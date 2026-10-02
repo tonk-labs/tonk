@@ -59,6 +59,9 @@ impl Query {
     /// Convert into a dialog [`ConceptQuery`], if this is a concept
     /// query. Returns the original [`Query`] back when it names a
     /// formula instead (which dialog's planner cannot resolve).
+    // The error is the query itself, handed back unchanged; it is as
+    // large as the concept query it would have been.
+    #[allow(clippy::result_large_err)]
     pub fn into_concept_query(self) -> Result<ConceptQuery, Self> {
         match self.predicate {
             Predicate::Concept(predicate) => Ok(ConceptQuery {

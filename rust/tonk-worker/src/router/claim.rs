@@ -376,7 +376,7 @@ pub async fn select_claims(
 
     let repo = tonk_state
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk_state.operator)
         .await

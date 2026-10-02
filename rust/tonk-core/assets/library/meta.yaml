@@ -15,7 +15,7 @@
 # Where a peer is reachable.
 #
 # A peer and a profile are one entity in two roles:
-# `dialog.replica/profile` names the peer holding a replica — this
+# `dialog.replica/peer` names the peer holding a replica — this
 # device locally, a serving service remotely — so the address is an
 # attribute on that entity rather than a concept of its own.
 #

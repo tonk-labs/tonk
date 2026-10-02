@@ -4,8 +4,6 @@
 use anyhow::Result;
 use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_effects::storage::Directory;
-use dialog_operator::{DeriveOperator, Profile};
-use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::subject::Subject;
 use dialog_ucan_core::time::{Duration, SystemTime, Timestamp};
@@ -69,17 +67,19 @@ async fn connection_outer_layout_prevents_old_cli_ambient_authority_fallback() -
     #[cfg(not(target_os = "macos"))]
     let profile_parent = home.join("data/dialog");
     std::fs::create_dir_all(&profile_parent)?;
-    let storage = Storage::<NativeSpace>::default();
-    let profile = Profile::create(tonk_cli::site::PROFILE_NAME)
-        .at(Directory::At(profile_parent.to_string_lossy().into_owned()))
-        .perform(&storage)
-        .await?;
+    let profile = tonk_cli::site::open_profile(
+        tonk_cli::site::PROFILE_NAME,
+        Directory::At(profile_parent.to_string_lossy().into_owned()),
+        true,
+    )
+    .await?;
     let base = home.join("legacy-data");
     std::fs::create_dir_all(&base)?;
     let operator = profile
-        .derive("legacy-compatibility")
+        .session("legacy-compatibility")
+        .space(profile.state())
         .base(Directory::At(base.to_string_lossy().into_owned()))
-        .build(storage)
+        .build()
         .await?;
     let ambient = DelegationBuilder::new()
         .issuer(Signer::from(owner))
@@ -90,6 +90,7 @@ async fn connection_outer_layout_prevents_old_cli_ambient_authority_fallback() -
         .try_build()
         .await?;
     profile
+        .access()
         .save(UcanDelegation(DelegationChain::new(ambient)))
         .perform(&operator)
         .await?;

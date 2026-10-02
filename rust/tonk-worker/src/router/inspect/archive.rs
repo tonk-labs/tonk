@@ -94,7 +94,7 @@ pub async fn inspect_archive_block(
 
     let repo = match tonk_state
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk_state.operator)
         .await
@@ -198,7 +198,7 @@ pub async fn inspect_remote_archive_block(
 
     let repo = match tonk_state
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk_state.operator)
         .await
@@ -215,23 +215,19 @@ pub async fn inspect_remote_archive_block(
         }
     };
 
-    let remote_repo = match repo
-        .remote(params.remote.as_str())
-        .load()
-        .perform(&tonk_state.operator)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            return Ok(Json(ArchiveBlockResponse {
-                hash: params.hash,
-                found: false,
-                data: None,
-                size: None,
-                error: Some(format!("Remote '{}' not found: {}", params.remote, e)),
-            }));
-        }
-    };
+    let remote_repo =
+        match crate::router::remotes::load(&repo, &params.remote, &tonk_state.operator).await {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(Json(ArchiveBlockResponse {
+                    hash: params.hash,
+                    found: false,
+                    data: None,
+                    size: None,
+                    error: Some(format!("Remote '{}' not found: {}", params.remote, e)),
+                }));
+            }
+        };
 
     // Read the block directly from the remote's archive index
     let result = remote_repo

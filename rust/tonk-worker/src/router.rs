@@ -93,6 +93,9 @@ pub use repository::{
     UpstreamConfiguration, bootstrap_profile,
 };
 
+/// The remotes a repository names, as its meta branch records them.
+pub(crate) mod remotes;
+
 mod sync;
 pub use dialog_repository::Revision;
 pub use sync::{
@@ -505,8 +508,8 @@ pub mod tests {
     // by their old path, so keep it resolving without widening them.
     pub(crate) use crate::helpers::state::{persist_test_root, test_root_seed};
 
+    use crate::worker::DefaultProfile;
     use dialog_credentials::Ed25519Signer;
-    use dialog_operator::Profile;
     use dialog_repository::RepositoryExt as _;
     use dialog_storage::provider::storage::Storage;
     use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as UcanSubject};
@@ -653,7 +656,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -687,7 +690,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -722,7 +725,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -755,7 +758,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -788,7 +791,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -860,7 +863,7 @@ pub mod tests {
             let tonk = state.read().await;
             let repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -884,7 +887,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -915,7 +918,7 @@ pub mod tests {
 
         let repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -959,7 +962,7 @@ pub mod tests {
         for key in [first, second] {
             let repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await

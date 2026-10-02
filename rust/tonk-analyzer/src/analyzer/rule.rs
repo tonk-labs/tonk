@@ -335,7 +335,7 @@ pub(crate) fn parse_rule_this_entity(
     };
     uri.parse()
         .map(Some)
-        .map_err(|e: dialog_artifacts::DialogArtifactsError| {
+        .map_err(|e: dialog_artifacts::IdentityError| {
             AnalyzeError::at(
                 AnalyzeErrorKind::InvalidSubjectUri {
                     subject: uri,
@@ -503,7 +503,7 @@ fn trivially_tautological(
             let term = query.terms.get(&key);
             let matches = matches!(
                 term,
-                Some(Term::Variable { name: Some(n), .. }) if n.as_str() == key.as_str()
+                Some(Term::Variable { name: Some(n), .. }) if &**n == key.as_str()
             );
             if !matches {
                 all_match = false;
@@ -1190,7 +1190,7 @@ fn lift_resolver_premise(
 mod tests {
     use super::*;
     use dialog_artifacts::Entity;
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::AttributeDescriptor;
     use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
@@ -1210,6 +1210,8 @@ mod tests {
         + dialog_query::Provider<dialog_effects::memory::Publish>
         + dialog_query::Provider<dialog_effects::archive::Import>
         + dialog_query::Provider<dialog_effects::authority::Attest>
+        + dialog_query::Provider<dialog_effects::blob::Import>
+        + dialog_query::Provider<dialog_effects::blob::Size>
     {
     }
 
@@ -1218,6 +1220,8 @@ mod tests {
             + dialog_query::Provider<dialog_effects::memory::Publish>
             + dialog_query::Provider<dialog_effects::archive::Import>
             + dialog_query::Provider<dialog_effects::authority::Attest>
+            + dialog_query::Provider<dialog_effects::blob::Import>
+            + dialog_query::Provider<dialog_effects::blob::Size>
     {
     }
 
@@ -1235,7 +1239,7 @@ mod tests {
     }
 
     async fn new_fixture() -> Fixture<impl FixtureEnv> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo
             .branch("main")

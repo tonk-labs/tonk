@@ -178,7 +178,7 @@ async fn export_branch_snapshot(
         .revision()
         .ok_or_else(|| TonkWorkerError::NotFound("branch has no revision".into()))?;
     let root = dialog_common::Blake3Hash::from(*revision.tree.hash());
-    let repository = dialog_repository::Repository::from(&tonk_state.profile);
+    let repository = dialog_repository::Repository::from(tonk_state.profile.did());
 
     // The profile is a PARTIAL replica: login materializes the
     // operational regions and leaves history and coverage by reference,
@@ -190,14 +190,20 @@ async fn export_branch_snapshot(
     // With no remote configured there is nothing to reach for; sparse is
     // then the honest answer.
     let export = repository.snapshot(revision).export();
-    let upstream = match super::identity::local_root(tonk_state).await {
-        Ok(root) => repository
-            .remote(tonk_account::account_access_remote_name(root.root_did.as_str()).as_str())
-            .load()
-            .perform(&tonk_state.operator)
-            .await
-            .ok(),
-        Err(_) => None,
+    let upstream = match (
+        super::identity::local_root(tonk_state).await,
+        super::account_state::account_remote(tonk_state).await,
+    ) {
+        (Ok(root), Ok(remote)) => tonk_account::peer::connect(
+            dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
+                remote.as_str(),
+            )),
+            root.root_did,
+            &tonk_state.operator,
+        )
+        .await
+        .ok(),
+        _ => None,
     };
     let export = match upstream {
         Some(upstream) => export.download(upstream),

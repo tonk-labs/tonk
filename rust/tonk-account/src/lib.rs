@@ -11,6 +11,8 @@ pub mod delegations;
 mod descriptor;
 /// Canonical device-signed account attachment detach intents.
 pub mod detach;
+/// Opening the peer a tonk profile is.
+pub mod peer;
 /// Work deferred until the account confirms its email.
 pub mod pending;
 /// Provider-neutral account space backup artifacts.
@@ -27,8 +29,8 @@ use dialog_effects::archive::{Get, Put};
 use dialog_effects::blob::{Import as BlobImport, Read as BlobRead};
 use dialog_effects::memory::{Publish as MemoryPublish, Resolve};
 use dialog_repository::{
-    Branch, FetchRemoteBranchError, Hydrate, PublishError, PublishRemoteBranchError, PushError,
-    RemoteBranch, RemoteSite, ResolveError, Revision,
+    Branch, ConnectedBranch, FetchRemoteBranchError, PublishError, PublishRemoteBranchError,
+    PushError, RemoteSite, ResolveEnv, ResolveError, Revision,
 };
 use thiserror::Error;
 
@@ -134,7 +136,7 @@ pub enum RemoteError {
 /// Probe `origin/main`, distinguishing only a confirmed missing revision cell
 /// from every remote failure.
 pub async fn probe_remote_main<Env>(
-    branch: &RemoteBranch,
+    branch: &ConnectedBranch,
     env: &Env,
 ) -> Result<RemotePresence, RemoteError>
 where
@@ -160,16 +162,12 @@ where
 /// error.
 pub async fn publish_genesis_if_absent<Env>(
     branch: &Branch,
-    remote: &RemoteBranch,
+    remote: &ConnectedBranch,
     env: &Env,
 ) -> Result<CreateGenesis, RemoteError>
 where
-    Env: Provider<Get>
-        + Provider<Put>
-        + Provider<Resolve>
-        + Provider<MemoryPublish>
+    Env: ResolveEnv
         + Provider<BlobRead>
-        + Provider<Hydrate>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Put>>
         + Provider<Fork<RemoteSite, Resolve>>

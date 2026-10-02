@@ -604,7 +604,7 @@ fn substitute_concept_query(
             } => {
                 let Some(bound) = bindings.get(var_name) else {
                     return Err(PlanError::UnboundVariable {
-                        name: var_name.clone(),
+                        name: var_name.to_string(),
                     });
                 };
                 bound.clone()
@@ -623,7 +623,7 @@ fn collect_variable_names(params: &Parameters, out: &mut HashSet<String>) {
             name: Some(name), ..
         } = term
         {
-            out.insert(name.clone());
+            out.insert(name.to_string());
         }
     }
 }

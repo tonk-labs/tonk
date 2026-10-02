@@ -240,7 +240,7 @@ mod tests {
         );
 
         let bytes = encode(exported.clone(), "predecessor", 0).expect("encode");
-        let successor = crate::Reactor::new(tonk.profile.clone());
+        let successor = crate::Reactor::new(tonk.profile.credential().clone());
         let restored = successor
             .import_overlays(
                 match decode(&bytes, "successor", 0) {

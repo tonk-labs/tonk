@@ -182,7 +182,7 @@ pub async fn revoke(
     // what a proof search has to aim at.
     let repository = tonk
         .profile
-        .repository(&repo)
+        .space(&repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -306,7 +306,7 @@ where
         let subject = repository.did();
         let authority = revoking_authority(tonk, branch, &subject).await?;
         tonk_identity::revocation::mint_delegated_revocation(
-            tonk.profile.signer().signer().clone(),
+            tonk.profile.credential().signer().clone(),
             path,
             target,
             &authority,
@@ -395,7 +395,7 @@ pub async fn list(
         .map_err(|error| TonkWorkerError::NotFound(format!("repository not found: {error}")))?;
     let repository = tonk
         .profile
-        .repository(&repo)
+        .space(&repo)
         .load()
         .perform(&tonk.operator)
         .await

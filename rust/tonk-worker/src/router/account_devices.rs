@@ -343,7 +343,7 @@ async fn delegated_revocation(
     let target = path.proof_cids()[0];
     let artifact = hex::encode(
         tonk_identity::revocation::mint_delegated_revocation(
-            state.profile.signer().signer().clone(),
+            state.profile.credential().signer().clone(),
             &path,
             &target,
             link,
@@ -365,7 +365,7 @@ async fn self_revocation(
     let target = link.proof_cids()[0];
     let artifact = hex::encode(
         tonk_identity::revocation::mint_self_revocation(
-            state.profile.signer().signer().clone(),
+            state.profile.credential().signer().clone(),
             link,
             &target,
         )

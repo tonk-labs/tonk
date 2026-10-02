@@ -44,10 +44,10 @@ async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
     let prefix_site = space_root_site(&site.repository.did(), fixture.link.issuer());
     fixture
         .profile
-        .credential()
+        .secrets()
         .site(prefix_site.clone())
         .save(Vec::<u8>::new())
-        .perform(&site.operator)
+        .perform(&fixture.profile)
         .await?;
     configure_upstream(&site, &env.access_service_url).await?;
     // What is under test is push authority, not provisioning; the space
@@ -59,10 +59,10 @@ async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
 
     let restored = fixture
         .profile
-        .credential()
+        .secrets()
         .site(prefix_site)
         .load::<Vec<u8>>()
-        .perform(&site.operator)
+        .perform(&fixture.profile)
         .await?;
     assert!(
         !restored.is_empty(),
@@ -231,6 +231,11 @@ async fn it_installs_authority_from_a_callback_authorization(
     // confirmed its email.
     fixture.activate_with(&env).await?;
     let operator = fixture.pre_account_site.operator.inner();
+    assert_eq!(
+        fixture.profile.authority().await?,
+        fixture.link.issuer().clone(),
+        "signing in hands the profile's dialog account over to the tonk account"
+    );
 
     // Exactly what the page mints: the account's powerline to this profile,
     // plus the descriptor that says where the account repository lives.
@@ -287,7 +292,7 @@ async fn it_installs_authority_from_a_callback_authorization(
         "the account root must be the issuer"
     );
     let union = tonk_account::delegations::mint_account_union(
-        &fixture.profile.signer().signer().clone(),
+        &fixture.profile.credential().signer().clone(),
         &root.did(),
     )
     .await?;
@@ -491,7 +496,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
         command: dialog_ucan_core::command::Command::parse("/").expect("root command"),
         parameters: dialog_ucan::Parameters::default(),
     };
-    let joiner_access = dialog_repository::Repository::from(&joiner_profile)
+    let joiner_access = dialog_repository::Repository::from(joiner_profile.did())
         .branch(dialog_repository::ACCESS_BRANCH)
         .open()
         .perform(joiner_operator)
@@ -550,7 +555,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     );
 
     // Re-open the access branch: linking advanced its head.
-    let joiner_access = dialog_repository::Repository::from(&joiner_profile)
+    let joiner_access = dialog_repository::Repository::from(joiner_profile.did())
         .branch(dialog_repository::ACCESS_BRANCH)
         .open()
         .perform(joiner_operator)
@@ -586,7 +591,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     .await?
     .expect("linking hydrates the joiner's account");
     let union = tonk_account::delegations::mint_account_union(
-        &joiner_profile.signer().signer().clone(),
+        &joiner_profile.credential().signer().clone(),
         &account_root,
     )
     .await?;
@@ -687,23 +692,21 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
     // account's, so pulling the account is not enough on its own: the access
     // branch has to adopt the account as its upstream and pull too. That is
     // what makes recovered authority usable rather than merely present.
-    let second_access = dialog_repository::Repository::from(&second.profile)
+    let second_access = dialog_repository::Repository::from(second.profile.did())
         .branch(dialog_repository::ACCESS_BRANCH)
         .open()
         .perform(second_operator)
         .await?;
-    let second_remote = dialog_repository::Repository::from(&second.profile)
-        .remote("account")
-        .create(dialog_repository::SiteAddress::from(
-            dialog_remote_ucan::UcanAddress::new(&remote),
-        ))
-        .subject(account_root.clone())
-        .perform(second_operator)
-        .await?
-        .branch(dialog_repository::ACCESS_BRANCH)
-        .open()
-        .perform(second_operator)
-        .await?;
+    let second_remote = tonk_account::peer::connect(
+        dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(&remote)),
+        account_root.clone(),
+        second_operator,
+    )
+    .await?
+    .branch(dialog_repository::ACCESS_BRANCH)
+    .open()
+    .perform(second_operator)
+    .await?;
     assert!(
         second_access
             .delegations()
@@ -748,22 +751,21 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
 /// safe to re-run.
 #[dialog_common::test]
 async fn it_migrates_delegations_idempotently() -> Result<()> {
-    use dialog_storage::provider::storage::{NativeSpace, Storage};
-
     let fixture = common::AccountFixture::new().await?;
     let store = tonk_cli::space::SpaceStore::at(fixture.tmp.path().join("registry"));
     // Mount the fixture's profile so migration has a provider for its
     // subject: it commits as the profile, and an unmounted one errors.
-    let storage = Storage::<NativeSpace>::default();
-    let profile = dialog_operator::Profile::load(&fixture.config.profile_name)
-        .at(fixture.config.profile_directory.clone())
-        .perform(&storage)
-        .await?;
+    let profile = tonk_cli::site::open_profile(
+        &fixture.config.profile_name,
+        fixture.config.profile_directory.clone(),
+        false,
+    )
+    .await?;
 
     let first = tonk_cli::account_state::migrate_delegations(
         &profile,
         fixture.pre_account_site.operator.inner(),
-        &storage,
+        profile.storage(),
         &store,
     )
     .await?;
@@ -773,7 +775,7 @@ async fn it_migrates_delegations_idempotently() -> Result<()> {
     let second = tonk_cli::account_state::migrate_delegations(
         &profile,
         fixture.pre_account_site.operator.inner(),
-        &storage,
+        profile.storage(),
         &store,
     )
     .await?;
@@ -786,16 +788,14 @@ async fn it_migrates_delegations_idempotently() -> Result<()> {
     Ok(())
 }
 
-/// A space created before the account existed reaches no account root.
-/// Ordinary sync must not silently turn account linking into ownership
-/// adoption; `tonk space move` is the explicit boundary that does so.
+/// A space created before sign-in is held for the profile's onboarding
+/// account, which signing in hands over to the account: the space follows
+/// it, as it does in the browser, and ordinary sync pushes it.
 #[dialog_common::test]
-async fn it_denies_ordinary_sync_for_a_space_created_before_the_account_existed(
+async fn it_moves_a_space_created_before_sign_in_to_the_account(
     env: AccessServiceAddress,
 ) -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
-    // The access service serves nothing for an account that has not
-    // confirmed its email.
     fixture.activate_with(&env).await?;
     let path = fixture.pre_account_site.root.clone();
     let site = TonkSite::open_with(&path, account_config(&fixture)).await?;
@@ -803,9 +803,39 @@ async fn it_denies_ordinary_sync_for_a_space_created_before_the_account_existed(
     env.provision_subject(site.repository.did().as_str())
         .await?;
 
+    let pushed = tonk_cli::sync::push(&site).await?;
+    assert!(pushed.advanced, "{pushed:?}");
+    Ok(())
+}
+
+/// Signing in moves what the profile's onboarding account held to the
+/// account, and nothing else: a space another profile on this machine
+/// created was never this account's, so ordinary sync cannot adopt it.
+/// `tonk space link` is the explicit boundary that does.
+#[dialog_common::test]
+async fn it_denies_ordinary_sync_for_a_space_the_account_never_held(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let fixture = common::AccountFixture::new().await?;
+    // The access service serves nothing for an account that has not
+    // confirmed its email.
+    fixture.activate_with(&env).await?;
+    let path = fixture.tmp.path().join("created-elsewhere");
+    let elsewhere = SiteConfig {
+        profile_name: format!("elsewhere-{:x}", rand::random::<u64>()),
+        require_account: false,
+        ..fixture.config.clone()
+    };
+    drop(TonkSite::init_at_with(&path, elsewhere).await?);
+
+    let site = TonkSite::open_with(&path, account_config(&fixture)).await?;
+    configure_upstream(&site, &env.access_service_url).await?;
+    env.provision_subject(site.repository.did().as_str())
+        .await?;
+
     let error = tonk_cli::sync::push(&site)
         .await
-        .expect_err("ordinary sync cannot adopt a local-only space");
+        .expect_err("ordinary sync cannot adopt a space the account never held");
     assert!(
         error.to_string().contains("No delegation chain proves"),
         "{error}"
@@ -813,92 +843,58 @@ async fn it_denies_ordinary_sync_for_a_space_created_before_the_account_existed(
     Ok(())
 }
 
-/// An account-backed create seals the space's seed to the account's
-/// published encryption key and records it on the account branch — the
-/// copy any of the account's devices recovers the space from after a
-/// ceremony opens it.
+/// An account-backed create takes the space's key into the account's
+/// custody: held sealed to the account the profile acts for, which the
+/// account's own key opens — the copy any of the account's devices
+/// recovers the space from after a ceremony.
 #[dialog_common::test]
 async fn it_custodies_the_created_space_seed() -> Result<()> {
-    use dialog_query::{Output as _, Query, Term};
-    use tonk_schema::{SecretMessage, SecretPrincipal, prelude::DidExt as _};
-
     let fixture = common::AccountFixture::new().await?;
     let site = TonkSite::init_at_with(
         &fixture.tmp.path().join("custodied"),
         account_config(&fixture),
     )
     .await?;
-    let subject = site.repository.did();
+    held_for_the_account(&fixture, &site.repository.did()).await
+}
 
-    let account_operator =
-        tonk_cli::account_state::credential_operator_for_store(&fixture.profile, &fixture.store)
-            .await?;
-    let account = tonk_cli::account_state::open_account_branch_in(
-        &fixture.profile,
-        &account_operator,
-        &fixture.store,
-    )
-    .await?
-    .context("the fixture account branch mounts")?;
-    // The principal names the message; the message carries the seed.
-    let principals: Vec<SecretPrincipal> = account
-        .query()
-        .select(Query::<SecretPrincipal> {
-            this: Term::from(subject.this()),
-            kind: Term::var("kind"),
-            seed: Term::var("seed"),
-        })
-        .perform(&account_operator)
-        .try_vec()
+/// `subject`'s key is held for the account the fixture's peer acts for,
+/// this device keeps a copy of it, and the account proves authority over
+/// the space.
+async fn held_for_the_account(
+    fixture: &common::AccountFixture,
+    subject: &dialog_varsig::Did,
+) -> Result<()> {
+    // A fresh open: the fixture's peer handle predates the writes.
+    let site = TonkSite::open_with(&fixture.pre_account_site.root, account_config(fixture)).await?;
+    let peer = &site.profile;
+    let account = peer.authority().await?;
+    let held = dialog_repository::secrets::held_principal(peer.state(), subject, peer)
+        .await?
+        .context("the space's key is held")?;
+    assert_eq!(held.kind, tonk_schema::SeedKind::Space.held());
+    assert_eq!(held.to, account, "held for the account");
+    assert!(peer.holds_key(subject).await?, "this device keeps a copy");
+    peer.access()
+        .prove(dialog_capability::Subject::from(subject.clone()))
+        .audience(&account)
+        .perform(site.operator.inner())
         .await
-        .map_err(|error| anyhow::anyhow!("read sealed principals: {error:?}"))?;
-    assert_eq!(principals.len(), 1, "the created space's seed is sealed");
-    assert_eq!(
-        principals[0].kind.0.to_string(),
-        tonk_schema::SeedKind::SPACE
-    );
-    let rows: Vec<SecretMessage> = account
-        .query()
-        .select(Query::<SecretMessage> {
-            this: Term::from(principals[0].seed.0.clone()),
-            to: Term::var("to"),
-            message: Term::var("message"),
-            from: Term::var("from"),
-        })
-        .perform(&account_operator)
-        .try_vec()
-        .await
-        .map_err(|error| anyhow::anyhow!("read sealed messages: {error:?}"))?;
-    assert_eq!(rows.len(), 1, "the principal names a real message");
-
-    // The account secret opens the row and derives the space itself.
-    let secret = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
-        fixture.root_prf,
-    ));
-    let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].message.0)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let seed = secret
-        .secret()
-        .reveal(&sealed, &subject)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let signer = dialog_credentials::Ed25519Signer::import(&*seed).await?;
-    use dialog_varsig::Principal as _;
-    assert_eq!(signer.did(), subject, "the sealed seed derives the space");
+        .context("the account proves authority over the space")?;
     Ok(())
 }
 
-/// Sign-in moves custody with two passes. The shared rotation core
-/// rotates whatever the onboarding account sealed (here the fixture's
-/// pre-account site, created before any root existed) and retires the
-/// onboarding account; the legacy walk then exports spaces that predate
-/// custody rows entirely — "premade", created with a root recorded but
-/// no account gate. Hosting moves in neither pass; that stays
-/// `tonk space link`'s boundary.
+/// Sign-in moves custody with two passes. The first moves whatever the
+/// onboarding account sealed in tonk's own custody rows (here the
+/// fixture's pre-account site, created before any root existed) into the
+/// account's custody and retires the onboarding account; the walk then
+/// finds "premade", created with a root recorded but no account gate,
+/// already held: creating a space takes its key into the account's
+/// custody. Hosting moves in neither pass; that stays `tonk space link`'s
+/// boundary.
 #[dialog_common::test]
 async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
-    use dialog_query::{Output as _, Query, Term};
     use tonk_cli::custody::{SpaceRotation, rotate_from_onboarding, rotate_local_spaces};
-    use tonk_schema::{SecretMessage, SecretPrincipal, prelude::DidExt as _};
 
     let fixture = common::AccountFixture::new().await?;
     // What `tonk account login` records once the ceremony succeeds.
@@ -913,69 +909,20 @@ async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
     let subject: dialog_varsig::Did = created.did.parse()?;
 
     // The login sequence: the shared core rotates the onboarding-sealed
-    // seeds, then the legacy walk covers anything without a custody row.
-    // The fixture's attach recorded a root before this create, so
-    // "premade" is the LEGACY shape: root-delegated, no custody row.
-    // The rotation pass moves the genuinely onboarding-custodied seed
-    // (the fixture's pre-account site) and the walk exports this one.
+    // seeds, then the walk covers anything without a held key. The
+    // rotation pass moves the onboarding-custodied seed (the fixture's
+    // pre-account site); "premade" was held at create.
     let failures = rotate_from_onboarding(&fixture.store, &fixture.config).await?;
     assert!(failures.is_empty(), "rotation completes: {failures:?}");
     let outcomes = rotate_local_spaces(&fixture.store, &fixture.config).await?;
     assert!(
         outcomes
             .iter()
-            .any(|(name, outcome)| name == "premade" && matches!(outcome, SpaceRotation::Moved)),
-        "the walk moves the legacy space: {outcomes:?}"
+            .any(|(name, outcome)| name == "premade" && matches!(outcome, SpaceRotation::Already)),
+        "the walk finds the created space held: {outcomes:?}"
     );
 
-    let account_operator =
-        tonk_cli::account_state::credential_operator_for_store(&fixture.profile, &fixture.store)
-            .await?;
-    let account = tonk_cli::account_state::open_account_branch_in(
-        &fixture.profile,
-        &account_operator,
-        &fixture.store,
-    )
-    .await?
-    .context("the fixture account branch mounts")?;
-    let principals: Vec<SecretPrincipal> = account
-        .query()
-        .select(Query::<SecretPrincipal> {
-            this: Term::from(subject.this()),
-            kind: Term::var("kind"),
-            seed: Term::var("seed"),
-        })
-        .perform(&account_operator)
-        .try_vec()
-        .await
-        .map_err(|error| anyhow::anyhow!("read sealed principals: {error:?}"))?;
-    assert_eq!(principals.len(), 1, "the moved space's seed is sealed");
-    let rows: Vec<SecretMessage> = account
-        .query()
-        .select(Query::<SecretMessage> {
-            this: Term::from(principals[0].seed.0.clone()),
-            to: Term::var("to"),
-            message: Term::var("message"),
-            from: Term::var("from"),
-        })
-        .perform(&account_operator)
-        .try_vec()
-        .await
-        .map_err(|error| anyhow::anyhow!("read sealed messages: {error:?}"))?;
-    assert_eq!(rows.len(), 1, "the principal names a real message");
-
-    let secret = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
-        fixture.root_prf,
-    ));
-    let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].message.0)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let seed = secret
-        .secret()
-        .reveal(&sealed, &subject)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let signer = dialog_credentials::Ed25519Signer::import(&*seed).await?;
-    use dialog_varsig::Principal as _;
-    assert_eq!(signer.did(), subject, "the sealed seed derives the space");
+    held_for_the_account(&fixture, &subject).await?;
 
     // Running again converges: the onboarding account is retired, so
     // the rotation finds nothing, and the walk still reports the row.
@@ -1037,7 +984,7 @@ async fn replacement_does_not_hydrate_previous_account_facts(
         .perform(&guarded_site.operator)
         .await?;
 
-    let previous_branch = dialog_repository::Repository::from(&fixture.profile)
+    let previous_branch = dialog_repository::Repository::from(fixture.profile.did())
         .branch(tonk_account::MAIN_BRANCH)
         .open()
         .perform(&operator)

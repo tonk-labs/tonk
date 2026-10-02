@@ -88,7 +88,7 @@ mod when_managing_remotes {
 
         // Dialog now reports an upstream on the local main.
         let session = test.site.branch().await?;
-        assert!(session.handle().upstream().is_some());
+        assert!(tonk_account::peer::upstream(session.handle()).is_some());
         Ok(())
     }
 
@@ -535,7 +535,7 @@ mod when_claiming_an_invite_with_a_remote {
         // authority on the inviter's repo.
         assert_eq!(listed[0].subject, inviter.site.repository.did());
         let session = joined.branch().await?;
-        assert!(session.handle().upstream().is_some());
+        assert!(tonk_account::peer::upstream(session.handle()).is_some());
         Ok(())
     }
 
@@ -646,10 +646,10 @@ mod when_recording_roster_facts {
         // account — the durable identity an unlinked device has.
         let root_bytes = joined
             .profile
-            .credential()
+            .secrets()
             .site(tonk_cli::onboarding::ONBOARDING_GRANT_SITE)
             .load::<Vec<u8>>()
-            .perform(&joined.operator)
+            .perform(&joined.profile)
             .await?;
         let chain = dialog_ucan_core::DelegationChain::try_from(root_bytes.as_slice())
             .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -1555,10 +1555,10 @@ mod when_mounting_account_authority {
     async fn local_root(site: &TonkSite) -> Result<dialog_varsig::Did> {
         let bytes = site
             .profile
-            .credential()
+            .secrets()
             .site(tonk_cli::onboarding::ONBOARDING_GRANT_SITE)
             .load::<Vec<u8>>()
-            .perform(&site.operator)
+            .perform(&site.profile)
             .await?;
         let chain = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
             .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -1595,10 +1595,10 @@ mod when_mounting_account_authority {
         assert_eq!(mounted.repository.did(), subject);
         let persisted = mounted
             .profile
-            .credential()
+            .secrets()
             .site(space_root_site(&subject, &account_root))
             .load::<Vec<u8>>()
-            .perform(&mounted.operator)
+            .perform(&mounted.profile)
             .await?;
         assert_eq!(persisted, expected);
 
@@ -1671,10 +1671,10 @@ mod when_mounting_account_authority {
         let key = space_root_site(&test.site.repository.did(), &root);
         test.site
             .profile
-            .credential()
+            .secrets()
             .site(key.clone())
             .save(Vec::<u8>::new())
-            .perform(&test.site.operator)
+            .perform(&test.site.profile)
             .await?;
 
         let recovered = site::account_root_prefix(&test.site, &root).await?;
@@ -1683,10 +1683,10 @@ mod when_mounting_account_authority {
         let persisted = test
             .site
             .profile
-            .credential()
+            .secrets()
             .site(key)
             .load::<Vec<u8>>()
-            .perform(&test.site.operator)
+            .perform(&test.site.profile)
             .await?;
         assert_eq!(persisted, recovered.to_bytes()?);
         Ok(())
@@ -1709,10 +1709,10 @@ mod when_mounting_account_authority {
         let persisted = test
             .site
             .profile
-            .credential()
+            .secrets()
             .site(space_root_site(&test.site.repository.did(), &account_root))
             .load::<Vec<u8>>()
-            .perform(&test.site.operator)
+            .perform(&test.site.profile)
             .await?;
         assert_eq!(persisted, adopted.to_bytes()?);
         Ok(())
@@ -1741,7 +1741,7 @@ mod when_reopening_a_site {
 
     async fn access_revision(site: &TonkSite) -> Result<Option<dialog_repository::Revision>> {
         Ok(
-            dialog_repository::Repository::from(site.profile.signer().clone())
+            dialog_repository::Repository::from(site.profile.credential().clone())
                 .branch(dialog_repository::ACCESS_BRANCH)
                 .open()
                 .perform(site.operator.inner())

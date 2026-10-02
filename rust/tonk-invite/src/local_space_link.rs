@@ -198,7 +198,20 @@ impl TrustedService {
     }
 }
 
-/// Space-signed request displayed by the browser before account consent.
+/// What the leaf of a local-space link request carries. Created by
+/// [`LocalSpaceLinkRequest::binding`].
+#[derive(Clone, Debug)]
+pub struct RequestBinding {
+    /// The command the leaf grants.
+    pub command: Command,
+    /// The binding the leaf signs into its `meta`.
+    pub meta: BTreeMap<String, Ipld>,
+    /// When the leaf expires.
+    pub expiration: Timestamp,
+}
+
+/// A request displayed by the browser before account consent: a chain
+/// rooted at the space, proving the requester's authority over it.
 #[derive(Clone, Debug)]
 pub struct LocalSpaceLinkRequest {
     chain: DelegationChain,
@@ -208,17 +221,20 @@ pub struct LocalSpaceLinkRequest {
 }
 
 impl LocalSpaceLinkRequest {
-    /// Sign a short-lived request as the existing repository identity.
-    pub async fn issue(
-        owner: &Ed25519Signer,
-        recipient: &Did,
-        callback: Url,
-        correlation: String,
-        name: String,
+    /// What the leaf of a request for `space` carries: the command it
+    /// grants, the binding it signs into its `meta`, and its short expiry.
+    /// Whoever proves authority over `space` issues the leaf to the
+    /// recipient with these, on the chain that proves it, and hands the
+    /// finished chain to [`Self::from_chain`].
+    pub fn binding(
+        space: &Did,
+        callback: &Url,
+        correlation: &str,
+        name: &str,
         service: &TrustedService,
         now: Timestamp,
-    ) -> Result<Self> {
-        validate_loopback_callback(&callback)?;
+    ) -> Result<RequestBinding> {
+        validate_loopback_callback(callback)?;
         ensure!(
             correlation.len() >= 32 && correlation.len() <= 128,
             "local_space_link_invalid_correlation"
@@ -227,30 +243,31 @@ impl LocalSpaceLinkRequest {
             !name.trim().is_empty() && name.len() <= 256,
             "local_space_link_invalid_name"
         );
-        let space = owner.did();
-        let grant = DelegationBuilder::new()
-            .issuer(Signer::from(owner.clone()))
-            .audience(recipient)
-            .subject(Subject::Specific(space.clone()))
-            .command(
-                REQUEST_COMMAND
-                    .iter()
-                    .map(|part| (*part).to_owned())
-                    .collect(),
-            )
-            .expiration(expiry_after(now)?)
-            .meta(text_meta([
+        Ok(RequestBinding {
+            command: command(REQUEST_COMMAND),
+            meta: text_meta([
                 (META_CALLBACK, callback.to_string()),
-                (META_CORRELATION, correlation.clone()),
-                (META_NAME, name.clone()),
+                (META_CORRELATION, correlation.to_owned()),
+                (META_NAME, name.to_owned()),
                 (META_SERVICE_DID, service.did.to_string()),
                 (META_SERVICE_URL, service.url.to_string()),
                 (META_SPACE, space.to_string()),
-            ]))
-            .try_build()
-            .await?;
+            ]),
+            expiration: expiry_after(now)?,
+        })
+    }
+
+    /// A request from its finished chain: rooted at the space, through
+    /// whoever proves authority over it, to the recipient, the leaf
+    /// carrying the [binding](Self::binding).
+    pub fn from_chain(chain: DelegationChain) -> Result<Self> {
+        let callback: Url = meta_string(&chain, META_CALLBACK)?
+            .parse()
+            .context("local_space_link_callback_invalid")?;
+        let correlation = meta_string(&chain, META_CORRELATION)?.to_owned();
+        let name = meta_string(&chain, META_NAME)?.to_owned();
         Ok(Self {
-            chain: DelegationChain::new(grant),
+            chain,
             callback,
             correlation,
             name,
@@ -264,17 +281,7 @@ impl LocalSpaceLinkRequest {
             "local_space_link_payload_too_large"
         );
         let chain = DelegationChain::try_from(bytes).context("local_space_link_invalid_chain")?;
-        let callback: Url = meta_string(&chain, META_CALLBACK)?
-            .parse()
-            .context("local_space_link_callback_invalid")?;
-        let correlation = meta_string(&chain, META_CORRELATION)?.to_owned();
-        let name = meta_string(&chain, META_NAME)?.to_owned();
-        Ok(Self {
-            chain,
-            callback,
-            correlation,
-            name,
-        })
+        Self::from_chain(chain)
     }
 
     /// Encode the public signed request. No private key material is included.
@@ -308,7 +315,8 @@ impl LocalSpaceLinkRequest {
         self.chain.subject()
     }
 
-    /// Validate ownership proof and exact deployment routing.
+    /// Validate the proof of authority over the space and exact deployment
+    /// routing.
     pub async fn validate(
         &self,
         trusted_service: &TrustedService,
@@ -321,8 +329,14 @@ impl LocalSpaceLinkRequest {
             .cloned()
             .context("local_space_link_subject_mismatch")?;
         let recipient = self.chain.audience().clone();
+        // The chain roots at the space: its first hop is the space's own
+        // delegation, and every hop after it is proven from there.
+        ensure!(
+            self.chain.proofs().next().map(|root| root.issuer()) == Some(&space),
+            "local_space_link_unrooted_chain"
+        );
         let expires_at =
-            validate_chain(&self.chain, &space, &recipient, REQUEST_COMMAND, now, true).await?;
+            validate_chain(&self.chain, &space, &recipient, REQUEST_COMMAND, now, false).await?;
         ensure!(
             meta_string(&self.chain, META_SPACE)? == space.as_str(),
             "local_space_link_subject_mismatch"
@@ -351,7 +365,14 @@ impl LocalSpaceLinkRequest {
             correlation: self.correlation.clone(),
             name: self.name.clone(),
             service: trusted_service.clone(),
-            request_cid: self.chain.proof_cids()[0].to_string(),
+            // The leaf is what this request alone signs: the hops above it
+            // are the space's standing delegations, shared by every request.
+            request_cid: self
+                .chain
+                .proof_cids()
+                .last()
+                .context("local_space_link_invalid_chain")?
+                .to_string(),
             expires_at,
         })
     }
@@ -744,6 +765,55 @@ mod local_space_link_tests {
         Timestamp::new(UNIX_EPOCH + Duration::from_secs(seconds)).unwrap()
     }
 
+    /// The leaf of a request for `space`, signed by `issuer`.
+    #[allow(clippy::too_many_arguments)]
+    async fn leaf(
+        issuer: &Ed25519Signer,
+        space: &Did,
+        recipient: &Did,
+        callback: Url,
+        correlation: String,
+        name: String,
+        service: &TrustedService,
+        now: Timestamp,
+    ) -> Result<dialog_ucan_core::Delegation<dialog_credentials::Signature>> {
+        let binding =
+            LocalSpaceLinkRequest::binding(space, &callback, &correlation, &name, service, now)?;
+        Ok(DelegationBuilder::new()
+            .issuer(Signer::from(issuer.clone()))
+            .audience(recipient)
+            .subject(Subject::Specific(space.clone()))
+            .command(binding.command.0)
+            .expiration(binding.expiration)
+            .meta(binding.meta)
+            .try_build()
+            .await?)
+    }
+
+    /// A request the space itself signs: a chain of one hop.
+    async fn issue(
+        space: &Ed25519Signer,
+        recipient: &Did,
+        callback: Url,
+        correlation: String,
+        name: String,
+        service: &TrustedService,
+        now: Timestamp,
+    ) -> Result<LocalSpaceLinkRequest> {
+        let leaf = leaf(
+            space,
+            &space.did(),
+            recipient,
+            callback,
+            correlation,
+            name,
+            service,
+            now,
+        )
+        .await?;
+        LocalSpaceLinkRequest::from_chain(DelegationChain::new(leaf))
+    }
+
     async fn fixture() -> (
         Ed25519Signer,
         Ed25519Signer,
@@ -761,7 +831,7 @@ mod local_space_link_tests {
             "https://access.example/ucan/".parse().unwrap(),
         )
         .unwrap();
-        let request = LocalSpaceLinkRequest::issue(
+        let request = issue(
             &owner,
             &recipient.did(),
             "http://127.0.0.1:43210/link".parse().unwrap(),
@@ -938,7 +1008,7 @@ mod local_space_link_tests {
         );
 
         let other_recipient = Ed25519Signer::generate().await.unwrap();
-        let wrong_request = LocalSpaceLinkRequest::issue(
+        let wrong_request = issue(
             &other,
             &other_recipient.did(),
             "http://127.0.0.1:43211/link".parse().unwrap(),
@@ -972,7 +1042,7 @@ mod local_space_link_tests {
             "https://other.example/ucan/".parse().unwrap(),
         )
         .unwrap();
-        let fresh = LocalSpaceLinkRequest::issue(
+        let fresh = issue(
             &owner,
             &recipient.did(),
             "http://localhost:43212/link".parse().unwrap(),
@@ -1027,7 +1097,7 @@ mod local_space_link_tests {
             .await
             .unwrap();
         let other_owner = Ed25519Signer::generate().await.unwrap();
-        let other_request = LocalSpaceLinkRequest::issue(
+        let other_request = issue(
             &other_owner,
             &recipient.did(),
             "http://127.0.0.1:43213/link".parse().unwrap(),
@@ -1049,5 +1119,97 @@ mod local_space_link_tests {
                 .to_string()
                 .contains("binding_mismatch")
         );
+    }
+
+    /// A request issued by a peer the space delegated to carries the chain
+    /// from the space, and is accepted as the space's own would be.
+    #[tokio::test]
+    async fn local_space_link_accepts_a_request_proven_from_the_space() {
+        let (_, recipient, _, service, _, _) = fixture().await;
+        let space = Ed25519Signer::generate().await.unwrap();
+        let peer = Ed25519Signer::generate().await.unwrap();
+        let grant = DelegationBuilder::new()
+            .issuer(Signer::from(space.clone()))
+            .audience(&peer.did())
+            .subject(Subject::Specific(space.did()))
+            .command(Vec::new())
+            .try_build()
+            .await
+            .unwrap();
+        let request_leaf = leaf(
+            &peer,
+            &space.did(),
+            &recipient.did(),
+            "http://127.0.0.1:43210/link".parse().unwrap(),
+            "0123456789abcdef0123456789abcdef".into(),
+            "garden".into(),
+            &service,
+            at(1_000_000),
+        )
+        .await
+        .unwrap();
+        let chain = DelegationChain::new(grant).push(request_leaf).unwrap();
+        let request = LocalSpaceLinkRequest::from_bytes(
+            &LocalSpaceLinkRequest::from_chain(chain)
+                .unwrap()
+                .to_bytes()
+                .unwrap(),
+        )
+        .unwrap();
+        let validated = request.validate(&service, at(1_000_001)).await.unwrap();
+        assert_eq!(validated.space, space.did());
+        assert_eq!(validated.recipient, recipient.did());
+    }
+
+    /// A request whose chain does not start at the space it names is
+    /// refused: a peer cannot claim a space by naming it.
+    #[tokio::test]
+    async fn local_space_link_refuses_a_chain_not_rooted_at_the_space() {
+        let (_, recipient, _, service, _, _) = fixture().await;
+        let space = Ed25519Signer::generate().await.unwrap();
+        let peer = Ed25519Signer::generate().await.unwrap();
+        let unrooted = leaf(
+            &peer,
+            &space.did(),
+            &recipient.did(),
+            "http://127.0.0.1:43210/link".parse().unwrap(),
+            "0123456789abcdef0123456789abcdef".into(),
+            "garden".into(),
+            &service,
+            at(1_000_000),
+        )
+        .await
+        .unwrap();
+        let request = LocalSpaceLinkRequest::from_chain(DelegationChain::new(unrooted)).unwrap();
+        let refused = request.validate(&service, at(1_000_001)).await.unwrap_err();
+        assert_eq!(refused.to_string(), "local_space_link_unrooted_chain");
+
+        // Nor does a chain from another space the peer holds.
+        let other = Ed25519Signer::generate().await.unwrap();
+        let grant = DelegationBuilder::new()
+            .issuer(Signer::from(other.clone()))
+            .audience(&peer.did())
+            .subject(Subject::Specific(other.did()))
+            .command(Vec::new())
+            .try_build()
+            .await
+            .unwrap();
+        let elsewhere = leaf(
+            &peer,
+            &space.did(),
+            &recipient.did(),
+            "http://127.0.0.1:43210/link".parse().unwrap(),
+            "0123456789abcdef0123456789abcdef".into(),
+            "garden".into(),
+            &service,
+            at(1_000_000),
+        )
+        .await
+        .unwrap();
+        let chain = DelegationChain::new(grant).push(elsewhere);
+        if let Ok(chain) = chain {
+            let request = LocalSpaceLinkRequest::from_chain(chain).unwrap();
+            assert!(request.validate(&service, at(1_000_001)).await.is_err());
+        }
     }
 }

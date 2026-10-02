@@ -393,7 +393,7 @@ impl SpaceStatus {
 
 /// Where a peer is reachable.
 ///
-/// Keyed on the PEER entity — the one `dialog.replica/profile` names.
+/// Keyed on the PEER entity — the one `dialog.replica/peer` names.
 /// A peer and a profile are the same entity in two roles: this device
 /// in the local role, a serving service in the remote one, so there is
 /// no peer to identify apart from the profile.
@@ -454,17 +454,7 @@ impl PeerAddress {
 /// `https://tonk.network/sync` are one peer. `None` for an address that
 /// names no host.
 pub fn peer_of(address: &dialog_repository::SiteAddress) -> Option<dialog_varsig::Did> {
-    let endpoint = match address {
-        dialog_repository::SiteAddress::Ucan(ucan) => ucan.endpoint(),
-        _ => return None,
-    };
-    let authority = url::Url::parse(endpoint).ok()?;
-    let host = authority.host_str()?;
-    let authority = match authority.port() {
-        Some(port) => format!("{host}%3A{port}"),
-        None => host.to_string(),
-    };
-    format!("did:web:{authority}").parse().ok()
+    tonk_account::peer::service_did(address).ok()
 }
 
 /// What a branch follows.

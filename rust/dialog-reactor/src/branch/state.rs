@@ -73,13 +73,22 @@ impl BranchState {
     /// overlay now, folds it in at the single `QueryLayer::from(&Branch)`
     /// point, and bumps an epoch so the branch's subscriptions re-evaluate
     /// on their next poll. A cardinality-one re-assert overwrites in place.
+    ///
+    /// The overlay holds facts only, so a statement that changes an asset
+    /// is refused; that is a mistake in the caller, reported in the log.
     pub fn assert_overlay<S: Statement>(&self, claim: S) {
-        self.branch.overlay().assert(claim);
+        if let Err(error) = self.branch.overlay().assert(claim) {
+            dialog_common::log!("overlay assert refused: {error}");
+        }
     }
 
-    /// Retract a [`Statement`] from the branch's session overlay.
+    /// Retract a [`Statement`] from the branch's session overlay. A
+    /// statement that changes an asset is refused, as for
+    /// [`assert_overlay`](Self::assert_overlay).
     pub fn retract_overlay<S: Statement>(&self, claim: S) {
-        self.branch.overlay().retract(claim);
+        if let Err(error) = self.branch.overlay().retract(claim) {
+            dialog_common::log!("overlay retract refused: {error}");
+        }
     }
 
     /// Drop every fact in the branch's session overlay. Used to keep
