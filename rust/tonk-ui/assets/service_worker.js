@@ -1578,6 +1578,11 @@ function holdProfilePort(port, page) {
             next.probes.get(data.pong)?.();
             return;
         }
+        // The profile's worker asks for what this origin stored, to move in.
+        if (typeof data?.id === "number") {
+            answerProfile(port, data);
+            return;
+        }
         const call = next.calls.get(data?.call);
         if (!call) return;
         if (data.head) call.head(data.head);
@@ -1771,6 +1776,131 @@ function releaseProfileCalls(reason) {
             passed.fail(new Error(reason));
         }
     }
+}
+
+// ---- A profile's move out of this origin --------------------------------
+//
+// Before sites had origins of their own, this worker held the person's
+// profile, in this origin's storage. The profile's worker now holds it, in
+// its own. A person who was here before has theirs here still, so the first
+// time the profile's worker starts it asks this one for what this origin
+// stored and copies it in: the databases as they are, record by record, and
+// the files beside them. A key the browser will not export goes with its
+// record, and stays one the browser will not export.
+//
+// Nothing here is changed or removed. This worker no longer opens it.
+
+// The databases a profile is kept in: its own, its credentials', and one for
+// each space it holds.
+const PROFILE_DATABASE = /^(tonk[.-]|did:)/;
+
+async function answerProfile(port, { id, stored }) {
+    // Acknowledged before it is answered, so the profile's worker can tell a
+    // restarted (silent) worker from a slow one.
+    port.postMessage({ id, ack: true });
+    try {
+        if (stored === "list") {
+            port.postMessage({ id, databases: await storedDatabases(), files: await storedFiles() });
+        } else if (typeof stored?.database === "string" && typeof stored?.store === "string") {
+            port.postMessage({ id, ...(await storedRecords(stored)) });
+        } else if (Array.isArray(stored?.file)) {
+            const bytes = await storedBytes(stored);
+            port.postMessage({ id, bytes }, [bytes]);
+        } else {
+            throw new Error("unknown request");
+        }
+    } catch (error) {
+        port.postMessage({ id, error: String(error?.message ?? error) });
+    }
+}
+
+function settled(request) {
+    return new Promise((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+// Each database a profile is kept in, with the shape to make it again.
+async function storedDatabases() {
+    const listed = (await indexedDB.databases()).filter(({ name }) => PROFILE_DATABASE.test(name));
+    const databases = [];
+    for (const { name } of listed) {
+        const database = await settled(indexedDB.open(name));
+        try {
+            const names = [...database.objectStoreNames];
+            const transaction = names.length > 0 ? database.transaction(names) : null;
+            databases.push({
+                name,
+                version: database.version,
+                stores: names.map(storeName => {
+                    const store = transaction.objectStore(storeName);
+                    return {
+                        name: storeName,
+                        keyPath: store.keyPath,
+                        autoIncrement: store.autoIncrement,
+                        indexes: [...store.indexNames].map(indexName => {
+                            const index = store.index(indexName);
+                            return {
+                                name: indexName,
+                                keyPath: index.keyPath,
+                                unique: index.unique,
+                                multiEntry: index.multiEntry,
+                            };
+                        }),
+                    };
+                }),
+            });
+        } finally {
+            database.close();
+        }
+    }
+    return databases;
+}
+
+// The next `limit` records of a store past the key `after`, in key order.
+async function storedRecords({ database: name, store: storeName, after, limit }) {
+    if (!PROFILE_DATABASE.test(name)) throw new Error("not a profile's database");
+    const database = await settled(indexedDB.open(name));
+    try {
+        const store = database.transaction(storeName).objectStore(storeName);
+        const range = after === undefined ? null : IDBKeyRange.lowerBound(after, true);
+        const [keys, values] = await Promise.all([
+            settled(store.getAllKeys(range, limit)),
+            settled(store.getAll(range, limit)),
+        ]);
+        return { records: keys.map((key, index) => [key, values[index]]), done: keys.length < limit };
+    } finally {
+        database.close();
+    }
+}
+
+// Every directory and file in this origin's private file system, where a
+// profile keeps what is too large for a record: each as its path, a file
+// with its size.
+async function storedFiles() {
+    const entries = [];
+    const walk = async (directory, path) => {
+        for await (const [name, handle] of directory.entries()) {
+            const entry = [...path, name];
+            if (handle.kind === "directory") {
+                entries.push({ path: entry });
+                await walk(handle, entry);
+            } else {
+                entries.push({ path: entry, size: (await handle.getFile()).size });
+            }
+        }
+    };
+    await walk(await navigator.storage.getDirectory(), []);
+    return entries;
+}
+
+// `length` bytes of the file at `file`, a path, from `offset`.
+async function storedBytes({ file, offset, length }) {
+    let directory = await navigator.storage.getDirectory();
+    for (const name of file.slice(0, -1)) directory = await directory.getDirectoryHandle(name);
+    const handle = await directory.getFileHandle(file[file.length - 1]);
+    return (await handle.getFile()).slice(offset, offset + length).arrayBuffer();
 }
 
 // ---- The session, across restarts -------------------------------------
