@@ -9,6 +9,11 @@
              so everything after this runs exactly as it does there. -->
         <script>
             (function () {
+                // Say so at once: a parent that never hears this knows the
+                // frame could not load at all (offline, with no worker here
+                // yet), and tells the person why.
+                parent.postMessage({ __tonkOrigin: "shell" }, "*");
+
                 // Written ahead of the host's markup. It hands the space worker
                 // a port to the host worker, now and whenever the worker asks
                 // for one (it loses its port on every restart). The host mints

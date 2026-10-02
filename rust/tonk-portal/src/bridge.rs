@@ -45,7 +45,7 @@
 //! uses) and are posted to the iframe as `subscribe-event` /
 //! `subscribe-error` envelopes.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 
@@ -60,7 +60,8 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{AbortController, Element, HtmlIFrameElement, MessageEvent, MessagePort, window};
 
 use crate::space_origin::{
-    broker_port, deliver_document, grant_relayed_port, relay_port, requested_location,
+    broker_port, clear_unreachable, deliver_document, grant_relayed_port, relay_port,
+    requested_location,
 };
 
 /// Per-portal bridge + iframe state. Held behind `Rc<RefCell<…>>` so
@@ -110,6 +111,20 @@ pub(crate) struct PortalState {
     /// The authority real-origin sites render under, handed down to the
     /// guest so the sites it nests render on origins of their own too.
     pub(crate) site_host: Option<String>,
+    /// Which load of the real-origin frame this is, and whether its shell
+    /// has announced itself. A frame that finishes loading without its
+    /// shell could not be reached (see `space_origin::watch_shell`).
+    pub(crate) shell: Cell<Shell>,
+}
+
+/// One load of a real-origin frame, counted so that a check scheduled for an
+/// earlier load does not judge a later one.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Shell {
+    /// The load this is, starting at 1.
+    pub(crate) load: u32,
+    /// Whether the shell of this load has announced itself.
+    pub(crate) seen: bool,
 }
 
 /// One live subscription: the iframe's correlation id (so frames are
@@ -139,6 +154,7 @@ impl PortalState {
             origin: None,
             document: None,
             site_host: None,
+            shell: Cell::default(),
         }
     }
 
@@ -153,6 +169,10 @@ impl PortalState {
         self.origin = Some(origin);
         self.document = Some(document);
         self.site_host = site_host;
+        self.shell.set(Shell {
+            load: self.shell.get().load + 1,
+            seen: false,
+        });
     }
 
     /// The space's real origin, when this portal renders it there.
@@ -1068,6 +1088,13 @@ pub(crate) fn install_message_listener() {
                     return;
                 };
                 match kind.as_str() {
+                    "shell" => {
+                        state.shell.set(Shell {
+                            seen: true,
+                            ..state.shell.get()
+                        });
+                        clear_unreachable(&iframe);
+                    }
                     "shell-ready" => {
                         if let Some(document) = state.document.as_deref() {
                             deliver_document(&iframe, origin, document);

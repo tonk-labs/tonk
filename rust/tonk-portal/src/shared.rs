@@ -17,7 +17,7 @@ use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
 use crate::bridge::{self, PortalState};
 use crate::site_content::head_markup as build_head_markup;
-use crate::space_origin::{SANDBOX, SHELL_PATH, site_host, site_origin};
+use crate::space_origin::{SANDBOX, SHELL_PATH, site_host, site_origin, watch_shell};
 
 /// The tags an embedder may place in a portal's light DOM to style its
 /// guest. Anything else a caller nests is ignored: the head is not a
@@ -158,6 +158,8 @@ pub(crate) fn connect_portal(
             state
                 .borrow_mut()
                 .set_origin_document(origin, srcdoc, site_host);
+            let load = state.borrow().shell.get().load;
+            watch_shell(&host, &iframe, &state, load);
             let _ = iframe.set_attribute("src", &shell);
         }
         None => {
@@ -202,6 +204,7 @@ pub(crate) fn reload_portal(host: &Element, state: &Rc<RefCell<PortalState>>) {
             let shell = format!("{origin}{SHELL_PATH}");
             let site_host = s.site_host.clone();
             s.set_origin_document(origin, srcdoc, site_host);
+            watch_shell(host, &iframe, state, s.shell.get().load);
             let _ = iframe.set_attribute("src", &shell);
         }
         None => {
