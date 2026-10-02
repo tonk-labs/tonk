@@ -36,6 +36,18 @@ pub const REGISTRY_PROFILE: &str = "tonk";
 /// name as UTF-8.
 const ACTIVE_PROFILE_SITE: &str = "tonk-active-profile-v1";
 
+/// How many times recording the active profile is tried again after its
+/// publish lost to another commit on the registry's branch.
+const SAVE_RETRY_LIMIT: usize = 4;
+
+/// Whether a save failed because the head moved between its read and its
+/// publish. Matched on the rendered error, as the reactor does for its
+/// own commits: the `VersionMismatch` leaf renders its text through the
+/// chain.
+fn is_head_moved(error: &impl std::fmt::Display) -> bool {
+    error.to_string().contains("Version mismatch")
+}
+
 /// Branch of the registry profile's repository holding the roster of every
 /// profile this browser knows. It stores only the stable profile DID and
 /// storage handle; the switcher reads mutable labels and account attachment
@@ -343,16 +355,33 @@ impl Registry {
         storage: &Storage<DefaultSpace>,
         name: &str,
     ) -> Result<(), TonkWorkerError> {
-        let registry = self.open_self(storage).await?;
-        registry
-            .secrets()
-            .site(ACTIVE_PROFILE_SITE)
-            .save(name.as_bytes().to_vec())
-            .perform(&registry)
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!("failed to record the active profile: {error}"))
-            })
+        // The registry profile is the one a device signs as until it
+        // rotates, so the worker commits to the same branch this save
+        // publishes on. A commit landing between the save's read of the
+        // head and its publish fails it with a version mismatch; opening
+        // the registry again reads the head that won.
+        let mut attempt = 0;
+        loop {
+            let registry = self.open_self(storage).await?;
+            match registry
+                .secrets()
+                .site(ACTIVE_PROFILE_SITE)
+                .save(name.as_bytes().to_vec())
+                .perform(&registry)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(error) if is_head_moved(&error) && attempt < SAVE_RETRY_LIMIT => {
+                    attempt += 1;
+                    log!("active profile save raced (attempt {attempt}); retrying");
+                }
+                Err(error) => {
+                    return Err(TonkWorkerError::Internal(format!(
+                        "failed to record the active profile: {error}"
+                    )));
+                }
+            }
+        }
     }
 
     /// The roster branch, opened fresh: it has no upstream and no
@@ -785,6 +814,40 @@ mod tests {
             active.did(),
             second.did(),
             "the pointer must name the newest key, not the first rotation"
+        );
+    }
+
+    /// Recording the active profile survives the registry's branch
+    /// moving under it.
+    ///
+    /// The registry profile is also the profile a device signs as until
+    /// it rotates, so its branch takes the worker's own commits: account
+    /// catch-up runs detached and writes there while a profile switch
+    /// records the pointer. The save reads the head, then publishes
+    /// against it, and a commit landing in between fails the publish.
+    /// That failed the whole switch, after the profile had already left
+    /// its account.
+    #[dialog_common::test]
+    async fn it_records_the_active_profile_while_the_registry_branch_moves() {
+        let registry = scratch();
+        let storage = registry.storage().await.unwrap();
+        registry.open_self(&storage).await.unwrap();
+
+        let names = ["one", "two", "three"];
+        let recorded =
+            futures_util::future::join_all(names.map(|name| registry.set_active(&storage, name)))
+                .await;
+
+        for (name, outcome) in names.iter().zip(recorded) {
+            outcome.unwrap_or_else(|error| panic!("recording '{name}' failed: {error}"));
+        }
+        let profile = registry.open_self(&storage).await.unwrap();
+        let active = registry.read(&profile).await.unwrap();
+        assert!(
+            active
+                .as_deref()
+                .is_some_and(|active| names.contains(&active)),
+            "the pointer names one of the recorded profiles, got {active:?}"
         );
     }
 }
