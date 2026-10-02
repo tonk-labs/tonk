@@ -34,11 +34,19 @@
                     function ask() {
                         parent.postMessage({ __tonkOrigin: "need-port" }, "*");
                     }
-                    window.addEventListener("message", function (e) {
-                        if (e.source !== parent || !e.data || e.data.__tonkOrigin !== "port") return;
-                        var port = e.ports && e.ports[0];
-                        if (port && sw.controller) sw.controller.postMessage({ type: "port" }, [port]);
-                    });
+                    // Heard before anything else in this document, and by
+                    // nothing after: the site's own code runs here too, and
+                    // the port is not for it.
+                    window.addEventListener(
+                        "message",
+                        function (e) {
+                            if (e.source !== parent || !e.data || e.data.__tonkOrigin !== "port") return;
+                            e.stopImmediatePropagation();
+                            var port = e.ports && e.ports[0];
+                            if (port && sw.controller) sw.controller.postMessage({ type: "port" }, [port]);
+                        },
+                        true,
+                    );
                     // A profile's worker tells the page that asked it where
                     // to go next, or to run a passkey ceremony. That page is
                     // the app's, around this frame, and hears it from here.

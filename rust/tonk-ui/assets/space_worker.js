@@ -105,17 +105,10 @@ async function pinWorkerWasm() {
     const response = await fetch(WORKER_WASM_URL, { cache: "no-cache" });
     if (!response.ok) throw new Error(`worker wasm: ${response.status}`);
     const bytes = await response.arrayBuffer();
-    if (WORKER_WASM_HASH !== "dev") {
-        const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-        const hex = [...digest].map(byte => byte.toString(16).padStart(2, "0")).join("");
-        if (!hex.startsWith(WORKER_WASM_HASH)) {
-            throw new Error(`worker wasm is ${hex.slice(0, 16)}, expected ${WORKER_WASM_HASH}`);
-        }
+    if (!(await isWorkerWasm(bytes))) {
+        throw new Error(`the served worker wasm is not ${WORKER_WASM_HASH}`);
     }
-    await cache.put(
-        WORKER_WASM_KEY,
-        new Response(bytes, { headers: { "content-type": "application/wasm" } }),
-    );
+    await cache.put(WORKER_WASM_KEY, wasmResponse(bytes));
 }
 
 // Once this worker is the active one, no other build's wasm is needed.
@@ -128,9 +121,38 @@ async function dropOtherWorkerWasm() {
     }
 }
 
+// The wasm this worker runs, checked against the hash this script was stamped
+// with every time it is loaded. The cache it is kept in is this origin's, and
+// so is writable by a space's author code: a copy that is not the one built
+// with this script is thrown away and fetched again.
 async function workerWasm() {
-    const held = await caches.match(WORKER_WASM_KEY, { cacheName: RUNTIME_CACHE });
-    return held ?? fetch(WORKER_WASM_URL);
+    const cache = await caches.open(RUNTIME_CACHE);
+    const held = await cache.match(WORKER_WASM_KEY);
+    if (held) {
+        const bytes = await held.arrayBuffer();
+        if (await isWorkerWasm(bytes)) return wasmResponse(bytes);
+        log("the kept wasm is not the one built with this worker; fetching it again");
+        await cache.delete(WORKER_WASM_KEY);
+    }
+    const response = await fetch(WORKER_WASM_URL, { cache: "no-cache" });
+    if (!response.ok) throw new Error(`worker wasm: ${response.status}`);
+    const bytes = await response.arrayBuffer();
+    if (!(await isWorkerWasm(bytes))) throw new Error("the served wasm is not this worker's");
+    await cache.put(WORKER_WASM_KEY, wasmResponse(bytes));
+    return wasmResponse(bytes);
+}
+
+function wasmResponse(bytes) {
+    return new Response(bytes, { headers: { "content-type": "application/wasm" } });
+}
+
+// Whether `bytes` hash to what this script was stamped with. A development
+// build is stamped with nothing to check against.
+async function isWorkerWasm(bytes) {
+    if (WORKER_WASM_HASH === "dev") return true;
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const hex = [...digest].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    return hex.startsWith(WORKER_WASM_HASH);
 }
 
 // Serve one of the app's static assets. A name with its content's hash in it
@@ -389,17 +411,9 @@ function bindSpacePort(port, { repo, branch }) {
             if (typeof data.delegate === "string") {
                 const grant = await worker.delegateSpace(repo, data.delegate);
                 const chain = grant.chain.buffer;
-                port.postMessage(
-                    {
-                        id,
-                        space: repo,
-                        chain,
-                        expires: grant.expires,
-                        remote: grant.remote,
-                        account: grant.account,
-                    },
-                    [chain],
-                );
+                // Where the space syncs and which account it is for are
+                // signed into the chain, and read from nowhere else.
+                port.postMessage({ id, space: repo, chain, expires: grant.expires }, [chain]);
                 return;
             }
             // Where the space syncs and which account this profile acts
@@ -731,7 +745,7 @@ self.tonkBundledAsset = async path => {
 const GRANT_KEY = "/__space/grant";
 // What taking up a grant does. A grant taken up by an earlier version is
 // taken up again, so the space gets what that version left out.
-const GRANT_VERSION = 4;
+const GRANT_VERSION = 5;
 // Ask for a new delegation once the held one has less than this left.
 const RENEW_MARGIN_SECONDS = 60 * 60;
 
@@ -961,12 +975,10 @@ async function ensureGrant(worker, { renew = false } = {}) {
     }
     const audience = await worker.profileDid();
     const grant = await askHost({ delegate: audience });
-    await worker.adoptSpace(
-        grant.space,
-        new Uint8Array(grant.chain),
-        grant.remote ?? undefined,
-        grant.account,
-    );
+    // What the delegation was signed to say: where the space syncs, and
+    // which account it is for. Anyone on this origin can hand this worker a
+    // port; only the person's profile can sign for the space.
+    const terms = await worker.adoptSpace(grant.space, new Uint8Array(grant.chain));
     // A freshly mounted replica is empty. A space made where spaces have
     // origins of their own has no content anywhere yet: the host hands over
     // what to create it from, and it is created here, the one place it is
@@ -976,7 +988,7 @@ async function ensureGrant(worker, { renew = false } = {}) {
         const snapshot = await askHost({ snapshot: true }).catch(error => {
             // A space that syncs fills from where it syncs. The profile
             // holds only part of one it joined, which is no snapshot.
-            if (!grant.remote) throw error;
+            if (!terms.remote) throw error;
             log("the profile has no copy to start from; the space will fill as it syncs:", error);
             return { empty: true };
         });
@@ -994,8 +1006,8 @@ async function ensureGrant(worker, { renew = false } = {}) {
     const record = {
         space: grant.space,
         expires: grant.expires,
-        remote: grant.remote,
-        account: grant.account,
+        remote: terms.remote,
+        account: terms.account,
         seeded: true,
         version: GRANT_VERSION,
     };
@@ -1402,6 +1414,22 @@ function parseRange(header, size) {
     return end < start ? null : [start, end];
 }
 
+// What a page on a space's origin may ask this worker directly: the space's
+// own data. A space's pages run its author's code, which gets no network, and
+// this worker has one. So nothing a page asks may send this worker somewhere
+// the code names: not the space's remote, not an invite or a join, not this
+// worker's own profile and what it can be made to create or attach. Those
+// come down the port from the person's profile, or not at all.
+function pageMayAsk(request, path) {
+    if (path === "/api/language-server" || path === "/api/site" || path === "/api/sync") return true;
+    const match = /^\/api\/(inspect\/)?repository\/[^/]+(\/.*)?$/.exec(path);
+    if (!match) return false;
+    const [, inspect, rest] = match;
+    // The inspector reads, and so does asking what the repository is.
+    if (inspect || rest === undefined) return request.method === "GET";
+    return rest.startsWith("/branch/");
+}
+
 self.addEventListener("fetch", event => {
     const url = new URL(event.request.url);
     if (url.origin !== self.location.origin) return;
@@ -1422,6 +1450,17 @@ self.addEventListener("fetch", event => {
         return;
     }
     if (url.pathname.startsWith("/api/")) {
+        if (!PROFILE && !pageMayAsk(event.request, url.pathname)) {
+            event.respondWith(
+                new Response(
+                    JSON.stringify({
+                        error: { kind: "forbidden", message: "not a space's page's to ask" },
+                    }),
+                    { status: 403, headers: { "content-type": "application/json" } },
+                ),
+            );
+            return;
+        }
         // Only a write can stamp a site.
         event.respondWith(event.request.method === "GET" ? api(event) : serveChanging(event));
         // A worker kept alive past its delegation's window would otherwise

@@ -6518,7 +6518,7 @@ where
 
 /// Assert `member`'s [`Membership`] of `subject`, with its role and the name
 /// it goes by, on the content branch of the repository at `key`.
-async fn assert_membership(
+pub(crate) async fn assert_membership(
     tonk: &TonkState,
     key: &str,
     subject: &Did,

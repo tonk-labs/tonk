@@ -18,15 +18,24 @@
 use dialog_artifacts::Value;
 use dialog_capability::Subject;
 use dialog_common::Blake3Hash;
+use dialog_credentials::DidKeyResolver;
 use dialog_effects::Use;
 use dialog_repository::schema::Session;
 use dialog_repository::{RepositoryExt as _, Revision, codec};
 use dialog_ucan::UcanDelegation;
-use dialog_ucan_core::{DelegationChain, time::Timestamp};
+use dialog_ucan_core::{
+    Delegation, DelegationChain,
+    time::{TimeRange, Timestamp},
+};
 use dialog_varsig::Did;
+use dialog_varsig::signature::AnySignature;
 use futures_util::stream;
+use ipld_core::ipld::Ipld;
+use std::collections::BTreeMap;
 use tonk_common::log;
+use tonk_invite::{HOME_ADDRESS, home_address_meta};
 use tonk_schema::prelude::DidExt as _;
+use url::Url;
 
 use super::account::{act_for, acts_for, member_did};
 use super::claim::RawClaim;
@@ -56,7 +65,12 @@ pub(crate) struct Grant {
 
 /// Issue the worker whose profile is `audience` a delegation to use `space`,
 /// signed by the person's profile. Scoped to that one space with `Use`, which
-/// covers reading and writing its content, not delegating it further.
+/// covers reading and writing its content.
+///
+/// The delegation carries its [`Terms`] in its signed meta. A space's worker
+/// is handed this by a page on its own origin, where the space's author code
+/// runs too, so what tells it where to sync has to be something that code
+/// cannot make: only the person's profile can sign for the space.
 pub(crate) async fn delegate(
     tonk: &TonkState,
     space: &Did,
@@ -66,12 +80,14 @@ pub(crate) async fn delegate(
     let expires = now + DELEGATION_TTL_SECONDS;
     let until = Timestamp::try_from(expires as i128)
         .map_err(|e| TonkWorkerError::Internal(format!("delegation expiry: {e:?}")))?;
+    let terms = terms(tonk, space).await?;
     let delegation: UcanDelegation = tonk
         .profile
         .access()
         .claim(Subject::from(space.clone()).attenuate(Use))
         .expires(until)
         .delegate(audience.clone())
+        .meta(terms.signed()?)
         .perform(&tonk.operator)
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to delegate {space}: {e}")))?;
@@ -79,24 +95,65 @@ pub(crate) async fn delegate(
         .into_chain()
         .to_bytes()
         .map_err(|e| TonkWorkerError::Internal(format!("failed to encode delegation: {e}")))?;
-
-    let Terms { remote, account } = terms(tonk, space).await?;
     Ok(Grant {
         chain,
         expires,
-        remote,
-        account,
+        remote: terms.remote,
+        account: terms.account,
     })
 }
 
-/// What a space's worker is told beside its delegation, and has to take up
+/// What a space's worker is told with its delegation, and has to take up
 /// again when it changes: where the space syncs, and which account the
 /// person's profile acts for.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Terms {
     /// The space's upstream, `None` for a space that only exists here.
     pub(crate) remote: Option<String>,
     /// The account the person's profile acts for.
     pub(crate) account: Did,
+}
+
+/// The delegation meta naming the account the issuing profile acts for.
+const ACTS_FOR: &str = "acts.for";
+
+impl Terms {
+    /// These terms as the meta of the delegation that carries them: the
+    /// remote where an invite names a space's endpoint, so a chain says where
+    /// its space syncs the same way whoever it was minted for.
+    fn signed(&self) -> Result<BTreeMap<String, Ipld>, TonkWorkerError> {
+        let mut meta =
+            BTreeMap::from([(ACTS_FOR.to_owned(), Ipld::String(self.account.to_string()))]);
+        if let Some(remote) = &self.remote {
+            let remote = Url::parse(remote)
+                .map_err(|e| TonkWorkerError::Internal(format!("remote '{remote}': {e}")))?;
+            meta.extend(home_address_meta(&remote));
+        }
+        Ok(meta)
+    }
+
+    /// The terms `leaf` was signed with. A delegation that names no account
+    /// was not issued for a space's worker.
+    fn of(leaf: &Delegation<AnySignature>) -> Result<Self, TonkWorkerError> {
+        let Some(Ipld::String(account)) = leaf.meta().get(ACTS_FOR) else {
+            return Err(TonkWorkerError::Forbidden(
+                "delegation does not say which account it is for".into(),
+            ));
+        };
+        let account = account.parse().map_err(|e| {
+            TonkWorkerError::Forbidden(format!("delegation names no account: {e:?}"))
+        })?;
+        let remote = match leaf.meta().get(HOME_ADDRESS) {
+            Some(Ipld::String(remote)) => Some(remote.clone()),
+            Some(_) => {
+                return Err(TonkWorkerError::Forbidden(
+                    "delegation names its remote illegibly".into(),
+                ));
+            }
+            None => None,
+        };
+        Ok(Self { remote, account })
+    }
 }
 
 /// The [`Terms`] the person's profile holds for `space` now.
@@ -116,20 +173,15 @@ pub(crate) async fn terms(tonk: &TonkState, space: &Did) -> Result<Terms, TonkWo
     Ok(Terms { remote, account })
 }
 
-/// Take up a delegation for `space`: save its chain to this worker's profile,
-/// where every proof is looked up, and mount the space as a replica syncing
-/// with `remote`. From then on this worker acts for `account`, the one the
-/// person's profile acts for. Refuses a chain for another space or another
-/// audience.
-pub(crate) async fn adopt(
+/// Check that `chain` is what it has to be to be taken up for `space` by this
+/// worker: rooted at the space's own key, every hop signed by its issuer and
+/// in date, and ending at this worker's profile. Answers the leaf, the hop
+/// the person's profile signed.
+async fn verified<'a>(
     tonk: &TonkState,
     space: &Did,
-    chain: &[u8],
-    remote: Option<&str>,
-    account: &Did,
-) -> Result<(), TonkWorkerError> {
-    let chain = DelegationChain::try_from(chain)
-        .map_err(|e| TonkWorkerError::Router(format!("malformed delegation: {e}")))?;
+    chain: &'a DelegationChain,
+) -> Result<&'a Delegation<AnySignature>, TonkWorkerError> {
     if chain.subject() != Some(space) {
         return Err(TonkWorkerError::Forbidden(format!(
             "delegation is not for {space}"
@@ -141,6 +193,41 @@ pub(crate) async fn adopt(
             "delegation is not for this worker's profile {profile}"
         )));
     }
+    if chain.proofs().next().map(Delegation::issuer) != Some(space) {
+        return Err(TonkWorkerError::Forbidden(format!(
+            "delegation does not start at {space}"
+        )));
+    }
+    let now = Timestamp::now();
+    for hop in chain.proofs() {
+        hop.verify_signature(&DidKeyResolver)
+            .await
+            .map_err(|e| TonkWorkerError::Forbidden(format!("delegation is not signed: {e}")))?;
+        TimeRange::new(hop.not_before(), hop.expiration())
+            .check(&now)
+            .map_err(|e| TonkWorkerError::Forbidden(format!("delegation is out of date: {e}")))?;
+    }
+    chain
+        .proofs()
+        .last()
+        .ok_or_else(|| TonkWorkerError::Forbidden("delegation is empty".into()))
+}
+
+/// Take up a delegation for `space`: save its chain to this worker's profile,
+/// where every proof is looked up, and mount the space as a replica syncing
+/// where the chain's signed [`Terms`] say. From then on this worker acts for
+/// the account they name, the one the person's profile acts for. Refuses a
+/// chain that is not signed all the way from the space to this worker's
+/// profile, and answers the terms it took up.
+pub(crate) async fn adopt(
+    tonk: &TonkState,
+    space: &Did,
+    chain: &[u8],
+) -> Result<Terms, TonkWorkerError> {
+    let chain = DelegationChain::try_from(chain)
+        .map_err(|e| TonkWorkerError::Router(format!("malformed delegation: {e}")))?;
+    let terms = Terms::of(verified(tonk, space, &chain).await?)?;
+    let (remote, account) = (terms.remote.as_deref(), &terms.account);
     tonk.profile
         .access()
         .save(UcanDelegation(chain))
@@ -166,7 +253,7 @@ pub(crate) async fn adopt(
     }
     resume(tonk, space).await?;
     log!("space worker: adopted {space} for {account} (remote: {remote:?})");
-    Ok(())
+    Ok(terms)
 }
 
 /// The fact saying which account a session acts for, on dialog's session
@@ -302,7 +389,7 @@ mod tests {
     use dialog_varsig::Did;
     use tower::ServiceExt;
 
-    use super::{adopt, delegate, member_did, resume, seed, snapshot};
+    use super::{DelegationChain, act_for, adopt, delegate, member_did, resume, seed, snapshot};
     use crate::TonkWorkerError;
     use crate::helpers::state::{test_state, test_state_without_root};
     use crate::router::join::{find_replica_for_subject, mount_replica};
@@ -388,9 +475,12 @@ mod tests {
             grant.remote.is_none(),
             "a space only on this device has no upstream"
         );
-        adopt(&worker, &space, &grant.chain, None, &grant.account)
-            .await
-            .unwrap();
+        let taken = adopt(&worker, &space, &grant.chain).await.unwrap();
+        assert_eq!(
+            (taken.remote, taken.account),
+            (grant.remote.clone(), grant.account.clone()),
+            "the worker takes up what the delegation was signed with"
+        );
         assert!(
             main_revision(&worker, &space).await.is_some(),
             "the worker reads the space it was handed"
@@ -436,30 +526,69 @@ mod tests {
             .collect()
     }
 
-    /// A profile that signs in acts for another account, and tells the
-    /// space's worker so. The roster entry made under the last account is
-    /// the worker's to move: the person's profile holds no roster.
+    /// A profile that signs in acts for another account, and says so in the
+    /// delegation it issues next. The roster entry made under the last
+    /// account is the worker's to move: the person's profile holds no roster.
     #[dialog_common::test]
     async fn it_moves_its_roster_entry_to_the_account_it_is_told() {
+        use crate::router::repository::assert_membership;
+        use tonk_schema::{MemberRole, prelude::DidExt as _};
+
         let (host, space) = host_with_space().await;
         let host = host.read().await;
         let worker = space_origin().await;
         let grant = delegate(&host, &space, &worker.profile.did())
             .await
             .unwrap();
-        adopt(&worker, &space, &grant.chain, None, &grant.account)
-            .await
-            .unwrap();
+        // The worker acted for another account before, and made its entry
+        // under that one.
+        let before = space_origin().await.profile.did();
+        act_for(&worker, &before).await.unwrap();
+        assert_membership(
+            &worker,
+            space.repo_key(),
+            &space,
+            before.clone(),
+            MemberRole::FOUNDER,
+            "before".to_owned(),
+        )
+        .await
+        .unwrap();
+        assert!(roster(&worker, &space).await.contains(&before.to_string()));
+
+        adopt(&worker, &space, &grant.chain).await.unwrap();
         assert_eq!(
             roster(&worker, &space).await,
             vec![grant.account.to_string()]
         );
+    }
 
-        let signed_in = space_origin().await.profile.did();
-        adopt(&worker, &space, &grant.chain, None, &signed_in)
+    /// The page that hands a space's worker its delegation is on the space's
+    /// own origin, where the space's author code runs. Where the space syncs
+    /// is read from what the person's profile signed, so nothing else on
+    /// that origin can say.
+    #[dialog_common::test]
+    async fn it_refuses_a_delegation_nobody_signed_for_it() {
+        use dialog_ucan_core::DelegationBuilder;
+        use dialog_ucan_core::subject::Subject as UcanSubject;
+
+        let (_host, space) = host_with_space().await;
+        let worker = space_origin().await;
+        // Signed, but by a key that holds nothing over the space.
+        let stranger = dialog_credentials::Ed25519Signer::import(&[7; 32])
             .await
             .unwrap();
-        assert_eq!(roster(&worker, &space).await, vec![signed_in.to_string()]);
+        let forged = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(stranger))
+            .audience(&worker.profile.did())
+            .subject(UcanSubject::Specific(space.clone()))
+            .command(vec!["use".to_owned()])
+            .try_build()
+            .await
+            .unwrap();
+        let chain = DelegationChain::new(forged).to_bytes().unwrap();
+        let refused = adopt(&worker, &space, &chain).await;
+        assert!(matches!(refused, Err(TonkWorkerError::Forbidden(_))));
     }
 
     #[dialog_common::test]
@@ -498,7 +627,7 @@ mod tests {
         let other = space_origin().await;
 
         let grant = delegate(&host, &space, &other.profile.did()).await.unwrap();
-        let refused = adopt(&worker, &space, &grant.chain, None, &grant.account).await;
+        let refused = adopt(&worker, &space, &grant.chain).await;
         assert!(matches!(refused, Err(TonkWorkerError::Forbidden(_))));
     }
 
@@ -510,9 +639,7 @@ mod tests {
         let grant = delegate(&host, &space, &worker.profile.did())
             .await
             .unwrap();
-        adopt(&worker, &space, &grant.chain, None, &grant.account)
-            .await
-            .unwrap();
+        adopt(&worker, &space, &grant.chain).await.unwrap();
         let seeded = main_revision(&worker, &space).await;
         assert!(seeded.is_some());
 

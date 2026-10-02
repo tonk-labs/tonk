@@ -2227,8 +2227,9 @@ impl TonkServiceWorker {
     }
 
     /// Issue the space worker whose profile is `audience` a delegation to use
-    /// `space`. Resolves to `{ chain, expires, remote }`: the encoded chain,
-    /// when it lapses (unix seconds), and the space's upstream or `null`.
+    /// `space`. Resolves to `{ chain, expires }`: the encoded chain, and when
+    /// it lapses (unix seconds). Where the space syncs and which account it
+    /// is for are signed into the chain.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[wasm_bindgen(js_name = "delegateSpace")]
     pub fn delegate_space(&self, space: String, audience: String) -> Promise {
@@ -2249,15 +2250,6 @@ impl TonkServiceWorker {
             let _ = js_sys::Reflect::set(&result, &"chain".into(), &chain);
             let _ =
                 js_sys::Reflect::set(&result, &"expires".into(), &(grant.expires as f64).into());
-            let remote = grant
-                .remote
-                .map_or(JsValue::NULL, |remote| JsValue::from_str(&remote));
-            let _ = js_sys::Reflect::set(&result, &"remote".into(), &remote);
-            let _ = js_sys::Reflect::set(
-                &result,
-                &"account".into(),
-                &grant.account.to_string().into(),
-            );
             Ok(result.into())
         })
     }
@@ -2343,30 +2335,32 @@ impl TonkServiceWorker {
     }
 
     /// Take up a delegation for `space` issued by the person's profile: save
-    /// its chain and mount the space as a replica syncing with `remote`.
+    /// its chain and mount the space as a replica syncing where the chain
+    /// was signed to say. Resolves to the `{ remote, account }` taken up.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[wasm_bindgen(js_name = "adoptSpace")]
-    pub fn adopt_space(
-        &self,
-        space: String,
-        chain: js_sys::Uint8Array,
-        remote: Option<String>,
-        account: String,
-    ) -> Promise {
+    pub fn adopt_space(&self, space: String, chain: js_sys::Uint8Array) -> Promise {
         let state = self.state.clone();
         future_to_promise(async move {
             let space: Did = space
                 .parse()
                 .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
-            let account: Did = account
-                .parse()
-                .map_err(|e| JsError::new(&format!("account: {e:?}")))?;
             let tonk = state.read().await;
-            space_worker::adopt(&tonk, &space, &chain.to_vec(), remote.as_deref(), &account)
+            let terms = space_worker::adopt(&tonk, &space, &chain.to_vec())
                 .await
                 .map_err(|e| JsError::new(&e.to_string()))?;
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-            Ok(JsValue::UNDEFINED)
+            let result = js_sys::Object::new();
+            let remote = terms
+                .remote
+                .map_or(JsValue::NULL, |remote| JsValue::from_str(&remote));
+            let _ = js_sys::Reflect::set(&result, &"remote".into(), &remote);
+            let _ = js_sys::Reflect::set(
+                &result,
+                &"account".into(),
+                &terms.account.to_string().into(),
+            );
+            Ok(result.into())
         })
     }
 
