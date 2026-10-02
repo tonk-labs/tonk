@@ -2063,6 +2063,7 @@ pub(crate) mod tests {
             commands: crate::router::command_providers(),
             clients: Default::default(),
             seed_upgrades: Default::default(),
+            site_origins: Default::default(),
             account_keys: Default::default(),
             profile_library: Default::default(),
             registry: crate::device::Registry {

@@ -34,6 +34,8 @@ use wasm_bindgen_futures::future_to_promise;
 use web_sys::{FetchEvent, Request, Response};
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use crate::router::repository::{SpaceSeed, create_content, pending_seed, settle_seed};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use crate::router::{Saved, space_worker};
 
 /// The fetch event whose lifetime owns background work started by one of its
@@ -436,6 +438,11 @@ pub struct TonkState {
     /// Spaces whose seed this worker instance already checked against the
     /// shipped bundle. See [`crate::router::adopt::SeedUpgrades`].
     pub(crate) seed_upgrades: crate::router::adopt::SeedUpgrades,
+    /// Whether this deployment renders each space on an origin of its own,
+    /// where the space's own worker holds its content. This worker then
+    /// creates a space's identity and leaves its content to that worker
+    /// (see `router::repository::SpaceSeed`).
+    pub site_origins: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Routing keys the hidden account repository answers to, resolved lazily.
     /// Consulted by the middleware that keeps that repository off the generic
     /// HTTP surface, so it sits on the hot path for every repository request.
@@ -1850,6 +1857,7 @@ pub(crate) async fn boot_state_with_profile_library(
         sync_queue: Default::default(),
         clients: Default::default(),
         seed_upgrades: Default::default(),
+        site_origins: Default::default(),
         account_keys: Default::default(),
         profile_library,
         registry,
@@ -2309,6 +2317,86 @@ impl TonkServiceWorker {
             space_worker::adopt(&tonk, &space, &chain.to_vec(), remote.as_deref())
                 .await
                 .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Say whether this deployment renders each space on an origin of its
+    /// own. Where it does, this worker creates a space's identity and leaves
+    /// its content to the worker of the space's origin.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "setSiteOrigins")]
+    pub fn set_site_origins(&self, on: bool) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            state
+                .read()
+                .await
+                .site_origins
+                .store(on, std::sync::atomic::Ordering::Relaxed);
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// What `space`'s own worker is to create its content from, as JSON, or
+    /// `null` when there is nothing left to hand over.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "pendingSeed")]
+    pub fn pending_seed(&self, space: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            let seed = pending_seed(&tonk, &space)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(match seed {
+                Some(seed) => serde_json::to_string(&seed)
+                    .map_err(|e| JsError::new(&e.to_string()))?
+                    .into(),
+                None => JsValue::NULL,
+            })
+        })
+    }
+
+    /// `space`'s own worker has created its content from the seed.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "settleSeed")]
+    pub fn settle_seed(&self, space: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            settle_seed(&tonk, &space)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Create the content of `space`, which this worker holds, from the seed
+    /// the person's profile handed over (JSON, as [`pendingSeed`] gives it).
+    ///
+    /// [`pendingSeed`]: Self::pending_seed
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "createContent")]
+    pub fn create_content(&self, space: String, seed: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let seed: SpaceSeed =
+                serde_json::from_str(&seed).map_err(|e| JsError::new(&format!("seed: {e}")))?;
+            let tonk = state.read().await;
+            create_content(&tonk, &space, &seed)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
             Ok(JsValue::UNDEFINED)
         })
     }

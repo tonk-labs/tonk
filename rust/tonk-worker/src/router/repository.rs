@@ -3761,6 +3761,15 @@ async fn seed_and_initialize(
         if bail_if_space_removed(&tonk, subject, key, "seed").await? {
             return Ok(());
         }
+        // The space renders on an origin of its own, where its own worker
+        // holds its content: leave the content for that worker to create,
+        // and keep what it needs to do so until it asks.
+        if tonk.site_origins.load(std::sync::atomic::Ordering::Relaxed) {
+            defer_seed(&tonk, subject, display_name, description).await?;
+            write_replica_status(&tonk, subject, Replica::initialized_status(), description)
+                .await?;
+            return Ok(());
+        }
     }
 
     if !branches.is_empty() {
@@ -5429,17 +5438,192 @@ pub async fn create_repository(
     // is the repository DID. The `display_name` is only threaded for log
     // context — the name itself is seeded into the repository's own
     // `tonk/repository` concept by the caller's seed step.
-    // The opener of a freshly created repo is its founder.
-    record_repository_meta(
-        tonk,
-        &repository,
-        display_name,
-        configuration,
-        MemberRole::FOUNDER,
-    )
-    .await?;
+    // The opener of a freshly created repo is its founder. Where the
+    // space's own worker holds its content, the founder's membership is
+    // written there with the rest of it (see [`SpaceSeed`]).
+    if tonk.site_origins.load(std::sync::atomic::Ordering::Relaxed) {
+        record_replica_meta(tonk, &repository, display_name, configuration).await?;
+    } else {
+        record_repository_meta(
+            tonk,
+            &repository,
+            display_name,
+            configuration,
+            MemberRole::FOUNDER,
+        )
+        .await?;
+    }
 
     Ok(repository)
+}
+
+/// The profile secret a space's pending [`SpaceSeed`] is kept under.
+const PENDING_SEED_SITE_PREFIX: &str = "tonk-space-seed:";
+
+/// What a new space's content is created from, by the space's own worker.
+///
+/// Where each space renders on an origin of its own, this worker creates a
+/// space's identity and its place in the profile, and nothing on its content
+/// branch: the worker of the space's origin holds that, and there is to be
+/// one copy of it. That worker writes what creating a space writes (the
+/// standard library, the space's name, the founder's membership) from this.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpaceSeed {
+    /// The space's display name.
+    pub name: String,
+    /// The space's description, when it was given one.
+    pub description: Option<String>,
+    /// Who founded it: the account the creating profile acts for.
+    pub founder: String,
+    /// The name the founder goes by on the space's roster.
+    pub founder_name: String,
+}
+
+/// The part of a [`SpaceSeed`] known when the space is created. The founder
+/// is read when the seed is handed over, as the account the profile then
+/// acts for.
+#[derive(Serialize, Deserialize)]
+struct PendingSeed {
+    name: String,
+    description: Option<String>,
+}
+
+fn pending_seed_site(subject: &Did) -> String {
+    format!("{PENDING_SEED_SITE_PREFIX}{subject}")
+}
+
+/// Keep what `subject`'s content is to be created from until its own worker
+/// asks for it ([`pending_seed`]).
+async fn defer_seed(
+    tonk: &TonkState,
+    subject: &Did,
+    display_name: &str,
+    description: Option<&str>,
+) -> Result<(), RepositoryError> {
+    let pending = PendingSeed {
+        name: display_name.to_owned(),
+        description: description.map(str::to_owned),
+    };
+    let bytes = serde_json::to_vec(&pending)
+        .map_err(|e| RepositoryError::Internal(format!("space seed does not encode: {e}")))?;
+    save_pending_seed(tonk, subject, bytes).await
+}
+
+async fn save_pending_seed(
+    tonk: &TonkState,
+    subject: &Did,
+    bytes: Vec<u8>,
+) -> Result<(), RepositoryError> {
+    tonk.profile
+        .secrets()
+        .site(pending_seed_site(subject))
+        .save(bytes)
+        .perform(&tonk.profile)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("failed to keep the space seed: {e}")))
+}
+
+/// What `subject`'s own worker is to create its content from, or `None` when
+/// this worker created that content itself or the seed has been settled.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn pending_seed(
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<Option<SpaceSeed>, TonkWorkerError> {
+    let bytes = match tonk
+        .profile
+        .secrets()
+        .site(pending_seed_site(subject))
+        .load::<Vec<u8>>()
+        .perform(&tonk.profile)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
+        Err(error) => {
+            return Err(TonkWorkerError::Internal(format!(
+                "failed to load the space seed: {error}"
+            )));
+        }
+    };
+    // Settled: see [`settle_seed`].
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let pending: PendingSeed = serde_json::from_slice(&bytes)
+        .map_err(|e| TonkWorkerError::Internal(format!("stored space seed is invalid: {e}")))?;
+    let founder = crate::router::account::member_did(tonk).await?;
+    let founder_name = crate::router::profile_name::resolve_display_name(tonk).await;
+    Ok(Some(SpaceSeed {
+        name: pending.name,
+        description: pending.description,
+        founder: founder.to_string(),
+        founder_name,
+    }))
+}
+
+/// The space's own worker has created its content: there is nothing left to
+/// hand over.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn settle_seed(tonk: &TonkState, subject: &Did) -> Result<(), TonkWorkerError> {
+    save_pending_seed(tonk, subject, Vec::new())
+        .await
+        .map_err(|e| TonkWorkerError::Internal(e.to_string()))
+}
+
+/// Create `subject`'s content from `seed`, in the worker that holds it: the
+/// standard library and the space's name on a `main` with nothing on it yet,
+/// and the founder's membership. Each is safe to repeat, so a worker stopped
+/// part-way picks it up when it is asked again.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn create_content(
+    tonk: &TonkState,
+    subject: &Did,
+    seed: &SpaceSeed,
+) -> Result<(), RepositoryError> {
+    let library = fetch_standard_library(STANDARD_LIBRARY_URL)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}")))?;
+    create_content_with(tonk, subject, seed, &library).await
+}
+
+/// [`create_content`], with the standard library's text in hand.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn create_content_with(
+    tonk: &TonkState,
+    subject: &Did,
+    seed: &SpaceSeed,
+    library: &str,
+) -> Result<(), RepositoryError> {
+    let key = subject.repo_key();
+    let empty = tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("open '{key}': {e}")))?
+        .handle()
+        .revision()
+        .is_none();
+    if empty {
+        let name = repository_name_claims(subject, &seed.name, seed.description.as_deref())?;
+        install_fresh_seed(tonk, key, CONTENT_BRANCH, library, &name).await?;
+    }
+    let founder: Did = seed
+        .founder
+        .parse()
+        .map_err(|e| RepositoryError::Internal(format!("founder '{}': {e:?}", seed.founder)))?;
+    assert_membership(
+        tonk,
+        key,
+        subject,
+        founder,
+        MemberRole::FOUNDER,
+        seed.founder_name.clone(),
+    )
+    .await
 }
 
 /// Provision owned `subject` under this profile's account, repairing a stale
@@ -5983,13 +6167,26 @@ where
             TonkWorkerError::RootRequired => RepositoryError::RootRequired,
             error => RepositoryError::Internal(error.to_string()),
         })?;
-    let membership = Membership::new(member, repository.did());
+    let display_name = crate::router::profile_name::resolve_display_name(tonk).await;
+    assert_membership(tonk, key, &repository.did(), member, role_uri, display_name).await
+}
+
+/// Assert `member`'s [`Membership`] of `subject`, with its role and the name
+/// it goes by, on the content branch of the repository at `key`.
+async fn assert_membership(
+    tonk: &TonkState,
+    key: &str,
+    subject: &Did,
+    member: Did,
+    role_uri: &str,
+    display_name: String,
+) -> Result<(), RepositoryError> {
+    let membership = Membership::new(member, subject.clone());
     let role = if role_uri == MemberRole::FOUNDER {
         MemberRole::founder(membership.this().clone())
     } else {
         MemberRole::member(membership.this().clone())
     };
-    let display_name = crate::router::profile_name::resolve_display_name(tonk).await;
     let member_name = MemberName::new(membership.this().clone(), display_name);
 
     // Write through the *reactor's* cached content-branch handle, not a
@@ -9185,6 +9382,7 @@ route!: &foreign-profile-route
             .expect("test session opens");
         TonkState {
             seed_upgrades: Default::default(),
+            site_origins: Default::default(),
             profile: profile.clone(),
             operator: session.operator,
             storage,
@@ -10227,6 +10425,85 @@ mod tests {
         assert!(founder.is_self, "founder is the active profile");
         assert!(founder.invited_by.is_none(), "founder has no inviter");
         assert!(founder.name.is_some(), "founder is named");
+    }
+
+    /// Where a space has an origin of its own, creating it leaves its content
+    /// branch untouched and keeps a seed for the space's own worker, which
+    /// creates the content from it: the library, the name and the founder.
+    #[dialog_common::test]
+    async fn it_leaves_a_new_space_for_its_own_worker_to_fill() {
+        const SEED_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+        let tonk = test_state().await;
+        tonk.site_origins
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (app, state, _lsp) = api_router_with_state(tonk);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/test-deferred-content")
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let info: RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        let key = info.name.as_str();
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+
+        let tonk = state.read().await;
+        let main = || async {
+            tonk.reactor
+                .repository(key)
+                .branch(super::CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("main acquires")
+                .handle()
+                .revision()
+        };
+        assert!(main().await.is_none(), "nothing is written to the content");
+        let seed = super::pending_seed(&tonk, &subject)
+            .await
+            .unwrap()
+            .expect("a seed is kept for the space's own worker");
+        assert_eq!(seed.name, "test-deferred-content");
+
+        // What the space's own worker does with the seed, run here.
+        super::create_content_with(&tonk, &subject, &seed, SEED_LIBRARY)
+            .await
+            .unwrap();
+        assert!(main().await.is_some(), "the content now exists");
+        use dialog_repository::RepositoryExt as _;
+        let repository: dialog_repository::Repository = tonk
+            .profile
+            .space(key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let info = super::build_repository_info(&tonk, key, &repository).await;
+        assert_eq!(info.members.len(), 1, "exactly the founder");
+        assert!(info.members[0].is_self, "the founder is who created it");
+
+        // Creating it again changes nothing, and once settled the seed is gone.
+        let before = main().await;
+        super::create_content_with(&tonk, &subject, &seed, SEED_LIBRARY)
+            .await
+            .unwrap();
+        assert_eq!(main().await, before);
+        super::settle_seed(&tonk, &subject).await.unwrap();
+        assert!(
+            super::pending_seed(&tonk, &subject)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// All `Replica` rows on the profile meta branch (any kind), read

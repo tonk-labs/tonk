@@ -78,6 +78,7 @@ pub async fn test_state_without_root() -> TonkState {
     };
     TonkState {
         seed_upgrades: Default::default(),
+        site_origins: Default::default(),
         profile,
         operator: session.operator,
         storage,
