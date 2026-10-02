@@ -37,8 +37,8 @@ use tonk_schema::rule::{Rule, StoredRuleError, stored_rule};
 
 use super::assertion::{body_digest, derive_head_intent};
 use super::declaration::{
-    DeclaredApplication, attribute_application, build_concept_retractions, concept_application,
-    parse_attribute_body, parse_concept_body,
+    DeclaredApplication, action_application, attribute_application, build_concept_retractions,
+    concept_application, parse_attribute_body, parse_concept_body, role_application,
 };
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::rule::{collect_rule_concepts, is_rule_retract_body, parse_rule_this_entity};
@@ -782,7 +782,11 @@ impl Graph {
                         pending.index,
                         DeclaredApplication {
                             application: Some(application),
-                            inline_attributes: Vec::new(),
+                            inline_attributes: plan
+                                .role
+                                .iter()
+                                .map(|role| role_application(&entity, role))
+                                .collect(),
                             retractions: Vec::new(),
                         },
                     );
@@ -850,7 +854,23 @@ impl Graph {
                     let inline_attributes = plan
                         .inline_attributes
                         .into_iter()
-                        .map(|attr| attribute_application(&attr.descriptor, &attr.entity, None))
+                        .flat_map(|attr| {
+                            let role = attr
+                                .role
+                                .as_deref()
+                                .map(|role| role_application(&attr.entity, role));
+                            std::iter::once(attribute_application(
+                                &attr.descriptor,
+                                &attr.entity,
+                                None,
+                            ))
+                            .chain(role)
+                        })
+                        .chain(
+                            plan.action
+                                .as_deref()
+                                .map(|name| action_application(&entity, name)),
+                        )
                         .collect();
                     // Field retractions (`with: { f: _ }` / `..: _`)
                     // dissociate stored fields read off the branch.

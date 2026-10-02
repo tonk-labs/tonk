@@ -384,11 +384,18 @@ fn registry(sources: &[Source]) -> (Registry, Fields) {
             {
                 let (Some(field), Some(role)) = (
                     row.text("field").and_then(|field| attributes.get(field)),
-                    row.text("role").and_then(|role| roles.get(role)),
+                    // A role entity (`intent/argument`), or a role named on
+                    // the attribute itself.
+                    row.text("role").and_then(|role| {
+                        roles
+                            .get(role)
+                            .copied()
+                            .or((ROLES.contains(&role) || role == NOW).then_some(role))
+                    }),
                 ) else {
                     continue;
                 };
-                if *role == NOW {
+                if role == NOW {
                     fields
                         .now
                         .entry(id.clone())
@@ -397,7 +404,7 @@ fn registry(sources: &[Source]) -> (Registry, Fields) {
                     continue;
                 }
                 // One argument per role, as in Ubiquity.
-                if !seen.insert(*role) {
+                if !seen.insert(role) {
                     continue;
                 }
                 let noun = row.text("noun");
@@ -407,7 +414,7 @@ fn registry(sources: &[Source]) -> (Registry, Fields) {
                     .map(|word| (*word).to_owned())
                     .unwrap_or_else(|| field_name(&field.selector).to_owned());
                 arguments.push(Argument {
-                    role: (*role).to_owned(),
+                    role: role.to_owned(),
                     field: field.selector.clone(),
                     noun: match noun {
                         Some(concept) => Noun::Concept(concept.to_owned()),

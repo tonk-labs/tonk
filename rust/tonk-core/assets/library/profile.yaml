@@ -252,6 +252,7 @@ attribute!: &rename-space/name
   description: The new repository name.
   the: xyz.tonk.command.rename-repository/name
   as: text
+  role: goal
 
 attribute!: &rename-space/space
   description: The target space DID.
@@ -1201,6 +1202,7 @@ attribute!: &pause-sync/time
   description: The click's timestamp; makes each dispatch a distinct transient.
   the: xyz.tonk.command.pause-sync/time
   as: float
+  role: now
 
 attribute!: &pause-sync/space
   description: The target space DID — the replica whose auto-sync is flipped.
@@ -1218,6 +1220,7 @@ attribute!: &home/time
   description: The moment it was asked; makes each dispatch a distinct transient.
   the: xyz.tonk.command.home/time
   as: float
+  role: now
 
 command!: &tonk/home
   this: tonk:home
@@ -1231,6 +1234,7 @@ attribute!: &add-account/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.add-account/time
   as: float
+  role: now
 
 command!: &account/add
   description: Start adding an account to this profile, from the bar.
@@ -1241,6 +1245,7 @@ attribute!: &share-link/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.share-link/time
   as: float
+  role: now
 
 command!: &space/share-link
   description: Copy a link that invites someone into this space, from the bar.
@@ -1251,6 +1256,7 @@ attribute!: &view-members/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.view-members/time
   as: float
+  role: now
 
 command!: &space/view-members
   description: Show who is in this space, in the bar.
@@ -1261,6 +1267,7 @@ attribute!: &connect-agent/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.connect-agent/time
   as: float
+  role: now
 
 command!: &agent/connect
   description: Invite an agent to work in this space, from the bar.
@@ -5702,11 +5709,6 @@ intent/argument!:
   role: intent/object
   noun: space
 
-intent/argument!:
-  command: tonk/pause-sync
-  field: pause-sync/time
-  role: intent/now
-
 intent/action!:
   this: tonk/rename-repository
   name: "rename"
@@ -5721,11 +5723,6 @@ intent/argument!:
   role: intent/object
   noun: space
 
-intent/argument!:
-  command: tonk/rename-repository
-  field: rename-space/name
-  role: intent/goal
-
 intent/action!:
   this: tonk/home
   name: "home"
@@ -5733,11 +5730,6 @@ intent/action!:
 intent/action!:
   this: tonk/home
   name: "go home"
-
-intent/argument!:
-  command: tonk/home
-  field: home/time
-  role: intent/now
 
 intent/action!:
   this: tonk/home
@@ -5747,11 +5739,6 @@ intent/action!:
   this: account/add
   name: "add an account"
 
-intent/argument!:
-  command: account/add
-  field: add-account/time
-  role: intent/now
-
 intent/action!:
   this: space/share-link
   name: "copy share link"
@@ -5759,11 +5746,6 @@ intent/action!:
 intent/action!:
   this: space/share-link
   name: "share"
-
-intent/argument!:
-  command: space/share-link
-  field: share-link/time
-  role: intent/now
 
 intent/action!:
   this: space/view-members
@@ -5773,19 +5755,9 @@ intent/action!:
   this: space/view-members
   name: "members"
 
-intent/argument!:
-  command: space/view-members
-  field: view-members/time
-  role: intent/now
-
 intent/action!:
   this: agent/connect
   name: "connect agent"
-
-intent/argument!:
-  command: agent/connect
-  field: connect-agent/time
-  role: intent/now
 
 # The command palette is the FABB's command mode. Cmd/Ctrl+K (or
 # Cmd/Ctrl+Shift+P) puts the bar in it (`commanding` on `<tonk-fab>`): the

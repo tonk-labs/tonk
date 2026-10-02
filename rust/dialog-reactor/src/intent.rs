@@ -61,6 +61,9 @@ pub async fn suggest<Env: SelectProvider>(
     source.roles = rows(branch, env, named("tonk.dialog.intent.role/name", "one")).await?;
     source.attributes = rows(branch, env, attributes()).await?;
     source.arguments = rows(branch, env, arguments()).await?;
+    source
+        .arguments
+        .extend(attribute_arguments(branch, env).await?);
     let nouns: Vec<String> = source
         .arguments
         .iter()
@@ -232,6 +235,76 @@ fn arguments() -> Json {
             "role": var("role"), "noun": var("noun")
         }
     })
+}
+
+/// Arguments declared on the attributes themselves: every concept field
+/// whose attribute carries a `tonk.dialog.intent.attribute/role`, as an
+/// `intent/argument` row (`command`, `field`, `role` by name).
+async fn attribute_arguments<Env: SelectProvider>(
+    branch: &Branch,
+    env: &Env,
+) -> Result<Vec<Row>, FormulaError> {
+    let roles: BTreeMap<String, String> = rows(
+        branch,
+        env,
+        json!({
+            "predicate": { "with": { "role": text("tonk.dialog.intent.attribute/role", "one") } },
+            "terms": { "this": var("this"), "role": var("role") }
+        }),
+    )
+    .await?
+    .into_iter()
+    .filter_map(|row| {
+        let role = row.fields.get("role")?.as_str()?.to_owned();
+        Some((row.this, role))
+    })
+    .collect();
+    if roles.is_empty() {
+        return Ok(Vec::new());
+    }
+    // A concept's fields, as `db.concept.with/<field>` → attribute entity.
+    // A keyed field arrives as one `{ <field>: <attribute> }` object per
+    // row.
+    let fields = rows(
+        branch,
+        env,
+        json!({
+            "predicate": { "with": { "field": {
+                "the": { "domain": "db.concept.with", "keyed": "dictionary" },
+                "as": "Entity", "cardinality": "one"
+            } } },
+            "terms": { "this": var("this"), "field": var("field") }
+        }),
+    )
+    .await?;
+    Ok(fields
+        .into_iter()
+        .flat_map(|row| {
+            let command = row.this;
+            let attributes: Vec<String> = match row.fields.get("field") {
+                Some(Json::Object(entries)) => entries
+                    .values()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect(),
+                Some(Json::String(attribute)) => vec![attribute.clone()],
+                _ => Vec::new(),
+            };
+            attributes
+                .into_iter()
+                .filter_map(|field| {
+                    let role = roles.get(&field)?.clone();
+                    let mut argument = BTreeMap::new();
+                    argument.insert("command".to_owned(), json!(command));
+                    argument.insert("field".to_owned(), json!(field));
+                    argument.insert("role".to_owned(), json!(role));
+                    Some(Row {
+                        this: String::new(),
+                        fields: argument,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect())
 }
 
 /// `intent/choice`: what was run before, for the parser's memory.

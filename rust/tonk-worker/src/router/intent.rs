@@ -163,6 +163,58 @@ async fn it_suggests_from_a_seeded_space_and_runs_what_it_suggests() {
     );
 }
 
+/// A command whose fields say their own role, with no `intent/argument`
+/// facts: the field's attribute carries `role: goal`, so typed text after
+/// "to" fills it.
+const RETITLE: &str = r#"
+command!: &test/retitle
+  description: "Retitle the test thing"
+  with:
+    title:
+      description: "The new title"
+      the: io.test.retitle/title
+      as: text
+      role: goal
+
+intent/action!:
+  this: test/retitle
+  name: "retitle"
+"#;
+
+#[dialog_common::test]
+async fn it_fills_a_field_by_the_role_on_its_attribute() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let evaluate = format!("/api/repository/{key}/branch/main/evaluate");
+    send(&app, "POST", &evaluate, "application/yaml", CORE.into()).await;
+    send(&app, "POST", &evaluate, "application/yaml", RETITLE.into()).await;
+
+    let rows = suggest(&app, &key, "retitle to Plans", &subject).await;
+    let top = rows
+        .iter()
+        .find(|row| field(row, "text") == "retitle to [Plans]")
+        .unwrap_or_else(|| panic!("retitle is read with its goal: {rows:?}"));
+    let claim: Value = serde_json::from_str(
+        field(top, "claim")
+            .as_str()
+            .expect("the only field is filled, so it runs"),
+    )
+    .unwrap();
+    assert!(
+        claim.to_string().contains("io.test.retitle/title") && claim.to_string().contains("Plans"),
+        "the claim sets the title: {claim}"
+    );
+}
+
 /// How `intent/suggest` scales with a noun's rows, store reads included.
 /// Run with `cargo test --release -p tonk-worker --lib -- --ignored
 /// --nocapture intent::it_scales`.

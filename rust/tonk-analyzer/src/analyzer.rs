@@ -1562,6 +1562,174 @@ concept!: &person
         assert_eq!(name.as_ref().map(AnchorName::as_str), Some("person"));
     }
 
+    /// The `role` of an attribute, read off one asserted application.
+    fn asserted_role(statement: &Statement) -> Option<(Entity, String)> {
+        let Statement::Assert(Application::Concept { query, this, .. }) = statement else {
+            return None;
+        };
+        let ThisIntent::Uri(entity) = this else {
+            return None;
+        };
+        match query.terms.get("role") {
+            Some(Term::Constant(Value::String(role))) => Some((entity.clone(), role.clone())),
+            _ => None,
+        }
+    }
+
+    /// A command field's `role:` is asserted as its own fact on the
+    /// field's attribute entity, after the attribute itself.
+    #[dialog_common::test]
+    async fn it_asserts_an_inline_fields_role_on_its_attribute() {
+        let syntax = must_parse(
+            r#"
+command!: &notebook/retitle
+  description: "Rename a notebook"
+  with:
+    title:
+      description: "The new title"
+      the:         xyz.tonk.notebook.retitle/title
+      as:          Text
+      role:        goal
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let statements = &analysis.mutate.statements;
+        // The attribute, its role, then the command.
+        assert_eq!(statements.len(), 3);
+        let Statement::Assert(Application::Concept {
+            this: ThisIntent::Uri(attribute),
+            ..
+        }) = &statements[0]
+        else {
+            panic!("expected the attribute first");
+        };
+        assert_eq!(
+            asserted_role(&statements[1]),
+            Some((attribute.clone(), "goal".to_owned()))
+        );
+    }
+
+    /// `role:` on an `attribute!` head is asserted the same way.
+    #[dialog_common::test]
+    async fn it_asserts_an_attribute_heads_role() {
+        let syntax = must_parse(
+            r#"
+attribute!: &rename/name
+  description: "The new name"
+  the:         xyz.tonk.rename/name
+  as:          Text
+  role:        goal
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let roles: Vec<_> = analysis
+            .mutate
+            .statements
+            .iter()
+            .filter_map(asserted_role)
+            .map(|(_, role)| role)
+            .collect();
+        assert_eq!(roles, vec!["goal".to_owned()]);
+    }
+
+    /// A role is not part of the attribute: the same attribute with and
+    /// without one is the same entity.
+    #[dialog_common::test]
+    async fn it_keeps_a_roles_attribute_identity() {
+        let declare = |role: &str| {
+            must_parse(&format!(
+                r#"
+attribute!: &rename/name
+  description: "The new name"
+  the:         xyz.tonk.rename/name
+  as:          Text
+{role}"#
+            ))
+        };
+        let entity = |analysis: &Flat| match &analysis.mutate.statements[0] {
+            Statement::Assert(Application::Concept {
+                this: ThisIntent::Uri(entity),
+                ..
+            }) => entity.clone(),
+            other => panic!("expected the attribute, got {other:?}"),
+        };
+        let plain = flat(analyze_empty(&declare("")).await.unwrap());
+        let with_role = flat(
+            analyze_empty(&declare("  role:        goal\n"))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(entity(&plain), entity(&with_role));
+    }
+
+    /// A command's `action:` is asserted as its palette name, on the
+    /// command's own entity.
+    #[dialog_common::test]
+    async fn it_asserts_a_commands_action_on_the_command() {
+        let syntax = must_parse(
+            r#"
+command!: &notebook/retitle
+  description: "Rename a notebook"
+  action: "rename"
+  with:
+    title:
+      description: "The new title"
+      the:         xyz.tonk.notebook.retitle/title
+      as:          Text
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let command = analysis
+            .mutate
+            .statements
+            .iter()
+            .find_map(|statement| match statement {
+                Statement::Assert(Application::Concept {
+                    this: ThisIntent::Uri(entity),
+                    name: Some(name),
+                    ..
+                }) if name.as_str() == "notebook/retitle" => Some(entity.clone()),
+                _ => None,
+            })
+            .expect("the command is asserted");
+        let actions: Vec<_> = analysis
+            .mutate
+            .statements
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::Assert(Application::Concept {
+                    query,
+                    this: ThisIntent::Uri(entity),
+                    ..
+                }) if entity == &command => match query.terms.get("name") {
+                    Some(Term::Constant(Value::String(name))) => Some(name.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(actions, vec!["rename".to_owned()]);
+    }
+
+    /// A role nothing knows is an error, not a silent fact.
+    #[dialog_common::test]
+    async fn it_rejects_an_unknown_role() {
+        let syntax = must_parse(
+            r#"
+attribute!: &rename/name
+  description: "The new name"
+  the:         xyz.tonk.rename/name
+  as:          Text
+  role:        gaol
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(&err.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("gaol")),
+            "expected InvalidAttributeBody naming the role, got {err:?}"
+        );
+    }
+
     /// A `maybe:` block declares optional fields. The descriptor
     /// carries the optional flag on those fields and the required
     /// flag on `with:` fields.
