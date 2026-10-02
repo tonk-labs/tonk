@@ -5705,8 +5705,9 @@ concept!: &intent/choice
 # `intent/interpret` as the line changes; its handler (the parser) records
 # the expression and one `intent` per command the line could mean, in the
 # session overlay. Rules derive values for a command's fields onto its
-# intent, each as a one-field concept on the field's own attribute, scoped
-# to the command (`intent` where `command: <the command>`). `intent/suggest`
+# intent, each as a one-field concept on the field's own attribute with the
+# field named after the attribute (`subject` for `…/subject`), scoped to the
+# command (`intent` where `command: <the command>`). `intent/suggest`
 # reads the intents and those values back as readings.
 command!: &intent/interpret
   this: tonk:intent-interpret

@@ -158,6 +158,21 @@ fn it_fills_a_field_with_no_noun_from_a_value_derived_for_it() {
             "value": "notebook:plans", "label": "Plans"
         }),
     )];
+    // Nothing derived: the subject stays empty rather than taking text.
+    let mut bare = source.clone();
+    bare.fragments.clear();
+    let mut asked = request("retitle to Notes");
+    asked.sources = vec![bare];
+    let proposals = propose(&asked);
+    assert!(
+        proposals.iter().all(|proposal| proposal.claim.is_none()),
+        "an entity field takes no typed text: {:?}",
+        proposals
+            .iter()
+            .map(|p| p.parse.display_text())
+            .collect::<Vec<_>>()
+    );
+
     let mut asked = request("retitle to Notes");
     asked.sources = vec![source];
     let top = &propose(&asked)[0];

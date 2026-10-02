@@ -443,6 +443,11 @@ fn registry(sources: &[Source]) -> (Registry, Fields) {
                 let noun = if derived.is_empty() {
                     match noun {
                         Some(concept) => Noun::Concept(concept.to_owned()),
+                        // An entity field that names no concept takes only
+                        // what is derived for it: typed text is no entity.
+                        None if field.kind == "Entity" => {
+                            Noun::Concept(format!("{id}{JOIN}{}", field.selector))
+                        }
                         None => Noun::Text,
                     }
                 } else {

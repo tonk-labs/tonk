@@ -291,10 +291,11 @@ async fn intents<Env: SelectProvider>(
 /// as `fragments` rows (`command`, `field`, `value`).
 ///
 /// A field's values are the rows of a one-field concept on the field's own
-/// attribute, read on the intent. A concept's identity is its attributes
-/// (domain, name, type, cardinality), not its name or field names, so this
-/// is the same concept a library rule concludes for that field, and the
-/// rule answers it.
+/// attribute, read on the intent, with the field named after the
+/// attribute. A concept's identity is its attributes (domain, name, type,
+/// cardinality), not its name or field names, so this is the same concept
+/// a library rule concludes for that field, and the rule answers it; the
+/// rule binds the field by name, which is why the name must match.
 async fn fragments<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
@@ -325,19 +326,24 @@ async fn fragments<Env: SelectProvider>(
                 .get("cardinality")
                 .and_then(Json::as_str)
                 .unwrap_or("one");
+            // A rule binds its conclusion's fields by name, so the field is
+            // read under the attribute's own name: a fragment concept names
+            // its one field after the attribute (`subject` for
+            // `…retitle/subject`).
+            let name = selector.rsplit('/').next().unwrap_or(selector);
             let values = rows(
                 branch,
                 env,
                 json!({
-                    "predicate": { "with": { "value": {
+                    "predicate": { "with": { name: {
                         "the": selector, "as": "Entity", "cardinality": cardinality
                     } } },
-                    "terms": { "this": intent, "value": var("value") }
+                    "terms": { "this": intent, name: var(name) }
                 }),
             )
             .await?;
             for value in values {
-                let Some(value) = value.fields.get("value").and_then(Json::as_str) else {
+                let Some(value) = value.fields.get(name).and_then(Json::as_str) else {
                     continue;
                 };
                 let mut fragment = BTreeMap::new();
