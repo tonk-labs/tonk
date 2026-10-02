@@ -48,6 +48,18 @@ pub fn custodian_name(branch: &str) -> String {
     }
 }
 
+/// Where the credential store of the directory at `directory` keeps the
+/// key named `name` on the filesystem, for the few places that must look
+/// without opening it: whether a key was ever kept, and what its file's
+/// permissions are.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn kept_key_path(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
+    directory
+        .join("dialog.credential")
+        .join("credential/key")
+        .join(name)
+}
+
 /// Open the key of the system tonk runs as, from the credential store in
 /// `directory`, and the store, owned by that system.
 pub async fn open_system<S>(
@@ -191,7 +203,8 @@ where
 ///
 /// A profile from before that keeps its home under its name, at
 /// `location`, and goes on living there: a store cannot be renamed, and
-/// what the profile holds is in it.
+/// what the profile holds is in it. A space of that name that is another
+/// key's is not this profile's home, and is left alone.
 async fn home<S>(
     location: &Location,
     base: &Directory,
@@ -209,12 +222,7 @@ where
         .await;
     match named {
         Ok(held) if held.did() == *profile => Ok(location.clone()),
-        Ok(held) => Err(PeerError::Open(format!(
-            "the space named {} belongs to {}, not the profile {profile}",
-            location.name,
-            held.did()
-        ))),
-        Err(storage_fx::StorageError::NotFound(_)) => {
+        Ok(_) | Err(storage_fx::StorageError::NotFound(_)) => {
             Ok(Location::new(base.clone(), profile.to_string()))
         }
         Err(error) => Err(PeerError::Open(format!(

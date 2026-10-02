@@ -572,9 +572,7 @@ pub async fn import_at(
     // a connection imported before keys were kept apart has it in the
     // space, and opening the profile moves it.
     let credentials = root.join(CREDENTIAL_DIRECTORY);
-    let key_path = credentials
-        .join(format!("{PROFILE_NAME}.credentials"))
-        .join("credential/key/self");
+    let key_path = tonk_account::peer::kept_key_path(&credentials, PROFILE_NAME);
     let legacy_key_path = credentials.join(PROFILE_NAME).join("credential/key/self");
     if !key_path.exists() && !legacy_key_path.exists() {
         ensure!(
