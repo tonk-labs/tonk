@@ -186,10 +186,58 @@ self.addEventListener("message", event => {
 function adopt(port) {
     // A replaced port is left open: replies to requests already sent on it
     // still arrive, and every reply is matched by id, not by port.
-    port.onmessage = onReply;
+    port.onmessage = event => {
+        const { data } = event;
+        if (typeof data?.call === "number") answerHost(port, data);
+        else if (typeof data?.cancel === "number") hostReads.get(data.cancel)?.cancel().catch(() => {});
+        else onReply(event);
+    };
     hostPort = port;
     for (const resolve of portWaiters.splice(0)) resolve(port);
     log("adopted a port to the host worker");
+}
+
+// ---- Reads the host passes on --------------------------------------------
+//
+// The person's profile shows things about the space it frames (its title, its
+// roster) and asks the host's worker for them, which holds none of the
+// space's content. The host passes those reads here over the port, and the
+// answer goes back the same way: its status and headers, then its body in
+// pieces as it is produced, so a subscription keeps flowing.
+
+// The body readers of the reads still being answered, for the host to cancel.
+const hostReads = new Map();
+
+async function answerHost(port, { call, request }) {
+    try {
+        const worker = await spaceWorker();
+        const response = await worker.onfetch({
+            request: new Request(new URL(request.path, self.location.origin), {
+                method: request.method,
+                headers: request.headers,
+                body: request.body ?? undefined,
+            }),
+            clientId: "",
+            resultingClientId: "",
+            waitUntil() {},
+        });
+        port.postMessage({ call, head: { status: response.status, headers: [...response.headers] } });
+        if (response.body) {
+            const reader = response.body.getReader();
+            hostReads.set(call, reader);
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+                port.postMessage({ call, chunk }, [chunk]);
+            }
+        }
+        port.postMessage({ call, end: true });
+    } catch (error) {
+        port.postMessage({ call, error: String(error?.message ?? error) });
+    } finally {
+        hostReads.delete(call);
+    }
 }
 
 // ---- The space's own database -------------------------------------------
@@ -225,6 +273,11 @@ function spaceWorker() {
         .then(async worker => {
             await ensureGrant(worker);
             await restoreSession(worker);
+            // The host passes its reads of this space over the port, and a
+            // port does not outlive the worker it was handed to. Open one
+            // now, so the host learns this is a new worker and has what it
+            // was reading asked for again.
+            if (!hostPort) portToHost().catch(() => {});
             return worker;
         })
         .catch(error => {
@@ -268,11 +321,17 @@ async function ensureGrant(worker) {
     const audience = await worker.profileDid();
     const grant = await askHost({ delegate: audience });
     await worker.adoptSpace(grant.space, new Uint8Array(grant.chain), grant.remote ?? undefined);
-    // A freshly mounted replica is empty: seed it from the host's copy, once.
-    // The Rust side leaves a replica that already has content alone.
+    // A freshly mounted replica is empty. A space made where spaces have
+    // origins of their own has no content anywhere yet: the host hands over
+    // what to create it from, and it is created here, the one place it is
+    // kept. A space from before that is copied from the host's, once. Either
+    // leaves a replica that already has content alone.
     if (!held?.seeded) {
         const snapshot = await askHost({ snapshot: true });
-        if (!snapshot.empty) {
+        if (snapshot.fresh) {
+            await worker.createContent(grant.space, snapshot.fresh);
+            await askHost({ seeded: true });
+        } else if (!snapshot.empty) {
             await worker.seedSpace(
                 grant.space,
                 new Uint8Array(snapshot.content),

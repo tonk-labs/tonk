@@ -935,6 +935,7 @@ async function activateWorker() {
             })
             .then(() => activate(BUILD_ID, ASSET_PATHS))
             .then(async worker => {
+                await tellSiteOrigins(worker);
                 await restoreSession(worker);
                 workerHealth.state = "ok";
                 workerHealth.error = null;
@@ -1108,6 +1109,9 @@ async function retire(reason) {
             // couple the successor's startup to this worker's death: worker
             // lifecycles belong to the browser.
             await worker.onupdatefound?.();
+            // The reads this worker passed on to spaces' own workers are
+            // streams of its own, which the Rust side knows nothing of.
+            releaseSpaceReads("this worker is retiring");
             // Publish the one-way latch only after release succeeds. A failed
             // worker boot or hook must remain retryable on the next fetch.
             retired = true;
@@ -1479,6 +1483,10 @@ async function deploymentConfig(live) {
         const response = await live();
         if (response.ok) {
             await cache.put(DEPLOYMENT_KEY, response.clone());
+            // The worker may have started before this was known.
+            if (tonkServiceWorkerResolves != null) {
+                tonkServiceWorkerResolves.then(tellSiteOrigins).catch(() => {});
+            }
             return response;
         }
         return (await cache.match(DEPLOYMENT_KEY)) ?? response;
@@ -1486,6 +1494,22 @@ async function deploymentConfig(live) {
         const held = await cache.match(DEPLOYMENT_KEY);
         if (held) return held;
         throw error;
+    }
+}
+
+// Tell the Rust worker whether this deployment renders each space on an
+// origin of its own, from the configuration last kept. Where it does, the
+// worker creates a space's identity and leaves its content to the worker of
+// the space's origin. Read from the cache alone: a worker starting offline,
+// or before the page has asked, decides from what was last known.
+async function tellSiteOrigins(worker) {
+    try {
+        const held = await caches.match(DEPLOYMENT_KEY, { cacheName: DEPLOYMENT_CACHE });
+        const sites = held ? (await held.json()).sites : null;
+        siteOrigins = sites != null;
+        await worker.setSiteOrigins?.(siteOrigins);
+    } catch (error) {
+        log("Could not read the deployment's site origins:", error);
     }
 }
 
@@ -1639,6 +1663,13 @@ async function routeFetch(event, path) {
         return serveNavigation();
     }
     if (!isShellCacheable(event.request, path)) {
+        // A read of a space that renders on its own origin is answered by
+        // the worker there, which holds the space's content.
+        const space = spaceRead(event.request, path);
+        if (space) {
+            const answer = await readFromSpace(event, space);
+            if (answer) return answer;
+        }
         // Only a write can stamp a site.
         return path.startsWith("/api/") && event.request.method !== "GET"
             ? rustFetchChanging(event)
@@ -1907,18 +1938,186 @@ self.onmessage = event => {
     );
 };
 
-// A base58btc blob hash, the whole of what a space worker may ask for.
-const SPACE_BLOB_HASH = /^[1-9A-HJ-NP-Za-km-z]+$/;
+// ---- A space's reads, from the space's own worker ----------------------
+//
+// Where each space renders on an origin of its own, the space's own worker
+// holds its content and this worker holds none. The profile still reads a
+// space it is showing (its title, its roster), and asks this worker, as it
+// always has. Those reads are passed over the port the space's worker opened
+// here, and its answer is streamed back, a subscription included.
+//
+// The port arrives a moment after the space's frame starts loading, so a read
+// that comes first waits for it. A space with no frame open has no port; its
+// read then falls to this worker, which answers that it holds nothing.
 
-// Serve a space origin's worker over `port`, scoped to `repo` and `branch`:
-// its blob reads, the delegation it holds for that one space, and the
-// snapshot it seeds its replica from. Every
-// request is acknowledged before it is read, so the space worker can
-// tell a restarted (silent) worker from a slow read. The read runs through
-// the same route a page's `/api/.../blob/...` fetch takes.
+// What a read of a space looks like: its repository, then a route that only
+// reads. A query is a read however it is sent.
+const SPACE_READ =
+    /^\/api\/repository\/((?:did:key:)?z[1-9A-HJ-NP-Za-km-z]+)\/branch\/[^/]+\/(query|claim\/select|export|sync\/status|blob\/[^/]+)$/;
+const SPACE_PORT_WAIT_MS = 8_000;
+const SPACE_ANSWER_WAIT_MS = 15_000;
+
+// Whether sites have origins of their own here (see `tellSiteOrigins`).
+let siteOrigins = false;
+// The port to each space's worker, by the space's key, with the reads
+// passed over it that are still being answered.
+const spacePorts = new Map();
+const spacePortWaiters = new Map();
+let nextSpaceCall = 1;
+
+const spaceKey = repo => repo.replace(/^did:key:/, "");
+
+function holdSpacePort(repo, port) {
+    const key = spaceKey(repo);
+    const space = { port, calls: new Map() };
+    // A port replaces the last: the space's worker restarted, and whatever
+    // it was still answering will never finish. Ask the new worker the same
+    // things. A subscription carries on in the response already open: its
+    // next piece is the whole result again, as on first asking.
+    const stale = spacePorts.get(key);
+    if (stale) {
+        for (const [call, read] of stale.calls) {
+            space.calls.set(call, read);
+            port.postMessage({ call, request: read.request });
+        }
+        if (stale.calls.size > 0) {
+            log(`Asking ${stale.calls.size} read(s) of ${key} again of its new worker`);
+        }
+        stale.calls.clear();
+    }
+    spacePorts.set(key, space);
+    for (const resolve of spacePortWaiters.get(key) ?? []) resolve(space);
+    spacePortWaiters.delete(key);
+    return space;
+}
+
+function spacePort(key) {
+    const held = spacePorts.get(key);
+    if (held) return Promise.resolve(held);
+    return new Promise(resolve => {
+        const waiters = spacePortWaiters.get(key) ?? [];
+        waiters.push(resolve);
+        spacePortWaiters.set(key, waiters);
+        setTimeout(() => resolve(null), SPACE_PORT_WAIT_MS);
+    });
+}
+
+// The space a request reads, when this worker is to pass it on.
+function spaceRead(request, path) {
+    if (!siteOrigins) return null;
+    const match = SPACE_READ.exec(path);
+    if (!match) return null;
+    const reads = request.method === "GET" || (request.method === "POST" && match[2] === "query");
+    return reads ? spaceKey(match[1]) : null;
+}
+
+// Pass `event`'s request to the worker of the space `key`, and answer with
+// what it answers. `null` when that worker cannot be reached, for this
+// worker to answer in its place.
+async function readFromSpace(event, key) {
+    const space = await spacePort(key);
+    if (!space) return null;
+    const { request } = event;
+    const url = new URL(request.url);
+    const body = request.method === "GET" ? null : await request.arrayBuffer();
+    const call = nextSpaceCall++;
+    let controller;
+    let answer;
+    const answered = new Promise((resolve, reject) => {
+        answer = { resolve, reject };
+    });
+    // The port may be replaced while this is read: find the read wherever
+    // it has moved to.
+    const drop = () => {
+        const held = spacePorts.get(key);
+        if (held?.calls.delete(call)) held.port.postMessage({ cancel: call });
+    };
+    const passed = {
+        method: request.method,
+        path: url.pathname + url.search,
+        headers: [...request.headers],
+        body,
+    };
+    const stream = new ReadableStream({
+        start(started) {
+            controller = started;
+        },
+        cancel: drop,
+    });
+    const forget = () => spacePorts.get(key)?.calls.delete(call);
+    space.calls.set(call, {
+        request: passed,
+        // Asked again of a new worker, a read already answering keeps the
+        // status it gave.
+        head: answer.resolve,
+        chunk: bytes => controller.enqueue(new Uint8Array(bytes)),
+        end() {
+            forget();
+            controller.close();
+        },
+        fail(error) {
+            forget();
+            answer.reject(error);
+            try {
+                controller.error(error);
+            } catch {}
+        },
+    });
+    request.signal?.addEventListener("abort", drop);
+    // Not transferred: the body is kept to ask a new worker with.
+    space.port.postMessage({ call, request: passed });
+    const timer = setTimeout(
+        () => answer.reject(new Error("the space's worker did not answer")),
+        SPACE_ANSWER_WAIT_MS,
+    );
+    try {
+        const { status, headers } = await answered;
+        const bodiless = status === 204 || status === 304;
+        return new Response(bodiless ? null : stream, { status, headers });
+    } catch (error) {
+        log(`A read of ${key} was not answered by its own worker:`, error);
+        drop();
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+// End every read passed on to a space's worker, so that nothing this worker
+// streams outlives its retirement. Whoever was reading asks its successor.
+function releaseSpaceReads(reason) {
+    for (const space of spacePorts.values()) {
+        for (const [call, read] of [...space.calls]) {
+            space.port.postMessage({ cancel: call });
+            read.fail(new Error(reason));
+        }
+    }
+}
+
+function spaceAnswered(space, data) {
+    const call = space.calls.get(data.call);
+    if (!call) return;
+    if (data.head) call.head(data.head);
+    else if (data.chunk) call.chunk(data.chunk);
+    else if (data.end) call.end();
+    else if (data.error) call.fail(new Error(data.error));
+}
+
+// Serve a space origin's worker over `port`, bound to the space `repo`: the
+// delegation it holds for that one space, and what its content starts from
+// (the seed of a space made for it to fill, or a copy of one this worker
+// held before). Every request is acknowledged before it is answered, so the
+// space's worker can tell a restarted (silent) worker from a slow one. The
+// same port carries this worker's reads of the space the other way.
 function bindSpacePort(port, { repo, branch }) {
     if (!port || typeof repo !== "string" || typeof branch !== "string") return;
+    const space = holdSpacePort(repo, port);
     port.onmessage = async ({ data }) => {
+        // An answer to a read this worker passed on to the space's worker.
+        if (typeof data?.call === "number") {
+            spaceAnswered(space, data);
+            return;
+        }
         const id = data?.id;
         if (typeof id !== "number") return;
         port.postMessage({ id, ack: true });
@@ -1937,8 +2136,25 @@ function bindSpacePort(port, { repo, branch }) {
             }
             // A freshly mounted space worker seeds its replica from this one's
             // copy of the space: its `main`, as a snapshot.
+            // The space's worker has created the content it was handed
+            // the seed for.
+            if (data.seeded === true) {
+                const worker = await activateWorker();
+                await worker.settleSeed(repo);
+                port.postMessage({ id, settled: true });
+                return;
+            }
             if (data.snapshot === true) {
                 const worker = await activateWorker();
+                // A space this worker created and left for its own worker to
+                // fill comes with the seed to fill it from, whatever this
+                // worker's branch holds: a page's own writes may have put a
+                // revision on it since, with none of the space's content.
+                const fresh = await worker.pendingSeed(repo);
+                if (fresh) {
+                    port.postMessage({ id, fresh });
+                    return;
+                }
                 const snapshot = await worker.snapshotSpace(repo);
                 if (!snapshot) {
                     port.postMessage({ id, empty: true });
@@ -1949,26 +2165,7 @@ function bindSpacePort(port, { repo, branch }) {
                 port.postMessage({ id, content, revision }, [content, revision]);
                 return;
             }
-            if (typeof data.blob !== "string" || !SPACE_BLOB_HASH.test(data.blob)) {
-                throw new Error("malformed blob hash");
-            }
-            // The same shape `blob_url.rs` builds for a page's own reads.
-            const path = `/api/repository/${repo}/branch/${branch}/blob/blob:${data.blob}`;
-            const request = new Request(new URL(path, self.location.origin));
-            const worker = await activateWorker();
-            // Not a real fetch event: no client, and nothing to keep alive
-            // beyond this reply.
-            const response = await worker.onfetch({
-                request,
-                clientId: "",
-                resultingClientId: "",
-                waitUntil() {},
-            });
-            const body = await response.arrayBuffer();
-            port.postMessage(
-                { id, status: response.status, headers: [...response.headers], body },
-                [body],
-            );
+            throw new Error("unknown request");
         } catch (error) {
             port.postMessage({ id, error: String(error?.message ?? error) });
         }
