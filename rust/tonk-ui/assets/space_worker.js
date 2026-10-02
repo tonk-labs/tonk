@@ -810,7 +810,13 @@ async function ensureGrant(worker, { renew = false } = {}) {
     // kept. A space from before that is copied from the host's, once. Either
     // leaves a replica that already has content alone.
     if (!held?.seeded) {
-        const snapshot = await askHost({ snapshot: true });
+        const snapshot = await askHost({ snapshot: true }).catch(error => {
+            // A space that syncs fills from where it syncs. The profile
+            // holds only part of one it joined, which is no snapshot.
+            if (!grant.remote) throw error;
+            log("the profile has no copy to start from; the space will fill as it syncs:", error);
+            return { empty: true };
+        });
         if (snapshot.fresh) {
             await worker.createContent(grant.space, snapshot.fresh);
             await askHost({ seeded: true });
@@ -944,7 +950,7 @@ async function flushSession() {
 }
 
 async function saveWhileDirty() {
-    while (dirty) {
+    while (dirty && rust) {
         dirty = false;
         try {
             const worker = await rust;

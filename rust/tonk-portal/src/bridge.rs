@@ -1265,6 +1265,21 @@ fn pass_relayed_port(
     }
 }
 
+/// Whether a portal in this document renders the site at `with` on an origin
+/// of its own.
+pub(crate) fn renders(with: &Location) -> bool {
+    REGISTRY.with(|registry| {
+        registry.borrow().iter().any(|entry| {
+            let state = entry.state.borrow();
+            state.origin().is_some()
+                && state
+                    .with
+                    .as_ref()
+                    .is_some_and(|rendered| rendered.same_reach(with))
+        })
+    })
+}
+
 /// Dispatch what a site's worker said on this page's own service worker
 /// container, where the page listens for its worker. Only the top document
 /// does: a nested one is not the page.

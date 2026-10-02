@@ -1975,10 +1975,6 @@ async fn run_invite(
 ) -> Result<RunInvite, TonkWorkerError> {
     use dialog_artifacts::Entity;
     use dialog_varsig::Principal as _;
-    use tonk_schema::command::{Authorization, Credential};
-    use tonk_schema::domain::authorization::{Proof, Remote as AuthorizationRemote};
-    use tonk_schema::domain::credential::{Link, Seed};
-    use tonk_schema::{Invitation, InvitationExecution};
 
     let tonk = env.state().read().await;
 
@@ -2166,7 +2162,13 @@ async fn run_invite(
     // independently, the name as the invitation's historical fact ("you
     // were invited to a space called X", true after any rename).
     let mut meta = tonk_invite::home_address_meta(&remote_execution.access_url);
-    if let Some(name) = repository_display_name(&tonk, &repository, repo_name).await {
+    let elsewhere = tonk.site_origins.load(std::sync::atomic::Ordering::Relaxed);
+    let name = if elsewhere {
+        directory_space_name(&tonk, &repository.did()).await
+    } else {
+        repository_display_name(&tonk, &repository, repo_name).await
+    };
+    if let Some(name) = name {
         meta.extend(tonk_invite::space_name_meta(&name));
     }
     let delegation: dialog_ucan::UcanDelegation = tonk
@@ -2179,14 +2181,6 @@ async fn run_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
     let chain = delegation.into_chain();
-
-    // Derive the invitation record from the chain as minted — before it's
-    // serialized away — so the meta-branch roster carries this invite. The
-    // claim side self-heals a missing record, but the mint should write its
-    // own. Guaranteed `Some`: the delegation is scoped to the repo subject.
-    let invitation =
-        Invitation::from_chain(&chain).expect("invite delegation is scoped to a specific subject");
-    let execution = InvitationExecution::new(&invitation, "open");
 
     // base58-encode the delegation chain — the `?access=` parameter the
     // view reads back and assembles into the final URL.
@@ -2234,42 +2228,44 @@ async fn run_invite(
     let link = shortened_or_full(link).await;
     let tonk = env.state().read().await;
 
-    let authorization = Authorization {
-        this: subject_entity.clone(),
-        proof: Proof(proof),
-        remote: AuthorizationRemote(remote),
-    };
+    // What the mint leaves in the space is the space's to write. Where its
+    // content is held by a worker of its own, that worker is handed it and
+    // writes it; the union edge is this profile's to sign either way.
+    let union = super::create_invite::account_union(&tonk).await;
+    if elsewhere {
+        let union = match &union {
+            Some(union) => bs58::encode(union.to_bytes().map_err(|e| {
+                TonkWorkerError::Internal(format!("failed to serialize the union edge: {e}"))
+            })?)
+            .into_string(),
+            None => String::new(),
+        };
+        drop(tonk);
+        super::space_reach::transact(
+            repo_name,
+            &record_invite_claim(&proof, &union, &link, &seed),
+        )
+        .await?;
+    } else {
+        record_invite(
+            &tonk,
+            repo_name,
+            InviteRecord {
+                chain,
+                union,
+                proof,
+                link: link.clone(),
+                seed,
+            },
+        )
+        .await?;
+        drop(tonk);
+    }
+    let tonk = env.state().read().await;
 
-    // Write the private seed and the assembled URL into the session overlay
-    // and schedule a poll of this branch so the change propagates even
-    // though it never commits durably. Neither reaches replicated storage:
-    // the URL carries the seed in its `#` fragment, so it is exactly as
-    // secret as the seed and lives on the same overlay-only concept.
-    // `Credential` is cardinality-one keyed on the subject, so asserting
-    // supersedes any prior credential in place — no whole-overlay clear,
-    // which would also drop the tab's `tonk:site` fact and collapse the
-    // share view to "not found".
-    tonk.reactor
-        .repository(repo_name)
-        .branch(CONTENT_BRANCH)
-        .overlay()
-        .assert(Credential {
-            this: subject_entity.clone(),
-            seed: Seed(seed),
-            link: Link(link.clone()),
-        })
-        .write()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("failed to write credential overlay: {e}"))
-        })?;
-
-    // The same answer in the shape the share control subscribes to, on
-    // PROFILE main rather than the space: one row per space whose
-    // `status` says where the invite has got to, carrying the url once
-    // there is one. `Credential` above keeps the seed beside it on the
-    // space for readers that need both; this is what a view renders.
+    // The answer in the shape the share control subscribes to, on PROFILE
+    // main rather than the space: one row per space whose `status` says
+    // where the invite has got to, carrying the url once there is one.
     //
     // On profile main because the Hub renders one share control per row,
     // and a control subscribed to the space made merely LISTING spaces
@@ -2282,50 +2278,6 @@ async fn run_invite(
         tonk_schema::command::InviteState::granted(subject_entity, link.clone()),
     )
     .await;
-
-    // Ensure the self-identity overlay (`state:self`) is present so the
-    // topbar identity chip renders. The overlay builder above no longer
-    // clears the whole overlay (which previously wiped `state:self` and the
-    // tab's `tonk:site`), so this is a guarantee, not a recovery: if no
-    // sync-status poll has stamped it yet, this fills it in.
-    crate::router::sync::publish_self_identity(&tonk, repo_name, CONTENT_BRANCH).await;
-
-    // Assert the public authorization durably — committed **through the
-    // reactor** so its cached branch sees the fact. The commit schedules
-    // its own poll on the same branch; the dispatcher's drain coalesces it
-    // with the overlay write above into a single re-evaluation that fans
-    // the now-complete invitation out to the share view.
-    tonk.reactor
-        .repository(repo_name)
-        .branch(CONTENT_BRANCH)
-        .transaction()
-        .assert(authorization)
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("failed to commit authorization fact: {e}"))
-        })?;
-
-    // Record the invitation on the repo's content branch — the durable
-    // roster half of the invite (the URL with its secret fragment is never
-    // stored). Mirrors the HTTP `create_invite` route so both mint paths
-    // leave the same roster fact for the claim side to match against, and
-    // routes through the *reactor's* cached handle for the same reason the
-    // `Authorization` commit above does: a commit on a separately-opened
-    // handle would leave the cached one pinned at a stale head.
-    tonk.reactor
-        .repository(repo_name)
-        .branch(CONTENT_BRANCH)
-        .transaction()
-        .assert(invitation)
-        .assert(execution)
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
-
-    super::create_invite::retain_invite_authority(&tonk, repo_name, &chain).await?;
 
     crate::router::navigate::notify_analytics(
         env.client(),
@@ -2443,6 +2395,223 @@ async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::Inv
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// What a minted invite leaves in its space.
+struct InviteRecord {
+    /// The delegation chain the invite grants.
+    chain: dialog_ucan_core::DelegationChain,
+    /// The `profile -> account` union edge retained beside it, when the
+    /// minting profile has an account root.
+    union: Option<dialog_ucan_core::DelegationChain>,
+    /// The chain, base58: the `?access=` parameter.
+    proof: String,
+    /// The complete invite URL, carrying the seed in its fragment.
+    link: String,
+    /// The base58 membership seed.
+    seed: String,
+}
+
+/// Write what a minted invite leaves in `repo_name`: the secret half in the
+/// session overlay, the public [`Authorization`] and the roster's invitation
+/// on the content branch, and the retained delegation.
+///
+/// [`Authorization`]: tonk_schema::command::Authorization
+async fn record_invite(
+    tonk: &TonkState,
+    repo_name: &str,
+    record: InviteRecord,
+) -> Result<(), TonkWorkerError> {
+    use dialog_artifacts::Entity;
+    use tonk_schema::command::{Authorization, Credential};
+    use tonk_schema::domain::authorization::{Proof, Remote as AuthorizationRemote};
+    use tonk_schema::domain::credential::{Link, Seed};
+    use tonk_schema::{Invitation, InvitationExecution};
+
+    // Both facts are keyed by the repository's *subject* DID — the entity
+    // the share view already addresses (`entity={subject}`) — not the
+    // membership DID.
+    let subject_entity = record
+        .chain
+        .subject()
+        .ok_or_else(|| {
+            TonkWorkerError::Router("an invite delegation names the space it is for".into())
+        })?
+        .to_string()
+        .parse::<Entity>()
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("repository subject is not a valid entity: {e}"))
+        })?;
+    // Derive the invitation record from the chain as minted, so the
+    // meta-branch roster carries this invite. The claim side self-heals a
+    // missing record, but the mint should write its own.
+    let invitation = Invitation::from_chain(&record.chain).ok_or_else(|| {
+        TonkWorkerError::Router("an invite delegation names the space it is for".into())
+    })?;
+    let execution = InvitationExecution::new(&invitation, "open");
+
+    // The endpoint rides inside the signed chain (`home.address` meta), so
+    // the URL carries no `&remote=` suffix any more. The suffix slot stays
+    // empty rather than removed: `tonk:authorization.remote` is a required
+    // field of the seeded concept, and the URL assembler treats an empty
+    // suffix as absent.
+    let authorization = Authorization {
+        this: subject_entity.clone(),
+        proof: Proof(record.proof),
+        remote: AuthorizationRemote(String::new()),
+    };
+
+    // Write the private seed and the assembled URL into the session overlay
+    // and schedule a poll of this branch so the change propagates even
+    // though it never commits durably. Neither reaches replicated storage:
+    // the URL carries the seed in its `#` fragment, so it is exactly as
+    // secret as the seed and lives on the same overlay-only concept.
+    // `Credential` is cardinality-one keyed on the subject, so asserting
+    // supersedes any prior credential in place — no whole-overlay clear,
+    // which would also drop the tab's `tonk:site` fact and collapse the
+    // share view to "not found".
+    tonk.reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .overlay()
+        .assert(Credential {
+            this: subject_entity,
+            seed: Seed(record.seed),
+            link: Link(record.link),
+        })
+        .write()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to write credential overlay: {e}"))
+        })?;
+
+    // Ensure the self-identity overlay (`state:self`) is present so the
+    // topbar identity chip renders. The overlay builder above no longer
+    // clears the whole overlay (which previously wiped `state:self` and the
+    // tab's `tonk:site`), so this is a guarantee, not a recovery: if no
+    // sync-status poll has stamped it yet, this fills it in.
+    crate::router::sync::publish_self_identity(tonk, repo_name, CONTENT_BRANCH).await;
+
+    // Assert the public authorization durably — committed **through the
+    // reactor** so its cached branch sees the fact. The commit schedules
+    // its own poll on the same branch; the dispatcher's drain coalesces it
+    // with the overlay write above into a single re-evaluation that fans
+    // the now-complete invitation out to the share view.
+    tonk.reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(authorization)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to commit authorization fact: {e}"))
+        })?;
+
+    // Record the invitation on the repo's content branch — the durable
+    // roster half of the invite (the URL with its secret fragment is never
+    // stored). Mirrors the HTTP `create_invite` route so both mint paths
+    // leave the same roster fact for the claim side to match against, and
+    // routes through the *reactor's* cached handle for the same reason the
+    // `Authorization` commit above does: a commit on a separately-opened
+    // handle would leave the cached one pinned at a stale head.
+    tonk.reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(invitation)
+        .assert(execution)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
+
+    super::create_invite::retain_invite_chains(tonk, repo_name, &record.chain, record.union).await
+}
+
+/// The [`RecordInvite`] command as a transact request, for the space's own
+/// worker to run on the space's branch.
+///
+/// [`RecordInvite`]: tonk_schema::command::RecordInvite
+fn record_invite_claim(proof: &str, union: &str, link: &str, seed: &str) -> serde_json::Value {
+    let field = |name: &str| {
+        serde_json::json!({
+            "the": format!("xyz.tonk.command.record-invite/{name}"),
+            "as": "Text"
+        })
+    };
+    serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "with": {
+                            "proof": field("proof"),
+                            "union": field("union"),
+                            "link": field("link"),
+                            "seed": field("seed")
+                        }
+                    }
+                },
+                "parameters": { "proof": proof, "union": union, "link": link, "seed": seed }
+            }
+        }]
+    })
+}
+
+/// Run the [`RecordInvite`] command: write, in the space this worker holds,
+/// the invite the person's profile minted for it. The chain says which space
+/// it is for, and one for any other than the branch it fired on is refused.
+///
+/// [`RecordInvite`]: tonk_schema::command::RecordInvite
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::RecordInvite> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::RecordInvite) {
+        let repo = self.origin().repo.clone();
+        let recorded = async {
+            let decode = |text: &str| {
+                let bytes = bs58::decode(text)
+                    .into_vec()
+                    .map_err(|e| TonkWorkerError::Router(format!("not base58: {e}")))?;
+                dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
+                    .map_err(|e| TonkWorkerError::Router(format!("malformed delegation: {e}")))
+            };
+            let chain = decode(&command.proof.0)?;
+            if chain.subject().map(|subject| subject.to_string()) != Some(repo.clone()) {
+                return Err(TonkWorkerError::Forbidden(format!(
+                    "the invite is not for '{repo}'"
+                )));
+            }
+            let union = match command.union.0.as_str() {
+                "" => None,
+                union => Some(decode(union)?),
+            };
+            let tonk = self.state().read().await;
+            record_invite(
+                &tonk,
+                &repo,
+                InviteRecord {
+                    chain,
+                    union,
+                    proof: command.proof.0.clone(),
+                    link: command.link.0.clone(),
+                    seed: command.seed.0.clone(),
+                },
+            )
+            .await?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            Ok(())
+        };
+        match recorded.await {
+            Ok(()) => log!("Recorded an invite to '{repo}'"),
+            Err(error) => log!("RecordInvite for '{repo}' failed: {error}"),
+        }
+    }
 }
 
 /// The shortcut for `link`, or `link` itself when there isn't one.
@@ -6071,6 +6240,32 @@ pub(crate) async fn record_space_name(tonk: &TonkState, subject: &Did, display_n
     if let Err(error) = transaction.commit().perform(&tonk.operator).await {
         log!("record space name for '{subject}': {error}");
     }
+}
+
+/// A space's display name as the account directory has it: the copy kept
+/// for a device that holds none of the space's content. Where each space's
+/// content is on an origin of its own, the person's profile is such a
+/// device.
+async fn directory_space_name(tonk: &TonkState, subject: &Did) -> Option<String> {
+    let main = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+        .ok()?;
+    let names: Vec<tonk_schema::SpaceName> = main
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::SpaceName> {
+            this: Term::from(subject.this()),
+            name: Term::var("name"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    names.into_iter().next().map(|row| row.name.0)
 }
 
 /// Mirror a space's remote/branch configuration — and optionally its
@@ -10442,6 +10637,87 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(name.as_deref(), Some("forwarded-garden"));
+    }
+
+    /// Where a space's content is held by a worker of its own, the profile
+    /// mints an invite and hands that worker what to write, as a transact
+    /// request. Committed on the space's branch, the request has to decode
+    /// as the command and leave the invite's public half in the space.
+    #[dialog_common::test]
+    async fn it_records_an_invite_from_the_claim_its_profile_forwards() {
+        use super::CONTENT_BRANCH;
+        use dialog_capability::Subject;
+        use dialog_effects::Use;
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_varsig::Principal as _;
+        use tonk_schema::command::Authorization;
+
+        let (app, state, key) = fresh_repo("recorded-invite").await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let proof = {
+            let tonk = state.read().await;
+            let (member, _seed) = crate::router::create_invite::generate_ephemeral()
+                .await
+                .unwrap();
+            let delegation: dialog_ucan::UcanDelegation = tonk
+                .profile
+                .access()
+                .claim(Subject::from(subject.clone()).attenuate(Use))
+                .delegate(member.did())
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            bs58::encode(delegation.into_chain().to_bytes().unwrap()).into_string()
+        };
+        let claim = super::record_invite_claim(&proof, "", "https://tonk.test/join#seed", "seed");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{key}/branch/{CONTENT_BRANCH}/transact"
+                    ))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(claim.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The command runs after the commit answers.
+        let mut recorded = None;
+        for _ in 0..40 {
+            let tonk = state.read().await;
+            let content = tonk
+                .reactor
+                .repository(&key)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap();
+            let rows: Vec<Authorization> = content
+                .handle()
+                .query()
+                .select(Query::<Authorization> {
+                    this: Term::from(tonk_schema::prelude::DidExt::this(&subject)),
+                    proof: Term::var("proof"),
+                    remote: Term::var("remote"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            recorded = rows.into_iter().next().map(|row| row.proof.0);
+            if recorded.is_some() {
+                break;
+            }
+            drop(tonk);
+            crate::r#async::sleep(web_time::Duration::from_millis(50))
+                .await
+                .unwrap();
+        }
+        assert_eq!(recorded, Some(proof));
     }
 
     #[dialog_common::test]

@@ -339,6 +339,41 @@ pub(super) async fn retain_invite_authority(
     repo_name: &str,
     chain: &dialog_ucan_core::DelegationChain,
 ) -> Result<(), TonkWorkerError> {
+    let union = account_union(tonk).await;
+    retain_invite_chains(tonk, repo_name, chain, union).await
+}
+
+/// The `profile -> account` union edge retained beside an invite, minted by
+/// this profile. `None` for a profile with no account root.
+pub(super) async fn account_union(
+    tonk: &crate::TonkState,
+) -> Option<dialog_ucan_core::DelegationChain> {
+    match super::identity::local_root(tonk).await {
+        Ok(root) => {
+            let signer = tonk.profile.credential().signer().clone();
+            match tonk_account::delegations::mint_account_union(&signer, &root.root_did).await {
+                Ok(union) => Some(union),
+                Err(e) => {
+                    log!("invite union edge was not minted: {e}");
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            log!("no account root on this profile, minting invite without a union: {e}");
+            None
+        }
+    }
+}
+
+/// Retain an invite's chain on the space's content branch, and the union
+/// edge its minter made beside it.
+pub(super) async fn retain_invite_chains(
+    tonk: &crate::TonkState,
+    repo_name: &str,
+    chain: &dialog_ucan_core::DelegationChain,
+    union: Option<dialog_ucan_core::DelegationChain>,
+) -> Result<(), TonkWorkerError> {
     // The reactor's cached handle, for the same stale-head reason the
     // invitation transaction above routes through it.
     let session = tonk
@@ -352,16 +387,7 @@ pub(super) async fn retain_invite_authority(
         })?;
 
     let mut chains = vec![UcanDelegation(chain.clone())];
-    match super::identity::local_root(tonk).await {
-        Ok(root) => {
-            let signer = tonk.profile.credential().signer().clone();
-            match tonk_account::delegations::mint_account_union(&signer, &root.root_did).await {
-                Ok(union) => chains.push(UcanDelegation(union)),
-                Err(e) => log!("invite union edge was not minted: {e}"),
-            }
-        }
-        Err(e) => log!("no account root on this profile, minting invite without a union: {e}"),
-    }
+    chains.extend(union.map(UcanDelegation));
 
     session
         .handle()
@@ -451,18 +477,38 @@ async fn probe_shortcut(request: &ShortcutRequest, hash: &str) -> Result<(), Ton
     let probe = request
         .probe_url(hash)
         .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe URL: {e}")))?;
-    let init = RequestInit::new();
-    init.set_method("HEAD");
-    init.set_signal(shortcut_timeout_signal().as_ref());
-    let probe_request = Request::new_with_str_and_init(&probe, &init)
-        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe request: {e:?}")))?;
     let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
         .dyn_into()
         .map_err(|_| TonkWorkerError::Internal("not in a service-worker scope".to_owned()))?;
+    // A link lives on the host serving the space, which a worker on a site's
+    // own origin is not. The redirect lands on that host's app, a page that
+    // answers no other origin, so following it from here fails however well
+    // the shortcut works. Such a worker asks only whether the shortcut
+    // redirects, which is all another origin is shown of it.
+    let elsewhere = url::Url::parse(&probe)
+        .is_ok_and(|probe| probe.origin().ascii_serialization() != global.location().origin());
+    let init = RequestInit::new();
+    init.set_method("HEAD");
+    init.set_signal(shortcut_timeout_signal().as_ref());
+    if elsewhere {
+        init.set_redirect(web_sys::RequestRedirect::Manual);
+    }
+    let probe_request = Request::new_with_str_and_init(&probe, &init)
+        .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe request: {e:?}")))?;
     let response: Response = JsFuture::from(global.fetch_with_request(&probe_request))
         .await
         .and_then(|v| v.dyn_into())
         .map_err(|e| TonkWorkerError::Internal(format!("shortcut probe HEAD: {e:?}")))?;
+    if elsewhere {
+        return if response.type_() == web_sys::ResponseType::Opaqueredirect {
+            Ok(())
+        } else {
+            Err(TonkWorkerError::Internal(format!(
+                "the shortcut host answered the probe without redirecting (HTTP {})",
+                response.status()
+            )))
+        };
+    }
     if !response.redirected() {
         return Err(TonkWorkerError::Internal(format!(
             "the shortcut host answered the probe without redirecting (HTTP {})",

@@ -416,6 +416,35 @@ impl Command for CheckUpdate {
     type Output = ();
 }
 
+/// Record, in a space, an invite to it that the person's profile minted.
+///
+/// Where each space's content is held by a worker on the space's own origin,
+/// minting an invite takes two workers. The profile's signs it: it holds the
+/// authority, and a delegation issued by the space's worker would lapse with
+/// that worker's own. The space's worker writes what the mint leaves in the
+/// space (the [`Authorization`], the roster's invitation, the retained
+/// delegation) and keeps the secret half in its session overlay. This is how
+/// the first hands the second what to write. It fires on the space's own
+/// branch and records an invite for that space only.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RecordInvite {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The delegation chain the invite grants.
+    pub proof: crate::domain::command::current::record_invite::Proof,
+    /// The `profile -> account` union edge, or empty.
+    pub union: crate::domain::command::current::record_invite::Union,
+    /// The complete invite URL.
+    pub link: crate::domain::command::current::record_invite::Link,
+    /// The membership seed.
+    pub seed: crate::domain::command::current::record_invite::Seed,
+}
+
+impl Command for RecordInvite {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Pull a space this account has but this device does not.
 ///
 /// Replication was only ever implicit: the first data-plane request

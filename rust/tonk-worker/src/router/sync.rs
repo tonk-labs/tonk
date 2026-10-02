@@ -1380,9 +1380,18 @@ pub async fn drain_sync(state: &AppState) {
     // Every currently-open repository — the pull population. Read the reactor's
     // cached repo map; a repo only appears once acquired, which every rendered
     // space has done.
+    //
+    // Where each space's content is held by a worker of its own, that worker
+    // is the one that follows the space. This one still pushes what it wrote
+    // to a space itself (a join's claim), which is in `pending`, and follows
+    // none.
     let open: Vec<String> = {
         let tonk = state.read().await;
-        tonk.reactor.repos().read().keys().cloned().collect()
+        if tonk.site_origins.load(std::sync::atomic::Ordering::Relaxed) {
+            Vec::new()
+        } else {
+            tonk.reactor.repos().read().keys().cloned().collect()
+        }
     };
 
     // Union, pending-first, de-duplicated while preserving order.

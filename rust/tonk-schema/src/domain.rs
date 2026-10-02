@@ -1319,6 +1319,37 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `tonk/record-invite` — a space's own worker records an invite
+        /// the person's profile minted.
+        pub mod record_invite {
+            use dialog_query::Attribute;
+
+            /// The base58 delegation chain the invite grants (`?access=`).
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.record-invite")]
+            pub struct Proof(pub String);
+
+            /// The base58 `profile -> account` union edge retained beside
+            /// the chain, so another device of the same account can walk
+            /// to it. Empty when the profile has no account root to mint
+            /// one from.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.record-invite")]
+            pub struct Union(pub String);
+
+            /// The complete invite URL. It carries the membership seed in
+            /// its fragment, so it is kept in the session overlay only.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.record-invite")]
+            pub struct Link(pub String);
+
+            /// The base58 membership seed, kept in the session overlay
+            /// only.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.record-invite")]
+            pub struct Seed(pub String);
+        }
+
         /// `tonk/rename-repository` — rename a space's repository.
         pub mod rename_repository {
             use dialog_query::Attribute;

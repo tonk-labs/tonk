@@ -421,7 +421,9 @@ fn reach(with: &Location) {
             }
         })
     });
-    if kept.is_some() {
+    // A space on screen has a frame already, whose shell opens the port as
+    // it loads.
+    if kept.is_some() || crate::bridge::renders(with) {
         return;
     }
     // Before this page has its context it does not know where sites render:

@@ -264,6 +264,10 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // request would have to arrive on the branch it is asking for.
         .command::<tonk_schema::command::CheckUpdate>()
         .command::<super::repository::AgentHandoffRequest>()
+        // What the person's profile hands a space's own worker to write
+        // after minting an invite to the space. It records for the origin
+        // and names no other space.
+        .command::<tonk_schema::command::RecordInvite>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
 }
