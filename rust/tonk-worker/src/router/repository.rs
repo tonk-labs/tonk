@@ -4066,16 +4066,23 @@ struct ProfileInstallation {
     installed: tonk_schema::SeedInstalled,
 }
 
-/// Read the seed a space is running, if it recorded one.
-///
-/// A record a release from before wrote ([`tonk_schema::SeedInstalled`])
-/// wins over a complete one: the space was then installed, at least in
-/// part, the way those releases did, and only reverting every install it
-/// recorded undoes that.
-async fn read_installed_seed(
+/// Which install a source's record belongs to: a library component's own
+/// (its source), or the space's main seed (`core.yaml`, or a custom seed)
+/// for every other source. A space runs one main seed and any number of
+/// components, each recorded, upgraded and reverted on its own.
+fn lineage(source: &str) -> &str {
+    if super::library::is_component_url(source) {
+        source
+    } else {
+        "main"
+    }
+}
+
+/// Every install a space has recorded, each joined with its source.
+async fn installed_seeds(
     tonk: &TonkState,
     session: &crate::reactor::BranchSession,
-) -> Result<Option<InstalledSeed>, String> {
+) -> Result<Vec<InstalledSeed>, String> {
     use dialog_query::{Output as _, Query, Term};
 
     let legacy: Vec<tonk_schema::SeedInstalled> = session
@@ -4090,52 +4097,84 @@ async fn read_installed_seed(
         .try_vec()
         .await
         .map_err(|e| format!("{e:?}"))?;
-    let (seed, version, complete) = match legacy.into_iter().next() {
-        Some(record) => (record.this, record.version.0, false),
-        None => {
-            let installed: Vec<tonk_schema::SeedInstall> = session
-                .handle()
-                .query()
-                .select(Query::<tonk_schema::SeedInstall> {
-                    this: Term::var("this"),
-                    prior: Term::var("prior"),
-                    version: Term::var("version"),
-                })
-                .perform(&tonk.operator)
-                .try_vec()
-                .await
-                .map_err(|e| format!("{e:?}"))?;
-            let Some(record) = installed.into_iter().next() else {
-                return Ok(None);
-            };
-            (record.this, record.version.0, true)
-        }
-    };
-
-    let available: Vec<tonk_schema::SeedAvailable> = session
+    let complete: Vec<tonk_schema::SeedInstall> = session
         .handle()
         .query()
-        .select(Query::<tonk_schema::SeedAvailable> {
-            this: Term::from(seed.clone()),
-            source: Term::var("source"),
-            replaces: Term::var("replaces"),
+        .select(Query::<tonk_schema::SeedInstall> {
+            this: Term::var("this"),
+            prior: Term::var("prior"),
+            version: Term::var("version"),
         })
         .perform(&tonk.operator)
         .try_vec()
         .await
         .map_err(|e| format!("{e:?}"))?;
-    let Some(source) = available.into_iter().next() else {
-        // The install half without its identity half. A seed is always
-        // written as both, so this means the record was damaged.
-        return Err(format!("seed {seed} records no source"));
-    };
+    let records = legacy
+        .into_iter()
+        .map(|record| (record.this, record.version.0, false))
+        .chain(
+            complete
+                .into_iter()
+                .map(|record| (record.this, record.version.0, true)),
+        );
 
-    Ok(Some(InstalledSeed {
-        seed,
-        source: source.source.0,
-        version,
-        complete,
-    }))
+    let mut seeds = Vec::new();
+    for (seed, version, complete) in records {
+        let available: Vec<tonk_schema::SeedAvailable> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SeedAvailable> {
+                this: Term::from(seed.clone()),
+                source: Term::var("source"),
+                replaces: Term::var("replaces"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let Some(source) = available.into_iter().next() else {
+            // The install half without its identity half. A seed is always
+            // written as both, so this means the record was damaged.
+            return Err(format!("seed {seed} records no source"));
+        };
+        seeds.push(InstalledSeed {
+            seed,
+            source: source.source.0,
+            version,
+            complete,
+        });
+    }
+    Ok(seeds)
+}
+
+/// Read the main seed a space is running, if it recorded one. See
+/// [`read_installed_seed_in`].
+async fn read_installed_seed(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+) -> Result<Option<InstalledSeed>, String> {
+    read_installed_seed_in(tonk, session, "main").await
+}
+
+/// Read the install a space runs in `lineage` (see [`lineage`]), if it
+/// recorded one.
+///
+/// A record a release from before wrote ([`tonk_schema::SeedInstalled`])
+/// wins over a complete one: the space was then installed, at least in
+/// part, the way those releases did, and only reverting every install it
+/// recorded undoes that.
+async fn read_installed_seed_in(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+    in_lineage: &str,
+) -> Result<Option<InstalledSeed>, String> {
+    let mut seeds: Vec<InstalledSeed> = installed_seeds(tonk, session)
+        .await?
+        .into_iter()
+        .filter(|seed| lineage(&seed.source) == in_lineage)
+        .collect();
+    // Legacy records come first in `installed_seeds`; keep the first.
+    Ok((!seeds.is_empty()).then(|| seeds.remove(0)))
 }
 
 /// The retractions that withdraw every install record standing on the
@@ -4152,10 +4191,28 @@ async fn live_install_records(
     tonk: &TonkState,
     session: &crate::reactor::BranchSession,
 ) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
+    live_install_records_in(tonk, session, "main").await
+}
+
+/// [`live_install_records`] for the installs of one `lineage` (see
+/// [`lineage`]): upgrading a component withdraws its own records, and the
+/// main seed's and other components' stay.
+async fn live_install_records_in(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+    in_lineage: &str,
+) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
     use dialog_artifacts::Statement as _;
     use dialog_query::{Output as _, Query, Term};
 
     let failed = |e| RepositoryError::Internal(format!("read seed record: {e:?}"));
+    let ours: std::collections::HashSet<String> = installed_seeds(tonk, session)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("read seed record: {e}")))?
+        .into_iter()
+        .filter(|seed| lineage(&seed.source) == in_lineage)
+        .map(|seed| seed.seed.to_string())
+        .collect();
     let mut changes = dialog_artifacts::Changes::new();
     for record in session
         .handle()
@@ -4170,7 +4227,9 @@ async fn live_install_records(
         .await
         .map_err(failed)?
     {
-        record.retract(&mut changes);
+        if ours.contains(&record.this.to_string()) {
+            record.retract(&mut changes);
+        }
     }
     for record in session
         .handle()
@@ -4185,7 +4244,9 @@ async fn live_install_records(
         .await
         .map_err(failed)?
     {
-        record.retract(&mut changes);
+        if ours.contains(&record.this.to_string()) {
+            record.retract(&mut changes);
+        }
     }
     Ok(changes
         .into_instructions()
@@ -4558,7 +4619,56 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
     let library = fetch_standard_library(&current.source)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch '{}': {e}", current.source)))?;
-    install_seed(tonk, &key, &session, current, library).await
+    let mut upgraded = install_seed(tonk, &key, &session, current, library).await?;
+
+    // Then every component the space installed, each from its own source.
+    let components: Vec<InstalledSeed> = installed_seeds(tonk, &session)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("read seed record: {e}")))?
+        .into_iter()
+        .filter(|seed| lineage(&seed.source) != "main")
+        .collect();
+    for component in components {
+        let library = fetch_standard_library(&component.source)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("fetch '{}': {e}", component.source)))?;
+        upgraded |= install_seed(tonk, &key, &session, component, library).await?;
+    }
+    Ok(upgraded)
+}
+
+/// Install the library component at `source` into the branch `branch` of
+/// space `key`, or bring the installed one up to the shipped version. A
+/// component is an install of its own beside the space's main seed (see
+/// [`lineage`]): recorded, upgraded on mount and reverted like a seed, with
+/// any number installed at once. `Ok(false)` when it is installed and
+/// current.
+pub(super) async fn install_component(
+    tonk: &TonkState,
+    key: &str,
+    branch: &str,
+    source: &str,
+) -> Result<bool, RepositoryError> {
+    let library = fetch_standard_library(source)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{source}': {e}")))?;
+    let session = tonk
+        .reactor
+        .repository(key)
+        .branch(branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("open '{key}' branch '{branch}': {e}")))?;
+    let current = read_installed_seed_in(tonk, &session, source)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("read seed record: {e}")))?;
+    match current {
+        Some(current) => install_seed(tonk, key, &session, current, library).await,
+        None => {
+            install_fresh_from(tonk, key, branch, source, &library, &[]).await?;
+            Ok(true)
+        }
+    }
 }
 
 /// The content branch of the space `key` names, under whichever key
@@ -4653,7 +4763,7 @@ async fn install_seed(
     if current.seed.to_string() == shipped {
         return Ok(false);
     }
-    let install = library_claims(&library, "space library").await?;
+    let install = install_claims_for(&current.source, &library).await?;
     let subject = space_entity(key)?;
 
     // The writer lock the evaluate path takes, so another committer lines up
@@ -4664,7 +4774,8 @@ async fn install_seed(
     // Read the record again under the lock: an upgrade that held it first
     // may have moved the space already, and uninstalling from the record
     // read before would revert an install the space no longer runs.
-    let Some(mut current) = read_installed_seed(tonk, session)
+    let in_lineage = lineage(&current.source).to_owned();
+    let Some(mut current) = read_installed_seed_in(tonk, session, &in_lineage)
         .await
         .map_err(|e| RepositoryError::Internal(format!("read seed record: {e}")))?
     else {
@@ -4692,7 +4803,7 @@ async fn install_seed(
             }
             Err(error) => {
                 retry_after_race(tonk, key, session, &mut attempt, error).await?;
-                match read_installed_seed(tonk, session)
+                match read_installed_seed_in(tonk, session, &in_lineage)
                     .await
                     .map_err(|e| RepositoryError::Internal(format!("read seed record: {e}")))?
                 {
@@ -4720,7 +4831,21 @@ pub(super) async fn install_fresh_seed(
     library: &str,
     own: &[super::claim::RawClaim],
 ) -> Result<(), RepositoryError> {
-    let install = library_claims(library, "space library").await?;
+    install_fresh_from(tonk, key, branch, STANDARD_LIBRARY_URL, library, own).await
+}
+
+/// [`install_fresh_seed`] for a library fetched from `source`, recorded as
+/// that source's first install: the main seed's, or a component's (see
+/// [`lineage`]).
+pub(super) async fn install_fresh_from(
+    tonk: &TonkState,
+    key: &str,
+    branch: &str,
+    source: &str,
+    library: &str,
+    own: &[super::claim::RawClaim],
+) -> Result<(), RepositoryError> {
+    let install = install_claims_for(source, library).await?;
     let seed = seed_version(library);
     let session = tonk
         .reactor
@@ -4731,7 +4856,7 @@ pub(super) async fn install_fresh_seed(
         .map_err(|e| RepositoryError::Internal(format!("open '{key}' branch '{branch}': {e}")))?;
     let _committing = session.transactor().lock().await;
     let record = |installed: &dialog_artifacts::history::Version| {
-        installed_seed_facts(&seed, STANDARD_LIBRARY_URL, SEED_NONE, installed)
+        installed_seed_facts(&seed, source, SEED_NONE, installed)
     };
     let mut attempt = 0;
     while let Err(error) = stage_reinstall(tonk, &session, &[], &install, &record, own).await {
@@ -4873,6 +4998,11 @@ fn installed_seed_facts(
 /// Facts about the space itself stay. A space's first install carried its
 /// name beside the library, and reverting that withdrew the name with
 /// nothing to put it back.
+///
+/// So do the claims another installed library asserted too. A component
+/// declares what it uses of core again (the same concepts, the same
+/// attributes), and a fact has no owner: reverting one library's copy would
+/// take it from the library still relying on it.
 async fn uninstall_claims(
     tonk: &TonkState,
     session: &crate::reactor::BranchSession,
@@ -4884,7 +5014,26 @@ async fn uninstall_claims(
     } else {
         recorded_install_versions(tonk, session, &current.source).await?
     };
+    let in_lineage = lineage(&current.source).to_owned();
+    // What the other installed libraries assert, which this one leaves.
     let mut seen = std::collections::HashSet::new();
+    for other in installed_seeds(tonk, session)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("read seed record: {e}")))?
+        .into_iter()
+        .filter(|seed| lineage(&seed.source) != in_lineage)
+    {
+        let theirs = if other.complete {
+            vec![other.version]
+        } else {
+            recorded_install_versions(tonk, session, &other.source).await?
+        };
+        for version in &theirs {
+            for claim in assertions_at_version(tonk, session, version).await? {
+                seen.insert(claim_identity(&claim));
+            }
+        }
+    }
     let mut claims = Vec::new();
     for version in &versions {
         for claim in assertions_at_version(tonk, session, version).await? {
@@ -4903,7 +5052,7 @@ async fn uninstall_claims(
             }
         }
     }
-    claims.extend(live_install_records(tonk, session).await?);
+    claims.extend(live_install_records_in(tonk, session, &in_lineage).await?);
     Ok(claims)
 }
 
@@ -6505,13 +6654,49 @@ struct LibraryClaims {
 /// transaction is committed whatever its concept. `what` names the library
 /// in errors.
 async fn library_claims(library: &str, what: &str) -> Result<LibraryClaims, RepositoryError> {
+    library_claims_after(None, library, what).await
+}
+
+/// What installing `library`, fetched from `source`, asserts: a main seed on
+/// its own, a component after the core it relies on.
+async fn install_claims_for(source: &str, library: &str) -> Result<LibraryClaims, RepositoryError> {
+    if !super::library::is_component_url(source) {
+        return library_claims(library, "space library").await;
+    }
+    let core = fetch_standard_library(STANDARD_LIBRARY_URL)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}")))?;
+    library_claims_after(Some(&core), library, source).await
+}
+
+/// [`library_claims`] for a library that relies on `prelude`, as a component
+/// relies on core: the two are analyzed as one document, so the library's
+/// references to what the prelude declares resolve, and only the library's
+/// own expressions are lowered. Still without a branch source, so what the
+/// branch already holds suppresses nothing.
+async fn library_claims_after(
+    prelude: Option<&str>,
+    library: &str,
+    what: &str,
+) -> Result<LibraryClaims, RepositoryError> {
     use dialog_artifacts::{Changes, Instruction, Statement as _};
     use dialog_query::{Parameters, Term};
     use tonk_schema::transact::{ApplicationPlan, Planner as _, Statement};
 
-    let syntax = super::library::parse(library)
-        .await
-        .map_err(|error| RepositoryError::Internal(format!("{what}: {error}")))?;
+    let parse = |text| async move {
+        super::library::parse(text)
+            .await
+            .map_err(|error| RepositoryError::Internal(format!("{what}: {error}")))
+    };
+    let (syntax, first) = match prelude {
+        None => (parse(library).await?, 0),
+        Some(prelude) => {
+            let mut joined = parse(prelude).await?;
+            let first = joined.expressions.len();
+            joined.expressions.extend(parse(library).await?.expressions);
+            (joined, first)
+        }
+    };
     let analyzed = tonk_analyzer::analyzer::analyze_local(&syntax)
         .map_err(|error| RepositoryError::Internal(format!("analyze {what}: {error}")))?;
     let mut bindings = Parameters::new();
@@ -6525,7 +6710,7 @@ async fn library_claims(library: &str, what: &str) -> Result<LibraryClaims, Repo
     let transient = analyzed.analysis.transient_entities();
     let mut desired = Changes::new();
     let mut commands = Changes::new();
-    for planned in analyzed.analysis.statements() {
+    for planned in analyzed.analysis.statements_from(first) {
         match planned.statement {
             Statement::Assert(application) => {
                 let plan = application
@@ -14817,6 +15002,159 @@ name!:
         assert_eq!(
             missing_from_install(&tonk, &key, &next).await,
             Vec::<Triple>::new()
+        );
+    }
+
+    /// The notebook component, as a space installs it from the palette.
+    const NOTEBOOK_SOURCE: &str = "/library/notebook.yaml";
+
+    /// Whether the branch holds `claim` now.
+    async fn holds(tonk: &TonkState, key: &str, claim: &Triple) -> bool {
+        use dialog_artifacts::ArtifactSelector;
+        use futures_util::StreamExt as _;
+
+        let (the, of, is) = claim;
+        let session = content(tonk, key).await;
+        let stream = session
+            .handle()
+            .claims()
+            .select(
+                ArtifactSelector::new()
+                    .of(of.parse().expect("an entity"))
+                    .the(the.parse().expect("an attribute")),
+            )
+            .perform(&tonk.operator)
+            .await
+            .expect("the claims read");
+        tokio::pin!(stream);
+        while let Some(found) = stream.next().await {
+            let found = found.expect("a claim").to_owned().expect("a claim");
+            if &format!("{:?}", found.is) == is {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// What one recorded install asserted.
+    async fn install_claims(
+        tonk: &TonkState,
+        key: &str,
+        seed: &InstalledSeed,
+    ) -> std::collections::HashSet<Triple> {
+        assertions_at_version(tonk, &content(tonk, key).await, &seed.version)
+            .await
+            .expect("the install's history reads")
+            .iter()
+            .map(claim_identity)
+            .collect()
+    }
+
+    async fn component(tonk: &TonkState, key: &str, source: &str) -> Option<InstalledSeed> {
+        read_installed_seed_in(tonk, &content(tonk, key).await, source)
+            .await
+            .expect("the seed records read")
+    }
+
+    /// A component installs beside the space's seed, recorded as an install
+    /// of its own: the seed's record stays, installing it again does
+    /// nothing, and a mount finds both current.
+    #[dialog_common::test]
+    async fn a_component_installs_beside_the_seed() {
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, "Garden").await;
+        let seed = running(&tonk, &key).await;
+
+        assert!(
+            install_component(&tonk, &key, CONTENT_BRANCH, NOTEBOOK_SOURCE)
+                .await
+                .expect("the component installs"),
+            "a first install installs"
+        );
+        let notebook = component(&tonk, &key, NOTEBOOK_SOURCE)
+            .await
+            .expect("the component's install is recorded");
+        assert_eq!(notebook.source, NOTEBOOK_SOURCE);
+        assert!(notebook.complete);
+
+        let still = running(&tonk, &key).await;
+        assert_eq!(still.seed, seed.seed, "the seed's record stays");
+        assert_eq!(still.source, STANDARD_LIBRARY_URL);
+
+        assert!(
+            !install_component(&tonk, &key, CONTENT_BRANCH, NOTEBOOK_SOURCE)
+                .await
+                .expect("installing again reads"),
+            "an installed, current component is left alone"
+        );
+        assert!(
+            !upgrade_seed(&tonk, &key)
+                .await
+                .expect("the mount upgrade runs"),
+            "a mount finds the seed and the component current"
+        );
+    }
+
+    /// Updating a component reverts what its last version asserted, but not
+    /// a claim the seed asserts too: a fact has no owner, and the seed still
+    /// relies on it.
+    #[dialog_common::test]
+    async fn updating_a_component_keeps_what_the_seed_also_asserts() {
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, "Garden").await;
+        install_component(&tonk, &key, CONTENT_BRANCH, NOTEBOOK_SOURCE)
+            .await
+            .expect("the component installs");
+        let seed = running(&tonk, &key).await;
+        let notebook = component(&tonk, &key, NOTEBOOK_SOURCE)
+            .await
+            .expect("the component is installed");
+        let core = install_claims(&tonk, &key, &seed).await;
+        let ours = install_claims(&tonk, &key, &notebook).await;
+        let shared: Vec<&Triple> = ours.intersection(&core).collect();
+        let only_ours: Vec<&Triple> = ours.difference(&core).collect();
+        assert!(
+            !shared.is_empty(),
+            "the notebook library declares some of core again"
+        );
+        assert!(!only_ours.is_empty());
+
+        // A version of the component that drops everything it had.
+        let next = r#"
+attribute!: &probe/note
+  description: "A note."
+  the: xyz.example.probe/note
+  as: text
+"#;
+        let session = content(&tonk, &key).await;
+        assert!(
+            install_seed(&tonk, &key, &session, notebook, next.to_owned())
+                .await
+                .expect("the update commits")
+        );
+        for claim in &shared {
+            assert!(
+                holds(&tonk, &key, claim).await,
+                "the seed's {claim:?} stays"
+            );
+        }
+        for claim in only_ours.iter().take(20) {
+            assert!(
+                !holds(&tonk, &key, claim).await,
+                "the old version's {claim:?} goes"
+            );
+        }
+        assert_eq!(
+            running(&tonk, &key).await.seed,
+            seed.seed,
+            "the seed's record stays"
+        );
+        assert_ne!(
+            component(&tonk, &key, NOTEBOOK_SOURCE)
+                .await
+                .expect("the component is still installed")
+                .seed,
+            seed.seed
         );
     }
 }
