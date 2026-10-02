@@ -79,9 +79,14 @@
     var c=(window.tonk&&window.tonk.context)||{};
     return location.origin!=="null"&&c.siteHost&&c.repo?c:null;
   }
+  // The language server is the same worker's: it reads the database its
+  // editor writes to. Relayed, it would answer from the host's copy, and
+  // an editor here would see none of what it just defined.
   function ownsPath(url){
     var c=ownSpace();
-    return !!c&&url.indexOf("/api/repository/"+c.repo+"/")===0;
+    if(!c) return false;
+    return url.indexOf("/api/repository/"+c.repo+"/")===0||
+      url.split("?")[0]==="/api/language-server";
   }
   // On an origin of its own, the app's static assets (the guest runtime, the
   // stylesheet, images, fonts) are this origin's too: its worker serves them
