@@ -118,13 +118,15 @@ impl CustomElement for TonkFab {
 
     fn inject_children(&mut self, this: &HtmlElement) {
         // Appended, not assigned: what the page authors inside the bar (the
-        // `command` slot's occupant) stays where it was put. A bar with no
-        // `space` at all is on a page that has none (the hub, settings), so
-        // it holds only what serves the profile; a blank one is a space
-        // route whose `{id}` has not resolved yet.
-        let stacks = match this.get_attribute("space") {
-            Some(space) => crate::markup::stacks_html(&space),
-            None => crate::markup::PROFILE_STACKS_HTML.to_owned(),
+        // `command` slot's occupant) stays where it was put. A `latent` bar
+        // is on a page with no space (the hub, settings), so it holds only
+        // what serves the profile. Keyed on `latent`, a static attribute,
+        // not on `space`: the page stamps a bound `space={id}` after the bar
+        // connects, so its absence here does not mean there is no space.
+        let stacks = if this.has_attribute("latent") {
+            crate::markup::PROFILE_STACKS_HTML.to_owned()
+        } else {
+            crate::markup::stacks_html(&this.get_attribute("space").unwrap_or_default())
         };
         let _ = this.insert_adjacent_html("beforeend", &stacks);
     }
