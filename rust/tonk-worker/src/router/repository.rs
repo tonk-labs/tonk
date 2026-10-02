@@ -2791,41 +2791,60 @@ async fn run_rename_repository(
 ) -> Result<(), RepositoryError> {
     use tonk_schema::prelude::DidExt as _;
 
-    let tonk = env.state().read().await;
-
-    // The durable key: the repository's own subject DID, read straight off
-    // the branch handle rather than re-parsed from `repo` (they're the same
-    // DID either way).
-    let session = tonk
-        .reactor
-        .repository(repo)
-        .branch(CONTENT_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|e| {
-            RepositoryError::Internal(format!("{repo}/{CONTENT_BRANCH} not found: {e}"))
-        })?;
-    let subject = session.handle().of().this();
-
     log!("RenameRepository repo={} name={}", repo, name);
 
-    // Commit the new name through the reactor so subscriptions re-poll. `name`
-    // is cardinality-one, so the assert supersedes the prior value — the same
-    // fact the standard-library rule wrote.
-    tonk.reactor
-        .repository(repo)
-        .branch(CONTENT_BRANCH)
-        .transaction()
-        .assert(RepositoryName {
-            this: subject,
-            name: tonk_schema::domain::repo::Name(name.to_string()),
-        })
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("failed to commit repository name: {e}")))?;
+    // Where sites have origins of their own, the name is the space's own
+    // worker's to write: it holds the content, and runs this same command
+    // on the space's branch. Only the directory below is this worker's.
+    let elsewhere = env.from_profile()
+        && env
+            .state()
+            .read()
+            .await
+            .site_origins
+            .load(std::sync::atomic::Ordering::Relaxed);
+    if elsewhere {
+        super::space_reach::transact(repo, &rename_claim(repo, name))
+            .await
+            .map_err(|e| RepositoryError::Internal(e.to_string()))?;
+    }
 
-    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    let tonk = env.state().read().await;
+    if !elsewhere {
+        // The durable key: the repository's own subject DID, read straight
+        // off the branch handle rather than re-parsed from `repo` (they're
+        // the same DID either way).
+        let session = tonk
+            .reactor
+            .repository(repo)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .map_err(|e| {
+                RepositoryError::Internal(format!("{repo}/{CONTENT_BRANCH} not found: {e}"))
+            })?;
+        let subject = session.handle().of().this();
+
+        // Commit the new name through the reactor so subscriptions re-poll.
+        // `name` is cardinality-one, so the assert supersedes the prior
+        // value — the same fact the standard-library rule wrote.
+        tonk.reactor
+            .repository(repo)
+            .branch(CONTENT_BRANCH)
+            .transaction()
+            .assert(RepositoryName {
+                this: subject,
+                name: tonk_schema::domain::repo::Name(name.to_string()),
+            })
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| {
+                RepositoryError::Internal(format!("failed to commit repository name: {e}"))
+            })?;
+
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    }
     // Mirror the new name into the account directory so devices that
     // have not replicated this space still label it correctly.
     if let Ok(subject) = repo.parse::<Did>()
@@ -2842,6 +2861,36 @@ async fn run_rename_repository(
         log!("RenameRepository directory mirror skipped: {error}");
     }
     Ok(())
+}
+
+/// The [`RenameRepository`] command as a transact request, for the space's
+/// own worker to run on the space's branch.
+///
+/// [`RenameRepository`]: tonk_schema::command::RenameRepository
+fn rename_claim(space: &str, name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "with": {
+                            "name": {
+                                "the": "xyz.tonk.command.rename-repository/name",
+                                "as": "Text"
+                            },
+                            "space": {
+                                "the": "xyz.tonk.rename-repository/space",
+                                "as": "Entity"
+                            }
+                        }
+                    }
+                },
+                "parameters": { "space": space, "name": name }
+            }
+        }]
+    })
 }
 
 /// Run the [`RemoveSpace`] command: the user confirmed a Hub row's
@@ -10329,6 +10378,68 @@ mod tests {
             "the rename lands in the account directory so unreplicated \
              devices can label the space"
         );
+    }
+
+    /// Where a space's content is held by a worker of its own, the profile
+    /// forwards a rename to it as a transact request. Committed on the
+    /// space's branch, that request has to decode as the command and write
+    /// the name: the two are otherwise only related by attribute strings.
+    #[dialog_common::test]
+    async fn it_renames_a_space_from_the_claim_its_profile_forwards() {
+        use super::{CONTENT_BRANCH, RepositoryName};
+        use dialog_query::{Output as _, Query, Term};
+
+        let (app, state, key) = fresh_repo("forwarded-rename").await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{key}/branch/{CONTENT_BRANCH}/transact"
+                    ))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        super::rename_claim(&key, "forwarded-garden").to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The command runs after the commit answers.
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let mut name = None;
+        for _ in 0..40 {
+            let tonk = state.read().await;
+            let content = tonk
+                .reactor
+                .repository(&key)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap();
+            let names: Vec<RepositoryName> = content
+                .handle()
+                .query()
+                .select(Query::<RepositoryName> {
+                    this: Term::from(tonk_schema::prelude::DidExt::this(&subject)),
+                    name: Term::var("name"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            name = names.into_iter().next().map(|row| row.name.0);
+            if name.as_deref() == Some("forwarded-garden") {
+                break;
+            }
+            drop(tonk);
+            crate::r#async::sleep(web_time::Duration::from_millis(50))
+                .await
+                .unwrap();
+        }
+        assert_eq!(name.as_deref(), Some("forwarded-garden"));
     }
 
     #[dialog_common::test]

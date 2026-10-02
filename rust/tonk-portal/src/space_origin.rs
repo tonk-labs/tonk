@@ -33,7 +33,8 @@
 //! a frame that finishes loading without that is reported in place of the
 //! site ([`watch_shell`]), with the reason and a way to try again.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::str::FromStr;
 
@@ -44,8 +45,8 @@ use tonk_host::space_origin::{encode_label, site_hostname};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{
-    AddEventListenerOptions, Element, HtmlElement, HtmlIFrameElement, MessageChannel, MessagePort,
-    Url, window,
+    AddEventListenerOptions, Element, HtmlElement, HtmlIFrameElement, MessageChannel, MessageEvent,
+    MessagePort, Url, window,
 };
 
 use crate::bridge::PortalState;
@@ -319,6 +320,157 @@ pub(crate) fn broker_port(iframe: &HtmlIFrameElement, origin: &str, with: &Locat
         &JsValue::from_str(with.effective_branch()),
     );
     let _ = parent.post_message(&request, &host);
+}
+
+/// A frame this page keeps, unseen, on the origin of a space that is not on
+/// screen: only to reach the space's worker.
+struct Reached {
+    iframe: HtmlIFrameElement,
+    origin: String,
+    with: Location,
+    /// Whether its shell has asked for a port, and so can take one.
+    listening: bool,
+}
+
+thread_local! {
+    static REACHED: RefCell<HashMap<String, Reached>> = RefCell::new(HashMap::new());
+    static REACHING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// On a profile's origin, reach the workers of spaces that are not on screen.
+///
+/// The profile's worker holds none of a space's content and passes what it
+/// is asked about one to the space's own worker, over a port only a page can
+/// open. Around a space on screen its `<tonk-site>` opens it. For any other
+/// the worker asks this page, which frames the space's origin unseen and
+/// opens one through that frame, and drops the frame when the worker lets
+/// the space go. Idempotent, and nothing on any other origin.
+pub(crate) fn install_reach() {
+    if !on_profile_origin() || REACHING.replace(true) {
+        return;
+    }
+    let Some(window) = window() else {
+        return;
+    };
+    let asked = Closure::<dyn FnMut(MessageEvent)>::new(|event: MessageEvent| {
+        let data = event.data();
+        let kind = Reflect::get(&data, &"type".into())
+            .ok()
+            .and_then(|kind| kind.as_string());
+        let Some(with) = requested_location(&data) else {
+            return;
+        };
+        match kind.as_deref() {
+            Some("need-space-port") => reach(&with),
+            Some("release-space-port") => release(&with),
+            _ => {}
+        }
+    });
+    let _ = window
+        .navigator()
+        .service_worker()
+        .add_event_listener_with_callback("message", asked.as_ref().unchecked_ref());
+    asked.forget();
+
+    // The frame's shell asks for a port once its worker is in control, and
+    // again whenever that worker has restarted.
+    let needs = Closure::<dyn FnMut(MessageEvent)>::new(|event: MessageEvent| {
+        let data = event.data();
+        let asks = Reflect::get(&data, &"__tonkOrigin".into())
+            .ok()
+            .and_then(|kind| kind.as_string())
+            .is_some_and(|kind| kind == "need-port");
+        if !asks {
+            return;
+        }
+        let source = Reflect::get(&event, &"source".into()).unwrap_or(JsValue::NULL);
+        REACHED.with_borrow_mut(|reached| {
+            let frame = reached.values_mut().find(|frame| {
+                frame.origin == event.origin()
+                    && frame
+                        .iframe
+                        .content_window()
+                        .is_some_and(|window| JsValue::from(window) == source)
+            });
+            if let Some(frame) = frame {
+                frame.listening = true;
+                hand_port(frame);
+            }
+        });
+    });
+    let _ = window.add_event_listener_with_callback("message", needs.as_ref().unchecked_ref());
+    needs.forget();
+}
+
+fn hand_port(frame: &Reached) {
+    if let Some(port) = mint_port(&frame.with) {
+        post_port(&frame.iframe, &frame.origin, "port", &frame.with, port);
+    }
+}
+
+/// Open a port to the worker of the space at `with`: through the frame
+/// already kept for it, or a new one.
+fn reach(with: &Location) {
+    let Some(space) = with.space() else {
+        return;
+    };
+    let kept = REACHED.with_borrow(|reached| {
+        reached.get(space).map(|frame| {
+            if frame.listening {
+                hand_port(frame);
+            }
+        })
+    });
+    if kept.is_some() {
+        return;
+    }
+    // Before this page has its context it does not know where sites render:
+    // the worker asks again.
+    let Some(origin) =
+        context_field("sitePattern").and_then(|site_pattern| site_origin(with, &site_pattern))
+    else {
+        return;
+    };
+    let Some(document) = window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Some(iframe) = document
+        .create_element("iframe")
+        .ok()
+        .and_then(|element| element.dyn_into::<HtmlIFrameElement>().ok())
+    else {
+        return;
+    };
+    iframe.set_hidden(true);
+    let _ = iframe.set_attribute("sandbox", "allow-scripts allow-same-origin");
+    let _ = iframe.set_attribute("title", "space");
+    iframe.set_src(&format!("{origin}{SHELL_PATH}#connector"));
+    let Some(body) = document.body() else {
+        return;
+    };
+    let _ = body.append_child(&iframe);
+    REACHED.with_borrow_mut(|reached| {
+        reached.insert(
+            space.to_owned(),
+            Reached {
+                iframe,
+                origin,
+                with: with.clone(),
+                listening: false,
+            },
+        );
+    });
+}
+
+/// Drop the frame kept for the space at `with`: its worker is no longer
+/// being asked anything.
+fn release(with: &Location) {
+    let Some(space) = with.space() else {
+        return;
+    };
+    if let Some(frame) = REACHED.with_borrow_mut(|reached| reached.remove(space)) {
+        frame.iframe.remove();
+    }
 }
 
 /// Grant a nested frame's request, relayed by the portal at `iframe`: mint a

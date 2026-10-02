@@ -17,8 +17,8 @@
 // - Navigations get the static shell, carrying the site's CSP, except one
 //   to an asset. The server hands out the same shell for any path, so a deep
 //   link with no worker yet still boots one.
-// - `/api/*` is answered by this origin's database. A profile passes a read
-//   of a space it shows on to that space's worker.
+// - `/api/*` is answered by this origin's database. What a profile is asked
+//   about a space's content it passes on to that space's worker.
 // - `/asset:{hash}`, an asset's own URI as a path, is read from a space's
 //   database and served with the media type and size recorded for it,
 //   natively, so `<img>`, `<video>` and `<link>` just work.
@@ -232,9 +232,9 @@ function adopt(port, frame) {
 // ---- Requests passed down the port ---------------------------------------
 //
 // The worker above this one passes requests down the port: the app's passes
-// a profile every request its page makes, and a profile passes a space the
-// reads of what it shows of that space (its title, its roster). The answer
-// goes back the same way: its status and headers, then its body in pieces as
+// a profile every request its page makes, and a profile passes a space
+// whatever it is asked about that space's content. The answer goes back the
+// same way: its status and headers, then its body in pieces as
 // it is produced, so a subscription keeps flowing.
 
 // The body readers of the requests still being answered, to cancel.
@@ -300,15 +300,13 @@ async function messaged(data, ports, frame) {
     }
 }
 
-// Answer an `/api/` request. A profile's read of a space it shows is that
-// space's worker's to answer; anything else is this origin's database's.
+// Answer an `/api/` request. What a profile is asked about a space's
+// content is that space's worker's to answer; anything else is this origin's
+// database's.
 async function api(event) {
     if (PROFILE) {
-        const space = spaceRead(event.request);
-        if (space) {
-            const answered = await readFromSpace(event.request, space);
-            if (answered) return answered;
-        }
+        const space = spaceOf(event.request);
+        if (space) return askSpace(event.request, space);
     }
     return (await siteWorker()).onfetch(event);
 }
@@ -316,28 +314,40 @@ async function api(event) {
 // ---- A profile's spaces ---------------------------------------------------
 //
 // A profile's worker holds none of a space's content: the worker on the
-// space's own origin does. The profile's page frames the space and hands
-// this worker one end of a port to that worker, bound to the space. Over it
-// the space's worker asks for its delegation and for what its content starts
-// from, and this worker passes it the reads of the space that the profile
-// makes, as it shows the space's title or its roster.
+// space's own origin does. So whatever is asked of this worker about a
+// space's content (a read, a write, a command) it passes to that worker over
+// a port, and answers with what it answers.
 //
-// The port arrives a moment after the space's frame starts loading, so a read
-// that comes first waits for it. A space with no frame open has no port; its
-// read then falls to this worker, which answers that it holds nothing.
+// The profile's page opens the port. Around a space on screen it hands this
+// worker one end as the space's frame loads. For a space that is not on
+// screen this worker asks, and the page frames the space's origin unseen,
+// only to reach its worker. Over the same port the space's worker asks for
+// its delegation and for what its content starts from.
+//
+// A message over a port does not wake a stopped worker, and a worker stops
+// without a word. So while a space's worker is answering something this
+// worker asks it, every so often, whether it is there. One that is silent has
+// stopped: the page is asked for a new port, and handing one over is what
+// starts it again. A space nothing has been asked of for a while is let go,
+// and the page drops the frame it kept for it.
 
-// What a read of a space looks like: its repository, then a route that only
-// reads. A query is a read however it is sent.
-const SPACE_READ =
-    /^\/api\/repository\/((?:did:key:)?z[1-9A-HJ-NP-Za-km-z]+)\/branch\/[^/]+\/(query|claim\/select|export|sync\/status|blob\/[^/]+)$/;
-const SPACE_PORT_WAIT_MS = 8_000;
-const SPACE_ANSWER_WAIT_MS = 15_000;
+// What belongs to a space's own worker: everything under one of its
+// branches, and what the inspector reads of it.
+const SPACE_PATH =
+    /^\/api\/(?:inspect\/)?repository\/((?:did:key:)?z[1-9A-HJ-NP-Za-km-z]+)\/(?:branch|remote|archive)\//;
+const SPACE_PORT_WAIT_MS = 10_000;
+const SPACE_PORT_ASK_EVERY_MS = 1_500;
+const SPACE_ANSWER_WAIT_MS = 30_000;
+const SPACE_PROBE_WAIT_MS = 3_000;
+const SPACE_PROBE_EVERY_MS = 10_000;
+const SPACE_IDLE_MS = 60_000;
 
-// The port to each space's worker, by the space's key, with the reads
-// passed over it that are still being answered.
+// The port to each space's worker, by the space's key, with what has been
+// passed over it and is still being answered.
 const spacePorts = new Map();
 const spacePortWaiters = new Map();
 let nextSpaceCall = 1;
+let nextSpaceProbe = 1;
 
 const spaceKey = repo => repo.replace(/^did:key:/, "");
 
@@ -350,7 +360,11 @@ function bindSpacePort(port, { repo, branch }) {
     if (!port || typeof repo !== "string" || typeof branch !== "string") return;
     const space = holdSpacePort(repo, port);
     port.onmessage = async ({ data }) => {
-        // An answer to a read this worker passed on to the space's worker.
+        if (typeof data?.pong === "number") {
+            space.probes.get(data.pong)?.();
+            return;
+        }
+        // An answer to something this worker passed on to the space's worker.
         if (typeof data?.call === "number") {
             spaceAnswered(space, data);
             return;
@@ -414,73 +428,179 @@ function bindSpacePort(port, { repo, branch }) {
 
 function holdSpacePort(repo, port) {
     const key = spaceKey(repo);
-    const space = { port, calls: new Map() };
+    const space = { key, port, calls: new Map(), probes: new Map(), probing: false, lost: false, idle: null };
     // A port replaces the last: the space's worker restarted, and whatever
     // it was still answering will never finish. Ask the new worker the same
     // things. A subscription carries on in the response already open: its
     // next piece is the whole result again, as on first asking.
     const stale = spacePorts.get(key);
     if (stale) {
-        for (const [call, read] of stale.calls) {
-            space.calls.set(call, read);
-            port.postMessage({ call, request: read.request });
+        clearTimeout(stale.idle);
+        for (const [call, passed] of stale.calls) {
+            passed.space = space;
+            space.calls.set(call, passed);
+            port.postMessage({ call, request: passed.request });
         }
         if (stale.calls.size > 0) {
-            log(`asking ${stale.calls.size} read(s) of ${key} again of its new worker`);
+            log(`asking ${stale.calls.size} thing(s) of ${key} again of its new worker`);
         }
         stale.calls.clear();
     }
     spacePorts.set(key, space);
     for (const resolve of spacePortWaiters.get(key) ?? []) resolve(space);
     spacePortWaiters.delete(key);
+    watchSpace(space);
+    restSpace(space);
     return space;
 }
 
+// The port to the worker of the space `key`, asking the pages to open one
+// when there is none or the one held has gone quiet. `null` when none opens
+// one in time: the space's origin could not be loaded.
 function spacePort(key) {
     const held = spacePorts.get(key);
-    if (held) return Promise.resolve(held);
+    if (held && !held.lost) return Promise.resolve(held);
     return new Promise(resolve => {
+        // A page that is still loading cannot answer yet: keep asking.
+        const asking = setInterval(() => askForSpacePort(key), SPACE_PORT_ASK_EVERY_MS);
+        const settle = value => {
+            clearInterval(asking);
+            resolve(value);
+        };
         const waiters = spacePortWaiters.get(key) ?? [];
-        waiters.push(resolve);
+        waiters.push(settle);
         spacePortWaiters.set(key, waiters);
-        setTimeout(() => resolve(null), SPACE_PORT_WAIT_MS);
+        setTimeout(() => settle(null), SPACE_PORT_WAIT_MS);
+        askForSpacePort(key);
     });
 }
 
-// The space a request reads, when this worker is to pass it on.
-function spaceRead(request) {
-    const match = SPACE_READ.exec(new URL(request.url).pathname);
-    if (!match) return null;
-    const reads = request.method === "GET" || (request.method === "POST" && match[2] === "query");
-    return reads ? spaceKey(match[1]) : null;
+// The pages of this origin that render the profile. The frame the app keeps
+// only to reach this worker renders nothing, and opens no ports.
+async function profilePages() {
+    const pages = await self.clients.matchAll({ type: "window" });
+    return pages.filter(page => !page.url.endsWith("#connector"));
+}
+
+async function askForSpacePort(key) {
+    for (const page of await profilePages()) {
+        page.postMessage({ type: "need-space-port", repo: `did:key:${key}`, branch: "main" });
+    }
+}
+
+// Whether the space's worker answers on `space`'s port.
+function probeSpace(space) {
+    const probe = nextSpaceProbe++;
+    return new Promise(resolve => {
+        const timer = setTimeout(() => {
+            space.probes.delete(probe);
+            resolve(false);
+        }, SPACE_PROBE_WAIT_MS);
+        space.probes.set(probe, () => {
+            clearTimeout(timer);
+            space.probes.delete(probe);
+            resolve(true);
+        });
+        space.port.postMessage({ ping: probe });
+    });
+}
+
+// Probe a space's worker for as long as it is answering something. Once it
+// is silent its port is given up for lost and the pages are asked for
+// another; what was being answered moves to the new one.
+async function watchSpace(space) {
+    if (space.probing) return;
+    space.probing = true;
+    try {
+        while (spacePorts.get(space.key) === space && space.calls.size > 0) {
+            if (!(await probeSpace(space))) {
+                if (spacePorts.get(space.key) !== space) return;
+                log(`the worker of ${space.key} went quiet; asking for a new port`);
+                space.lost = true;
+                await askForSpacePort(space.key);
+                return;
+            }
+            await delay(SPACE_PROBE_EVERY_MS);
+        }
+    } finally {
+        space.probing = false;
+    }
+}
+
+// Let a space go once nothing has been asked of it for a while: the page
+// drops the frame it kept only to reach it.
+function restSpace(space) {
+    clearTimeout(space.idle);
+    if (space.calls.size > 0) return;
+    space.idle = setTimeout(async () => {
+        if (spacePorts.get(space.key) !== space || space.calls.size > 0) return;
+        spacePorts.delete(space.key);
+        for (const page of await profilePages()) {
+            page.postMessage({ type: "release-space-port", repo: `did:key:${space.key}`, branch: "main" });
+        }
+    }, SPACE_IDLE_MS);
+}
+
+// The space a request is about, when that space's own worker answers it.
+function spaceOf(request) {
+    const match = SPACE_PATH.exec(new URL(request.url).pathname);
+    return match ? spaceKey(match[1]) : null;
+}
+
+function spaceUnreachable(message) {
+    return new Response(JSON.stringify({ error: { kind: "space-unreachable", message } }), {
+        status: 503,
+        headers: { "content-type": "application/json", "retry-after": "2" },
+    });
 }
 
 // Pass `request` to the worker of the space `key`, and answer with what it
-// answers. `null` when that worker cannot be reached, for this worker to
-// answer in its place.
-async function readFromSpace(request, key) {
-    const space = await spacePort(key);
-    if (!space) return null;
+// answers.
+async function askSpace(request, key) {
+    const held = await spacePort(key);
+    if (!held) return spaceUnreachable("the space's worker could not be reached");
     const url = new URL(request.url);
-    const body = request.method === "GET" ? null : await request.arrayBuffer();
+    const body = request.method === "GET" || request.method === "HEAD" ? null : await request.arrayBuffer();
     const call = nextSpaceCall++;
     let controller;
     let answered;
     const head = new Promise((resolve, reject) => {
         answered = { resolve, reject };
     });
-    // The port may be replaced while this is read: find the read wherever
-    // it has moved to.
-    const drop = () => {
-        const held = spacePorts.get(key);
-        if (held?.calls.delete(call)) held.port.postMessage({ cancel: call });
+    const settled = () => {
+        passed.space.calls.delete(call);
+        restSpace(passed.space);
     };
-    const forget = () => spacePorts.get(key)?.calls.delete(call);
     const passed = {
-        method: request.method,
-        path: url.pathname + url.search,
-        headers: [...request.headers],
-        body,
+        // The port may be replaced while this is answered: `space` follows
+        // the request to wherever it has moved.
+        space: held,
+        request: {
+            method: request.method,
+            path: url.pathname + url.search,
+            headers: [...request.headers],
+            body,
+        },
+        // Asked again of a new worker, a request already answering keeps
+        // the status it gave.
+        head: answered.resolve,
+        chunk: bytes => controller.enqueue(new Uint8Array(bytes)),
+        end() {
+            settled();
+            controller.close();
+        },
+        fail(error) {
+            settled();
+            answered.reject(error);
+            try {
+                controller.error(error);
+            } catch {}
+        },
+    };
+    const drop = () => {
+        if (!passed.space.calls.has(call)) return;
+        passed.space.port.postMessage({ cancel: call });
+        settled();
     };
     const stream = new ReadableStream({
         start(started) {
@@ -488,27 +608,12 @@ async function readFromSpace(request, key) {
         },
         cancel: drop,
     });
-    space.calls.set(call, {
-        request: passed,
-        // Asked again of a new worker, a read already answering keeps the
-        // status it gave.
-        head: answered.resolve,
-        chunk: bytes => controller.enqueue(new Uint8Array(bytes)),
-        end() {
-            forget();
-            controller.close();
-        },
-        fail(error) {
-            forget();
-            answered.reject(error);
-            try {
-                controller.error(error);
-            } catch {}
-        },
-    });
+    clearTimeout(held.idle);
+    held.calls.set(call, passed);
     request.signal?.addEventListener("abort", drop);
     // Not transferred: the body is kept to ask a new worker with.
-    space.port.postMessage({ call, request: passed });
+    held.port.postMessage({ call, request: passed.request });
+    watchSpace(held);
     const timer = setTimeout(
         () => answered.reject(new Error("the space's worker did not answer")),
         SPACE_ANSWER_WAIT_MS,
@@ -516,14 +621,31 @@ async function readFromSpace(request, key) {
     try {
         const { status, headers } = await head;
         const bodiless = status === 204 || status === 304;
+        if (bodiless) settled();
         return new Response(bodiless ? null : stream, { status, headers });
     } catch (error) {
-        log(`a read of ${key} was not answered by its own worker:`, error);
+        log(`${key} did not answer:`, error);
         drop();
-        return null;
+        return spaceUnreachable(String(error?.message ?? error));
     } finally {
         clearTimeout(timer);
     }
+}
+
+// The Rust worker asks a space's own worker through this: what one of the
+// profile's commands does to a space's content, that worker does.
+if (PROFILE) {
+    self.tonkAskSpace = async (space, method, path, body) => {
+        const response = await askSpace(
+            new Request(new URL(path, self.location.origin), {
+                method,
+                headers: body == null ? {} : { "content-type": "application/json" },
+                body: body ?? undefined,
+            }),
+            spaceKey(space),
+        );
+        return { status: response.status, body: await response.text() };
+    };
 }
 
 function spaceAnswered(space, data) {
@@ -535,13 +657,13 @@ function spaceAnswered(space, data) {
     else if (data.error) call.fail(new Error(data.error));
 }
 
-// End every read passed on to a space's worker, so that nothing this worker
-// streams outlives its retirement. Whoever was reading asks its successor.
+// End everything passed on to a space's worker, so that nothing this worker
+// streams outlives its retirement. Whoever was asking asks its successor.
 function releaseSpaceReads(reason) {
     for (const space of spacePorts.values()) {
-        for (const [call, read] of [...space.calls]) {
+        for (const [call, passed] of [...space.calls]) {
             space.port.postMessage({ cancel: call });
-            read.fail(new Error(reason));
+            passed.fail(new Error(reason));
         }
     }
 }

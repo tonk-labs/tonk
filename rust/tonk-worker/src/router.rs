@@ -69,6 +69,8 @@ pub(crate) mod custody;
 pub(crate) mod rotation;
 
 mod join;
+/// Reaching a space's own worker from the person's profile.
+pub(crate) mod space_reach;
 /// A space's own worker: the delegation it holds, and the space it mounts.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) mod space_worker;

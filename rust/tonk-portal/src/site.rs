@@ -536,6 +536,7 @@ fn render_in_iframe(
 /// element runtime through it.
 pub fn register() {
     crate::bridge::install_message_listener();
+    crate::space_origin::install_reach();
     if let Some(win) = window()
         && win.custom_elements().get("tonk-site").is_undefined()
     {
