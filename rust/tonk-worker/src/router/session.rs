@@ -421,6 +421,16 @@ async fn stamp_site_on(tonk: &crate::worker::TonkState, client: ClientId, stamp:
             return;
         }
     };
+    // A page is looking at this space: say who its session acts for, where
+    // the space's roster is, so a view can tell which member that is. Here
+    // because a stamp is made whenever a page loads a space and again when
+    // a restarted worker restores it, and the overlay lasts no longer than
+    // either.
+    if !profile
+        && let Err(error) = super::sync::publish_session_account(tonk, repo, branch_name).await
+    {
+        tonk_common::log!("register_site: {error}");
+    }
 
     let Some(replica) = origin_entity(tonk, &state).await else {
         tonk_common::log!(

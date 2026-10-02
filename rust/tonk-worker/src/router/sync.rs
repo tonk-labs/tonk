@@ -153,9 +153,6 @@ pub async fn publish_self_identity(tonk: &crate::worker::TonkState, repo: &str, 
     session.state.assert_overlay(stamp);
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&session.state));
-    if let Err(error) = publish_session_account(tonk, repo, branch).await {
-        log!("publish_self_identity: {error}");
-    }
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
