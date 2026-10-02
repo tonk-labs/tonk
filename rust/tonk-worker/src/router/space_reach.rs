@@ -155,3 +155,38 @@ pub(crate) fn changed(space: Option<&str>) {
         let _ = space;
     }
 }
+
+/// Have `space`'s own worker forget the space: remove everything its origin
+/// stored, and itself. For a space the person removed from this device,
+/// whose content this worker never held. Best effort, like the removal of
+/// local storage it stands in for: a worker that cannot be reached leaves
+/// bytes nothing shows, on an origin nothing opens.
+pub(crate) async fn forget(space: &str) {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        use js_sys::{Function, Promise, Reflect};
+        use wasm_bindgen::{JsCast, JsValue};
+        use wasm_bindgen_futures::JsFuture;
+
+        let global = js_sys::global();
+        let Some(hook) = Reflect::get(&global, &"tonkForgetSpace".into())
+            .ok()
+            .and_then(|hook| hook.dyn_into::<Function>().ok())
+        else {
+            return;
+        };
+        let forgotten = hook
+            .call1(&global, &JsValue::from_str(space))
+            .ok()
+            .and_then(|forgotten| forgotten.dyn_into::<Promise>().ok());
+        if let Some(forgotten) = forgotten
+            && let Err(error) = JsFuture::from(forgotten).await
+        {
+            tonk_common::log!("{space} was not forgotten by its own worker: {error:?}");
+        }
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        let _ = space;
+    }
+}

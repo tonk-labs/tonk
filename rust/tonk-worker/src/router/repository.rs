@@ -3252,6 +3252,11 @@ pub(crate) async fn remove_space_inner(
     } else {
         delete_space_storage_for(subject.repo_key()).await;
     }
+    // Where the space's content is on an origin of its own, that is where
+    // most of it is, and its worker is the one that can remove it.
+    if state.read().await.spaces_elsewhere() {
+        space_reach::forget(subject.repo_key()).await;
+    }
 
     // The delete ran unlocked, so a concurrent `drain_sync` could have
     // reached in and re-acquired the repo (e.g. to pull) while it was in

@@ -285,6 +285,11 @@ async function signalled(signal) {
             await ensureGrant(worker, { renew: true });
             return;
         }
+        // The person removed this space from the device.
+        if (signal === "forget" && !PROFILE) {
+            await forgetSite();
+            return;
+        }
         for (const space of spacePorts.values()) space.port.postMessage({ signal });
         if (signal === "connectivity") await worker.onconnectivity?.();
         else if (signal === "visibility") await worker.onvisibility?.();
@@ -662,6 +667,21 @@ if (PROFILE) {
     // The Rust worker says through this that what a space's worker was told has
     // changed (where the space syncs, which account this profile acts for):
     // of one space, or of all of them.
+    // The Rust worker says through this that the person removed a space
+    // from this device: its own worker forgets it, origin and all.
+    self.tonkForgetSpace = async space => {
+        const key = spaceKey(space);
+        const held = await spacePort(key);
+        if (!held) throw new Error("the space's worker could not be reached");
+        held.port.postMessage({ signal: "forget" });
+        // Nothing more is asked of it, so the page drops its frame.
+        clearTimeout(held.idle);
+        spacePorts.delete(key);
+        for (const page of await profilePages()) {
+            page.postMessage({ type: "release-space-port", repo: `did:key:${key}`, branch: "main" });
+        }
+    };
+
     self.tonkSpaceChanged = space => {
         for (const held of spacePorts.values()) {
             if (space == null || held.key === spaceKey(space)) held.port.postMessage({ signal: "grant" });
@@ -714,6 +734,22 @@ const GRANT_KEY = "/__space/grant";
 const GRANT_VERSION = 4;
 // Ask for a new delegation once the held one has less than this left.
 const RENEW_MARGIN_SECONDS = 60 * 60;
+
+// ---- Forgetting a space ---------------------------------------------------
+//
+// A space the person removes from the device is removed by its profile, and
+// its content is here. Told so, this worker removes everything its origin
+// stored and unregisters itself. A database this worker still has open is
+// deleted once it stops, which is when its last page goes.
+async function forgetSite() {
+    log("forgetting this space");
+    retired = true;
+    for (const name of await caches.keys()) await caches.delete(name);
+    for (const { name } of await indexedDB.databases()) indexedDB.deleteDatabase(name);
+    const root = await navigator.storage.getDirectory();
+    for await (const name of root.keys()) await root.removeEntry(name, { recursive: true });
+    await self.registration.unregister();
+}
 
 // ---- A profile's move in from the app's origin ---------------------------
 //
