@@ -576,6 +576,13 @@ pub fn with_socket(address: SiteAddress) -> SiteAddress {
     SiteAddress::Ucan(ucan.clone().with_socket(socket))
 }
 
+/// Whether a peer reached at `addresses` is reached at `address`: as it
+/// is, or with its service's socket, which [`connect`] records it with.
+/// An address recorded before the socket was is matched as it is.
+pub fn reaches(addresses: &[SiteAddress], address: &SiteAddress) -> bool {
+    addresses.contains(address) || addresses.contains(&with_socket(address.clone()))
+}
+
 /// Why [`connect`] could not reach a replica.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectReplicaError {
@@ -929,6 +936,10 @@ mod tests {
             .await?;
         assert!(by_name.addresses().contains(&with_socket(ucan.clone())));
         assert!(by_name.addresses().contains(&with_socket(sync.clone())));
+        assert!(
+            reaches(by_name.addresses(), &ucan),
+            "an address names its peer whether or not it names the socket"
+        );
         let by_did = peer
             .contact(service_did(&ucan)?)
             .connect()
