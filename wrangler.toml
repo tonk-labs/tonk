@@ -183,15 +183,24 @@ namespace_id = "1001"
 ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.xyz"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # Sites render at `{label}.tonk.spot`, framed by the app at staging.tonk.xyz.
-# Production and previews leave these unset and keep sites in sealed frames.
+# Dev does the same under tonk.foundation. Production and previews leave
+# these unset and keep sites in sealed frames.
 SITE_HOST = "tonk.spot"
 APP_ORIGIN = "https://staging.tonk.xyz"
 
 # Dev. Every push to `main` deploys here, so tonk.foundation always runs the
 # development branch. Its state is disjoint from staging and production, and
 # being off the tonk.network apex it mints its own passkey credentials.
+#
+# Its sites render on origins of their own, `{label}.tonk.foundation`. The
+# zone route needs a proxied wildcard DNS record (`*`) in the zone to reach
+# this worker; without one those origins do not resolve and every site
+# reports that it could not load.
 [env.dev]
-routes = [{ pattern = "tonk.foundation", custom_domain = true }]
+routes = [
+  { pattern = "tonk.foundation", custom_domain = true },
+  { pattern = "*.tonk.foundation/*", zone_name = "tonk.foundation" },
+]
 
 [env.dev.build]
 command = "nix build --accept-flake-config .#tonk-cloudflare-preview-artifacts"
@@ -240,6 +249,9 @@ namespace_id = "1001"
 
 [env.dev.vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
+# Sites render at `{label}.tonk.foundation`, framed by the app at the apex.
+SITE_HOST = "tonk.foundation"
+APP_ORIGIN = "https://tonk.foundation"
 
 # Preview. Every pull request uploads a version of this environment under a
 # `--preview-alias` and is reached at its own workers.dev URL, so the
