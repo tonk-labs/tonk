@@ -296,36 +296,57 @@ Keep it that way. A space needing its own credential would mean a different RP I
 - Does `<base href>` fake-origin navigation survive, or go away?
 - How far may a space's service worker version drift before an update is forced?
 
-## Proof of concept
+## What is built
 
-Built on `feat/worker-per-space`. Every `<tonk-site>` renders on a real origin: the profile chrome at `profile.{host}`, and each space at `{label}.{host}`, each with its own service worker. `/space/{did}` works unchanged. In development the host is `localhost:{port}`: `*.localhost` resolves to loopback, counts as a secure context, and each subdomain is its own site, so it behaves like the PSL-listed production case.
+On `feat/worker-per-space-on-peer`, over `feat/dialog-peer`. Where the deployment's `/.well-known/tonk` names `sites`, every site renders on an origin of its own with a worker of its own, and each worker holds its own database. Without `sites` nothing changes: one worker, sealed frames.
+
+Three kinds of origin:
+
+- **The app's** (`tonk.network`). Its page frames the profile and runs passkey ceremonies. Its worker holds no database: it serves the shell and passes every `/api/` request to the profile's worker.
+- **A profile's** (`profile.{host}`). Its worker holds the person's profile: their key, their account, the spaces they have, and the authority over each.
+- **A space's** (`{label}.{host}`). Its worker runs under a profile made for that origin and holds a delegation for its one space, issued by the person's profile for twelve hours and renewed before it lapses. It holds the space's content and is the one that syncs it.
 
 How it hangs together:
 
-- **The chrome has to be on a real origin too.** It is what nests the space frame, and a frame nested in an opaque (null-origin) frame inherits its sandbox and is opaque as well. The top document mounts the profile site with `origin`; a `<tonk-site>` inside a real-origin guest takes a real origin of its own. `<tonk-portal>` and the FAB's portal stay sealed `srcdoc` frames.
-- **Origins derive from the host's real origin**, which every guest is handed in its context, never from the current document. A site whose origin would equal its parent's falls back to `srcdoc`, since `allow-same-origin` on a same-origin child could lift its sandbox.
-- A site frame loads `/space-origin.html`, which registers `/space_worker.js`, waits for control, then asks its parent for its document. The parent sends the same markup a sealed frame gets as `srcdoc`, and the shell `document.write`s it. The bridge handshake and runtime injection then run unchanged.
-- The space database still lives on the host origin. The space worker serves `/asset:{hash}` by asking the host worker over a `MessagePort`. **Only the top document can reach the host worker, so it mints every port.** A nested frame's request goes up through the chrome, and the top document grants it only if the chrome portal's `allow` reaches the requested space. Queries and transactions still go through the existing bridge.
-- The site worker passes the app's own `/images/` and `/fonts/` through to the server. A sealed frame used to reach them on the host origin; relative URLs now land on the site's origin.
+- **A site frame loads `/space-origin.html`**, which registers `/space_worker.js`, waits for control, and asks its parent for its document. The same Rust worker runs on every origin. The script tells a profile from a space by the first label of its hostname.
+- **Workers talk over ports that pages open.** A page frames an origin and hands each worker an end. The app's page frames the profile's origin unseen for this (`#connector`); the profile's page does the same for a space that is not on screen, and drops the frame once the space has been quiet for a minute.
+- **Requests go down a port, answers come back up it**: status and headers, then the body in pieces, so a subscription keeps flowing. The app's worker passes the profile's every `/api/` request; the profile's passes a space's everything under one of the space's branches.
+- **A port message does not wake a stopped worker.** While something is being answered the asking worker probes, and a silent worker's port is given up: the page is asked for a new one, and handing it over is what starts the worker again. What was being answered is asked again of the new worker.
+- **The profile's worker answers as its own frame.** A request from the app's page is answered as though the profile's frame in that tab had made it, so the site stamp has a live client, and what the worker tells "the page that asked" (go here, run this passkey ceremony) it tells that frame, which passes it up.
+- **What a command does to a space's content, the space's worker does.** A profile command that has such a part hands it over as a command on the space's branch: a rename forwards itself, an invite is minted by the profile and recorded by the space (`RecordInvite`).
+- **A space's worker is told its account and its remote with its delegation**, and told again when either changes. Signing in moves the space's own roster entry to the new account there.
+- **A person who was here before moves once.** The first time the profile's worker starts it copies in what the app's origin stored: every database record by record, and the files beside them. A key the browser will not export goes with its record. A space then moves on to its own origin the first time it is opened, from a snapshot the profile's worker makes of its copy.
+- **Sessions survive a stopped worker.** Each worker saves what its site stamps were made from and restores them before serving.
+- **Assets are served natively**: `/asset:{hash}` with media type, size and ranges; `PUT /` stores one.
 
-Verified in Chrome, on `/space/{did}` and from the hub:
+Verified in headless Chrome against `dev:web` (two browser profiles for sharing):
 
-- Both workers register inside cross-site `sandbox="allow-scripts allow-same-origin"` frames, including the space frame nested in the chrome frame.
-- `<img src="/asset:{hash}">` loads natively. A `Range` request gets a correct `206`.
-- **The service worker script fetch bypasses the active worker.** `register('/asset:{hash}')` got the server's catch-all `text/html`, not the blob the space worker would have served, and was refused on MIME.
-- On a worker-served load, the CSP blocks external `img-src` and `connect-src`, and `worker-src` refuses `register()` before any fetch.
-- A stopped space worker recovers its port through its page and the relay in well under 100ms. A stopped host worker costs one ack timeout (3s) on the next read, then recovers.
+- A new person: profile, new space, rename, reload, offline reload, either worker stopped mid-session, an update of either worker.
+- Creating an account with a passkey, activating it, and the space syncing from its own worker under the delegated chain.
+- Sharing: mint, short link, join on a second device, content and roster arriving through the remote.
+- A person from before: profile moved with the same identity, spaces listed, a space seeded into its own origin on first open.
 
 Corrections to the design above:
 
 - **`worker-src blob:` rather than `'none'`.** It still refuses `register()`, since a service worker script must be same-origin, but it leaves blob workers available to author code.
 - **`'unsafe-eval'` is required.** Author views and element shims are compiled from strings (`new Function`). This costs nothing under the threat model: space code is untrusted by design, and the boundary is the origin and its lack of network, not `script-src`.
-- **`frame-ancestors` must list the chrome's origin as well as the host**, and the chrome's `frame-src` must allow site origins. Every ancestor is checked, not only the parent.
-- **The first load has no CSP.** The shell comes from the server before any worker exists. The server has to send a policy on the shell, but that policy must allow `worker-src 'self'`, or the shell could not register its worker. `register()` of author bytes on that first load is still refused on MIME.
-- **Web Awesome fetches its icons from `ka-f.fontawesome.com`.** `connect-src` now blocks that, so those icons are missing. Sealed frames only got them because they had no CSP at all. The icon set has to be served from our own origin.
-- **The space suffix cannot always be derived from the host name** once spaces live on a different registrable domain from the host (see Staging), so the suffix has to become configuration.
+- **`frame-ancestors` must list the profile's origin as well as the app's**, and the profile's `frame-src` must allow site origins. Every ancestor is checked, not only the parent.
+- **The first load has no CSP.** The shell comes from the server before any worker exists. The server has to send a policy on the shell, but that policy must allow `worker-src 'self'`, or the shell could not register its worker.
+- **Storage is partitioned by the site of the page around a frame.** A site on another registrable domain than the app (staging: `tonk.spot` under `staging.tonk.xyz`; development: `*.localhost`) keeps its storage per framing site. Production and previews are same-site and are not partitioned.
+- **A key the browser will not export can still be handed to another origin** by `postMessage`, which is what makes the one-time move possible without touching custody.
+- **Web Awesome fetches its icons from `ka-f.fontawesome.com`.** `connect-src` blocks that, so those icons are missing. The icon set has to be served from our own origin.
 
-Not done yet: Firefox and Safari; the database in the space origin; data operations over the port; loading the runtime from the site origin instead of injecting it; self-hosted icons; `allow-downloads` and `allow-forms` review; a server-sent first-load policy; the suffix as configuration.
+Not done:
+
+- **Commands not yet split.** Promote, expel, pause sync, remove, duplicate, check update, forget invite, agent handoff and a space's own share button still act on the profile's copy of the space or mint from the space's worker. A join pulls into the profile's copy and pushes its claim from there, so a joined space is held twice until that copy is dropped.
+- **The profile's copy of a space is never deleted**, nor is what the app's origin stored before the move.
+- **`GET /api/repository/{space}`** still answers from the profile, members included. The roster itself reads the space by query.
+- **An origin per profile.** Every profile on a device shares `profile.{host}`.
+- **Links the worker makes for people** (the agent link) are made from the worker's own origin, which is now a site's.
+- **The server does not yet answer a site's hostname with the shell and its policy.**
+- Firefox and Safari. Two tabs. Pre-warming origins for offline creation.
+
+Known and not ours to fix here: an invite minted after signing in names the retired onboarding account as inviter, so the member graph cannot place the person who joins.
 
 ## Staging
 
