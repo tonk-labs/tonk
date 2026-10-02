@@ -98,6 +98,12 @@
     var path=url.indexOf(location.origin+"/")===0?url.slice(location.origin.length):url;
     return /^\/(guest\/|styles-|images\/|fonts\/|asset:)/.test(path);
   }
+  // `PUT /` on an origin of its own stores an asset in the space there.
+  function storesAsset(url,input,init){
+    if(location.origin==="null") return false;
+    var method=(init&&init.method)||(typeof input==="object"&&input&&input.method)||"GET";
+    return method.toUpperCase()==="PUT"&&(url==="/"||url===location.origin+"/");
+  }
   function nativeWithContext(input,init){
     var request=new Request(input,init);
     contextHeaders().forEach(function(h){ request.headers.set(h[0],h[1]); });
@@ -544,7 +550,7 @@
     var url=(typeof input==="string")?input:(input&&input.url)||"";
     // This space's own data, on its own origin: its own worker answers.
     if(ownsPath(url)){ return nativeWithContext(input,init); }
-    if(ownsStatic(url)){ return nativeFetch(input,init); }
+    if(ownsStatic(url)||storesAsset(url,input,init)){ return nativeFetch(input,init); }
     // Host-relative (`/…`, not `//`): route through the relay.
     if(url.charAt(0)==="/"&&url.charAt(1)!=="/"){
       return relayRequest(url,input,init);

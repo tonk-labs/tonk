@@ -10,6 +10,8 @@
 // - `/asset:{hash}`, an asset's own URI as a path, is read from the space's
 //   own database and served with the media type and size recorded for it,
 //   natively, so `<img>`, `<video>` and `<link>` just work.
+// - `PUT /` stores the request's body as an asset of the space and answers
+//   with its location, `/asset:{hash}`.
 // - `/api/*` is answered by the space's own database: the Rust worker the
 //   host runs, opened on this origin's storage (see "The space's own
 //   database" below).
@@ -237,6 +239,12 @@ function spaceWorker() {
 async function heldGrant() {
     const held = await caches.match(GRANT_KEY, { cacheName: SHELL_CACHE });
     return held ? held.json() : null;
+}
+
+// The space this origin holds. An origin that holds none (the profile's) has
+// no assets, and is told so without bringing a database up.
+async function heldSpace() {
+    return (await heldGrant())?.space ?? null;
 }
 
 let renewing = null;
@@ -575,10 +583,9 @@ async function serveShell() {
 // Read an asset from the space's own database, through the same route a
 // page's `/api/.../blob/...` read takes.
 async function readAsset(hash) {
-    const worker = await spaceWorker();
-    // An origin that holds no space (the profile's) has no assets.
-    const space = (await heldGrant())?.space;
+    const space = await heldSpace();
     if (!space) return { status: 404, headers: [], body: new TextEncoder().encode("not found").buffer };
+    const worker = await spaceWorker();
     const request = new Request(
         new URL(`/api/repository/${space}/branch/main/blob/asset:${hash}`, self.location.origin),
     );
@@ -589,6 +596,38 @@ async function readAsset(hash) {
         waitUntil() {},
     });
     return { status: response.status, headers: [...response.headers], body: await response.arrayBuffer() };
+}
+
+// Store a request's body as an asset of the space, through the same route a
+// page's upload takes: the bytes go into the space's store and the commit
+// records the asset, with the request's media type. Answers where it now is.
+async function storeAsset(event) {
+    const space = await heldSpace();
+    if (!space) return new Response("not found", { status: 404 });
+    const worker = await spaceWorker();
+    const headers = new Headers();
+    for (const name of ["content-type", "x-tonk-blob-name"]) {
+        const value = event.request.headers.get(name);
+        if (value) headers.set(name, value);
+    }
+    const request = new Request(
+        new URL(`/api/repository/${space}/branch/main/blob`, self.location.origin),
+        { method: "POST", headers, body: await event.request.arrayBuffer() },
+    );
+    const response = await worker.onfetch({
+        request,
+        clientId: event.clientId,
+        resultingClientId: "",
+        waitUntil(work) {
+            event.waitUntil(work);
+        },
+    });
+    if (!response.ok) return response;
+    const stored = await response.json();
+    return new Response(JSON.stringify(stored), {
+        status: 201,
+        headers: { "content-type": "application/json", location: `/${stored.entity}` },
+    });
 }
 
 // Serve an asset. One opened as a document (a frame or a tab navigated to
@@ -672,6 +711,15 @@ self.addEventListener("fetch", event => {
         if (self.registration.waiting) {
             event.waitUntil(retire("a successor is waiting"));
         }
+        return;
+    }
+    if (url.pathname === "/" && event.request.method === "PUT") {
+        event.respondWith(
+            storeAsset(event).catch(error => {
+                log("asset store failed:", error);
+                return new Response(String(error.message), { status: 502 });
+            }),
+        );
         return;
     }
     if (url.pathname === SHELL_PATH) return;
