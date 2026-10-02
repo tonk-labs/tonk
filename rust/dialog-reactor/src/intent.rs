@@ -12,6 +12,8 @@
 //! - `now` — the caller's clock in milliseconds, for arguments that take
 //!   the moment the command runs.
 //! - `max` — how many rows at most (default 5).
+//! - `site` — the tab's site; its recorded `selection` is tried in every
+//!   reading, and stands in for "this" and "it".
 //!
 //! Each row is one reading, best first: `rank`, `score`, `command` (the
 //! command entity), `text` (the reading as plain text), `display` (its
@@ -49,6 +51,12 @@ pub async fn suggest<Env: SelectProvider>(
 ) -> Result<Vec<Conclusion>, FormulaError> {
     let input = text_term(query, "input").unwrap_or_default();
     let this = text_term(query, "this");
+    // The tab's site, whose `selection` (recorded by `site/select`) the
+    // parser tries in every reading, as Ubiquity did.
+    let selection = match text_term(query, "site") {
+        Some(site) => site_selection(branch, env, &site).await?,
+        None => None,
+    };
     let now = number_term(query, "now");
     let max = number_term(query, "max").map_or(5, |max| max.max(1.0) as usize);
 
@@ -82,7 +90,7 @@ pub async fn suggest<Env: SelectProvider>(
         input: input.clone(),
         max,
         context: dialog_lingo::Context {
-            selection: None,
+            selection: selection.map(|text| dialog_lingo::Selection { text, entity: None }),
             this: this.map(|entity| dialog_lingo::Selection {
                 text: String::new(),
                 entity: Some(entity),
@@ -305,6 +313,26 @@ async fn attribute_arguments<Env: SelectProvider>(
                 .collect::<Vec<_>>()
         })
         .collect())
+}
+
+/// The selection recorded on `site`, if any.
+async fn site_selection<Env: SelectProvider>(
+    branch: &Branch,
+    env: &Env,
+    site: &str,
+) -> Result<Option<String>, FormulaError> {
+    Ok(rows(
+        branch,
+        env,
+        json!({
+            "predicate": { "with": { "selection": text("xyz.tonk.site/selection", "one") } },
+            "terms": { "this": site, "selection": var("selection") }
+        }),
+    )
+    .await?
+    .into_iter()
+    .find_map(|row| row.fields.get("selection")?.as_str().map(str::to_owned))
+    .filter(|text| !text.is_empty()))
 }
 
 /// `intent/choice`: what was run before, for the parser's memory.

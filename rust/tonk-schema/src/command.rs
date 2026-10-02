@@ -541,6 +541,28 @@ bar_command!(
     connect_agent
 );
 
+/// `site/select`: what the page in a tab has selected, reported by the
+/// page as it changes. The handler records it on the tab's site as
+/// `xyz.tonk.site/selection`, in the session overlay of the branch it came
+/// from and of the profile, so rules and the palette read it as a site
+/// fact. An empty `text` clears it.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct SiteSelect {
+    /// The command entity (a fresh id per report).
+    pub this: Entity,
+    /// The tab's site entity.
+    pub site: crate::domain::command::current::site_select::Site,
+    /// The selected text; empty when the selection was cleared.
+    pub text: crate::domain::command::current::site_select::Text,
+    /// When it changed.
+    pub time: crate::domain::command::current::site_select::Time,
+}
+
+impl Command for SiteSelect {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Take the page that asked back to the hub.
 ///
 /// What the FAB's home button does with a link, as a command, so it can be

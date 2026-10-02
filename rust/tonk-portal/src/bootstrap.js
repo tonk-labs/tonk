@@ -414,6 +414,36 @@
       ctrlKey:event.ctrlKey,metaKey:event.metaKey,shiftKey:event.shiftKey,altKey:event.altKey});});
   });
 
+  // What the page has selected, reported on the tab's site as it settles
+  // (`site/select`), so rules and the command palette can use it: "rename"
+  // with a heading selected offers the heading as the new name. Text being
+  // edited in a form field belongs to the field, so a selection made while an
+  // input or text area has focus is not reported (that includes the palette's
+  // own line). Debounced, and sent only when the text changes; an empty
+  // selection clears what was reported.
+  var selectionTimer=null, reportedSelection="";
+  document.addEventListener("selectionchange",function(){
+    if(selectionTimer) clearTimeout(selectionTimer);
+    selectionTimer=setTimeout(function(){
+      selectionTimer=null;
+      var active=document.activeElement;
+      if(active&&(active.tagName==="INPUT"||active.tagName==="TEXTAREA")) return;
+      var site=((window.tonk&&window.tonk.context)||{}).site;
+      if(!site) return;
+      var text=String(document.getSelection()||"").trim().slice(0,4096);
+      if(text===reportedSelection) return;
+      reportedSelection=text;
+      tonk.transact({claims:[{op:"assert",application:{
+        predicate:{kind:"transient",concept:{
+          description:"Report what the page in a tab has selected.",
+          with:{
+            site:{the:"xyz.tonk.command.site-select/site",as:"Entity"},
+            text:{the:"xyz.tonk.command.site-select/text",as:"Text"},
+            time:{the:"xyz.tonk.command.site-select/time",as:"Float"}}}},
+        parameters:{site:site,text:text,time:Date.now()}}}]}).catch(function(){});
+    },250);
+  });
+
   // The product-owned agent prompt lives in rendered guest markup, outside
   // the Rust component tree. Observe only its reviewed copy control and send
   // a content-free lifecycle; never read or forward the copied value.

@@ -213,6 +213,173 @@ async fn it_fills_a_field_by_the_role_on_its_attribute() {
         claim.to_string().contains("io.test.retitle/title") && claim.to_string().contains("Plans"),
         "the claim sets the title: {claim}"
     );
+    // With text selected in the page, the bare verb takes it as the title.
+    let site = "site:0b5c8e7a-6f0e-4b1d-8c2e-7d9a1f3e5b40";
+    send(
+        &app,
+        "POST",
+        &format!("/api/repository/{key}/branch/main/transact"),
+        "application/json",
+        select(site, "Roadmap", 1.0),
+    )
+    .await;
+    let space = format!("/api/repository/{key}/branch/main");
+    selection(&app, &space, site, Some("Roadmap")).await;
+    let rows = send(
+        &app,
+        "POST",
+        &format!("{space}/query"),
+        "application/json",
+        json!({
+            "predicate": "intent/suggest",
+            "terms": { "input": "retitle", "this": subject, "now": 1.0, "site": site }
+        })
+        .to_string(),
+    )
+    .await;
+    let rows = rows.as_array().cloned().unwrap_or_default();
+    assert!(
+        rows.iter()
+            .any(|row| field(row, "text") == "retitle to [Roadmap]"),
+        "the selection fills the title: {rows:?}"
+    );
+}
+
+/// A `site/select` report, as `bootstrap.js` sends it.
+fn select(site: &str, text: &str, time: f64) -> String {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Report what the page in a tab has selected.",
+                        "with": {
+                            "site": { "the": "xyz.tonk.command.site-select/site", "as": "Entity" },
+                            "text": { "the": "xyz.tonk.command.site-select/text", "as": "Text" },
+                            "time": { "the": "xyz.tonk.command.site-select/time", "as": "Float" }
+                        }
+                    }
+                },
+                "parameters": { "site": site, "text": text, "time": time }
+            }
+        }]
+    })
+    .to_string()
+}
+
+/// The selection recorded on `site`, on the branch at `prefix`, once it
+/// is `expected` (the command runs after the transact returns).
+async fn selection(
+    app: &Router,
+    prefix: &str,
+    site: &str,
+    expected: Option<&str>,
+) -> Option<String> {
+    let mut seen = None;
+    for _ in 0..200 {
+        let rows = send(
+            app,
+            "POST",
+            &format!("{prefix}/query"),
+            "application/json",
+            json!({
+                "predicate": { "with": {
+                    "selection": { "the": "xyz.tonk.site/selection", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": { "this": site, "selection": { "?": { "name": "selection" } } }
+            })
+            .to_string(),
+        )
+        .await;
+        seen = rows
+            .as_array()
+            .and_then(|rows| rows.first())
+            .and_then(|row| row["fields"]["selection"].as_str())
+            .map(str::to_owned);
+        if seen.as_deref() == expected {
+            return seen;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    seen
+}
+
+#[dialog_common::test]
+async fn it_records_a_pages_selection_on_its_site() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    let profile = "/api/profile/branch/main";
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+    let site = "site:6d3c3f5e-0b0e-4f2a-9a55-3c1d2f0e9a11";
+
+    // Reported from the space: recorded on the space, and on the profile,
+    // whose commands the palette proposes too.
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        select(site, "Plans", 1.0),
+    )
+    .await;
+    assert_eq!(
+        selection(&app, &space, site, Some("Plans"))
+            .await
+            .as_deref(),
+        Some("Plans")
+    );
+    assert_eq!(
+        selection(&app, profile, site, Some("Plans"))
+            .await
+            .as_deref(),
+        Some("Plans")
+    );
+
+    // A new selection replaces the old one.
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        select(site, "Roadmap", 2.0),
+    )
+    .await;
+    assert_eq!(
+        selection(&app, &space, site, Some("Roadmap"))
+            .await
+            .as_deref(),
+        Some("Roadmap")
+    );
+
+    // An empty one clears it, on both.
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        select(site, "", 3.0),
+    )
+    .await;
+    assert_eq!(selection(&app, &space, site, None).await, None);
+    assert_eq!(selection(&app, profile, site, None).await, None);
 }
 
 /// How `intent/suggest` scales with a noun's rows, store reads included.

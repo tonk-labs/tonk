@@ -1492,6 +1492,28 @@ pub mod command {
             #[domain("xyz.tonk.command.check-update")]
             pub struct Time(pub f64);
         }
+
+        /// `site/select` — what the page in a tab has selected.
+        pub mod site_select {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The tab's site entity (`window.tonk.context.site`).
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.site-select")]
+            pub struct Site(pub Entity);
+
+            /// The selected text; empty when the selection was cleared.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.site-select")]
+            pub struct Text(pub String);
+
+            /// When it changed, so the same selection reported again
+            /// re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.site-select")]
+            pub struct Time(pub f64);
+        }
     }
 }
 

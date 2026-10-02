@@ -1706,7 +1706,37 @@ concept!: &site
       the: xyz.tonk.site/concept
       cardinality: one
       as: entity
+  maybe:
+    selection:
+      description: >
+        The text selected in the tab's page, as the page reports it through
+        `site/select`. Absent when nothing is selected. A session fact like the
+        rest of the site: it goes with the tab.
+      the: xyz.tonk.site/selection
+      cardinality: one
+      as: text
 
+
+# What the page in a tab has selected. The page (`bootstrap.js` in every
+# guest) reports it as it settles; the handler records it on the tab's site
+# as `selection`, in the session overlay, so rules and the palette read it as
+# a site fact. An empty `text` clears it.
+command!: &site/select
+  this: tonk:site-select
+  description: Report what the page in a tab has selected.
+  with:
+    site:
+      description: The tab's site entity (`window.tonk.context.site`).
+      the: xyz.tonk.command.site-select/site
+      as: entity
+    text:
+      description: The selected text; empty when the selection was cleared.
+      the: xyz.tonk.command.site-select/text
+      as: text
+    time:
+      description: When it changed, so reporting the same selection again re-fires.
+      the: xyz.tonk.command.site-select/time
+      as: float
 # A site renders the route model it matched. The shell mounts a fixed
 # `<tonk-display entity=site:… model=tonk:site>`; this view nests into the
 # matched `{concept}` on the SAME site entity, so the route model

@@ -157,6 +157,7 @@ mod migration;
 
 mod navigate;
 mod site_request;
+mod site_select;
 
 mod command;
 pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch};
