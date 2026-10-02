@@ -153,7 +153,48 @@ pub async fn publish_self_identity(tonk: &crate::worker::TonkState, repo: &str, 
     session.state.assert_overlay(stamp);
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&session.state));
+    if let Err(error) = publish_session_account(tonk, repo, branch).await {
+        log!("publish_self_identity: {error}");
+    }
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// The fact saying which account a session acts for, on dialog's session
+/// entity beside the profile and operator dialog records there.
+const SESSION_ACCOUNT: &str = "xyz.tonk.session/account";
+
+/// Say, in the session overlay of a space's branch, which account this
+/// session acts for: the one the space's memberships name, so a view can
+/// tell which member is looking at it by joining the roster against this. An
+/// overlay lives only as long as the worker, so it is said again each time
+/// one starts.
+pub async fn publish_session_account(
+    tonk: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+) -> Result<(), crate::TonkWorkerError> {
+    use crate::TonkWorkerError;
+    use dialog_repository::schema::Session;
+    use tonk_schema::prelude::DidExt as _;
+
+    let account = super::account::member_did(tonk).await?;
+    let the = SESSION_ACCOUNT
+        .parse()
+        .map_err(|e| TonkWorkerError::Internal(format!("{SESSION_ACCOUNT}: {e}")))?;
+    tonk.reactor
+        .repository(repo)
+        .branch(branch)
+        .overlay()
+        .assert(super::claim::RawClaim {
+            the,
+            of: Session::entity(),
+            is: dialog_artifacts::Value::Entity(account.this()),
+            unique: true,
+        })
+        .write()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to say who {repo} is for: {e}")))
 }
 
 /// Whether auto-sync is enabled for `repo`'s content branch: reads the durable

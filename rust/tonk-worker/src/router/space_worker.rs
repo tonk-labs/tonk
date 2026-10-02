@@ -15,12 +15,10 @@
 //! The space worker stores it and publishes that revision ([`seed`]), so the
 //! replica holds the same history the host did, and syncs on from there.
 
-use dialog_artifacts::Value;
 use dialog_capability::Subject;
 use dialog_common::Blake3Hash;
 use dialog_credentials::DidKeyResolver;
 use dialog_effects::Use;
-use dialog_repository::schema::Session;
 use dialog_repository::{RepositoryExt as _, Revision, Upstream, codec};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::{
@@ -38,29 +36,24 @@ use tonk_schema::prelude::DidExt as _;
 use url::Url;
 
 use super::account::{act_for, acts_for, member_did};
-use super::claim::RawClaim;
 use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url_with};
 use super::join::mount_replica;
 use super::repository::{CONTENT_BRANCH, record_initialized_replica_in_profile};
 use super::rotation::migrate_membership_rows;
+use super::sync::publish_session_account;
 use crate::{TonkWorkerError, worker::TonkState};
 
 /// How long a space worker's delegation lasts. It asks for a new one before
 /// this runs out, so a lapsed grant costs at most one boot's request.
 pub(crate) const DELEGATION_TTL_SECONDS: u64 = 12 * 60 * 60;
 
-/// A delegation for a space worker: the chain from the space to its profile,
-/// and where the space syncs, when it syncs anywhere.
+/// A delegation for a space worker: the chain from the space to its profile.
+/// Where the space syncs and which account it is for are signed into it.
 pub(crate) struct Grant {
     /// The encoded chain, from the space down to the space worker's profile.
     pub(crate) chain: Vec<u8>,
     /// When the leaf lapses, in unix seconds.
     pub(crate) expires: u64,
-    /// The space's upstream, `None` for a space that only exists here.
-    pub(crate) remote: Option<String>,
-    /// The account the person's profile acts for, and so the one the
-    /// space's worker acts for in turn.
-    pub(crate) account: Did,
 }
 
 /// Issue the worker whose profile is `audience` a delegation to use `space`,
@@ -95,12 +88,7 @@ pub(crate) async fn delegate(
         .into_chain()
         .to_bytes()
         .map_err(|e| TonkWorkerError::Internal(format!("failed to encode delegation: {e}")))?;
-    Ok(Grant {
-        chain,
-        expires,
-        remote: terms.remote,
-        account: terms.account,
-    })
+    Ok(Grant { chain, expires })
 }
 
 /// What a space's worker is told with its delegation, and has to take up
@@ -256,36 +244,16 @@ pub(crate) async fn adopt(
     Ok(terms)
 }
 
-/// The fact saying which account a session acts for, on dialog's session
-/// entity beside the profile and operator dialog records there.
-const SESSION_ACCOUNT: &str = "xyz.tonk.session/account";
-
 /// Put back what a restart of this worker lost about `space`: the account
 /// this session acts for, in the session overlay, where a view reads who is
 /// looking at it. An overlay lives only as long as the worker, so this runs
 /// each time one starts. Nothing to do before the worker has been told an
 /// account.
 pub(crate) async fn resume(tonk: &TonkState, space: &Did) -> Result<(), TonkWorkerError> {
-    let Some(account) = acts_for(tonk).await? else {
+    if acts_for(tonk).await?.is_none() {
         return Ok(());
-    };
-    let the = SESSION_ACCOUNT
-        .parse()
-        .map_err(|e| TonkWorkerError::Internal(format!("{SESSION_ACCOUNT}: {e}")))?;
-    tonk.reactor
-        .repository(space.repo_key())
-        .branch(CONTENT_BRANCH)
-        .overlay()
-        .assert(RawClaim {
-            the,
-            of: Session::entity(),
-            is: Value::Entity(account.this()),
-            unique: true,
-        })
-        .write()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to say who {space} is for: {e}")))
+    }
+    publish_session_account(tonk, space.repo_key(), CONTENT_BRANCH).await
 }
 
 /// A space's `main` as the host holds it: the snapshot of everything its
@@ -389,7 +357,9 @@ mod tests {
     use dialog_varsig::Did;
     use tower::ServiceExt;
 
-    use super::{DelegationChain, act_for, adopt, delegate, member_did, resume, seed, snapshot};
+    use super::{
+        DelegationChain, act_for, adopt, delegate, member_did, resume, seed, snapshot, terms,
+    };
     use crate::TonkWorkerError;
     use crate::helpers::state::{test_state, test_state_without_root};
     use crate::router::join::{find_replica_for_subject, mount_replica};
@@ -471,14 +441,14 @@ mod tests {
         let grant = delegate(&host, &space, &worker.profile.did())
             .await
             .unwrap();
+        let taken = adopt(&worker, &space, &grant.chain).await.unwrap();
         assert!(
-            grant.remote.is_none(),
+            taken.remote.is_none(),
             "a space only on this device has no upstream"
         );
-        let taken = adopt(&worker, &space, &grant.chain).await.unwrap();
         assert_eq!(
-            (taken.remote, taken.account),
-            (grant.remote.clone(), grant.account.clone()),
+            taken,
+            terms(&host, &space).await.unwrap(),
             "the worker takes up what the delegation was signed with"
         );
         assert!(
@@ -556,10 +526,10 @@ mod tests {
         .unwrap();
         assert!(roster(&worker, &space).await.contains(&before.to_string()));
 
-        adopt(&worker, &space, &grant.chain).await.unwrap();
+        let taken = adopt(&worker, &space, &grant.chain).await.unwrap();
         assert_eq!(
             roster(&worker, &space).await,
-            vec![grant.account.to_string()]
+            vec![taken.account.to_string()]
         );
     }
 

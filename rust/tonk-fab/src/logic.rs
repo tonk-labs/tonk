@@ -1626,16 +1626,21 @@ mod agent_handoff {
     }
 }
 
-/// The member DID marked `is_self` by the repository read model. Memberships
-/// are keyed to the account root, which can differ from this device's profile.
-pub fn self_member_did_from_repository(info: &Value) -> Option<String> {
-    info.get("members")?.as_array()?.iter().find_map(|member| {
-        if member.get("is_self").and_then(Value::as_bool) == Some(true) {
-            member.get("did").and_then(Value::as_str).map(str::to_owned)
-        } else {
-            None
+/// Which account the session looking at a space acts for: the fact the
+/// worker keeps on the branch's session entity. Memberships are keyed to the
+/// account, which can differ from this device's profile, so the member whose
+/// DID this is, is the one looking.
+pub fn session_account_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "account": { "the": "xyz.tonk.session/account", "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": { "?": { "name": "this" } },
+            "account": { "?": { "name": "account" } }
         }
     })
+    .to_string()
 }
 
 /// Whether a member holding `role` runs the space: founders and admins
@@ -1646,22 +1651,15 @@ pub fn role_manages_members(role: &str) -> bool {
 }
 
 #[cfg(test)]
-mod self_member_did {
+mod member_roles {
     use super::*;
 
     #[test]
-    fn it_uses_the_repository_member_identity_instead_of_the_device_profile() {
-        let rows = json!({ "profile": "did:key:zDevice", "members": [
-            { "did": "did:key:zOther", "is_self": false },
-            { "did": "did:key:zAccount", "is_self": true }
-        ] });
+    fn it_asks_the_session_which_account_it_acts_for() {
+        let query: Value = serde_json::from_str(&session_account_query_body()).unwrap();
         assert_eq!(
-            self_member_did_from_repository(&rows).as_deref(),
-            Some("did:key:zAccount")
-        );
-        assert_eq!(
-            self_member_did_from_repository(&json!({ "members": [] })),
-            None
+            query["predicate"]["with"]["account"]["the"],
+            "xyz.tonk.session/account"
         );
     }
 

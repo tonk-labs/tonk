@@ -14,7 +14,9 @@
 //! row) — see [`crate::logic::member_roster_query_body`]. No concept is
 //! named, so nothing seeded on the space's branch is consulted.
 //!
-//! A second subscription resolves invitation references to their recorded inviter.
+//! A second subscription resolves invitation references to their recorded
+//! inviter, and a third reads which account the session acts for, to mark
+//! that member as "you".
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -22,14 +24,11 @@ use std::rc::Rc;
 
 use custom_elements::CustomElement;
 use js_sys::Reflect;
-use tonk_common::log;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{CustomEvent, HtmlElement, Response, window};
+use web_sys::{HtmlElement, window};
 
 use crate::logic::{
-    member_invitations_query_body, member_roster_query_body, repository_endpoint,
-    self_member_did_from_repository,
+    member_invitations_query_body, member_roster_query_body, session_account_query_body,
 };
 use crate::member_graph::{self, Member};
 use crate::shadow::{self, Bound};
@@ -37,6 +36,7 @@ use crate::subscribing;
 
 const SUB_TAG: &str = "ui-member-roster";
 const INVITATIONS_TAG: &str = "ui-member-invitations";
+const VIEWER_TAG: &str = "ui-member-viewer";
 
 #[derive(Default)]
 pub struct UiMemberRosterElement {
@@ -48,7 +48,6 @@ pub struct UiMemberRosterElement {
     /// The current membership DID, used to mark its row as "you".
     viewer: Rc<RefCell<Option<String>>>,
     invitations: Rc<RefCell<BTreeMap<String, String>>>,
-    viewer_request: Rc<Cell<u64>>,
     listeners: Vec<Bound>,
     resize_observer: Option<web_sys::ResizeObserver>,
     scroll_listener: Rc<RefCell<Option<Bound>>>,
@@ -87,14 +86,12 @@ impl CustomElement for UiMemberRosterElement {
                     viewer: self.viewer.clone(),
                     invitations: self.invitations.clone(),
                 }),
+                Rc::new(ViewerBehaviour {
+                    members: self.members.clone(),
+                    viewer: self.viewer.clone(),
+                    invitations: self.invitations.clone(),
+                }),
             ],
-        );
-        resolve_viewer(
-            this,
-            self.members.clone(),
-            self.viewer.clone(),
-            self.viewer_request.clone(),
-            self.invitations.clone(),
         );
         // Light children connect before the bar builds its shadow buttons.
         // Delegate through the stable host so reconnects cannot leave dead controls.
@@ -168,31 +165,6 @@ impl CustomElement for UiMemberRosterElement {
                     }
                 }));
         }
-        if let Some(win) = window() {
-            let host = this.clone();
-            let members = self.members.clone();
-            let viewer = self.viewer.clone();
-            let request = self.viewer_request.clone();
-            let invitations = self.invitations.clone();
-            self.listeners
-                .push(shadow::bind(&win, "tonk:task-closed", move |event| {
-                    if event
-                        .dyn_ref::<CustomEvent>()
-                        .and_then(|event| Reflect::get(&event.detail(), &"result".into()).ok())
-                        .and_then(|value| value.as_string())
-                        .as_deref()
-                        == Some("completed")
-                    {
-                        resolve_viewer(
-                            &host,
-                            members.clone(),
-                            viewer.clone(),
-                            request.clone(),
-                            invitations.clone(),
-                        );
-                    }
-                }));
-        }
     }
 
     fn attribute_changed_callback(
@@ -231,20 +203,16 @@ impl CustomElement for UiMemberRosterElement {
                     viewer: self.viewer.clone(),
                     invitations: self.invitations.clone(),
                 }),
+                Rc::new(ViewerBehaviour {
+                    members: self.members.clone(),
+                    viewer: self.viewer.clone(),
+                    invitations: self.invitations.clone(),
+                }),
             ],
-        );
-        resolve_viewer(
-            this,
-            self.members.clone(),
-            self.viewer.clone(),
-            self.viewer_request.clone(),
-            self.invitations.clone(),
         );
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
-        self.viewer_request
-            .set(self.viewer_request.get().wrapping_add(1));
         self.listeners.clear();
         self.scroll_listener.borrow_mut().take();
         if let Some(observer) = self.resize_observer.take() {
@@ -396,6 +364,62 @@ impl InvitationBehaviour {
             self.viewer.borrow().as_deref(),
             &self.invitations.borrow(),
         );
+    }
+}
+
+/// Which member is looking: the account the session acts for, read from the
+/// space's own session overlay.
+struct ViewerBehaviour {
+    invitations: Rc<RefCell<BTreeMap<String, String>>>,
+    members: Rc<RefCell<Vec<Member>>>,
+    viewer: Rc<RefCell<Option<String>>>,
+}
+
+impl ViewerBehaviour {
+    fn account(row: &JsValue) -> Option<String> {
+        Reflect::get(row, &"fields".into())
+            .ok()
+            .and_then(|fields| Reflect::get(&fields, &"account".into()).ok())
+            .and_then(|account| account.as_string())
+    }
+
+    fn render(&self, host: &HtmlElement) {
+        render_rows(
+            host,
+            &self.members.borrow(),
+            self.viewer.borrow().as_deref(),
+            &self.invitations.borrow(),
+        );
+    }
+}
+
+impl subscribing::Subscribing for ViewerBehaviour {
+    fn query_body(&self, _: &HtmlElement) -> Result<String, String> {
+        Ok(session_account_query_body())
+    }
+    fn tag(&self) -> &'static str {
+        VIEWER_TAG
+    }
+    fn render_reset(&self, host: &HtmlElement, payload: &JsValue) {
+        let rows = js_sys::Array::from(payload);
+        *self.viewer.borrow_mut() = rows.iter().find_map(|row| Self::account(&row));
+        self.render(host);
+    }
+    fn render_update(&self, host: &HtmlElement, payload: &JsValue) {
+        let rows = |key: &str| {
+            js_sys::Array::from(&Reflect::get(payload, &key.into()).unwrap_or(JsValue::UNDEFINED))
+        };
+        // The fact is one of a kind: what is asserted replaces what was.
+        let asserted = rows("asserted").iter().find_map(|row| Self::account(&row));
+        let retracted = rows("retracted").iter().find_map(|row| Self::account(&row));
+        let mut viewer = self.viewer.borrow_mut();
+        if asserted.is_some() {
+            *viewer = asserted;
+        } else if retracted.is_some() && *viewer == retracted {
+            *viewer = None;
+        }
+        drop(viewer);
+        self.render(host);
     }
 }
 
@@ -927,71 +951,6 @@ fn show_member_detail(panel: &HtmlElement, description: Option<&str>) {
         let _ = detail.toggle_attribute_with_force("hidden", description.is_none());
         apply_fisheye(panel);
     }
-}
-
-/// Resolve the current member from the repository's `is_self` projection.
-/// Its DID is the account principal that owns the membership, which need not
-/// be this device's profile DID. Repaint rows delivered during the request.
-fn resolve_viewer(
-    host: &HtmlElement,
-    members: Rc<RefCell<Vec<Member>>>,
-    viewer: Rc<RefCell<Option<String>>>,
-    request: Rc<Cell<u64>>,
-    invitations: Rc<RefCell<BTreeMap<String, String>>>,
-) {
-    let Some(win) = window() else { return };
-    let Some(space) = host.get_attribute("space") else {
-        return;
-    };
-    let Ok(endpoint) = repository_endpoint(&space) else {
-        return;
-    };
-    let current = request.get().wrapping_add(1);
-    request.set(current);
-    viewer.borrow_mut().take();
-    render_rows(host, &members.borrow(), None, &invitations.borrow());
-
-    let host = host.clone();
-    spawn_local(async move {
-        let response = match JsFuture::from(win.fetch_with_str(&endpoint)).await {
-            Ok(response) => response.dyn_into::<Response>().ok(),
-            Err(error) => {
-                log!("ui-member-roster repository lookup failed: {error:?}");
-                return;
-            }
-        };
-        let Some(response) = response.filter(Response::ok) else {
-            return;
-        };
-        let Ok(promise) = response.json() else {
-            return;
-        };
-        let Ok(info) = JsFuture::from(promise).await else {
-            return;
-        };
-        let Some(json) = js_sys::JSON::stringify(&info)
-            .ok()
-            .and_then(|json| json.as_string())
-        else {
-            return;
-        };
-        let Ok(info) = serde_json::from_str::<serde_json::Value>(&json) else {
-            return;
-        };
-        if request.get() != current
-            || !host.is_connected()
-            || host.get_attribute("space").as_deref() != Some(space.as_str())
-        {
-            return;
-        }
-        *viewer.borrow_mut() = self_member_did_from_repository(&info);
-        render_rows(
-            &host,
-            &members.borrow(),
-            viewer.borrow().as_deref(),
-            &invitations.borrow(),
-        );
-    });
 }
 
 /// Register `<ui-member-roster>`. Idempotent.

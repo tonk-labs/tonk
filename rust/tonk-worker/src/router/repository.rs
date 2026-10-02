@@ -14118,6 +14118,7 @@ route!: &probe/dropped
             paths,
             [
                 "/",
+                "/asset:{hash}",
                 "/{*entity}@{*model}",
                 "/{*entity}@{*model}!{*view}",
                 "/{*model}"
