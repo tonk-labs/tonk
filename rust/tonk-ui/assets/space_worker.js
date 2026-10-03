@@ -222,6 +222,13 @@ self.addEventListener("message", event => {
         bindSpacePort(event.ports[0], event.data);
         return;
     }
+    // What a custody ceremony on the app's page derived, handed down by the
+    // profile's frame there. The ceremony is the app's page's; the account it
+    // opens is this worker's.
+    if (type === "custody" && PROFILE) {
+        event.waitUntil(messaged(event.data, event.ports, event.source?.id ?? ""));
+        return;
+    }
     if (type !== "port") return;
     const [port] = event.ports;
     if (!port) return;

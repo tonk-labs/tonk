@@ -59,6 +59,39 @@ const SPACE_SHELL: &str = "/space.html";
 /// space's, at a path of its own so the two are told apart when debugging.
 const PROFILE_SHELL: &str = "/profile.html";
 
+/// Let the top page hand what a custody ceremony derived to the profile's
+/// worker, through `iframe`, the profile's frame on `origin`. The ceremony
+/// runs here, where the passkeys are; the account it opens is the profile's
+/// worker's. `tonk-identity` posts through `tonkProfileCustody` when it is
+/// installed. Nothing to install in a nested document.
+pub(crate) fn expose_profile_custody(iframe: &HtmlIFrameElement, origin: &str) {
+    let Some(window) = window() else {
+        return;
+    };
+    let nested = window
+        .parent()
+        .ok()
+        .flatten()
+        .is_some_and(|parent| JsValue::from(parent) != JsValue::from(window.clone()));
+    if nested {
+        return;
+    }
+    let iframe = iframe.clone();
+    let origin = origin.to_owned();
+    let relay =
+        Closure::<dyn Fn(JsValue, JsValue)>::new(move |message: JsValue, transfer: JsValue| {
+            let Some(frame) = iframe.content_window() else {
+                return;
+            };
+            let envelope = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(&envelope, &"__tonkOrigin".into(), &"custody".into());
+            let _ = js_sys::Reflect::set(&envelope, &"message".into(), &message);
+            let _ = frame.post_message_with_transfer(&envelope, &origin, &transfer);
+        });
+    let _ = js_sys::Reflect::set(&window, &"tonkProfileCustody".into(), relay.as_ref());
+    relay.forget();
+}
+
 /// The shell `origin` loads first.
 pub(crate) fn shell_url(origin: &str) -> String {
     let profile = Url::new(origin)

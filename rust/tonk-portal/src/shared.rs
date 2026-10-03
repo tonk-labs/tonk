@@ -17,7 +17,9 @@ use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
 use crate::bridge::{self, PortalState};
 use crate::site_content::head_markup as build_head_markup;
-use crate::space_origin::{SANDBOX, shell_url, site_origin, site_pattern, watch_shell};
+use crate::space_origin::{
+    SANDBOX, expose_profile_custody, shell_url, site_origin, site_pattern, watch_shell,
+};
 
 /// The tags an embedder may place in a portal's light DOM to style its
 /// guest. Anything else a caller nests is ignored: the head is not a
@@ -124,6 +126,7 @@ pub(crate) fn connect_portal(
     // its attributes, `<tonk-fab-portal>` grants `*`, the generic
     // `<tonk-portal>` grants `self` — so a synced/untrusted content guest
     // can forward a route but the bridge denies anything un-listed.
+    let profile = with.as_ref().is_some_and(Location::profile);
     state.borrow_mut().set_route(with, allow);
     bridge::register_portal(&iframe, &host, &state);
     install_method_delegates(&host, &state);
@@ -155,6 +158,9 @@ pub(crate) fn connect_portal(
         // once the space worker is in control.
         Some(origin) => {
             let shell = shell_url(&origin);
+            if profile {
+                expose_profile_custody(&iframe, &origin);
+            }
             state
                 .borrow_mut()
                 .set_origin_document(origin, srcdoc, site_pattern);

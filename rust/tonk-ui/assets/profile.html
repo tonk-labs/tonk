@@ -47,6 +47,20 @@
                         },
                         true,
                     );
+                    // The app's page runs the passkey ceremonies, and hands
+                    // what a custody ceremony derived to the worker that
+                    // holds the account, this origin's, by way of this frame.
+                    window.addEventListener(
+                        "message",
+                        function (e) {
+                            if (e.source !== parent || !e.data || e.data.__tonkOrigin !== "custody") return;
+                            e.stopImmediatePropagation();
+                            var message = e.data.message;
+                            if (!message || message.type !== "custody" || !sw.controller) return;
+                            sw.controller.postMessage(message, Array.prototype.slice.call(e.ports));
+                        },
+                        true,
+                    );
                     // A profile's worker tells the page that asked it where
                     // to go next, or to run a passkey ceremony. That page is
                     // the app's, around this frame, and hears it from here.

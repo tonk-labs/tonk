@@ -150,6 +150,26 @@ async fn mediate(
     mediate_pair(credential, None, request).await
 }
 
+/// Post a custody hand-off to the worker that holds the account. Where the
+/// profile renders on an origin of its own that is the profile's worker,
+/// reached through the profile's frame on this page, which installs
+/// `tonkProfileCustody` to do it. Otherwise it is this page's own worker.
+fn hand_to_custodian(message: &JsValue, transfer: &js_sys::Array) -> Result<(), JsValue> {
+    let global = js_sys::global();
+    if let Ok(relay) = Reflect::get(&global, &"tonkProfileCustody".into())
+        .and_then(|relay| relay.dyn_into::<js_sys::Function>())
+    {
+        return relay.call2(&global, message, transfer).map(|_| ());
+    }
+    web_sys::window()
+        .ok_or_else(|| JsValue::from_str("no window"))?
+        .navigator()
+        .service_worker()
+        .controller()
+        .ok_or_else(|| JsValue::from_str("no service worker controls this page"))?
+        .post_message_with_transferable(message, transfer)
+}
+
 /// [`mediate`], optionally carrying a second custodian: the passkey
 /// that already holds the account, for work that must open it before
 /// sealing under the first.
@@ -187,15 +207,9 @@ async fn mediate_pair(
         None
     };
 
-    let worker = web_sys::window()
-        .ok_or_else(|| JsValue::from_str("no window"))?
-        .navigator()
-        .service_worker()
-        .controller()
-        .ok_or_else(|| JsValue::from_str("no service worker controls this page"))?;
     let transfer = js_sys::Array::new();
     transfer.push(&channel.port2());
-    let posted = worker.post_message_with_transferable(&message, &transfer);
+    let posted = hand_to_custodian(&message, &transfer);
 
     // Structured clone has taken the receiver's copies before postMessage
     // returns. Clear every page-side typed array whether posting succeeded
