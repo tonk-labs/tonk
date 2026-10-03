@@ -673,7 +673,8 @@ pub(crate) fn derive_head_intent(
             | FieldValue::Include(_)
             | FieldValue::Blank
             | FieldValue::Nested(_)
-            | FieldValue::Premises(_) => {
+            | FieldValue::Premises(_)
+            | FieldValue::List(_) => {
                 return Err(AnalyzeError::at(
                     AnalyzeErrorKind::UnsupportedFieldValue {
                         field: "this".into(),
@@ -865,6 +866,15 @@ fn digest_into(
             // identity: a variable is not a value yet, a blank is an
             // absence, and premises are a rule body.
             FieldValue::Variable(_) | FieldValue::Blank | FieldValue::Premises(_) => continue,
+            FieldValue::List(_) => {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::UnsupportedFieldValue {
+                        field: field.name.clone(),
+                        form: "a list (only a command's `action:` takes one)",
+                    },
+                    field.value_range,
+                ));
+            }
             FieldValue::Include(include) => {
                 return Err(
                     super::field::unexpanded_include(include, None).with_range(field.value_range)

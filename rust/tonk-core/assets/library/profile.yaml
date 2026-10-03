@@ -245,17 +245,27 @@ event!: &on/repository-rename-submit
     space: ".currentTarget.dataset.space"
     name: ".currentTarget.elements.name.value"
 
+#
+# Named field attributes, so the palette's arguments can point at them. The
+# descriptors are unchanged, and so is the command's identity.
+attribute!: &rename-space/name
+  description: The new repository name.
+  the: xyz.tonk.command.rename-repository/name
+  as: text
+  role: goal
+
+attribute!: &rename-space/space
+  description: The target space DID.
+  the: xyz.tonk.rename-repository/space
+  as: entity
+  role: object
+
 command!: &tonk/rename-repository
   description: Rename a space from the profile Hub.
+  action: ["rename", "rename space"]
   with:
-    name:
-      description: The new repository name.
-      the: xyz.tonk.command.rename-repository/name
-      as: text
-    space:
-      description: The target space DID.
-      the: xyz.tonk.rename-repository/space
-      as: entity
+    name: rename-space/name
+    space: rename-space/space
 
 # Load the requesting tab's site for its current path. Mirrors core.yaml's
 # `&tonk/load` — seeded here too because the top-level `<tonk-site>` stamps onto
@@ -1190,18 +1200,103 @@ concept!: &seed/available
       cardinality: one
       as: entity
 
+attribute!: &pause-sync/time
+  description: The click's timestamp; makes each dispatch a distinct transient.
+  the: xyz.tonk.command.pause-sync/time
+  as: float
+  role: now
+
+attribute!: &pause-sync/space
+  description: The target space DID — the replica whose auto-sync is flipped.
+  the: xyz.tonk.pause-sync/space
+  as: entity
+  role: object
+
 command!: &tonk/pause-sync
   this: tonk:pause-sync
   description: Toggle auto-sync (pause ⇄ resume) for a space.
+  action: ["pause sync", "resume sync"]
   with:
-    time:
-      description: The click's timestamp; makes each dispatch a distinct transient.
-      the: xyz.tonk.command.pause-sync/time
-      as: float
-    space:
-      description: The target space DID — the replica whose auto-sync is flipped.
-      the: xyz.tonk.pause-sync/space
-      as: entity
+    time: pause-sync/time
+    space: pause-sync/space
+
+attribute!: &home/time
+  description: The moment it was asked; makes each dispatch a distinct transient.
+  the: xyz.tonk.command.home/time
+  as: float
+  role: now
+
+command!: &tonk/home
+  this: tonk:home
+  description: Take the page back to the hub.
+  action: ["home", "go home", "go to tonk home"]
+  with:
+    time: home/time
+
+# The bar's own acts, as commands: each records a request on the asking tab's
+# site (`site/request`), which that tab's bar performs.
+attribute!: &add-account/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.command.add-account/time
+  as: float
+  role: now
+
+command!: &account/add
+  description: Start adding an account to this profile, from the bar.
+  action: ["add an account"]
+  with:
+    time: add-account/time
+
+attribute!: &share-link/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.command.share-link/time
+  as: float
+  role: now
+
+command!: &space/share-link
+  description: Copy a link that invites someone into this space, from the bar.
+  action: ["copy share link", "share"]
+  with:
+    time: share-link/time
+
+attribute!: &view-members/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.command.view-members/time
+  as: float
+  role: now
+
+command!: &space/view-members
+  description: Show who is in this space, in the bar.
+  action: ["view members", "members"]
+  with:
+    time: view-members/time
+
+attribute!: &connect-agent/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.command.connect-agent/time
+  as: float
+  role: now
+
+command!: &agent/connect
+  description: Invite an agent to work in this space, from the bar.
+  action: ["connect agent", "copy agent link"]
+  with:
+    time: connect-agent/time
+
+attribute!: &connect-space/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.command.connect-space/time
+  as: float
+  role: now
+
+# The bar's condition: "connect this space" while it is local-only, "confirm
+# your email" while the account waits on it. The bar does nothing when it
+# offers neither.
+command!: &space/connect
+  description: Connect this space, or confirm the email that would, from the bar.
+  action: ["connect this space", "confirm your email"]
+  with:
+    time: connect-space/time
 
 # The FAB fallback seat — the nearest corner restored on the next page load,
 # stored on `state:fab`. The live page keeps the exact point along the nearest
@@ -1337,7 +1432,7 @@ view!:
 # ============================================================
 #
 # The profile is itself a routable target: `<tonk-site path=…>` posts to
-# `/api/profile/branch/main/site`, the SW asserts this tab's `tonk:site` on this
+# `/api/repository/profile:tonk/branch/main/site`, the SW asserts this tab's `tonk:site` on this
 # branch (matching the path against the `route!` table below), and the element
 # renders `<tonk-display entity=site:… model=tonk:site>`. The site view nests the
 # matched `{concept}` on the same site entity — the same indirection a space uses.
@@ -1399,13 +1494,64 @@ concept!: &site
       the: xyz.tonk.site/concept
       cardinality: one
       as: entity
+  maybe:
+    selection:
+      description: >
+        The text selected in the tab's page, as the page reports it through
+        `site/select`. Absent when nothing is selected. A session fact like the
+        rest of the site: it goes with the tab.
+      the: xyz.tonk.site/selection
+      cardinality: one
+      as: text
 
+
+# What the page in a tab has selected. The page (`bootstrap.js` in every
+# guest) reports it as it settles; the handler records it on the tab's site
+# as `selection`, in the session overlay, so rules and the palette read it as
+# a site fact. An empty `text` clears it.
+command!: &site/select
+  this: tonk:site-select
+  description: Report what the page in a tab has selected.
+  with:
+    site:
+      description: The tab's site entity (`window.tonk.context.site`).
+      the: xyz.tonk.command.site-select/site
+      as: entity
+    text:
+      description: The selected text; empty when the selection was cleared.
+      the: xyz.tonk.command.site-select/text
+      as: text
+    time:
+      description: When it changed, so reporting the same selection again re-fires.
+      the: xyz.tonk.command.site-select/time
+      as: float
 # The site view: render the matched route concept on this same site entity.
 view!:
   this: tonk:site
   show:
     ui: |
       <tonk-display entity={this} model={concept} />
+
+# What a tab's bar was last asked to do. The bar's own acts (add an account,
+# copy a share link, view members, connect an agent) are commands like any
+# other; what their handlers can do is record the request here, on the
+# asking tab's site, in the session overlay. The bar that tab shows
+# subscribes to its own site and, on a newer request, performs it as a press
+# of the matching control would. A separate concept from `&site`, so the
+# route stamp keeps its identity.
+concept!: &site/request
+  description: The bar action a tab was last asked to perform, and when.
+  with:
+    request:
+      description: The act — `account`, `share`, `members` or `agent`.
+      the: xyz.tonk.site/request
+      cardinality: one
+      as: text
+    time:
+      description: When it was asked, so the same act asked twice is two requests.
+      the: xyz.tonk.site/request-time
+      cardinality: one
+      as: float
 
 # The route table concept. Mirrors core.yaml's `&route`.
 concept!: &route
@@ -2573,12 +2719,25 @@ concept!: &hub
       the: xyz.tonk.site/path
       cardinality: one
       as: text
+  maybe:
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        latent bar's command line talks to the profile.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:hub
   show:
     ui: |
       <div class="hub-page">
+        <!-- The bar, latent: no space here, so it shows only for the
+             command line (Cmd/Ctrl+K) and what a command opens. -->
+        <tonk-fab with="{profile-branch}@profile:tonk" latent>
+          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
+        </tonk-fab>
         <link rel="stylesheet" with:src="ui@space">
         <!-- The hub chrome's CSS is the `space` view's own `style: ui`,
              which also says which of the two sections below shows. -->
@@ -2781,12 +2940,25 @@ concept!: &join/route
       the: xyz.tonk.site/path
       cardinality: one
       as: text
+  maybe:
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        latent bar's command line talks to the profile.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:join/route
   show:
     ui: |
       <div class="display-view-slot">
+        <!-- The bar, latent: no space here, so it shows only for the
+             command line (Cmd/Ctrl+K) and what a command opens. -->
+        <tonk-fab with="{profile-branch}@profile:tonk" latent>
+          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
+        </tonk-fab>
         <tab-title text="Tonk"></tab-title>
         <main class="join-view">
           <style>
@@ -2868,7 +3040,7 @@ view!:
 # you can explore the profile DB (the hub's replicas, the member name,
 # sync state) directly. `<tonk-inspector>` and `<tonk-tree>` resolve their
 # repository from their own `with` — here the profile endpoint — so they
-# query `/api/profile/branch/main/query` rather than a named space.
+# query `/api/repository/profile:tonk/branch/main/query` rather than a named space.
 #
 # Both take that `with` from the SITE, exactly as core.yaml's route views do,
 # rather than naming the profile endpoint literally. The site's `repo` is a
@@ -2903,12 +3075,25 @@ concept!: &inspector/route
       the: xyz.tonk.site/branch
       cardinality: one
       as: text
+  maybe:
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        latent bar's command line talks to the profile.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:inspector/route
   show:
     ui: |
       <div class="display-view-slot">
+        <!-- The bar, latent: no space here, so it shows only for the
+             command line (Cmd/Ctrl+K) and what a command opens. -->
+        <tonk-fab with="{profile-branch}@profile:tonk" latent>
+          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
+        </tonk-fab>
         <tab-title text="Tonk"></tab-title>
         <tonk-inspector with="{branch}@{repo}"></tonk-inspector>
       </div>
@@ -2937,12 +3122,25 @@ concept!: &diagnose/route
       the: xyz.tonk.site/branch
       cardinality: one
       as: text
+  maybe:
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        latent bar's command line talks to the profile.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:diagnose/route
   show:
     ui: |
       <div class="display-view-slot">
+        <!-- The bar, latent: no space here, so it shows only for the
+             command line (Cmd/Ctrl+K) and what a command opens. -->
+        <tonk-fab with="{profile-branch}@profile:tonk" latent>
+          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
+        </tonk-fab>
         <tab-title text="Tonk"></tab-title>
         <tonk-tree with="{branch}@{repo}"></tonk-tree>
       </div>
@@ -2972,12 +3170,25 @@ concept!: &seed/route
       the: xyz.tonk.site/url
       cardinality: one
       as: text
+  maybe:
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        latent bar's command line talks to the profile.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:seed/route
   show:
     ui: |
       <div class="hub-page seed-page">
+        <!-- The bar, latent: no space here, so it shows only for the
+             command line (Cmd/Ctrl+K) and what a command opens. -->
+        <tonk-fab with="{profile-branch}@profile:tonk" latent>
+          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
+        </tonk-fab>
         <link rel="stylesheet" with:src="ui@space">
         <tab-title text="New space — Tonk"></tab-title>
         <style>
@@ -3038,6 +3249,34 @@ route!: &route/space-sub
   this: id:tonk:route/space-sub
   path: "/space/{id}/{*rest}"
   concept: tonk:space/chrome
+
+# The profile's own repository, as the space chrome reads any space.
+#
+# The chrome below decides a space is here by resolving `tonk:repository`
+# on the space's own branch, and takes a branch that does not carry the
+# concept for a space this device has not replicated. The profile's
+# repository is a space like any other and is always here, but its
+# branch carries this library rather than a space's, so without the
+# concept `/space/<profile did>` answered "open this space" over a
+# repository that had loaded.
+#
+# The same shape `core.yaml` declares for a space, so the name is read
+# the same way if the profile's repository is ever given one.
+concept!: &profile/repository
+  this: tonk:repository
+  description: The profile's own repository, addressed as a space.
+  with:
+    name:
+      description: The repository's display name.
+      the: xyz.tonk.repo/name
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:repository
+  show:
+    title: |
+      <tab-title text="{name} — Tonk"></tab-title>
 
 # The space chrome model. `{id}` (the repository) and `{rest}` (the sub-path) are
 # captured from the path and stamped on the site; the view reads them. `rest` is
@@ -3148,7 +3387,9 @@ view!:
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-fab { display: none; }
       </style>
       <tonk-site data-space-preview with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
-      <tonk-fab with="{profile-branch}@profile:tonk" space={id}></tonk-fab>
+      <tonk-fab with="{profile-branch}@profile:tonk" space={id}>
+        <command-palette slot="command" space={id} profile="{profile-branch}@profile:tonk"></command-palette>
+      </tonk-fab>
       <tonk-display with={id} entity={id} model=tonk:repository view=title>
         <!-- `no-model` is now the absent-space panel below, which sets its
              own title; a second `no-model` child would render alongside it
@@ -3255,12 +3496,25 @@ concept!: &not-found
       the: xyz.tonk.site/path
       cardinality: one
       as: text
+  maybe:
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        latent bar's command line talks to the profile.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:not-found
   show:
     ui: |
       <div class="display-view-slot">
+        <!-- The bar, latent: no space here, so it shows only for the
+             command line (Cmd/Ctrl+K) and what a command opens. -->
+        <tonk-fab with="{profile-branch}@profile:tonk" latent>
+          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
+        </tonk-fab>
         <style>
           .nf { display: flex; flex-direction: column; align-items: center;
                 justify-content: center; gap: 8px; height: 100%; padding: 32px;
@@ -5535,3 +5789,536 @@ element!: &account-settings
       }
     released: |
       (self) => self.disconnected()
+
+# The command palette's schema, as in the core library: this library lowers
+# on its own, so it declares the same concepts (same attributes, so the same
+# concepts) for the profile's commands. See core.yaml for the prose.
+concept!: &intent/action
+  description: Words that say a command. Asserted on the command itself.
+  with:
+    name:
+      description: A word or phrase the command answers to.
+      the: tonk.dialog.intent.action/name
+      cardinality: many
+      as: text
+
+concept!: &intent/choice
+  description: A command run from the palette, and the words typed for its verb.
+  with:
+    command:
+      description: The command that was run.
+      the: tonk.dialog.intent.choice/command
+      cardinality: one
+      as: entity
+    input:
+      description: The words typed for the verb; empty when it was suggested from a noun.
+      the: tonk.dialog.intent.choice/input
+      cardinality: one
+      as: text
+    time:
+      description: When it was run, so two runs are two choices.
+      the: tonk.dialog.intent.choice/time
+      cardinality: one
+      as: float
+
+# The command palette's interpretation of what was typed, as session facts.
+# The palette makes an `expression` per opening and sends
+# `intent/interpret` as the line changes; its handler (the parser) records
+# the expression and one `intent` per command the line could mean, in the
+# session overlay. Rules derive values for a command's fields onto its
+# intent, each as a one-field concept on the field's own attribute with the
+# field named after the attribute (`subject` for `…/subject`), scoped to the
+# command (`intent` where `command: <the command>`). `intent/suggest`
+# reads the intents and those values back as readings.
+command!: &intent/interpret
+  this: tonk:intent-interpret
+  description: Interpret what was typed in the command palette, where it was opened.
+  with:
+    expression:
+      description: The palette opening it belongs to, made by the page.
+      the: tonk.dialog.intent.interpret/expression
+      as: entity
+    input:
+      description: Exactly what is typed.
+      the: tonk.dialog.intent.interpret/input
+      as: text
+    site:
+      description: The tab's site entity.
+      the: tonk.dialog.intent.interpret/site
+      as: entity
+    time:
+      description: When it was typed, so typing the same line again re-fires.
+      the: tonk.dialog.intent.interpret/time
+      as: float
+
+concept!: &intent/expression
+  description: One opening of the command palette, as interpreted so far. Session facts.
+  with:
+    input:
+      description: What is typed.
+      the: tonk.dialog.intent.expression/input
+      cardinality: one
+      as: text
+    site:
+      description: The tab's site, where the palette was opened.
+      the: tonk.dialog.intent.expression/site
+      cardinality: one
+      as: entity
+    time:
+      description: When the line was last interpreted.
+      the: tonk.dialog.intent.expression/time
+      cardinality: one
+      as: float
+  maybe:
+    selection:
+      description: The text selected in the tab's page, when there was some.
+      the: tonk.dialog.intent.expression/selection
+      cardinality: one
+      as: text
+
+concept!: &intent
+  description: What an expression could mean as one command. Rules derive the command's field values onto it.
+  with:
+    expression:
+      description: The expression it was read from.
+      the: tonk.dialog.intent/expression
+      cardinality: one
+      as: entity
+    command:
+      description: The command it would run.
+      the: tonk.dialog.intent/command
+      cardinality: one
+      as: entity
+
+# The directory row IS the repository's own entity (its subject DID), which
+# is what the space commands take: a space's label is what names it there.
+view!:
+  this: space
+  show:
+    label: |
+      {name}
+
+# What the space commands can be said of: the spaces on this account. On a
+# space's page the parser takes that space, the one the page shows; anywhere
+# else, a space has to be named.
+rule!:
+  description: A space on this account is one "pause sync" from the palette can name.
+  assert: pause-sync/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: tonk/pause-sync }
+    - assert: space
+      where: { this: ?space }
+
+rule!:
+  description: A space on this account is one "rename space" from the palette can name.
+  assert: rename-space/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: tonk/rename-repository }
+    - assert: space
+      where: { this: ?space }
+
+# The command palette is the FABB's command mode. Cmd/Ctrl+K (or
+# Cmd/Ctrl+Shift+P) puts the bar in it (`commanding` on `<tonk-fab>`): the
+# header's space name gives way to this command line (the bar's `command`
+# slot), and what it suggests is listed below the header (the `command-list`
+# slot) in the place of the actions. A folded bar opens out of its dot to
+# hold it. The menu itself is untouched: clicking the space name still opens
+# it. With nothing typed the list is what can run as it is; as you type, what
+# the typing says. The top reading completes inline, as a selection ahead of
+# the cursor: typing goes on over it, Tab or → takes it, ↑/↓ (Ctrl+N/P) move
+# to another reading and the selection follows. Escape clears the line, then
+# leaves; so does leaving the line.
+#
+# It only queries and transacts. What the line could mean is the named query
+# `intent/suggest` — `{input, this, now}` in, one row per reading out —
+# asked of the space branch and of the profile, whose readings are merged by
+# score. On a page with no space (the hub, settings, join) the bar is
+# `latent`, hidden until the chord, and only the profile is asked. Running
+# one transacts its `claim` on the branch it came from, as a button bound to
+# that command would, and records a `intent/choice` on the profile. What
+# can be said is what commands declare (`action:`, `role:`) and what rules
+# derive for their fields; the query reads it.
+#
+# Keys pressed inside the space's own frame are relayed to this document by
+# the portal bridge, so the shortcut works wherever focus is.
+#
+# Not `tonk-palette`: the element runtime leaves `tonk-` and `wa-` tags to
+# their built-in definitions and never announces them, so an author element
+# with either prefix would stay inert.
+element!: &command-palette
+  description: The FABB's command line, over the palette verbs and nouns of the space and profile.
+  method:
+    connected: |
+      (self) => {
+        if (self.__keys) return;
+        self.build();
+        self.__keys = (event) => {
+          const key = (event.key || '').toLowerCase();
+          const chord = (event.metaKey || event.ctrlKey)
+            && (key === 'k' || (event.shiftKey && key === 'p'));
+          if (chord) {
+            event.preventDefault();
+            self.summon();
+          }
+        };
+        document.addEventListener('keydown', self.__keys);
+      }
+    disconnected: |
+      (self) => {
+        document.removeEventListener('keydown', self.__keys);
+        self.__keys = null;
+        self.__asked = null;
+        if (self.__list) self.__list.remove();
+      }
+    summon: |
+      (self) => {
+        // The chord toggles command mode. Entering it closes the bar's menu:
+        // the command line is not the menu, it stands in the header's place.
+        const fab = self.closest('tonk-fab');
+        if (!fab) return;
+        if (fab.hasAttribute('commanding')) {
+          self.dismiss();
+          return;
+        }
+        if (fab.close) fab.close();
+        fab.setAttribute('commanding', '');
+        self.reset();
+        requestAnimationFrame(() => self.__input.focus({ preventScroll: true }));
+      }
+    dismiss: |
+      (self) => {
+        const fab = self.closest('tonk-fab');
+        if (fab) fab.removeAttribute('commanding');
+        self.__asked = null;
+        // The next opening is a new expression.
+        self.__expression = null;
+        self.__typed = '';
+        self.__input.value = '';
+        self.__proposals = [];
+        self.render();
+      }
+    build: |
+      (self) => {
+        self.innerHTML = `
+          <style>
+            command-palette { display: flex; align-items: center; gap: 18px; flex: 1; min-width: 0;
+              padding: 0 16px 0 6px; font: 600 17px/1.1 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif; }
+            command-palette .prompt { flex: none; font-weight: 600; }
+            command-palette input { flex: 1; min-width: 0; border: 0; padding: 0; background: transparent;
+              color: inherit; font: inherit; outline: none; }
+            command-palette input::placeholder { color: inherit; opacity: .55; }
+            command-palette input::selection { background: var(--_hover, rgb(56 24 42 / 14%)); color: var(--_ink, #38182a); }
+            /* The page around the bar may ring what is focused (the hub's
+               \`.hub-page :focus-visible\`); the line is the focus here. */
+            tonk-fab[commanding] command-palette input:focus-visible { outline: none; box-shadow: none; }
+            tonk-fab[commanding] command-palette input::selection { background: var(--_hover, rgb(56 24 42 / 14%)); color: var(--_ink, #38182a); }
+            tonk-fab > ol.command-suggestions { display: flex; flex-direction: column; list-style: none;
+              margin: 0; padding: 0; font: 400 17px/1.3 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif;
+              box-shadow: inset 0 1px 0 color-mix(in srgb, currentColor 22%, transparent); }
+            tonk-fab[up] > ol.command-suggestions { flex-direction: column-reverse;
+              box-shadow: inset 0 -1px 0 color-mix(in srgb, currentColor 22%, transparent); }
+            tonk-fab > ol.command-suggestions:empty { display: none; }
+            tonk-fab > ol.command-suggestions li { display: flex; flex-wrap: wrap; align-items: center;
+              column-gap: 6px; row-gap: 4px; min-height: 44px; box-sizing: border-box; margin: 0;
+              padding: 8px 20px; cursor: pointer; }
+            tonk-fab > ol.command-suggestions li:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+            tonk-fab > ol.command-suggestions li[aria-selected="true"] {
+              background: var(--_cur, #38182a); color: var(--_on, #fcfbfb); }
+            tonk-fab > ol.command-suggestions .note { cursor: default; opacity: .7; }
+            tonk-fab > ol.command-suggestions .verb { font-weight: 600; }
+            tonk-fab > ol.command-suggestions .delimiter { opacity: .65; }
+            tonk-fab > ol.command-suggestions .noun,
+            tonk-fab > ol.command-suggestions .missing { display: inline-flex; align-items: baseline;
+              gap: 5px; padding: 0 6px; border: 1.5px solid currentColor; border-radius: 4px; }
+            tonk-fab > ol.command-suggestions .missing { border-style: dashed; opacity: .7; }
+            tonk-fab > ol.command-suggestions .kind { font-size: 12px; opacity: .7; }
+            tonk-fab > ol.command-suggestions .text::before { content: '“'; opacity: .6; }
+            tonk-fab > ol.command-suggestions .text::after { content: '”'; opacity: .6; }
+          </style>
+          <span class="prompt" aria-hidden="true">&rsaquo;</span>
+          <input type="text" role="combobox" aria-autocomplete="both" aria-controls="command-suggestions"
+            aria-label="command" placeholder="type a command" autocomplete="off" spellcheck="false">`;
+        self.__input = self.querySelector('input');
+        // The suggestions go in the bar's `command-list` slot, below its
+        // header, so they are the bar's sibling child rather than ours.
+        const list = document.createElement('ol');
+        list.className = 'command-suggestions';
+        list.id = 'command-suggestions';
+        list.setAttribute('role', 'listbox');
+        list.setAttribute('slot', 'command-list');
+        self.parentElement.append(list);
+        self.__list = list;
+        self.__typed = '';
+        self.__input.addEventListener('input', (event) => {
+          const input = self.__input;
+          self.__typed = input.value;
+          // Complete only while typing forward at the end: after a deletion
+          // the completion would put back what was just removed.
+          self.__complete = !(event.inputType || '').startsWith('delete')
+            && input.selectionEnd === input.value.length;
+          self.update();
+        });
+        self.__input.addEventListener('keydown', (event) => self.key(event));
+        // Leaving the line leaves command mode.
+        self.__input.addEventListener('blur', () => self.dismiss());
+        list.addEventListener('mousedown', (event) => event.preventDefault());
+        list.addEventListener('click', (event) => {
+          const row = event.target.closest('li[data-index]');
+          if (!row) return;
+          self.__index = Number(row.dataset.index);
+          self.run();
+        });
+      }
+    key: |
+      (self, event) => {
+        const input = self.__input;
+        const count = (self.__proposals || []).length;
+        const suggested = input.selectionStart !== input.selectionEnd
+          && input.selectionEnd === input.value.length;
+        // Upward, the list runs away from the input the other way.
+        const up = !!self.closest('tonk-fab[up]');
+        const down = event.key === 'ArrowDown' || (event.ctrlKey && event.key === 'n');
+        const back = event.key === 'ArrowUp' || (event.ctrlKey && event.key === 'p');
+        if (down || back) {
+          event.preventDefault();
+          if (!count) return;
+          const step = (down !== (up && !event.ctrlKey)) ? 1 : -1;
+          self.__index = (self.__index + step + count) % count;
+          self.suggest();
+          self.render();
+          return;
+        }
+        if (suggested && ((event.key === 'Tab' && !event.shiftKey) || event.key === 'ArrowRight')) {
+          event.preventDefault();
+          self.accept();
+          return;
+        }
+        if (event.key === 'Escape') {
+          // First Escape clears the line; the next one leaves command mode.
+          event.preventDefault();
+          event.stopPropagation();
+          if (input.value) self.reset();
+          else self.dismiss();
+          return;
+        }
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          self.run();
+        }
+      }
+    suggest: |
+      (self) => {
+        // Show the chosen proposal's completion ahead of the cursor, selected,
+        // so typing replaces it and Tab keeps it.
+        const input = self.__input;
+        const typed = self.__typed || '';
+        const proposal = (self.__proposals || [])[self.__index];
+        const completion = self.__complete && proposal && proposal.completion;
+        if (completion) {
+          input.value = completion;
+          input.setSelectionRange(typed.length, completion.length, 'forward');
+        } else if (input.value !== typed) {
+          input.value = typed;
+        }
+      }
+    accept: |
+      (self) => {
+        const input = self.__input;
+        const end = input.value.length;
+        input.setSelectionRange(end, end);
+        self.__typed = input.value;
+        // Taken: the next completion waits for the next keystroke.
+        self.__complete = false;
+        self.update();
+      }
+    reset: |
+      (self) => {
+        self.__typed = '';
+        if (self.__input) self.__input.value = '';
+        self.update();
+      }
+    update: |
+      async (self) => {
+        // Ask both branches what the line could mean. An answer that lands
+        // after a newer question is dropped.
+        const typed = self.__typed || '';
+        const asked = {};
+        self.__asked = asked;
+        // No space on a page with none (the hub, settings): then the
+        // profile is the only branch asked, and nothing is "this".
+        const space = self.getAttribute('space') || null;
+        const fab = self.closest('tonk-fab');
+        if (!window.tonk || !(fab && fab.hasAttribute('commanding'))) return;
+        const branches = [space && `main@${space}`, self.getAttribute('profile')].filter(Boolean);
+        if (!branches.length) return;
+        // The site of the page being looked at: the space's, nested in the
+        // bar's frame, else this frame's own. Its route and its selection
+        // are the context every branch's rules and parser read; the page
+        // reports its selection to both branches under it.
+        const page = space && document.querySelector(`tonk-site[data-site][with="main@${space}"]`);
+        const site = (page && page.getAttribute('data-site')) || (window.tonk.context || {}).site;
+        const now = Date.now();
+        const max = typed ? 5 : 12;
+        // Each branch interprets the line (`intent/interpret`: its parser
+        // records the expression and an intent per command it could mean,
+        // and rules derive values for those commands' fields), then reads
+        // the expression's readings back. One expression per opening.
+        if (site && !self.__expression) self.__expression = `intent:${crypto.randomUUID()}`;
+        const expression = site ? self.__expression : null;
+        const started = performance.now();
+        const timing = {};
+        const interpreted = async (branch) => {
+          const field = (name, as) => ({ the: `tonk.dialog.intent.interpret/${name}`, as });
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: {
+              description: 'Interpret what was typed in the command palette, where it was opened.',
+              with: {
+                expression: field('expression', 'Entity'), input: field('input', 'Text'),
+                site: field('site', 'Entity'), time: field('time', 'Float'),
+              } } },
+            parameters: { expression, input: typed, site, time: now },
+          } }] }, { with: branch });
+          // The handler runs after the transact returns: wait until it has
+          // recorded this line.
+          const recorded = { predicate: { with: { input: {
+            the: 'tonk.dialog.intent.expression/input', as: 'Text', cardinality: 'one' } } },
+            terms: { this: expression, input: { '?': { name: 'input' } } } };
+          for (let tries = 0; tries < 100; tries++) {
+            if (self.__asked !== asked) return false;
+            const found = await window.tonk.query(recorded, { with: branch });
+            const rows = Array.isArray(found) ? found : (found && found.rows) || [];
+            if (rows.some((row) => (row.fields || {}).input === typed)) return true;
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          return false;
+        };
+        const subject = space ? { this: space } : {};
+        const ofExpression = { predicate: 'intent/suggest', terms: { expression, ...subject, now, max } };
+        // No site to interpret against, or a branch that didn't interpret
+        // the line: ask with the line itself.
+        const ofLine = { predicate: 'intent/suggest', terms: { input: typed, ...subject, now, max, site } };
+        const read = (branch, row) => {
+          const fields = row.fields || {};
+          const json = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
+          return {
+            branch,
+            command: fields.command,
+            score: fields.score || 0,
+            rank: fields.rank || 0,
+            input: fields.input || '',
+            display: json(fields.display, []),
+            nouns: json(fields.nouns, {}),
+            completion: fields.completion || null,
+            claim: fields.claim ? json(fields.claim, null) : null,
+          };
+        };
+        const answers = await Promise.all(branches.map(async (branch) => {
+          const done = expression ? await interpreted(branch).catch((error) => {
+            console.warn('<command-palette> intent/interpret failed on', branch, error);
+            return false;
+          }) : false;
+          if (self.__asked !== asked) return [];
+          timing[branch] = Math.round(performance.now() - started);
+          return window.tonk.query(done ? ofExpression : ofLine, { with: branch })
+            .then((found) => (Array.isArray(found) ? found : (found && found.rows) || [])
+              .map((row) => read(branch, row)))
+            .catch((error) => {
+              console.warn('<command-palette> intent/suggest failed on', branch, error);
+              return [];
+            });
+        }));
+        if (self.__asked !== asked || !fab.hasAttribute('commanding')) return;
+        // How long a line took: per branch until it was interpreted, and in
+        // all until its readings arrived. For measuring, not for behaviour.
+        console.debug('[intent] interpreted', JSON.stringify(timing),
+          'readings', Math.round(performance.now() - started), 'ms', JSON.stringify(typed));
+        let readings = answers.flat();
+        if (typed) {
+          // One ranking across both branches, the way one branch ranks its
+          // own: best first, and nothing under half the best.
+          readings.sort((a, b) => b.score - a.score);
+          const best = readings.length ? readings[0].score : 0;
+          readings = readings.filter((reading) => reading.score >= best * 0.5).slice(0, 5);
+        }
+        self.__proposals = readings;
+        self.__note = '';
+        self.__index = 0;
+        self.suggest();
+        self.render();
+      }
+    render: |
+      (self) => {
+        const list = self.__list;
+        list.textContent = '';
+        const proposals = self.__proposals || [];
+        if (!self.__typed && !proposals.length) return;
+        if (!proposals.length) {
+          const note = document.createElement('li');
+          note.className = 'note';
+          note.textContent = self.__note || 'nothing matches';
+          list.append(note);
+          return;
+        }
+        const span = (className, text) => {
+          const part = document.createElement('span');
+          part.className = className;
+          part.textContent = text;
+          return part;
+        };
+        proposals.forEach((proposal, index) => {
+          const row = document.createElement('li');
+          row.setAttribute('role', 'option');
+          row.dataset.index = String(index);
+          row.setAttribute('aria-selected', String(index === self.__index));
+          for (const segment of proposal.display) {
+            const kind = segment.role && proposal.nouns && proposal.nouns[segment.role];
+            if (segment.kind === 'argument' && kind) {
+              // A thing: boxed, with what kind of thing it is.
+              const noun = span('noun', segment.text);
+              noun.append(span('kind', kind));
+              row.append(noun);
+            } else if (segment.kind === 'argument') {
+              row.append(span('text', segment.text));
+            } else if (segment.kind === 'missing') {
+              row.append(span('missing', segment.text));
+            } else {
+              row.append(span(segment.kind, segment.text));
+            }
+          }
+          list.append(row);
+        });
+      }
+    remember: |
+      (self, proposal) => {
+        const profile = self.getAttribute('profile');
+        if (!profile) return;
+        const field = (name, as) => ({ the: `tonk.dialog.intent.choice/${name}`, as });
+        window.tonk.transact({ claims: [{ op: 'assert', application: {
+          predicate: { kind: 'durable', concept: { with: {
+            command: field('command', 'Entity'), input: field('input', 'Text'), time: field('time', 'Float'),
+          } } },
+          parameters: { command: proposal.command, input: proposal.input || '', time: Date.now() },
+        } }] }, { with: profile }).catch((error) => console.warn('<command-palette> not remembered', error));
+      }
+    run: |
+      async (self) => {
+        const proposal = (self.__proposals || [])[self.__index];
+        if (!proposal) return;
+        if (!proposal.claim) {
+          // Incomplete: take its completion and keep typing.
+          self.suggest();
+          self.accept();
+          return;
+        }
+        // Leave command mode first: a command's outcome may be the bar
+        // opening one of its own panels (a site request).
+        self.dismiss();
+        try {
+          await window.tonk.transact(proposal.claim, { with: proposal.branch });
+          self.remember(proposal);
+        } catch (error) {
+          console.error('<command-palette> run failed', error);
+        }
+      }

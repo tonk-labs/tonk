@@ -504,6 +504,9 @@ fn finish_panel_collapse(this: &HtmlElement) {
             let _ = panel.set_attribute("hidden", "");
         }
     }
+    // The close lands a transition after the press, on `transitionend`;
+    // say so, rather than leave a listener to guess how long that takes.
+    shadow::emit(this, "fabb-drawer-closed", &wasm_bindgen::JsValue::NULL);
 }
 
 fn close_v017(this: &HtmlElement, state: &Shared, restore_focus: bool) {
@@ -1190,6 +1193,9 @@ pub(crate) fn apply_responsive(this: &HtmlElement, usable_width_px: f64, state: 
         apply_flip(this);
         propagate(this);
         update(this);
+        // The room arrives from a ResizeObserver, a rendering step after
+        // the container changed; say when the rail has taken it.
+        shadow::emit(this, "fabb-room", &wasm_bindgen::JsValue::from_f64(usable));
         return;
     }
     let layout = logic::bar_layout(usable_width_px);

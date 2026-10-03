@@ -286,6 +286,10 @@ pub enum FieldValue {
     /// [`Literal`](FieldValue::Literal). An include that survives to
     /// analysis was never expanded and is rejected there.
     Include(Include),
+    /// A list of values. Only a command's `action:` takes one (the
+    /// several names a command answers to); everywhere else a list is
+    /// rejected, and a cardinality-many write repeats the assertion.
+    List(Vec<FieldValue>),
 }
 
 /// An `!include` reference, as written.

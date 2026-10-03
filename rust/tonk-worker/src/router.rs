@@ -155,11 +155,16 @@ mod blob;
 
 mod migration;
 
+mod interpret;
 mod navigate;
+mod site_request;
+mod site_select;
 
 mod command;
 pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch};
 
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod intent;
 #[cfg(test)]
 mod route_table;
 #[cfg(test)]
@@ -188,6 +193,67 @@ async fn profile_context_fence(
         }
     }
     Ok(next.run(request).await)
+}
+
+/// The token a repository route's `{repo}` segment names the profile's
+/// own repository by: `profile:<name>`, as a view's `main@profile:tonk`
+/// context spells it. The worker serves one profile, so the name is not
+/// consulted.
+const PROFILE_ALIAS: &str = "profile:";
+
+/// Whether `repo` is the key of the profile's own repository.
+///
+/// The profile's repository is a repository like any other, reached by
+/// its DID through the same routes. What sets it apart is what may be
+/// done to it: a sealed guest never writes it, and its commits belong to
+/// no space. Each route that makes that distinction asks here.
+pub(crate) async fn names_profile(state: &AppState, repo: &str) -> bool {
+    state.read().await.reactor.profile_key() == repo
+}
+
+/// The path a repository route is asked for, with a `profile:<name>`
+/// repository segment replaced by `key`, the profile's DID, or `None`
+/// when the path names no profile alias.
+fn resolve_profile_alias(path: &str, key: &str) -> Option<String> {
+    let rest = path.strip_prefix("/api/repository/")?;
+    let (repo, tail) = match rest.split_once('/') {
+        Some((repo, tail)) => (repo, Some(tail)),
+        None => (rest, None),
+    };
+    let alias = repo.starts_with(PROFILE_ALIAS)
+        || repo
+            .get(..PROFILE_ALIAS.len() + 2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("profile%3a"));
+    if !alias {
+        return None;
+    }
+    Some(match tail {
+        Some(tail) => format!("/api/repository/{key}/{tail}"),
+        None => format!("/api/repository/{key}"),
+    })
+}
+
+/// Route a request naming the profile's repository by its alias to the
+/// repository's own key, before the router matches it. One place knows
+/// the alias; every route past it sees a repository key.
+async fn profile_alias(
+    State(state): State<AppState>,
+    mut request: ::axum::extract::Request,
+    next: Next,
+) -> Response {
+    if request.uri().path().starts_with("/api/repository/profile") {
+        let key = state.read().await.reactor.profile_key().to_owned();
+        if let Some(path) = resolve_profile_alias(request.uri().path(), &key) {
+            let rewritten = match request.uri().query() {
+                Some(query) => format!("{path}?{query}"),
+                None => path,
+            };
+            if let Ok(uri) = rewritten.parse() {
+                *request.uri_mut() = uri;
+            }
+        }
+    }
+    next.run(request).await
 }
 
 /// Root handler that returns a welcome message.
@@ -256,38 +322,12 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api/profiles", get(profiles::list))
         .route("/api/profiles/activate", post(profiles::activate))
         .route("/api/profiles/add", post(profiles::add))
-        // Profile-as-repository routes. The profile is its own
-        // repository but lives outside the named-repo namespace
-        // (no `repo` segment), so it gets a parallel route
-        // surface here rather than nesting under
-        // `/api/repository/{repo}/...`.
-        .route(
-            "/api/profile/repository",
-            get(repository::get_profile_repository),
-        )
-        .route(
-            "/api/profile/branch/{branch}/query",
-            post(query::query_profile),
-        )
-        .route(
-            "/api/profile/branch/{branch}/evaluate",
-            post(evaluate::evaluate_profile),
-        )
+        // The profile's own repository has no routes of its own: it is
+        // reached through `/api/repository/{repo}/…` like every other,
+        // by its DID or the `profile:<name>` alias (see `profile_alias`).
         .route(
             "/api/profile/library",
             post(repository::update_profile_library),
-        )
-        .route(
-            "/api/profile/branch/{branch}/transact",
-            post(transact::transact_profile),
-        )
-        // The profile's own CSV export, alongside `/query` and
-        // `/transact`. The repository route cannot serve the profile:
-        // the profile is a singleton reached through
-        // `profile_repository()`, not by name.
-        .route(
-            "/api/profile/branch/{branch}/export",
-            get(transfer::export_profile),
         )
         // Register the requesting client's site (per-tab navigation state).
         // The page calls this on load and on each client-side navigation; the
@@ -298,10 +338,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // `/query` and `/transact`), not from parsing the document path. A
         // `<tonk-site>` scoped by `<tonk-repository>`/`<tonk-branch>` ancestors
         // posts its path here and renders the returned site entity.
-        .route(
-            "/api/profile/branch/{branch}/site",
-            post(session::register_site_on_profile),
-        )
         .route(
             "/api/repository/{repo}/branch/{branch}/site",
             post(session::register_site_on_repo),
@@ -484,6 +520,12 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             state.clone(),
             profile_context_fence,
         ));
+    // A layer runs after its router has matched a route, so the alias is
+    // resolved by a router of its own in front, whose only service is the
+    // one above.
+    let router = Router::new()
+        .fallback_service(router)
+        .layer(middleware::from_fn_with_state(state, profile_alias));
     (router, lsp_hub)
 }
 
@@ -556,7 +598,7 @@ pub mod tests {
 
         for (method, uri) in [
             ("GET", "/api/profile"),
-            ("POST", "/api/profile/branch/main/transact"),
+            ("POST", "/api/repository/profile:tonk/branch/main/transact"),
         ] {
             let stale = app
                 .clone()
@@ -852,6 +894,114 @@ pub mod tests {
     /// of "not signed in": no root at all, and a root with no account behind
     /// it. Neither may create a space — one that exists without an account is
     /// local-only and never backed up, and nothing later would say so.
+    /// A repository route names the profile's own repository by its
+    /// `profile:<name>` alias, encoded or not, and the alias resolves to
+    /// the profile's key wherever in the route it sits. Nothing else is
+    /// taken for the alias.
+    #[dialog_common::test]
+    fn it_resolves_the_profile_alias_to_the_profile_key() {
+        let key = "did:key:zProfile";
+        let resolve = |path| super::resolve_profile_alias(path, key);
+        assert_eq!(
+            resolve("/api/repository/profile:tonk/branch/main/query").as_deref(),
+            Some("/api/repository/did:key:zProfile/branch/main/query")
+        );
+        assert_eq!(
+            resolve("/api/repository/profile%3Atonk/branch/meta/transact").as_deref(),
+            Some("/api/repository/did:key:zProfile/branch/meta/transact")
+        );
+        assert_eq!(
+            resolve("/api/repository/profile:tonk").as_deref(),
+            Some("/api/repository/did:key:zProfile")
+        );
+        for other in [
+            "/api/repository/did:key:zSpace/branch/main/query",
+            "/api/repository/profile/branch/main/query",
+            "/api/repository/profiles:tonk",
+            "/api/profile",
+            "/api/profiles/add",
+        ] {
+            assert_eq!(resolve(other), None, "{other}");
+        }
+    }
+
+    /// The alias and the DID reach one repository through one route: what
+    /// is written naming the profile one way is read naming it the other.
+    #[dialog_common::test]
+    async fn it_serves_the_profile_repository_by_alias_and_by_did() {
+        use dialog_capability::Principal as _;
+
+        let (app, state, _lsp) = super::api_router_with_state(test_state_without_root().await);
+        let profile = state.read().await.profile.did().to_string();
+        let info = |uri: String| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+            }
+        };
+        let by_alias = info("/api/repository/profile:tonk".to_owned()).await;
+        let by_did = info(format!("/api/repository/{profile}")).await;
+        assert_eq!(by_alias, by_did);
+        assert_eq!(by_did["subject"], serde_json::json!(profile));
+    }
+
+    /// The profile's own repository is a repository like any other: named
+    /// by the profile's DID, it is the one the profile chain reaches, with
+    /// one cached state and one handle per branch however it is asked for.
+    /// It is not counted among the spaces.
+    #[dialog_common::test]
+    async fn it_reaches_the_profile_repository_by_its_did() {
+        use dialog_capability::Principal as _;
+
+        let (app, state, _lsp) = super::api_router_with_state(test_state_without_root().await);
+        let space = put_repo(&app, "beside-the-profile").await;
+        let tonk = state.read().await;
+        let profile = tonk.profile.did().to_string();
+        assert_eq!(tonk.reactor.profile_key(), profile);
+
+        let through_chain = tonk
+            .reactor
+            .profile_repository()
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let by_did = tonk
+            .reactor
+            .repository(&profile)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&through_chain, &by_did));
+
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let same = tonk
+            .reactor
+            .repository(&profile)
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&main.state, &same.state));
+
+        let spaces = tonk.reactor.spaces();
+        assert!(spaces.contains(&space), "{spaces:?}");
+        assert!(!spaces.contains(&profile), "{spaces:?}");
+    }
+
     /// A space creates before any account exists, delegated to the most
     /// durable key the profile holds (plan/Account model.md §2): the
     /// device key when there is no root, the root when there is one.
@@ -1504,7 +1654,7 @@ pub mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/profile/branch/main/transact")
+                    .uri("/api/repository/profile:tonk/branch/main/transact")
                     .method("POST")
                     .header("content-type", "application/json")
                     .body(Body::from(command.to_string()))

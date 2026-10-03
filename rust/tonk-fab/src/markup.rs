@@ -63,6 +63,21 @@ button,a{ min-height:48px; font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Na
 :host([data-agent-connected]) .w.collapsed .space{ visibility:visible; }
 .space .edit{ text-align:left; }
 .run{ display:grid; }
+/* Command mode (`commanding` on the host, set by what fills the `command`
+   slots): the header's space name gives way to a command line, and what it
+   suggests takes the place of the actions and panels. A folded bar opens
+   out of its dot to hold it — the width transition does the unfolding.
+   A `latent` bar (on a page with no space) shows only in command mode, or
+   while a command it ran has a panel open. */
+.header slot[name=command]{ display:none; }
+.command{ display:none; min-width:0; }
+:host([commanding]) .header slot[name=command]{ display:flex; flex:1; min-width:0; }
+:host([commanding]) .space{ display:none!important; }
+:host([commanding]) .command{ display:block; }
+:host([commanding]) .run,:host([commanding]) .panel{ display:none!important; }
+:host([latent]:not([commanding])) .w:not(.menu-open){ display:none; }
+:host([commanding]) .w.collapsed{ width:min(var(--fabb-space-width),var(--_room,calc(100vw - 32px)),calc(100vw - 32px));
+  grid-template-columns:minmax(0,1fr); border-radius:25px; overflow:auto; }
 .run[hidden],.action[hidden],.panel[hidden],.more,.mw{ display:none!important; }
 .action{ display:flex; align-items:center; justify-content:flex-start; gap:18px;
   padding:0 28px 0 16px; text-align:left; text-decoration:none; color:var(--_ink); border-radius:0; }
@@ -213,8 +228,10 @@ pub const BAR_HTML: &str = r#"<div class="w">
     <div class="header">
       <button class="fab" data-cell="sync" part="fab" aria-label="collapse bar"><span class="disc st"></span></button>
       <button class="space" data-cell="space" aria-expanded="false" aria-controls="fabb-actions"><span class="n"></span></button>
+      <slot name="command"></slot>
     </div>
     <div class="agent-feedback"><div class="agent-feedback-clip"><p class="agent-feedback-message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m20 6-11 11-5-5"/></svg><span class="agent-notice" role="status" aria-live="polite"></span></p></div></div>
+    <div class="command"><slot name="command-list"></slot></div>
     <nav class="run" id="fabb-actions" aria-label="space actions" hidden>
       <button class="action login" data-action="account" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3h6v18h-6M3 12h12m-5-5 5 5-5 5"/></svg><span>add an account</span></button>
       <button class="action condition" data-action="condition" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4h.01"/></svg><span></span></button>
@@ -269,7 +286,12 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
 <tonk-share headless space="{space}"></tonk-share>
 <tonk-tool-connection headless space="{space}"></tonk-tool-connection>
 <tonk-agent-panel headless space="{space}" with="main@{space}"></tonk-agent-panel>
-<ui-member-roster headless space="{space}"></ui-member-roster>"#;
+<ui-member-roster headless space="{space}"></ui-member-roster>
+<ui-site-request headless></ui-site-request>"#;
+
+/// The stacks of a bar on a page with no space: what the bar does for the
+/// profile, without the subscribers addressed to a space.
+pub const PROFILE_STACKS_HTML: &str = r#"<ui-site-request headless></ui-site-request>"#;
 
 /// Styles for the slotted stack content.
 ///
@@ -288,7 +310,8 @@ tonk-fab > ui-sync-status[headless],
 tonk-fab > ui-space-name[headless],
 tonk-fab > tonk-share[headless],
 tonk-fab > tonk-tool-connection[headless],
-tonk-fab > tonk-agent-panel[headless]{ display:none; }
+tonk-fab > tonk-agent-panel[headless],
+tonk-fab > ui-site-request[headless]{ display:none; }
 /* the row producers render their rows as SIBLINGS (see stack_rows), so they
    hold nothing themselves — laid out they would only add a stack gap where
    they sit */
@@ -583,6 +606,21 @@ mod tests {
         ] {
             assert!(!stacks_html("did:key:z6Mk").contains(removed));
         }
+    }
+
+    #[test]
+    fn it_seats_the_command_line_in_the_header_and_its_suggestions_below() {
+        let space = BAR_HTML.find(r#"class="space""#).unwrap();
+        let line = BAR_HTML.find(r#"<slot name="command">"#).unwrap();
+        let list = BAR_HTML.find(r#"<slot name="command-list">"#).unwrap();
+        let run = BAR_HTML.find(r#"class="run""#).unwrap();
+        assert!(space < line && line < list && list < run);
+        assert!(BAR_CSS.contains(":host([commanding]) .space{ display:none!important; }"));
+        assert!(BAR_CSS.contains(":host([commanding]) .w.collapsed{"));
+        assert!(
+            BAR_CSS
+                .contains(":host([latent]:not([commanding])) .w:not(.menu-open){ display:none; }")
+        );
     }
 
     #[test]

@@ -496,6 +496,141 @@ impl Command for SignOut {
     type Output = ();
 }
 
+/// The FABB's own acts, as commands. Each asks the tab that ran it to
+/// perform one of the bar's actions: the handler records the request on the
+/// tab's site (`xyz.tonk.site/request`), and the bar that tab shows acts on
+/// it as a press of the matching control would. A request, not the effect:
+/// opening a panel, the account ceremony and the clipboard all live in the
+/// page.
+macro_rules! bar_command {
+    ($(#[$doc:meta])* $name:ident, $module:ident) => {
+        $(#[$doc])*
+        #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+        pub struct $name {
+            /// The command entity (a fresh id per invocation).
+            pub this: Entity,
+            /// The moment it was asked, so asking again re-fires.
+            pub time: crate::domain::command::current::$module::Time,
+        }
+
+        impl Command for $name {
+            type Input = Self;
+            type Output = ();
+        }
+    };
+}
+
+bar_command!(
+    /// Start adding an account to this profile (the bar's "add an account").
+    AddAccount,
+    add_account
+);
+bar_command!(
+    /// Copy a link that invites someone into the space (the bar's share).
+    ShareLink,
+    share_link
+);
+bar_command!(
+    /// Show who is in the space (the bar's members panel).
+    ViewMembers,
+    view_members
+);
+bar_command!(
+    /// Invite an agent into the space (the bar's agent panel).
+    ConnectAgent,
+    connect_agent
+);
+bar_command!(
+    /// Connect this space, or confirm the email that would (the bar's
+    /// condition, when it offers one).
+    ConnectSpace,
+    connect_space
+);
+
+/// `intent/interpret`: what was typed in the command palette, where it
+/// was opened. The handler is the parser: it records the expression (the
+/// input, the site, and the site's selection) and one `intent` per command
+/// the input could mean, in the session overlay of the branch it came from.
+/// Rules derive values for those commands' fields onto the intents, and
+/// `intent/suggest` reads them back as readings.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct Interpret {
+    /// The command entity (a fresh id per keystroke).
+    pub this: Entity,
+    /// The palette opening it belongs to.
+    pub expression: crate::domain::command::current::intent_interpret::Expression,
+    /// Exactly what is typed.
+    pub input: crate::domain::command::current::intent_interpret::Input,
+    /// The tab's site.
+    pub site: crate::domain::command::current::intent_interpret::Site,
+    /// When it was typed.
+    pub time: crate::domain::command::current::intent_interpret::Time,
+}
+
+impl Command for Interpret {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `site/select`: what the page in a tab has selected, reported by the
+/// page as it changes. The handler records it on the tab's site as
+/// `xyz.tonk.site/selection`, in the session overlay of the branch it came
+/// from and of the profile, so rules and the palette read it as a site
+/// fact. An empty `text` clears it.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct SiteSelect {
+    /// The command entity (a fresh id per report).
+    pub this: Entity,
+    /// The tab's site entity.
+    pub site: crate::domain::command::current::site_select::Site,
+    /// The selected text; empty when the selection was cleared.
+    pub text: crate::domain::command::current::site_select::Text,
+    /// When it changed.
+    pub time: crate::domain::command::current::site_select::Time,
+}
+
+impl Command for SiteSelect {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Take the page that asked back to the hub.
+///
+/// What the FAB's home button does with a link, as a command, so it can be
+/// said: the handler posts a navigation to the originating page, the way a
+/// join lands its tab on the new space.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct Home {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The moment it was asked, so going home twice re-fires.
+    pub time: crate::domain::command::current::home::Time,
+}
+
+impl Command for Home {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `library/install`: add one of the library's components (notebook,
+/// table, …) to the space it is said in. Additive: the component's
+/// definitions are evaluated into the branch beside what is there, and the
+/// space's installed seed is neither recorded nor replaced.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct InstallComponent {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// Which component: `tonk:library/<name>`.
+    pub component: crate::domain::command::current::install_component::Component,
+    /// The moment it was asked.
+    pub time: crate::domain::command::current::install_component::Time,
+}
+
+impl Command for InstallComponent {
+    type Input = Self;
+    type Output = ();
+}
+
 /// `tonk:sign-in-via`: sign this browser in through another deployment.
 ///
 /// The browser-side `tonk account login --via`: the worker sends the page

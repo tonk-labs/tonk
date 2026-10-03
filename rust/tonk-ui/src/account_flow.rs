@@ -3170,7 +3170,7 @@ pub(crate) mod tests {
         let unknown = "nobody-has-this@example.com";
         let dispatched = post_json(
             &driver,
-            "/api/profile/branch/main/transact",
+            "/api/repository/profile:tonk/branch/main/transact",
             check_email_claim_json(unknown),
         )
         .await?;
@@ -3189,7 +3189,7 @@ pub(crate) mod tests {
         sign_up(&driver, &env, taken).await?;
         let dispatched = post_json(
             &driver,
-            "/api/profile/branch/main/transact",
+            "/api/repository/profile:tonk/branch/main/transact",
             check_email_claim_json(taken),
         )
         .await?;
@@ -3208,7 +3208,10 @@ pub(crate) mod tests {
     /// Read the overlay answer for `address`, waiting for the row that
     /// names it rather than whichever row happens to be there.
     async fn await_email_status(driver: &WebDriver, address: &str) -> Result<String> {
-        let endpoint = format!("/api/profile/branch/{}/query", active_branch(driver).await?);
+        let endpoint = format!(
+            "/api/repository/profile:tonk/branch/{}/query",
+            active_branch(driver).await?
+        );
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let rows = post_json(
@@ -4485,7 +4488,7 @@ pub(crate) mod tests {
 
         let rows = post_json(
             &driver,
-            "/api/profile/branch/main/query",
+            "/api/repository/profile:tonk/branch/main/query",
             // The bar's query, inlined: `tonk-ui` does not depend on
             // `tonk-fab`. Pinned to it by
             // `logic::account_state_query::it_binds_its_subject`, which
@@ -4576,7 +4579,7 @@ pub(crate) mod tests {
         let taken = "activates@example.com";
         let dispatched = post_json(
             &driver,
-            "/api/profile/branch/main/transact",
+            "/api/repository/profile:tonk/branch/main/transact",
             check_email_claim_json(taken),
         )
         .await?;
@@ -4599,7 +4602,7 @@ pub(crate) mod tests {
             // it was when it was given.
             let asked = post_json(
                 &driver,
-                "/api/profile/branch/main/transact",
+                "/api/repository/profile:tonk/branch/main/transact",
                 check_email_claim_json(taken),
             )
             .await?;
@@ -5511,7 +5514,10 @@ pub(crate) mod tests {
                 "url": { "?": { "name": "url" } }
             }
         });
-        let endpoint = format!("/api/profile/branch/{}/query", active_branch(driver).await?);
+        let endpoint = format!(
+            "/api/repository/profile:tonk/branch/{}/query",
+            active_branch(driver).await?
+        );
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
             let rows = post_json(driver, &endpoint, ask.clone()).await?;
@@ -6040,7 +6046,7 @@ pub(crate) mod tests {
         let claim = tonk_worker_api::create_space_claim_json(name);
         let dispatched = post_json(
             driver,
-            &format!("/api/profile/branch/{branch}/transact"),
+            &format!("/api/repository/profile:tonk/branch/{branch}/transact"),
             claim,
         )
         .await?;
@@ -6052,7 +6058,7 @@ pub(crate) mod tests {
         let known = serde_json::to_string(&before).unwrap_or_else(|_| "[]".to_owned());
         await_subscription(
             driver,
-            &format!("/api/profile/branch/{branch}/query"),
+            &format!("/api/repository/profile:tonk/branch/{branch}/query"),
             tonk_worker::helpers::replica_concept_wire_query(),
             &format!(
                 r#"const before = new Set({known});
@@ -6091,7 +6097,7 @@ pub(crate) mod tests {
             // it the moment it commits.
             await_subscription(
                 driver,
-                &format!("/api/profile/branch/{branch}/query"),
+                &format!("/api/repository/profile:tonk/branch/{branch}/query"),
                 tonk_worker::helpers::remote_concept_wire_query(),
                 &format!(
                     r#"const rows = frame.conclusions || frame.asserted || [];
@@ -6195,7 +6201,10 @@ pub(crate) mod tests {
     }
 
     async fn account_summary(driver: &WebDriver) -> Result<serde_json::Value> {
-        let endpoint = format!("/api/profile/branch/{}/query", active_branch(driver).await?);
+        let endpoint = format!(
+            "/api/repository/profile:tonk/branch/{}/query",
+            active_branch(driver).await?
+        );
         let query = serde_json::json!({
             "predicate": { "with": {
                 "email": {
@@ -6597,7 +6606,7 @@ pub(crate) mod tests {
         // not the attach having landed, so poll rather than read once.
         await_subscription(
             &driver,
-            "/api/profile/branch/main/query",
+            "/api/repository/profile:tonk/branch/main/query",
             tonk_worker::helpers::remote_concept_wire_query(),
             &format!(
                 r#"const rows = frame.conclusions || frame.asserted || [];
@@ -10245,7 +10254,7 @@ pub(crate) mod tests {
         let branch = active_branch(&creator).await?;
         let created = post_json(
             &creator,
-            &format!("/api/profile/branch/{branch}/transact"),
+            &format!("/api/repository/profile:tonk/branch/{branch}/transact"),
             serde_json::json!({
                 "claims": [{
                     "op": "assert",
@@ -10308,7 +10317,7 @@ pub(crate) mod tests {
         let recipient = loop {
             let principals = post_json(
                 &creator,
-                &format!("/api/profile/branch/{branch}/query"),
+                &format!("/api/repository/profile:tonk/branch/{branch}/query"),
                 serde_json::json!({
                     "terms": {
                         "this": { "?": { "name": "this" } },
@@ -10331,7 +10340,7 @@ pub(crate) mod tests {
             if let Some(seed) = seed {
                 let messages = post_json(
                     &creator,
-                    &format!("/api/profile/branch/{branch}/query"),
+                    &format!("/api/repository/profile:tonk/branch/{branch}/query"),
                     serde_json::json!({
                         "terms": {
                             "this": { "?": { "name": "this" } },

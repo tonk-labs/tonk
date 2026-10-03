@@ -508,7 +508,9 @@ mod link_row_tests {
         let query = r#"{"predicate":{"with":{"account":{"the":"xyz.tonk.link/account","as":"Entity","cardinality":"one"}}},"terms":{"this":{"?":{"name":"this"}},"account":{"?":{"name":"account"}}}}"#;
         let mut request = Request::builder()
             .method("POST")
-            .uri(format!("/api/profile/branch/{branch}/query"))
+            .uri(format!(
+                "/api/repository/profile:tonk/branch/{branch}/query"
+            ))
             .header("content-type", "application/json")
             .body(Body::from(query))
             .unwrap();
