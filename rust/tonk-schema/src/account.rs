@@ -210,7 +210,7 @@ impl AccountSealedInbox {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use dialog_operator::helpers;
+    use dialog_peer::helpers;
     use dialog_query::{Output as _, Query, Term};
     use dialog_varsig::did;
     #[cfg(target_arch = "wasm32")]
@@ -223,7 +223,7 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     async fn converge(a_first: bool) -> Result<String> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let base = repository.branch("base").open().perform(&operator).await?;
         let base_revision = base
@@ -320,7 +320,7 @@ mod tests {
     /// own, and an account carries whichever have happened.
     #[dialog_common::test]
     async fn it_reads_registration_activation_and_suspension_apart() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let account = did!("test:account").this();
@@ -451,7 +451,7 @@ mod tests {
     /// registered.
     #[dialog_common::test]
     async fn it_does_not_race_enrollment_against_activation() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let account = did!("test:account").this();
@@ -497,14 +497,15 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_converges_divergent_display_names_in_both_orders() -> Result<()> {
-        let a_then_b = converge(true).await?;
-        let b_then_a = converge(false).await?;
-
-        // Order independence is the property that matters, and it is the one
-        // this pins. Which of two concurrent names wins is dialog's
-        // cardinality-one merge to decide, not wall-clock latest-write, so
-        // asserting the specific winner would only pin that internal choice.
-        assert_eq!(a_then_b, b_then_a);
+        // Order independence is the property that matters, and it is the
+        // one this pins: whichever replica pulls first, both end up on
+        // the same name, which `converge` asserts for each order. Which
+        // of two concurrent names wins is dialog's cardinality-one
+        // election to decide; it goes by the revisions that wrote them,
+        // so two runs with freshly minted identities need not agree with
+        // each other, and this does not compare them.
+        converge(true).await?;
+        converge(false).await?;
         Ok(())
     }
 }
@@ -530,6 +531,32 @@ pub struct EmailStatus {
     /// One of `unregistered`, `active`, `pending`, `suspended`,
     /// `invalid`, `unavailable`.
     pub state: crate::domain::email_status::State,
+}
+
+/// This device holds an account's authority on the active branch.
+///
+/// Published on the branch overlay by the worker whenever the link
+/// changes, and re-published at boot, so a view can tell a linked branch
+/// from one whose account facts merely remain after a sign-out.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AccountLink {
+    /// Always [`AccountLink::ENTITY`]: one row per branch overlay.
+    pub this: Entity,
+    /// The linked account.
+    pub account: crate::domain::account_link::Account,
+}
+
+impl AccountLink {
+    /// The single entity the link row lives on.
+    pub const ENTITY: &str = "state:account-link";
+
+    /// A link to `account`.
+    pub fn new(this: Entity, account: Entity) -> Self {
+        Self {
+            this,
+            account: crate::domain::account_link::Account(account),
+        }
+    }
 }
 
 /// Where a passkey-gated command got to, on the profile overlay.
@@ -577,6 +604,18 @@ pub mod ceremony {
     pub const AUTHORIZE_DEVICE: &str = "authorize-device";
     /// `tonk:add-passkey`.
     pub const ADD_PASSKEY: &str = "add-passkey";
+    /// `tonk:add-profile` — signing up a fresh profile's account.
+    ///
+    /// Unlike its siblings the worker does not drive this one to
+    /// completion: it rotates the profile, asks the page to raise the
+    /// signup, and the page's own ceremony runs from there. The status
+    /// exists so the hub can show that a signup is up without holding
+    /// that fact in element state, which a re-render would lose.
+    pub const ADD_PROFILE: &str = "add-profile";
+    /// `tonk:sign-in-via` and `tonk:finish-sign-in-via`: signing this
+    /// browser in through another deployment. One name for both halves,
+    /// so the page shows one line however far the round trip got.
+    pub const SIGN_IN_VIA: &str = "sign-in-via";
 }
 
 /// The states a [`CeremonyStatus`] can report.

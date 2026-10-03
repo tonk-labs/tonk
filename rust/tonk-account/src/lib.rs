@@ -11,6 +11,8 @@ pub mod delegations;
 mod descriptor;
 /// Canonical device-signed account attachment detach intents.
 pub mod detach;
+/// Opening the peer a tonk profile is.
+pub mod peer;
 /// Work deferred until the account confirms its email.
 pub mod pending;
 /// Provider-neutral account space backup artifacts.
@@ -27,8 +29,8 @@ use dialog_effects::archive::{Get, Put};
 use dialog_effects::blob::{Import as BlobImport, Read as BlobRead};
 use dialog_effects::memory::{Publish as MemoryPublish, Resolve};
 use dialog_repository::{
-    Branch, FetchRemoteBranchError, Hydrate, PublishError, PublishRemoteBranchError, PushError,
-    RemoteBranch, RemoteSite, ResolveError, Revision,
+    Branch, ConnectedBranch, FetchRemoteBranchError, PublishError, PublishRemoteBranchError,
+    PushError, RemoteSite, ResolveEnv, ResolveError, Revision,
 };
 use thiserror::Error;
 
@@ -36,6 +38,28 @@ use thiserror::Error;
 pub const MAIN_BRANCH: &str = "main";
 /// The account repository's sole remote in descriptor version 1.
 pub const ORIGIN_REMOTE: &str = "origin";
+
+/// The profile-local name of `subject`'s account remote.
+///
+/// One remote per account rather than one `origin` repointed at whichever
+/// account is active: dialog keeps a remote branch's last-seen head under
+/// the remote's name, so a name two accounts share hands the second
+/// account the first one's head, and its pulls and its genesis push then
+/// resolve against a revision its own site never held.
+pub fn account_remote_name(subject: &str) -> String {
+    format!("account-{}-origin", account_slug(subject))
+}
+
+/// The profile-local name of the remote the access branch adopts
+/// `subject`'s delegations from; one per account, like
+/// [`account_remote_name`].
+pub fn account_access_remote_name(subject: &str) -> String {
+    format!("account-{}-access", account_slug(subject))
+}
+
+fn account_slug(subject: &str) -> String {
+    blake3::hash(subject.as_bytes()).to_hex().to_string()
+}
 /// Replica kind used for the hidden account system repository.
 pub const ACCOUNT_REPLICA_KIND: &str = "tonk:account";
 /// Credential site holding the local provider attachment and the account
@@ -112,7 +136,7 @@ pub enum RemoteError {
 /// Probe `origin/main`, distinguishing only a confirmed missing revision cell
 /// from every remote failure.
 pub async fn probe_remote_main<Env>(
-    branch: &RemoteBranch,
+    branch: &ConnectedBranch,
     env: &Env,
 ) -> Result<RemotePresence, RemoteError>
 where
@@ -138,16 +162,12 @@ where
 /// error.
 pub async fn publish_genesis_if_absent<Env>(
     branch: &Branch,
-    remote: &RemoteBranch,
+    remote: &ConnectedBranch,
     env: &Env,
 ) -> Result<CreateGenesis, RemoteError>
 where
-    Env: Provider<Get>
-        + Provider<Put>
-        + Provider<Resolve>
-        + Provider<MemoryPublish>
+    Env: ResolveEnv
         + Provider<BlobRead>
-        + Provider<Hydrate>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Put>>
         + Provider<Fork<RemoteSite, Resolve>>

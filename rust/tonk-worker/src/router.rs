@@ -49,11 +49,12 @@ pub(crate) fn update_pending() -> bool {
 mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
-mod account;
+pub(crate) mod account;
 mod account_deletion;
 mod ceremony;
 pub(crate) mod customer;
 mod email_status;
+mod sign_in_via;
 
 pub(crate) mod account_state;
 pub use account_state::AccountKeys;
@@ -69,12 +70,14 @@ pub(crate) mod rotation;
 
 mod join;
 pub use join::{JoinRequest, JoinResponse};
+mod local_space_link;
 
 pub(crate) mod account_devices;
 
 mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
+pub(crate) mod agent_connections;
 mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
@@ -83,12 +86,15 @@ mod members;
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 
-mod repository;
+pub(crate) mod repository;
 pub(crate) use repository::ProfileLibraryCache;
 pub use repository::{
     BranchConfiguration, MemberInfo, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
     UpstreamConfiguration, bootstrap_profile,
 };
+
+/// The remotes a repository names, as its meta branch records them.
+pub(crate) mod remotes;
 
 mod sync;
 pub use dialog_repository::Revision;
@@ -111,8 +117,7 @@ pub use lsp::LspHub;
 
 mod lsp_env;
 
-mod onboarding_space;
-mod profile;
+pub(crate) mod profile;
 pub use profile::{ProfileInfo, SpaceEntry};
 
 pub(crate) mod profiles;
@@ -120,6 +125,8 @@ pub(crate) mod profiles;
 mod profile_name;
 
 mod evaluate;
+mod library;
+mod seed;
 pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBlock, QueryResult};
 
 mod query;
@@ -148,11 +155,16 @@ mod blob;
 
 mod migration;
 
+mod interpret;
 mod navigate;
+mod site_request;
+mod site_select;
 
 mod command;
 pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch};
 
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod intent;
 #[cfg(test)]
 mod route_table;
 #[cfg(test)]
@@ -181,6 +193,67 @@ async fn profile_context_fence(
         }
     }
     Ok(next.run(request).await)
+}
+
+/// The token a repository route's `{repo}` segment names the profile's
+/// own repository by: `profile:<name>`, as a view's `main@profile:tonk`
+/// context spells it. The worker serves one profile, so the name is not
+/// consulted.
+const PROFILE_ALIAS: &str = "profile:";
+
+/// Whether `repo` is the key of the profile's own repository.
+///
+/// The profile's repository is a repository like any other, reached by
+/// its DID through the same routes. What sets it apart is what may be
+/// done to it: a sealed guest never writes it, and its commits belong to
+/// no space. Each route that makes that distinction asks here.
+pub(crate) async fn names_profile(state: &AppState, repo: &str) -> bool {
+    state.read().await.reactor.profile_key() == repo
+}
+
+/// The path a repository route is asked for, with a `profile:<name>`
+/// repository segment replaced by `key`, the profile's DID, or `None`
+/// when the path names no profile alias.
+fn resolve_profile_alias(path: &str, key: &str) -> Option<String> {
+    let rest = path.strip_prefix("/api/repository/")?;
+    let (repo, tail) = match rest.split_once('/') {
+        Some((repo, tail)) => (repo, Some(tail)),
+        None => (rest, None),
+    };
+    let alias = repo.starts_with(PROFILE_ALIAS)
+        || repo
+            .get(..PROFILE_ALIAS.len() + 2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("profile%3a"));
+    if !alias {
+        return None;
+    }
+    Some(match tail {
+        Some(tail) => format!("/api/repository/{key}/{tail}"),
+        None => format!("/api/repository/{key}"),
+    })
+}
+
+/// Route a request naming the profile's repository by its alias to the
+/// repository's own key, before the router matches it. One place knows
+/// the alias; every route past it sees a repository key.
+async fn profile_alias(
+    State(state): State<AppState>,
+    mut request: ::axum::extract::Request,
+    next: Next,
+) -> Response {
+    if request.uri().path().starts_with("/api/repository/profile") {
+        let key = state.read().await.reactor.profile_key().to_owned();
+        if let Some(path) = resolve_profile_alias(request.uri().path(), &key) {
+            let rewritten = match request.uri().query() {
+                Some(query) => format!("{path}?{query}"),
+                None => path,
+            };
+            if let Ok(uri) = rewritten.parse() {
+                *request.uri_mut() = uri;
+            }
+        }
+    }
+    next.run(request).await
 }
 
 /// Root handler that returns a welcome message.
@@ -229,10 +302,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/account", get(account::get).delete(account::unlink))
         .route("/api/account/deletion/plan", get(account_deletion::plan))
-        .route(
-            "/api/account/spaces/delete",
-            post(account_deletion::delete_space),
-        )
         .route("/api/account/attach", post(account::link))
         .route("/api/account/display-name", post(account::set_display_name))
         // Customer registration with the same-origin access service.
@@ -253,53 +322,22 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api/profiles", get(profiles::list))
         .route("/api/profiles/activate", post(profiles::activate))
         .route("/api/profiles/add", post(profiles::add))
-        // Profile-as-repository routes. The profile is its own
-        // repository but lives outside the named-repo namespace
-        // (no `repo` segment), so it gets a parallel route
-        // surface here rather than nesting under
-        // `/api/repository/{repo}/...`.
-        .route(
-            "/api/profile/repository",
-            get(repository::get_profile_repository),
-        )
-        .route(
-            "/api/profile/branch/{branch}/query",
-            post(query::query_profile),
-        )
-        .route(
-            "/api/profile/branch/{branch}/evaluate",
-            post(evaluate::evaluate_profile),
-        )
+        // The profile's own repository has no routes of its own: it is
+        // reached through `/api/repository/{repo}/…` like every other,
+        // by its DID or the `profile:<name>` alias (see `profile_alias`).
         .route(
             "/api/profile/library",
             post(repository::update_profile_library),
-        )
-        .route(
-            "/api/profile/branch/{branch}/transact",
-            post(transact::transact_profile),
-        )
-        // The profile's own CSV export, alongside `/query` and
-        // `/transact`. The repository route cannot serve the profile:
-        // the profile is a singleton reached through
-        // `profile_repository()`, not by name.
-        .route(
-            "/api/profile/branch/{branch}/export",
-            get(transfer::export_profile),
         )
         // Register the requesting client's site (per-tab navigation state).
         // The page calls this on load and on each client-side navigation; the
         // SW asserts the tab's `tonk:site` and returns the site id. Reads never
         // stamp — see `router/session.rs`.
-        .route("/api/profile/welcome", post(onboarding_space::welcome))
         .route("/api/site", post(session::register_site))
         // Per-branch site registration: the branch comes from the URL (like
         // `/query` and `/transact`), not from parsing the document path. A
         // `<tonk-site>` scoped by `<tonk-repository>`/`<tonk-branch>` ancestors
         // posts its path here and renders the returned site entity.
-        .route(
-            "/api/profile/branch/{branch}/site",
-            post(session::register_site_on_profile),
-        )
         .route(
             "/api/repository/{repo}/branch/{branch}/site",
             post(session::register_site_on_repo),
@@ -307,6 +345,22 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
         .route("/api/profile/join", post(join::join))
+        .route(
+            "/api/local-space-link/approve",
+            post(local_space_link::approve),
+        )
+        .route(
+            "/api/local-space-link/describe",
+            post(local_space_link::describe),
+        )
+        .route(
+            "/api/local-space-link/provision",
+            post(local_space_link::provision),
+        )
+        .route(
+            "/api/local-space-link/complete",
+            post(local_space_link::complete),
+        )
         .route(
             "/api/migrate/repo-vs-profile",
             get(migration::repo_vs_profile),
@@ -328,6 +382,11 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(revoke_invite::revoke),
         )
         .route("/api/repository/{repo}/invites", get(revoke_invite::list))
+        .route("/api/account/connections", get(agent_connections::list))
+        .route(
+            "/api/account/connections/{id}/revoke",
+            post(agent_connections::revoke),
+        )
         // Opt-in remote attach — wires a remote (and branch upstream)
         // onto an existing repo, idempotently. See
         // `router/repository.rs::attach_remote`.
@@ -415,10 +474,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
             get(host::guest),
         )
-        .route(
-            "/api/repository/{repo}/branch/{branch}/onboarding",
-            post(onboarding_space::prepare),
-        )
         // Content-addressed blob bytes: GET serves an entity's bytes; POST
         // ingests a new blob into the branch store and returns its ref.
         // `<tonk-display>` points `<img src>` at the GET form for
@@ -465,6 +520,12 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             state.clone(),
             profile_context_fence,
         ));
+    // A layer runs after its router has matched a route, so the alias is
+    // resolved by a router of its own in front, whose only service is the
+    // one above.
+    let router = Router::new()
+        .fallback_service(router)
+        .layer(middleware::from_fn_with_state(state, profile_alias));
     (router, lsp_hub)
 }
 
@@ -479,9 +540,18 @@ pub mod tests {
 
     use crate::api_router;
     use crate::worker::TonkState;
+    // The state fixtures moved to `helpers::state` so crates outside
+    // this one can boot a real worker too; re-exported here so the
+    // tests below read as they did.
+    pub use crate::helpers::state::{
+        test_state, test_state_without_account, test_state_without_root,
+    };
+    // Crate-internal fixtures: several router submodules reach for these
+    // by their old path, so keep it resolving without widening them.
+    pub(crate) use crate::helpers::state::{persist_test_root, test_root_seed};
 
+    use crate::worker::DefaultProfile;
     use dialog_credentials::Ed25519Signer;
-    use dialog_operator::Profile;
     use dialog_repository::RepositoryExt as _;
     use dialog_storage::provider::storage::Storage;
     use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as UcanSubject};
@@ -528,7 +598,7 @@ pub mod tests {
 
         for (method, uri) in [
             ("GET", "/api/profile"),
-            ("POST", "/api/profile/branch/main/transact"),
+            ("POST", "/api/repository/profile:tonk/branch/main/transact"),
         ] {
             let stale = app
                 .clone()
@@ -618,178 +688,6 @@ pub mod tests {
         );
     }
 
-    /// A random id minted once per test *process*, mixed into every profile
-    /// name so two runs never collide on storage a shared browser profile
-    /// kept between them.
-    fn session_nonce() -> u32 {
-        use std::sync::OnceLock;
-        static NONCE: OnceLock<u32> = OnceLock::new();
-        *NONCE.get_or_init(rand::random::<u32>)
-    }
-
-    /// Creates a test state with the default storage backend.
-    ///
-    /// The state has a profile and operator but *no* repository —
-    /// tests that need one call [`put_repo`] with a display label and
-    /// use the minted routing key it returns. Every create mints a
-    /// fresh identity for the repos it makes, but the profile itself
-    /// is durable IndexedDB state keyed by name: each call mints its
-    /// own unique profile name so tests that rename or restamp the
-    /// profile never bleed into one another.
-    ///
-    /// The sequence number alone is unique only *within* a run —
-    /// `test-tonk-3` is whichever test happened to run third — so a
-    /// runner that reuses a browser profile (safaridriver, a persistent
-    /// Chrome user-data-dir) would hand run N's leftover IndexedDB to
-    /// run N+1's third test, reviving the order dependence in cross-run
-    /// form. `wasm-bindgen-test-runner`'s throwaway Chrome profile hides
-    /// that today; the [`session_nonce`] makes it unconditional.
-    pub async fn test_state_without_root() -> TonkState {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static SEQ: AtomicU64 = AtomicU64::new(0);
-        let profile_name = format!(
-            "test-tonk-{}-{}",
-            session_nonce(),
-            SEQ.fetch_add(1, Ordering::Relaxed)
-        );
-
-        crate::patch_idb_versionchange();
-        let storage = Storage::<DefaultSpace>::default();
-        let profile = Profile::open(&profile_name)
-            .perform(&storage)
-            .await
-            .expect("Failed to create test profile");
-
-        let session = crate::session::open(&profile, &storage)
-            .await
-            .expect("Failed to open a test signing session");
-
-        let reactor = crate::Reactor::new(profile.clone());
-        // The registry mirrors production shape — the state's own profile
-        // is the registry profile, exactly as `Registry::device()` signs
-        // as `tonk` until the first rotation. Uniquely named per state,
-        // so tests neither collide with each other nor touch the real
-        // registry, while rotated/activated profiles still resolve in the
-        // same directory the test profile itself lives in.
-        let registry = crate::device::Registry {
-            profile: profile_name.clone(),
-            directory: dialog_effects::storage::Directory::Profile,
-        };
-        TonkState {
-            seed_upgrades: Default::default(),
-            profile,
-            operator: session.operator,
-            storage,
-            session_expires_at: session.expires_at,
-            profile_name,
-            reactor,
-            admission: Default::default(),
-            reject_admission_content_reads: Default::default(),
-            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            view_bindings: Default::default(),
-            bridges: Default::default(),
-            sync_queue: Default::default(),
-            commands: super::command_providers(),
-            clients: Default::default(),
-            account_keys: Default::default(),
-            profile_library: Default::default(),
-            registry,
-            profile_transition: Default::default(),
-            context_generation: Default::default(),
-        }
-    }
-
-    /// The root seed for a test profile, derived from its name.
-    ///
-    /// Per-profile rather than one shared constant, because the account
-    /// repository's routing key IS the root's — so every profile sharing a
-    /// root shares one account repository, and its storage is not scoped by
-    /// profile the way a space's is. Two tests that link descriptors naming
-    /// different remotes then fight over the same mount, and the second one
-    /// to run reads the first one's remote and refuses as a conflict. That
-    /// is invisible until the ordering shifts, which is exactly the failure
-    /// [`session_nonce`] exists to prevent one layer down.
-    ///
-    /// A fold rather than a hash: no dependency, deterministic, and it mixes
-    /// every byte of the name — which is all that separating test profiles
-    /// requires.
-    pub(crate) fn test_root_seed(profile_name: &str) -> [u8; 32] {
-        let mut seed = [42u8; 32];
-        for (index, byte) in profile_name.as_bytes().iter().enumerate() {
-            seed[index % 32] ^= byte.rotate_left((index % 8) as u32);
-        }
-        seed
-    }
-
-    /// Create an isolated test state with a stable local root grant and no
-    /// account attached to it.
-    ///
-    /// The shape a device is in between provisioning a root and finishing
-    /// sign-up. Only the tests that assert a durable operation refuses want
-    /// it; everything else wants [`test_state`], because production never
-    /// creates a root without an account around it.
-    pub async fn test_state_without_account() -> TonkState {
-        let state = test_state_without_root().await;
-        persist_test_root(&state).await;
-        state
-    }
-
-    /// Persist the test root on `state`, the way a creation or unlock
-    /// ceremony does: the `root -> device` grant, the recipient custodied
-    /// seeds are sealed to, and that recipient published on profile main.
-    /// Returns the root DID.
-    pub(crate) async fn persist_test_root(state: &TonkState) -> dialog_varsig::Did {
-        let root = Ed25519Signer::import(&test_root_seed(&state.profile_name))
-            .await
-            .unwrap();
-        let root_did = root.did();
-        let grant = tonk_identity::delegation::mint_device_delegation(root, &state.profile.did())
-            .await
-            .unwrap();
-        // What a creation or unlock ceremony hands back with the root, and
-        // what the account sweep then publishes: the recipient custodied
-        // seeds are sealed to. Published here directly, since the fixture
-        // has no account branch to sweep.
-        let recipient = tonk_identity::envelope::AccountSecret::from_bytes(
-            zeroize::Zeroizing::new(test_root_seed(&state.profile_name)),
-        )
-        .secret()
-        .did();
-        super::identity::persist_root(
-            state,
-            tonk_worker_api::SaveRootRequest {
-                credential_id: "test-credential".to_string(),
-                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
-                passkey: None,
-                encryption_key: Some(recipient.to_string()),
-            },
-        )
-        .await
-        .unwrap();
-        state
-            .reactor
-            .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
-            .transaction()
-            .assert(tonk_schema::AccountSealedInbox::new(
-                root_did.this(),
-                recipient.this(),
-            ))
-            .commit()
-            .perform(&state.operator)
-            .await
-            .expect("the fixture publishes the account's encryption key");
-        root_did
-    }
-
-    /// Create an isolated test state with a stable local root grant and an
-    /// account attached to it — a signed-in device.
-    pub async fn test_state() -> TonkState {
-        let state = test_state_without_account().await;
-        super::account::attach_test_account(&state).await.unwrap();
-        state
-    }
-
     /// Query all `Membership` rows on `repo`'s content branch.
     pub(crate) async fn content_memberships(
         state: &super::AppState,
@@ -800,7 +698,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -834,7 +732,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -869,7 +767,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -902,7 +800,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -935,7 +833,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -996,6 +894,114 @@ pub mod tests {
     /// of "not signed in": no root at all, and a root with no account behind
     /// it. Neither may create a space — one that exists without an account is
     /// local-only and never backed up, and nothing later would say so.
+    /// A repository route names the profile's own repository by its
+    /// `profile:<name>` alias, encoded or not, and the alias resolves to
+    /// the profile's key wherever in the route it sits. Nothing else is
+    /// taken for the alias.
+    #[dialog_common::test]
+    fn it_resolves_the_profile_alias_to_the_profile_key() {
+        let key = "did:key:zProfile";
+        let resolve = |path| super::resolve_profile_alias(path, key);
+        assert_eq!(
+            resolve("/api/repository/profile:tonk/branch/main/query").as_deref(),
+            Some("/api/repository/did:key:zProfile/branch/main/query")
+        );
+        assert_eq!(
+            resolve("/api/repository/profile%3Atonk/branch/meta/transact").as_deref(),
+            Some("/api/repository/did:key:zProfile/branch/meta/transact")
+        );
+        assert_eq!(
+            resolve("/api/repository/profile:tonk").as_deref(),
+            Some("/api/repository/did:key:zProfile")
+        );
+        for other in [
+            "/api/repository/did:key:zSpace/branch/main/query",
+            "/api/repository/profile/branch/main/query",
+            "/api/repository/profiles:tonk",
+            "/api/profile",
+            "/api/profiles/add",
+        ] {
+            assert_eq!(resolve(other), None, "{other}");
+        }
+    }
+
+    /// The alias and the DID reach one repository through one route: what
+    /// is written naming the profile one way is read naming it the other.
+    #[dialog_common::test]
+    async fn it_serves_the_profile_repository_by_alias_and_by_did() {
+        use dialog_capability::Principal as _;
+
+        let (app, state, _lsp) = super::api_router_with_state(test_state_without_root().await);
+        let profile = state.read().await.profile.did().to_string();
+        let info = |uri: String| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+            }
+        };
+        let by_alias = info("/api/repository/profile:tonk".to_owned()).await;
+        let by_did = info(format!("/api/repository/{profile}")).await;
+        assert_eq!(by_alias, by_did);
+        assert_eq!(by_did["subject"], serde_json::json!(profile));
+    }
+
+    /// The profile's own repository is a repository like any other: named
+    /// by the profile's DID, it is the one the profile chain reaches, with
+    /// one cached state and one handle per branch however it is asked for.
+    /// It is not counted among the spaces.
+    #[dialog_common::test]
+    async fn it_reaches_the_profile_repository_by_its_did() {
+        use dialog_capability::Principal as _;
+
+        let (app, state, _lsp) = super::api_router_with_state(test_state_without_root().await);
+        let space = put_repo(&app, "beside-the-profile").await;
+        let tonk = state.read().await;
+        let profile = tonk.profile.did().to_string();
+        assert_eq!(tonk.reactor.profile_key(), profile);
+
+        let through_chain = tonk
+            .reactor
+            .profile_repository()
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let by_did = tonk
+            .reactor
+            .repository(&profile)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&through_chain, &by_did));
+
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let same = tonk
+            .reactor
+            .repository(&profile)
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&main.state, &same.state));
+
+        let spaces = tonk.reactor.spaces();
+        assert!(spaces.contains(&space), "{spaces:?}");
+        assert!(!spaces.contains(&profile), "{spaces:?}");
+    }
+
     /// A space creates before any account exists, delegated to the most
     /// durable key the profile holds (plan/Account model.md §2): the
     /// device key when there is no root, the root when there is one.
@@ -1007,7 +1013,7 @@ pub mod tests {
             let tonk = state.read().await;
             let repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -1031,7 +1037,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -1062,7 +1068,7 @@ pub mod tests {
 
         let repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -1106,7 +1112,7 @@ pub mod tests {
         for key in [first, second] {
             let repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -1380,7 +1386,7 @@ pub mod tests {
         use super::repository::{
             BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
         };
-        use dialog_remote_ucan_s3::UcanAddress;
+        use dialog_remote_ucan::UcanAddress;
         use dialog_repository::SiteAddress;
 
         let config = RepositoryConfiguration::default()
@@ -1648,7 +1654,7 @@ pub mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/profile/branch/main/transact")
+                    .uri("/api/repository/profile:tonk/branch/main/transact")
                     .method("POST")
                     .header("content-type", "application/json")
                     .body(Body::from(command.to_string()))
@@ -2502,7 +2508,7 @@ pub mod tests {
         use super::repository::{
             BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
         };
-        use dialog_remote_ucan_s3::UcanAddress;
+        use dialog_remote_ucan::UcanAddress;
         use dialog_repository::SiteAddress;
 
         let state = test_state().await;
@@ -4508,6 +4514,145 @@ employee:
             session.state.subscriptions().lock().is_empty(),
             "dropped subscriber's subscription must be pruned after a change-driven poll"
         );
+    }
+
+    /// A branch polls its subscriptions lowest level first. The page gives
+    /// a display its nesting depth as its level, because a nested display must see
+    /// a change after its parent: otherwise it renders a frame for an
+    /// address its parent is about to replace. Creation order can't stand
+    /// in for level, because after a worker restart the page reconnects its
+    /// subscriptions in any order.
+    #[dialog_common::test]
+    async fn it_polls_outer_levels_before_nested_ones() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+        use tokio::sync::mpsc::unbounded_channel;
+        use tonk_schema::query::Query as WireQuery;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+        let (repo, subject) = put_repo_info(&app, "test-reactor-poll-order").await;
+
+        let guard = app_state.read().await;
+        let session = guard
+            .reactor
+            .repository(&repo)
+            .branch("main")
+            .acquire(&guard.operator)
+            .await
+            .expect("acquire");
+        session.state.assert_overlay(tonk_schema::SpaceLocal::new(
+            &subject.parse().unwrap(),
+            true,
+        ));
+
+        // Every query names its term differently, which gives it its own
+        // hash and tags its rows with the query they came from.
+        let query = |term: &str| {
+            let wire: WireQuery = serde_json::from_value(serde_json::json!({
+                "predicate": { "with": { term: {
+                    "the": "xyz.tonk.space/local", "as": "Boolean", "cardinality": "one"
+                } } },
+                "terms": { "this": subject, term: { "?": { "name": term } } }
+            }))
+            .expect("query decodes");
+            wire.into_concept_query().expect("concept query")
+        };
+
+        // Every subscriber shares one channel, so the receiver sees frames
+        // in the order the branch delivered them. Deeper levels register
+        // first (as nested displays can after a reconnect), four per level.
+        let (sender, mut receiver) = unbounded_channel();
+        // A query shared across levels is polled at its outermost, even
+        // though its deepest subscriber created it (first of all).
+        session
+            .state
+            .adopt_subscriber(query("shared"), None, 9, sender.clone());
+        let mut expected = Vec::new();
+        for level in (0..4u32).rev() {
+            for index in 0..4 {
+                let term = format!("l{level}n{index}");
+                session
+                    .state
+                    .adopt_subscriber(query(&term), None, level, sender.clone());
+                expected.push((level, term));
+            }
+        }
+        session
+            .state
+            .adopt_subscriber(query("shared"), None, 0, sender.clone());
+        expected.sort_by_key(|(level, _)| *level);
+        let mut expected: Vec<String> = expected.into_iter().map(|(_, term)| term).collect();
+        expected.insert(0, "shared".into());
+        expected.insert(0, "shared".into());
+        let terms = expected.clone();
+
+        session.state.poll(&guard.operator).await;
+
+        let mut delivered = Vec::new();
+        while let Ok(bytes) = receiver.try_recv() {
+            let frame: serde_json::Value = serde_json::from_slice(&bytes).expect("frame decodes");
+            let rows = frame["conclusions"].as_array().expect("a snapshot");
+            assert_eq!(rows.len(), 1, "each query matches the stamp: {frame}");
+            let row = rows[0].to_string();
+            let term = terms
+                .iter()
+                .find(|term| row.contains(&format!("\"{term}\"")))
+                .unwrap_or_else(|| panic!("row names its query: {frame}"));
+            delivered.push(term.clone());
+        }
+        assert_eq!(delivered, expected);
+    }
+
+    /// A subscription request carries its level in the URL, and the branch
+    /// records it on the subscriber.
+    #[dialog_common::test]
+    async fn it_records_the_level_a_subscription_request_names() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+        let repo = "test-reactor-level";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/query?level=3"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("accept", "text/event-stream")
+                    .body(Body::from(named_concept_wire_query().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = SseReader::new(response.into_body());
+        let _snapshot = read_sse_frame(&mut body).await;
+
+        let guard = app_state.read().await;
+        let session = guard
+            .reactor
+            .repository(repo)
+            .branch("main")
+            .acquire(&guard.operator)
+            .await
+            .expect("acquire");
+        let levels: Vec<u32> = session
+            .state
+            .subscriptions()
+            .lock()
+            .values()
+            .flat_map(|subscription| subscription.subscribers.iter().map(|s| s.level))
+            .collect();
+        assert_eq!(levels, vec![3]);
     }
 
     /// One-shot `/query` projects every term named in the

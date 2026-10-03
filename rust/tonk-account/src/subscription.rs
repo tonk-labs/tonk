@@ -15,10 +15,23 @@
 //!
 //! Deletion is the customer's own request and lives in `deletion`.
 
-use dialog_capability::{Attenuate, Effect};
-use dialog_effects::Use;
+use dialog_capability::{Attenuate, Attenuation, Effect};
+use dialog_effects::method::Put;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
+
+/// Ability segment `subscription` under `/use/put`: the operator's
+/// writes to a subscription row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Subscription;
+
+impl Attenuation for Subscription {
+    type Of = Put;
+
+    fn attenuation() -> &'static str {
+        "subscription"
+    }
+}
 
 /// `/use/put/subscription/suspend` — withdraw service from one
 /// subscription, and `/use/put/subscription/resume` to restore it.
@@ -45,13 +58,12 @@ pub struct Suspend {
     pub until: Option<u64>,
 }
 
-impl Effect for Suspend {
-    type Of = Use;
-    type Output = ();
+impl Attenuation for Suspend {
+    type Of = Subscription;
+}
 
-    fn command() -> &'static str {
-        "put/subscription/suspend"
-    }
+impl Effect for Suspend {
+    type Output = ();
 }
 
 /// `/use/put/subscription/resume` — restore a suspended subscription.
@@ -64,13 +76,12 @@ pub struct Resume {
     pub consumer: Did,
 }
 
-impl Effect for Resume {
-    type Of = Use;
-    type Output = ();
+impl Attenuation for Resume {
+    type Of = Subscription;
+}
 
-    fn command() -> &'static str {
-        "put/subscription/resume"
-    }
+impl Effect for Resume {
+    type Output = ();
 }
 
 /// `/use/put/subscription/archive` — stop carrying a subscription's
@@ -87,13 +98,12 @@ pub struct Archive {
     pub consumer: Did,
 }
 
-impl Effect for Archive {
-    type Of = Use;
-    type Output = ();
+impl Attenuation for Archive {
+    type Of = Subscription;
+}
 
-    fn command() -> &'static str {
-        "put/subscription/archive"
-    }
+impl Effect for Archive {
+    type Output = ();
 }
 
 #[cfg(test)]
@@ -101,6 +111,7 @@ mod tests {
     use super::*;
     use dialog_capability::Subject;
     use dialog_capability::did;
+    use dialog_effects::Use;
 
     /// The paths an operator tool delegates and the service dispatches
     /// on. Asserted because they are wire: a rename here is a protocol
@@ -109,6 +120,8 @@ mod tests {
     fn it_names_the_suspension_commands() {
         let suspend = Subject::from(did!("web:network.tonk"))
             .attenuate(Use)
+            .attenuate(Put)
+            .attenuate(Subscription)
             .invoke(Suspend {
                 consumer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
                     .parse()
@@ -121,6 +134,8 @@ mod tests {
 
         let resume = Subject::from(did!("web:network.tonk"))
             .attenuate(Use)
+            .attenuate(Put)
+            .attenuate(Subscription)
             .invoke(Resume {
                 consumer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
                     .parse()
@@ -130,6 +145,8 @@ mod tests {
 
         let archive = Subject::from(did!("web:network.tonk"))
             .attenuate(Use)
+            .attenuate(Put)
+            .attenuate(Subscription)
             .invoke(Archive {
                 consumer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
                     .parse()

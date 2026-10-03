@@ -65,21 +65,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alloc-no-stdlib"
-version = "2.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
-
-[[package]]
-name = "alloc-stdlib"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e76a019e91224d279006ff972f1e984179a6e9feb050adba6ce8274aef23195"
-dependencies = [
- "alloc-no-stdlib",
-]
-
-[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -395,6 +380,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bijoux"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0df3f02c7ce18790c3c2f547305fa61c8c9a73425d681bae7f978ccbf5abbc4"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -445,27 +439,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
 dependencies = [
  "objc2",
-]
-
-[[package]]
-name = "brotli"
-version = "8.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cc91aac060a7a1e25823bdccbfb6af1875b88f17c6daac97894eed8207166b3"
-dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
- "brotli-decompressor",
-]
-
-[[package]]
-name = "brotli-decompressor"
-version = "5.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a32acac15fe1967bc3986b2a6347dffc965602354ea6f450ad07e8bfd253583"
-dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
 ]
 
 [[package]]
@@ -986,7 +959,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -1019,14 +992,12 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
 ]
 
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "async-trait",
  "base58",
@@ -1036,6 +1007,7 @@ dependencies = [
  "dialog-macros",
  "dialog-varsig",
  "ed25519-dalek",
+ "rand 0.8.7",
  "rkyv",
  "serde",
  "serde-big-array",
@@ -1044,12 +1016,14 @@ dependencies = [
  "signature",
  "thiserror 2.0.18",
  "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1078,7 +1052,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1104,7 +1078,7 @@ dependencies = [
 [[package]]
 name = "dialog-csv"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "async-trait",
  "base58",
@@ -1119,7 +1093,7 @@ dependencies = [
 [[package]]
 name = "dialog-did-web"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "async-trait",
  "base58",
@@ -1142,7 +1116,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "async-trait",
  "base58",
@@ -1157,7 +1131,7 @@ dependencies = [
 [[package]]
 name = "dialog-identity"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1175,7 +1149,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "blake3",
  "convert_case",
@@ -1187,7 +1161,7 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1195,14 +1169,15 @@ dependencies = [
  "dialog-effects",
  "dialog-remote-fs",
  "dialog-remote-s3",
+ "dialog-remote-ucan",
  "dialog-remote-ucan-s3",
  "serde",
 ]
 
 [[package]]
-name = "dialog-operator"
+name = "dialog-peer"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1215,6 +1190,7 @@ dependencies = [
  "dialog-effects",
  "dialog-identity",
  "dialog-network",
+ "dialog-query",
  "dialog-repository",
  "dialog-storage",
  "dialog-ucan",
@@ -1240,7 +1216,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1268,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "dialog-reactor"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1279,18 +1255,23 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-repository",
  "dialog-search-tree",
  "dialog-storage",
  "futures-util",
+ "indexmap",
  "ipld-core",
  "parking_lot",
+ "serde",
+ "serde_ipld_dagjson",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tonk-evaluator",
+ "tonk-intent",
+ "tonk-lingo",
  "tonk-schema",
  "wasm-bindgen-test",
  "web-sys",
@@ -1300,7 +1281,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-fs"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1317,7 +1298,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1354,9 +1335,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "dialog-remote-ucan"
+version = "0.1.0"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base58",
+ "bytes",
+ "dialog-capability",
+ "dialog-common",
+ "dialog-did-web",
+ "dialog-effects",
+ "dialog-remote-s3",
+ "dialog-remote-ucan-s3",
+ "dialog-ucan-core",
+ "dialog-varsig",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_ipld_dagcbor",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1394,7 +1404,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1409,12 +1419,15 @@ dependencies = [
  "dialog-network",
  "dialog-query",
  "dialog-remote-s3",
+ "dialog-remote-ucan",
  "dialog-remote-ucan-s3",
  "dialog-search-tree",
  "dialog-storage",
  "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
+ "dirs 5.0.1",
+ "ed25519-dalek",
  "futures-util",
  "getrandom 0.2.17",
  "ipld-core",
@@ -1434,15 +1447,17 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
  "base58",
+ "bijoux",
  "blake3",
  "bytes",
  "dashmap",
+ "dialog-capability",
  "dialog-common",
  "dialog-macros",
  "dialog-storage",
@@ -1464,14 +1479,13 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
  "base58",
  "blake3",
- "brotli",
  "bytes",
  "dialog-capability",
  "dialog-common",
@@ -1487,12 +1501,9 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "pidlock",
- "rand 0.8.7",
- "rexie",
  "s3s",
  "serde",
  "serde_ipld_dagcbor",
- "sieve-cache",
  "signature",
  "tempfile",
  "thiserror 2.0.18",
@@ -1511,7 +1522,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "async-trait",
  "base58",
@@ -1532,9 +1543,11 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
+ "base64",
  "dialog-varsig",
+ "flate2",
  "futures",
  "getrandom 0.2.17",
  "ipld-core",
@@ -1558,7 +1571,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-16.1#e26e0e61da76e460339c45bd45c4d7e9ce9a801b"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",
@@ -2013,18 +2026,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gloo-timers"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
-dependencies = [
- "futures-channel",
- "futures-core",
- "js-sys",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2385,21 +2386,6 @@ dependencies = [
  "zerofrom",
  "zerotrie",
  "zerovec",
-]
-
-[[package]]
-name = "idb"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6554f394e990a1af530a528a7fdcad6e01b29cb1b990f89df3ffd62cf15f7828"
-dependencies = [
- "indexmap",
- "js-sys",
- "num-traits",
- "thiserror 2.0.18",
- "tokio",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]
@@ -3663,17 +3649,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rexie"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "887466cfa8a12c08ee4b174998135cea8ff0fd84858627cd793e56535a045bc9"
-dependencies = [
- "idb",
- "thiserror 1.0.69",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "rfc6979"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4636,10 +4611,11 @@ dependencies = [
 
 [[package]]
 name = "tonk-access-service"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base58",
  "base64",
  "blake3",
  "bs58",
@@ -4648,10 +4624,12 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-did-web",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-remote-s3",
+ "dialog-remote-ucan",
  "dialog-remote-ucan-s3",
  "dialog-repository",
  "dialog-storage",
@@ -4693,7 +4671,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-account"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -4702,7 +4680,8 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
+ "dialog-remote-ucan",
  "dialog-repository",
  "dialog-storage",
  "dialog-ucan",
@@ -4714,6 +4693,7 @@ dependencies = [
  "serde_bytes",
  "serde_ipld_dagcbor",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "url",
@@ -4722,7 +4702,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-analytics"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "chrono",
  "dialog-common",
@@ -4742,7 +4722,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-analyzer"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4750,7 +4730,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-repository",
  "lsp-types",
@@ -4767,23 +4747,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonk-board"
-version = "0.6.15"
-dependencies = [
- "custom-elements",
- "js-sys",
- "serde-wasm-bindgen",
- "serde_json",
- "tonk-host",
- "tonk-schema",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "tonk-cli"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4798,10 +4763,11 @@ dependencies = [
  "dialog-credentials",
  "dialog-csv",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-reactor",
  "dialog-remote-s3",
+ "dialog-remote-ucan",
  "dialog-remote-ucan-s3",
  "dialog-repository",
  "dialog-storage",
@@ -4834,9 +4800,11 @@ dependencies = [
  "tonk-evaluator",
  "tonk-identity",
  "tonk-invite",
+ "tonk-library",
  "tonk-notation",
  "tonk-render",
  "tonk-schema",
+ "tonk-template",
  "tonk-worker-api",
  "tracing-log",
  "tracing-subscriber",
@@ -4850,7 +4818,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-code"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -4859,7 +4827,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-common"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "dialog-common",
  "futures-util",
@@ -4872,7 +4840,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-core"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "base58",
  "dialog-artifacts",
@@ -4891,8 +4859,9 @@ dependencies = [
 
 [[package]]
 name = "tonk-display"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
+ "axum",
  "custom-elements",
  "dialog-common",
  "indexmap",
@@ -4908,6 +4877,8 @@ dependencies = [
  "tonk-notation",
  "tonk-schema",
  "tonk-template",
+ "tonk-worker",
+ "tower",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -4916,7 +4887,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-email"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -4925,14 +4896,14 @@ dependencies = [
 
 [[package]]
 name = "tonk-evaluator"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "dialog-artifacts",
  "dialog-capability",
  "dialog-common",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-repository",
  "serde",
@@ -4948,7 +4919,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-fab"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "custom-elements",
  "dialog-common",
@@ -4959,6 +4930,7 @@ dependencies = [
  "tonk-analytics",
  "tonk-common",
  "tonk-host",
+ "tonk-portal",
  "tonk-schema",
  "tonk-worker-api",
  "urlencoding",
@@ -4970,21 +4942,18 @@ dependencies = [
 
 [[package]]
 name = "tonk-guest"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "console_error_panic_hook",
  "custom-elements",
  "dialog-common",
  "js-sys",
- "tonk-board",
  "tonk-display",
  "tonk-fab",
  "tonk-host",
  "tonk-inspector",
  "tonk-portal",
- "tonk-sigil",
  "tonk-tree",
- "tonk-workspace",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -4993,7 +4962,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-host"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "bytes",
  "custom-elements",
@@ -5016,7 +4985,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-identity"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5027,6 +4996,9 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-effects",
+ "dialog-remote-ucan",
+ "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
  "getrandom 0.3.4",
@@ -5056,7 +5028,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-inspector"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "bs58",
  "custom-elements",
@@ -5075,8 +5047,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-intent"
+version = "0.6.16-rc.1"
+dependencies = [
+ "ipld-core",
+ "serde",
+ "serde_json",
+ "tonk-lingo",
+ "tonk-template",
+]
+
+[[package]]
 name = "tonk-invite"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -5084,10 +5067,18 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-effects",
+ "dialog-peer",
+ "dialog-storage",
  "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
+ "flate2",
  "ipld-core",
+ "serde",
+ "serde_bytes",
+ "serde_ipld_dagcbor",
+ "serde_json",
  "tokio",
  "url",
  "wasm-bindgen-test",
@@ -5095,12 +5086,12 @@ dependencies = [
 
 [[package]]
 name = "tonk-language-server"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "async-trait",
  "dialog-capability",
  "dialog-common",
- "dialog-operator",
+ "dialog-peer",
  "dialog-repository",
  "lsp-types",
  "serde",
@@ -5114,8 +5105,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-library"
+version = "0.6.16-rc.1"
+dependencies = [
+ "dialog-common",
+ "tokio",
+ "tonk-notation",
+ "wasm-bindgen-test",
+]
+
+[[package]]
+name = "tonk-lingo"
+version = "0.6.16-rc.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tonk-macros"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5128,8 +5137,9 @@ dependencies = [
 
 [[package]]
 name = "tonk-notation"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
+ "base64",
  "dialog-common",
  "lsp-types",
  "saphyr",
@@ -5138,12 +5148,13 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "url",
  "wasm-bindgen-test",
 ]
 
 [[package]]
 name = "tonk-perf"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -5159,7 +5170,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-portal"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "bs58",
@@ -5187,7 +5198,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-prose"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -5196,7 +5207,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-render"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "async-trait",
  "dialog-common",
@@ -5213,7 +5224,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-router"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "dialog-common",
  "tokio",
@@ -5222,7 +5233,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-schema"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5233,7 +5244,7 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-repository",
  "dialog-ucan-core",
@@ -5249,29 +5260,20 @@ dependencies = [
  "serde_yaml",
  "thiserror 2.0.18",
  "tokio",
+ "tonk-account",
  "tonk-core",
  "tonk-evaluator",
  "tonk-identity",
  "tonk-notation",
  "tonk-worker-api",
+ "url",
  "wasm-bindgen-test",
-]
-
-[[package]]
-name = "tonk-sigil"
-version = "0.6.15"
-dependencies = [
- "blake3",
- "bs58",
- "custom-elements",
- "js-sys",
- "wasm-bindgen",
- "web-sys",
+ "zeroize",
 ]
 
 [[package]]
 name = "tonk-table"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -5280,7 +5282,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-template"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "dialog-common",
  "indexmap",
@@ -5297,7 +5299,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-tree"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "custom-elements",
  "dialog-common",
@@ -5314,7 +5316,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-ui"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5349,6 +5351,7 @@ dependencies = [
  "tonk-common",
  "tonk-host",
  "tonk-identity",
+ "tonk-invite",
  "tonk-portal",
  "tonk-schema",
  "tonk-worker",
@@ -5362,7 +5365,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-worker"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5380,9 +5383,10 @@ dependencies = [
  "dialog-credentials",
  "dialog-csv",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-reactor",
+ "dialog-remote-ucan",
  "dialog-remote-ucan-s3",
  "dialog-repository",
  "dialog-search-tree",
@@ -5404,7 +5408,9 @@ dependencies = [
  "send_wrapper",
  "serde",
  "serde-wasm-bindgen",
+ "serde_ipld_dagcbor",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -5419,6 +5425,7 @@ dependencies = [
  "tonk-inspector",
  "tonk-invite",
  "tonk-language-server",
+ "tonk-library",
  "tonk-notation",
  "tonk-router",
  "tonk-schema",
@@ -5438,7 +5445,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-worker-api"
-version = "0.6.15"
+version = "0.6.16-rc.1"
 dependencies = [
  "dialog-artifacts",
  "dialog-capability",
@@ -5452,30 +5459,6 @@ dependencies = [
  "tonk-account",
  "url",
  "wasm-bindgen-test",
-]
-
-[[package]]
-name = "tonk-workspace"
-version = "0.6.15"
-dependencies = [
- "bs58",
- "custom-elements",
- "dialog-common",
- "gloo-timers",
- "js-sys",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tonk-analytics",
- "tonk-common",
- "tonk-fab",
- "tonk-host",
- "tonk-schema",
- "tonk-worker-api",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
- "web-sys",
 ]
 
 [[package]]

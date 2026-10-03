@@ -234,7 +234,13 @@ impl Scope {
         if let Some(found) = self.in_doc_concepts.lock().get(name).cloned() {
             return Some(found);
         }
-        tonk_schema::builtin::lookup_concept(name)
+        if let Some(found) = tonk_schema::builtin::lookup_concept(name) {
+            return Some(found);
+        }
+        // An attribute is a concept with one field: where a concept is
+        // named, an attribute names the concept over it alone.
+        self.attribute(name)
+            .and_then(|attribute| attribute_concept(&attribute))
     }
 
     /// Record a branch-resolved concept into the in-doc tables so
@@ -372,4 +378,19 @@ impl Scope {
     pub(crate) fn event_declaration(&self, name: &str) -> Option<EventDescriptor> {
         self.event_declarations.lock().get(name).cloned()
     }
+}
+
+/// The concept an attribute is on its own: one field, over that attribute,
+/// named after it (`subject` for `…/subject`). Dialog identifies a concept by
+/// its attributes, not its field names, so this is the same concept as any
+/// one-field `concept!` over the attribute. `None` for a collection, whose
+/// name is per entry.
+pub(crate) fn attribute_concept(attribute: &AttributeDefinition) -> Option<ConceptDefinition> {
+    let name = attribute.descriptor.name()?.to_owned();
+    let descriptor =
+        dialog_query::ConceptDescriptor::try_from([(name, attribute.descriptor.clone())]).ok()?;
+    Some(ConceptDefinition {
+        entity: descriptor.this(),
+        descriptor: tonk_core::claim::ConceptDescriptor::Durable(descriptor),
+    })
 }

@@ -42,14 +42,17 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tonk-core = { workspace = true }
+url = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-worker-api = { workspace = true }
+tonk-account = { workspace = true }
 
 [dev-dependencies]
+zeroize = { workspace = true }
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-credentials = { workspace = true }
-dialog-operator = { workspace = true, features = ["helpers"] }
+dialog-peer = { workspace = true, features = ["helpers"] }
 lsp-types = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 tonk-evaluator = { workspace = true }

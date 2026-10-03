@@ -461,6 +461,23 @@
       // Non-fatal: a failed prime just means an extra reseed next load.
     }
   }
+  // The page build this document was emitted as, and the one now served.
+  // /version.json bypasses the service worker, so it names the latest
+  // build. Equal page builds mean only worker, guest, or library code moved:
+  // the page can stay, and a worker update remounts its guests in place.
+  const PAGE_BUILD = /^[0-9a-f]{16}$/
+  const ownPageBuild = () =>
+    document.querySelector('meta[name="tonk-page-build"]')?.content ?? null
+  const servedPageBuild = async () => {
+    const response = await fetch("/version.json", { cache: "no-store" })
+    return response.ok ? (await response.json()).page ?? null : null
+  }
+  const pageUnchanged = async () => {
+    const own = ownPageBuild()
+    if (!PAGE_BUILD.test(own ?? "")) return false
+    return (await servedPageBuild().catch(() => null)) === own
+  }
+
   const servedWasmHash = async () => {
     const response = await fetch("/", { cache: "no-store" })
     const html = await response.text()
@@ -817,8 +834,19 @@
       return
     }
 
-    // Neither wasm nor library changed that we can see — but trunk
-    // signalled *something* (index.html, CSS, an asset). Reload.
+    // Neither wasm nor library changed that we can see. When the page
+    // build is unchanged too, only worker or guest code moved: pick up the
+    // new worker, and the page adopts it by remounting its guests instead
+    // of reloading. Otherwise trunk signalled a page change (index.html,
+    // CSS, an asset). Reload.
+    if (view.enabled && (await pageUnchanged())) {
+      try {
+        await (await navigator.serviceWorker.getRegistration())?.update()
+        return
+      } catch (_) {
+        // The update check failed: fall back to the reload.
+      }
+    }
     reloadOrHold()
   }
 

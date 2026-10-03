@@ -11,25 +11,18 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use dialog_query::{Output as _, Query, Term};
-use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::{RemoteAddress, RemoteRepository, Repository, SiteAddress, Upstream};
+use dialog_remote_ucan::UcanAddress;
+use dialog_repository::{ConnectedReplica, Repository, SiteAddress, Upstream};
 use dialog_ucan_core::DelegationChain;
-use dialog_varsig::Principal;
 use tonk_account::{
     AccountStateStatus, CreateGenesis, RemotePresence, probe_remote_main, publish_genesis_if_absent,
 };
 use tonk_common::log;
-use tonk_identity::sealed::RecipientKey;
-use tonk_schema::{
-    AccountSealedInbox, Replica, SecretMessage, SecretPrincipal, SeedKind, prelude::DidExt as _,
-};
+use tonk_schema::{AccountSealedInbox, Replica, SecretMessage, SeedKind, prelude::DidExt as _};
 use zeroize::Zeroizing;
 
 use crate::worker::TonkState;
 use crate::{RepositoryError, TonkWorkerError};
-
-/// Remote name for the account's access branch in the profile repository.
-pub(crate) const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
 
 /// Identity returned only after the trusted-base gate has passed.
 #[allow(dead_code)]
@@ -43,10 +36,16 @@ pub(crate) struct ReadyAccountBranch {
 async fn trusted_marker(tonk: &TonkState) -> Result<Option<Vec<u8>>, TonkWorkerError> {
     match tonk
         .profile
-        .credential()
-        .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
+        .secrets()
+        .site(
+            crate::credential::branch_site(
+                tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
+                &tonk.active_branch,
+            )
+            .as_str(),
+        )
         .load::<Vec<u8>>()
-        .perform(&tonk.operator)
+        .perform(&tonk.profile)
         .await
     {
         Ok(marker) => Ok(Some(marker)),
@@ -62,10 +61,16 @@ async fn mark_trusted(
     subject: &dialog_varsig::Did,
 ) -> Result<(), TonkWorkerError> {
     tonk.profile
-        .credential()
-        .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
+        .secrets()
+        .site(
+            crate::credential::branch_site(
+                tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
+                &tonk.active_branch,
+            )
+            .as_str(),
+        )
         .save(subject.as_str().as_bytes().to_vec())
-        .perform(&tonk.operator)
+        .perform(&tonk.profile)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!(
@@ -214,7 +219,7 @@ async fn account_replicas(tonk: &TonkState) -> Result<Vec<Replica>, TonkWorkerEr
     let meta = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| {
@@ -255,67 +260,12 @@ pub(crate) async fn linked_account(
         .find_map(|row| row.subject.0.to_string().parse::<dialog_varsig::Did>().ok()))
 }
 
-/// Retract every account replica row from the profile index: the unlink
-/// half of the linked-state signal. The mounted repository and its
-/// remote configuration stay on disk — dialog remotes are create-only —
-/// but nothing tracks them any more, so neither sync nor the linked
-/// signal sees them, and re-linking re-records the same replica.
-pub(crate) async fn retract_account_replicas(tonk: &TonkState) -> Result<(), TonkWorkerError> {
-    let rows = account_replicas(tonk).await?;
-    if rows.is_empty() {
-        return Ok(());
-    }
-    let mut transaction = tonk
-        .reactor
-        .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .transaction();
-    for row in rows {
-        transaction = transaction.retract(row);
-    }
-    transaction
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to retract account replicas: {error}"))
-        })?;
-    tonk.account_keys.invalidate();
-    Ok(())
-}
-
-/// Republish a stored remote's address cell so it matches the current
-/// descriptor, returning the repointed remote.
-///
-/// A remote's address is a memory cell, not an immutable record: when
-/// the link's provider address changes or the profile links to a
-/// different account, the stored cell goes stale and every
-/// strict-equality check after it would refuse to mount forever.
-async fn repoint_remote<C: Principal>(
-    repository: &Repository<C>,
-    name: &str,
-    address: &SiteAddress,
-    subject: &dialog_varsig::Did,
-    tonk: &TonkState,
-) -> Result<RemoteRepository, TonkWorkerError> {
-    let reference = repository.remote(name);
-    let target = RemoteAddress::new(address.clone(), subject.clone());
-    let cell = reference.address();
-    // Resolve first: publish is a compare-and-swap against the cell's
-    // current version, and a fresh handle has not seen one yet.
-    cell.resolve()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to resolve the '{name}' remote: {error}"))
-        })?;
-    cell.publish(target.clone())
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to repoint the '{name}' remote: {error}"))
-        })?;
-    Ok(RemoteRepository::new(cell.retain(target), reference))
+/// Whether `branch` pulls from the branch `name` of `remote`.
+fn tracks(branch: &dialog_repository::Branch, remote: &ConnectedReplica, name: &str) -> bool {
+    branch.pulls().iter().any(|upstream| {
+        matches!(upstream, Upstream::Remote { remote: tracked, branch, .. }
+            if tracked.same(remote) && branch == name)
+    })
 }
 
 /// Point profile main at the account: the account is the upstream
@@ -333,43 +283,12 @@ async fn configure_account_upstream(
 ) -> Result<String, TonkWorkerError> {
     let subject = subject.clone();
     let key = subject.repo_key().to_owned();
-    let repository = Repository::from(&tonk.profile);
-
     let address = SiteAddress::from(UcanAddress::new(account_remote(tonk).await?.as_str()));
-    let remote = match repository
-        .remote(tonk_account::ORIGIN_REMOTE)
-        .load()
-        .perform(&tonk.operator)
+    let remote = tonk_account::peer::connect(address.clone(), subject.clone(), &tonk.operator)
         .await
-    {
-        Ok(remote) if remote.address().site() == &address && remote.did() == subject => remote,
-        // A stored remote that disagrees with the descriptor follows an
-        // older link — a previous provider address or an account this
-        // profile has since left. The descriptor is the current link,
-        // so repoint the address cell to it rather than refusing to
-        // mount forever.
-        Ok(_) => {
-            repoint_remote(
-                &repository,
-                tonk_account::ORIGIN_REMOTE,
-                &address,
-                &subject,
-                tonk,
-            )
-            .await?
-        }
-        Err(_) => repository
-            .remote(tonk_account::ORIGIN_REMOTE)
-            .create(address.clone())
-            .subject(subject.clone())
-            .perform(&tonk.operator)
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!(
-                    "failed to configure the account remote: {error}"
-                ))
-            })?,
-    };
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to configure the account remote: {error}"))
+        })?;
 
     // The REACTOR's cached session, not a fresh handle. A branch handle
     // captures its upstream cell when first opened, and the reactor's
@@ -384,7 +303,7 @@ async fn configure_account_upstream(
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| {
@@ -400,17 +319,14 @@ async fn configure_account_upstream(
             TonkWorkerError::Internal(format!("failed to open account remote branch: {error}"))
         })?;
 
-    match branch.upstream() {
-        Some(Upstream::Remote { remote, branch, .. })
-            if remote == tonk_account::ORIGIN_REMOTE && branch == tonk_account::MAIN_BRANCH => {}
-        // A pointer left by an earlier account scheme (or an older link)
-        // is repointed, like the remote cell above: with a linked
-        // account, the account IS profile main's upstream by
-        // definition, and set_upstream promotes over an existing
-        // tracking target.
-        _ => branch
-            .set_upstream(&remote_branch)
-            .perform(&tonk.operator)
+    // A branch not yet tracking the linked account's main does now, in
+    // place of what it tracked before: with a linked account, the account
+    // IS profile main's upstream by definition, and an earlier link's (a
+    // previous provider address, or an account this profile has since
+    // left) is no longer synced with.
+    match tracks(branch, &remote, tonk_account::MAIN_BRANCH) {
+        true => {}
+        false => tonk_account::peer::repoint_upstream(branch, &remote_branch, &tonk.operator)
             .await
             .map_err(|error| {
                 TonkWorkerError::Internal(format!("failed to set profile main upstream: {error}"))
@@ -430,7 +346,8 @@ async fn record_account_replica(
     address: &SiteAddress,
 ) -> Result<(), TonkWorkerError> {
     let replica = Replica::account(tonk.profile.did(), subject.clone());
-    let remote = replica.remote(tonk_account::ORIGIN_REMOTE, subject.clone(), address);
+    let remote_name = tonk_account::account_remote_name(subject.as_str());
+    let remote = replica.remote(remote_name.as_str(), subject.clone(), address);
     let tracked = remote.branch(tonk_account::MAIN_BRANCH);
 
     // Re-asserted on every sweep, on purpose. A guard that skipped the
@@ -442,7 +359,7 @@ async fn record_account_replica(
 
     tonk.reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(replica.clone())
         .assert(replica.branch(tonk_account::MAIN_BRANCH))
@@ -464,7 +381,79 @@ async fn record_account_replica(
     // and only this clears it.
     tonk.account_keys.invalidate();
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+
+    record_account_branch(tonk, subject, address).await;
     Ok(())
+}
+
+/// Record the account as a branch of the profile repository, and make
+/// it the active one when the profile has none.
+///
+/// The link written above indexes the account replica on profile main,
+/// which is what the sync drain routes by. This records the same link
+/// the way the DATA model describes it: a branch of the profile
+/// repository that follows a branch on the peer serving the account.
+///
+/// On `meta`, which never replicates — which branch this device is on
+/// is nobody else's business.
+///
+/// Best-effort. The account is linked either way; what fails here is
+/// the branch bookkeeping a view reads, not the link itself.
+pub(crate) async fn record_account_branch(
+    tonk: &TonkState,
+    account: &dialog_varsig::Did,
+    address: &SiteAddress,
+) {
+    use tonk_schema::{Branch as MetaBranch, BranchUpstream, PeerAddress, ReplicaActiveBranch};
+
+    let profile_did = tonk.profile.did();
+    let replica = Replica::new(profile_did.clone(), profile_did);
+
+    // The branch this profile is on takes the account: `main` on a fresh
+    // device, or the upstream-less branch a sign-out landed on.
+    let local = MetaBranch::new(&replica, tonk.active_branch.as_str());
+
+    // The peer serving the account holds its own replica of it, keyed by
+    // the `did:web` its address names so that peer's address is one fact
+    // however many accounts it serves; the branch we follow is that
+    // replica's main. An address naming no host keys the replica on the
+    // account itself, and records no address.
+    let peer = tonk_schema::peer_of(address).unwrap_or_else(|| account.clone());
+    let served = Replica::new(peer, account.clone());
+    let upstream = MetaBranch::new(&served, tonk_account::MAIN_BRANCH);
+
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(crate::router::repository::META_BRANCH)
+        .transaction()
+        .assert(served)
+        .assert(upstream.clone())
+        .assert(local.clone())
+        .assert(BranchUpstream::new(&local, &upstream));
+
+    // Only a profile with no active branch on record takes one here.
+    // This runs from the detached account catch-up, which holds the
+    // state it started with: by the time it gets here a sign-out, or an
+    // added account, may have moved the profile to a branch following
+    // nothing, and asserting this state's branch would move it back.
+    // Every later move is `set_active_branch`'s or `leave_account`'s.
+    if super::profile::active_branch(tonk).await.is_none() {
+        transaction = transaction.assert(ReplicaActiveBranch::new(&replica, &local));
+    }
+
+    // Where the serving peer answers, keyed by the `did:web` its
+    // endpoint names rather than by this account: a service serving
+    // several accounts is then one peer with one address, and changing
+    // it is one write. An address naming no host records nothing —
+    // there is no peer to attribute it to.
+    if let Some(reachable) = PeerAddress::served_by(address) {
+        transaction = transaction.assert(reachable);
+    }
+
+    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
+        log!("account branch not recorded: {error}");
+    }
 }
 
 /// Withdraw this device's own library installation ahead of a first
@@ -490,16 +479,20 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
-    let remote = Repository::from(&tonk.profile)
-        .remote(tonk_account::ORIGIN_REMOTE)
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?
+    // The branch follows the account's replica at the peer serving it.
+    let remote = match tonk_account::peer::upstream(session.handle()) {
+        Some(Upstream::Remote { remote, .. }) => remote,
+        _ => {
+            return Err(TonkWorkerError::Internal(
+                "the profile branch follows no account remote".to_string(),
+            ));
+        }
+    };
+    let remote = remote
         .branch(tonk_account::MAIN_BRANCH)
         .open()
         .perform(&tonk.operator)
@@ -536,7 +529,7 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
         Ok(RemotePresence::Absent) => {
             tonk.reactor
                 .profile_repository()
-                .branch(tonk_account::MAIN_BRANCH)
+                .branch(&tonk.active_branch)
                 .transaction()
                 .commit()
                 .perform(&tonk.operator)
@@ -602,7 +595,7 @@ pub(crate) async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| format!("account branch unavailable: {error}"))?;
@@ -766,7 +759,7 @@ async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<()
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| format!("account branch unavailable: {error}"))?;
@@ -990,7 +983,7 @@ pub(crate) async fn require_ready_account_state(
     let key = subject.repo_key().to_owned();
     tonk.reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
@@ -1012,7 +1005,7 @@ async fn read_passkeys(
     let branch = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open ready account state: {error}")))?;
@@ -1106,6 +1099,11 @@ pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::P
 /// living in the account is present but unusable until the access branch
 /// adopts it. This is what makes a recovered delegation authorize anything.
 ///
+/// The access branch is the branch the profile is on, the one the session
+/// operator was built for: each account's branch carries that account's
+/// authority, and adopting through a fixed branch would pull one account
+/// with another's grants.
+///
 /// Best-effort and non-fatal, like the rest of the sweep: a device that
 /// cannot reach the account keeps whatever authority it already holds.
 /// Returns whether it adopted, and logs every reason it did not.
@@ -1114,9 +1112,9 @@ pub(crate) async fn adopt_account_access(tonk: &TonkState) -> bool {
         return false;
     };
     let subject = root.root_did.clone();
-    let repository = Repository::from(&tonk.profile);
+    let repository = Repository::from(tonk.profile.did());
     let access = match repository
-        .branch(dialog_repository::ACCESS_BRANCH)
+        .branch(tonk.active_branch.as_str())
         .open()
         .perform(&tonk.operator)
         .await
@@ -1136,37 +1134,12 @@ pub(crate) async fn adopt_account_access(tonk: &TonkState) -> bool {
         return false;
     };
     let address = SiteAddress::from(UcanAddress::new(remote.as_str()));
-    let remote = match repository
-        .remote(ACCOUNT_ACCESS_REMOTE)
-        .load()
-        .perform(&tonk.operator)
-        .await
-    {
-        Ok(remote) if remote.address().site() == &address && remote.did() == subject => remote,
-        // Stale cell from an earlier link; see `repoint_remote`.
-        Ok(_) => {
-            match repoint_remote(&repository, ACCOUNT_ACCESS_REMOTE, &address, &subject, tonk).await
-            {
-                Ok(remote) => remote,
-                Err(error) => {
-                    log!("repoint the account access remote: {error}");
-                    return false;
-                }
-            }
+    let remote = match tonk_account::peer::connect(address, subject, &tonk.operator).await {
+        Ok(remote) => remote,
+        Err(error) => {
+            log!("configure the account access remote: {error}");
+            return false;
         }
-        Err(_) => match repository
-            .remote(ACCOUNT_ACCESS_REMOTE)
-            .create(address)
-            .subject(subject)
-            .perform(&tonk.operator)
-            .await
-        {
-            Ok(remote) => remote,
-            Err(error) => {
-                log!("configure the account access remote: {error}");
-                return false;
-            }
-        },
     };
     let upstream = match remote
         .branch(dialog_repository::ACCESS_BRANCH)
@@ -1213,7 +1186,7 @@ pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &Delegation
     let branch = match tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -1287,7 +1260,7 @@ pub(crate) async fn published_sealed_inbox(
     let branch = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open profile main: {error}")))?;
@@ -1345,7 +1318,7 @@ pub(crate) async fn seed_sealed_inbox(tonk: &TonkState) -> bool {
     if let Err(error) = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(AccountSealedInbox::new(
             ready.subject.this(),
@@ -1363,139 +1336,51 @@ pub(crate) async fn seed_sealed_inbox(tonk: &TonkState) -> bool {
     true
 }
 
-/// Seal `seed` (the signing seed `subject` derives from) to the account's
-/// published sealed-inbox address and record it as a [`SecretMessage`]
-/// plus the [`SecretPrincipal`] naming it, in the
-/// account space, so any device on the account can re-issue the subject
-/// after a passkey ceremony opens it. Returns whether it wrote.
+/// Take the principal `seed` is the key of (`subject`, a space or an open
+/// invite's principal) into the custody of the account the profile acts
+/// for: its key held sealed to the account, a copy kept for this profile,
+/// and its authority delegated on to the account (an invite's with the
+/// chain proving it). This is the custody tonk and dialog share; the
+/// account's other devices recover the principal from it. Returns whether
+/// it took custody.
 ///
 /// Best-effort, like [`retain_space_delegation`]: the subject is usable
-/// the moment its signer exists locally, and an account that has not
-/// published a key yet (one predating the key, or not ready) is logged
-/// and left for the next sweep rather than failing the caller.
+/// the moment its signer exists locally, so a failure is logged rather than
+/// failing the caller.
 pub(crate) async fn custody_seed(
     tonk: &TonkState,
     subject: &dialog_varsig::Did,
     kind: SeedKind,
     seed: Zeroizing<[u8; 32]>,
 ) -> bool {
-    let (recipient, ready) = match custody_recipient(tonk).await {
-        Ok(found) => found,
-        Err(error) => {
-            log!("seed for {subject} not custodied: {error}");
-            return false;
-        }
-    };
-    let sealed = match RecipientKey::try_from(&recipient) {
-        Ok(key) => match key.secret().conceal(&seed, subject) {
-            Ok(sealed) => sealed.encode(),
+    use dialog_credentials::key::ExtractableKey as _;
+    use dialog_varsig::Principal as _;
+
+    let key =
+        match <dialog_credentials::Ed25519Signer<dialog_credentials::Extractable>>::import(&*seed)
+            .await
+        {
+            Ok(key) => key,
             Err(error) => {
-                log!("seed for {subject} not custodied: {error}");
+                log!("seed for {subject} not custodied: {error:?}");
                 return false;
             }
-        },
-        Err(error) => {
-            log!("seed for {subject} not custodied: {error}");
-            return false;
-        }
-    };
-    let message = SecretMessage::new(&recipient, sealed);
-    if let Err(error) = tonk
-        .reactor
-        .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .transaction()
-        // Two rows: the envelope, and the principal whose seed it carries.
-        // Asserted together — a principal naming a message that was never
-        // written would be a seed nothing can open.
-        .assert(message.clone())
-        .assert(SecretPrincipal::new(subject, kind, message.this()))
-        .commit()
-        .perform(&tonk.operator)
-        .await
-    {
-        log!("commit custodied seed for {subject}: {error}");
+        };
+    if key.did() != *subject {
+        log!("seed for {subject} not custodied: it derives {}", key.did());
         return false;
     }
+    if let Err(error) = tonk.profile.adopt_principal(kind.held(), key).await {
+        log!("seed for {subject} not custodied: {error}");
+        return false;
+    }
+    // Custody lands on profile main, which syncs with the account: nudge it
+    // out rather than waiting for the next sweep.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if let Some(ready) = ready {
+    if let Ok(ready) = require_ready_account_state(tonk).await {
         tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    let _ = ready;
     true
-}
-
-/// The recipient custodied seeds are sealed to on this device, and the
-/// ready account branch when the recipient is a linked passkey account's.
-///
-/// A linked account publishes its key from the ceremony that held the
-/// secret; an onboarding account's secret is local, so its key is derived
-/// here and published on profile `main` the first time it is needed. That
-/// is the branch the account becomes the upstream of at accreditation, so
-/// rows sealed before it land where rows sealed after it do.
-async fn custody_recipient(
-    tonk: &TonkState,
-) -> Result<(dialog_varsig::Did, Option<ReadyAccountBranch>), TonkWorkerError> {
-    match super::identity::local_root(tonk).await {
-        Ok(root) => {
-            let ready = require_ready_account_state(tonk).await.ok();
-            if let Some(recipient) = published_sealed_inbox(tonk, &root.root_did).await? {
-                return Ok((recipient, ready));
-            }
-            // A ceremony recorded the key with the root but the sweep has
-            // not published it yet (the account branch may not be ready).
-            // Publish it here: profile main is where it lives either way.
-            let Some(recipient) = root.encryption_key else {
-                return Err(TonkWorkerError::Conflict(
-                    "the account has not published its encryption key on this device; a \
-                     passkey assertion derives it"
-                        .to_string(),
-                ));
-            };
-            tonk.reactor
-                .profile_repository()
-                .branch(tonk_account::MAIN_BRANCH)
-                .transaction()
-                .assert(AccountSealedInbox::new(
-                    root.root_did.this(),
-                    recipient.this(),
-                ))
-                .commit()
-                .perform(&tonk.operator)
-                .await
-                .map_err(|error| {
-                    TonkWorkerError::Internal(format!("publish account encryption key: {error}"))
-                })?;
-            Ok((recipient, ready))
-        }
-        Err(TonkWorkerError::RootRequired) => {
-            let secret = crate::onboarding::account(tonk).await?;
-            let recipient = secret.secret().did();
-            let account = secret
-                .signer()
-                .await
-                .map_err(|error| TonkWorkerError::Internal(format!("{error}")))?
-                .did();
-            if published_sealed_inbox(tonk, &account).await?.is_none() {
-                tonk.reactor
-                    .profile_repository()
-                    .branch(tonk_account::MAIN_BRANCH)
-                    .transaction()
-                    .assert(AccountSealedInbox::new(account.this(), recipient.this()))
-                    .commit()
-                    .perform(&tonk.operator)
-                    .await
-                    .map_err(|error| {
-                        TonkWorkerError::Internal(format!(
-                            "publish onboarding encryption key: {error}"
-                        ))
-                    })?;
-            }
-            Ok((recipient, None))
-        }
-        Err(error) => Err(error),
-    }
 }
 
 /// Reconcile account-derived state into this device's local spaces.
@@ -1515,7 +1400,7 @@ pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkW
     let account = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open ready account state: {error}")))?;
@@ -1537,7 +1422,7 @@ pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkW
         let profile = tonk
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .map_err(|error| {
@@ -1558,7 +1443,7 @@ pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkW
         if profile_changed {
             tonk.reactor
                 .profile_repository()
-                .branch(tonk_account::MAIN_BRANCH)
+                .branch(&tonk.active_branch)
                 .transaction()
                 .assert(ProfileName::new(profile_entity, name.clone()))
                 .commit()
@@ -1633,7 +1518,7 @@ async fn adopt_account_display_name(
         .map_err(|_| account_state_unavailable())?;
     tonk.reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(AccountDisplayName::new(
             ready.subject.this(),
@@ -1671,7 +1556,7 @@ pub(crate) async fn initialize_display_name(
     let branch = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open ready account state: {error}")))?;
@@ -1726,7 +1611,7 @@ pub(crate) async fn rename_display_name(
     let profile_entity = tonk.profile.did().this();
     tonk.reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(ProfileName::new(profile_entity, name.to_string()))
         .commit()
@@ -1754,6 +1639,193 @@ pub(crate) async fn rename_display_name(
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    /// Linking records the account as a branch and makes it active.
+    //
+    // Wasm-only: `router::tests::test_state` builds a worker state the
+    // native target does not compile.
+    ///
+    /// The replica row this writes alongside is what the sync drain
+    /// routes by; this is the same link as the DATA model describes it,
+    /// so a view can read which account is current without asking the
+    /// worker.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_records_the_account_as_the_active_branch() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+
+        let state = crate::router::tests::test_state().await;
+        let account = Ed25519Signer::import(&[94; 32]).await.unwrap().did();
+
+        super::record_account_branch(&state, &account, &probe_address()).await;
+
+        let resolved = crate::router::profile::active_account(&state)
+            .await
+            .expect("an account");
+        assert_eq!(
+            resolved,
+            account.this(),
+            "linking makes the account's branch the active one",
+        );
+    }
+
+    /// A link pass that started before the profile left the account does
+    /// not bring it back.
+    ///
+    /// The account catch-up runs detached and holds the state it started
+    /// with, so it can reach this write after a sign-out, or an added
+    /// account, already moved the profile to a branch that follows
+    /// nothing. Re-asserting its own branch as the active one there
+    /// undoes the move: the next page reads the account's branch off
+    /// `meta` and renders signed in. Only a profile with no active
+    /// branch on record takes one from a link.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_leaves_the_active_branch_where_the_profile_moved_it() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+
+        let state = crate::router::tests::test_state().await;
+        let account = Ed25519Signer::import(&[98; 32]).await.unwrap().did();
+        super::record_account_branch(&state, &account, &probe_address()).await;
+
+        crate::router::profile::leave_account(&state).await;
+        let landed =
+            crate::router::profile::active_branch_name(&state.reactor, &state.operator).await;
+        assert_ne!(
+            landed.as_deref(),
+            Some(state.active_branch.as_str()),
+            "leaving moves the profile off the account's branch",
+        );
+
+        // The pass that was still running when the profile left.
+        super::record_account_branch(&state, &account, &probe_address()).await;
+
+        assert_eq!(
+            crate::router::profile::active_branch_name(&state.reactor, &state.operator).await,
+            landed,
+            "a late link pass leaves the active branch where the profile moved it",
+        );
+        assert_eq!(
+            crate::router::profile::active_account(&state).await,
+            None,
+            "the profile stays signed out",
+        );
+    }
+
+    /// An address a test can recognize when it reads it back.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    fn probe_address() -> dialog_repository::SiteAddress {
+        dialog_repository::SiteAddress::from(UcanAddress::new("https://probe.example/sync"))
+    }
+
+    /// Linking records where the serving peer is reachable, keyed by
+    /// the `did:web` its endpoint names.
+    ///
+    /// The address is what turns "which peer" into a peer something can
+    /// dial, so the branch rows are only half a link without it. Keyed
+    /// on the SERVICE rather than the account: the query below asks for
+    /// `did:web:probe.example` without ever naming the account, which
+    /// is what makes a second account on the same service share the row
+    /// instead of writing another.
+    ///
+    /// Read back through `decode` rather than compared as bytes — what
+    /// has to survive the round trip is the `SiteAddress`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_records_where_the_serving_peer_is_reachable() {
+        use dialog_query::{Query, Term};
+        use dialog_varsig::Principal as _;
+        use tonk_schema::PeerAddress;
+
+        let state = crate::router::tests::test_state().await;
+        let account = Ed25519Signer::import(&[95; 32]).await.unwrap().did();
+
+        super::record_account_branch(&state, &account, &probe_address()).await;
+
+        let peer: dialog_artifacts::Entity = "did:web:probe.example"
+            .parse()
+            .expect("the derived peer DID is an entity");
+        let session = state
+            .reactor
+            .profile_repository()
+            .branch(crate::router::repository::META_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .expect("the meta branch");
+        let rows: Vec<PeerAddress> = session
+            .handle()
+            .query()
+            .select(Query::<PeerAddress> {
+                this: Term::from(peer),
+                address: Term::var("address"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .expect("the query runs");
+
+        let recorded = rows.first().expect("the serving peer has an address");
+        assert_eq!(
+            recorded.address.decode().expect("the address decodes"),
+            probe_address(),
+            "the address a link was made through is the one recorded for the peer",
+        );
+    }
+
+    /// Two accounts on one service share that service's address row.
+    ///
+    /// The reason to derive the peer from the endpoint rather than key
+    /// on the account: a changed service address is then one update,
+    /// not one per account linked through it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_keeps_one_address_for_a_service_serving_two_accounts() {
+        use dialog_query::{Query, Term};
+        use dialog_varsig::Principal as _;
+        use tonk_schema::PeerAddress;
+
+        let state = crate::router::tests::test_state().await;
+        let first = Ed25519Signer::import(&[96; 32]).await.unwrap().did();
+        let second = Ed25519Signer::import(&[97; 32]).await.unwrap().did();
+
+        super::record_account_branch(&state, &first, &probe_address()).await;
+        super::record_account_branch(&state, &second, &probe_address()).await;
+
+        let session = state
+            .reactor
+            .profile_repository()
+            .branch(crate::router::repository::META_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .expect("the meta branch");
+        let rows: Vec<PeerAddress> = session
+            .handle()
+            .query()
+            .select(Query::<PeerAddress> {
+                this: Term::from(
+                    "did:web:probe.example"
+                        .parse::<dialog_artifacts::Entity>()
+                        .expect("the derived peer DID is an entity"),
+                ),
+                address: Term::var("address"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .expect("the query runs");
+
+        assert_eq!(
+            rows.len(),
+            1,
+            "one service is one peer however many accounts it serves",
+        );
+        assert_eq!(
+            rows[0].address.decode().expect("the address decodes"),
+            probe_address(),
+        );
+    }
     use dialog_credentials::Ed25519Signer;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -1764,6 +1836,7 @@ pub(crate) mod tests {
     use dialog_common::helpers::Provisionable as _;
 
     use super::*;
+    use dialog_varsig::Principal;
 
     /// The marker answers "did I trust a base for THIS account", so a
     /// marker naming another account — or none at all — is not ready.
@@ -1783,9 +1856,6 @@ pub(crate) mod tests {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[dialog_common::test]
     async fn it_projects_the_name_to_each_space_and_catches_up_the_ones_it_could_not_reach() {
-        use dialog_capability::Subject;
-        use dialog_credentials::{Credential, Ed25519Verifier};
-        use dialog_effects::space::{Space, SpaceExt as _};
         use dialog_varsig::Principal as _;
         use tonk_schema::prelude::DidExt as _;
 
@@ -1800,7 +1870,7 @@ pub(crate) mod tests {
             state
                 .reactor
                 .profile_repository()
-                .branch("main")
+                .branch(&state.active_branch)
                 .transaction()
                 .assert(tonk_schema::ProfileName::new(
                     profile_entity,
@@ -1831,15 +1901,21 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
             tonk.profile
-                .credential()
-                .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
+                .secrets()
+                .site(
+                    crate::credential::branch_site(
+                        tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
+                        &tonk.active_branch,
+                    )
+                    .as_str(),
+                )
                 .save(root.did().as_str().as_bytes().to_vec())
-                .perform(&tonk.operator)
+                .perform(&tonk.profile)
                 .await
                 .unwrap();
             tonk.reactor
                 .profile_repository()
-                .branch(tonk_account::MAIN_BRANCH)
+                .branch(&tonk.active_branch)
                 .transaction()
                 .assert(Replica::new(tonk.profile.did(), missing.clone()))
                 .commit()
@@ -1897,13 +1973,13 @@ pub(crate) mod tests {
 
         {
             let tonk = state.read().await;
-            let verifier: Ed25519Verifier = missing.to_string().parse().unwrap();
-            let local = Subject::from(tonk.profile.did()).attenuate(Space::new(&missing_key));
-            let credential = local
-                .create(Credential::from(verifier))
-                .perform(&tonk.operator)
-                .await
-                .unwrap();
+            let credential = tonk_account::peer::mount_verifier(
+                tonk.profile.storage(),
+                crate::device::space_location(&missing_key),
+                &missing,
+            )
+            .await
+            .unwrap();
             let repository = Repository::from(credential);
             repository
                 .branch(tonk_account::MAIN_BRANCH)
@@ -2010,50 +2086,13 @@ pub(crate) mod tests {
         Ed25519Signer,
         String,
     ) {
-        use dialog_operator::Profile;
-        use dialog_storage::provider::storage::Storage;
         use dialog_varsig::Principal as _;
         use tonk_access_service::helpers::AccessServiceAddress;
 
         let service = AccessServiceAddress::start(Default::default())
             .await
             .unwrap();
-        let storage = Storage::<crate::worker::DefaultSpace>::default();
-        let name = format!("account-state-worker-test-{}", rand::random::<u64>());
-        let profile = Profile::open(&name).perform(&storage).await.unwrap();
-        let session = crate::session::open(&profile, &storage).await.unwrap();
-        let reactor = crate::Reactor::new(profile.clone());
-        let state = TonkState {
-            profile,
-            operator: session.operator,
-            storage,
-            session_expires_at: session.expires_at,
-            profile_name: name.clone(),
-            reactor,
-            admission: Default::default(),
-            reject_admission_content_reads: Default::default(),
-            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            view_bindings: Default::default(),
-            bridges: Default::default(),
-            sync_queue: Default::default(),
-            commands: crate::router::command_providers(),
-            clients: Default::default(),
-            seed_upgrades: Default::default(),
-            account_keys: Default::default(),
-            profile_library: Default::default(),
-            registry: crate::device::Registry {
-                profile: name.clone(),
-                directory: dialog_effects::storage::Directory::Profile,
-            },
-            profile_transition: Default::default(),
-            context_generation: Default::default(),
-        };
-        crate::router::repository::bootstrap_profile(&state)
-            .await
-            .unwrap();
-
         let root = Ed25519Signer::generate().await.unwrap();
-        let root_signer = root.clone();
         // Hydration syncs the account space, which the access service
         // serves only once its customer has confirmed the emailed
         // activation link.
@@ -2076,17 +2115,102 @@ pub(crate) mod tests {
             "{}/ucan/",
             service.address.access_service_url.trim_end_matches('/')
         );
+        let state = device_on(&root, &remote, passkey).await;
+        // The marker only exists once a hydration succeeded, and none
+        // can while the customer is still `Registered`: pre-setting it
+        // there would put the fixture in a state no real browser reaches.
+        if activated {
+            state
+                .profile
+                .secrets()
+                .site(
+                    crate::credential::branch_site(
+                        tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
+                        &state.active_branch,
+                    )
+                    .as_str(),
+                )
+                .save(root.did().as_str().as_bytes().to_vec())
+                .perform(&state.profile)
+                .await
+                .unwrap();
+        }
+
+        (state, service, root, remote)
+    }
+
+    /// A device on a fresh randomized profile, signed in to the account
+    /// `root` holds and linked to sync it at `remote`: a local root and
+    /// an account link, not yet hydrated.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn device_on(
+        root: &Ed25519Signer,
+        remote: &str,
+        passkey: Option<tonk_worker_api::PasskeyMetadata>,
+    ) -> TonkState {
+        let name = format!("account-state-worker-test-{}", rand::random::<u64>());
+        let (storage, profile) =
+            crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
+                .await
+                .unwrap();
+        let session = crate::session::open(&profile).await.unwrap();
+        let reactor = crate::Reactor::new(profile.credential().clone());
+        let state = TonkState {
+            profile,
+            operator: session.operator,
+            storage,
+            session_expires_at: session.expires_at,
+            profile_name: name.clone(),
+            active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
+            reactor,
+            admission: Default::default(),
+            reject_admission_content_reads: Default::default(),
+            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            view_bindings: Default::default(),
+            bridges: Default::default(),
+            sync_queue: Default::default(),
+            commands: crate::router::command_providers(),
+            clients: Default::default(),
+            seed_upgrades: Default::default(),
+            account_keys: Default::default(),
+            profile_library: Default::default(),
+            registry: crate::device::Registry {
+                profile: name.clone(),
+                directory: dialog_effects::storage::Directory::Profile,
+            },
+            profile_transition: Default::default(),
+            context_generation: Default::default(),
+        };
+        crate::router::repository::bootstrap_profile(&state)
+            .await
+            .unwrap();
+        link_device(&state, root, remote, passkey).await;
+        state
+    }
+
+    /// What a sign-in through `root` leaves on `state`: a fresh
+    /// `root -> device` grant persisted as the local root, and the account
+    /// link that names `remote`.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn link_device(
+        state: &TonkState,
+        root: &Ed25519Signer,
+        remote: &str,
+        passkey: Option<tonk_worker_api::PasskeyMetadata>,
+    ) {
+        use dialog_varsig::Principal as _;
+
         let root_did = root.did().to_string();
         let credential_id = "account-state-test-credential".to_string();
         let delegation =
-            tonk_identity::delegation::mint_device_delegation(root, &state.profile.did())
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &state.profile.did())
                 .await
                 .unwrap();
         let delegation_hex = hex::encode(delegation.to_bytes().unwrap());
         // The link attaches a provider to an already-persisted local root, so
         // the root has to exist before persist_link will accept it.
         crate::router::identity::persist_root(
-            &state,
+            state,
             tonk_worker_api::SaveRootRequest {
                 credential_id: credential_id.clone(),
                 delegation_hex: delegation_hex.clone(),
@@ -2097,33 +2221,18 @@ pub(crate) mod tests {
         .await
         .unwrap();
         crate::router::account::persist_link(
-            &state,
+            state,
             &tonk_worker_api::AccountLinkRequest {
                 provider: "https://accounts.example".to_string(),
                 root_did,
                 credential_id,
                 delegation_hex,
-                remote: remote.clone(),
+                remote: remote.to_string(),
                 initialize_name: false,
             },
         )
         .await
         .unwrap();
-        // The marker only exists once a hydration succeeded, and none
-        // can while the customer is still `Registered`: pre-setting it
-        // there would put the fixture in a state no real browser reaches.
-        if activated {
-            state
-                .profile
-                .credential()
-                .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
-                .save(root_signer.did().as_str().as_bytes().to_vec())
-                .perform(&state.operator)
-                .await
-                .unwrap();
-        }
-
-        (state, service, root_signer, remote)
     }
 
     /// Every passkey recorded for the ready account, through its envelopes.
@@ -2153,6 +2262,206 @@ pub(crate) mod tests {
     /// service's receipt. A device that confirmed elsewhere learns it from
     /// the status probe rather than from the activation page, so this pins
     /// the write itself rather than either caller.
+    /// A second account added on its own branch hydrates.
+    ///
+    /// The profile has one `origin` remote, re-pointed from the first
+    /// account to the second, and the branch the worker lands on is a
+    /// fresh state over the same storage, as `promote` builds one. Both
+    /// have to leave the new branch able to establish its own genesis.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_hydrates_a_second_account_on_its_own_branch() {
+        use dialog_varsig::Principal as _;
+
+        let (state, service, _first, remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready,
+            "the first account hydrates on main",
+        );
+
+        // Onto a fresh branch, the way sign-out and add-account land.
+        super::super::account_devices::withdraw_own_authority(&state).await;
+        super::super::account::disconnect(&state).await.unwrap();
+        super::super::profile::leave_account(&state).await;
+        // The way the worker lands there: a fresh state over the same
+        // storage, as `promote` builds one.
+        let state = crate::worker::boot_state_with_profile_library(
+            state.storage.clone(),
+            state.profile_name.clone(),
+            state.profile.clone(),
+            state.registry.clone(),
+            state.profile_library.clone(),
+        )
+        .await
+        .unwrap();
+        let landing = state.active_branch.clone();
+        assert_ne!(landing, "main", "the profile moved onto a branch");
+
+        // A second account, registered with the same service.
+        let second = Ed25519Signer::generate().await.unwrap();
+        service
+            .address
+            .activate_customer(&second, "worker-second-account@example.com")
+            .await
+            .unwrap();
+        let root_did = second.did().to_string();
+        let credential_id = "account-state-second-credential".to_string();
+        let delegation =
+            tonk_identity::delegation::mint_device_delegation(second, &state.profile.did())
+                .await
+                .unwrap();
+        let delegation_hex = hex::encode(delegation.to_bytes().unwrap());
+        crate::router::identity::persist_root(
+            &state,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: credential_id.clone(),
+                delegation_hex: delegation_hex.clone(),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .unwrap();
+        crate::router::account::persist_link(
+            &state,
+            &tonk_worker_api::AccountLinkRequest {
+                provider: "https://accounts.example".to_string(),
+                root_did,
+                credential_id,
+                delegation_hex,
+                remote,
+                initialize_name: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready,
+            "the second account hydrates on {landing}",
+        );
+        require_ready_account_state(&state)
+            .await
+            .expect("the branch is ready to rename on");
+
+        // A remote of its own: dialog keeps a remote branch's last-seen
+        // head under the remote's name, so a shared `origin` would hand
+        // the second account the first one's head.
+        let repository = dialog_repository::Repository::from(state.profile.did());
+        let mut followed = Vec::new();
+        for name in ["main", landing.as_str()] {
+            let branch = repository
+                .branch(name)
+                .open()
+                .perform(&state.operator)
+                .await
+                .unwrap();
+            match tonk_account::peer::upstream(&branch) {
+                Some(dialog_repository::Upstream::Remote { remote, .. }) => followed.push(remote),
+                other => panic!("{name} follows {other:?}, not an account remote"),
+            }
+        }
+        assert!(
+            !followed[0].same(&followed[1]),
+            "each account's branch follows a remote named for that account"
+        );
+
+        // The access branch is the branch the profile is on. Adopting
+        // through a fixed `main` would pull the FIRST account's access
+        // branch with the second account's authority, which no delegation
+        // proves, and the sweep would refuse every proof from then on.
+        assert!(
+            adopt_account_access(&state).await,
+            "the second account's authority is adopted on {landing}",
+        );
+    }
+
+    /// A device that signs out and back in keeps pulling its account.
+    ///
+    /// A device joining an account in use retains its grant on a branch
+    /// whose tree has already grown past one leaf, so the grant's blob
+    /// record rides a buffer above the leaves. Sign-out retracts it there,
+    /// and its own push is then refused, since the branch no longer proves
+    /// the device. Signing back in pulls that unpushed retraction together
+    /// with what another device pushed meanwhile, and the pull's download
+    /// took the superseded record for a live one: it asked for the grant's
+    /// blob, which the tree no longer references, and failed with
+    /// "Revision references blob …, which is not present". Every pull
+    /// after that failed the same way, so nothing the account changed
+    /// elsewhere reached the device again.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_pulls_the_account_after_signing_out_and_back_in() {
+        use dialog_artifacts::{Artifact, Instruction, Value};
+        use dialog_varsig::Principal as _;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        const RENAMED: &str = "Renamed on the other device";
+
+        let (home, _service, root, remote) = ready_account_state(None).await;
+        assert_eq!(ensure_account_state(&home).await, AccountStateStatus::Ready);
+
+        // An account in use: enough facts that its tree has an index node.
+        let facts: Vec<_> = (0..2048)
+            .map(|n| {
+                Instruction::Assert(Artifact {
+                    the: "test/fact".parse().expect("a valid attribute"),
+                    of: format!("test:{n}").parse().expect("a valid entity"),
+                    is: Value::UnsignedInt(n),
+                    cause: None,
+                })
+            })
+            .collect();
+        home.reactor
+            .profile_repository()
+            .branch(&home.active_branch)
+            .acquire(&home.operator)
+            .await
+            .unwrap()
+            .handle()
+            .commit(futures_util::stream::iter(facts))
+            .perform(&home.operator)
+            .await
+            .unwrap();
+        push_account_main(&home).await.unwrap();
+
+        // A second device signs in; its sweep retains its grant.
+        let device = device_on(&root, &remote, None).await;
+        let (status, swept) = ensure_account_state_swept(&device).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.unwrap();
+
+        let device = Arc::new(RwLock::new(device));
+        super::super::profiles::sign_out(&device, None)
+            .await
+            .unwrap();
+
+        // The account changes on the first device.
+        rename_display_name(&home, RENAMED).await.unwrap();
+        let (_, swept) = ensure_account_state_swept(&home).await;
+        swept.unwrap();
+
+        // Signing back in returns to the branch that follows the account
+        // and links it again.
+        let device = super::super::profiles::for_account(device, &root.did(), None)
+            .await
+            .unwrap();
+        link_device(&device, &root, &remote, None).await;
+        let (status, swept) = ensure_account_state_swept(&device).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.expect("the account pulls after signing back in");
+        assert_eq!(
+            super::super::account_devices::account_display_name(&device)
+                .await
+                .as_deref(),
+            Some(RENAMED),
+            "the rename made on the other device arrives",
+        );
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_records_the_activation_the_bar_subscribes_to() {
@@ -2181,7 +2490,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -2336,7 +2645,7 @@ pub(crate) mod tests {
             let branch = state
                 .reactor
                 .profile_repository()
-                .branch(tonk_account::MAIN_BRANCH)
+                .branch(&state.active_branch)
                 .acquire(&state.operator)
                 .await
                 .unwrap();
@@ -2418,7 +2727,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -2521,7 +2830,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -2625,7 +2934,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -2745,13 +3054,14 @@ pub(crate) mod tests {
     }
 
     /// The recipient a ceremony recorded on the local root is published
-    /// as the account's encryption key, and a seed sealed to it lands as
-    /// a `SecretMessage` that the account's own key opens.
+    /// as the account's encryption key, and a seed taken into custody is
+    /// held sealed to the account the profile acts for.
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_publishes_the_encryption_key_and_custodies_a_seed() {
+        use dialog_credentials::key::ExtractableKey as _;
+        use dialog_varsig::Principal as _;
         use tonk_identity::envelope::AccountSecret;
-        use tonk_identity::sealed::Sealed;
 
         let (state, service, root, _remote) = ready_account_state(None).await;
         assert_eq!(
@@ -2763,8 +3073,6 @@ pub(crate) mod tests {
         // A device that only linked recorded no recipient: nothing to seed.
         assert!(!seed_sealed_inbox(&state).await);
         assert_eq!(read_sealed_inbox(&state, &ready).await.unwrap(), None);
-        let subject: dialog_varsig::Did = "did:key:z6MkSpaceUnderTest".parse().unwrap();
-        assert!(!custody_seed(&state, &subject, SeedKind::Space, Zeroizing::new([7u8; 32])).await);
 
         // A ceremony that held the secret re-saves the root with the recipient.
         let account = AccountSecret::from_bytes(Zeroizing::new([5u8; 32]));
@@ -2791,48 +3099,27 @@ pub(crate) mod tests {
             Some(recipient.clone())
         );
 
-        assert!(custody_seed(&state, &subject, SeedKind::Space, Zeroizing::new([7u8; 32])).await);
-        let branch = state
-            .reactor
-            .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
-            .acquire(&state.operator)
-            .await
-            .unwrap();
-        // The principal names the message; the message carries the seed.
-        let principals: Vec<SecretPrincipal> = branch
-            .handle()
-            .query()
-            .select(Query::<SecretPrincipal> {
-                this: Term::from(subject.this()),
-                kind: Term::var("kind"),
-                seed: Term::var("seed"),
-            })
-            .perform(&state.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(principals.len(), 1);
-        assert_eq!(principals[0].kind.0.to_string(), SeedKind::SPACE);
+        // A seed that does not derive the subject is refused.
+        let seed = Zeroizing::new([7u8; 32]);
+        let subject =
+            <dialog_credentials::Ed25519Signer<dialog_credentials::Extractable>>::import(&*seed)
+                .await
+                .unwrap()
+                .did();
+        let other: dialog_varsig::Did = "did:key:z6MkSpaceUnderTest".parse().unwrap();
+        assert!(!custody_seed(&state, &other, SeedKind::Space, seed.clone()).await);
 
-        let rows: Vec<SecretMessage> = branch
-            .handle()
-            .query()
-            .select(Query::<SecretMessage> {
-                this: Term::from(principals[0].seed.0.clone()),
-                to: Term::var("to"),
-                message: Term::var("message"),
-                from: Term::var("from"),
-            })
-            .perform(&state.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(rows.len(), 1, "the principal names a real message");
-        assert_eq!(rows[0].to.0, recipient.this());
-        let sealed = Sealed::decode(&rows[0].message.0).unwrap();
-        let opened = account.secret().reveal(&sealed, &subject).unwrap();
-        assert_eq!(*opened, [7u8; 32]);
+        assert!(custody_seed(&state, &subject, SeedKind::Space, seed).await);
+        let held = dialog_repository::secrets::held_principal(
+            state.profile.state(),
+            &subject,
+            &state.profile,
+        )
+        .await
+        .unwrap()
+        .expect("the space's key is held");
+        assert_eq!(held.kind, SeedKind::Space.held());
+        assert_eq!(held.to, state.profile.authority().await.unwrap());
 
         service.stop().await.unwrap();
         discard(state, &ready.key);
@@ -2854,7 +3141,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .expect("account branch opens");
@@ -2942,7 +3229,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -3021,7 +3308,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -3108,7 +3395,7 @@ pub(crate) mod tests {
         let account = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -3137,7 +3424,7 @@ pub(crate) mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn stale_profile_library() -> String {
         const CURRENT: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
-        let marker = "<div class=\"stack chrome\" data-spaces-view aria-label=\"spaces\">";
+        let marker = "<hub-collection class=\"stack chrome\" with=\"main@profile:tonk\"\n          data-spaces-view aria-label=\"spaces\">";
         let stale = format!("{marker}\n          <div class=\"sempty\">no spaces yet</div>");
         let historical = CURRENT.replacen(marker, &stale, 1);
         assert_ne!(historical, CURRENT, "the historical fixture must differ");
@@ -3254,7 +3541,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();

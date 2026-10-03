@@ -8,10 +8,17 @@
 
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
-use serde::Serialize;
 
-use crate::domain::branch::{Name, Origin};
-use crate::prelude::*;
+use crate::domain::branch::{Name, Origin, Replica};
+
+/// Branch facts written before `branch/replica` replaced `branch/origin`.
+/// Their entity also used a different hash input, so reads must retain it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LegacyBranch {
+    pub this: Entity,
+    pub name: Name,
+    pub origin: Origin,
+}
 
 /// Hash input for [`Branch::this`].
 ///
@@ -26,11 +33,6 @@ use crate::prelude::*;
 ///
 /// Not stored — constructed transiently inside [`Branch::new`] so
 /// the hash can be computed.
-#[derive(Serialize)]
-enum This<'a> {
-    Branch { origin: &'a Entity, name: &'a str },
-}
-
 /// A branch within a replica.
 ///
 /// The `this` entity is content-derived from the replica's entity
@@ -72,7 +74,7 @@ pub struct Branch {
     /// The branch's name on this replica.
     pub name: Name,
     /// The replica this branch lives on.
-    pub origin: Origin,
+    pub replica: Replica,
 }
 
 impl AsRef<Entity> for Branch {
@@ -89,20 +91,19 @@ impl Branch {
     /// [`Remote`] (for a remote-side branch) both work via their
     /// `AsRef<Entity>` impls. `name` takes anything convertible
     /// into [`Name`] — e.g. a `&str` — so callers don't have to
-    /// wrap string literals. Derives `this` from `(origin, name)`
-    /// and stores `origin` as an attribute so every field is
+    /// wrap string literals. Derives `this` from `(replica, name)`
+    /// and stores `replica` as an attribute so every field is
     /// consistent with the entity hash.
     ///
     /// [`Remote`]: crate::Remote
-    pub fn new(origin: impl AsRef<Entity>, name: impl Into<Name>) -> Self {
-        let origin = origin.as_ref();
+    pub fn new(replica: impl AsRef<Entity>, name: impl Into<Name>) -> Self {
+        let replica = replica.as_ref();
         let name = name.into();
         Self {
-            this: Entity::of(&This::Branch {
-                origin,
-                name: &name.0,
-            }),
-            origin: Origin::from(origin.clone()),
+            // Derived through dialog's own `Branch`, so the branch tonk
+            // records on `meta` is the entity dialog surfaces for it.
+            this: dialog_repository::schema::Branch::new(replica, name.0.as_str()).this,
+            replica: Replica::from(replica.clone()),
             name,
         }
     }
@@ -152,7 +153,7 @@ mod tests {
     fn attributes_reflect_replica() {
         let r = Replica::new(did!("test:p"), did!("test:r"));
         let b = Branch::new(&r, "main");
-        assert_eq!(b.origin.0, r.this);
+        assert_eq!(b.replica.0, r.this);
     }
 
     #[test]
@@ -172,7 +173,7 @@ mod tests {
         let local = Branch::new(&replica, "main");
         let tracking = Branch::new(&remote, "main");
         assert_ne!(local.this, tracking.this);
-        assert_eq!(local.origin.0, replica.this);
-        assert_eq!(tracking.origin.0, remote.this);
+        assert_eq!(local.replica.0, replica.this);
+        assert_eq!(tracking.replica.0, remote.this);
     }
 }

@@ -97,6 +97,44 @@ pub enum AuthoringError {
     /// template source and found it empty.
     #[error("the view template is empty; pass --template <html> or --template-file <path>")]
     EmptyTemplate,
+    /// An element tag that a browser would refuse to register.
+    #[error("'{raw}' is not a usable custom element name: {reason}")]
+    BadElementTag {
+        /// The offending tag, as given.
+        raw: String,
+        /// Which rule it broke, phrased for a terminal.
+        reason: &'static str,
+    },
+    /// A `method:` key that would not survive contact with a browser.
+    #[error("'{raw}' is not a usable method name: {reason}")]
+    BadMethodKey {
+        /// The offending key, as given.
+        raw: String,
+        /// Which rule it broke, phrased for a terminal.
+        reason: &'static str,
+    },
+    /// A named method carried no source.
+    #[error("the '{key}' method is empty")]
+    EmptyMethod {
+        /// The method key whose source was blank.
+        key: String,
+    },
+    /// An element was authored with no methods at all.
+    #[error(
+        "an element needs at least one method; pass --method <name>=<js> or --method-file <name>=<path>"
+    )]
+    NoMethods,
+    /// An element was authored without a description.
+    #[error("an element needs a description; pass --description <text>")]
+    NoDescription,
+    /// An attribute default named something no element could carry.
+    #[error("'{raw}' is not a usable attribute name: {reason}")]
+    BadAttributeName {
+        /// The offending name, as given.
+        raw: String,
+        /// Which rule it broke, phrased for a terminal.
+        reason: &'static str,
+    },
 }
 
 /// Canonical `as:` type spellings the analyzer accepts, matching
@@ -319,6 +357,340 @@ pub fn build_view_decl(kind: ViewKind, model: &str, template: &str) -> String {
     out
 }
 
+/// Custom element names a browser reserves for SVG/MathML, which
+/// contain a hyphen but can never be registered.
+const RESERVED_ELEMENT_TAGS: &[&str] = &[
+    "annotation-xml",
+    "color-profile",
+    "font-face",
+    "font-face-src",
+    "font-face-uri",
+    "font-face-format",
+    "font-face-name",
+    "missing-glyph",
+];
+
+/// Check `tag` against the rules a browser applies before it will
+/// register a custom element: it must start with an ASCII lowercase
+/// letter, contain a hyphen, carry no uppercase, and not be one of
+/// the reserved SVG/MathML names.
+///
+/// This is deliberately narrower than the spec's full
+/// `PotentialCustomElementName` grammar, which also admits most
+/// non-ASCII characters. A tag rejected here is still a name we can
+/// refuse to author with a clear message; a tag accepted here is one
+/// every browser will take.
+pub fn validate_element_tag(tag: &str) -> Result<(), AuthoringError> {
+    let bad = |reason| {
+        Err(AuthoringError::BadElementTag {
+            raw: tag.to_owned(),
+            reason,
+        })
+    };
+    if tag.is_empty() {
+        return bad("it is empty");
+    }
+    if !tag.starts_with(|c: char| c.is_ascii_lowercase()) {
+        return bad("it must start with a lowercase ASCII letter");
+    }
+    if !tag.contains('-') {
+        return bad("it must contain a hyphen, e.g. tally-widget");
+    }
+    if tag
+        .chars()
+        .any(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '_')))
+    {
+        return bad("it may only contain lowercase ASCII letters, digits, '-', '.' and '_'");
+    }
+    if RESERVED_ELEMENT_TAGS.contains(&tag) {
+        return bad("it is reserved for SVG/MathML");
+    }
+    Ok(())
+}
+
+/// The method keys the runtime dispatches rather than installing on the
+/// element. Everything else in a `method:` dictionary becomes a method
+/// on the element.
+///
+/// Four come from the DOM lifecycle. The last two are the runtime's
+/// own: a definition can be replaced while its instances are live, and
+/// `released` / `swapped` are the outgoing and incoming halves of that
+/// handover.
+pub const LIFECYCLE_METHODS: &[&str] = &[
+    "connected",
+    "disconnected",
+    "adopted",
+    "attribute-changed",
+    "released",
+    "swapped",
+];
+
+/// The reserved key whose value is a class factory. When present the
+/// runtime registers the class it returns instead of the generated
+/// wrapper — the escape hatch for what a method table cannot say.
+pub const DEFINE_METHOD: &str = "define";
+
+/// Members a custom method must not shadow. Installing `remove` or
+/// `click` on the prototype breaks the element in ways that surface
+/// far from the cause, so the name is refused at authoring time.
+///
+/// The inherited chain (EventTarget -> Node -> Element -> HTMLElement)
+/// down to the members an author plausibly reaches for; it is a guard
+/// against the likely collisions, not a proof of their absence, since
+/// the real prototype grows with the platform. The runtime repeats the
+/// check against the live prototype, which is exact.
+///
+/// Members whose real spelling holds an acronym (`innerHTML`,
+/// `outerHTML`) are unreachable anyway: a kebab key camel-cases to
+/// `innerHtml`, which shadows nothing. They are listed for the reader,
+/// not because a key could hit them.
+const RESERVED_MEMBERS: &[&str] = &[
+    "addEventListener",
+    "after",
+    "animate",
+    "append",
+    "appendChild",
+    "attachInternals",
+    "attachShadow",
+    "attributes",
+    "before",
+    "blur",
+    "childNodes",
+    "children",
+    "classList",
+    "className",
+    "click",
+    "cloneNode",
+    "closest",
+    "connectedCallback",
+    "contains",
+    "dataset",
+    "dispatchEvent",
+    "focus",
+    "getAttribute",
+    "hasAttribute",
+    "hidden",
+    "id",
+    "innerHTML",
+    "innerText",
+    "insertBefore",
+    "matches",
+    "nodeName",
+    "nodeType",
+    "outerHTML",
+    "parentElement",
+    "parentNode",
+    "prepend",
+    "querySelector",
+    "querySelectorAll",
+    "remove",
+    "removeAttribute",
+    "removeChild",
+    "removeEventListener",
+    "replaceChild",
+    "replaceWith",
+    "setAttribute",
+    "shadowRoot",
+    "slot",
+    "style",
+    "tagName",
+    "textContent",
+    "title",
+    "toggleAttribute",
+];
+
+/// The JS property name a method key installs on the element:
+/// `attribute-changed` -> `attributeChanged`, `bump` -> `bump`.
+///
+/// Keys stay kebab in the data — matching every other tonk key — and
+/// become camelCase on the prototype so `el.myMethod()` is callable
+/// JS, which `el['my-method']()` is not.
+pub fn method_property(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    let mut upper = false;
+    for c in key.chars() {
+        if c == '-' {
+            upper = true;
+        } else if upper {
+            out.extend(c.to_uppercase());
+            upper = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Check one `method:` key: kebab-cased, and not a name that would
+/// shadow an `HTMLElement` member once camelCased.
+pub fn validate_method_key(key: &str) -> Result<(), AuthoringError> {
+    let bad = |reason| {
+        Err(AuthoringError::BadMethodKey {
+            raw: key.to_owned(),
+            reason,
+        })
+    };
+    if key.is_empty() {
+        return bad("it is empty");
+    }
+    if !key.starts_with(|c: char| c.is_ascii_lowercase()) {
+        return bad("it must start with a lowercase ASCII letter");
+    }
+    if key
+        .chars()
+        .any(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+    {
+        return bad("it may only contain lowercase ASCII letters, digits and '-'");
+    }
+    if RESERVED_MEMBERS.contains(&method_property(key).as_str()) {
+        return bad("it would shadow a member every HTML element already has");
+    }
+    Ok(())
+}
+
+/// Build the `element!:` declaration defining the custom element `tag`
+/// as `description`, from `methods`, a list of `(key, source)` pairs.
+///
+/// The declaration is ANCHORED, not pinned: the assertion mints a
+/// content-addressed entity for this element and publishes `id:<tag>`
+/// pointing at it. That indirection is the point. An element is a
+/// value and the tag is a mutable pointer to one, so re-authoring the
+/// tag publishes a NEW value and repoints the name — and everything
+/// that resolves the tag by name follows on the spot, which is what
+/// makes a definition swappable at all. Pinning an entity to the tag
+/// would collapse the indirection and take that away.
+///
+/// Because the entity is derived from the whole body, a body built
+/// here is the WHOLE element rather than a patch — re-deriving from
+/// one method would mint a one-method element, not amend the existing
+/// one. So [`crate::data_ops::element_add`] reads the tag's current
+/// methods and carries them forward. (Authors editing notation by
+/// hand keep the cheaper road: naming the entity with `this:` and
+/// asserting one key supersedes just that fact.)
+pub fn build_element_decl(
+    tag: &str,
+    description: &str,
+    parts: &ElementParts<'_>,
+) -> Result<String, AuthoringError> {
+    let ElementParts {
+        methods,
+        attributes,
+        getters,
+        setters,
+    } = parts;
+    validate_element_tag(tag)?;
+    if description.trim().is_empty() {
+        return Err(AuthoringError::NoDescription);
+    }
+    if methods.is_empty() {
+        return Err(AuthoringError::NoMethods);
+    }
+    let mut out = String::new();
+    let _ = writeln!(out, "element!: &{tag}");
+    // Required by the concept, and not decoration: it reaches the
+    // entity digest alongside the methods, so it is part of what this
+    // element IS. The tag is deliberately absent from the body — it
+    // lives in the anchor above, where it can be repointed.
+    let _ = writeln!(out, "  description: {}", quote_string(description));
+    out.push_str("  method:\n");
+    for (key, source) in *methods {
+        validate_method_key(key)?;
+        if source.trim().is_empty() {
+            return Err(AuthoringError::EmptyMethod { key: key.clone() });
+        }
+        let _ = writeln!(out, "    {key}: |");
+        for line in source.lines() {
+            if line.trim().is_empty() {
+                out.push('\n');
+            } else {
+                let _ = writeln!(out, "      {line}");
+            }
+        }
+    }
+    // Each map is omitted entirely when empty. A keyed collection is
+    // zero-or-more, so an absent map is an empty one — writing
+    // `attribute: {}` would say the same thing at more length.
+    if !attributes.is_empty() {
+        out.push_str("  attribute:\n");
+        for (name, value) in *attributes {
+            validate_attribute_name(name)?;
+            // Quoted, always: a default is DATA, and a bare `red`
+            // would be read as a reference to something else on the
+            // branch rather than as the three letters.
+            let _ = writeln!(out, "    {name}: {}", quote_string(value));
+        }
+    }
+    for (field, entries) in [("getter", getters), ("setter", setters)] {
+        if entries.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "  {field}:");
+        for (key, source) in *entries {
+            // An accessor lands on the prototype the way a method
+            // does, so it answers to the same key rules.
+            validate_method_key(key)?;
+            if source.trim().is_empty() {
+                return Err(AuthoringError::EmptyMethod { key: key.clone() });
+            }
+            let _ = writeln!(out, "    {key}: |");
+            for line in source.lines() {
+                if line.trim().is_empty() {
+                    out.push('\n');
+                } else {
+                    let _ = writeln!(out, "      {line}");
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The four dictionaries an `element!:` carries, as the CLI collected
+/// them from flags.
+///
+/// Borrowed slices in a struct rather than four parameters: they are
+/// all `&[(String, String)]`, so positional arguments would let a
+/// caller swap two with nothing to catch it, and swapping `getters`
+/// for `setters` produces notation that evaluates and registers while
+/// reading through the write half.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ElementParts<'a> {
+    /// Lifecycle hooks, `define`, and custom methods.
+    pub methods: &'a [(String, String)],
+    /// Attribute defaults, keyed by attribute name.
+    pub attributes: &'a [(String, String)],
+    /// Property reads, keyed by property name.
+    pub getters: &'a [(String, String)],
+    /// Property writes, keyed by property name.
+    pub setters: &'a [(String, String)],
+}
+
+/// Refuse an attribute name a browser would not let an element carry.
+///
+/// The HTML parser's own rule, minus the exotic middle: an attribute
+/// name may not contain whitespace, a quote, `>`, `/` or `=`, and may
+/// not be empty. Kept narrow rather than mirroring the full grammar —
+/// anything stricter would refuse names (`data-*`, `aria-*`, a bare
+/// `count`) that authors legitimately use.
+fn validate_attribute_name(name: &str) -> Result<(), AuthoringError> {
+    let bad = |reason: &'static str| {
+        Err(AuthoringError::BadAttributeName {
+            raw: name.to_owned(),
+            reason,
+        })
+    };
+    if name.is_empty() {
+        return bad("it is empty");
+    }
+    if name
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '>' | '/' | '='))
+    {
+        return bad("an attribute name may not contain whitespace, quotes, '>', '/' or '='");
+    }
+    Ok(())
+}
+
 /// Build the space-home recipe: the origin-keyed root concept, its
 /// view (one `<tonk-display model=X />` per model — wrapped in a
 /// `<section>` with an `<h2>` heading when there are 2+ models, a
@@ -514,6 +886,290 @@ mod tests {
             &fields(&["name"]),
         );
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    fn methods(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn it_builds_an_element_declaration_anchored_to_its_tag() {
+        let doc = build_element_decl(
+            "tally-widget",
+            "A running tally",
+            &ElementParts {
+                methods: &methods(&[("connected", "(self) => { self.textContent = 'hi'; }")]),
+                ..Default::default()
+            },
+        )
+        .expect("valid tag and method");
+        assert!(doc.starts_with("element!: &tally-widget\n"), "{doc}");
+        // No `this:`. The anchor mints a value and points the tag at
+        // it; pinning an entity here would collapse the indirection
+        // the loader resolves through.
+        assert!(!doc.contains("this:"), "{doc}");
+        assert!(
+            doc.contains("  description: \"A running tally\"\n"),
+            "{doc}"
+        );
+        // The tag is the anchor's job, not a field's.
+        assert!(!doc.contains("  name:"), "{doc}");
+        assert!(doc.contains("  method:\n    connected: |\n"), "{doc}");
+        assert!(doc.contains("      (self) => { self.textContent"), "{doc}");
+    }
+
+    #[test]
+    fn it_writes_every_method_as_its_own_dictionary_entry() {
+        let doc = build_element_decl(
+            "tally-widget",
+            "A running tally",
+            &ElementParts {
+                methods: &methods(&[
+                    ("connected", "(self) => {}"),
+                    ("attribute-changed", "(self, name, before, after) => {}"),
+                    ("bump", "(self) => {}"),
+                ]),
+                ..Default::default()
+            },
+        )
+        .expect("valid");
+        // Each key is its own entry, so each is its own fact and
+        // supersedes independently.
+        for key in ["connected", "attribute-changed", "bump"] {
+            assert!(
+                doc.contains(&format!("    {key}: |\n")),
+                "{key} missing:\n{doc}"
+            );
+        }
+    }
+
+    #[test]
+    fn it_indents_every_method_line_under_the_block_scalar() {
+        let doc = build_element_decl(
+            "x-y",
+            "Two letters",
+            &ElementParts {
+                methods: &methods(&[("connected", "(self) => {\n\n  const a = 1;\n}")]),
+                ..Default::default()
+            },
+        )
+        .expect("valid");
+        // A blank line inside the source stays blank (indenting it
+        // would put trailing whitespace in the notation); every
+        // content line carries the block scalar's six spaces.
+        assert!(
+            doc.contains("      (self) => {\n\n        const a = 1;\n"),
+            "{doc}"
+        );
+    }
+
+    #[test]
+    fn it_refuses_tags_a_browser_would_refuse() {
+        for (tag, why) in [
+            ("widget", "no hyphen"),
+            ("Tally-Widget", "uppercase"),
+            ("-widget", "leading hyphen"),
+            ("1-widget", "leading digit"),
+            ("tally widget", "whitespace"),
+            ("font-face", "reserved for SVG/MathML"),
+            ("", "empty"),
+        ] {
+            assert!(
+                validate_element_tag(tag).is_err(),
+                "expected {tag:?} to be rejected ({why})",
+            );
+        }
+        for tag in ["tally-widget", "x-y", "my-el.2", "a-b_c"] {
+            assert!(
+                validate_element_tag(tag).is_ok(),
+                "expected {tag:?} to pass"
+            );
+        }
+    }
+
+    #[test]
+    fn it_camel_cases_a_method_key_for_the_prototype() {
+        assert_eq!(method_property("attribute-changed"), "attributeChanged");
+        assert_eq!(method_property("bump"), "bump");
+        assert_eq!(method_property("a-b-c"), "aBC");
+    }
+
+    #[test]
+    fn it_refuses_method_keys_that_shadow_an_html_element_member() {
+        // `remove` and `click` are outright; `text-content` is caught
+        // only after camel-casing, which is the form that actually
+        // lands on the prototype.
+        for key in ["remove", "click", "id", "text-content"] {
+            assert!(
+                validate_method_key(key).is_err(),
+                "expected {key:?} to be refused",
+            );
+        }
+        // Acronym-cased members are out of reach by construction:
+        // `inner-html` camel-cases to `innerHtml`, not `innerHTML`,
+        // so it shadows nothing.
+        assert!(validate_method_key("inner-html").is_ok());
+        for key in LIFECYCLE_METHODS {
+            assert!(validate_method_key(key).is_ok(), "{key} should be allowed");
+        }
+        assert!(validate_method_key(DEFINE_METHOD).is_ok());
+        assert!(validate_method_key("bump").is_ok());
+    }
+
+    #[test]
+    fn it_refuses_malformed_method_keys() {
+        for key in ["", "Connected", "-connected", "2connected", "on_connect"] {
+            assert!(
+                validate_method_key(key).is_err(),
+                "expected {key:?} to be refused",
+            );
+        }
+    }
+
+    #[test]
+    fn it_refuses_an_element_with_no_methods() {
+        assert!(matches!(
+            build_element_decl("tally-widget", "A running tally", &ElementParts::default()),
+            Err(AuthoringError::NoMethods)
+        ));
+    }
+
+    #[test]
+    fn it_refuses_an_empty_method_body() {
+        assert!(matches!(
+            build_element_decl(
+                "tally-widget",
+                "A running tally",
+                &ElementParts {
+                    methods: &methods(&[("connected", "  \n\n")]),
+                    ..Default::default()
+                }
+            ),
+            Err(AuthoringError::EmptyMethod { .. })
+        ));
+    }
+
+    #[test]
+    fn it_writes_attribute_defaults_as_quoted_data() {
+        let doc = build_element_decl(
+            "tally-widget",
+            "A running tally",
+            &ElementParts {
+                methods: &methods(&[("connected", "(self) => {}")]),
+                attributes: &[
+                    ("color".to_owned(), "red".to_owned()),
+                    ("size".to_owned(), String::new()),
+                ],
+                ..Default::default()
+            },
+        )
+        .expect("valid");
+        // Quoted even when the value looks like a bare identifier: a
+        // default is DATA, and `red` unquoted would be read as a
+        // reference to something else on the branch.
+        assert!(doc.contains("  attribute:\n    color: \"red\"\n"), "{doc}");
+        assert!(doc.contains("    size: \"\"\n"), "{doc}");
+    }
+
+    #[test]
+    fn it_omits_the_attribute_map_when_there_are_no_defaults() {
+        let doc = build_element_decl(
+            "tally-widget",
+            "A running tally",
+            &ElementParts {
+                methods: &methods(&[("connected", "(self) => {}")]),
+                ..Default::default()
+            },
+        )
+        .expect("valid");
+        // A keyed collection is zero-or-more, so an absent map already
+        // says "none"; `attribute: {}` would say it at more length.
+        assert!(!doc.contains("attribute:"), "{doc}");
+    }
+
+    #[test]
+    fn it_writes_getters_and_setters_as_their_own_blocks() {
+        let doc = build_element_decl(
+            "tally-widget",
+            "A running tally",
+            &ElementParts {
+                methods: &methods(&[("connected", "(self) => {}")]),
+                getters: &methods(&[("value", "(self) => self.textContent")]),
+                setters: &methods(&[("value", "(self, next) => { self.textContent = next; }")]),
+                ..Default::default()
+            },
+        )
+        .expect("valid");
+        assert!(
+            doc.contains("  getter:\n    value: |\n      (self) => self.textContent\n"),
+            "{doc}"
+        );
+        assert!(
+            doc.contains(
+                "  setter:\n    value: |\n      (self, next) => { self.textContent = next; }\n"
+            ),
+            "{doc}"
+        );
+        // Unlike a default, an accessor is JS and goes out as a block
+        // scalar, the way a method does.
+        assert!(!doc.contains("getter: {"), "{doc}");
+    }
+
+    #[test]
+    fn it_refuses_an_accessor_key_that_would_shadow_an_html_element_member() {
+        assert!(matches!(
+            build_element_decl(
+                "tally-widget",
+                "A running tally",
+                &ElementParts {
+                    methods: &methods(&[("connected", "(self) => {}")]),
+                    getters: &methods(&[("id", "(self) => 1")]),
+                    ..Default::default()
+                }
+            ),
+            Err(AuthoringError::BadMethodKey { .. })
+        ));
+    }
+
+    #[test]
+    fn it_refuses_an_attribute_name_no_element_could_carry() {
+        for (name, why) in [
+            ("", "empty"),
+            ("two words", "whitespace"),
+            ("a=b", "equals"),
+            ("a/b", "slash"),
+            ("a>b", "gt"),
+            ("a\"b", "quote"),
+        ] {
+            assert!(
+                validate_attribute_name(name).is_err(),
+                "expected {name:?} to be refused ({why})",
+            );
+        }
+        for name in ["color", "data-count", "aria-label", "x"] {
+            assert!(
+                validate_attribute_name(name).is_ok(),
+                "expected {name:?} to pass",
+            );
+        }
+    }
+
+    #[test]
+    fn it_refuses_an_element_with_no_description() {
+        assert!(matches!(
+            build_element_decl(
+                "tally-widget",
+                "   ",
+                &ElementParts {
+                    methods: &methods(&[("connected", "(self) => {}")]),
+                    ..Default::default()
+                }
+            ),
+            Err(AuthoringError::NoDescription)
+        ));
     }
 
     #[test]

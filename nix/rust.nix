@@ -176,21 +176,28 @@ let
       # names them here so they are cached across source changes instead of
       # rebuilt inside every archive derivation.
       depsExtraArgs ? null,
+      # Cargo profile the archive builds with, when not the default one.
+      # Its dependencies are built under the same profile, since artifacts
+      # built for another profile are not reused.
+      profile ? null,
     }:
     let
-      targetAttributes = if target == "wasm32-unknown-unknown" then wasmAttributes else commonAttributes;
+      baseAttributes = if target == "wasm32-unknown-unknown" then wasmAttributes else commonAttributes;
+
+      targetAttributes =
+        if profile == null then baseAttributes else baseAttributes // { CARGO_PROFILE = profile; };
 
       sharedArtifacts = if target == "wasm32-unknown-unknown" then wasmArtifacts else nativeArtifacts;
 
       targetArtifacts =
-        if depsExtraArgs == null then
+        if depsExtraArgs == null && profile == null then
           sharedArtifacts
         else
           craneLib.buildDepsOnly (
             targetAttributes
             // {
               pname = "tonk-workspace-${name}-deps";
-              cargoExtraArgs = depsExtraArgs;
+              cargoExtraArgs = if depsExtraArgs == null then "" else depsExtraArgs;
             }
           );
     in

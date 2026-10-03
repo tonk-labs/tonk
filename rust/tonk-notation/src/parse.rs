@@ -12,13 +12,16 @@
 //!
 //! [analyze]: https://github.com/dialog-db/tonk-workers/tree/main/rust/tonk-schema/src/interpret.rs
 
+use base64::Engine as _;
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 use saphyr::{MarkedYaml, Scalar as SaphyrScalar, ScanError, YamlData, YamlLoader};
 use saphyr_parser::{Event, Marker, Parser, ScalarStyle, Span, SpannedEventReceiver, StrInput};
 
+use url::Url;
+
 use crate::syntax::{
-    Anchor, Application, Effectful, Expression, Field, FieldValue, HeadName, Predicate, Premise,
-    Scalar, Spanned, Syntax,
+    Anchor, Application, Effectful, Expression, Field, FieldValue, HeadName, Include, IncludeForm,
+    Predicate, Premise, Scalar, Spanned, Syntax,
 };
 
 /// Outcome of a parse.
@@ -30,9 +33,25 @@ pub struct Parsed {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Parse `text` as a YAML document and convert it to a [`Syntax`]
-/// tree.
+/// The location of a document that has none: text that arrived
+/// without a URI of its own (a request body, an editor buffer, an
+/// inline `-c` string). A `data:` URI cannot be a base, so an
+/// `!include` in such a document has nothing to resolve against and
+/// is refused rather than guessed at.
+pub const INLINE_LOCATION: &str = "data:,";
+
+/// Parse `text` as a YAML document with no location of its own and
+/// convert it to a [`Syntax`] tree. Its [`Syntax::base`] is
+/// [`INLINE_LOCATION`], so it cannot `!include` anything; use
+/// [`parse_at`] for a document read from somewhere.
 pub fn parse(text: &str) -> Parsed {
+    let inline = Url::parse(INLINE_LOCATION).expect("INLINE_LOCATION is a valid URI");
+    parse_at(inline, text)
+}
+
+/// Parse `text` as the YAML document found at `base`, which is what
+/// its `!include` references resolve against.
+pub fn parse_at(base: Url, text: &str) -> Parsed {
     let documents = match parse_documents(text) {
         Ok(documents) => documents,
         Err(err) => {
@@ -71,7 +90,11 @@ pub fn parse(text: &str) -> Parsed {
         diagnostic.range = clamp_range(diagnostic.range, text);
     }
     Parsed {
-        syntax: Some(Syntax { expressions, range }),
+        syntax: Some(Syntax {
+            expressions,
+            range,
+            base,
+        }),
         diagnostics,
     }
 }
@@ -276,6 +299,13 @@ fn scalar_to_marked_yaml<'input>(event: Event<'input>, span: Span) -> MarkedYaml
         unreachable!("scalar_to_marked_yaml called on non-scalar event");
     };
     let data = match style {
+        // `!!binary` IS a core-schema handle, but saphyr's core-schema
+        // parse only knows `bool`/`int`/`float`/`null`/`str` and answers
+        // `None` for anything else — which would discard the text before
+        // it could be decoded. Claim it first, in every style: base64 is
+        // written as a `|` block far more often than as a plain scalar,
+        // so the style guard below would miss the common spelling.
+        _ if is_binary_tag(tag.as_deref()) => YamlData::Representation(value, style, tag),
         ScalarStyle::Plain | ScalarStyle::DoubleQuoted | ScalarStyle::SingleQuoted
             if tag.as_ref().is_some_and(|t| !t.is_yaml_core_schema()) =>
         {
@@ -287,6 +317,28 @@ fn scalar_to_marked_yaml<'input>(event: Event<'input>, span: Span) -> MarkedYaml
         }
     };
     MarkedYaml { span, data }
+}
+
+/// The [`IncludeForm`] a local `!include` / `!include/text` tag
+/// selects, or `None` for any other tag.
+fn include_form(tag: Option<&saphyr_parser::Tag>) -> Option<IncludeForm> {
+    let tag = tag?;
+    if tag.handle != "!" {
+        return None;
+    }
+    [IncludeForm::Bytes, IncludeForm::Text]
+        .into_iter()
+        .find(|form| tag.suffix == form.tag())
+}
+
+/// Whether `tag` is YAML 1.1's `!!binary`, whose content is base64.
+///
+/// Matched on the expanded handle rather than the `!!` shorthand: that
+/// is what the parser hands us once the document's tag directives are
+/// applied, so an author who rebinds the handle still gets the same
+/// meaning.
+fn is_binary_tag(tag: Option<&saphyr_parser::Tag>) -> bool {
+    tag.is_some_and(|tag| tag.is_yaml_core_schema() && tag.suffix == "binary")
 }
 
 fn yaml_to_data<'input>(yaml: saphyr::Yaml<'input>) -> YamlData<'input, MarkedYaml<'input>> {
@@ -938,6 +990,13 @@ fn walk_field(
     let value_range = range_of(value);
     let field_value = if rule_body && (name == "when" || name == "unless") {
         Some(FieldValue::Premises(parse_premise_list(value, out)))
+    } else if let (true, YamlData::Sequence(items)) = (name == "action", &value.data) {
+        // A command's several names: `action: ["home", "go home"]`.
+        let items = items
+            .iter()
+            .map(|item| walk_field_value(item, rule_body, out))
+            .collect::<Option<Vec<_>>>()?;
+        Some(FieldValue::List(items))
     } else {
         walk_field_value(value, rule_body, out)
     }?;
@@ -968,6 +1027,42 @@ fn walk_field_value(
             // (uppercase, spaces, punctuation), which means they
             // are unambiguously string literals.
             Some(FieldValue::Literal(Scalar::String(s.as_ref().to_owned())))
+        }
+        YamlData::Representation(text, style, tag) if is_binary_tag(tag.as_deref()) => {
+            // `!!binary` content is base64 with insignificant
+            // whitespace (a `|` block wraps it across lines), so the
+            // decoder is fed the text with every space and newline
+            // removed. A body that is not base64 is a diagnostic
+            // rather than a silent empty value: the author asked for
+            // bytes, and there is no sensible text reading of a
+            // failed decode.
+            let packed: String = text.as_ref().split_whitespace().collect();
+            match base64::engine::general_purpose::STANDARD.decode(&packed) {
+                Ok(bytes) => Some(FieldValue::Literal(Scalar::Bytes(bytes))),
+                Err(failure) => {
+                    out.push(error(
+                        range_of(value),
+                        format!("`!!binary` content is not valid base64: {failure}"),
+                    ));
+                    None
+                }
+            }
+        }
+        YamlData::Representation(text, _, tag) if include_form(tag.as_deref()).is_some() => {
+            let form = include_form(tag.as_deref()).expect("guarded");
+            let reference = text.trim();
+            if reference.is_empty() {
+                // An empty reference resolves to the document itself.
+                out.push(error(
+                    range_of(value),
+                    format!("`!{}` needs a path or URI to include.", form.tag()),
+                ));
+                return None;
+            }
+            Some(FieldValue::Include(Include {
+                reference: reference.to_owned(),
+                form,
+            }))
         }
         YamlData::Representation(text, style, _) => {
             // A plain (unquoted) scalar can be a symbol, a
@@ -1002,6 +1097,17 @@ fn walk_field_value(
             out.push(error(
                 range_of(value),
                 r#"Sequence values are not supported in this notation. Use repeated assertions for cardinality-many writes."#,
+            ));
+            None
+        }
+        YamlData::Tagged(tag, _) if include_form(Some(tag)).is_some() => {
+            let form = include_form(Some(tag)).expect("guarded");
+            out.push(error(
+                range_of(value),
+                format!(
+                    "`!{}` takes a path or URI, not a mapping or sequence.",
+                    form.tag()
+                ),
             ));
             None
         }
@@ -1878,6 +1984,164 @@ person:
             &age.value,
             FieldValue::Literal(Scalar::UnsignedInteger(28))
         ));
+    }
+
+    /// `!include` records the reference as written; loading it is
+    /// [`crate::include::expand`]'s job, not the parser's.
+    #[dialog_common::test]
+    fn it_parses_include_references() {
+        let syntax = parse_clean(
+            r#"
+note!:
+  this: ?n
+  body: !include/text ./body.md
+  quoted: !include "notes/a b.md"
+  image: !include ../media/a.webp
+"#,
+        );
+        let fields = &syntax.expressions[0].application().fields;
+        let include = |name: &str| {
+            let field = fields.iter().find(|f| f.name == name).unwrap();
+            let FieldValue::Include(include) = &field.value else {
+                panic!("expected include for {name}, got {:?}", field.value);
+            };
+            include.clone()
+        };
+        assert_eq!(
+            include("body"),
+            Include {
+                reference: "./body.md".into(),
+                form: IncludeForm::Text
+            }
+        );
+        assert_eq!(include("quoted").reference, "notes/a b.md");
+        assert_eq!(include("image").form, IncludeForm::Bytes);
+        assert_eq!(syntax.base.as_str(), INLINE_LOCATION);
+    }
+
+    #[dialog_common::test]
+    fn it_records_the_document_location() {
+        let base = Url::parse("file:///notes/today.yaml").unwrap();
+        let syntax = parse_at(
+            base.clone(),
+            "note:
+  this: ?n
+",
+        )
+        .syntax
+        .unwrap();
+        assert_eq!(syntax.base, base);
+    }
+
+    #[dialog_common::test]
+    fn it_rejects_an_include_without_a_scalar_reference() {
+        let parsed = parse(
+            "note!:
+  this: ?n
+  body: !include \"\"\n  other: !include {a: 1}\n",
+        );
+        let messages: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(messages.len(), 2, "{messages:#?}");
+        assert!(messages[0].contains("needs a path"));
+        assert!(messages[1].contains("not a mapping"));
+    }
+
+    /// `!!binary` is YAML 1.1's standard tag for base64 content. It is a
+    /// CORE-SCHEMA handle whose suffix saphyr does not know, so without
+    /// claiming it before the core-schema parse the text is discarded
+    /// before anything can decode it.
+    #[dialog_common::test]
+    fn it_parses_binary_field_value() {
+        let syntax = parse_clean(
+            r#"
+resource:
+  this: ?sheet
+  content: !!binary aGVsbG8=
+"#,
+        );
+        let Expression::Query(q) = &syntax.expressions[0] else {
+            panic!("expected Query");
+        };
+        let content = q.fields.iter().find(|f| f.name == "content").unwrap();
+        let FieldValue::Literal(Scalar::Bytes(bytes)) = &content.value else {
+            panic!("expected bytes, got {:?}", content.value);
+        };
+        assert_eq!(bytes, b"hello");
+    }
+
+    /// The spelling that matters: base64 of anything sizeable is written
+    /// as a `|` block. A literal block is normally taken as text before
+    /// the tag is ever consulted, so this is the case the tag check has
+    /// to run ahead of.
+    #[dialog_common::test]
+    fn it_parses_binary_written_as_a_literal_block() {
+        let syntax = parse_clean(
+            r#"
+resource:
+  this: ?sheet
+  content: !!binary |
+    aGVsbG8s
+    IHdvcmxk
+"#,
+        );
+        let Expression::Query(q) = &syntax.expressions[0] else {
+            panic!("expected Query");
+        };
+        let content = q.fields.iter().find(|f| f.name == "content").unwrap();
+        let FieldValue::Literal(Scalar::Bytes(bytes)) = &content.value else {
+            panic!("expected bytes, got {:?}", content.value);
+        };
+        // The block's line breaks are transfer whitespace, not content:
+        // both lines are one base64 stream.
+        assert_eq!(bytes, b"hello, world");
+    }
+
+    /// Bytes that are not text: a decoded value keeps every byte,
+    /// including those no string could carry.
+    #[dialog_common::test]
+    fn it_decodes_binary_that_is_not_valid_text() {
+        let syntax = parse_clean(
+            r#"
+resource:
+  this: ?icon
+  content: !!binary /w7/
+"#,
+        );
+        let Expression::Query(q) = &syntax.expressions[0] else {
+            panic!("expected Query");
+        };
+        let content = q.fields.iter().find(|f| f.name == "content").unwrap();
+        let FieldValue::Literal(Scalar::Bytes(bytes)) = &content.value else {
+            panic!("expected bytes, got {:?}", content.value);
+        };
+        assert_eq!(bytes, &[0xffu8, 0x0e, 0xff]);
+    }
+
+    /// A body that is not base64 is reported. The author asked for
+    /// bytes, and there is no sensible text reading of a failed decode
+    /// — silently keeping the source text would hand a stylesheet's
+    /// worth of base64 to something expecting bytes.
+    #[dialog_common::test]
+    fn it_reports_binary_content_that_is_not_base64() {
+        let parsed = parse(
+            r#"
+resource:
+  this: ?sheet
+  content: !!binary "not base64!"
+"#,
+        );
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("not valid base64")),
+            "expected a base64 diagnostic, got: {:#?}",
+            parsed.diagnostics
+        );
     }
 
     #[dialog_common::test]

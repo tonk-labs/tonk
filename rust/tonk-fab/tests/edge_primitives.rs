@@ -90,8 +90,10 @@ fn a_space_typed_while_renaming_does_not_commit_the_name() {
     edit_space.call0(&bar).expect("start rename");
 
     let cell = shadow(&bar, "[data-cell=space]");
-    let edit = shadow(&bar, ".space .edit");
-    edit.set_text_content(Some("Project "));
+    let edit = shadow(&bar, ".space .edit")
+        .dyn_into::<HtmlInputElement>()
+        .expect("space rename text input");
+    edit.set_value("Project ");
 
     // Browsers synthesize a detail-zero click on a focused button for the
     // Space key. The editable lives inside that button, so this is the click
@@ -107,7 +109,26 @@ fn a_space_typed_while_renaming_does_not_commit_the_name() {
         cell.class_list().contains("editing"),
         "a Space-key click must leave the rename active",
     );
-    assert_eq!(edit.text_content().as_deref(), Some("Project "));
+    assert_eq!(edit.value(), "Project ");
+    bar.remove();
+}
+
+#[dialog_common::test]
+fn a_space_rename_focuses_a_text_caret_at_the_end() {
+    let bar = mount("tonk-fab");
+    bar.set_attribute("label", "Project").expect("label");
+    let edit_space = js_sys::Reflect::get(&bar, &"editSpace".into())
+        .expect("editSpace member")
+        .dyn_into::<js_sys::Function>()
+        .expect("editSpace function");
+    edit_space.call0(&bar).expect("start rename");
+
+    let edit = shadow(&bar, ".space .edit")
+        .dyn_into::<HtmlInputElement>()
+        .expect("space rename text input");
+    assert_eq!(edit.value(), "Project");
+    assert_eq!(edit.selection_start().expect("selection start"), Some(7));
+    assert_eq!(edit.selection_end().expect("selection end"), Some(7));
     bar.remove();
 }
 
@@ -287,29 +308,38 @@ async fn local_only_bar_opens_the_shared_connect_ceremony() {
     bar.set_attribute("space", "did:key:zLocal").expect("space");
     bar.set_attribute("state", "offline")
         .expect("offline state");
+    yield_for(0).await;
+    // The headless sync subscriber first reports pending when this test has
+    // no host. Seat the local-only frame after that initial callback.
     bar.set_attribute("data-sync-status", "sync:local")
         .expect("precise status");
-    yield_for(0).await;
 
-    let banner = document()
-        .get_element_by_id("fabb-connect-banner")
-        .expect("local-only banner")
-        .dyn_into::<HtmlElement>()
-        .expect("banner html");
+    assert!(
+        document()
+            .get_element_by_id("fabb-connect-banner")
+            .is_none()
+    );
+    let condition = shadow(&bar, ".condition");
+    assert!(
+        !condition.has_attribute("hidden"),
+        "condition stayed hidden: sync={:?} customer={:?} text={:?}",
+        bar.get_attribute("data-sync-status"),
+        bar.get_attribute("data-customer-status"),
+        condition.text_content()
+    );
     assert_eq!(
-        banner.text_content().as_deref(),
-        Some("connect this spaceconnect")
+        condition.text_content().as_deref(),
+        Some("connect this space")
     );
 
-    shadow(&banner, ".door")
+    condition
         .dyn_into::<HtmlElement>()
-        .expect("banner door")
+        .expect("condition action")
         .click();
     let cluster = document()
         .get_element_by_id("fabb-connect-cluster")
         .expect("connect ceremony");
     assert!(!cluster.has_attribute("hidden"));
-    assert!(banner.has_attribute("hidden"));
     // The field stands but names nothing. The bar used to derive the
     // sync endpoint itself and prefill it here, which asked a sealed
     // guest for an origin it does not have — its document is
@@ -339,7 +369,7 @@ async fn local_only_bar_opens_the_shared_connect_ceremony() {
     .expect("ghost")
     .click();
     assert!(cluster.has_attribute("hidden"));
-    assert!(!banner.has_attribute("hidden"));
+    assert!(!shadow(&bar, ".condition").has_attribute("hidden"));
 
     bar.remove();
     cluster.remove();

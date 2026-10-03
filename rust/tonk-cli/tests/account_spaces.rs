@@ -109,7 +109,7 @@ async fn pull_rejects_an_ambiguous_directory_name_with_exact_subjects() -> Resul
 }
 
 #[tokio::test]
-async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
+async fn pull_requires_an_explicit_name_only_when_none_can_be_derived() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
     let unnamed_subject = fixture
         .record_directory_space(83, None, Some("http://127.0.0.1:9/ucan/"))
@@ -121,28 +121,20 @@ async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
         None,
     )
     .await
-    .expect_err("nameless directory rows require --name");
+    .expect_err("a row with no label has nothing to derive a local name from");
     assert!(error.to_string().contains("pass --name"), "{error:#}");
     assert!(!fixture.store.canonical_site("garden").exists());
     assert!(fixture.store.load()?.spaces.is_empty());
 
-    let invalid_subject = fixture
+    // An explicit `--name` asks for that exact name, so it is still
+    // validated rather than slugified into something else.
+    let labelled_subject = fixture
         .record_directory_space(84, Some("My Garden"), Some("http://127.0.0.1:9/ucan/"))
         .await?;
     let error = account_spaces::pull(
         &fixture.profile,
         &fixture.store,
-        invalid_subject.as_ref(),
-        None,
-    )
-    .await
-    .expect_err("UI labels are not slugified");
-    assert!(error.to_string().contains("pass --name"), "{error:#}");
-
-    let error = account_spaces::pull(
-        &fixture.profile,
-        &fixture.store,
-        invalid_subject.as_ref(),
+        labelled_subject.as_ref(),
         Some("Bad Name"),
     )
     .await
@@ -159,26 +151,53 @@ async fn pull_requires_an_explicit_name_before_local_mutation() -> Result<()> {
     let error = account_spaces::pull(
         &fixture.profile,
         &fixture.store,
-        invalid_subject.as_ref(),
+        labelled_subject.as_ref(),
         Some("occupied"),
     )
     .await
     .expect_err("occupied explicit names are not overwritten");
     assert!(error.to_string().contains("pass --name"), "{error:#}");
-
-    let colliding_subject = fixture
-        .record_directory_space(89, Some("occupied"), Some("http://127.0.0.1:9/ucan/"))
-        .await?;
-    let error = account_spaces::pull(
-        &fixture.profile,
-        &fixture.store,
-        colliding_subject.as_ref(),
-        None,
-    )
-    .await
-    .expect_err("an occupied stored name requires an explicit alternative");
-    assert!(error.to_string().contains("pass --name"), "{error:#}");
     assert!(!occupied.exists());
+    Ok(())
+}
+
+/// A display label the CLI's slug rule rejects no longer stops the pull
+/// before it starts: the label names the space, and a derived name is
+/// what the local registry calls it. The endpoint here is dead, so the
+/// pull still fails — but at the sync, having gotten past naming.
+#[tokio::test]
+async fn pull_derives_a_local_name_from_a_label_that_is_not_a_slug() -> Result<()> {
+    let fixture = common::AccountFixture::new().await?;
+    // The worker's own default label from the second space onward, and
+    // the shape the web UI's free-text rename produces.
+    let subject = fixture
+        .record_directory_space(84, Some("Untitled 2"), Some("http://127.0.0.1:9/ucan/"))
+        .await?;
+    let error = account_spaces::pull(&fixture.profile, &fixture.store, subject.as_ref(), None)
+        .await
+        .expect_err("the dead endpoint still fails the initial sync");
+    assert!(
+        !error.to_string().contains("pass --name"),
+        "naming must not be what stops this pull: {error:#}"
+    );
+    assert!(error.to_string().contains("initial pull"), "{error:#}");
+
+    // A derived name steps aside from an occupied one rather than
+    // asking the person to pick the next suffix by hand.
+    let mut registry = fixture.store.load()?;
+    registry.spaces.insert(
+        "untitled-2".to_string(),
+        SpaceEntry::at(fixture.tmp.path().join("already-here")),
+    );
+    fixture.store.save(&registry)?;
+    let error = account_spaces::pull(&fixture.profile, &fixture.store, subject.as_ref(), None)
+        .await
+        .expect_err("the dead endpoint still fails the initial sync");
+    assert!(
+        !error.to_string().contains("already occupied"),
+        "a derived name takes the next free suffix: {error:#}"
+    );
+    assert!(error.to_string().contains("initial pull"), "{error:#}");
     Ok(())
 }
 
@@ -391,6 +410,66 @@ async fn pull_from_a_live_access_service_syncs_the_canonical_unbound_site(
     assert_eq!(registry.spaces.len(), 1);
     assert_eq!(registry.spaces["garden"].site, outcome.site);
     assert!(registry.bindings.is_empty());
+    Ok(())
+}
+
+/// The reported failure, end to end: a space labelled the way the web
+/// UI labels one pulls without `--name`, lands under a derived local
+/// name, and keeps its own label unchanged on its content branch.
+#[dialog_common::test]
+async fn pull_registers_a_derived_name_and_leaves_the_label_alone(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let fixture = common::AccountFixture::new().await?;
+    fixture.activate_with(&env).await?;
+    let source_root = fixture.tmp.path().join("labelled-source");
+    let source = TonkSite::init_at_with(&source_root, fixture.config.clone()).await?;
+    let subject = source.repository.did();
+    env.provision_subject(subject.as_str()).await?;
+    // A label with a space and a capital — `validate_name` rejects it,
+    // and nothing on the authoring side ever promised it would not.
+    name_repository(&source, "Tonk Team").await?;
+    tonk_cli::site::record_founder_membership(&source).await?;
+    tonk_cli::remote::add(
+        &source,
+        "origin",
+        &env.access_service_url,
+        Some(subject.clone()),
+    )
+    .await?;
+    tonk_cli::remote::set_upstream(&source, "origin").await?;
+    tonk_cli::sync::push(&source).await?;
+    assert_eq!(
+        account_spaces::record_site_in("tonk-team", &source, &fixture.store).await?,
+        account_spaces::RecordOutcome::Recorded
+    );
+
+    let outcome =
+        account_spaces::pull(&fixture.profile, &fixture.store, subject.as_ref(), None).await?;
+    assert_eq!(outcome.name, "tonk-team");
+    assert_eq!(
+        outcome.site,
+        fixture.store.canonical_site("tonk-team").canonicalize()?
+    );
+    let registry = fixture.store.load()?;
+    assert_eq!(registry.spaces["tonk-team"].site, outcome.site);
+
+    // The local name is an alias. The space is still called what its
+    // author called it, and every other device still reads that.
+    let pulled = TonkSite::open_with(&outcome.site, fixture.config.clone()).await?;
+    let names: Vec<RepositoryName> = pulled
+        .branch()
+        .await?
+        .handle()
+        .query()
+        .select(Query::<RepositoryName> {
+            this: Term::from(subject.this()),
+            name: Term::var("name"),
+        })
+        .perform(&pulled.operator)
+        .try_vec()
+        .await?;
+    assert_eq!(names[0].name.0, "Tonk Team");
     Ok(())
 }
 

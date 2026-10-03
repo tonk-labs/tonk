@@ -63,10 +63,68 @@ impl DeviceProfile {
     }
 }
 
+/// What a switcher row shows about a profile, as of this read.
+///
+/// OVERLAY ONLY — never committed. Its fields live on that profile's own
+/// account branch, which a sealed guest cannot reach: the guest queries the
+/// ACTIVE profile's branches and nothing else. The worker can open every
+/// profile, so it reads each one and republishes the result here, where the
+/// guest can see it.
+///
+/// This is the same shape the space directory uses, and for the same reason:
+/// `xyz.tonk.space/name` mirrors a name that belongs to the space's own repo
+/// so a device that has not replicated it can still label the card.
+///
+/// The difference is that this mirror is never written down. A durable copy
+/// is what [`DeviceProfile`]'s design refused — it would be a second home
+/// for a name owned elsewhere, free to disagree after a rename on another
+/// device. An overlay fact is rebuilt from the source on every roster read
+/// and discarded with the session, so there is nothing to invalidate.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProfileRow {
+    /// The branch this row is for: the local branch entity `meta`
+    /// enumerates, so a switch can name it and a second read supersedes
+    /// the same row.
+    pub this: Entity,
+    /// The branch's name — what a switch activates.
+    pub name: Name,
+    /// The account name to show, read from that branch.
+    pub label: crate::domain::roster::Label,
+    /// The access service the account is attached to. A local workspace
+    /// has none.
+    pub provider: crate::domain::roster::Provider,
+    /// Whether this is the profile the browser is using right now.
+    pub active: crate::domain::roster::Active,
+}
+
+impl ProfileRow {
+    /// The row for the branch `this`, named `name`.
+    ///
+    /// `label` and `provider` fall back to the empty string rather than
+    /// being omitted: every field of a concept must be present for the row
+    /// to match, and a switcher that drops unnamed or unlinked branches
+    /// would hide exactly the local workspace a person is trying to find.
+    pub fn new(
+        this: Entity,
+        name: impl Into<String>,
+        label: Option<&str>,
+        provider: Option<&str>,
+        active: bool,
+    ) -> Self {
+        Self {
+            this,
+            name: Name(name.into()),
+            label: crate::domain::roster::Label(label.unwrap_or_default().to_owned()),
+            provider: crate::domain::roster::Provider(provider.unwrap_or_default().to_owned()),
+            active: crate::domain::roster::Active(active),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use dialog_operator::helpers;
+    use dialog_peer::helpers;
     use dialog_query::{Output as _, Query, Term};
     use dialog_varsig::did;
     #[cfg(target_arch = "wasm32")]
@@ -81,7 +139,7 @@ mod tests {
     /// open it with.
     #[dialog_common::test]
     async fn it_finds_a_profile_entry_by_its_did() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let subject = did!("test:profile-one");
@@ -113,7 +171,7 @@ mod tests {
     /// returns both — the switcher's own read.
     #[dialog_common::test]
     async fn it_lists_every_profile_this_device_can_open() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
 
@@ -147,7 +205,7 @@ mod tests {
     /// so `name` is cardinality-one on it.
     #[dialog_common::test]
     async fn it_keeps_one_entry_per_profile_when_the_handle_changes() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let subject = did!("test:profile-one");

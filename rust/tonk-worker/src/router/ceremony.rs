@@ -21,7 +21,7 @@ pub(crate) async fn report(tonk: &TonkState, ceremony: &str, state: &str, detail
     if let Err(error) = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .overlay()
         .assert(CeremonyStatus::new(this, ceremony, state, detail))
         .write()

@@ -142,7 +142,9 @@ pub struct CommandProviders {
     /// refusal publishes there), and — until membership moves fully
     /// profile-side —
     /// [`ExpelMember`](tonk_schema::command::ExpelMember), whose target
-    /// is likewise the origin space.
+    /// is likewise the origin space, and installing a library component
+    /// ([`InstallComponent`](tonk_schema::command::InstallComponent)) into
+    /// the origin space, which the profile has none of.
     space: CommandRegistry<CommandEnv>,
 }
 
@@ -211,7 +213,7 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
     CommandRegistry::new()
         .command::<super::repository::CreateSpaceRequest>()
         .command::<super::repository::InviteRequest>()
-        .command::<tonk_schema::command::AgentHandoff>()
+        .command::<super::repository::AgentHandoffRequest>()
         .command::<super::repository::EnableSyncRequest>()
         .command::<tonk_schema::command::Load>()
         .command::<tonk_schema::command::PromoteMember>()
@@ -219,6 +221,10 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::ResendActivation>()
         .command::<tonk_schema::command::DeleteAccount>()
         .command::<super::ceremony::AuthorizeDeviceRequest>()
+        // Signing in through another deployment is new, so neither half
+        // has a legacy shape to migrate.
+        .command::<tonk_schema::command::SignInVia>()
+        .command::<tonk_schema::command::FinishSignInVia>()
         .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RemoveSpace, tonk_schema::command::legacy::RemoveSpace>()
@@ -231,6 +237,22 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         // Replication and update checks are the Hub's to ask for: it is
         // the surface that lists spaces this device may not hold, and
         // `ForgetInvite` clears a row that lives on this branch anyway.
+        // Switching profiles is new, so it has no legacy shape to migrate.
+        .command::<tonk_schema::command::AddProfile>()
+        .command::<tonk_schema::command::SwitchProfile>()
+        .command::<tonk_schema::command::SignOut>()
+        .command::<tonk_schema::command::Home>()
+        // The bar's own acts: each records a request on the asking tab's
+        // site, which that tab's bar performs (see `site_request`).
+        .command::<tonk_schema::command::AddAccount>()
+        .command::<tonk_schema::command::ShareLink>()
+        .command::<tonk_schema::command::ViewMembers>()
+        .command::<tonk_schema::command::ConnectAgent>()
+        .command::<tonk_schema::command::ConnectSpace>()
+        // What the page in a tab has selected, recorded on its site.
+        .command::<tonk_schema::command::SiteSelect>()
+        // What was typed in the command palette, interpreted.
+        .command::<tonk_schema::command::Interpret>()
         .command::<tonk_schema::command::ReplicateSpace>()
         .command::<tonk_schema::command::ForgetInvite>()
         .command::<tonk_schema::command::CheckUpdate>()
@@ -241,6 +263,10 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
 fn space_commands() -> CommandRegistry<CommandEnv> {
     CommandRegistry::new()
         .command::<tonk_schema::command::Load>()
+        // What the space's page has selected, recorded on the tab's site.
+        .command::<tonk_schema::command::SiteSelect>()
+        // What was typed in the command palette, against this space's commands.
+        .command::<tonk_schema::command::Interpret>()
         // A space may request an invite FOR ITSELF: the space view's
         // blank-canvas share (and the seeded `tonk:invite` descriptor)
         // dispatches on the space's own branch, and the refusal flow
@@ -255,7 +281,10 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // pulled onto a device that does not have it yet, because the
         // request would have to arrive on the branch it is asking for.
         .command::<tonk_schema::command::CheckUpdate>()
-        .command::<tonk_schema::command::AgentHandoff>()
+        .command::<super::repository::AgentHandoffRequest>()
+        // A space installs a library component into itself; the profile
+        // has no components to install.
+        .command::<tonk_schema::command::InstallComponent>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
 }
@@ -684,20 +713,20 @@ pub(crate) mod tests {
         /// access service (nothing here needs an account). The registry
         /// installed is the REAL one, not a test double.
         pub(crate) async fn test_state() -> AppState {
-            use dialog_operator::Profile;
-            use dialog_storage::provider::storage::Storage;
-
-            let storage = Storage::<crate::worker::DefaultSpace>::default();
             let name = format!("command-dispatch-test-{}", rand::random::<u64>());
-            let profile = Profile::open(&name).perform(&storage).await.unwrap();
-            let session = crate::session::open(&profile, &storage).await.unwrap();
-            let reactor = crate::Reactor::new(profile.clone());
+            let (storage, profile) =
+                crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
+                    .await
+                    .unwrap();
+            let session = crate::session::open(&profile).await.unwrap();
+            let reactor = crate::Reactor::new(profile.credential().clone());
             let state = TonkState {
                 profile,
                 operator: session.operator,
                 storage,
                 session_expires_at: session.expires_at,
                 profile_name: name.clone(),
+                active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
                 reactor,
                 admission: Default::default(),
                 reject_admission_content_reads: Default::default(),
@@ -731,7 +760,7 @@ pub(crate) mod tests {
             let meta = tonk
                 .reactor
                 .profile_repository()
-                .branch("main")
+                .branch(&tonk.active_branch)
                 .acquire(&tonk.operator)
                 .await
                 .unwrap();
@@ -828,6 +857,190 @@ pub(crate) mod tests {
                 space_subjects(&state).await.is_empty(),
                 "dispatching space/remove from the profile must remove the space"
             );
+        }
+
+        /// Serve `files` (path → body) over plain HTTP/1.1 on a loopback
+        /// port, answering anything else 404, and return the base URL.
+        fn serve(files: &'static [(&'static str, &'static str)]) -> String {
+            use std::io::{BufRead as _, BufReader, Write as _};
+
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut request = String::new();
+                    let _ = reader.read_line(&mut request);
+                    let path = request.split_whitespace().nth(1).unwrap_or("").to_owned();
+                    // Drain the headers so the client sees a clean response.
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                        line.clear();
+                    }
+                    let mut stream = stream;
+                    let response = match files.iter().find(|(file, _)| *file == path) {
+                        Some((_, body)) => format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        ),
+                        None => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_owned(),
+                    };
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            });
+            base
+        }
+
+        /// `create_space_transient` carrying a seed URL, as the /seed
+        /// page's dialog commits it.
+        fn seeded_create_transient(name: &str, seed: &str) -> Changes {
+            let mut changes = create_space_transient(name);
+            the!("xyz.tonk.command.create-space/seed")
+                .of("cmd:create".parse::<Entity>().unwrap())
+                .is(seed.to_string())
+                .assert(&mut changes);
+            changes
+        }
+
+        #[dialog_common::test]
+        async fn it_dispatches_duplicate_space_only_from_the_profile() {
+            let state = test_state().await;
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                create_space_transient("Original"),
+            )
+            .await;
+            let original = space_subjects(&state).await[0].clone();
+            let copy_command = || {
+                let mut changes = create_space_transient("Copy of Original");
+                the!("xyz.tonk.command.create-space/copy-from")
+                    .of("cmd:create".parse::<Entity>().unwrap())
+                    .is(original.this())
+                    .assert(&mut changes);
+                changes
+            };
+            dispatch(
+                &state,
+                CommandOrigin {
+                    repo: original.repo_key().to_owned(),
+                    branch: "main".into(),
+                    client: None,
+                },
+                copy_command(),
+            )
+            .await;
+            assert_eq!(space_subjects(&state).await.len(), 1);
+            dispatch(&state, CommandOrigin::default(), copy_command()).await;
+            let spaces = space_subjects(&state).await;
+            assert_eq!(spaces.len(), 2);
+            assert!(spaces.contains(&original));
+            assert_ne!(spaces[0], spaces[1]);
+
+            // A malformed source is a failed copy, never a fallback to blank creation.
+            let mut invalid = create_space_transient("Invalid copy");
+            the!("xyz.tonk.command.create-space/copy-from")
+                .of("cmd:create".parse::<Entity>().unwrap())
+                .is(false)
+                .assert(&mut invalid);
+            dispatch(&state, CommandOrigin::default(), invalid).await;
+            assert_eq!(space_subjects(&state).await.len(), 2);
+        }
+
+        const SEED_FILES: &[(&str, &str)] = &[
+            (
+                "/lib/seed.yaml",
+                "xyz.test.seed!:\n  this: id:seeded\n  body: !include/text ./body.txt\n",
+            ),
+            ("/lib/body.txt", "hello from a seed\n"),
+        ];
+
+        /// SPACE-15: fetch the catalog and ordered required files before
+        /// allocating a space. Optional files are deliberately unavailable.
+        #[dialog_common::test]
+        async fn it_creates_from_a_remote_catalog_and_refuses_changed_sources() {
+            const CATALOG: &str = include_str!("../../tests/fixtures/discover/catalog.json");
+            const MODEL: &str = include_str!("../../tests/fixtures/discover/model.yaml");
+            const VIEW: &str = include_str!("../../tests/fixtures/discover/view.yaml");
+            for (view, expected) in [(VIEW, 1), ("changed after catalog publication", 0)] {
+                let files = Box::leak(Box::new([
+                    ("/catalog.json", CATALOG),
+                    ("/model.yaml", MODEL),
+                    ("/view.yaml", view),
+                ]));
+                let base = serve(files);
+                let state = test_state().await;
+                let mut changes = create_space_transient("Remote template");
+                dialog_query::the!("xyz.tonk.command.create-space/template")
+                    .of("cmd:create".parse::<Entity>().unwrap())
+                    .is(format!("{base}/catalog.json#remote-demo"))
+                    .assert(&mut changes);
+                dispatch(&state, CommandOrigin::default(), changes).await;
+                assert_eq!(space_subjects(&state).await.len(), expected);
+            }
+        }
+
+        /// A seeded `space/create` evaluates the document at the seed URL
+        /// into the new space, on top of the standard library, with what it
+        /// includes resolved beside it on the seed's server.
+        #[dialog_common::test]
+        async fn it_seeds_a_new_space_from_a_url() {
+            let base = serve(SEED_FILES);
+            let state = test_state().await;
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                seeded_create_transient("Seeded", &format!("{base}/lib/seed.yaml")),
+            )
+            .await;
+            let spaces = space_subjects(&state).await;
+            assert_eq!(spaces.len(), 1, "the seeded create must mint a space");
+
+            let key = spaces[0].repo_key().to_owned();
+            let tonk = state.read().await;
+            let response = crate::router::evaluate::evaluate_body(
+                &tonk,
+                &key,
+                "main",
+                "xyz.test.seed:\n  this: id:seeded\n  body: ?body\n".to_owned(),
+                false,
+            )
+            .await
+            .unwrap();
+            let body = response.matches_after[0].results[0]
+                .fields
+                .get("body")
+                .cloned();
+            assert_eq!(
+                body,
+                Some(serde_json::Value::String("hello from a seed\n".to_owned())),
+                "the seed's included text must be in the new space"
+            );
+        }
+
+        /// A seed that cannot be used fails the create before anything is
+        /// created: no half-seeded space is left behind.
+        #[dialog_common::test]
+        async fn it_creates_nothing_when_the_seed_cannot_be_used() {
+            let base = serve(SEED_FILES);
+            let state = test_state().await;
+            for seed in [
+                format!("{base}/lib/missing.yaml"),
+                "ftp://example.test/seed.yaml".to_owned(),
+                "not a url".to_owned(),
+            ] {
+                dispatch(
+                    &state,
+                    CommandOrigin::default(),
+                    seeded_create_transient("Refused", &seed),
+                )
+                .await;
+                assert!(
+                    space_subjects(&state).await.is_empty(),
+                    "an unusable seed ({seed}) must not create a space"
+                );
+            }
         }
     }
 }

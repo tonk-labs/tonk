@@ -4,9 +4,6 @@
 //! error text a human or an agent actually sees — not just the
 //! `space` module's in-process ops (covered by `tests/space.rs`).
 
-#[cfg(feature = "integration-tests")]
-mod common;
-
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
@@ -143,24 +140,82 @@ mod when_one_account_is_signed_in {
     }
 
     #[dialog_common::test]
-    fn linking_without_an_account_says_to_sign_in_first() {
+    fn invalid_browser_link_handoff_preserves_the_local_space() {
         let state = tempfile::tempdir().expect("tempdir");
         space_and_account(state.path(), "garden", None);
+        let before = std::fs::read(state.path().join("spaces.json")).expect("registry before");
+        let status_before = run(
+            state.path(),
+            &["--space", "garden", "status", "--json"],
+            &[],
+        );
+        assert!(
+            status_before.status.success(),
+            "{}",
+            stderr_of(&status_before)
+        );
 
-        let output = run(state.path(), &["space", "link", "garden"], &[]);
+        let output = run(
+            state.path(),
+            &[
+                "space",
+                "link",
+                "garden",
+                "--via",
+                "file:///invalid/settings/link",
+            ],
+            &[],
+        );
 
         assert!(!output.status.success());
         assert!(
-            stderr_of(&output).contains("no account is signed in"),
+            stderr_of(&output).contains("account approval page must use HTTP or HTTPS"),
             "{}",
             stderr_of(&output)
         );
+        assert_eq!(
+            std::fs::read(state.path().join("spaces.json")).expect("registry after"),
+            before
+        );
+        let status_after = run(
+            state.path(),
+            &["--space", "garden", "status", "--json"],
+            &[],
+        );
+        assert!(
+            status_after.status.success(),
+            "{}",
+            stderr_of(&status_after)
+        );
+        assert_eq!(status_after.stdout, status_before.stdout);
     }
 
-    /// The listing names the space and its owner, and has no access column:
-    /// there is nothing for it to report, because nothing is refused.
     #[dialog_common::test]
-    fn the_space_listing_carries_an_owner_and_no_access_column() {
+    fn new_space_stays_local_with_a_retained_account_record() {
+        let state = tempfile::tempdir().expect("tempdir");
+        space_and_account(state.path(), "garden", Some(ACCOUNT_A));
+        let registry_file = state.path().join("spaces.json");
+        let before: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_file).unwrap()).unwrap();
+        let output = run(state.path(), &["space", "new", "scratch"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_file).unwrap()).unwrap();
+        assert_eq!(before["account"], after["account"]);
+        assert_eq!(before["spaces"]["garden"], after["spaces"]["garden"]);
+        let remotes = run(
+            state.path(),
+            &["--space", "scratch", "remote", "--json"],
+            &[],
+        );
+        assert!(remotes.status.success(), "{}", stderr_of(&remotes));
+        let remotes: serde_json::Value = serde_json::from_slice(&remotes.stdout).unwrap();
+        assert_eq!(remotes["rows"].as_array().unwrap().len(), 0);
+    }
+
+    /// The default listing reports local roster facts, not inferred authority provenance.
+    #[dialog_common::test]
+    fn the_space_listing_carries_owner_and_role_without_an_access_guess() {
         let state = tempfile::tempdir().expect("tempdir");
         space_and_account(state.path(), "garden", Some(ACCOUNT_A));
 
@@ -173,8 +228,6 @@ mod when_one_account_is_signed_in {
         assert!(stdout.contains("ROLE"), "{stdout}");
         assert!(!stdout.contains("ACCESS"), "{stdout}");
         assert!(!stdout.contains("another account"), "{stdout}");
-        // Local-only until it is linked: no roster, so no owner.
-        assert!(stdout.contains("local"), "{stdout}");
     }
 }
 
@@ -228,224 +281,41 @@ mod when_no_account_is_signed_in {
     }
 }
 
-#[cfg(feature = "integration-tests")]
-mod when_a_signed_in_space_creation_is_interrupted {
-    use std::io::{BufRead as _, Read as _};
-    use std::process::Command;
-    use std::sync::mpsc;
-    use std::thread;
-    use std::time::Duration;
-
-    use anyhow::{Context as _, Result, bail};
-    use tonk_access_service::helpers::AccessServiceAddress;
-
+mod when_an_ambient_account_is_present {
     use super::*;
 
-    fn production_cmd(state: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Command {
-        let mut command = tonk_cmd(state, args, extra_env);
-        command
-            .env_remove("TONK_UNSAFE_ALLOW_DEVICE_ROOT")
-            .env("NO_PROXY", "127.0.0.1,localhost");
-        command
-    }
-
-    async fn run_production(state: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
-        let mut command = production_cmd(state, args, extra_env);
-        tokio::task::spawn_blocking(move || command.output())
-            .await
-            .expect("tonk command task joins")
-            .expect("tonk binary runs")
-    }
-
-    /// Authorize the real child CLI profile, then leave the child with a
-    /// hydrated account and an explicit content endpoint. The approval page
-    /// intentionally has no deployment-discovery route, so the test writes
-    /// the already-authorized endpoint into the isolated registry after the
-    /// login. This changes no authority and reaches no global environment.
-    async fn sign_in(state: &Path, fixture: &common::AccountFixture, remote: &str) -> Result<()> {
-        let page =
-            common::authorizing_page(fixture.root_signer().await?, remote.to_owned()).await?;
-        let mut child = production_cmd(
-            state,
-            &["account", "login", "--no-open", "--via", &page.url],
-            &[],
-        )
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("spawn account login")?;
-
-        let stdout = child.stdout.take().context("account login stdout")?;
-        let stderr = child.stderr.take().context("account login stderr")?;
-        let (url_tx, url_rx) = mpsc::channel();
-        let stdout_reader = thread::spawn(move || {
-            let mut captured = String::new();
-            for line in std::io::BufReader::new(stdout).lines() {
-                let line = line.expect("read account login stdout");
-                if line.starts_with("http") {
-                    let _ = url_tx.send(line.clone());
-                }
-                captured.push_str(&line);
-                captured.push('\n');
-            }
-            captured
-        });
-        let stderr_reader = thread::spawn(move || {
-            let mut captured = String::new();
-            std::io::BufReader::new(stderr)
-                .read_to_string(&mut captured)
-                .expect("read account login stderr");
-            captured
-        });
-
-        let approval =
-            tokio::task::spawn_blocking(move || url_rx.recv_timeout(Duration::from_secs(30)))
-                .await
-                .context("approval URL task")?
-                .context("account login did not print an approval URL")?;
-        reqwest::Client::new()
-            .get(approval)
-            .send()
-            .await
-            .context("approve the child account login")?
-            .error_for_status()
-            .context("approval page rejected the login")?;
-
-        let status = tokio::task::spawn_blocking(move || child.wait())
-            .await
-            .context("account login wait task")??;
-        let stdout = stdout_reader.join().expect("join account login stdout");
-        let stderr = stderr_reader.join().expect("join account login stderr");
-        if !status.success() {
-            bail!("account login failed\nstdout: {stdout}\nstderr: {stderr}");
-        }
-
-        let path = state.join("spaces.json");
-        let mut registry: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).context("read the child space registry")?)
-                .context("parse the child space registry")?;
-        registry["account"]["accessRemote"] = serde_json::json!(remote);
-        std::fs::write(
-            &path,
-            serde_json::to_vec_pretty(&registry).context("encode the child space registry")?,
-        )
-        .context("write the child space registry")?;
-        Ok(())
-    }
-
-    #[dialog_common::test]
-    async fn every_partial_stage_keeps_the_local_space_and_names_one_recovery_path(
-        env: AccessServiceAddress,
-    ) -> Result<()> {
-        let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
-        let fixture = common::AccountFixture::with_account_remote(&remote).await?;
-        fixture.activate_with(&env).await?;
-        let operator = fixture.operator().await?;
-        fixture
-            .account_branch()
-            .await?
-            .push()
-            .perform(&operator)
-            .await
-            .context("publish the account fixture before the child logs in")?;
-
-        let state = tempfile::tempdir()?;
-        sign_in(state.path(), &fixture, &remote).await?;
-
+    #[test]
+    fn new_spaces_stay_local_without_entering_account_publication() {
+        let state = tempfile::tempdir().unwrap();
+        let store = tonk_cli::space::SpaceStore::at(state.path());
+        let account = tonk_cli::space::AccountRecord::new(
+            "did:key:z6MkAccountAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        );
+        store.set_account(Some(account.clone())).unwrap();
+        // These hooks fail any attempted account publication in integration
+        // builds. New spaces now remain local until explicit browser consent.
         for stage in ["founder", "remote", "upstream", "push", "accountDirectory"] {
-            let name = format!("partial-{}", stage.to_ascii_lowercase());
-            let site = state.path().join(format!("{name}-site"));
-            let output = run_production(
+            let name = format!("local-{}", stage.to_ascii_lowercase());
+            let site = state.path().join(&name);
+            let mut command = tonk_cmd(
                 state.path(),
-                &[
-                    "space",
-                    "new",
-                    &name,
-                    "--site",
-                    site.to_str().context("UTF-8 site path")?,
-                ],
+                &["space", "new", &name, "--site", site.to_str().unwrap()],
                 &[("TONK_TEST_SPACE_NEW_FAIL_STAGE", stage)],
-            )
-            .await;
-
-            assert!(
-                !output.status.success(),
-                "stage {stage} unexpectedly succeeded"
             );
-            let stdout = stdout_of(&output);
-            let stderr = stderr_of(&output);
+            command.env_remove("TONK_UNSAFE_ALLOW_DEVICE_ROOT");
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{}", stderr_of(&output));
             assert!(
-                stdout.trim().is_empty(),
-                "a partial {stage} result must not print a final receipt: {stdout}"
+                stdout_of(&output).contains("Registered space"),
+                "{}",
+                stdout_of(&output)
             );
-            assert!(stderr.contains(&format!("stage '{stage}'")), "{stderr}");
-            assert!(stderr.contains("local space is safe"), "{stderr}");
-            assert!(site.exists(), "partial {stage} removed {}", site.display());
-            let canonical_site = site
-                .canonicalize()
-                .with_context(|| format!("canonicalize retained {stage} site"))?;
-            assert!(
-                stderr.contains(&format!("site: {}", canonical_site.display())),
-                "{stderr}"
-            );
-            assert!(stderr.contains("DID: did:key:"), "{stderr}");
-            assert!(
-                stderr.contains(&format!("tonk space link {name}")),
-                "{stderr}"
-            );
-            let registry: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(state.path().join("spaces.json"))?)?;
-            assert!(
-                registry["spaces"][&name].is_object(),
-                "partial {stage} lost its registry entry: {registry}"
-            );
-
-            let resumed = run_production(state.path(), &["space", "link", &name], &[]).await;
-            assert!(
-                resumed.status.success(),
-                "stage {stage} did not converge through space link: {}",
-                stderr_of(&resumed)
-            );
+            let registry = store.load().unwrap();
+            assert_eq!(registry.account, Some(account.clone()));
+            assert!(registry.spaces.contains_key(&name));
+            assert!(!site.join("local-space-link-v1.json").exists());
+            assert!(!site.join("claimed-invitation").exists());
         }
-
-        let complete_site = state.path().join("complete-site");
-        let complete = run_production(
-            state.path(),
-            &[
-                "space",
-                "new",
-                "complete",
-                "--site",
-                complete_site.to_str().context("UTF-8 complete site")?,
-            ],
-            &[],
-        )
-        .await;
-        assert!(complete.status.success(), "{}", stderr_of(&complete));
-        let receipt = stdout_of(&complete);
-        assert!(
-            receipt.starts_with("Registered space 'complete'\n"),
-            "{receipt}"
-        );
-        assert!(receipt.contains("site: "), "{receipt}");
-        assert!(receipt.contains("DID: did:key:"), "{receipt}");
-        assert!(receipt.contains("binding: "), "{receipt}");
-        assert!(receipt.contains("account: did:key:"), "{receipt}");
-
-        let retry = run_production(state.path(), &["space", "new", "complete"], &[]).await;
-        assert!(!retry.status.success());
-        assert!(stdout_of(&retry).trim().is_empty());
-        let retry_error = stderr_of(&retry);
-        assert!(
-            retry_error.contains("existing space was not changed"),
-            "{retry_error}"
-        );
-        assert!(
-            retry_error.contains("tonk space link complete"),
-            "{retry_error}"
-        );
-        assert!(!retry_error.contains("creation failed"), "{retry_error}");
-        Ok(())
     }
 }
 
@@ -685,6 +555,19 @@ mod when_nothing_is_registered {
         assert!(stdout.contains("examine state"), "{stdout}");
         assert!(stdout.contains("write facts"), "{stdout}");
         assert!(stdout.contains("collaborate"), "{stdout}");
+        assert!(!stdout.contains("--agent"), "{stdout}");
+        assert!(
+            !stdout
+                .lines()
+                .any(|line| line.trim_start().starts_with("connect ")),
+            "{stdout}"
+        );
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.trim_start().starts_with("join ")),
+            "{stdout}"
+        );
     }
 
     #[dialog_common::test]
@@ -771,11 +654,7 @@ mod when_resolving_with_precedence {
         let state = tempfile::tempdir().expect("tempdir");
         two_space_registry(state.path());
 
-        for args in [
-            &["--spot", "a", "status"][..],
-            &["spot", "link", "a"][..],
-            &["account", "spots"][..],
-        ] {
+        for args in [&["--spot", "a", "status"][..], &["spot", "link", "a"][..]] {
             let output = run(state.path(), args, &[]);
             assert!(!output.status.success());
             let stderr = stderr_of(&output);
@@ -877,6 +756,19 @@ mod when_resolving_with_precedence {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(!stdout.to_ascii_lowercase().contains("spot"), "{stdout}");
+        assert!(!stdout.contains("--agent"), "{stdout}");
+        assert!(
+            !stdout
+                .lines()
+                .any(|line| line.trim_start().starts_with("connect ")),
+            "{stdout}"
+        );
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.trim_start().starts_with("join ")),
+            "{stdout}"
+        );
     }
 
     #[dialog_common::test]
@@ -1105,16 +997,18 @@ fn status_reports_when_a_configured_remote_cannot_be_fetched() {
         started.elapsed()
     );
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("status JSON");
-    assert_eq!(value["schemaVersion"], "tonk.status.v2");
+    assert_eq!(value["schemaVersion"], "tonk.status.v3");
+    assert!(value.get("account").is_none(), "{value}");
+    assert!(value.get("signedIn").is_none(), "{value}");
     assert_eq!(value["sync"]["state"], "not-fetched");
     assert_eq!(value["sync"]["fetched"], false);
 }
 
-mod when_joining {
+mod when_using_the_removed_connect_command {
     use super::*;
 
     #[dialog_common::test]
-    fn it_rejects_a_duplicate_join_name_before_any_network_work() {
+    fn it_rejects_connect_before_any_network_work() {
         let state = tempfile::tempdir().expect("tempdir");
         let a = state.path().join("site-a");
         std::fs::create_dir_all(&a).expect("mkdir a");
@@ -1122,12 +1016,12 @@ mod when_joining {
 
         let output = run(
             state.path(),
-            &["join", "not-a-real-url", "--name", "a"],
+            &["connect", "not-a-real-url", "--name", "a"],
             &[],
         );
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("already exists"), "{stderr}");
+        assert!(stderr.contains("unrecognized subcommand"), "{stderr}");
     }
 }
 
@@ -1253,8 +1147,8 @@ mod when_no_remote_is_registered_at_all {
         let output = run(state.path(), &["invite", "--no-shorten"], &[]);
         let stderr = stderr_of(&output);
 
-        assert!(stderr.contains("tonk account login"), "{stderr}");
-        assert!(stderr.contains("tonk space link demo"), "{stderr}");
+        assert!(!stderr.contains("tonk account login"), "{stderr}");
+        assert!(!stderr.contains("tonk space link demo"), "{stderr}");
         assert!(stderr.contains("tonk remote add"), "{stderr}");
         assert!(stderr.contains("--base-url"), "{stderr}");
     }
@@ -2046,7 +1940,6 @@ mod when_reading {
 
         for args in [
             vec!["status", "--json"],
-            vec!["account", "status", "--json"],
             vec!["space", "agents", "get", "--json"],
             vec!["query", "task", "--json"],
             vec!["concept", "--json"],

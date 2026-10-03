@@ -14,15 +14,13 @@ use tonk_schema::{ProfileName, petname};
 // on the native target writes a name any more.
 #[cfg(target_arch = "wasm32")]
 use crate::RepositoryError;
+use crate::worker::DefaultProfile;
 use crate::worker::{DefaultOperator, TonkState};
-use dialog_operator::Profile;
 #[cfg(target_arch = "wasm32")]
 use tonk_schema::{MemberName, Membership};
 
-// The profile repository lives on `main` (it has no content/meta
-// split); spaces re-stamp member names on their own `main` content
-// branch.
-const PROFILE_BRANCH: &str = "main";
+// Spaces re-stamp member names on their own `main` content branch,
+// which is the same name the profile's content branch carries.
 // Only the wasm-gated rename handler re-stamps member names, so this and
 // `restamp_member_name` exist only on the wasm target (the worker's real
 // runtime). Gating them keeps the native `clippy -D warnings` build clean.
@@ -38,20 +36,25 @@ const CONTENT_BRANCH: &str = "main";
 /// [`stored_display_name`] instead, so an unnamed profile reads as
 /// unnamed rather than as a generated word.
 pub(crate) async fn resolve_display_name(tonk: &TonkState) -> String {
-    stored_display_name_from(&tonk.profile, &tonk.operator)
+    stored_display_name_from(&tonk.profile, &tonk.operator, &tonk.active_branch)
         .await
         .unwrap_or_else(|| petname(&tonk.profile.did()))
 }
 
 /// The stored name for an explicit profile, or `None` when none is set.
+///
+/// Read off `branch`, the one the profile is on: each account's branch
+/// carries its own name, so a fixed branch would answer with another
+/// account's.
 pub(crate) async fn stored_display_name_from(
-    profile: &Profile,
+    profile: &DefaultProfile,
     operator: &DefaultOperator,
+    branch: &str,
 ) -> Option<String> {
     let profile_entity = profile.did().this();
 
-    let branch = match Repository::from(profile)
-        .branch(PROFILE_BRANCH)
+    let branch = match Repository::from(profile.did())
+        .branch(branch)
         .open()
         .perform(operator)
         .await
@@ -88,6 +91,12 @@ pub(crate) async fn stored_display_name_from(
 /// A single unparseable subject is logged and dropped rather than failing
 /// the whole list.
 pub(crate) async fn real_space_keys(tonk: &TonkState) -> Vec<String> {
+    real_space_keys_on(tonk, &tonk.active_branch).await
+}
+
+/// [`real_space_keys`] for the profile branch `branch`, which need not be
+/// the active one.
+pub(crate) async fn real_space_keys_on(tonk: &TonkState, branch: &str) -> Vec<String> {
     use dialog_varsig::Did;
     use tonk_schema::{Replica, domain::replica::Profile as ProfileEntity};
 
@@ -97,7 +106,7 @@ pub(crate) async fn real_space_keys(tonk: &TonkState) -> Vec<String> {
     let session = match tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -228,9 +237,7 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    use crate::worker::{DefaultSpace, TonkState};
-    use dialog_operator::Profile;
-    use dialog_storage::provider::storage::Storage;
+    use crate::worker::TonkState;
     use tonk_schema::petname;
 
     /// Build an isolated `TonkState` backed by a unique IDB namespace.
@@ -238,15 +245,14 @@ mod tests {
     /// with each other — `Profile::open(name)` keys the IDB by `name`.
     async fn isolated_state(name: &str) -> TonkState {
         crate::patch_idb_versionchange();
-        let storage = Storage::<DefaultSpace>::default();
-        let profile = Profile::open(name)
-            .perform(&storage)
-            .await
-            .expect("profile opens");
-        let session = crate::session::open(&profile, &storage)
+        let (storage, profile) =
+            crate::device::open_profile_at(name, dialog_effects::storage::Directory::Profile)
+                .await
+                .expect("profile opens");
+        let session = crate::session::open(&profile)
             .await
             .expect("signing session opens");
-        let reactor = crate::Reactor::new(profile.clone());
+        let reactor = crate::Reactor::new(profile.credential().clone());
         TonkState {
             seed_upgrades: Default::default(),
             profile,
@@ -254,6 +260,7 @@ mod tests {
             storage,
             session_expires_at: session.expires_at,
             profile_name: name.to_string(),
+            active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
             reactor,
             admission: Default::default(),
             reject_admission_content_reads: Default::default(),
@@ -287,7 +294,7 @@ mod tests {
         let profile_entity = tonk.profile.did().this();
         tonk.reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .transaction()
             .assert(ProfileName::new(profile_entity, "brave-lynx".into()))
             .commit()

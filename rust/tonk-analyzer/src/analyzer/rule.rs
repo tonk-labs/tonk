@@ -335,7 +335,7 @@ pub(crate) fn parse_rule_this_entity(
     };
     uri.parse()
         .map(Some)
-        .map_err(|e: dialog_artifacts::DialogArtifactsError| {
+        .map_err(|e: dialog_artifacts::IdentityError| {
             AnalyzeError::at(
                 AnalyzeErrorKind::InvalidSubjectUri {
                     subject: uri,
@@ -503,7 +503,7 @@ fn trivially_tautological(
             let term = query.terms.get(&key);
             let matches = matches!(
                 term,
-                Some(Term::Variable { name: Some(n), .. }) if n.as_str() == key.as_str()
+                Some(Term::Variable { name: Some(n), .. }) if &**n == key.as_str()
             );
             if !matches {
                 all_match = false;
@@ -659,7 +659,10 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
                 // Description is preserved on the descriptor through
                 // dialog's planner; we don't model it on the analyzer
                 // side beyond shape validation.
-                if !matches!(&field.value, FieldValue::Literal(Scalar::String(_))) {
+                if !matches!(
+                    &field.value,
+                    FieldValue::Literal(Scalar::String(_) | Scalar::Included(_))
+                ) {
                     return Err(AnalyzeError::at(
                         AnalyzeErrorKind::UnsupportedFieldValue {
                             field: "description".into(),
@@ -1187,7 +1190,7 @@ fn lift_resolver_premise(
 mod tests {
     use super::*;
     use dialog_artifacts::Entity;
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::AttributeDescriptor;
     use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
@@ -1207,6 +1210,8 @@ mod tests {
         + dialog_query::Provider<dialog_effects::memory::Publish>
         + dialog_query::Provider<dialog_effects::archive::Import>
         + dialog_query::Provider<dialog_effects::authority::Attest>
+        + dialog_query::Provider<dialog_effects::blob::Import>
+        + dialog_query::Provider<dialog_effects::blob::Size>
     {
     }
 
@@ -1215,6 +1220,8 @@ mod tests {
             + dialog_query::Provider<dialog_effects::memory::Publish>
             + dialog_query::Provider<dialog_effects::archive::Import>
             + dialog_query::Provider<dialog_effects::authority::Attest>
+            + dialog_query::Provider<dialog_effects::blob::Import>
+            + dialog_query::Provider<dialog_effects::blob::Size>
     {
     }
 
@@ -1232,7 +1239,7 @@ mod tests {
     }
 
     async fn new_fixture() -> Fixture<impl FixtureEnv> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo
             .branch("main")
@@ -1599,6 +1606,60 @@ rule!:
         );
         // ...and not through the inductive accessor.
         assert!(analysis.analysis.rule_installs().is_empty());
+    }
+
+    /// An attribute is a concept with one field: a rule can conclude an
+    /// attribute by name, and what it concludes is the very concept a
+    /// one-field `concept!` over that attribute declares, whatever that
+    /// concept calls its field.
+    #[dialog_common::test]
+    async fn it_concludes_an_attribute_as_its_one_field_concept() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("ping", one_text_field("io.gozala.ping", "tag"))
+            .await;
+
+        let conclusion = |doc: String| {
+            let fixture = &fixture;
+            async move {
+                let syntax = parse(&doc).syntax.expect("parsed syntax");
+                let analysis = fixture.analyze(&syntax).await.expect("analyze succeeds");
+                let installs = analysis.analysis.deductive_rule_installs();
+                assert_eq!(installs.len(), 1, "one deductive rule in {doc}");
+                installs[0].conclusion().this()
+            }
+        };
+        let attribute = r#"attribute!: &probe/subject
+  description: "What a probe is about."
+  the: io.gozala.probe/subject
+  as: Text
+"#;
+        let by_attribute = conclusion(format!(
+            r#"{attribute}
+rule!:
+  assert: probe/subject
+  when:
+    - assert: ping
+      where: {{ this: ?this, tag: ?subject }}
+"#
+        ))
+        .await;
+        let by_concept = conclusion(format!(
+            r#"{attribute}
+concept!: &probe/about
+  description: "A probe's subject, under another field name."
+  with:
+    about: probe/subject
+
+rule!:
+  assert: probe/about
+  when:
+    - assert: ping
+      where: {{ this: ?this, tag: ?about }}
+"#
+        ))
+        .await;
+        assert_eq!(by_attribute, by_concept);
     }
 
     /// Retracting an installed deductive rule by entity

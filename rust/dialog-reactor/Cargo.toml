@@ -15,18 +15,23 @@ dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-effects = { workspace = true }
-dialog-operator = { workspace = true }
+dialog-peer = { workspace = true }
+tonk-lingo = { workspace = true }
 dialog-query = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-search-tree = { workspace = true }
 dialog-storage = { workspace = true }
 futures-util = { workspace = true }
+indexmap = { workspace = true }
 ipld-core = { workspace = true }
 parking_lot = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_ipld_dagjson = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonk-evaluator = { workspace = true }
+tonk-intent = { workspace = true }
 tonk-schema = { workspace = true }
 web-time = { workspace = true }
 

@@ -65,8 +65,9 @@ pub use sync::*;
 
 pub mod account;
 pub use account::{
-    AccountActive, AccountDisplayName, AccountLinking, AccountRegistered, AccountSealedInbox,
-    AccountSuspended, CeremonyStatus, EmailStatus, ceremony, ceremony_state, email_state,
+    AccountActive, AccountDisplayName, AccountLink, AccountLinking, AccountRegistered,
+    AccountSealedInbox, AccountSuspended, CeremonyStatus, EmailStatus, ceremony, ceremony_state,
+    email_state,
 };
 
 pub mod custody;
@@ -82,6 +83,9 @@ pub use repository::*;
 
 pub mod membership;
 pub use membership::*;
+
+pub mod agent_connection;
+pub use agent_connection::{AgentGrantGroup, AgentGrantRevocation};
 
 pub mod invitation;
 pub use invitation::*;
@@ -112,7 +116,8 @@ pub use space::{DEFAULT_BRANCH, RouteTarget, SpaceRef, parse_space, resolve_path
 
 pub mod site;
 pub use site::{
-    ReplicaCheckFailure, ReplicaChecked, ReplicaChecking, Route, SeedAvailable, SeedInstalled, Site,
+    ReplicaCheckFailure, ReplicaChecked, ReplicaChecking, Route, SeedAvailable, SeedInstall,
+    SeedInstalled, Site,
 };
 
 mod identity;
@@ -121,7 +126,7 @@ pub use identity::{ProfileIdentity, ProfileName};
 mod recovery;
 mod roster;
 pub use recovery::RecoveryPasskey;
-pub use roster::DeviceProfile;
+pub use roster::{DeviceProfile, ProfileRow};
 
 mod petname;
 pub use petname::petname;

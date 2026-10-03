@@ -13,7 +13,15 @@ upstream is configured. `--no-sync` disables that wrapper for one command.
 diverged, or has no upstream. Its JSON form keeps `sync.fetched`, so callers can
 distinguish an unreachable upstream from a current comparison.
 
-`tonk invite` mints an invite URL for the current space, carrying the selected
-remote when one resolves. `tonk join <url> --name <name>` creates a local space
-from that invitation. Joining and syncing copy facts; removing a local replica
-does not erase replicas already held elsewhere.
+To access a browser space, copy its scoped invitation from Tonk and run
+`tonk join <invite-link>`. This works for people and agents.
+Importing and syncing copy facts; removing a local replica does not erase
+replicas already held elsewhere.
+
+Scoped invitations use ordinary space grants with explicit expiry
+(normally 90 days, bounded by the issuer's authority). Revocation blocks new
+remote authorizations as it propagates through the service; already-issued transport
+URLs can remain usable for up to one hour. Downloaded data and unsynced edits
+stay local. Queries needing data that was never downloaded still require remote
+access. New authorization is needed after grant expiry or revocation; the CLI
+does not fall back to another account's authority.

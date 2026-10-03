@@ -89,7 +89,7 @@ pub struct AccountFixture {
     /// A site this profile created before the account existed, so its
     /// repository authority reaches no account root.
     pub pre_account_site: TonkSite,
-    pub profile: dialog_operator::Profile,
+    pub profile: dialog_peer::Peer<dialog_storage::provider::storage::NativeSpace>,
     pub store: tonk_cli::space::SpaceStore,
     pub link: dialog_ucan_core::DelegationChain,
     pub config: SiteConfig,
@@ -170,10 +170,10 @@ impl AccountFixture {
             // linked it. Without this the account reads as unhydrated and
             // nothing will mount its repository.
             profile
-                .credential()
+                .secrets()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
                 .save(link.issuer().as_str().as_bytes().to_vec())
-                .perform(&test.site.operator)
+                .perform(&profile)
                 .await?;
 
             // Real accounts publish their encryption key: the ceremony
@@ -261,7 +261,9 @@ impl AccountFixture {
     /// under.
     pub async fn operator(
         &self,
-    ) -> Result<dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>> {
+    ) -> Result<
+        dialog_peer::Peer<dialog_storage::provider::storage::NativeSpace, dialog_peer::Session>,
+    > {
         tonk_cli::account_state::credential_operator_for_store(&self.profile, &self.store).await
     }
 
@@ -302,7 +304,7 @@ impl AccountFixture {
                     vec![MountRemote {
                         name: "origin".to_string(),
                         address: dialog_repository::SiteAddress::from(
-                            dialog_remote_ucan_s3::UcanAddress::new(url),
+                            dialog_remote_ucan::UcanAddress::new(url),
                         ),
                         subject: subject.clone(),
                         revocation: None,

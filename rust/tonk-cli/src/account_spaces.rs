@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use dialog_operator::{Operator, Profile};
+use dialog_peer::{Peer, Session};
 use dialog_query::{Output as _, Query, Term};
-use dialog_remote_ucan_s3::UcanAddress;
+use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{Branch, SiteAddress};
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::Did;
@@ -78,7 +78,7 @@ pub struct RecordWarning {
     pub message: String,
 }
 
-fn site_config(_profile: &Profile) -> Result<crate::site::SiteConfig> {
+fn site_config(_profile: &Peer<NativeSpace>) -> Result<crate::site::SiteConfig> {
     #[cfg(feature = "integration-tests")]
     if let Some(config) = account::integration_site_config(_profile) {
         return Ok(config);
@@ -86,7 +86,7 @@ fn site_config(_profile: &Profile) -> Result<crate::site::SiteConfig> {
     crate::site::default_config()
 }
 
-async fn open_site(path: &std::path::Path, profile: &Profile) -> Result<TonkSite> {
+async fn open_site(path: &std::path::Path, profile: &Peer<NativeSpace>) -> Result<TonkSite> {
     let site = TonkSite::open_with(path, site_config(profile)?).await?;
     if site.profile.did() != profile.did() {
         bail!("registered site profile does not match the active account profile");
@@ -101,7 +101,7 @@ struct LocalSpace {
 }
 
 async fn local_subjects(
-    profile: &Profile,
+    profile: &Peer<NativeSpace>,
     store: &SpaceStore,
 ) -> Result<HashMap<String, LocalSpace>> {
     let registry = store.load()?;
@@ -141,9 +141,9 @@ async fn local_subjects(
 /// profile is an ordinary state right after `tonk account login` on a
 /// fresh device, and reporting it as "no account" reads as data loss.
 async fn ready_account_branch(
-    profile: &Profile,
+    profile: &Peer<NativeSpace>,
     store: &SpaceStore,
-) -> Result<(Operator<NativeSpace>, Branch)> {
+) -> Result<(Peer<NativeSpace, Session>, Branch)> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
     if let Some(branch) =
         crate::account_state::open_account_branch_in(profile, &operator, store).await?
@@ -176,7 +176,7 @@ async fn ready_account_branch(
 /// List the account directory's spaces and identify subjects already
 /// registered locally. Reads the account DB — the same directory facts
 /// the Hub renders — not the retired space-backup escrow.
-pub async fn list(profile: &Profile, store: &SpaceStore) -> Result<Vec<AccountSpaceRow>> {
+pub async fn list(profile: &Peer<NativeSpace>, store: &SpaceStore) -> Result<Vec<AccountSpaceRow>> {
     let (operator, branch) = ready_account_branch(profile, store).await?;
     // Freshen best-effort: an offline listing still renders the local
     // copy of the directory.
@@ -209,7 +209,7 @@ fn name_error(name: Option<&str>, reason: impl std::fmt::Display) -> anyhow::Err
 
 /// Pull exactly one account space into canonical local storage.
 pub async fn pull(
-    profile: &Profile,
+    profile: &Peer<NativeSpace>,
     store: &SpaceStore,
     name_or_subject: &str,
     requested_name: Option<&str>,
@@ -282,12 +282,29 @@ pub async fn pull(
         });
     }
 
-    let name = requested_name
-        .map(str::to_string)
-        .or(directory_name)
-        .ok_or_else(|| name_error(None, "the directory has no stored name"))?;
-    space::validate_name(&name).map_err(|error| name_error(Some(&name), error))?;
     let registry = store.load()?;
+    // The account directory stores a *display label*, authored where no
+    // slug rule applies: the web UI's "Space name" editable, an invite
+    // link, or the worker's own `Untitled` / `Untitled 2` default. Using
+    // it verbatim as the local name made every such space unpullable
+    // until the person guessed a slug, so derive one instead — the same
+    // separation `tonk join` already makes via `handoff::synced_name`.
+    // An explicit `--name` is a request for that exact name and is still
+    // validated and refused on collision; only a derived name steps
+    // aside to the next free suffix.
+    let name = match requested_name {
+        Some(requested) => {
+            space::validate_name(requested).map_err(|error| name_error(Some(requested), error))?;
+            requested.to_string()
+        }
+        None => {
+            let label = directory_name
+                .ok_or_else(|| name_error(None, "the directory has no stored name"))?;
+            space::derive_name(&label, |name| {
+                registry.spaces.contains_key(name) || store.canonical_site(name).exists()
+            })
+        }
+    };
     if registry.spaces.contains_key(&name) {
         return Err(name_error(
             Some(&name),
@@ -493,7 +510,7 @@ pub async fn record_site_pushed(
 async fn record_site_for_profile(
     registry_name: &str,
     site: &TonkSite,
-    account_profile: &Profile,
+    account_profile: &Peer<NativeSpace>,
     store: &SpaceStore,
     require_push: bool,
 ) -> Result<RecordOutcome> {
@@ -596,7 +613,10 @@ pub(crate) async fn record_current(site: &TonkSite) -> Result<RecordOutcome> {
 }
 
 /// Best-effort directory sweep of every registered space.
-pub async fn record_registered(profile: &Profile, store: &SpaceStore) -> Vec<RecordWarning> {
+pub async fn record_registered(
+    profile: &Peer<NativeSpace>,
+    store: &SpaceStore,
+) -> Vec<RecordWarning> {
     let registry = match store.load() {
         Ok(registry) => registry,
         Err(error) => {

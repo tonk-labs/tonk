@@ -30,8 +30,8 @@ use dialog_effects::memory::Resolve;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::concept::query::ConceptQuery;
 use dialog_query::{
-    Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Scope, Selection,
-    Term, the, try_stream,
+    Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Restriction, Scope,
+    Selection, Term, the, try_stream,
 };
 use dialog_repository::{Hydrate, RemoteSite};
 use thiserror::Error;
@@ -158,6 +158,7 @@ impl ConceptLookupError {
 /// builder signatures readable.
 pub trait QueryEnv:
     Provider<Get>
+    + Provider<dialog_effects::blob::Read>
     + Provider<Put>
     + Provider<Resolve>
     + Provider<Identify>
@@ -173,6 +174,7 @@ pub trait QueryEnv:
 
 impl<T> QueryEnv for T where
     T: Provider<Get>
+        + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
@@ -1146,6 +1148,37 @@ impl Application for QueryPlan {
         }
     }
 
+    // A standard concept query supports incremental maintenance, so a
+    // subscription over it re-derives only the entities a change touches.
+    // The metadata and resolver plans keep the default: recompute.
+    fn restrict(&self, entity: &Entity) -> Restriction<Self> {
+        match self {
+            QueryPlan::Standard(q) => match q.restrict(entity) {
+                Restriction::Scoped(q) => Restriction::Scoped(QueryPlan::Standard(q)),
+                Restriction::Unaffected => Restriction::Unaffected,
+                Restriction::Unsupported => Restriction::Unsupported,
+            },
+            _ => Restriction::Unsupported,
+        }
+    }
+
+    fn concept(&self) -> Option<&ConceptDescriptor> {
+        match self {
+            QueryPlan::Standard(q) => q.concept(),
+            _ => None,
+        }
+    }
+
+    // A row the maintainer re-derives through a restriction comes back in
+    // the restriction's shape; the standard query puts it back in its own
+    // (restoring the subject binding). The other plans never restrict.
+    fn adopt(&self, conclusion: ConceptConclusion) -> Result<ConceptConclusion, EvaluationError> {
+        match self {
+            QueryPlan::Standard(q) => q.adopt(conclusion),
+            _ => Ok(conclusion),
+        }
+    }
+
     fn realize(&self, source: Match) -> Result<Self::Conclusion, EvaluationError> {
         match self {
             QueryPlan::Standard(q) => Application::realize(q, source),
@@ -1722,6 +1755,46 @@ mod tests {
         );
     }
 
+    /// A standard plan exposes its concept and scopes to one entity, so a
+    /// subscription over it maintains incrementally instead of recomputing
+    /// on every change. Metadata plans keep recomputing.
+    #[dialog_common::test]
+    fn it_lets_a_standard_plan_be_maintained_incrementally() {
+        let descriptor: ConceptDescriptor =
+            serde_json::from_str(r#"{"with":{"x":{"the":"a/b","as":"Text","cardinality":"one"}}}"#)
+                .unwrap();
+        let alice: Entity = "id:alice".parse().unwrap();
+        let bob: Entity = "id:bob".parse().unwrap();
+
+        let plan = QueryPlan::from(ConceptQuery {
+            terms: dialog_query::Parameters::new(),
+            predicate: descriptor.clone(),
+        });
+        assert_eq!(plan.concept(), Some(&descriptor));
+        let Restriction::Scoped(QueryPlan::Standard(scoped)) = plan.restrict(&alice) else {
+            panic!("an unpinned concept query scopes to the changed entity");
+        };
+        assert_eq!(
+            scoped.terms.get("this"),
+            Some(&Term::Constant(Value::Entity(alice.clone())))
+        );
+
+        let mut pinned = dialog_query::Parameters::new();
+        pinned.insert("this".into(), Term::Constant(Value::Entity(alice)));
+        let plan = QueryPlan::from(ConceptQuery {
+            terms: pinned,
+            predicate: descriptor,
+        });
+        assert!(matches!(plan.restrict(&bob), Restriction::Unaffected));
+
+        let meta = QueryPlan::from(ConceptQuery {
+            terms: dialog_query::Parameters::new(),
+            predicate: concept_of_concept_descriptor().clone(),
+        });
+        assert!(meta.concept().is_none());
+        assert!(matches!(meta.restrict(&bob), Restriction::Unsupported));
+    }
+
     /// The command sentinel must not collide with the concept
     /// sentinel — identity is the attribute-URI set, so the extra
     /// `db.meta/command` marker attribute is load-bearing.
@@ -1793,10 +1866,10 @@ mod tests {
     /// inverted lookup once the resolver is rewired.)
     #[dialog_common::test]
     async fn it_returns_concept_with_source_from_concept_query() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::{Any, Output as _, Parameters, Term};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -1896,9 +1969,9 @@ mod tests {
     /// required, optional field stays optional).
     #[dialog_common::test]
     async fn it_reconstructs_optional_flag_from_branch() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -1975,10 +2048,10 @@ mod tests {
     /// same branch must carry `Boolean(false)`.
     #[dialog_common::test]
     async fn it_returns_transient_marker_on_transient_concept_rows() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::{Any, Output as _, Parameters, Term};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2118,10 +2191,10 @@ mod tests {
     /// durable concept on the same branch does not.
     #[dialog_common::test]
     async fn it_queries_command_returns_only_transient_concepts() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::{Any, Output as _, Parameters, Term};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2239,9 +2312,9 @@ mod tests {
     /// the target.
     #[dialog_common::test]
     async fn it_resolves_published_name_to_target_entity() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2265,9 +2338,9 @@ mod tests {
     /// and for "the prior assertion was retracted."
     #[dialog_common::test]
     async fn it_returns_none_for_unknown_published_name() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2299,7 +2372,7 @@ mod tests {
     /// is in `dialog` itself.
     #[dialog_common::test]
     async fn it_supersedes_cardinality_one_across_transactions() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::Output as _;
 
         // A minimal one-attribute concept whose only field is
@@ -2319,7 +2392,7 @@ mod tests {
             pub target: pointer::Target,
         }
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2386,7 +2459,7 @@ mod tests {
     /// twice in the same batch, the second call should win.
     #[dialog_common::test]
     async fn it_supersedes_cardinality_one_within_transaction() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::Output as _;
 
         mod pointer {
@@ -2402,7 +2475,7 @@ mod tests {
             pub target: pointer::Target,
         }
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2460,11 +2533,11 @@ mod tests {
     /// direction, so v1 disappears.
     #[dialog_common::test]
     async fn it_resolves_only_latest_name_target_via_name_concept() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::Output as _;
         use tonk_core::meta::{Name, name};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 

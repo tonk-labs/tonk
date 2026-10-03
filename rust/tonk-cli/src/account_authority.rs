@@ -6,9 +6,9 @@ use dialog_capability::{
     Capability, Command, Effect, Fork, ForkInvocation, Policy as _, Provider, Site, SiteFork,
     Subject,
 };
-use dialog_common::{ConditionalSend, ConditionalSync};
+use dialog_common::{ConditionalSend, ConditionalSync, Held, Holds};
 use dialog_effects::authority::{Attest, Identify};
-use dialog_operator::{Operator, Profile};
+use dialog_peer::{Peer, Session};
 use dialog_repository::RemoteSite as Network;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_ucan::{Ucan, UcanAuthorization};
@@ -22,10 +22,11 @@ const REMOTE_AUTHORIZATION_MARGIN_SECONDS: u64 = 60;
 /// Operator wrapper that forwards local effects but exclusively owns UCAN
 /// authorization and every remote network fork.
 pub struct AccountBoundOperator {
-    inner: Operator<NativeSpace>,
-    profile: Profile,
+    inner: Peer<NativeSpace, Session>,
+    profile: Peer<NativeSpace>,
     store: SpaceStore,
     require_account: bool,
+    scoped_grants: Option<Vec<DelegationChain>>,
 }
 
 impl AccountBoundOperator {
@@ -35,14 +36,14 @@ impl AccountBoundOperator {
     /// opens the account repository in the same storage — reach it here
     /// rather than rebuilding one against the global install store, which
     /// would mount a different profile.
-    pub fn inner(&self) -> &Operator<NativeSpace> {
+    pub fn inner(&self) -> &Peer<NativeSpace, Session> {
         &self.inner
     }
 
     /// Wrap a raw local operator after canonical session initialization.
     pub fn new(
-        inner: Operator<NativeSpace>,
-        profile: Profile,
+        inner: Peer<NativeSpace, Session>,
+        profile: Peer<NativeSpace>,
         store: SpaceStore,
         require_account: bool,
     ) -> Self {
@@ -51,12 +52,50 @@ impl AccountBoundOperator {
             profile,
             store,
             require_account,
+            scoped_grants: None,
         }
+    }
+
+    /// Whether remote work is restricted to an isolated invitation grant set.
+    pub fn is_scoped(&self) -> bool {
+        self.scoped_grants.is_some()
+    }
+
+    async fn authorize_scoped(
+        &self,
+        input: Capability<Authorize<Ucan>>,
+    ) -> Result<UcanAuthorization, AuthorizeError> {
+        let expected = self.scoped_grants.as_ref().expect("scoped mode checked");
+        let authorization = require_current_window(input, current_unix_seconds())
+            .perform(&self.inner)
+            .await?;
+        let chain = authorization
+            .chain
+            .as_ref()
+            .ok_or_else(|| AuthorizeError::Malformed {
+                detail: "connection authorization has no proof chain".into(),
+            })?;
+        let matches = expected.iter().any(|grant| {
+            chain.subject() == grant.subject()
+                && chain.proof_cids().len() == grant.proof_cids().len() + 1
+                && chain.proof_cids().starts_with(grant.proof_cids())
+                && chain.audience() == &self.inner.did()
+                && chain
+                    .proofs()
+                    .last()
+                    .is_some_and(|hop| hop.issuer() == &self.profile.did())
+        });
+        if !matches {
+            return Err(AuthorizeError::Malformed {
+                detail: "remote request is outside this connection's retained grant set".into(),
+            });
+        }
+        Ok(authorization)
     }
 
     /// Persistent profile DID.
     pub fn profile_did(&self) -> dialog_varsig::Did {
-        self.inner.profile_did()
+        self.inner.home().clone()
     }
 
     /// Derived operator DID.
@@ -65,7 +104,7 @@ impl AccountBoundOperator {
     }
 
     /// Borrow the raw operator for credential/session initialization only.
-    pub(crate) fn local(&self) -> &Operator<NativeSpace> {
+    pub(crate) fn local(&self) -> &Peer<NativeSpace, Session> {
         &self.inner
     }
 
@@ -230,6 +269,16 @@ fn require_current_window(
     )
 }
 
+impl Holds for AccountBoundOperator {
+    fn held(&self, key: &str) -> Option<Held> {
+        self.inner.held(key)
+    }
+
+    fn hold(&self, key: String, handle: Held) {
+        self.inner.hold(key, handle)
+    }
+}
+
 impl dialog_varsig::Principal for AccountBoundOperator {
     fn did(&self) -> dialog_varsig::Did {
         self.inner.did()
@@ -241,7 +290,7 @@ macro_rules! forward {
         #[async_trait::async_trait]
         impl Provider<$command> for AccountBoundOperator
         where
-            Operator<NativeSpace>: Provider<$command> + ConditionalSync,
+            Peer<NativeSpace, Session>: Provider<$command> + ConditionalSync,
             <$command as Command>::Input: ConditionalSend,
             <$command as Command>::Output: ConditionalSend,
         {
@@ -249,7 +298,8 @@ macro_rules! forward {
                 &self,
                 input: <$command as Command>::Input,
             ) -> <$command as Command>::Output {
-                <Operator<NativeSpace> as Provider<$command>>::execute(&self.inner, input).await
+                <Peer<NativeSpace, Session> as Provider<$command>>::execute(&self.inner, input)
+                    .await
             }
         }
     };
@@ -263,13 +313,20 @@ forward!(dialog_effects::archive::Import);
 forward!(dialog_effects::blob::Read);
 forward!(dialog_effects::blob::Write);
 forward!(dialog_effects::blob::Import);
-forward!(dialog_effects::credential::Load<dialog_credentials::Credential>);
-forward!(dialog_effects::credential::Save<dialog_credentials::Credential>);
+forward!(dialog_effects::blob::Size);
 forward!(dialog_effects::credential::Load<dialog_effects::credential::Secret>);
 forward!(dialog_effects::credential::Save<dialog_effects::credential::Secret>);
 forward!(dialog_effects::memory::Resolve);
 forward!(dialog_effects::memory::Publish);
 forward!(dialog_effects::memory::Retract);
+forward!(dialog_effects::memory::List);
+forward!(dialog_effects::credential::Retract<dialog_effects::credential::Secret>);
+forward!(dialog_effects::peer::AddAddress);
+forward!(dialog_effects::peer::SetName);
+forward!(dialog_effects::peer::Find);
+forward!(dialog_effects::peer::Connect);
+forward!(dialog_effects::peer::RemoveAddress);
+forward!(dialog_effects::peer::RemoveName);
 forward!(dialog_repository::Hydrate);
 forward!(dialog_artifacts::Preload);
 forward!(dialog_artifacts::Speculation);
@@ -284,6 +341,9 @@ impl Provider<Authorize<Ucan>> for AccountBoundOperator {
         &self,
         input: Capability<Authorize<Ucan>>,
     ) -> Result<UcanAuthorization, AuthorizeError> {
+        if self.is_scoped() {
+            return self.authorize_scoped(input).await;
+        }
         let guard = crate::account_session::shared_remote_guard(&self.store).map_err(|error| {
             AuthorizeError::Unavailable {
                 detail: error.to_string(),
@@ -295,13 +355,14 @@ impl Provider<Authorize<Ucan>> for AccountBoundOperator {
 
 struct Guarded<'a> {
     operator: &'a AccountBoundOperator,
-    guard: &'a AccountSessionReadGuard,
+    guard: Option<&'a AccountSessionReadGuard>,
 }
 
 #[async_trait::async_trait]
 impl<'a> Provider<Identify> for Guarded<'a> {
     async fn execute(&self, input: <Identify as Command>::Input) -> <Identify as Command>::Output {
-        <Operator<NativeSpace> as Provider<Identify>>::execute(&self.operator.inner, input).await
+        <Peer<NativeSpace, Session> as Provider<Identify>>::execute(&self.operator.inner, input)
+            .await
     }
 }
 
@@ -310,7 +371,7 @@ macro_rules! forward_guarded {
         #[async_trait::async_trait]
         impl<'a> Provider<$command> for Guarded<'a>
         where
-            Operator<NativeSpace>: Provider<$command> + ConditionalSync,
+            Peer<NativeSpace, Session>: Provider<$command> + ConditionalSync,
             <$command as Command>::Input: ConditionalSend,
             <$command as Command>::Output: ConditionalSend,
         {
@@ -318,15 +379,17 @@ macro_rules! forward_guarded {
                 &self,
                 input: <$command as Command>::Input,
             ) -> <$command as Command>::Output {
-                <Operator<NativeSpace> as Provider<$command>>::execute(&self.operator.inner, input)
-                    .await
+                <Peer<NativeSpace, Session> as Provider<$command>>::execute(
+                    &self.operator.inner,
+                    input,
+                )
+                .await
             }
         }
     };
 }
 
 forward_guarded!(dialog_effects::credential::Load<dialog_effects::credential::Secret>);
-forward_guarded!(dialog_effects::credential::Load<dialog_credentials::Credential>);
 forward_guarded!(Prove<Ucan>);
 
 #[async_trait::async_trait]
@@ -335,7 +398,13 @@ impl<'a> Provider<Authorize<Ucan>> for Guarded<'a> {
         &self,
         input: Capability<Authorize<Ucan>>,
     ) -> Result<UcanAuthorization, AuthorizeError> {
-        self.operator.authorize_guarded(input, self.guard).await
+        if self.operator.is_scoped() {
+            self.operator.authorize_scoped(input).await
+        } else {
+            self.operator
+                .authorize_guarded(input, self.guard.expect("account guard"))
+                .await
+        }
     }
 }
 
@@ -361,7 +430,11 @@ where
     Network: Provider<ForkInvocation<At, Fx>> + ConditionalSync,
 {
     async fn execute(&self, input: Fork<At, Fx>) -> Fx::Output {
-        let guard = match crate::account_session::shared_remote_guard(&self.store) {
+        let guard = match if self.is_scoped() {
+            Ok(None)
+        } else {
+            crate::account_session::shared_remote_guard(&self.store).map(Some)
+        } {
             Ok(guard) => guard,
             Err(error) => {
                 return FromAuthError::from_auth_error(AuthorizeError::Unavailable {
@@ -371,7 +444,7 @@ where
         };
         let env = Guarded {
             operator: self,
-            guard: &guard,
+            guard: guard.as_ref(),
         };
         match input.authorize(&env).await {
             Ok(invocation) => invocation.perform(&Network::default()).await,
@@ -380,11 +453,27 @@ where
     }
 }
 
+/// Wrap an already isolated invitation profile without initializing account state.
+pub(crate) fn wrap_scoped(
+    inner: Peer<NativeSpace, Session>,
+    profile: Peer<NativeSpace>,
+    store: SpaceStore,
+    grants: Vec<DelegationChain>,
+) -> AccountBoundOperator {
+    AccountBoundOperator {
+        inner,
+        profile,
+        store,
+        require_account: false,
+        scoped_grants: Some(grants),
+    }
+}
+
 /// Initialize canonical session state before exposing an account-bound
 /// operator.
 pub async fn wrap(
-    inner: Operator<NativeSpace>,
-    profile: Profile,
+    inner: Peer<NativeSpace, Session>,
+    profile: Peer<NativeSpace>,
     store: SpaceStore,
     require_account: bool,
 ) -> Result<AccountBoundOperator> {

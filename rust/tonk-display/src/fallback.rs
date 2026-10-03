@@ -175,16 +175,41 @@ mod tests {
         assert!(!fb.hidden(), "back to empty -> fallback visible again");
 
         // Live: the observer wired in `connected_callback` flips `hidden`
-        // when `data-state` mutates, without a manual `sync`. Force the
-        // attribute right before ticking so a racing boot write (if the
-        // ancestor is registered) is superseded, and poll for the flip.
+        // when `data-state` mutates, without a manual `sync`.
+        //
+        // The ancestor is a REGISTERED `<tonk-display>`, so it is booting
+        // underneath this fixture, and a boot that settles calls
+        // `clear_host` — which removes every child WITHOUT a `slot`
+        // attribute as rendered output. This fallback is one, so the
+        // node held here can be evicted mid-test and a detached element
+        // never sees another mutation. In production that eviction is
+        // harmless: `<tonk-fallback>` is chrome inside a rendered VIEW,
+        // so a re-render remounts it with a fresh observer. Re-querying
+        // each turn is what reproduces that, instead of asserting on a
+        // node the renderer has already replaced.
         let observed = {
             host.set_attribute("data-state", "ready").unwrap();
             let mut hid = false;
             for _ in 0..40 {
-                if fb.hidden() {
-                    hid = true;
-                    break;
+                let live: Option<HtmlElement> = host
+                    .query_selector("tonk-fallback")
+                    .ok()
+                    .flatten()
+                    .and_then(|node| node.dyn_into().ok());
+                match live {
+                    Some(live) if live.hidden() => {
+                        hid = true;
+                        break;
+                    }
+                    // Evicted by a boot that settled: put it back, the
+                    // way a re-rendered view would, so the observer the
+                    // element wires on connect is live again.
+                    None => {
+                        let replacement = document.create_element("tonk-fallback").unwrap();
+                        replacement.set_inner_html("<p>nothing yet</p>");
+                        host.append_child(&replacement).unwrap();
+                    }
+                    Some(_) => {}
                 }
                 host.set_attribute("data-state", "ready").unwrap();
                 tick().await;

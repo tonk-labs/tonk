@@ -152,6 +152,8 @@ pub fn analyze_local(syntax: &Syntax) -> Result<Tree<Syntax>, AnalyzeError> {
         ));
     }
 
+    reject_unexpanded_includes(syntax)?;
+
     // push → resolve(LocalOnly) → build. The graph's resolve phase
     // is genuinely synchronous when the resolver does no IO:
     // `LocalOnly` answers every external need with `None` without
@@ -164,6 +166,41 @@ pub fn analyze_local(syntax: &Syntax) -> Result<Tree<Syntax>, AnalyzeError> {
     let resolved = poll_ready(graph.resolve(syntax, &scope, &graph::LocalOnly))?;
     rule::check_overlapping_transient_rule_triggers(syntax, &scope)?;
     expand(syntax, &scope, resolved)
+}
+
+/// Refuse a document that still carries an `!include`.
+///
+/// Included content is inlined by [`tonk_notation::expand`] before
+/// analysis, so one that survives was never loaded: its document has
+/// no location to resolve against (an inline body, whose base is
+/// [`tonk_notation::INLINE_LOCATION`]), or the pipeline that ran it
+/// does not load included resources. Checked up front, against the
+/// document's base, so the error says which of the two it was.
+fn reject_unexpanded_includes(syntax: &Syntax) -> Result<(), AnalyzeError> {
+    fn find(fields: &[tonk_notation::Field]) -> Option<&tonk_notation::Field> {
+        fields.iter().find_map(|field| match &field.value {
+            tonk_notation::FieldValue::Include(_) => Some(field),
+            tonk_notation::FieldValue::Nested(nested) => find(nested),
+            tonk_notation::FieldValue::Premises(premises) => {
+                premises.iter().find_map(|premise| find(&premise.bindings))
+            }
+            _ => None,
+        })
+    }
+    let found = syntax
+        .expressions
+        .iter()
+        .find_map(|expression| find(&expression.application().fields));
+    match found {
+        Some(field) => {
+            let tonk_notation::FieldValue::Include(include) = &field.value else {
+                unreachable!("find only returns includes");
+            };
+            Err(field::unexpanded_include(include, Some(&syntax.base))
+                .with_range(field.value_range))
+        }
+        None => Ok(()),
+    }
 }
 
 /// Drive a future that performs no real IO to completion on the
@@ -223,6 +260,8 @@ impl<'s, 'a> Analyze<'s, 'a> {
                 syntax.range,
             ));
         }
+
+        reject_unexpanded_includes(syntax)?;
 
         let scope = Scope::new();
         let graph = graph::push(syntax)?;
@@ -781,7 +820,7 @@ fn as_constant_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<En
 mod tests {
     use super::*;
     use dialog_artifacts::{Entity, Value};
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::{ConceptDescriptor, Term, the};
     use dialog_repository::Branch;
     use tonk_core::meta::AnchorName;
@@ -807,6 +846,8 @@ mod tests {
         + dialog_query::Provider<dialog_effects::memory::Publish>
         + dialog_query::Provider<dialog_effects::archive::Import>
         + dialog_query::Provider<dialog_effects::authority::Attest>
+        + dialog_query::Provider<dialog_effects::blob::Import>
+        + dialog_query::Provider<dialog_effects::blob::Size>
     {
     }
 
@@ -815,10 +856,12 @@ mod tests {
             + dialog_query::Provider<dialog_effects::memory::Publish>
             + dialog_query::Provider<dialog_effects::archive::Import>
             + dialog_query::Provider<dialog_effects::authority::Attest>
+            + dialog_query::Provider<dialog_effects::blob::Import>
+            + dialog_query::Provider<dialog_effects::blob::Size>
     {
     }
 
-    /// `Op` is the concrete operator type [`test_operator_with_profile`]
+    /// `Op` is the concrete operator type [`test_session_with_peer`]
     /// returns; tests build fixtures via [`new_fixture`] and
     /// never need to name it directly.
     struct Fixture<Op>
@@ -831,7 +874,7 @@ mod tests {
 
     /// Open a fresh test repo with one empty `main` branch.
     async fn new_fixture() -> Fixture<impl FixtureEnv> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo
             .branch("main")
@@ -1326,9 +1369,42 @@ holder!: &my-holder
         let syntax = Syntax {
             expressions: Vec::new(),
             range: lsp_types::Range::default(),
+            base: tonk_notation::Url::parse(tonk_notation::INLINE_LOCATION).unwrap(),
         };
         let err = analyze_empty(&syntax).await.unwrap_err();
         assert!(matches!(err.kind, AnalyzeErrorKind::EmptyDocument));
+    }
+
+    /// A document with no location of its own cannot `!include`: the
+    /// reference has nothing to be relative to.
+    #[dialog_common::test]
+    async fn it_rejects_an_include_in_an_inline_document() {
+        let syntax = must_parse("note!:\n  this: ?n\n  body: !include ./body.md\n");
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        let AnalyzeErrorKind::UnexpandedInclude { reference, .. } = &err.kind else {
+            panic!("expected UnexpandedInclude, got {err:?}");
+        };
+        assert_eq!(reference, "./body.md");
+        assert!(err.to_string().contains("no location"), "{err}");
+        assert_eq!(err.range.map(|r| r.start.line), Some(2));
+    }
+
+    /// A located document whose includes were never expanded is still
+    /// refused — nested under a mapping too — rather than analyzed as
+    /// if the value were missing.
+    #[dialog_common::test]
+    fn it_rejects_an_unexpanded_include_in_a_located_document() {
+        let parsed = tonk_notation::parse_at(
+            tonk_notation::Url::parse("file:///notes/today.yaml").unwrap(),
+            "note!:\n  this: ?n\n  meta:\n    image: !include a.webp\n",
+        );
+        let syntax = parsed.syntax.unwrap();
+        let err = analyze_local(&syntax).unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::UnexpandedInclude { .. }),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("file:///notes/a.webp"), "{err}");
     }
 
     /// `attribute!: &foo` declares a content-derived attribute
@@ -1484,6 +1560,197 @@ concept!: &person
             panic!("expected Assert(Concept) for concept");
         };
         assert_eq!(name.as_ref().map(AnchorName::as_str), Some("person"));
+    }
+
+    /// The `role` of an attribute, read off one asserted application.
+    fn asserted_role(statement: &Statement) -> Option<(Entity, String)> {
+        let Statement::Assert(Application::Concept { query, this, .. }) = statement else {
+            return None;
+        };
+        let ThisIntent::Uri(entity) = this else {
+            return None;
+        };
+        match query.terms.get("role") {
+            Some(Term::Constant(Value::String(role))) => Some((entity.clone(), role.clone())),
+            _ => None,
+        }
+    }
+
+    /// A command field's `role:` is asserted as its own fact on the
+    /// field's attribute entity, after the attribute itself.
+    #[dialog_common::test]
+    async fn it_asserts_an_inline_fields_role_on_its_attribute() {
+        let syntax = must_parse(
+            r#"
+command!: &notebook/retitle
+  description: "Rename a notebook"
+  with:
+    title:
+      description: "The new title"
+      the:         xyz.tonk.notebook.retitle/title
+      as:          Text
+      role:        goal
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let statements = &analysis.mutate.statements;
+        // The attribute, its role, then the command.
+        assert_eq!(statements.len(), 3);
+        let Statement::Assert(Application::Concept {
+            this: ThisIntent::Uri(attribute),
+            ..
+        }) = &statements[0]
+        else {
+            panic!("expected the attribute first");
+        };
+        assert_eq!(
+            asserted_role(&statements[1]),
+            Some((attribute.clone(), "goal".to_owned()))
+        );
+    }
+
+    /// `role:` on an `attribute!` head is asserted the same way.
+    #[dialog_common::test]
+    async fn it_asserts_an_attribute_heads_role() {
+        let syntax = must_parse(
+            r#"
+attribute!: &rename/name
+  description: "The new name"
+  the:         xyz.tonk.rename/name
+  as:          Text
+  role:        goal
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let roles: Vec<_> = analysis
+            .mutate
+            .statements
+            .iter()
+            .filter_map(asserted_role)
+            .map(|(_, role)| role)
+            .collect();
+        assert_eq!(roles, vec!["goal".to_owned()]);
+    }
+
+    /// A role is not part of the attribute: the same attribute with and
+    /// without one is the same entity.
+    #[dialog_common::test]
+    async fn it_keeps_a_roles_attribute_identity() {
+        let declare = |role: &str| {
+            must_parse(&format!(
+                r#"
+attribute!: &rename/name
+  description: "The new name"
+  the:         xyz.tonk.rename/name
+  as:          Text
+{role}"#
+            ))
+        };
+        let entity = |analysis: &Flat| match &analysis.mutate.statements[0] {
+            Statement::Assert(Application::Concept {
+                this: ThisIntent::Uri(entity),
+                ..
+            }) => entity.clone(),
+            other => panic!("expected the attribute, got {other:?}"),
+        };
+        let plain = flat(analyze_empty(&declare("")).await.unwrap());
+        let with_role = flat(
+            analyze_empty(&declare("  role:        goal\n"))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(entity(&plain), entity(&with_role));
+    }
+
+    /// Each of a command's `action:` names is asserted as a palette name,
+    /// on the command's own entity.
+    #[dialog_common::test]
+    async fn it_asserts_a_commands_action_on_the_command() {
+        let syntax = must_parse(
+            r#"
+command!: &notebook/retitle
+  description: "Rename a notebook"
+  action: ["rename", "retitle"]
+  with:
+    title:
+      description: "The new title"
+      the:         xyz.tonk.notebook.retitle/title
+      as:          Text
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let command = analysis
+            .mutate
+            .statements
+            .iter()
+            .find_map(|statement| match statement {
+                Statement::Assert(Application::Concept {
+                    this: ThisIntent::Uri(entity),
+                    name: Some(name),
+                    ..
+                }) if name.as_str() == "notebook/retitle" => Some(entity.clone()),
+                _ => None,
+            })
+            .expect("the command is asserted");
+        let actions: Vec<_> = analysis
+            .mutate
+            .statements
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::Assert(Application::Concept {
+                    query,
+                    this: ThisIntent::Uri(entity),
+                    ..
+                }) if entity == &command => match query.terms.get("name") {
+                    Some(Term::Constant(Value::String(name))) => Some(name.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let mut actions = actions;
+        actions.sort();
+        assert_eq!(actions, vec!["rename".to_owned(), "retitle".to_owned()]);
+    }
+
+    /// A list is a command's several names; anywhere else the parser
+    /// refuses it rather than reading it as one value.
+    #[dialog_common::test]
+    fn it_refuses_a_list_outside_action() {
+        let parsed = parse(
+            r#"
+attribute!: &rename/name
+  description: ["The new name", "or another"]
+  the:         xyz.tonk.rename/name
+  as:          Text
+"#,
+        );
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("Sequence values are not supported")),
+            "diagnostics: {:#?}",
+            parsed.diagnostics
+        );
+    }
+
+    /// A role nothing knows is an error, not a silent fact.
+    #[dialog_common::test]
+    async fn it_rejects_an_unknown_role() {
+        let syntax = must_parse(
+            r#"
+attribute!: &rename/name
+  description: "The new name"
+  the:         xyz.tonk.rename/name
+  as:          Text
+  role:        gaol
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(&err.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("gaol")),
+            "expected InvalidAttributeBody naming the role, got {err:?}"
+        );
     }
 
     /// A `maybe:` block declares optional fields. The descriptor
@@ -2362,6 +2629,86 @@ xyz.tonk.person!:
         );
     }
 
+    /// `syntax` with the named top-level field of its first expression
+    /// replaced by content an `!include` loaded — what
+    /// [`tonk_notation::expand`] leaves behind.
+    fn with_included(mut syntax: Syntax, name: &str, bytes: &[u8]) -> Syntax {
+        let application = match &mut syntax.expressions[0] {
+            Expression::Query(application) => application,
+            Expression::Claim(claim) => &mut claim.inner,
+        };
+        let field = application
+            .fields
+            .iter_mut()
+            .find(|field| field.name == name)
+            .expect("field to replace");
+        field.value =
+            tonk_notation::FieldValue::Literal(tonk_notation::Scalar::Included(bytes.to_vec()));
+        syntax
+    }
+
+    /// Included content in a field declared `as: text` is read as text.
+    #[dialog_common::test]
+    async fn it_reads_included_content_as_text_for_a_text_field() {
+        let syntax = with_included(
+            must_parse(
+                "person!:\n  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv\n  bio: \"_\"\n",
+            ),
+            "bio",
+            b"# About me\n",
+        );
+        let resolver = fixed_concept_typed("person", &[("bio", "xyz.tonk.person/bio", "Text")]);
+        let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
+        let Statement::Assert(Application::Concept { query: q, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert!(
+            matches!(q.terms.get("bio"), Some(Term::Constant(Value::String(s))) if s == "# About me\n"),
+            "included content in a text field should be text, got {:?}",
+            q.terms.get("bio")
+        );
+    }
+
+    /// Included content that is not UTF-8 has no text reading, so a
+    /// text field refuses it rather than decoding it lossily.
+    #[dialog_common::test]
+    async fn it_refuses_included_content_that_is_not_text_for_a_text_field() {
+        let syntax = with_included(
+            must_parse(
+                "person!:\n  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv\n  bio: \"_\"\n",
+            ),
+            "bio",
+            &[0xff, 0xfe],
+        );
+        let resolver = fixed_concept_typed("person", &[("bio", "xyz.tonk.person/bio", "Text")]);
+        let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+        assert!(err.to_string().contains("not UTF-8"), "{err}");
+    }
+
+    /// An untyped field says nothing about text, so included content
+    /// stays the bytes it was loaded as.
+    #[dialog_common::test]
+    async fn it_keeps_included_content_as_bytes_for_an_untyped_field() {
+        let syntax = with_included(
+            must_parse(
+                "xyz.tonk.person!:\n  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv\n  bio: \"_\"\n",
+            ),
+            "bio",
+            b"# About me\n",
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let Statement::Assert(application) = &analysis.mutate.statements[0] else {
+            panic!("expected an Assert statement");
+        };
+        let term = application.parameters().get("bio").cloned();
+        assert!(
+            matches!(&term, Some(Term::Constant(Value::Bytes(bytes))) if bytes == b"# About me\n"),
+            "included content on an untyped field should stay bytes, got {term:?}"
+        );
+    }
+
     /// A raw domain write whose literal diverges from a declared
     /// attribute's type still analyzes — raw domains are open-ended —
     /// but carries a warning-severity diagnostic with the spelling
@@ -2466,7 +2813,7 @@ branch:
             panic!("expected Concept application");
         };
         assert!(query.terms.contains("name"));
-        assert!(query.terms.contains("origin"));
+        assert!(query.terms.contains("replica"));
     }
 
     /// Built-in `attribute:` empty-body query surfaces every
@@ -4975,8 +5322,9 @@ mod library_analysis_tests {
     /// The worker asserts these as typed facts rather than notation, so
     /// what is pinned here is that the DECLARATIONS exist and accept the
     /// shape: identity plus source on `seed/available`, and the install
-    /// fields on `seed/installed` over the same entity. A seed a check
-    /// merely found asserts only the first, which is why the two are
+    /// fields on `seed/install` over the same entity — or on
+    /// `seed/installed`, as releases before it recorded installs. A seed a
+    /// check merely found asserts only the first, which is why the two are
     /// separable rather than one concept with optional fields.
     #[test]
     fn it_analyzes_a_seed_record() {
@@ -4986,10 +5334,15 @@ mod library_analysis_tests {
   source: "/library/core.yaml"
   replaces: seed:none
 
-seed/installed!:
+seed/install!:
   this: seed:abc
   prior: seed:none
   version: "1@abc"
+
+seed/installed!:
+  this: seed:def
+  prior: seed:none
+  version: "1@def"
 "#;
         assert_analyzes("core.yaml + seed record", &format!("{core}\n{body}"));
     }
@@ -5044,9 +5397,11 @@ seed/installed!:
         }
         let profile = include_str!("../../tonk-core/assets/library/profile.yaml");
         let inlined = inlined_declarations("profile.yaml", profile);
+        // Removal submits through space-remove's receipt-aware handler;
+        // rename still exercises declarative form binding inlining.
         assert!(
-            inlined.contains(&"on/space-create".to_string()),
-            "profile.yaml's create form must carry its declaration inlined, got {inlined:?}",
+            inlined.contains(&"on/repository-rename-submit".to_string()),
+            "profile.yaml's rename form must carry its declaration inlined, got {inlined:?}",
         );
     }
 

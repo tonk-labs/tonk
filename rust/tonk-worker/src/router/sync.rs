@@ -220,7 +220,12 @@ pub async fn is_sync_enabled(tonk: &crate::worker::TonkState, repo: &str, branch
 /// sync against). Best-effort: a failure to acquire/fetch is logged, not
 /// surfaced — the caller's sync result already carried the real outcome.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn publish_settled_status(tonk: &crate::worker::TonkState, repo: &str, branch: &str) {
+async fn publish_settled_status(
+    tonk: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    observed: Option<Option<Revision>>,
+) {
     let account = super::account_state::is_account_key(tonk, repo).await;
     // A user space paused mid-sync keeps `paused`. Account-system replicas
     // ignore user pause preferences and always remain in the sync population.
@@ -245,28 +250,38 @@ async fn publish_settled_status(tonk: &crate::worker::TonkState, repo: &str, bra
     let handle = session.handle();
     let local = handle.revision();
 
-    if handle.upstream().is_none() {
+    if tonk_account::peer::upstream(handle).is_none() {
         publish_sync_status(tonk, repo, branch, SyncState::NoUpstream).await;
         return;
     }
 
-    let remote = match handle.fetch().perform(&tonk.operator).await {
-        Ok(remote) => remote,
-        Err(e) => {
-            log!("publish_settled_status: fetch {repo}/{branch} failed: {e}");
-            // An unserved subject is not offline: the service answered,
-            // and said no. Settle on `local` — the same status the
-            // failure path stamps — or the chip would flap between the
-            // two on every sweep.
-            let status = match classified_service_failure(&e) {
-                Some(TonkWorkerError::Upstream {
-                    code: Some(code), ..
-                }) if code == "NOT_PROVISIONED" => tonk_schema::Replica::local_status(),
-                _ => tonk_schema::Replica::offline_status(),
-            };
-            publish_sync_status_attr(tonk, repo, branch, status).await;
-            return;
-        }
+    // The caller usually knows where upstream stands: a push that
+    // landed says so in its answer, and re-reading the cell to colour a
+    // chip is a round trip that learns nothing. Only a caller with
+    // nothing to hand fetches.
+    let remote = match observed {
+        Some(remote) => remote,
+        None => match handle.fetch().perform(&tonk.operator).await {
+            Ok(fetched) => fetched
+                .into_iter()
+                .next()
+                .and_then(|fetched| fetched.revision),
+            Err(e) => {
+                log!("publish_settled_status: fetch {repo}/{branch} failed: {e}");
+                // An unserved subject is not offline: the service answered,
+                // and said no. Settle on `local` — the same status the
+                // failure path stamps — or the chip would flap between the
+                // two on every sweep.
+                let status = match classified_service_failure(&e) {
+                    Some(TonkWorkerError::Upstream {
+                        code: Some(code), ..
+                    }) if code == "NOT_PROVISIONED" => tonk_schema::Replica::local_status(),
+                    _ => tonk_schema::Replica::offline_status(),
+                };
+                publish_sync_status_attr(tonk, repo, branch, status).await;
+                return;
+            }
+        },
     };
 
     let state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
@@ -285,6 +300,27 @@ async fn publish_settled_status(tonk: &crate::worker::TonkState, repo: &str, bra
 /// time, so a single retry settles it; the extra attempts guard against a burst
 /// of commits.
 const SYNC_RETRY_LIMIT: usize = 4;
+
+/// Whether `error` is a push refused because upstream moved under us.
+///
+/// Two shapes, one meaning. A push that confirms upstream first is
+/// refused by the fast-forward check; one that acts on what the pull
+/// already read is refused by the conditional head write, after the
+/// novelty shipped. Both say another writer got there first, and both
+/// converge the same way: the next sweep pulls, then pushes.
+fn is_upstream_moved(error: &crate::reactor::ReactorError) -> bool {
+    matches!(
+        error,
+        crate::reactor::ReactorError::Push(
+            dialog_repository::PushError::NonFastForward { .. }
+                | dialog_repository::PushError::PublishRemoteBranch(
+                    dialog_repository::PublishRemoteBranchError::Publish(
+                        PublishError::VersionMismatch { .. }
+                    )
+                )
+        )
+    )
+}
 
 /// Whether `error` is the typed "branch head moved under us" mismatch raised
 /// when a concurrent commit advances the local head during pull.
@@ -411,12 +447,7 @@ fn classified_service_failure(
 }
 
 fn sync_failure(error: &crate::reactor::ReactorError) -> TonkWorkerError {
-    if is_head_moved(error)
-        || matches!(
-            error,
-            crate::reactor::ReactorError::Push(dialog_repository::PushError::NonFastForward { .. })
-        )
-    {
+    if is_head_moved(error) || is_upstream_moved(error) {
         return TonkWorkerError::Upstream {
             status: 409,
             code: Some("SYNC_CONFLICT".to_string()),
@@ -512,7 +543,7 @@ pub fn branches_to_sync(branches: &HashMap<String, BranchConfiguration>) -> Vec<
 pub async fn mark_offline(state: &AppState) {
     let open: Vec<String> = {
         let tonk = state.read().await;
-        tonk.reactor.repos().read().keys().cloned().collect()
+        tonk.reactor.spaces()
     };
     for repo in open {
         let info = match super::repository::get_repository(State(state.clone()), Path(repo.clone()))
@@ -670,7 +701,7 @@ pub async fn pull(
     // pull reaches dialog, comes back `BranchHasNoUpstream`, and lands in
     // the catch-all as a 503 "temporarily unavailable", which is untrue:
     // nothing is going to become available until a remote is attached.
-    if session.handle().upstream().is_none() {
+    if tonk_account::peer::upstream(session.handle()).is_none() {
         log!(
             "Pull skipped, no upstream: {}@{}",
             params.branch,
@@ -873,7 +904,7 @@ pub async fn sync_status(
     let handle = session.handle();
     let local = handle.revision();
 
-    if handle.upstream().is_none() {
+    if tonk_account::peer::upstream(handle).is_none() {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         publish_sync_status(
             &tonk_state,
@@ -890,7 +921,10 @@ pub async fn sync_status(
     }
 
     let remote = match handle.fetch().perform(&tonk_state.operator).await {
-        Ok(remote) => remote,
+        Ok(fetched) => fetched
+            .into_iter()
+            .next()
+            .and_then(|fetched| fetched.revision),
         Err(e) => {
             let error = classified_service_failure(&e).unwrap_or(TonkWorkerError::Upstream {
                 status: 503,
@@ -1124,21 +1158,35 @@ pub async fn sync(
         .reactor
         .repository(&params.repo)
         .branch(&params.branch)
+        // The pull above just resolved this branch's upstream head, so
+        // the push does not resolve it again. What that gives up is
+        // early refusal when another writer moved upstream between the
+        // two: the novelty ships first and the conditional head write
+        // rejects it, which `sync_failure` reports as the same conflict.
         .push()
+        .assuming_upstream()
         .perform(&tonk_state.operator)
         .await
     {
-        Ok(_) => {
+        Ok(pushed) => {
             log!("Push succeeded: {}@{}", params.branch, params.repo);
             let after = session.handle().revision();
             announce_head(&params.repo, &params.branch, after.clone());
-            // Settle the chip: re-classify against the upstream and publish the
+            // Settle the chip: classify against the upstream and publish the
             // resolved status (e.g. `synced`), or it stays stuck on `pending`/
             // `syncing…` — the `sync` op only flipped it to `pending` at the
             // start. Done per-branch as this one finishes, so a slow branch
-            // never pins another's chip.
+            // never pins another's chip. A push that landed answers with the
+            // revision upstream now stands at, so the chip is coloured from
+            // what the push already learned rather than from another read of
+            // the same cell. `Ok(None)` means there was nothing to push, which
+            // leaves upstream where the pull above saw it.
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_settled_status(&tonk_state, &params.repo, &params.branch).await;
+            publish_settled_status(&tonk_state, &params.repo, &params.branch, Some(pushed)).await;
+            // Off the worker there is no chip to settle, so the revision
+            // the push answered with has no reader.
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            let _ = pushed;
             Ok(Json(SyncResponse {
                 success: true,
                 disposition: SyncDisposition::Completed,
@@ -1150,9 +1198,11 @@ pub async fn sync(
         Err(e) => {
             log!("Push failed: {}@{}: {e:?}", params.branch, params.repo);
             // Still settle the chip — a failed push leaves us `ahead`, not
-            // `pending`; classify so the chip reflects reality.
+            // `pending`; classify so the chip reflects reality. A push that
+            // did not land says nothing about where upstream stands, so this
+            // is the one caller that has to ask.
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_settled_status(&tonk_state, &params.repo, &params.branch).await;
+            publish_settled_status(&tonk_state, &params.repo, &params.branch, None).await;
             let _ = (before, after_pull);
             let error = sync_failure(&e);
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1332,7 +1382,7 @@ pub async fn drain_sync(state: &AppState) {
     // space has done.
     let open: Vec<String> = {
         let tonk = state.read().await;
-        tonk.reactor.repos().read().keys().cloned().collect()
+        tonk.reactor.spaces()
     };
 
     // Union, pending-first, de-duplicated while preserving order.
@@ -1385,8 +1435,12 @@ pub async fn drain_sync(state: &AppState) {
 /// install only if the observed generation is still current. Losing
 /// candidates and construction failures have no durable session effects.
 pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), TonkWorkerError> {
-    renew_session_with(state, |profile, storage| async move {
-        crate::session::rotate(&profile, &storage).await
+    // The replacement proves with the same branch's authority as the
+    // session it replaces; renewing on `main` would sign the profile
+    // out of its account mid-session.
+    let access_branch = state.read().await.active_branch.clone();
+    renew_session_with(state, move |profile, _storage| async move {
+        crate::session::rotate(&profile, &access_branch).await
     })
     .await
 }
@@ -1394,7 +1448,7 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
 async fn renew_session_with<F, Fut>(state: &AppState, build: F) -> Result<(), TonkWorkerError>
 where
     F: FnOnce(
-        dialog_operator::Profile,
+        crate::worker::DefaultProfile,
         dialog_storage::provider::storage::Storage<crate::worker::DefaultSpace>,
     ) -> Fut,
     Fut: std::future::Future<Output = Result<crate::session::Session, TonkWorkerError>>,
@@ -1734,7 +1788,7 @@ mod renewal_tests {
 
     async fn revision(state: &AppState) -> Option<dialog_repository::Revision> {
         let tonk = state.read().await;
-        dialog_repository::Repository::from(tonk.profile.signer().clone())
+        dialog_repository::Repository::from(tonk.profile.credential().clone())
             .branch(dialog_repository::ACCESS_BRANCH)
             .open()
             .perform(&tonk.operator)
@@ -1803,9 +1857,9 @@ mod renewal_tests {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
         let winner = async {
-            renew_session_with(&state, |profile, storage| async move {
+            renew_session_with(&state, |profile, _storage| async move {
                 ready_rx.await.unwrap();
-                crate::session::rotate(&profile, &storage).await
+                crate::session::rotate(&profile, crate::router::repository::PROFILE_BRANCH).await
             })
             .await
             .unwrap();
@@ -1813,8 +1867,11 @@ mod renewal_tests {
             installed_tx.send(installed.clone()).unwrap();
             installed
         };
-        let loser = renew_session_with(&state, |profile, storage| async move {
-            let candidate = crate::session::rotate(&profile, &storage).await.unwrap();
+        let loser = renew_session_with(&state, |profile, _storage| async move {
+            let candidate =
+                crate::session::rotate(&profile, crate::router::repository::PROFILE_BRANCH)
+                    .await
+                    .unwrap();
             ready_tx.send(()).unwrap();
             let installed = installed_rx.await.unwrap();
             assert_ne!(candidate.operator.did().to_string(), installed);

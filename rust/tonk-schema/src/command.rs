@@ -318,6 +318,46 @@ impl Command for EnableSync {
     type Output = ();
 }
 
+/// Rotate onto a fresh profile and open the account ceremony on it.
+///
+/// Adding an account IS the regular signup, run for a profile that has
+/// none. The worker does the rotation; the ceremony itself is a top-page
+/// dialog with a passkey prompt, which the worker asks the originating
+/// page to raise.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct AddProfile {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The click's timestamp — one attempt from the next.
+    pub time: crate::domain::command::current::add_profile::Time,
+}
+
+/// `AddProfile` is a [`dialog_capability::Command`]; its handler rotates
+/// the profile and notifies the page to open the ceremony.
+impl Command for AddProfile {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Make another profile on this browser the active one.
+///
+/// Dispatched when a switcher row is clicked. Carries the target
+/// profile's storage `handle` and a timestamp so switching back to a
+/// profile re-fires rather than deduplicating.
+///
+/// Naming the handle rather than firing on the profile's own entity is
+/// what lets this dispatch from the ACTIVE profile's branch: the profile
+/// being switched TO has branches this guest cannot reach.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct SwitchProfile {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The click's timestamp — one click from the next.
+    pub time: crate::domain::command::current::switch_profile::Time,
+    /// The storage handle of the profile to make active.
+    pub handle: crate::domain::command::current::switch_profile::Handle,
+}
+
 /// Toggle background sync for a space's replica.
 ///
 /// Dispatched when the FAB's sync cap is alt/option-clicked. Carries the
@@ -429,6 +469,220 @@ impl Command for PauseSync {
     type Output = ();
 }
 
+/// `SwitchProfile` is a [`dialog_capability::Command`]; its handler lives
+/// in `tonk-worker` and lands in the same `activate_named` the HTTP route
+/// uses, so both paths share one validation.
+impl Command for SwitchProfile {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Sign this device out of the account on the active branch.
+///
+/// Dispatched from the settings page. The handler withdraws the device's
+/// authority, disconnects, and moves onto an empty branch, retaining the
+/// account's branch for a later sign-in; the originating tab is then
+/// reloaded onto the fresh branch.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct SignOut {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The click's timestamp, so signing out twice re-fires.
+    pub time: crate::domain::command::current::sign_out::Time,
+}
+
+impl Command for SignOut {
+    type Input = Self;
+    type Output = ();
+}
+
+/// The FABB's own acts, as commands. Each asks the tab that ran it to
+/// perform one of the bar's actions: the handler records the request on the
+/// tab's site (`xyz.tonk.site/request`), and the bar that tab shows acts on
+/// it as a press of the matching control would. A request, not the effect:
+/// opening a panel, the account ceremony and the clipboard all live in the
+/// page.
+macro_rules! bar_command {
+    ($(#[$doc:meta])* $name:ident, $module:ident) => {
+        $(#[$doc])*
+        #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+        pub struct $name {
+            /// The command entity (a fresh id per invocation).
+            pub this: Entity,
+            /// The moment it was asked, so asking again re-fires.
+            pub time: crate::domain::command::current::$module::Time,
+        }
+
+        impl Command for $name {
+            type Input = Self;
+            type Output = ();
+        }
+    };
+}
+
+bar_command!(
+    /// Start adding an account to this profile (the bar's "add an account").
+    AddAccount,
+    add_account
+);
+bar_command!(
+    /// Copy a link that invites someone into the space (the bar's share).
+    ShareLink,
+    share_link
+);
+bar_command!(
+    /// Show who is in the space (the bar's members panel).
+    ViewMembers,
+    view_members
+);
+bar_command!(
+    /// Invite an agent into the space (the bar's agent panel).
+    ConnectAgent,
+    connect_agent
+);
+bar_command!(
+    /// Connect this space, or confirm the email that would (the bar's
+    /// condition, when it offers one).
+    ConnectSpace,
+    connect_space
+);
+
+/// `intent/interpret`: what was typed in the command palette, where it
+/// was opened. The handler is the parser: it records the expression (the
+/// input, the site, and the site's selection) and one `intent` per command
+/// the input could mean, in the session overlay of the branch it came from.
+/// Rules derive values for those commands' fields onto the intents, and
+/// `intent/suggest` reads them back as readings.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct Interpret {
+    /// The command entity (a fresh id per keystroke).
+    pub this: Entity,
+    /// The palette opening it belongs to.
+    pub expression: crate::domain::command::current::intent_interpret::Expression,
+    /// Exactly what is typed.
+    pub input: crate::domain::command::current::intent_interpret::Input,
+    /// The tab's site.
+    pub site: crate::domain::command::current::intent_interpret::Site,
+    /// When it was typed.
+    pub time: crate::domain::command::current::intent_interpret::Time,
+}
+
+impl Command for Interpret {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `site/select`: what the page in a tab has selected, reported by the
+/// page as it changes. The handler records it on the tab's site as
+/// `xyz.tonk.site/selection`, in the session overlay of the branch it came
+/// from and of the profile, so rules and the palette read it as a site
+/// fact. An empty `text` clears it.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct SiteSelect {
+    /// The command entity (a fresh id per report).
+    pub this: Entity,
+    /// The tab's site entity.
+    pub site: crate::domain::command::current::site_select::Site,
+    /// The selected text; empty when the selection was cleared.
+    pub text: crate::domain::command::current::site_select::Text,
+    /// When it changed.
+    pub time: crate::domain::command::current::site_select::Time,
+}
+
+impl Command for SiteSelect {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Take the page that asked back to the hub.
+///
+/// What the FAB's home button does with a link, as a command, so it can be
+/// said: the handler posts a navigation to the originating page, the way a
+/// join lands its tab on the new space.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct Home {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The moment it was asked, so going home twice re-fires.
+    pub time: crate::domain::command::current::home::Time,
+}
+
+impl Command for Home {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `library/install`: add one of the library's components (notebook,
+/// table, …) to the space it is said in. Additive: the component's
+/// definitions are evaluated into the branch beside what is there, and the
+/// space's installed seed is neither recorded nor replaced.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct InstallComponent {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// Which component: `tonk:library/<name>`.
+    pub component: crate::domain::command::current::install_component::Component,
+    /// The moment it was asked.
+    pub time: crate::domain::command::current::install_component::Time,
+}
+
+impl Command for InstallComponent {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `tonk:sign-in-via`: sign this browser in through another deployment.
+///
+/// The browser-side `tonk account login --via`: the worker sends the page
+/// to `<via>/settings/link` asking for an `account -> device` grant for
+/// this profile, with this deployment's `/settings/link` as the callback.
+/// The person approves there with the passkey that deployment holds.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SignInVia {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The deployment holding the account, as an origin.
+    pub via: crate::domain::command::current::sign_in_via::Via,
+}
+
+impl Command for SignInVia {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `tonk:finish-sign-in-via`: install the grant the other deployment
+/// approved for this browser.
+///
+/// Dispatched by the settings page when it loads on the callback the
+/// approval came back to. The worker checks the answer belongs to the
+/// request this profile made, installs the grant as this profile's
+/// account root, attaches the account where the grant says it syncs, and
+/// reports through [`crate::CeremonyStatus`].
+#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FinishSignInVia {
+    /// The command entity (a fresh id per return).
+    pub this: Entity,
+    /// The callback address, fragment included.
+    pub url: crate::domain::command::current::finish_sign_in_via::Url,
+}
+
+/// Redacted like [`Join`]'s: the url carries the grant in its fragment,
+/// so it must never reach a log.
+impl std::fmt::Debug for FinishSignInVia {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FinishSignInVia")
+            .field("this", &self.this)
+            .field("url", &"[redacted]")
+            .finish()
+    }
+}
+
+impl Command for FinishSignInVia {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Rename a space's repository from the FAB.
 ///
 /// The space-side `tonk/rename-repository` rule (`core.yaml`) cannot
@@ -468,7 +722,7 @@ impl Command for RenameRepository {
 /// Rename the signed-in member (set their display name).
 ///
 /// Asserted transiently when the topbar identity chip's
-/// `<tonk-editable>` commits. The handler persists the override to the
+/// `<inline-editable>` commits. The handler persists the override to the
 /// profile meta branch and re-stamps `MemberName` on the origin space.
 ///
 /// See [`RenameRepository`] for the marker these two used to need.
@@ -500,7 +754,7 @@ impl Command for ProfileRename {
 ///
 /// Removal is device-local: a synced space can be rejoined via an invite
 /// link, and server-side data is untouched. An owned hosted space does
-/// NOT submit this — `<ui-space-remove>` routes that verb through the
+/// NOT submit this — `<space-remove>` routes that verb through the
 /// reviewed account-space deletion flow instead.
 ///
 /// The field is called `subject`, which is what it is. It used to be

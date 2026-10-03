@@ -144,6 +144,7 @@ async fn it_reads_owner_and_role_from_each_space_s_own_roster() -> Result<()> {
     assert_eq!(json[2]["owner"], serde_json::Value::Null);
     // No per-space account tag survives anywhere, including the JSON.
     assert!(json[0].get("access").is_none(), "{json}");
+    assert!(json[0].get("accessKind").is_none(), "{json}");
     assert!(json[0].get("account").is_none(), "{json}");
     // Versioning belongs to the outer read envelope, not each row.
     assert!(json[0].get("version").is_none(), "{json}");
@@ -273,7 +274,6 @@ async fn it_lists_another_accounts_space_without_marking_it_out_of_reach() -> Re
     assert_eq!(report.rows[0].role, SpaceRole::Unlisted);
     let rendered = render(&report.rows);
     assert!(!rendered.contains("another account"), "{rendered}");
-    assert!(!rendered.contains("ACCESS"), "{rendered}");
 
     store.set_account(None)?;
     let signed_out = list_local(&store, &config).await?;
@@ -501,7 +501,7 @@ mod rendering {
         for line in rendered.lines().skip(1) {
             let prefix = line
                 .strip_suffix("member")
-                .expect("the role stays at the end of its row");
+                .expect("the role column stays at the end of the row");
             assert_eq!(
                 UnicodeWidthStr::width(prefix),
                 role_column,

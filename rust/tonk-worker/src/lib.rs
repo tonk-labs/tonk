@@ -153,7 +153,10 @@ export function dropped_idb_request_handler() {
 mod broadcast;
 pub use broadcast::*;
 
-mod axum;
+// Public so a test can reuse the exact browser <-> axum conversion the
+// service worker runs, rather than writing a second one that agrees with
+// it only by luck.
+pub mod axum;
 pub use axum::*;
 
 mod router;
@@ -171,6 +174,9 @@ pub use worker::*;
 
 pub mod device;
 pub mod session;
+
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+mod handoff;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod cache;

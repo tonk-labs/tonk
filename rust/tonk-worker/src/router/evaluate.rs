@@ -139,6 +139,21 @@ pub async fn evaluate(
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
+    if super::names_profile(&state, &path.repo).await {
+        let path = ProfileEvaluatePath {
+            branch: path.branch,
+        };
+        return evaluate_profile(
+            State(state),
+            Path(path),
+            axum::extract::Query(query),
+            client,
+            lifetime,
+            _headers,
+            body,
+        )
+        .await;
+    }
     log!("evaluate repo={}, branch={}", path.repo, path.branch);
     let (response, transients) = {
         // A READ lock, not a write lock. `tokio`'s `RwLock` is write-preferring, so
@@ -219,7 +234,7 @@ pub async fn evaluate(
     Ok(response)
 }
 
-/// `POST /api/profile/branch/{branch}/evaluate`
+/// `POST /api/repository/profile:tonk/branch/{branch}/evaluate`
 ///
 /// Profile-side counterpart to [`evaluate`]. The profile is its
 /// own repository but lives outside the named-repo namespace, so
@@ -327,7 +342,7 @@ pub type SeedRecord<'a> = &'a (
     not(all(target_arch = "wasm32", target_os = "unknown")),
     allow(dead_code)
 )]
-async fn stage_and_publish(
+pub(super) async fn stage_and_publish(
     tonk_state: &crate::worker::TonkState,
     txn: dialog_repository::Transaction<&dialog_repository::Branch>,
     record: Option<SeedRecord<'_>>,
@@ -387,13 +402,21 @@ async fn evaluate_on_branch<'a>(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        body,
+        Document::Text(body),
         query,
         Retractions::Fixed(Vec::new()),
         None,
         EvaluationMode::Interactive,
     )
     .await
+}
+
+/// What an evaluation runs: request text to parse, or a document already
+/// parsed where it lives with its includes inlined (a seed fetched from a
+/// URL).
+enum Document {
+    Text(Bytes),
+    Parsed(Syntax),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -421,20 +444,24 @@ pub(super) type RetractionPlanner<'a> = &'a (
 
 enum Retractions<'a> {
     Fixed(Vec<crate::router::claim::RawClaim>),
-    Planned(RetractionPlanner<'a>),
+    Planned {
+        retract: RetractionPlanner<'a>,
+        desired: &'a [crate::router::claim::RawClaim],
+    },
 }
 
 impl Retractions<'_> {
     async fn resolve(&self) -> Result<Vec<crate::router::claim::RawClaim>, TonkWorkerError> {
         match self {
             Self::Fixed(claims) => Ok(claims.clone()),
-            Self::Planned(plan) => plan().await,
+            Self::Planned { retract, .. } => retract().await,
         }
     }
 }
 
 /// Libraries are known mutation documents. Take the writer lock before their
 /// first evaluation, sharing the interactive path's commit, refresh and retry.
+#[cfg(test)]
 pub(super) async fn seed_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: crate::reactor::BranchReference<'a>,
@@ -443,7 +470,28 @@ pub(super) async fn seed_on_branch<'a>(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        Bytes::from(body.into_bytes()),
+        Document::Text(Bytes::from(body.into_bytes())),
+        EvaluateQuery { transact: true },
+        Retractions::Fixed(Vec::new()),
+        None,
+        EvaluationMode::LibrarySeed,
+    )
+    .await
+    .map(|(Json(response), _)| response)
+}
+
+/// Seed a document already parsed at its own location, with its includes
+/// inlined. Take the writer lock before evaluation and share commit/retry
+/// behavior with the interactive path.
+pub(super) async fn seed_syntax_on_branch<'a>(
+    tonk_state: &'a crate::worker::TonkState,
+    tonk_branch: crate::reactor::BranchReference<'a>,
+    syntax: Syntax,
+) -> Result<EvaluateResponse, TonkWorkerError> {
+    evaluate_on_branch_with(
+        tonk_state,
+        tonk_branch,
+        Document::Parsed(syntax),
         EvaluateQuery { transact: true },
         Retractions::Fixed(Vec::new()),
         None,
@@ -457,12 +505,12 @@ pub(super) async fn seed_on_branch<'a>(
 /// document commits in, and an optional second commit that can name the
 /// first's version.
 ///
-/// A seed upgrade is the caller: it withdraws the previous seed's claims
-/// and installs the new library atomically. Order matters and is fixed
-/// here — the retractions seed the transaction, the document follows —
-/// because a retract followed by an assert of the same fact KEEPS it,
-/// citing what it overrode, while the reverse order cancels. So the
-/// overlap between two seeds survives an upgrade untouched.
+/// The profile library's reconciliation is the caller: it withdraws the
+/// previous install's claims and installs the new library atomically.
+/// Order matters and is fixed here — the retractions seed the
+/// transaction, the document follows — because a retract followed by an
+/// assert of the same fact KEEPS it, citing what it overrode, while the
+/// reverse order cancels.
 ///
 /// `record` is how a seed record names the very commit that installed
 /// the library. The document's commit STAGES rather than publishes, so
@@ -478,7 +526,7 @@ pub(super) async fn seed_on_branch<'a>(
 async fn evaluate_on_branch_with<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: crate::reactor::BranchReference<'a>,
-    body: Bytes,
+    body: Document,
     query: EvaluateQuery,
     retract: Retractions<'a>,
     record: Option<SeedRecord<'_>>,
@@ -486,12 +534,22 @@ async fn evaluate_on_branch_with<'a>(
 ) -> Result<(Json<EvaluateResponse>, Option<Changes>), TonkWorkerError> {
     let total_start = web_time::Instant::now();
     let evaluation_passes = std::sync::atomic::AtomicUsize::new(0);
-    let text = std::str::from_utf8(&body)
-        .map_err(|e| TonkWorkerError::Router(format!("body is not valid UTF-8: {e}")))?;
-
     let t_parse = web_time::Instant::now();
-    let parsed = parse(text);
-    let syntax = surface_parse_diagnostics(parsed)?;
+    let syntax = match body {
+        // Already parsed where it lives, its includes inlined.
+        Document::Parsed(syntax) => syntax,
+        Document::Text(body) => {
+            let text = std::str::from_utf8(&body)
+                .map_err(|e| TonkWorkerError::Router(format!("body is not valid UTF-8: {e}")))?;
+            // A library seed is parsed where the library lives, so it can
+            // `!include` the files beside it. Anything else arrived as a
+            // request body with no location of its own, and may not.
+            match mode {
+                EvaluationMode::Interactive => surface_parse_diagnostics(parse(text))?,
+                _ => super::library::parse(text).await?,
+            }
+        }
+    };
     let parse_ms = t_parse.elapsed().as_millis();
 
     let exprs = syntax.expressions.len();
@@ -529,6 +587,15 @@ async fn evaluate_on_branch_with<'a>(
         let mut txn = branch.transaction();
         for claim in retract.resolve().await? {
             txn = txn.retract(claim);
+        }
+        if let Retractions::Planned { desired, .. } = &retract {
+            // The library was analyzed in isolation. Seed its complete desired
+            // schema into this same transaction before resolving the document
+            // against the branch: legacy schemas otherwise validate new views
+            // against old fields and prevent the migration from committing.
+            for claim in *desired {
+                txn = txn.assert(claim.clone());
+            }
         }
         let t_eval = web_time::Instant::now();
         let evaluated = syntax
@@ -631,15 +698,14 @@ async fn evaluate_on_branch_with<'a>(
             if mode == EvaluationMode::LibrarySeedWithRace && attempt == 0 {
                 use dialog_repository::RepositoryExt as _;
 
-                let name = match tonk_branch.repository {
-                    dialog_reactor::RepositoryReference::Named { name, .. } => name,
-                    dialog_reactor::RepositoryReference::Profile { .. } => {
-                        panic!("the test race hook requires a named repository")
-                    }
-                };
+                assert!(
+                    !tonk_branch.repository.is_profile(),
+                    "the test race hook requires a space, not the profile"
+                );
+                let name = tonk_branch.repository.name();
                 let repository = tonk_state
                     .profile
-                    .repository(name)
+                    .space(name)
                     .load()
                     .perform(&tonk_state.operator)
                     .await
@@ -754,10 +820,9 @@ async fn evaluate_on_branch_with<'a>(
 /// the same logic as [`evaluate_on_branch`] but accepts plain
 /// `String` arguments instead of HTTP-level types so the bridge
 /// handler can call it without constructing an axum request.
-/// Gated to match its callers: every seeding path that needs its record
-/// to name the installing commit now goes through
-/// [`evaluate_body_recording`], leaving this reachable only from tests
-/// and the service worker.
+/// Gated to match its callers: seed installs stage their own commits
+/// (see the repository module's `stage_reinstall`), leaving this reachable
+/// only from tests and the service worker.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 pub async fn evaluate_body(
     tonk_state: &crate::worker::TonkState,
@@ -799,11 +864,12 @@ pub async fn evaluate_body_with_transients(
 /// [`evaluate_body`], with a second commit that names the first's
 /// version.
 ///
-/// The seed install's entry point. The document stages, its minted
-/// version is handed to `record`, and the facts that come back commit as
-/// the next link of the same batch — one publish for both. Nothing
-/// predicts a version, and no reader ever sees a library without the
-/// record describing it.
+/// How seeds were installed before installs were complete: the document
+/// stages, its minted version is handed to `record`, and the facts that
+/// come back commit as the next link of the same batch. Seeds now install
+/// through the repository module's `stage_reinstall`; tests use this to
+/// create spaces the way earlier releases did.
+#[cfg(test)]
 pub async fn evaluate_body_recording(
     tonk_state: &crate::worker::TonkState,
     repo: &str,
@@ -817,7 +883,7 @@ pub async fn evaluate_body_recording(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        bytes,
+        Document::Text(bytes),
         query,
         Retractions::Fixed(Vec::new()),
         Some(record),
@@ -830,10 +896,10 @@ pub async fn evaluate_body_recording(
 /// [`evaluate_body`], with `retract` folded into the same commit and a
 /// `record` naming that commit's version.
 ///
-/// The seed upgrade's entry point: withdrawing the previous seed and
-/// installing its replacement is one staged commit, so a subscriber never
-/// sees a space with no definitions, and the record naming it chains on
-/// before the single publish.
+/// The seed upgrade before ownership was read from the whole install
+/// chain: withdraw what the last install asserted, evaluate the whole new
+/// library over the space. Tests use it to recreate the spaces it damaged.
+#[cfg(test)]
 pub async fn evaluate_with_retractions(
     tonk_state: &crate::worker::TonkState,
     repo: &str,
@@ -848,7 +914,7 @@ pub async fn evaluate_with_retractions(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        bytes,
+        Document::Text(bytes),
         query,
         Retractions::Fixed(retract),
         Some(record),
@@ -874,7 +940,7 @@ pub async fn evaluate_profile_body_recording(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        bytes,
+        Document::Text(bytes),
         query,
         Retractions::Fixed(Vec::new()),
         Some(record),
@@ -893,15 +959,16 @@ pub(super) async fn evaluate_profile_with_retraction_plan<'a>(
     branch: &'a str,
     body: String,
     retract: RetractionPlanner<'a>,
+    desired: &'a [crate::router::claim::RawClaim],
     record: SeedRecord<'a>,
 ) -> Result<EvaluateResponse, TonkWorkerError> {
     let tonk_branch = tonk_state.reactor.profile_repository().branch(branch);
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        Bytes::from(body.into_bytes()),
+        Document::Text(Bytes::from(body.into_bytes())),
         EvaluateQuery { transact: true },
-        Retractions::Planned(retract),
+        Retractions::Planned { retract, desired },
         Some(record),
         EvaluationMode::LibrarySeed,
     )
@@ -1186,7 +1253,6 @@ mod tests {
         for library in [
             include_str!("../../../tonk-core/assets/library/core.yaml"),
             include_str!("../../../tonk-core/assets/library/profile.yaml"),
-            include_str!("../../../tonk-core/assets/library/onboarding-agent.yaml"),
         ] {
             let single_before = facts(&single, &single_repo).await;
             let interactive_before = facts(&interactive, &interactive_repo).await;
@@ -1249,9 +1315,12 @@ mod tests {
         let response = super::evaluate_on_branch_with(
             &tonk,
             tonk.reactor.repository(&repo).branch("main"),
-            CONCEPTS.to_owned().into(),
+            super::Document::Text(CONCEPTS.to_owned().into()),
             super::EvaluateQuery { transact: true },
-            super::Retractions::Planned(&retractions),
+            super::Retractions::Planned {
+                retract: &retractions,
+                desired: &[],
+            },
             None,
             super::EvaluationMode::LibrarySeedWithRace,
         )

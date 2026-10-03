@@ -1,22 +1,18 @@
 name: 'CLI npm'
 
-# Prereleases are dispatched at their immutable `v*` tag and publish to
-# npm's `next` channel. Finals publish to `latest` only when `stable` is
-# fast-forwarded to the exact tagged release commit.
+# Every `v*` release tag publishes to npm: a prerelease tag
+# (`v0.7.0-rc.1`) to the `next` dist-tag, a final tag (`v0.7.0`) to
+# `latest`. `release.yml` explains how to cut one. The tag must be on
+# `main`, and its version is stamped into the build, so the published
+# binaries report the tag's version.
 #
-# Manual dispatch against a release tag is the recovery path for either
-# lifecycle. The policy below still requires that a final is held by
-# stable; selecting a ref or supplying a version never grants authority.
+# npm Trusted Publishing is bound to this file's name, which is why npm
+# lives here rather than in `release.yml`. Re-running a failed run is the
+# recovery path; versions that already landed are skipped.
 on:
   push:
-    branches:
-      - stable
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to publish. Leave empty to use the ref Cargo workspace version.'
-        required: false
-        type: string
+    tags:
+      - 'v*'
 
 concurrency:
   group: cli-npm-${{ github.ref }}
@@ -27,57 +23,14 @@ jobs:
     name: 'Resolve version'
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.resolve.outputs.version }}
-      dist-tag: ${{ steps.resolve.outputs.dist-tag }}
+      version: ${{ steps.release.outputs.version }}
+      dist-tag: ${{ steps.release.outputs.prerelease == 'true' && 'next' || 'latest' }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          fetch-tags: true
-
-      - name: Derive and validate version
-        id: resolve
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-
-          # Single version source: whatever we publish must match the
-          # Cargo workspace version of the checked-out commit.
-          cargo_version="$(grep -A30 '^\[workspace.package\]' Cargo.toml \
-            | grep -m1 '^version' \
-            | sed -E 's/.*"([^"]+)".*/\1/')"
-
-          version="$cargo_version"
-
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_VERSION:-}" ]]; then
-            requested_version="${INPUT_VERSION#v}"
-            if [[ "$requested_version" != "$cargo_version" ]]; then
-              echo "::error::requested version $requested_version does not match Cargo workspace version $cargo_version"
-              exit 1
-            fi
-          fi
-
-          # A tag-based dispatch does not reliably populate the remote
-          # branch ref, so resolve stable explicitly rather than infer it
-          # from the event. Tags were fetched by checkout above.
-          git fetch --no-tags origin \
-            refs/heads/stable:refs/remotes/origin/stable
-
-          checkout_sha="$(git rev-parse HEAD)"
-          if ! tag_sha="$(git rev-parse -q --verify "refs/tags/v$version^{commit}")"; then
-            echo "::error::tag v$version does not exist; every npm publication must use an immutable release tag"
-            exit 1
-          fi
-          stable_sha="$(git rev-parse 'refs/remotes/origin/stable^{commit}')"
-
-          dist_tag="$(node rust/tonk-cli/npm/channel-policy.mjs \
-            "$version" "$checkout_sha" "$tag_sha" "$stable_sha")"
-
-          echo "version=$version"   >> "$GITHUB_OUTPUT"
-          echo "dist-tag=$dist_tag" >> "$GITHUB_OUTPUT"
-
-          echo "Publishing $version to npm dist-tag '$dist_tag'"
+      - uses: ./.github/actions/resolve-release
+        id: release
 
   build:
     name: 'Build ${{ matrix.artifact-name }}'
@@ -94,6 +47,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/resolve-release
 
       - uses: wimpysworld/nothing-but-nix@main
         if: runner.os == 'Linux'

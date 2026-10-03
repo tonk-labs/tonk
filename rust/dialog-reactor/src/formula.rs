@@ -31,10 +31,9 @@ use dialog_artifacts::{
     ENTITY_KEY_TAG, Entity, HISTORY_KEY_TAG, Key, VALUE_KEY_TAG, Value,
 };
 use dialog_query::Term;
-use dialog_repository::{
-    Branch, LocalIndex, NetworkedIndex, RepositoryArchiveExt, RepositoryMemoryExt, Upstream,
-};
-use dialog_storage::{Blake3Hash, StorageBackend};
+use dialog_repository::{Branch, ConnectedReplica, LocalIndex, NetworkedIndex, Upstream};
+use dialog_search_tree::LoadBlock;
+use dialog_storage::Blake3Hash;
 use ipld_core::ipld::Ipld;
 use thiserror::Error;
 
@@ -117,6 +116,9 @@ pub async fn resolve_formula<Env: SelectProvider>(
             None => Ok(vec![]),
         },
 
+        // What a typed command could mean. See [`crate::intent`].
+        crate::intent::NAME => crate::intent::suggest(branch, env, query).await,
+
         other => Err(FormulaError::Unknown(other.into())),
     }
 }
@@ -171,28 +173,25 @@ async fn read_node<Env: SelectProvider>(
     env: &Env,
     hash: Blake3Hash,
 ) -> Result<Vec<u8>, FormulaError> {
-    let index = NetworkedIndex::new(env, branch.archive().index(), remote(branch, env).await);
-    index
-        .get(&hash)
+    let index = NetworkedIndex::new(env, branch.archive().index(), remote(branch));
+    LoadBlock::new(hash.into())
+        .perform(&index)
         .await
         .map_err(|e| FormulaError::Read(e.to_string()))?
+        .map(|block| block.as_ref().to_vec())
         .ok_or_else(|| FormulaError::Read(format!("node {} not found", to_base58(&hash))))
 }
 
-/// Load the branch's upstream remote, if it tracks one, so a networked read
-/// can fall back to it. A failure to load (e.g. no credentials) is non-fatal
-/// — the local archive alone may still satisfy the read. Mirrors
-/// dialog-repository's `Select::perform`.
-async fn remote<Env: SelectProvider>(
-    branch: &Branch,
-    env: &Env,
-) -> Option<dialog_repository::RemoteRepository> {
-    match branch.upstream() {
-        Some(Upstream::Remote { remote: name, .. }) => {
-            branch.subject().remote(name).load().perform(env).await.ok()
-        }
-        _ => None,
-    }
+/// The branch's upstream at a peer, if it tracks one, so a networked read
+/// can fall back to it. Mirrors dialog-repository's `Select::perform`.
+fn remote(branch: &Branch) -> Option<ConnectedReplica> {
+    branch
+        .upstreams()
+        .iter()
+        .find_map(|upstream| match upstream {
+            Upstream::Remote { remote, .. } => Some(remote.clone()),
+            _ => None,
+        })
 }
 
 /// Read a node's bytes from the *local* archive only (no remote fallback),
@@ -206,10 +205,11 @@ async fn read_local<Env: SelectProvider>(
     hash: Blake3Hash,
 ) -> Result<Option<Vec<u8>>, FormulaError> {
     let index = LocalIndex::new(env, branch.archive().index());
-    index
-        .get(&hash)
+    Ok(LoadBlock::new(hash.into())
+        .perform(&index)
         .await
-        .map_err(|e| FormulaError::Read(e.to_string()))
+        .map_err(|e| FormulaError::Read(e.to_string()))?
+        .map(|block| block.as_ref().to_vec()))
 }
 
 /// The scalar fields describing a node: `kind` (`index` for a node of

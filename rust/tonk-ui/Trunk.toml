@@ -28,7 +28,7 @@ no_autoreload = true
 #   - tonk-ui wasm (the page) — directly + via the in-SW tonk-worker.
 #   - tonk-worker (the SW) — incl. tonk-router (route matching).
 #   - the sealed-guest wasm (tonk-guest) — display/board/workspace/tree/
-#     inspector/portal/sigil register the elements rendered inside the iframe.
+#     inspector/portal register the elements rendered inside the iframe.
 # A crate missing here means its edits never reach the dev server (e.g. a
 # tonk-inspector change wouldn't rebuild the guest bundle).
 #
@@ -41,6 +41,11 @@ no_autoreload = true
 # plus the guest Web Awesome bundle under `./assets/guest` (covered by `./`).
 watch = [
     "./",
+    # The workspace manifest and lockfile: a dependency change (a new dialog
+    # pin, say) touches no crate directory, so without these the dev server
+    # keeps serving a bundle built against the old dependency.
+    "../../Cargo.toml",
+    "../../Cargo.lock",
     "../tonk-common",
     "../tonk-core",
     "../tonk-worker",
@@ -58,15 +63,12 @@ watch = [
     "../tonk-render",
     "../tonk-template",
     "../tonk-notation",
-    "../tonk-board",
-    "../tonk-workspace",
     "../tonk-display",
     "../tonk-host",
     "../tonk-portal",
     "../tonk-guest/src",
     "../tonk-fab/src",
     "../tonk-inspector/src",
-    "../tonk-sigil/src",
     "../tonk-code/assets",
     "../tonk-prose/assets",
     "../tonk-table/assets",

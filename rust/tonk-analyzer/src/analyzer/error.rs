@@ -222,6 +222,31 @@ pub enum AnalyzeDiagnosticKind {
     /// than a branch-declared attribute advertises. The write still
     /// commits — raw domains are open-ended — but typed readers (a
     /// concept declaring this attribute) will not see the fact, so
+    /// A `with:src` embed names content this document does not
+    /// declare.
+    ///
+    /// A warning rather than an error: the key is an ordinary keyed
+    /// fact, so it can be asserted separately — by a later document, or
+    /// by a space overriding one style — and a view embedding a name it
+    /// will be given later is legitimate. What is worth saying is that
+    /// nothing *here* provides it.
+    ///
+    /// Only an embed reading the view's OWN content is checked: a
+    /// reference carrying an entity reads another view's map, which is
+    /// on the branch rather than in this document. That entity failing
+    /// to resolve is `E_UNKNOWN_EMBED_VIEW`, and it IS an error — a
+    /// view that does not exist can never supply anything.
+    #[error("`with:src={reference}` names no `{dictionary}:` this view declares. {known}")]
+    UnknownEmbed {
+        /// The reference as written, for a diagnostic to quote.
+        reference: String,
+        /// Which map it would have read (`style` or `font`).
+        dictionary: String,
+        /// The keys the view does declare, rendered. One string rather
+        /// than a list so the type stays small enough to return by
+        /// value.
+        known: String,
+    },
     /// the author gets a heads-up with the spelling that would.
     #[error("{attribute} is declared {declared}, this literal stores {found} — {hint}")]
     DeclaredTypeDivergence {
@@ -253,6 +278,7 @@ impl AnalyzeDiagnosticKind {
                 "E_SINGLE_OCCURRENCE_VARIABLE_ASSERTION_FIELD"
             }
             Self::DeclaredTypeDivergence { .. } => "W_DECLARED_TYPE_DIVERGENCE",
+            Self::UnknownEmbed { .. } => "W_UNKNOWN_EMBED",
         }
     }
 }
@@ -265,6 +291,20 @@ pub enum AnalyzeErrorKind {
     /// Document has zero expressions.
     #[error("document is empty — nothing to analyze")]
     EmptyDocument,
+    /// An `!include` reached analysis still unexpanded. Included
+    /// content is inlined by [`tonk_notation::expand`] before
+    /// analysis; one left in place either has no location to resolve
+    /// against (an inline document) or ran through a pipeline that
+    /// does not load included resources.
+    #[error("`!{tag} {reference}` cannot be included: {reason}")]
+    UnexpandedInclude {
+        /// The tag as written (`include` / `include/text`).
+        tag: &'static str,
+        /// The reference as written.
+        reference: String,
+        /// Why it was not inlined.
+        reason: String,
+    },
     /// Two heads in the document tried to declare the same
     /// anchor or `?variable` name.
     #[error(
@@ -404,6 +444,17 @@ pub enum AnalyzeErrorKind {
         /// than a list so the error type stays small enough to return
         /// by value.
         known: String,
+    },
+    /// A `with:src` embed names a view that resolves to nothing. The
+    /// content it would read does not exist to be read, so the element
+    /// embeds nothing — the same silent miss an undeclared name makes,
+    /// one level out.
+    #[error("`with:src={reference}` names no view — `{view}` resolves to nothing")]
+    UnknownEmbedView {
+        /// The reference as written, for a diagnostic to quote.
+        reference: String,
+        /// The entity half that failed to resolve.
+        view: String,
     },
     /// A bound `event!:` sources a command field from a `{name}` the
     /// view's model does not declare. The interpolation is resolved in
@@ -631,6 +682,7 @@ impl AnalyzeErrorKind {
     pub fn code(&self) -> &'static str {
         match self {
             Self::EmptyDocument => "E_EMPTY_DOCUMENT",
+            Self::UnexpandedInclude { .. } => "E_UNEXPANDED_INCLUDE",
             Self::DuplicateName { .. } => "E_DUPLICATE_NAME",
             Self::NameShadowing { .. } => "E_NAME_SHADOWING",
             Self::UnboundMutationVariable { .. } => "E_UNBOUND_MUTATION_VARIABLE",
@@ -645,6 +697,7 @@ impl AnalyzeErrorKind {
             Self::UnknownBoundCommand { .. } => "E_UNKNOWN_BOUND_COMMAND",
             Self::EventCommandMismatch { .. } => "E_EVENT_COMMAND_MISMATCH",
             Self::UnknownTemplateField { .. } => "E_UNKNOWN_TEMPLATE_FIELD",
+            Self::UnknownEmbedView { .. } => "E_UNKNOWN_EMBED_VIEW",
             Self::UnknownEventSourceField { .. } => "E_UNKNOWN_EVENT_SOURCE_FIELD",
             Self::InvalidViewBindings { .. } => "E_INVALID_VIEW_BINDINGS",
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",

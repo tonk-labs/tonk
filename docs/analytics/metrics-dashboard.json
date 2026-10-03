@@ -1,0 +1,546 @@
+{
+  "schema_version": 1,
+  "project_id": 70116,
+  "dashboards": [
+    {
+      "id": 816709,
+      "description": "Production activity. DAU and WAU count profiles, including guests and automatic commits."
+    },
+    {
+      "id": 928106,
+      "description": "Account operation attempts and outcomes, not account totals. Signup receipts precede email activation. Successful activation attempts are separate. Current account totals and status come from CONTROL customer rows; profile hashes identify devices/profiles, not accounts."
+    },
+    {
+      "id": 929973,
+      "description": "Production signup and space activity. Seven-day signup cohorts; profiles, not accounts.",
+      "filters": {
+        "properties": [
+          {
+            "key": "environment",
+            "type": "event",
+            "operator": "exact",
+            "value": [
+              "production"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "insights": [
+    {
+      "name": "Daily visitors (pageviews)",
+      "description": "Unique PostHog persons with a pageview, including guest profiles and unresolved anonymous visits. Memory-only identity can split repeat visits when identification fails. This is traffic, not active profiles, people, or accounts.",
+      "id": "DLbPczF6"
+    },
+    {
+      "name": "Weekly visitors (pageviews)",
+      "description": "Unique PostHog persons with a pageview, including guest profiles and unresolved anonymous visits. Memory-only identity can split repeat visits when identification fails. This is traffic, not active profiles, people, or accounts.",
+      "id": "RKW6A5FJ"
+    },
+    {
+      "name": "Traffic sources",
+      "description": "Page opens by source over the last 14 days.",
+      "id": "Gr2WSY2Q",
+      "query": {
+        "kind": "InsightVizNode",
+        "source": {
+          "breakdownFilter": {
+            "breakdown": "source_platform",
+            "breakdown_type": "event"
+          },
+          "dateRange": {
+            "date_from": "-14d",
+            "excludeIncompletePeriods": false,
+            "explicitDate": false
+          },
+          "filterTestAccounts": false,
+          "interval": "day",
+          "kind": "TrendsQuery",
+          "properties": [
+            {
+              "key": "environment",
+              "operator": "exact",
+              "type": "event",
+              "value": [
+                "production"
+              ]
+            }
+          ],
+          "series": [
+            {
+              "event": "visit",
+              "kind": "EventsNode",
+              "math": "total",
+              "name": "visit"
+            }
+          ],
+          "trendsFilter": {
+            "aggregationAxisFormat": "numeric",
+            "display": "ActionsBarValue",
+            "excludeBoxPlotOutliers": true,
+            "hideWeekends": false,
+            "legendPosition": "bottom",
+            "metricColorByDirection": false,
+            "metricShowChange": true,
+            "metricSummary": "total",
+            "resultCustomizationBy": "value",
+            "showAlertThresholdLines": false,
+            "showAnnotations": true,
+            "showLegend": false,
+            "showMultipleYAxes": false,
+            "showPercentStackView": false,
+            "showValuesOnSeries": false,
+            "smoothingIntervals": 1,
+            "stackBreakdownValues": false,
+            "yAxisScaleType": "linear",
+            "yAxisStartAtZero": true
+          },
+          "version": 4
+        }
+      }
+    },
+    {
+      "name": "Visitor return with a local commit (legacy)",
+      "description": "Historical app_loaded cohorts returning with a local commit. Includes automatic commits and unresolved identities; not account retention or intentional engagement.",
+      "id": "6GAEVou5"
+    },
+    {
+      "name": "Shell-to-space navigation funnel (legacy)",
+      "description": "Historical app_loaded to space-route pageview funnel. Measures navigation, not account activation or product readiness.",
+      "id": "osoltR31"
+    },
+    {
+      "name": "Daily active profiles (successful user actions)",
+      "description": "Distinct profile hashes with a successful user-triggered product_event. Excludes startup, automatic work, anonymous identities, and failed attempts. Includes guests. Only releases emitting product_event are covered; missing rows are not zero usage. Not accounts or humans.",
+      "sql": "SELECT toDate(timestamp) AS period, uniqExact(distinct_id) AS active_profiles FROM events WHERE properties.environment = 'production' AND timestamp >= now() - INTERVAL 30 DAY AND event = 'product_event' AND properties.schema_version = 1 AND properties.phase = 'finished' AND properties.result = 'success' AND properties.trigger = 'user' AND match(distinct_id, '^tonk:[a-f0-9]{64}$') GROUP BY period ORDER BY period",
+      "id": "fyyAm1q0"
+    },
+    {
+      "name": "Weekly active profiles (successful user actions)",
+      "description": "Distinct profile hashes with a successful user-triggered product_event. Excludes startup, automatic work, anonymous identities, and failed attempts. Includes guests. Only releases emitting product_event are covered; missing rows are not zero usage. Not accounts or humans.",
+      "sql": "SELECT toStartOfWeek(timestamp, 1) AS period, uniqExact(distinct_id) AS active_profiles FROM events WHERE properties.environment = 'production' AND timestamp >= now() - INTERVAL 30 DAY AND event = 'product_event' AND properties.schema_version = 1 AND properties.phase = 'finished' AND properties.result = 'success' AND properties.trigger = 'user' AND match(distinct_id, '^tonk:[a-f0-9]{64}$') GROUP BY period ORDER BY period",
+      "id": "66LsC4so"
+    },
+    {
+      "name": "Signups",
+      "description": "Completed account creation, before email verification. Last 30 days.",
+      "sql": "SELECT toDate(timestamp) AS day, count() AS signup_receipts FROM events WHERE properties.environment = 'production' AND timestamp >= now() - INTERVAL 30 DAY AND event = 'account_created' GROUP BY day ORDER BY day",
+      "dashboards": [
+        816709,
+        928106
+      ],
+      "id": "eGDQK3F4",
+      "display": "ActionsLineGraph",
+      "chart_settings": {
+        "xAxis": {
+          "column": "day"
+        },
+        "yAxis": [
+          {
+            "column": "signup_receipts"
+          }
+        ],
+        "leftYAxisSettings": {
+          "startAtZero": true
+        },
+        "showLegend": false
+      }
+    },
+    {
+      "name": "Activations",
+      "description": "Successful email-activation attempts. Last 30 days; not a current account total.",
+      "sql": "SELECT toDate(timestamp) AS day, uniqExact(properties.attempt_id) AS activation_attempts FROM events WHERE properties.environment = 'production' AND timestamp >= now() - INTERVAL 30 DAY AND event = 'account_event' AND properties.action = 'activate_account' AND properties.phase = 'finished' AND properties.result = 'success' GROUP BY day ORDER BY day",
+      "dashboards": [
+        816709,
+        928106
+      ],
+      "id": "k1MILv3o",
+      "display": "ActionsLineGraph",
+      "chart_settings": {
+        "xAxis": {
+          "column": "day"
+        },
+        "yAxis": [
+          {
+            "column": "activation_attempts"
+          }
+        ],
+        "leftYAxisSettings": {
+          "startAtZero": true
+        },
+        "showLegend": false
+      }
+    },
+    {
+      "name": "Pageview identity at capture",
+      "description": "Capture-time identity, not eventual person merging: profile IDs versus anonymous IDs. Reloads can produce new anonymous IDs. Compare to visitors after PostHog merges; do not add the identity counts as people or accounts.",
+      "sql": "SELECT toDate(timestamp) AS day, count() AS pageviews, uniqExact(person_id) AS merged_visitors, uniqExactIf(distinct_id, match(distinct_id, '^tonk:[a-f0-9]{64}$')) AS profile_ids, uniqExactIf(distinct_id, NOT match(distinct_id, '^tonk:[a-f0-9]{64}$')) AS anonymous_ids FROM events WHERE properties.environment = 'production' AND timestamp >= now() - INTERVAL 30 DAY AND event = '$pageview' GROUP BY day ORDER BY day",
+      "id": "L2C6oHGl"
+    },
+    {
+      "name": "Account attempts by surface and action",
+      "description": "Distinct started attempt IDs, separated by environment. One attempt can emit several checkpoints and one terminal event. These are operations, not accounts.",
+      "id": "R2eeWvzY",
+      "sql": "SELECT properties.environment AS environment, properties.surface AS surface, properties.action AS action, uniqExact(properties.attempt_id) AS attempts, uniqExactIf(distinct_id, match(distinct_id, '^tonk:[a-f0-9]{64}$')) AS observed_profiles FROM events WHERE event = 'account_event' AND properties.phase = 'started' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY environment, surface, action ORDER BY attempts DESC"
+    },
+    {
+      "name": "Account terminal outcomes",
+      "description": "Distinct finished attempt IDs by environment and result. Normal create_account completion can be blocked/awaiting_activation; account_created is the creation receipt and activate_account is a separate attempt.",
+      "id": "P59MNMc2",
+      "sql": "SELECT properties.environment AS environment, properties.result AS result, properties.surface AS surface, properties.action AS action, uniqExact(properties.attempt_id) AS outcomes FROM events WHERE event = 'account_event' AND properties.phase = 'finished' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY environment, result, surface, action ORDER BY outcomes DESC"
+    },
+    {
+      "name": "DAU",
+      "description": "Unique profiles with a commit, space creation/join, or share each day. Includes guests and automatic commits.",
+      "dashboards": [
+        816709
+      ],
+      "sql": "SELECT toDate(timestamp) AS period, uniqExact(distinct_id) AS active_profiles FROM events WHERE properties.environment = 'production' AND timestamp >= toDate(now() - INTERVAL 90 DAY) AND event IN ('commit', 'space_conversion', 'space_shared') AND match(distinct_id, '^tonk:[a-f0-9]{64}$') GROUP BY period ORDER BY period",
+      "display": "ActionsLineGraph",
+      "chart_settings": {
+        "xAxis": {
+          "column": "period"
+        },
+        "yAxis": [
+          {
+            "column": "active_profiles"
+          }
+        ],
+        "leftYAxisSettings": {
+          "startAtZero": true,
+          "label": "Observed profiles"
+        },
+        "showLegend": false
+      },
+      "id": "hrMHaOwp"
+    },
+    {
+      "name": "WAU",
+      "description": "Unique profiles with a commit, space creation/join, or share each week. Includes guests and automatic commits.",
+      "dashboards": [
+        816709
+      ],
+      "sql": "SELECT toStartOfWeek(timestamp, 1) AS period, uniqExact(distinct_id) AS active_profiles FROM events WHERE properties.environment = 'production' AND timestamp >= toStartOfWeek(now() - INTERVAL 90 DAY, 1) AND event IN ('commit', 'space_conversion', 'space_shared') AND match(distinct_id, '^tonk:[a-f0-9]{64}$') GROUP BY period ORDER BY period",
+      "display": "ActionsLineGraph",
+      "chart_settings": {
+        "xAxis": {
+          "column": "period"
+        },
+        "yAxis": [
+          {
+            "column": "active_profiles"
+          }
+        ],
+        "leftYAxisSettings": {
+          "startAtZero": true,
+          "label": "Observed profiles"
+        },
+        "showLegend": false
+      },
+      "id": "zvqStwlu"
+    },
+    {
+      "name": "Weekly retention",
+      "description": "Weekly return rate (%), grouped by first activity. Cohort size in each row; blank cells are not yet measurable.",
+      "sql": "WITH activity AS (SELECT distinct_id AS profile, toStartOfWeek(timestamp, 1) AS week FROM events WHERE properties.environment = 'production' AND event IN ('commit','space_conversion','space_shared') AND match(distinct_id, '^tonk:[a-f0-9]{64}$') GROUP BY profile, week), cohorts AS (SELECT profile, min(week) AS cohort FROM activity GROUP BY profile), cohort_stats AS (SELECT c.cohort AS cohort, uniqExact(c.profile) AS profiles, if(c.cohort + INTERVAL 2 WEEK <= toStartOfWeek(now(), 1), round(100.0 * uniqExactIf(a.profile, a.week = c.cohort + INTERVAL 1 WEEK) / profiles, 1), NULL) AS w1, if(c.cohort + INTERVAL 3 WEEK <= toStartOfWeek(now(), 1), round(100.0 * uniqExactIf(a.profile, a.week = c.cohort + INTERVAL 2 WEEK) / profiles, 1), NULL) AS w2, if(c.cohort + INTERVAL 4 WEEK <= toStartOfWeek(now(), 1), round(100.0 * uniqExactIf(a.profile, a.week = c.cohort + INTERVAL 3 WEEK) / profiles, 1), NULL) AS w3, if(c.cohort + INTERVAL 5 WEEK <= toStartOfWeek(now(), 1), round(100.0 * uniqExactIf(a.profile, a.week = c.cohort + INTERVAL 4 WEEK) / profiles, 1), NULL) AS w4 FROM cohorts c JOIN activity a ON c.profile = a.profile WHERE c.cohort >= toStartOfWeek(now() - INTERVAL 90 DAY, 1) AND c.cohort < toStartOfWeek(now(), 1) GROUP BY c.cohort) SELECT * FROM (SELECT 'Week 0' AS week, concat(toString(toDate(cohort)), ' \u00b7 ', toString(profiles), ' profiles') AS cohort, 100.0 AS retained_percent FROM cohort_stats UNION ALL SELECT 'Week 1' AS week, concat(toString(toDate(cohort)), ' \u00b7 ', toString(profiles), ' profiles') AS cohort, w1 AS retained_percent FROM cohort_stats UNION ALL SELECT 'Week 2' AS week, concat(toString(toDate(cohort)), ' \u00b7 ', toString(profiles), ' profiles') AS cohort, w2 AS retained_percent FROM cohort_stats UNION ALL SELECT 'Week 3' AS week, concat(toString(toDate(cohort)), ' \u00b7 ', toString(profiles), ' profiles') AS cohort, w3 AS retained_percent FROM cohort_stats UNION ALL SELECT 'Week 4' AS week, concat(toString(toDate(cohort)), ' \u00b7 ', toString(profiles), ' profiles') AS cohort, w4 AS retained_percent FROM cohort_stats) ORDER BY cohort DESC, week",
+      "dashboards": [
+        816709
+      ],
+      "id": "RxdpjBo8",
+      "display": "TwoDimensionalHeatmap"
+    },
+    {
+      "name": "Returning profiles",
+      "description": "Profiles active in an earlier calendar week and active again. Same activity definition as WAU; current week is partial.",
+      "sql": "WITH activity AS (SELECT distinct_id AS profile, toStartOfWeek(timestamp, 1) AS week FROM events WHERE properties.environment = 'production' AND event IN ('commit','space_conversion','space_shared') AND match(distinct_id, '^tonk:[a-f0-9]{64}$') GROUP BY profile, week), cohorts AS (SELECT profile, min(week) AS cohort FROM activity GROUP BY profile) SELECT a.week AS week, uniqExactIf(a.profile, a.week > c.cohort) AS returning_profiles FROM activity a JOIN cohorts c ON a.profile = c.profile WHERE a.week >= toStartOfWeek(now() - INTERVAL 90 DAY, 1) GROUP BY week ORDER BY week",
+      "dashboards": [
+        816709
+      ],
+      "display": "ActionsLineGraph",
+      "chart_settings": {
+        "xAxis": {
+          "column": "week"
+        },
+        "yAxis": [
+          {
+            "column": "returning_profiles"
+          }
+        ],
+        "leftYAxisSettings": {
+          "startAtZero": true
+        },
+        "showLegend": false
+      },
+      "id": "LkJnOo2L"
+    },
+    {
+      "name": "Signup \u2192 first space",
+      "description": "Seven-day conversion from signup. Mature signup cohorts only; counts are profiles.",
+      "sql": "WITH signups AS (SELECT distinct_id AS profile, min(timestamp) AS signup_at FROM events WHERE properties.environment = 'production' AND event = 'account_created' AND match(distinct_id, '^tonk:[a-f0-9]{64}$') AND timestamp >= now() - INTERVAL 90 DAY GROUP BY profile HAVING signup_at < now() - INTERVAL 7 DAY), spaces AS (SELECT s.profile AS profile, min(e.timestamp) AS space_at FROM signups s JOIN events e ON s.profile = e.distinct_id WHERE e.properties.environment = 'production' AND e.event = 'space_conversion'  AND e.timestamp >= s.signup_at AND e.timestamp <= s.signup_at + INTERVAL 7 DAY GROUP BY s.profile), shares AS (SELECT sp.profile AS profile FROM spaces sp JOIN signups s ON sp.profile = s.profile JOIN events e ON sp.profile = e.distinct_id WHERE e.properties.environment = 'production' AND e.event = 'space_shared' AND e.timestamp >= sp.space_at AND e.timestamp <= s.signup_at + INTERVAL 7 DAY GROUP BY sp.profile) SELECT concat(toString(step_order), '. ', step, ' (', toString(percent_of_signups), '%)') AS stage, profiles FROM (SELECT 1 AS step_order, 'Signed up' AS step, count() AS profiles, if(count() > 0, 100.0, NULL) AS percent_of_signups FROM signups UNION ALL SELECT 2, 'Created or joined a space', count(), round(100.0 * count() / nullIf((SELECT count() FROM signups), 0), 1) FROM spaces UNION ALL SELECT 3, 'Shared after that', count(), round(100.0 * count() / nullIf((SELECT count() FROM signups), 0), 1) FROM shares) ORDER BY step_order",
+      "id": "u3tYc9Eg",
+      "display": "ActionsBar",
+      "chart_settings": {
+        "xAxis": {
+          "column": "stage"
+        },
+        "yAxis": [
+          {
+            "column": "profiles",
+            "settings": {
+              "display": {
+                "label": "Profiles",
+                "color": "#2563eb"
+              },
+              "formatting": {
+                "style": "number",
+                "decimalPlaces": 0
+              }
+            }
+          }
+        ],
+        "showLegend": false,
+        "showValuesOnSeries": true,
+        "leftYAxisSettings": {
+          "startAtZero": true,
+          "label": "Profiles"
+        }
+      }
+    },
+    {
+      "name": "Signup \u2192 create & share",
+      "description": "Seven-day conversion from signup. Mature signup cohorts only; counts are profiles.",
+      "sql": "WITH signups AS (SELECT distinct_id AS profile, min(timestamp) AS signup_at FROM events WHERE properties.environment = 'production' AND event = 'account_created' AND match(distinct_id, '^tonk:[a-f0-9]{64}$') AND timestamp >= now() - INTERVAL 90 DAY GROUP BY profile HAVING signup_at < now() - INTERVAL 7 DAY), spaces AS (SELECT s.profile AS profile, min(e.timestamp) AS space_at FROM signups s JOIN events e ON s.profile = e.distinct_id WHERE e.properties.environment = 'production' AND e.event = 'space_conversion' AND e.properties.conversion = 'created' AND e.timestamp >= s.signup_at AND e.timestamp <= s.signup_at + INTERVAL 7 DAY GROUP BY s.profile), shares AS (SELECT sp.profile AS profile FROM spaces sp JOIN signups s ON sp.profile = s.profile JOIN events e ON sp.profile = e.distinct_id WHERE e.properties.environment = 'production' AND e.event = 'space_shared' AND e.timestamp >= sp.space_at AND e.timestamp <= s.signup_at + INTERVAL 7 DAY GROUP BY sp.profile) SELECT concat(toString(step_order), '. ', step, ' (', toString(percent_of_signups), '%)') AS stage, profiles FROM (SELECT 1 AS step_order, 'Signed up' AS step, count() AS profiles, if(count() > 0, 100.0, NULL) AS percent_of_signups FROM signups UNION ALL SELECT 2, 'Created a space', count(), round(100.0 * count() / nullIf((SELECT count() FROM signups), 0), 1) FROM spaces UNION ALL SELECT 3, 'Shared after that', count(), round(100.0 * count() / nullIf((SELECT count() FROM signups), 0), 1) FROM shares) ORDER BY step_order",
+      "id": "DXC5P65L",
+      "display": "ActionsBar",
+      "chart_settings": {
+        "xAxis": {
+          "column": "stage"
+        },
+        "yAxis": [
+          {
+            "column": "profiles",
+            "settings": {
+              "display": {
+                "label": "Profiles",
+                "color": "#2563eb"
+              },
+              "formatting": {
+                "style": "number",
+                "decimalPlaces": 0
+              }
+            }
+          }
+        ],
+        "showLegend": false,
+        "showValuesOnSeries": true,
+        "leftYAxisSettings": {
+          "startAtZero": true,
+          "label": "Profiles"
+        }
+      }
+    },
+    {
+      "name": "Joined profiles by channel",
+      "description": "Profiles that joined a space, including existing users. Last 90 days.",
+      "sql": "SELECT multiIf(properties.channel = 'clearnet_discovery', 'Discovery', properties.channel = 'organic_reshare', 'Shared links', coalesce(properties.channel, 'Unknown')) AS channel, uniqExact(distinct_id) AS profiles FROM events WHERE properties.environment = 'production' AND timestamp >= now() - INTERVAL 90 DAY AND match(distinct_id, '^tonk:[a-f0-9]{64}$') AND event = 'space_conversion' AND properties.conversion = 'joined' GROUP BY channel ORDER BY profiles DESC",
+      "id": "3Cf8c2Pq",
+      "display": "ActionsBar",
+      "chart_settings": {
+        "xAxis": {
+          "column": "channel"
+        },
+        "yAxis": [
+          {
+            "column": "profiles",
+            "settings": {
+              "display": {
+                "label": "Profiles",
+                "color": "#7c3aed"
+              },
+              "formatting": {
+                "style": "number",
+                "decimalPlaces": 0
+              }
+            }
+          }
+        ],
+        "showLegend": false,
+        "showValuesOnSeries": true,
+        "leftYAxisSettings": {
+          "startAtZero": true,
+          "label": "Profiles"
+        }
+      }
+    },
+    {
+      "name": "Signup profiles by channel",
+      "description": "Completed signups by source, before email activation. Last 90 days.",
+      "sql": "SELECT multiIf(properties.channel = 'clearnet_discovery', 'Discovery', properties.channel = 'organic_reshare', 'Shared links', coalesce(properties.channel, 'Unknown')) AS channel, uniqExact(distinct_id) AS profiles FROM events WHERE properties.environment = 'production' AND timestamp >= now() - INTERVAL 90 DAY AND match(distinct_id, '^tonk:[a-f0-9]{64}$') AND event = 'account_created' GROUP BY channel ORDER BY profiles DESC",
+      "id": "k9V9nJQc",
+      "display": "ActionsBar",
+      "chart_settings": {
+        "xAxis": {
+          "column": "channel"
+        },
+        "yAxis": [
+          {
+            "column": "profiles",
+            "settings": {
+              "display": {
+                "label": "Profiles",
+                "color": "#7c3aed"
+              },
+              "formatting": {
+                "style": "number",
+                "decimalPlaces": 0
+              }
+            }
+          }
+        ],
+        "showLegend": false,
+        "showValuesOnSeries": true,
+        "leftYAxisSettings": {
+          "startAtZero": true,
+          "label": "Profiles"
+        }
+      }
+    },
+    {
+      "id": "XfB7cNDx",
+      "name": "Spaces created / joined",
+      "description": "Weekly successful operations in production.",
+      "query": {
+        "kind": "InsightVizNode",
+        "source": {
+          "kind": "TrendsQuery",
+          "series": [
+            {
+              "kind": "EventsNode",
+              "name": "Created",
+              "event": "space_conversion",
+              "properties": [
+                {
+                  "key": "conversion",
+                  "type": "event",
+                  "value": [
+                    "created"
+                  ],
+                  "operator": "exact"
+                }
+              ]
+            },
+            {
+              "kind": "EventsNode",
+              "name": "Joined",
+              "event": "space_conversion",
+              "properties": [
+                {
+                  "key": "conversion",
+                  "type": "event",
+                  "value": [
+                    "joined"
+                  ],
+                  "operator": "exact"
+                }
+              ]
+            }
+          ],
+          "version": 4,
+          "interval": "week",
+          "dateRange": {
+            "date_from": "-90d",
+            "explicitDate": false,
+            "excludeIncompletePeriods": false
+          },
+          "properties": [
+            {
+              "key": "environment",
+              "type": "event",
+              "operator": "exact",
+              "value": [
+                "production"
+              ]
+            }
+          ],
+          "filterTestAccounts": false
+        }
+      }
+    },
+    {
+      "id": "WwHdfDWT",
+      "name": "Spaces shared",
+      "description": "Distinct spaces with an invite minted each week in production.",
+      "query": {
+        "kind": "InsightVizNode",
+        "source": {
+          "kind": "TrendsQuery",
+          "series": [
+            {
+              "kind": "EventsNode",
+              "math": "hogql",
+              "name": "Unique spaces shared",
+              "event": "space_shared",
+              "math_hogql": "count(distinct properties.space_id)"
+            }
+          ],
+          "version": 4,
+          "interval": "week",
+          "dateRange": {
+            "date_from": "-90d",
+            "explicitDate": false,
+            "excludeIncompletePeriods": false
+          },
+          "properties": [
+            {
+              "key": "environment",
+              "type": "event",
+              "operator": "exact",
+              "value": [
+                "production"
+              ]
+            }
+          ],
+          "filterTestAccounts": false
+        }
+      }
+    }
+  ],
+  "dashboard_layouts": [
+    {
+      "id": 816709,
+      "insights": [
+        "hrMHaOwp",
+        "zvqStwlu",
+        "Weekly retention",
+        "Returning profiles",
+        "eGDQK3F4",
+        "k1MILv3o",
+        "Gr2WSY2Q",
+        "7YME1ISr"
+      ],
+      "remove": [
+        "DLbPczF6",
+        "RKW6A5FJ",
+        "6GAEVou5",
+        "TFjHXkrk",
+        "r40xofH1",
+        "osoltR31",
+        "fyyAm1q0",
+        "66LsC4so",
+        "L2C6oHGl"
+      ]
+    },
+    {
+      "id": 929973,
+      "insights": [
+        "u3tYc9Eg",
+        "DXC5P65L",
+        "k9V9nJQc",
+        "3Cf8c2Pq",
+        "XfB7cNDx",
+        "WwHdfDWT"
+      ]
+    }
+  ]
+}

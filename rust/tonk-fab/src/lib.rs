@@ -10,6 +10,13 @@ pub mod logic;
 pub mod markup;
 pub mod retry;
 pub mod skin;
+pub mod task;
+
+#[cfg(target_arch = "wasm32")]
+mod contained_tasks;
+
+#[cfg(target_arch = "wasm32")]
+mod trusted_tasks;
 
 mod banner;
 mod cluster;
@@ -17,6 +24,9 @@ mod field;
 
 #[cfg(target_arch = "wasm32")]
 mod activation;
+
+#[cfg(target_arch = "wasm32")]
+mod agent_panel;
 
 /// `<tonk-button>` — a block button.
 #[cfg(target_arch = "wasm32")]
@@ -46,6 +56,9 @@ mod mi;
 #[cfg(target_arch = "wasm32")]
 mod shadow;
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod member_graph;
+
 #[cfg(target_arch = "wasm32")]
 mod member_roster;
 
@@ -59,7 +72,14 @@ mod share;
 mod space_name;
 
 #[cfg(target_arch = "wasm32")]
+mod sync_status;
+
+#[cfg(target_arch = "wasm32")]
 mod space_switcher;
+
+/// Performing what the tab was asked to do (`xyz.tonk.site/request`).
+#[cfg(target_arch = "wasm32")]
+mod site_request;
 
 /// Rendering subscription results as rows of a stack.
 #[cfg(target_arch = "wasm32")]
@@ -68,10 +88,13 @@ mod stack_rows;
 #[cfg(target_arch = "wasm32")]
 mod subscribing;
 
+#[cfg(target_arch = "wasm32")]
+mod tool_connection;
+
 /// Register `<tonk-fab>` with the page. Idempotent — safe to call multiple times.
 #[cfg(target_arch = "wasm32")]
 pub fn register() {
-    element::register();
+    agent_panel::register();
     menu::register();
     mi::register();
     dialog::register();
@@ -80,10 +103,14 @@ pub fn register() {
     cluster::register();
     banner::register();
     share::register();
+    tool_connection::register();
     space_name::register();
+    sync_status::register();
     profile_name::register();
     member_roster::register();
     space_switcher::register();
+    site_request::register();
+    element::register();
 }
 
 /// No-op on non-wasm targets (tests / native build checks).

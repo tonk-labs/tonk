@@ -203,7 +203,7 @@ because the repo handle is cloned into per-branch chains.
 ```rust
 pub struct BranchState {
     pub branch: Branch,
-    subscriptions: Mutex<HashMap<QueryHash, Subscription>>,
+    subscriptions: Mutex<IndexMap<QueryHash, Subscription>>,
 }
 ```
 

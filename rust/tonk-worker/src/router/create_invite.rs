@@ -24,17 +24,14 @@ use axum_wasm_macros::wasm_compat;
 use dialog_capability::Subject;
 use dialog_credentials::{Ed25519Signer, key::KeyExport};
 use dialog_effects::Use;
-use dialog_query::{Output as _, Query, Term};
-use dialog_repository::{
-    LoadRemoteError, RemoteRepository, RepositoryExt as _, SiteAddress, Upstream,
-};
+use dialog_repository::{RepositoryExt as _, SiteAddress, Upstream};
 use dialog_ucan::UcanDelegation;
-use dialog_varsig::{Did, Principal};
+use dialog_varsig::Principal;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_invite::{Invite, InviteAudience, home_address_meta, shortcut::ShortcutRequest};
-use tonk_schema::{Invitation, InvitationExecution, Remote as RemoteConcept};
+use tonk_schema::{Invitation, InvitationExecution};
 use url::Url;
 
 pub use tonk_worker_api::{CreateInviteRequest, CreateInviteResponse};
@@ -46,30 +43,22 @@ use crate::{TonkWorkerError, axum::RequestOrigin};
 /// across replicas, where roster/governance facts must live.
 const CONTENT_BRANCH: &str = "main";
 
-/// Generate an ephemeral Ed25519 signer with an extractable seed.
+/// Generate an ephemeral Ed25519 signer and the seed it was made from.
 ///
-/// Wasm's default `Ed25519Signer::generate` produces a non-extractable
-/// WebCrypto key whose seed can't be embedded in the invite URL; the
-/// [`ExtractableKey`] variant opts in to extractable generation.
+/// The seed is what the invite URL carries, and only a signer generated
+/// as [`Extractable`] can give it back: a sealed one exports opaque
+/// handles on wasm. The signer handed on is sealed, imported from that
+/// seed, so nothing downstream holds an extractable key.
 ///
-/// [`ExtractableKey`]: dialog_credentials::key::ExtractableKey
+/// [`Extractable`]: dialog_credentials::Extractable
 pub(crate) async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), TonkWorkerError> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let signer = {
-        use dialog_credentials::key::ExtractableKey;
-        <Ed25519Signer as ExtractableKey>::generate()
-            .await
-            .map_err(|e| {
-                TonkWorkerError::Internal(format!("failed to generate ephemeral key: {e}"))
-            })?
-    };
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    let signer = Ed25519Signer::generate()
+    use dialog_credentials::Extractable;
+    use dialog_credentials::key::ExtractableKey;
+
+    let extractable = <Ed25519Signer<Extractable> as ExtractableKey>::generate()
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to generate ephemeral key: {e}")))?;
-
-    let exported = signer
-        .export()
+    let exported = ExtractableKey::export(&extractable)
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to export ephemeral key: {e}")))?;
 
@@ -88,6 +77,9 @@ pub(crate) async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), To
             )));
         }
     };
+    let signer = Ed25519Signer::import(&seed)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to import ephemeral key: {e}")))?;
 
     Ok((signer, seed))
 }
@@ -115,6 +107,7 @@ pub async fn create_invite(
 }
 
 /// Mint an agent handoff for the current browser account, never the space owner.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn create_agent_handoff(
     state: AppState,
     repo_name: String,
@@ -164,7 +157,7 @@ async fn mint_invite(
 
     let repository = tonk
         .profile
-        .repository(&repo_name)
+        .space(&repo_name)
         .load()
         .perform(&tonk.operator)
         .await
@@ -194,7 +187,7 @@ async fn mint_invite(
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     if expected.is_some()
-        && super::repository::remote_is_own_service(remote.access_url.as_str())
+        && super::repository::remote_is_own_service(&tonk, remote.access_url.as_str()).await
         && !super::customer::space_provider_recorded(&tonk, &repository.did()).await
     {
         match super::repository::provision_space_consumer(&tonk, &repository.did()).await {
@@ -361,7 +354,7 @@ pub(super) async fn retain_invite_authority(
     let mut chains = vec![UcanDelegation(chain.clone())];
     match super::identity::local_root(tonk).await {
         Ok(root) => {
-            let signer = tonk.profile.signer().signer().clone();
+            let signer = tonk.profile.credential().signer().clone();
             match tonk_account::delegations::mint_account_union(&signer, &root.root_did).await {
                 Ok(union) => chains.push(UcanDelegation(union)),
                 Err(e) => log!("invite union edge was not minted: {e}"),
@@ -717,7 +710,7 @@ where
             ))
         })?;
 
-    let remote_name = match main.upstream() {
+    let remote = match tonk_account::peer::upstream(&main) {
         Some(Upstream::Remote { remote, .. }) => remote,
         None => {
             return Ok(ConfiguredRemoteRequirement::Refused(
@@ -730,42 +723,7 @@ where
             ));
         }
     };
-
-    let meta = repository
-        .branch("meta")
-        .open()
-        .perform(operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!(
-                "failed to open meta while resolving remote execution: {error}"
-            ))
-        })?;
-    let remotes: Vec<RemoteConcept> = meta
-        .query()
-        .select(Query::<RemoteConcept> {
-            this: Term::var("this"),
-            name: Term::var("name"),
-            origin: Term::var("origin"),
-            subject: Term::var("subject"),
-            address: Term::var("address"),
-        })
-        .perform(operator)
-        .try_vec()
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to query remote metadata: {error:?}"))
-        })?;
-    let remote_concept = remotes
-        .into_iter()
-        .find(|concept| concept.name.0 == remote_name);
-    let remote = load_or_recover_remote(
-        repository,
-        operator,
-        remote_name.as_str(),
-        remote_concept.as_ref(),
-    )
-    .await?;
+    let remote_name = remote.name();
 
     let access_url = match remote.address().site() {
         SiteAddress::Ucan(ucan) => Url::parse(ucan.endpoint()).map_err(|e| {
@@ -784,60 +742,6 @@ where
     Ok(ConfiguredRemoteRequirement::Ready(
         ConfiguredRemoteExecutionUrls { access_url },
     ))
-}
-
-/// Load the named dialog remote, rebuilding a missing address cell only from
-/// the replica's persisted remote concept. The metadata is the same signed
-/// configuration mirrored by `ensure_remote_config`; the current deployment
-/// origin is deliberately not used as a fallback.
-async fn load_or_recover_remote<R>(
-    repository: &dialog_repository::Repository<R>,
-    operator: &crate::worker::DefaultOperator,
-    remote_name: &str,
-    concept: Option<&RemoteConcept>,
-) -> Result<RemoteRepository, TonkWorkerError>
-where
-    R: Principal + Clone,
-{
-    match repository
-        .remote(remote_name)
-        .load()
-        .perform(operator)
-        .await
-    {
-        Ok(remote) => Ok(remote),
-        Err(LoadRemoteError::NotFound { .. }) => {
-            let concept = concept.ok_or_else(|| {
-                TonkWorkerError::Internal(format!(
-                    "branch 'main' upstream names missing remote '{remote_name}', and meta has no recovery record"
-                ))
-            })?;
-            let subject: Did = concept.subject.0.to_string().parse().map_err(|error| {
-                TonkWorkerError::Internal(format!(
-                    "remote '{remote_name}' has an invalid subject in meta: {error}"
-                ))
-            })?;
-            let address = concept.address.decode().map_err(|error| {
-                TonkWorkerError::Internal(format!(
-                    "remote '{remote_name}' has an invalid address in meta: {error:?}"
-                ))
-            })?;
-            repository
-                .remote(remote_name)
-                .create(address)
-                .subject(subject)
-                .perform(operator)
-                .await
-                .map_err(|error| {
-                    TonkWorkerError::Internal(format!(
-                        "failed to recover remote '{remote_name}' from meta: {error}"
-                    ))
-                })
-        }
-        Err(error) => Err(TonkWorkerError::Internal(format!(
-            "branch 'main' upstream names remote '{remote_name}' but it failed to load: {error}"
-        ))),
-    }
 }
 
 /// Probe `main` for an invite-ready endpoint.
@@ -903,8 +807,7 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use dialog_remote_ucan_s3::UcanAddress;
-    use dialog_repository::{RepositoryExt as _, SiteAddress};
+    use dialog_repository::RepositoryExt as _;
     use tower::ServiceExt;
 
     use tonk_invite::Invite;
@@ -953,39 +856,6 @@ mod tests {
             "signed-out browser must not mint a handoff"
         );
         assert!(content_invitations(&state, &key).await.is_empty());
-    }
-
-    #[dialog_common::test]
-    async fn it_recovers_a_missing_dialog_remote_from_replica_metadata() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "recover-missing-dialog-remote").await;
-        let tonk = state.read().await;
-        let repository = tonk
-            .profile
-            .repository(&key)
-            .load()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
-        let address = SiteAddress::from(UcanAddress::new("https://sync.example.test/ucan/"));
-        let replica = tonk_schema::Replica::new(tonk.profile.did(), repository.did());
-        let concept = replica.remote("origin", repository.did(), &address);
-
-        let recovered =
-            super::load_or_recover_remote(&repository, &tonk.operator, "origin", Some(&concept))
-                .await
-                .expect("signed replica metadata repairs the missing address cell");
-
-        assert_eq!(recovered.address().site(), &address);
-        assert_eq!(recovered.did(), repository.did());
-        assert!(
-            repository
-                .remote("origin")
-                .load()
-                .perform(&tonk.operator)
-                .await
-                .is_ok()
-        );
     }
 
     /// Minting an invite records an `Invitation` on the repo's content
@@ -1066,7 +936,7 @@ mod tests {
         let tonk = state.read().await;
         let repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await

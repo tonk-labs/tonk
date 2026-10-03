@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileRosterEntry {
-    /// Storage name the profile opens under — the activation handle.
+    /// The branch this row is for — what a switch activates.
     pub profile_name: String,
     /// Account root the profile is attached to. Absent for a local
     /// workspace (never signed in, or signed out).
@@ -26,7 +26,7 @@ pub struct ProfileRosterEntry {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfilesResponse {
-    /// Name of the profile currently being served.
+    /// The branch the profile is on.
     pub active: String,
     /// Every profile this browser knows, active entry included.
     pub profiles: Vec<ProfileRosterEntry>,
@@ -36,7 +36,7 @@ pub struct ProfilesResponse {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivateProfileRequest {
-    /// Name of the roster profile to swap in.
+    /// The branch to switch to.
     pub profile: String,
 }
 

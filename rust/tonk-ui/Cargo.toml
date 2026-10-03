@@ -9,6 +9,8 @@ edition.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [features]
+# Opt-in until a released CLI supports the versioned invitation envelope.
+connection-invites = ["tonk-worker/connection-invites"]
 helpers = [
     "dialog-common/helpers",
     "dep:thirtyfour",
@@ -68,6 +70,7 @@ wasm-bindgen-test = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 anyhow = { workspace = true }
+tonk-invite = { workspace = true }
 # The e2e callback listener is native-only, and axum pulls in mio, which
 # does not compile for wasm32 — the web test build is a workspace-wide
 # `cargo test --no-run`, so an ungated dev-dependency would reach it.

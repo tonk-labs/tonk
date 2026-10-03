@@ -69,17 +69,6 @@ async fn main() {
                 }
                 return;
             }
-            "profile-transition" => {
-                // Add Account already promoted the empty landing profile.
-                // Preserve the anchored ceremony request, then reload so
-                // this tab receives a new client binding before it sends
-                // any work through that profile.
-                tonk_ui::register_dialog::stash_reopen(reason);
-                if let Some(window) = web_sys::window() {
-                    let _ = window.location().reload();
-                }
-                return;
-            }
             "dismiss" => {
                 tonk_ui::register_dialog::close();
                 return;
@@ -96,8 +85,19 @@ async fn main() {
                 tonk_ui::register_dialog::resume();
                 return;
             }
+            // Option on "add an account": sign in through the Tonk that
+            // holds the account rather than with a passkey on this one.
+            "sign-in-via" => {
+                let restore = return_focus.map(|return_focus| {
+                    Box::new(move || return_focus.restore()) as Box<dyn FnOnce()>
+                });
+                tonk_ui::register_dialog::raise_sign_in_via(&request, restore);
+                return;
+            }
             _ => {}
         }
+        // The email face was asked for: one asking which Tonk gives way.
+        tonk_ui::register_dialog::leave_sign_in_via();
         if tonk_ui::register_dialog::is_open() {
             // A standing anchored ceremony keeps its typed state, but the
             // guest bar may have moved after a scroll or resize.
@@ -126,6 +126,7 @@ async fn main() {
         tonk_ui::register_dialog::describe(reason);
         tonk_ui::register_dialog::adopt_stashed_share();
     });
+    tonk_portal::on_task(tonk_ui::fabb_task::handle);
     tonk_ui::activate::register();
 
     // Dev-only hot reload client. `debug_assertions` is on under `trunk serve`
@@ -144,17 +145,6 @@ async fn main() {
         return;
     }
     tonk_ui::analytics::startup_checkpoint(tonk_analytics::product::Stage::Worker);
-    if let Err(error) = open_welcome_space().await {
-        tonk_ui::analytics::finish_startup(
-            tonk_analytics::product::Stage::Welcome,
-            tonk_analytics::product::ProductResult::RetryableFailure,
-            Some(tonk_analytics::product::FailureKind::Network),
-        );
-        web_sys::console::error_1(&JsValue::from_str(&error.to_string()));
-        show_readiness_failure();
-        return;
-    }
-    tonk_ui::analytics::startup_checkpoint(tonk_analytics::product::Stage::Welcome);
     mount_root();
     if web_sys::window().is_some_and(|window| {
         matches!(
@@ -168,46 +158,6 @@ async fn main() {
             None,
         );
     }
-    if let Some(request) = tonk_ui::register_dialog::take_reopen() {
-        tonk_ui::register_dialog::open();
-        tonk_ui::register_dialog::describe(&request);
-        tonk_ui::register_dialog::adopt_stashed_share();
-    }
-}
-
-/// Root visits alone consume first-use onboarding; deep links keep their destination.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn open_welcome_space() -> anyhow::Result<()> {
-    let window = web_sys::window().ok_or_else(|| anyhow::anyhow!("no window"))?;
-    let path = window.location().pathname().unwrap_or_default();
-    if path != "/" {
-        return Ok(());
-    }
-    #[derive(serde::Deserialize)]
-    struct Welcome {
-        path: Option<String>,
-    }
-    let response = reqwest::Client::new()
-        .post(format!(
-            "{}/api/profile/welcome",
-            window.location().origin().unwrap_or_default()
-        ))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Welcome>()
-        .await?;
-    if let Some(destination) = response.path {
-        // A navigation while setup was in flight wins over the automatic visit.
-        if window.location().pathname().unwrap_or_default() == "/" {
-            window
-                .history()
-                .map_err(|e| anyhow::anyhow!("history: {e:?}"))?
-                .replace_state_with_url(&JsValue::NULL, "", Some(&destination))
-                .map_err(|e| anyhow::anyhow!("welcome navigation: {e:?}"))?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -294,17 +244,34 @@ fn render_root(shell: &web_sys::Element) {
         return;
     }
 
-    shell.set_inner_html("");
-    let Some(document) = shell.owner_document() else {
+    // The site mounts on the branch the profile is on, which only the
+    // worker knows: read it off `meta` first. A navigation while that
+    // read is in flight must not mount a second site.
+    if shell.has_attribute("data-mounting") {
         return;
-    };
-    let Ok(site) = document.create_element("tonk-site") else {
-        return;
-    };
-    let _ = site.set_attribute("with", "main@profile:tonk");
-    let _ = site.set_attribute("allow", "*");
-    let _ = site.set_attribute("path", &path);
-    let _ = shell.append_child(&site);
+    }
+    let _ = shell.set_attribute("data-mounting", "");
+    let shell = shell.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let with = tonk_host::bridge::resolve_profile_with().await;
+        let _ = shell.remove_attribute("data-mounting");
+        shell.set_inner_html("");
+        let Some(document) = shell.owner_document() else {
+            return;
+        };
+        let Ok(site) = document.create_element("tonk-site") else {
+            return;
+        };
+        let _ = site.set_attribute("with", &with);
+        let _ = site.set_attribute("allow", "*");
+        // The path may have moved while the branch was being read.
+        let path = web_sys::window()
+            .and_then(|window| window.location().pathname().ok())
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| "/".to_owned());
+        let _ = site.set_attribute("path", &path);
+        let _ = shell.append_child(&site);
+    });
 }
 
 /// Keep the top-document root in sync with client-side navigation.

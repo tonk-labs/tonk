@@ -20,6 +20,21 @@ pub(crate) fn is_missing(error: &CredentialError) -> bool {
     match error {
         CredentialError::NotFound(_) => true,
         CredentialError::Storage(message) => message.contains(NOT_FOUND_OS_ERROR),
-        CredentialError::Corrupted(_) => false,
+        CredentialError::Corrupted(_) | CredentialError::Withheld(_) => false,
+    }
+}
+
+/// The credential site holding `base` for `branch`.
+///
+/// What a device holds about an account, its link, its provider, its
+/// customer record, its trusted marker, and the local account a branch
+/// acts under before it follows one, describes the branch that follows
+/// the account, not the profile: every branch is an account. `main`
+/// keeps the site as older installs wrote it.
+pub(crate) fn branch_site(base: &str, branch: &str) -> String {
+    if branch == "main" {
+        base.to_owned()
+    } else {
+        format!("{base}-{branch}")
     }
 }

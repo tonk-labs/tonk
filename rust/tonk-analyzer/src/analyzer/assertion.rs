@@ -345,7 +345,10 @@ pub(crate) fn build_assertion_application(
             // a query per declaration name on every refresh.
             if super::view::is_view(&resolved) {
                 user_fields.remove(super::view::BINDINGS_FIELD);
-                if let Some(bindings) = super::view::compile_bindings(assertion, scope)? {
+                user_fields.remove(super::view::EMBEDS_FIELD);
+                let compiled = super::view::compile_bindings(assertion, scope)?;
+                analysis.warnings.extend(compiled.warnings);
+                if let Some(bindings) = compiled.bindings {
                     let encoded = bindings.encode().map_err(|reason| {
                         AnalyzeError::at(
                             AnalyzeErrorKind::InvalidViewBindings { reason },
@@ -358,6 +361,26 @@ pub(crate) fn build_assertion_application(
                     );
                     retract_terms.insert(
                         super::view::BINDINGS_FIELD.into(),
+                        Term::<dialog_query::Any>::blank(),
+                    );
+                    any_assert = true;
+                }
+                // The embeds ride the view the same way: resolved once
+                // here, so the renderer asks for the subject that was
+                // checked rather than one a caller supplied.
+                if let Some(embeds) = compiled.embeds {
+                    let encoded = embeds.encode().map_err(|reason| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::InvalidViewBindings { reason },
+                            head_range,
+                        )
+                    })?;
+                    assert_terms.insert(
+                        super::view::EMBEDS_FIELD.into(),
+                        Term::Constant(Value::Record(encoded)),
+                    );
+                    retract_terms.insert(
+                        super::view::EMBEDS_FIELD.into(),
                         Term::<dialog_query::Any>::blank(),
                     );
                     any_assert = true;
@@ -620,16 +643,15 @@ pub(crate) fn derive_head_intent(
             FieldValue::Variable(v) => ThisIntent::Variable(v.clone()),
             FieldValue::Uri(uri) => {
                 let entity: Entity =
-                    uri.parse()
-                        .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                            AnalyzeError::at(
-                                AnalyzeErrorKind::InvalidSubjectUri {
-                                    subject: uri.clone(),
-                                    reason: e.to_string(),
-                                },
-                                field.value_range,
-                            )
-                        })?;
+                    uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::InvalidSubjectUri {
+                                subject: uri.clone(),
+                                reason: e.to_string(),
+                            },
+                            field.value_range,
+                        )
+                    })?;
                 ThisIntent::Uri(entity)
             }
             FieldValue::Symbol(name) => {
@@ -648,9 +670,11 @@ pub(crate) fn derive_head_intent(
                 ThisIntent::Uri(entity)
             }
             FieldValue::Literal(_)
+            | FieldValue::Include(_)
             | FieldValue::Blank
             | FieldValue::Nested(_)
-            | FieldValue::Premises(_) => {
+            | FieldValue::Premises(_)
+            | FieldValue::List(_) => {
                 return Err(AnalyzeError::at(
                     AnalyzeErrorKind::UnsupportedFieldValue {
                         field: "this".into(),
@@ -760,8 +784,55 @@ fn this_term_for_assertion(
 /// matching `(predicate, payload)` pair — references included.
 pub(super) fn body_digest(fields: &[Field], scope: &Scope) -> Result<ValueMap, AnalyzeError> {
     let mut out = ValueMap::new();
+    digest_into(fields, scope, "", &mut out)?;
+    Ok(out)
+}
+
+/// Fold `fields` into `out`, prefixing each key with `prefix`.
+///
+/// Nested blocks recurse under a dotted key (`method.connected`)
+/// rather than being skipped. A keyed collection IS content — an
+/// element with different methods is a different element — and
+/// dropping it made every assertion whose body is all nested fields
+/// derive the same entity as its siblings. dag-cbor canonicalises map
+/// keys, so the flattened order does not reach the hash.
+fn digest_into(
+    fields: &[Field],
+    scope: &Scope,
+    prefix: &str,
+    out: &mut ValueMap,
+) -> Result<(), AnalyzeError> {
     for field in fields {
         if is_meta_field(&field.name) {
+            continue;
+        }
+        let key = if prefix.is_empty() {
+            field.name.clone()
+        } else {
+            format!("{prefix}.{}", field.name)
+        };
+        if let FieldValue::Nested(inner) = &field.value {
+            digest_into(inner, scope, &key, out)?;
+            continue;
+        }
+        // A bare symbol inside a nested block digests as its TEXT,
+        // never as the entity it resolves to.
+        //
+        // Not a shortcut: the entity is derived by more than one pass,
+        // and nested blocks are folded by passes that run before the
+        // document's later anchors are registered. Resolving here would
+        // make one pass see an entity where another sees an unresolved
+        // name, and the same anchor would derive two different subjects
+        // — which surfaces as `DuplicateName` on a document that is
+        // perfectly well formed. Text is the one reading every pass can
+        // agree on. Top-level references still resolve, so a view's
+        // `model: counter` is still identified by the concept it points
+        // at; the unknown-name check belongs to the pass that owns the
+        // reference either way.
+        if let FieldValue::Symbol(name) = &field.value
+            && !prefix.is_empty()
+        {
+            out.insert(key, Value::String(name.clone()));
             continue;
         }
         let value = match &field.value {
@@ -780,28 +851,41 @@ pub(super) fn body_digest(fields: &[Field], scope: &Scope) -> Result<ValueMap, A
             }
             FieldValue::Uri(uri) => {
                 let entity: Entity =
-                    uri.parse()
-                        .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                            AnalyzeError::at(
-                                AnalyzeErrorKind::InvalidSubjectUri {
-                                    subject: uri.clone(),
-                                    reason: e.to_string(),
-                                },
-                                field.value_range,
-                            )
-                        })?;
+                    uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::InvalidSubjectUri {
+                                subject: uri.clone(),
+                                reason: e.to_string(),
+                            },
+                            field.value_range,
+                        )
+                    })?;
                 Value::Entity(entity)
             }
-            // Unbound variables, blanks, premises and nested maps
-            // carry no content identity.
-            FieldValue::Variable(_)
-            | FieldValue::Blank
-            | FieldValue::Premises(_)
-            | FieldValue::Nested(_) => continue,
+            // Unbound variables, blanks and premises carry no content
+            // identity: a variable is not a value yet, a blank is an
+            // absence, and premises are a rule body.
+            FieldValue::Variable(_) | FieldValue::Blank | FieldValue::Premises(_) => continue,
+            FieldValue::List(_) => {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::UnsupportedFieldValue {
+                        field: field.name.clone(),
+                        form: "a list (only a command's `action:` takes one)",
+                    },
+                    field.value_range,
+                ));
+            }
+            FieldValue::Include(include) => {
+                return Err(
+                    super::field::unexpanded_include(include, None).with_range(field.value_range)
+                );
+            }
+            // Handled above.
+            FieldValue::Nested(_) => continue,
         };
-        out.insert(field.name.clone(), value);
+        out.insert(key, value);
     }
-    Ok(out)
+    Ok(())
 }
 
 fn scalar_to_value(scalar: &Scalar) -> Value {
@@ -811,6 +895,11 @@ fn scalar_to_value(scalar: &Scalar) -> Value {
         Scalar::UnsignedInteger(u) => Value::UnsignedInt(*u),
         Scalar::Float(f) => Value::Float(*f),
         Scalar::Boolean(b) => Value::Boolean(*b),
+        Scalar::Bytes(bytes) => Value::Bytes(bytes.clone()),
+        // Digested as the bytes it was loaded as. The digest only has to
+        // be deterministic, and the field's declared type is not known
+        // here to say whether the stored value will be text.
+        Scalar::Included(bytes) => Value::Bytes(bytes.clone()),
         // dialog's `Value` has no Null variant; encode an explicit
         // absence as an empty string so the digest stays total.
         // This only matters for `null` literals in `with:` slots,
@@ -872,8 +961,22 @@ fn check_complete_when_unbound(
     let mut missing: Vec<String> = Vec::new();
     for (field_name, attr) in descriptor.with().iter() {
         // Optional fields never count toward completeness — omitting
-        // one on a fresh entity is intentional, not an error.
-        if attr.is_optional() {
+        // one on a fresh entity is intentional, not an error. Neither
+        // do keyed collections, for the same reason said the other way
+        // round: a collection is zero-or-more, so omitting one
+        // declares zero entries rather than leaving a field unset.
+        //
+        // dialog-query says as much when it REFUSES to mark a
+        // collection optional ("a keyed collection is zero-or-more
+        // already and cannot be widened"). Without this exemption a
+        // collection would be the one field shape that can be neither
+        // declared optional nor left out — every assertion against the
+        // concept would have to carry at least one entry.
+        //
+        // A collection has no name half, which is what distinguishes
+        // it here: its name is a key that varies per entry rather than
+        // a fixed part of the selector.
+        if attr.is_optional() || attr.name().is_none() {
             if matches!(user_fields.get(field_name), Some((value, _)) if !matches!(value, FieldValue::Blank))
             {
                 set.push(field_name.to_string());
@@ -899,6 +1002,28 @@ fn check_complete_when_unbound(
     }
     if missing.is_empty() {
         // Body sets every field — intentional fresh entity.
+        //
+        // A body that sets NOTHING is a different matter: not a
+        // complete assertion but an empty one, and on a derived entity
+        // every empty body in the realm digests alike and collapses
+        // onto a single subject. A concept made only of collections
+        // would reach that state through the exemption above, so name
+        // it rather than let it through.
+        if set.is_empty() && descriptor.with().iter().len() > 0 {
+            return Some(AnalyzeError::at(
+                AnalyzeErrorKind::IncompleteAssertion {
+                    concept: concept_name.to_owned(),
+                    set,
+                    missing: descriptor
+                        .with()
+                        .iter()
+                        .map(|(name, _)| name.to_string())
+                        .collect(),
+                    selector_form,
+                },
+                range,
+            ));
+        }
         return None;
     }
     Some(AnalyzeError::at(

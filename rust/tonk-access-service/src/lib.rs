@@ -47,12 +47,16 @@ use worker::*;
 /// mid-load, roughly doubling the requests a cold load pays for.
 pub(crate) const PREFLIGHT_MAX_AGE: &str = "86400";
 
+pub mod cached;
 pub mod deletion;
+pub mod describe;
 pub mod email;
 mod error;
 mod handlers;
 pub mod lookup;
 pub mod metering;
+#[cfg(target_arch = "wasm32")]
+pub mod objects;
 pub mod observability;
 pub mod permit;
 pub mod provisioning;

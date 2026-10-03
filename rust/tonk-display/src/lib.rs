@@ -55,8 +55,21 @@ mod blob_url;
 mod component;
 #[cfg(target_arch = "wasm32")]
 mod element;
+// The generated-JS half of the author-element runtime. Pure
+// string assembly over folded facts, so its tests run natively;
+// the DOM half lives in `assets/element-runtime.js` and is
+// exercised by `tests/element-runtime.mjs` in a real browser.
+pub mod element_source;
+// The half that ANSWERS `tonk-element-needed`: one document-level
+// listener resolving a tag to its definition. Separate from the
+// announcing half (`assets/element-runtime.js`) on purpose — neither
+// knows how the other works.
+#[cfg(target_arch = "wasm32")]
+mod embed;
 #[cfg(target_arch = "wasm32")]
 mod fallback;
+#[cfg(target_arch = "wasm32")]
+mod font;
 /// The `<tonk-introspect>` overlay: alt-hover a `<tonk-display>` to
 /// see the slots its template filled, which concept fed them, and
 /// which of them just changed. The state machine and the slot
@@ -66,6 +79,8 @@ mod fallback;
 pub mod introspect;
 #[cfg(target_arch = "wasm32")]
 mod notation;
+#[cfg(target_arch = "wasm32")]
+pub mod registry;
 #[cfg(target_arch = "wasm32")]
 mod render;
 #[cfg(target_arch = "wasm32")]
@@ -88,11 +103,16 @@ mod view;
 /// Idempotent.
 #[cfg(target_arch = "wasm32")]
 pub fn register() {
+    // Installed first: a tag announced while the other elements are
+    // still registering is queued as a DOM mutation, not lost, but the
+    // listener has to exist before the first sweep.
+    registry::install();
     view::register();
     introspect::register();
     notation::register();
     element::register();
     fallback::register();
+    font::register();
     component::register();
     upload::register();
 }

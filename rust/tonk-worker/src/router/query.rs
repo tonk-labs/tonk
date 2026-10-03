@@ -13,7 +13,7 @@
 
 use ::axum::Json;
 use ::axum::body::{Body, Bytes};
-use ::axum::extract::{Path, Request, State};
+use ::axum::extract::{Path, Query as UrlQuery, Request, State};
 use ::axum::http::{HeaderMap, StatusCode, header};
 use ::axum::response::{IntoResponse, Response};
 use axum_wasm_macros::wasm_compat;
@@ -45,6 +45,16 @@ pub struct ProfileQueryPath {
     pub branch: String,
 }
 
+/// URL parameters for `/query`.
+#[derive(Debug, Default, Deserialize)]
+pub struct QueryParams {
+    /// How deeply the subscribing display is nested (0 when absent).
+    /// The branch notifies lower levels first, so a display learns of a
+    /// change before the displays nested inside it.
+    #[serde(default)]
+    pub level: u32,
+}
+
 /// Handler. Reads body, decides one-shot vs subscription based on
 /// `Accept`, dispatches to the reactor.
 #[wasm_compat]
@@ -54,6 +64,12 @@ pub async fn query(
     headers: HeaderMap,
     request: Request,
 ) -> Result<Response, TonkWorkerError> {
+    if super::names_profile(&state, &path.repo).await {
+        let path = ProfileQueryPath {
+            branch: path.branch,
+        };
+        return query_profile(State(state), Path(path), headers, request).await;
+    }
     let client = request_client(&request);
     let tonk = state.read().await;
     // First use of a directory-listed space this device has not
@@ -72,16 +88,13 @@ pub async fn query(
     query_on_branch(&tonk, branch, headers, request, client).await
 }
 
-/// `POST /api/profile/branch/{branch}/query`
-///
-/// Profile-side counterpart to [`query`]. The profile is its own
-/// repository but lives outside the named-repo namespace, so the
-/// route surface is parallel rather than nested. Same body / `Accept`
-/// / response contract — only the branch reference differs. Lets a
-/// `<tonk-display>` read the profile's meta branch (e.g. the Hub's
-/// list of spaces) the same way it reads any repository branch.
+/// [`query`] for the profile's own repository, which [`query`] hands a
+/// request naming it. Same body / `Accept` / response contract; there is
+/// no space to mount. Lets a `<tonk-display>` read the profile's meta
+/// branch (e.g. the Hub's list of spaces) the same way it reads any
+/// repository branch.
 #[wasm_compat]
-pub async fn query_profile(
+async fn query_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileQueryPath>,
     headers: HeaderMap,
@@ -115,6 +128,8 @@ async fn query_on_branch<'a>(
     request: Request,
     client: Option<String>,
 ) -> Result<Response, TonkWorkerError> {
+    let UrlQuery(params) = UrlQuery::<QueryParams>::try_from_uri(request.uri())
+        .map_err(|e| TonkWorkerError::Router(format!("invalid query parameters: {e}")))?;
     let bytes = request
         .into_body()
         .collect()
@@ -169,7 +184,7 @@ async fn query_on_branch<'a>(
             return Ok(retry_later(snapshot));
         }
 
-        let mut subscribe = branch.subscribe(query.clone());
+        let mut subscribe = branch.subscribe(query.clone()).level(params.level);
         if let Some(client) = client.clone() {
             subscribe = subscribe.client(client);
         }
@@ -210,6 +225,7 @@ async fn query_on_branch<'a>(
                         dialog_reactor::PendingSubscription {
                             query,
                             client,
+                            level: params.level,
                             sender,
                         },
                     )

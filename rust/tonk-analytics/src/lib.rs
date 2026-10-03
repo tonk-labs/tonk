@@ -14,6 +14,7 @@
 use sha2_0_10::{Digest, Sha256};
 
 pub mod account;
+pub mod discover;
 pub mod launch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
@@ -46,6 +47,8 @@ pub mod event {
     pub const ACCOUNT_CREATED: &str = "account_created";
     /// A space was successfully created or joined.
     pub const SPACE_CONVERSION: &str = "space_conversion";
+    /// Navigation into a space, excluding internal route changes.
+    pub const SPACE_ENTERED: &str = "space_entered";
     /// An invite was successfully minted for a space.
     pub const SPACE_SHARED: &str = "space_shared";
     /// Typed lifecycle for product-owned interactions outside account signup.

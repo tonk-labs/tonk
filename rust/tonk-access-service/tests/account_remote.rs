@@ -4,15 +4,14 @@ use std::convert::Infallible;
 
 use bytes::Bytes;
 use dialog_artifacts::Entity;
-use dialog_capability::Subject;
 use dialog_common::helpers::Provisionable as _;
-use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
-use dialog_effects::space::{Space, SpaceExt as _};
-use dialog_operator::Operator;
-use dialog_operator::helpers::{test_operator_with_profile, unique_name};
+use dialog_credentials::Ed25519Signer;
+use dialog_effects::storage::Location;
+use dialog_peer::helpers::{test_session_with_peer, unique_name};
+use dialog_peer::{Peer, Session};
 use dialog_query::{Attribute, Output as _, Query, Term};
-use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::{Branch, RemoteBranch, Repository, RepositoryExt as _};
+use dialog_remote_ucan::UcanAddress;
+use dialog_repository::{Branch, ConnectedBranch, Repository, RepositoryExt as _, SiteAddress};
 use dialog_storage::provider::storage::VolatileSpace;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::subject::Subject as UcanSubject;
@@ -35,14 +34,14 @@ struct Note(String);
 /// keyed on the root DID, tracking `origin` at `endpoint`. This is the shape
 /// the worker and CLI adapters build in their `mount`/`hydrate` paths.
 struct AccountDevice {
-    operator: Operator<VolatileSpace>,
+    operator: Peer<VolatileSpace, Session>,
     branch: Branch,
-    remote: RemoteBranch,
+    remote: ConnectedBranch,
 }
 
 async fn account_device(root: &Ed25519Signer, endpoint: &str) -> anyhow::Result<AccountDevice> {
     let root_did = root.did();
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let link = DelegationBuilder::new()
         .issuer(dialog_credentials::Signer::from(root.clone()))
         .audience(&profile.did())
@@ -56,21 +55,21 @@ async fn account_device(root: &Ed25519Signer, endpoint: &str) -> anyhow::Result<
         .perform(&operator)
         .await?;
 
-    let verifier: Ed25519Verifier = root_did.to_string().parse()?;
-    let local = Subject::from(profile.did()).attenuate(Space::new(root_did.to_string()));
     let repository = Repository::from(
-        local
-            .create(Credential::from(verifier))
-            .perform(&operator)
-            .await?,
+        tonk_account::peer::mount_verifier(
+            profile.storage(),
+            Location::profile(root_did.to_string()),
+            &root_did,
+        )
+        .await?,
     );
     let branch = repository.branch("main").open().perform(&operator).await?;
-    let origin = repository
-        .remote("origin")
-        .create(UcanAddress::new(endpoint))
-        .subject(root_did)
-        .perform(&operator)
-        .await?;
+    let origin = tonk_account::peer::connect(
+        SiteAddress::from(UcanAddress::new(endpoint)),
+        root_did,
+        &operator,
+    )
+    .await?;
     let remote = origin.branch("main").open().perform(&operator).await?;
     branch
         .set_upstream(remote.clone())
@@ -114,9 +113,9 @@ async fn static_access_endpoint(status: StatusCode, body: &'static [u8]) -> Stri
 async fn it_reports_a_never_published_authorized_branch_as_absent() -> anyhow::Result<()> {
     let service = AccessServiceAddress::start(Default::default()).await?;
     let env = service.address.clone();
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let repository = profile
-        .repository(unique_name("account-absence"))
+        .space(unique_name("account-absence"))
         .create()
         .perform(&operator)
         .await?;
@@ -131,11 +130,12 @@ async fn it_reports_a_never_published_authorized_branch_as_absent() -> anyhow::R
     // it; this test is about absence probing, not registration.
     env.provision_subject(repository.did().as_str()).await?;
 
-    let origin = repository
-        .remote("origin")
-        .create(UcanAddress::new(&env.access_service_url))
-        .perform(&operator)
-        .await?;
+    let origin = tonk_account::peer::connect(
+        SiteAddress::from(UcanAddress::new(&env.access_service_url)),
+        repository.did(),
+        &operator,
+    )
+    .await?;
     let remote = origin.branch("main").open().perform(&operator).await?;
 
     assert_eq!(
@@ -150,9 +150,9 @@ async fn it_reports_a_never_published_authorized_branch_as_absent() -> anyhow::R
 async fn it_never_classifies_remote_failures_as_absence() -> anyhow::Result<()> {
     let service = AccessServiceAddress::start(Default::default()).await?;
     let env = service.address.clone();
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let repository = profile
-        .repository(unique_name("account-errors"))
+        .space(unique_name("account-errors"))
         .create()
         .perform(&operator)
         .await?;
@@ -177,12 +177,13 @@ async fn it_never_classifies_remote_failures_as_absence() -> anyhow::Result<()> 
         "http://127.0.0.1:9",
     ];
 
-    for (index, endpoint) in endpoints.into_iter().enumerate() {
-        let origin = repository
-            .remote(format!("failure-{index}"))
-            .create(UcanAddress::new(endpoint))
-            .perform(&operator)
-            .await?;
+    for endpoint in endpoints {
+        let origin = tonk_account::peer::connect(
+            SiteAddress::from(UcanAddress::new(endpoint)),
+            repository.did(),
+            &operator,
+        )
+        .await?;
         let remote = origin.branch("main").open().perform(&operator).await?;
         assert!(
             probe_remote_main(&remote, &operator).await.is_err(),
@@ -190,11 +191,12 @@ async fn it_never_classifies_remote_failures_as_absence() -> anyhow::Result<()> 
         );
     }
 
-    let healthy = repository
-        .remote("healthy-control")
-        .create(UcanAddress::new(&env.access_service_url))
-        .perform(&operator)
-        .await?;
+    let healthy = tonk_account::peer::connect(
+        SiteAddress::from(UcanAddress::new(&env.access_service_url)),
+        repository.did(),
+        &operator,
+    )
+    .await?;
     let healthy = healthy.branch("main").open().perform(&operator).await?;
     assert_eq!(
         probe_remote_main(&healthy, &operator).await?,
@@ -248,11 +250,11 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
     // (profile, subject, name) rather than the subject DID itself.
     assert_eq!(
         genesis_a.branch,
-        dialog_repository::branch_of(&root_did, &operator_a.profile_did(), "main")
+        dialog_repository::branch_of(&root_did, operator_a.home(), "main")
     );
     assert_eq!(
         genesis_b.branch,
-        dialog_repository::branch_of(&root_did, &operator_b.profile_did(), "main")
+        dialog_repository::branch_of(&root_did, operator_b.home(), "main")
     );
     assert_ne!(genesis_a, genesis_b, "the race must use distinct revisions");
 
@@ -443,9 +445,9 @@ async fn it_adopts_a_losing_candidate_onto_the_winners_content() -> anyhow::Resu
 #[ignore = "requires TONK_ACCOUNT_REMOTE_URL and a staging-authorized account"]
 async fn it_proves_account_genesis_against_the_configured_live_remote() -> anyhow::Result<()> {
     let endpoint = std::env::var("TONK_ACCOUNT_REMOTE_URL")?;
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let repository = profile
-        .repository(unique_name("account-live"))
+        .space(unique_name("account-live"))
         .create()
         .perform(&operator)
         .await?;
@@ -457,11 +459,12 @@ async fn it_proves_account_genesis_against_the_configured_live_remote() -> anyho
         .await?;
     profile.access().save(ownership).perform(&operator).await?;
     let branch = repository.branch("main").open().perform(&operator).await?;
-    let origin = repository
-        .remote("origin")
-        .create(UcanAddress::new(endpoint))
-        .perform(&operator)
-        .await?;
+    let origin = tonk_account::peer::connect(
+        SiteAddress::from(UcanAddress::new(endpoint)),
+        repository.did(),
+        &operator,
+    )
+    .await?;
     let remote = origin.branch("main").open().perform(&operator).await?;
 
     assert_eq!(

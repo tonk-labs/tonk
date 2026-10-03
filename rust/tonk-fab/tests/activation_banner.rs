@@ -139,20 +139,34 @@ async fn registered_customer_can_resend_and_retires_when_active() {
     // `reset`/`update` onto the element from `connectedCallback`, so
     // give that a turn before delivering one.
     yield_for(20).await;
+    let root = bar.shadow_root().unwrap();
+    let login = root.query_selector(".login").unwrap().unwrap();
+    assert!(!login.has_attribute("hidden"));
+    assert!(root.query_selector("[data-action=tool]").unwrap().is_none());
     deliver(&bar, "Registered", "jack@example.test");
+    assert!(login.has_attribute("hidden"));
+    assert!(root.query_selector("[data-action=tool]").unwrap().is_none());
 
-    let banner = wait_for("#fabb-activation-banner").await;
-    assert!(banner.text_content().unwrap_or_default().contains(
-        "jack@example.test is waiting for email confirmation — nothing syncs until you confirm it"
-    ));
-    banner
+    assert!(
+        document
+            .get_element_by_id("fabb-activation-banner")
+            .is_none()
+    );
+    let condition = bar
         .shadow_root()
-        .expect("banner shadow")
-        .query_selector(".door")
-        .expect("door selector")
-        .expect("door")
+        .expect("FAB shadow")
+        .query_selector(".condition")
+        .expect("condition selector")
+        .expect("condition action");
+    assert!(!condition.has_attribute("hidden"));
+    assert_eq!(
+        condition.text_content().as_deref(),
+        Some("confirm your email")
+    );
+    condition
+        .clone()
         .dyn_into::<HtmlElement>()
-        .expect("door html")
+        .expect("condition button")
         .click();
 
     let cluster = wait_for("#fabb-activation-cluster").await;
@@ -193,6 +207,7 @@ async fn registered_customer_can_resend_and_retires_when_active() {
             .get_element_by_id("fabb-activation-cluster")
             .is_none()
     );
+    assert!(condition.has_attribute("hidden"));
     yield_for(180).await;
     assert!(
         document
@@ -200,7 +215,9 @@ async fn registered_customer_can_resend_and_retires_when_active() {
             .is_none()
     );
     let share = bar
-        .query_selector("[data-share-link]")
+        .shadow_root()
+        .expect("bar shadow")
+        .query_selector(".share")
         .expect("share selector")
         .expect("share row");
     assert!(!share.has_attribute("data-activation-blocked"));

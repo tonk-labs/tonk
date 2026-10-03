@@ -1,5 +1,15 @@
 # The CLI command surface
 
+Current scope (Plan 005): `join TOOL_LINK` accepts only isolated scoped tool
+links. An ordinary person invite is recognized only to return the dedicated
+wrong-kind error before local mutation; it must be opened in a browser. There
+is no `--agent` selector.
+Account commands, `space link`, `migrate account`, `connect`,
+and top-level `link` are absent. The account entries below preserve the earlier
+source audit and are retired; account administration now belongs in the UI.
+CLI space creation and transplant are local-only. Existing replicas and keys
+are retained. See `ACCT-C14` / `HANDOFF-21` for the supported invitation journey.
+
 ## Summary
 
 `tonk` exposes setup, account, collaboration, authoring, data, rendering,
@@ -43,10 +53,11 @@ remote-required mutation. A rerun inspects current state and is safe.
 | --- | --- | --- |
 | `concept`, `concept --json`, `concept add` | `DATA-01` | Empty/list, typed fields/cardinality, optional description, notation, write modifiers. |
 | `view`, `view --json`, `view add` | `DATA-02` | Detail/directory/label/title, inline/file template, explicit/default anchor and derived entity, entity-like anchor rejection, home, notation, write modifiers. |
+| `element`, `element --json`, `element add` | `DATA-12` | Empty/list, inline/file method source, attribute defaults, description required, re-authoring one method or one default, legacy `component` rows alongside, notation, write modifiers. |
 | `assert [CONCEPT] [ENTITY] ...` | `DATA-03`, `DATA-04` | Dynamic help, create/update/no-op, schema flags, notation/dry-run/no-sync/quiet. |
 | `query CONCEPT` | `DATA-05` | Empty/many, human/JSON, invalid/missing concept, broken pipe. |
 | `retract CONCEPT ENTITY [--field]` | `DATA-06` | Whole/field/many field, notation/dry-run/no-sync/quiet, already retracted. |
-| `eval` | `DATA-07` | `-c`, file, explicit `-`, implicit piped stdin, query/write/mixed, JSON/quiet/home/dry-run/no-sync. |
+| `eval` | `DATA-07` | `-c`, file, explicit `-`, implicit piped stdin, query/write/mixed, JSON/quiet/home/dry-run/no-sync; a file resolves `!include` / `!include/text` next to itself, other sources refuse them. |
 | `render ROUTE [--out PATH]` | `DATA-09` | Directory/detail/explicit view, every matching view once in entity order, frame-wide portal mode, default fallback only for an empty renderable match, stdout/file, missing route/view, output failure. |
 
 ### Collaboration and sync
@@ -54,7 +65,7 @@ remote-required mutation. A rerun inspects current state and is safe.
 | Entry | Journey IDs | Variants that require coverage |
 | --- | --- | --- |
 | `invite` | `COLLAB-01`, `COLLAB-02` | Default/base URL, remote/no-remote, recipient root, shorten/no-shorten/env, zero/one/many remotes. |
-| `join URL --name NAME` | `COLLAB-03`, `COLLAB-05` | Open/restricted, remote/no remote, malformed/expired/revoked/already claimed, name/site collision. |
+| `join TOOL_URL [--name NAME] [--agent-name LABEL] [--via ORIGIN]`, `--space NAME join` | `COLLAB-03`, `COLLAB-05`, `ACCT-C14` | Scoped v1/v2 full/short, default/explicit/environment deployment selection, route mismatch, malformed/mixed/expired/revoked/already imported, ordinary-link rejection, scoped resume, persisted legacy-person resume, name/site collision; bounded self-reported agent labels remain separate from local aliases and persist across setup retries. |
 | `push` | `SYNC-02` | `R0`–`R6`, timeout/lost response/concurrent push, account/invite authority. |
 | `pull` | `SYNC-03` | `R0`–`R6`, divergence, concurrent local/remote change, restart before ref update. |
 | `remote`, `remote --json` | `CLI-03` | Empty/many, stable JSON, malformed registry. |
@@ -86,7 +97,7 @@ remote-required mutation. A rerun inspects current state and is safe.
 | `account logout` | `ACCT-C08` | Active/pending/signed out, provider online/offline, lock/concurrency/crash. |
 | `account delete [--no-open]` | `ACCT-C12`, `AUTH-05` | Browser open failure, safe review URL, stale/deleted account, no direct mutation. |
 | `account space`, `account space --json` | `SPACE-11` | Empty/owned/joined/duplicates/offline/stale, human/JSON. |
-| `account space pull NAME_OR_SUBJECT [--name]` | `SPACE-12` | Unique/ambiguous/missing, subject, local collisions, offline/revoked/crash. |
+| `account space pull NAME_OR_SUBJECT [--name]` | `SPACE-12` | Unique/ambiguous/missing, subject, local collisions, label-derived vs explicit names, offline/revoked/crash. |
 | `account space delete SUBJECT [--no-open]` | `ACCT-C12`, `AUTH-04` | Exact subject URL, owned/joined/stale, browser open failure. |
 | `account devices [--json]` | `ACCT-C10` | Self/other/empty/duplicate/revoked, online/offline fallback, provider cross-check. |
 | `account revoke DID` | `ACCT-C11`, `AUTH-01`, `AUTH-02` | Self/other/unknown/already revoked, partial publish, retry, process output. |

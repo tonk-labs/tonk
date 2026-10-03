@@ -7,9 +7,9 @@
 //! server and comes back as 405 Method Not Allowed.
 //!
 //! The shell exposes the wait point as a global Promise factory
-//! `globalThis.serviceWorkerActivates()`. This module memoizes
-//! the wait so the first IO awaits it once, every subsequent
-//! call returns immediately. Consumer elements no longer need
+//! `globalThis.serviceWorkerActivates()`. Recheck that factory before
+//! each IO: an installed successor can close the gate again while
+//! the incumbent retires. Consumer elements do not need
 //! to thread their own readiness signal through Leptos
 //! contexts.
 //!
@@ -20,58 +20,36 @@
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
     use js_sys::{Function, Promise, Reflect};
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
     use web_sys::window;
 
-    thread_local! {
-        /// Cached "service worker is up" flag. Once `wait()` has
-        /// returned at least once the gate stays open for the page's
-        /// lifetime, so we skip the global-lookup + promise-await on
-        /// every subsequent call.
-        static SW_READY: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
-    }
-
-    /// Require the service worker to be activated. Idempotent
-    /// and cheap to call repeatedly — after the first successful
-    /// await, returns immediately. Missing shell globals remain a
+    /// Require the service worker to be ready for new IO, including
+    /// handoff of a previously ready page to an installed successor.
+    /// Missing shell globals remain a
     /// successful no-op for test harnesses and embeds; rejection of an
     /// installed readiness hook is returned without opening the gate.
     pub async fn require() -> Result<(), JsValue> {
-        // Fast path: already known ready.
-        let cached = SW_READY.with(|cell| *cell.borrow());
-        if cached {
-            return Ok(());
-        }
-
-        // Slow path: probe and await the global. Each failure mode
+        // Probe and await the current gate. Each failure mode
         // (no window, missing global, not a function, not a promise)
         // is treated as "already ready" so the call doesn't hang in
         // environments without the shell hook (test harness, embeds).
         let Some(win) = window() else {
-            SW_READY.with(|cell| *cell.borrow_mut() = true);
             return Ok(());
         };
         let Ok(activates_val) = Reflect::get(&win, &JsValue::from_str("serviceWorkerActivates"))
         else {
-            SW_READY.with(|cell| *cell.borrow_mut() = true);
             return Ok(());
         };
         let Ok(activates) = activates_val.dyn_into::<Function>() else {
-            SW_READY.with(|cell| *cell.borrow_mut() = true);
             return Ok(());
         };
         let result = activates.call0(&JsValue::UNDEFINED)?;
         let Ok(promise) = result.dyn_into::<Promise>() else {
-            SW_READY.with(|cell| *cell.borrow_mut() = true);
             return Ok(());
         };
         JsFuture::from(promise).await?;
-        SW_READY.with(|cell| *cell.borrow_mut() = true);
         Ok(())
     }
 
@@ -92,3 +70,39 @@ mod imp {
 #[cfg(target_arch = "wasm32")]
 pub use imp::require;
 pub use imp::wait;
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use js_sys::{Function, Promise, Reflect};
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen_futures::JsFuture;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn readiness_can_close_again_for_a_worker_handoff() {
+        let window = web_sys::window().unwrap();
+        let key = JsValue::from_str("serviceWorkerActivates");
+        let old = Reflect::get(&window, &key).unwrap();
+        let hook = Function::new_no_args("return globalThis.__tonkReadyTestPromise;");
+        Reflect::set(&window, &key, &hook).unwrap();
+        let gate_key = JsValue::from_str("__tonkReadyTestPromise");
+        Reflect::set(&window, &gate_key, &Promise::resolve(&JsValue::UNDEFINED)).unwrap();
+        super::require().await.unwrap();
+
+        let mut release = None;
+        let handoff = Promise::new(&mut |resolve, _| release = Some(resolve));
+        Reflect::set(&window, &gate_key, &handoff).unwrap();
+        let mut waiting = Box::pin(super::require());
+        let blocked = futures::poll!(waiting.as_mut()).is_pending();
+        release.unwrap().call0(&JsValue::UNDEFINED).unwrap();
+        JsFuture::from(handoff).await.unwrap();
+        if blocked {
+            waiting.await.unwrap();
+        }
+        Reflect::set(&window, &key, &old).unwrap();
+        Reflect::delete_property(&window, &gate_key).unwrap();
+        assert!(
+            blocked,
+            "a prior successful wait must not bypass a later handoff"
+        );
+    }
+}

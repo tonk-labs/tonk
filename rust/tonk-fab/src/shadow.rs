@@ -13,7 +13,9 @@ use std::rc::Rc;
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, Range, ShadowRoot, window};
+use web_sys::{
+    CustomEvent, CustomEventInit, Element, HtmlElement, HtmlInputElement, ShadowRoot, window,
+};
 
 use crate::skin::SKIN;
 
@@ -130,15 +132,15 @@ pub fn install_visibility_pause(this: &HtmlElement) -> Bound {
     })
 }
 
-/// A live in-place edit: the contenteditable span plus its block cursor.
+/// A live in-place edit: the text input plus its block cursor.
 ///
 /// Held behind an `Rc` by the caller, and deliberately NOT dropped when the
 /// edit settles: the commit runs from inside this struct's own blur listener,
 /// and dropping it there would free the closure currently executing. It is
 /// released when the next edit replaces it, or when the element disconnects.
 pub struct Edit {
-    /// The editable span itself.
-    pub span: HtmlElement,
+    /// The editable input itself.
+    pub input: HtmlInputElement,
     committed: Rc<RefCell<bool>>,
     /// The commit callback, so [`Edit::commit`] can settle the edit directly
     /// rather than going through focus.
@@ -159,28 +161,17 @@ impl Edit {
             return;
         }
         *self.committed.borrow_mut() = true;
-        let value = self
-            .span
-            .text_content()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        let value = self.input.value().trim().to_string();
         (self.on_commit)(true, value);
-        let _ = self.span.blur();
+        let _ = self.input.blur();
     }
 
-    /// Focus the span and put the caret after the last character — where the
+    /// Focus the input and put the caret after the last character — where the
     /// block cursor is already drawn.
     pub fn focus_end(&self) {
-        let _ = self.span.focus();
-        let Some(win) = window() else { return };
-        let Ok(range) = Range::new() else { return };
-        let _ = range.select_node_contents(&self.span);
-        range.collapse_with_to_start(false);
-        if let Some(sel) = win.get_selection().ok().flatten() {
-            let _ = sel.remove_all_ranges();
-            let _ = sel.add_range(&range);
-        }
+        let _ = self.input.focus();
+        let end = self.input.value().encode_utf16().count() as u32;
+        let _ = self.input.set_selection_range(end, end);
     }
 }
 
@@ -197,23 +188,19 @@ pub fn mount_edit(
 ) -> Edit {
     cell.set_text_content(Some(""));
 
-    let span: HtmlElement = el("span").unchecked_into();
-    span.set_class_name("edit");
-    // `plaintext-only` keeps pasted markup out of a chrome label; Firefox
-    // rejects the value, so fall back to the permissive mode there.
-    if span
-        .set_attribute("contenteditable", "plaintext-only")
-        .is_err()
-    {
-        let _ = span.set_attribute("contenteditable", "true");
-    }
-    span.set_text_content(Some(initial));
+    // A native text control owns its caret inside a shadow root. Safari does
+    // not expose a shadow-root Selection, so a contenteditable span focused
+    // here could not be given an editing caret with `window.getSelection()`.
+    let input: HtmlInputElement = el("input").unchecked_into();
+    input.set_class_name("edit");
+    input.set_type("text");
+    input.set_value(initial);
 
     let cursor = el("i");
     cursor.set_class_name("cur");
     let _ = cursor.set_attribute("aria-hidden", "true");
 
-    let _ = cell.append_child(&span);
+    let _ = cell.append_child(&input);
     let _ = cell.append_child(&cursor);
 
     let committed = Rc::new(RefCell::new(false));
@@ -222,7 +209,7 @@ pub fn mount_edit(
     let mut listeners: Vec<Closure<dyn FnMut(web_sys::Event)>> = Vec::new();
 
     {
-        let span_for_keys = span.clone();
+        let input_for_keys = input.clone();
         let commit = on_commit.clone();
         let committed = committed.clone();
         let original = original.clone();
@@ -236,16 +223,9 @@ pub fn mount_edit(
                         ev.prevent_default();
                         if !*committed.borrow() {
                             *committed.borrow_mut() = true;
-                            commit(
-                                true,
-                                span_for_keys
-                                    .text_content()
-                                    .unwrap_or_default()
-                                    .trim()
-                                    .to_string(),
-                            );
+                            commit(true, input_for_keys.value().trim().to_string());
                         }
-                        let _ = span_for_keys.blur();
+                        let _ = input_for_keys.blur();
                     }
                     "Escape" => {
                         // Stop here: an Escape aimed at the text must not also
@@ -255,17 +235,17 @@ pub fn mount_edit(
                             *committed.borrow_mut() = true;
                             commit(false, original.clone());
                         }
-                        let _ = span_for_keys.blur();
+                        let _ = input_for_keys.blur();
                     }
                     _ => {}
                 }
             }));
-        let _ = span.add_event_listener_with_callback("keydown", cb.as_ref().unchecked_ref());
+        let _ = input.add_event_listener_with_callback("keydown", cb.as_ref().unchecked_ref());
         listeners.push(cb);
     }
 
     {
-        let span_for_blur = span.clone();
+        let input_for_blur = input.clone();
         let commit = on_commit.clone();
         let committed = committed.clone();
         let cb: Closure<dyn FnMut(web_sys::Event)> =
@@ -274,21 +254,14 @@ pub fn mount_edit(
                     return;
                 }
                 *committed.borrow_mut() = true;
-                commit(
-                    true,
-                    span_for_blur
-                        .text_content()
-                        .unwrap_or_default()
-                        .trim()
-                        .to_string(),
-                );
+                commit(true, input_for_blur.value().trim().to_string());
             }));
-        let _ = span.add_event_listener_with_callback("blur", cb.as_ref().unchecked_ref());
+        let _ = input.add_event_listener_with_callback("blur", cb.as_ref().unchecked_ref());
         listeners.push(cb);
     }
 
     Edit {
-        span,
+        input,
         committed,
         on_commit,
         _listeners: listeners,

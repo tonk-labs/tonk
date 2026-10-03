@@ -14,16 +14,17 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
-use dialog_capability::Subject;
-use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
-use dialog_effects::space::{Space, SpaceExt as _};
-use dialog_effects::storage::Directory;
-use dialog_operator::{DeriveOperator, Operator, Profile};
-use dialog_reactor::{BranchSession, Reactor, ReactorError};
-use dialog_repository::{Repository, RepositoryExt as _};
+use dialog_capability::{Subject, did};
+use dialog_credentials::key::ExtractableKey;
+use dialog_credentials::{Ed25519Signer, Extractable};
+use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
+use dialog_peer::{Peer, Session};
+use dialog_reactor::{BranchSession, Reactor, ReactorError, RepositoryState};
+use dialog_repository::{Repository, RepositoryExt as _, RepositoryMemoryExt as _};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
@@ -144,6 +145,12 @@ pub const SITE_DIRNAME: &str = ".tonk";
 /// data: an empty directory is not a site.
 pub fn has_site_data(root: &Path) -> bool {
     root.join(REPO_NAME).is_dir()
+        || root.join(crate::connections::MARKER_FILE).exists()
+        || root.join(crate::connections::DATA_MARKER_FILE).exists()
+        || root
+            .join("data")
+            .join(crate::connections::DATA_MARKER_FILE)
+            .exists()
 }
 
 /// An opened tonk site: profile, operator, repository, and a
@@ -160,7 +167,7 @@ pub struct TonkSite {
     /// Absolute path to the `.tonk/` directory backing this site.
     pub root: PathBuf,
     /// The user's profile (shared identity).
-    pub profile: Profile,
+    pub profile: Peer<NativeSpace>,
     /// Operator rooted at [`Self::root`].
     pub operator: crate::account_authority::AccountBoundOperator,
     /// The `main` repository handle. Verifier-typed (`Credential`):
@@ -175,6 +182,11 @@ pub struct TonkSite {
 }
 
 impl TonkSite {
+    /// Whether this site uses isolated invitation authority instead of an account.
+    pub fn is_scoped(&self) -> bool {
+        self.operator.is_scoped()
+    }
+
     /// Open an already-existing site at the given directory.
     /// Errors if the directory exists but the dialog repository
     /// inside it is missing or unreadable.
@@ -187,6 +199,7 @@ impl TonkSite {
     /// unique profile name without touching the user's real
     /// data dir.
     pub async fn open_with(root: &Path, config: SiteConfig) -> Result<Self> {
+        crate::connections::reject_generic_open(root)?;
         let root = root
             .canonicalize()
             .with_context(|| format!("could not canonicalize {}", root.display()))?;
@@ -219,10 +232,7 @@ impl TonkSite {
             }
         }
 
-        let repository = profile
-            .repository(REPO_NAME)
-            .load()
-            .perform(&operator)
+        let repository = load_repository(&profile, &operator, &root)
             .await
             .with_context(|| {
                 format!(
@@ -231,7 +241,7 @@ impl TonkSite {
                 )
             })?;
 
-        let reactor = Reactor::new(profile.clone());
+        let reactor = reactor_for(&profile, &repository);
         let operator = crate::account_authority::wrap(
             operator,
             profile.clone(),
@@ -270,6 +280,7 @@ impl TonkSite {
     /// loaded, not clobbered, which is also how `tonk space new
     /// --site <path>` adopts pre-existing storage.
     pub async fn init_at_with(root: &Path, config: SiteConfig) -> Result<Self> {
+        crate::connections::reject_generic_open(root)?;
         std::fs::create_dir_all(root)
             .with_context(|| format!("failed to create {}", root.display()))?;
         // Record the format beside the data, so the next incompatible change
@@ -292,22 +303,17 @@ impl TonkSite {
         // repo. Without that root chain `profile.access().claim`
         // fails with "no delegation chain found" the moment we
         // try to mint an invite.
-        let (repository, fresh) = match profile
-            .repository(REPO_NAME)
-            .load()
-            .perform(&operator)
-            .await
-        {
+        let (repository, fresh) = match load_repository(&profile, &operator, &root).await {
             Ok(repository) => (repository, false),
             Err(_) => (
-                bootstrap_repository(&profile, &operator, &config)
+                bootstrap_repository(&profile, &operator, &config, &root)
                     .await
                     .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
                 true,
             ),
         };
 
-        let reactor = Reactor::new(profile.clone());
+        let reactor = reactor_for(&profile, &repository);
         let operator = crate::account_authority::wrap(
             operator,
             profile.clone(),
@@ -343,7 +349,7 @@ impl TonkSite {
     async fn seed_standard_library(&self) -> Result<()> {
         crate::eval::run_against_site(
             self,
-            crate::eval::Source::Inline(STANDARD_LIBRARY.to_string()),
+            crate::eval::Source::Library(STANDARD_LIBRARY.to_string()),
             crate::eval::Options::default(),
         )
         .await
@@ -437,6 +443,14 @@ impl Identity {
     /// A signed-out installation may retain its durable local root. Both
     /// are installation properties, so any replica answers for them.
     pub async fn of(site: &TonkSite) -> Result<Self> {
+        if site.is_scoped() {
+            return Ok(Self {
+                account: None,
+                local_root: None,
+                onboarding: None,
+                profile: site.profile.did().to_string(),
+            });
+        }
         let active = crate::account_session::snapshot(
             &site.profile,
             site.operator.local(),
@@ -483,6 +497,17 @@ impl Identity {
             .chain(std::iter::once(self.profile.as_str()))
     }
 
+    /// Installation identities that do not depend on the ambient cached
+    /// account. Browser-selected local-space linking uses this narrower set
+    /// so an unrelated legacy CLI account cannot affect eligibility.
+    pub fn local_dids(&self) -> impl Iterator<Item = &str> {
+        self.local_root
+            .as_deref()
+            .into_iter()
+            .chain(self.onboarding.as_deref())
+            .chain(std::iter::once(self.profile.as_str()))
+    }
+
     /// The DID this installation writes a roster row under: the most
     /// specific identity it has.
     pub fn member_did(&self) -> Result<Did> {
@@ -507,10 +532,10 @@ pub async fn member_did(site: &TonkSite) -> Result<Did> {
 async fn onboarding_grant_issuer(site: &TonkSite) -> Option<String> {
     let bytes = site
         .profile
-        .credential()
+        .secrets()
         .site(crate::onboarding::ONBOARDING_GRANT_SITE)
         .load::<Vec<u8>>()
-        .perform(site.operator.local())
+        .perform(&site.profile)
         .await
         .ok()?;
     let chain = DelegationChain::try_from(bytes.as_slice()).ok()?;
@@ -567,9 +592,10 @@ pub async fn record_founder_membership_for(site: &TonkSite, member: Did) -> Resu
 /// because the rest of tonk treats every repo handle uniformly,
 /// regardless of how it was bootstrapped.
 async fn bootstrap_repository(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
     config: &SiteConfig,
+    root: &Path,
 ) -> Result<Repository> {
     let account_store = &config.account_store;
     let require_account = config.require_account;
@@ -590,13 +616,8 @@ async fn bootstrap_repository(
     // from first boot. Unlinked spaces then have the same anatomy as
     // linked ones, and `tonk account login` moves them with the shared
     // account rotation instead of adopting a bespoke local form.
-    let store_operator = crate::account_state::store_operator_with_config(
-        profile,
-        account_store,
-        &config.profile_name,
-        config.profile_directory.clone(),
-    )
-    .await?;
+    let store_operator =
+        crate::account_state::store_operator_with_config(profile, account_store).await?;
     let onboarding = match &local_root {
         Some(_) => None,
         None => Some(crate::onboarding::account(profile, &store_operator).await?),
@@ -623,55 +644,16 @@ async fn bootstrap_repository(
         (None, None) => unreachable!("an onboarding account is minted when no root exists"),
     };
 
-    // The signer comes from an explicit seed so the seed can be sealed
-    // to the account BEFORE the space exists: the custody row is the
-    // copy the account's other devices recover the space from, and a
-    // create that cannot record it must not produce a space that only
-    // this machine can ever re-derive.
+    // Creating the space takes its key into the account's custody, sealed
+    // to the account before the space exists, with a copy for this profile:
+    // the copy the account's other devices recover the space from.
     let seed = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
-    let signer = Ed25519Signer::import(&*seed)
+    let signer = <Ed25519Signer<Extractable> as ExtractableKey>::import(&*seed)
         .await
         .context("failed to derive the space signer")?;
-    if require_account {
-        let account_operator = account_operator
-            .as_ref()
-            .expect("account operator exists when an account is required");
-        let account =
-            crate::account_state::open_account_branch_in(profile, account_operator, account_store)
-                .await?
-                .context("the account repository is not ready to custody this space")?;
-        let recipient = crate::custody::account_recipient(&account, &durable_did, account_operator)
-            .await?
-            .context(
-                "the account has not published its encryption key yet; \
-                     open /account in a signed-in browser once, then retry",
-            )?;
-        crate::custody::custody_space_seed(
-            &account,
-            &signer.did(),
-            &recipient,
-            &seed,
-            account_operator,
-        )
-        .await?;
-    } else if let Some(secret) = &onboarding {
-        // Unlinked: the seed seals to the onboarding key on the local
-        // account branch — the same branch the account mounts once the
-        // device signs in, so the rows ride straight into rotation.
-        let recipient = secret.secret().did();
-        let account = crate::custody::open_local_account_branch(profile, &store_operator).await?;
-        crate::custody::custody_space_seed(
-            &account,
-            &signer.did(),
-            &recipient,
-            &seed,
-            &store_operator,
-        )
-        .await?;
-    }
 
     let signer_repo = profile
-        .repository(REPO_NAME)
+        .space(REPO_NAME)
         .create()
         .with_credential(signer)
         .perform(operator)
@@ -689,10 +671,10 @@ async fn bootstrap_repository(
         .to_bytes()
         .context("failed to serialize repo→root delegation")?;
     profile
-        .credential()
+        .secrets()
         .site(space_root_site(&signer_repo.did(), &durable_did))
         .save(prefix_bytes)
-        .perform(operator)
+        .perform(profile)
         .await
         .context("failed to persist repo→root delegation")?;
 
@@ -727,10 +709,7 @@ async fn bootstrap_repository(
         }
     }
 
-    profile
-        .repository(REPO_NAME)
-        .load()
-        .perform(operator)
+    load_repository(profile, operator, root)
         .await
         .context("failed to reload repository after bootstrap")
 }
@@ -787,8 +766,8 @@ pub(crate) async fn mount_delegated_in_empty(
 /// device and can be connected to an account by the later profile union.
 pub(crate) async fn mount_delegated_with(
     root: &Path,
-    profile: Profile,
-    operator: Operator<NativeSpace>,
+    profile: Peer<NativeSpace>,
+    operator: Peer<NativeSpace, Session>,
     chain: DelegationChain,
     config: SiteConfig,
 ) -> Result<TonkSite> {
@@ -797,8 +776,8 @@ pub(crate) async fn mount_delegated_with(
 
 async fn mount_delegated_inner(
     root: &Path,
-    profile: Profile,
-    operator: Operator<NativeSpace>,
+    profile: Peer<NativeSpace>,
+    operator: Peer<NativeSpace, Session>,
     chain: DelegationChain,
     config: SiteConfig,
     require_reusable: bool,
@@ -823,13 +802,9 @@ async fn mount_delegated_inner(
             // Before a passkey exists the device's durable root is its
             // onboarding account, and a reusable prefix may terminate
             // there — sign-in rotation re-roots it later.
-            let store_operator = crate::account_state::store_operator_with_config(
-                &profile,
-                &config.account_store,
-                &config.profile_name,
-                config.profile_directory.clone(),
-            )
-            .await?;
+            let store_operator =
+                crate::account_state::store_operator_with_config(&profile, &config.account_store)
+                    .await?;
             match crate::onboarding::did(&profile, &store_operator).await? {
                 Some(did) => did,
                 None if require_reusable => {
@@ -878,32 +853,26 @@ async fn mount_delegated_inner(
             .to_bytes()
             .context("failed to serialize delegated prefix")?;
         profile
-            .credential()
+            .secrets()
             .site(space_root_site(&subject, &authority_root))
             .save(prefix_bytes)
-            .perform(&operator)
+            .perform(&profile)
             .await
             .context("failed to persist delegated account-root prefix")?;
     }
 
-    let verifier: Ed25519Verifier = subject
-        .to_string()
-        .parse()
-        .map_err(|error| anyhow::anyhow!("delegated subject is not an Ed25519 DID: {error:?}"))?;
-    Subject::from(profile.did())
-        .attenuate(Space::new(REPO_NAME))
-        .create(Credential::from(verifier))
-        .perform(&operator)
-        .await
-        .context("failed to provision delegated repository")?;
+    tonk_account::peer::mount_verifier(
+        profile.storage(),
+        site_location(root, REPO_NAME)?,
+        &subject,
+    )
+    .await
+    .context("failed to provision delegated repository")?;
 
-    let repository = profile
-        .repository(REPO_NAME)
-        .load()
-        .perform(&operator)
+    let repository = load_repository(&profile, &operator, root)
         .await
         .context("failed to load delegated repository")?;
-    let reactor = Reactor::new(profile.clone());
+    let reactor = reactor_for(&profile, &repository);
     let operator = crate::account_authority::wrap(
         operator,
         profile.clone(),
@@ -941,49 +910,104 @@ pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<
                 .context("failed to retain account-root authority for this profile")?;
             Ok(chain)
         }
-        Err(profile_error) if site.repository.credential().signer().is_some() => {
-            let Some(dialog_credentials::Signer::Ed25519(signer)) =
-                site.repository.credential().signer()
-            else {
-                unreachable!("tonk-cli enables only Ed25519 credentials");
-            };
-            let minter = Repository::from(signer.clone());
-            let delegation: UcanDelegation = minter
-                .access()
-                .claim(&minter)
-                .delegate(account_root.clone())
-                .perform(site.operator.local())
+        Err(profile_error) if site.profile.holds_key(&site.repository.did()).await? => {
+            direct_account_root_prefix(site, account_root)
                 .await
                 .with_context(|| {
                     format!(
-                        "the profile cannot delegate this space and its repository signer failed: {profile_error}"
+                        "the peer cannot delegate this space and no direct delegation from it was found: {profile_error}"
                     )
-                })?;
-            let chain = delegation.into_chain();
-            site.profile
-                .access()
-                .save(UcanDelegation(chain.clone()))
-                .perform(site.operator.local())
-                .await
-                .context("failed to retain repository-signed authority for this profile")?;
-            let bytes = chain
-                .to_bytes()
-                .context("failed to serialize repository-signed account-root prefix")?;
-            let validated = validate_prefix(bytes.clone(), account_root)
-                .await
-                .context("repository-signed account-root prefix is invalid")?;
-            save_prefix(
-                &site.profile,
-                site.operator.local(),
-                &space_root_site(&site.repository.did(), account_root),
-                bytes,
-            )
-            .await
-            .context("failed to persist repository-signed account-root prefix")?;
-            Ok(validated)
+                })
         }
         Err(error) => Err(error),
     }
+}
+
+/// Take the repository of the site at `root` into the account's custody
+/// when its space still holds the signing key a release before keys left
+/// the storage kept there: part of upgrading the site as it opens. The key
+/// leaves the space only into the credential store beside it, the one way
+/// a key leaves a space. A peer with no account yet leaves the key where it
+/// is, for an open once it has one.
+async fn adopt_legacy_space(profile: &Peer<NativeSpace>, root: &Path) -> Result<()> {
+    if profile.authority().await.is_err() {
+        return Ok(());
+    }
+    let location = site_location(root, REPO_NAME)?;
+    let adopted = dialog_storage::provider::storage::CredentialStore::<NativeSpace>::new()
+        .adopt_from(profile.storage(), &location)
+        .await;
+    let signer = match adopted {
+        Ok(dialog_credentials::Credential::Signer(signer)) => signer,
+        Ok(dialog_credentials::Credential::Verifier(_))
+        | Err(storage_fx::StorageError::NotFound(_)) => {
+            return Ok(());
+        }
+        Err(error) => return Err(error).context("failed to adopt the space's stored key"),
+    };
+    let dialog_credentials::Signer::Ed25519(key) = signer.signer().clone();
+    // Natively every export of a key is its seed.
+    let dialog_credentials::KeyExport::Extractable(seed) = key
+        .export()
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to export the space's key: {error:?}"))?;
+    let seed: [u8; 32] = seed
+        .as_slice()
+        .try_into()
+        .context("the space's stored key is not a key")?;
+    let key = <Ed25519Signer<Extractable> as ExtractableKey>::import(&seed)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to import the space's key: {error:?}"))?;
+    profile
+        .adopt_space(key)
+        .await
+        .context("failed to take the space into the account's custody")
+}
+
+/// Persist the direct `space -> account-root` prefix the space's custody
+/// left: creating, adopting or handing a space over has it delegate to the
+/// account it is held for. Provisioning consumes the first proof as the
+/// space's consent, so an otherwise valid chain through an onboarding
+/// account is intentionally not sufficient here. Found, never minted: one
+/// that is missing is custody that never reached the account, reported as
+/// such.
+pub async fn direct_account_root_prefix(
+    site: &TonkSite,
+    account_root: &Did,
+) -> Result<DelegationChain> {
+    let subject = site.repository.did();
+    let chain = recover_prefix(&site.profile, site.operator.local(), &subject, account_root)
+        .await?
+        .with_context(|| {
+            format!(
+                "no delegation from {subject} reaches {account_root}: the space's custody never reached that account"
+            )
+        })?;
+    anyhow::ensure!(
+        chain.issuer() == &subject && chain.proofs().count() == 1,
+        "no direct delegation from {subject} to {account_root}: the space's custody never reached that account"
+    );
+    let bytes = chain
+        .to_bytes()
+        .context("failed to serialize the account-root prefix")?;
+    let validated = validate_prefix(bytes.clone(), account_root)
+        .await
+        .context("the account-root prefix is invalid")?;
+    site.profile
+        .access()
+        .save(UcanDelegation(validated.clone()))
+        .perform(site.operator.local())
+        .await
+        .context("failed to retain the space's authority for this peer")?;
+    save_prefix(
+        &site.profile,
+        site.operator.local(),
+        &space_root_site(&site.repository.did(), account_root),
+        bytes,
+    )
+    .await
+    .context("failed to persist the account-root prefix")?;
+    Ok(validated)
 }
 
 /// Decode a stored prefix for `account_root`.
@@ -993,15 +1017,15 @@ async fn validate_prefix(bytes: Vec<u8>, account_root: &Did) -> Result<Delegatio
 
 /// Read one credential site, treating absence and emptiness alike.
 async fn optional_credential(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    _operator: &Peer<NativeSpace, Session>,
     site: String,
 ) -> Result<Option<Vec<u8>>> {
     match profile
-        .credential()
+        .secrets()
         .site(site)
         .load::<Vec<u8>>()
-        .perform(operator)
+        .perform(profile)
         .await
     {
         Ok(bytes) if bytes.is_empty() => Ok(None),
@@ -1020,8 +1044,8 @@ async fn optional_credential(
 /// account union. Recovery composes that existing path without minting a new
 /// ownership edge; explicit ownership adoption remains a separate operation.
 pub async fn load_account_root_prefix_for(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
     subject: &Did,
     account_root: &Did,
 ) -> Result<DelegationChain> {
@@ -1065,8 +1089,8 @@ pub async fn load_account_root_prefix_for(
 /// routine remote authorization calls [`load_account_root_prefix_for`] and
 /// therefore cannot silently change ownership.
 pub async fn adopt_account_root_prefix_for(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
     subject: &Did,
     account_root: &Did,
 ) -> Result<DelegationChain> {
@@ -1095,8 +1119,8 @@ pub async fn adopt_account_root_prefix_for(
 
 /// Compatibility name for callers that explicitly establish ownership.
 pub async fn account_root_prefix_for(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
     subject: &Did,
     account_root: &Did,
 ) -> Result<DelegationChain> {
@@ -1104,16 +1128,16 @@ pub async fn account_root_prefix_for(
 }
 
 async fn save_prefix(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    _operator: &Peer<NativeSpace, Session>,
     site: &str,
     bytes: Vec<u8>,
 ) -> Result<()> {
     profile
-        .credential()
+        .secrets()
         .site(site.to_string())
         .save(bytes)
-        .perform(operator)
+        .perform(profile)
         .await?;
     Ok(())
 }
@@ -1124,12 +1148,12 @@ async fn save_prefix(
 /// profile would stop at the shorter `subject → … → profile` path and omit
 /// the union edge needed by account-bound authorization.
 pub(crate) async fn recover_prefix(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
     subject: &Did,
     account_root: &Did,
 ) -> Result<Option<DelegationChain>> {
-    let access = Repository::from(profile)
+    let access = Repository::from(profile.did())
         .branch(dialog_repository::ACCESS_BRANCH)
         .open()
         .perform(operator)
@@ -1168,8 +1192,8 @@ pub(crate) async fn recover_prefix(
 
 /// Extend held authority over `subject` to the account root.
 async fn mint_prefix(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
     subject: &Did,
     account_root: &Did,
 ) -> Result<DelegationChain> {
@@ -1252,38 +1276,129 @@ pub fn default_config() -> Result<SiteConfig> {
 /// but the profile + operator setup is the same).
 async fn derive_operator_for_profile(
     root: &Path,
-    profile: &Profile,
-    storage: Storage<NativeSpace>,
-) -> Result<Operator<NativeSpace>> {
+    profile: &Peer<NativeSpace>,
+) -> Result<Peer<NativeSpace, Session>> {
     let root_str = root
         .to_str()
         .with_context(|| format!("non-UTF-8 path: {}", root.display()))?
         .to_owned();
-    let operator = profile
-        .derive(OPERATOR_CONTEXT)
-        .base(Directory::At(root_str))
-        .build(storage)
-        .await
-        .context("failed to build operator")?;
     let expiration = Timestamp::new(
         SystemTime::now() + Duration::from_secs(tonk_identity::session::SESSION_TTL_SECONDS),
     )
     .context("native session expiration is out of range")?;
-    let session = profile
-        .access()
-        .claim(Subject::any())
-        .expires(expiration)
-        .delegate(operator.did())
-        .perform(&operator)
+    // The signing session is held in memory for this process only. Every
+    // CLI invocation opens a site afresh, so a durable grant here would
+    // commit one more certificate to the profile per `tonk pull`.
+    let operator = profile
+        .session(OPERATOR_CONTEXT)
+        .space(profile.state())
+        .base(Directory::At(root_str))
+        .grant(profile.access().claim(Subject::any()).expires(expiration))
         .await
-        .context("failed to mint the native signing session")?;
-    profile
-        .access()
-        .save(session)
-        .perform(&operator)
-        .await
-        .context("failed to save the native signing session")?;
+        .context("failed to build operator")?;
     Ok(operator)
+}
+
+/// Load the repository of the site at `root`, from where it is stored.
+///
+/// Every site's space is named [`REPO_NAME`], and a peer resolves a space
+/// name from the records it keeps before its base directory, so the name
+/// would find whichever site recorded it last. A site's repository is
+/// loaded from its own directory instead, and upgraded and opened as
+/// loading it by name would.
+pub(crate) async fn load_repository(
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
+    root: &Path,
+) -> Result<Repository> {
+    adopt_legacy_space(profile, root).await?;
+    let credential = Subject::from(did!("local:storage"))
+        .attenuate(storage_fx::Storage)
+        .attenuate(site_location(root, REPO_NAME)?)
+        .load()
+        .perform(profile.storage())
+        .await?;
+    let repository = Repository::from(credential);
+    repository.upgrade().perform(operator).await?;
+    repository
+        .subject()
+        .registry()
+        .open()
+        .perform(operator)
+        .await?;
+    Ok(repository)
+}
+
+/// A reactor over `profile` whose site repository is `repository`, the one
+/// [`load_repository`] loaded, rather than the space its name resolves to.
+pub(crate) fn reactor_for(profile: &Peer<NativeSpace>, repository: &Repository) -> Reactor {
+    let reactor = Reactor::new(profile.credential().clone());
+    reactor.repos().write().insert(
+        REPO_NAME.to_owned(),
+        Arc::new(RepositoryState::new(Arc::new(Repository::from(
+            repository.credential().clone(),
+        )))),
+    );
+    reactor
+}
+
+/// Where the space `name` of the site at `root` is stored: the directory
+/// the site's operator resolves space names against.
+pub(crate) fn site_location(root: &Path, name: &str) -> Result<Location> {
+    let root = root
+        .to_str()
+        .with_context(|| format!("non-UTF-8 path: {}", root.display()))?;
+    Ok(Location::new(Directory::At(root.to_owned()), name))
+}
+
+/// Open the peer the profile `name` in `directory` is: its key from the
+/// credential store the system tonk runs as keeps there, its spaces in the
+/// storage that system owns, granted to it, and onboarded.
+///
+/// With `create` false, a profile that holds no key yet is refused rather
+/// than given a fresh one.
+pub async fn open_profile(
+    name: impl AsRef<str>,
+    directory: Directory,
+    create: bool,
+) -> Result<Peer<NativeSpace>> {
+    let name = name.as_ref();
+    let (credentials, system) = tonk_account::peer::open_system::<NativeSpace>(directory.clone())
+        .await
+        .context("failed to open the system key")?;
+    let storage = Storage::<NativeSpace>::default().owned_by(system.did());
+    let location = Location::new(directory.clone(), name);
+    let profile = tonk_account::peer::open_peer(
+        location.clone(),
+        directory,
+        storage,
+        &credentials,
+        &system,
+        create,
+    )
+    .await
+    .with_context(|| format!("failed to open profile '{name}'"))?;
+    tonk_account::peer::migrate_site_secrets(&profile, &location, &legacy_sites())
+        .await
+        .with_context(|| format!("failed to move the site secrets of profile '{name}'"))?;
+    Ok(profile)
+}
+
+/// Every site secret the CLI kept in a profile's space before site
+/// secrets were sealed to its peer's vault.
+fn legacy_sites() -> Vec<String> {
+    [
+        crate::identity::LOCAL_ROOT_SITE,
+        crate::account::ACCOUNT_LINK_SITE,
+        tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
+        tonk_account::CUSTOMER_CREDENTIAL_SITE,
+        tonk_account::PENDING_WORK_CREDENTIAL_SITE,
+        crate::onboarding::ONBOARDING_ENVELOPE_SITE,
+        crate::onboarding::ONBOARDING_GRANT_SITE,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 /// Outcome of [`transplant_at_with`].
@@ -1317,6 +1432,7 @@ pub async fn transplant_at_with(
     use tonk_schema::prelude::DidExt as _;
     use tonk_schema::{RepositoryName, Transplant};
 
+    crate::connections::reject_generic_open(root)?;
     let root = root
         .canonicalize()
         .with_context(|| format!("could not canonicalize {}", root.display()))?;
@@ -1387,21 +1503,17 @@ pub async fn transplant_at_with(
 /// fresh creation runs, over a store that already holds the data.
 async fn mint_fresh_subject(root: &Path, config: &SiteConfig) -> Result<()> {
     let (profile, operator) = build_profile_and_operator(root, config).await?;
-    bootstrap_repository(&profile, &operator, config).await?;
+    bootstrap_repository(&profile, &operator, config, root).await?;
     Ok(())
 }
 
 pub(crate) async fn build_profile_and_operator(
     root: &Path,
     config: &SiteConfig,
-) -> Result<(Profile, Operator<NativeSpace>)> {
-    let storage = Storage::<NativeSpace>::default();
-    let profile = Profile::open(config.profile_name.clone())
-        .at(config.profile_directory.clone())
-        .perform(&storage)
-        .await
-        .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
-    let operator = derive_operator_for_profile(root, &profile, storage).await?;
+) -> Result<(Peer<NativeSpace>, Peer<NativeSpace, Session>)> {
+    let profile =
+        open_profile(&config.profile_name, config.profile_directory.clone(), true).await?;
+    let operator = derive_operator_for_profile(root, &profile).await?;
 
     Ok((profile, operator))
 }

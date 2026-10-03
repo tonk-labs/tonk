@@ -376,6 +376,46 @@ describe("exact fetch routing", () => {
     assert.equal(await (await app.response()).text(), "APP SHELL");
   });
 
+  test("tool invite navigation serves its static document without booting Rust", async () => {
+    const { self, caches } = withGlobals();
+    self.clients.get = async () => ({ frameType: "top-level" });
+    const mod = await loadWith({
+      buildId: "published-build",
+      wasmHash: "dev",
+      assetPaths: ["/", "/agent/"],
+      activateSource: 'async () => { throw new Error("tool landing booted Rust"); }',
+      exports: ["SHELL_CACHE"],
+    });
+    const cache = await caches.open(mod.SHELL_CACHE);
+    await cache.put("/", new Response("APP SHELL"));
+    await cache.put("https://tonk.test/agent/", new Response("TOOL INSTRUCTIONS"));
+    const landing = fetchEvent({
+      method: "GET",
+      mode: "navigate",
+      url: "https://tonk.test/agent/?agent=fixture",
+    }, "controlled-top-level");
+    self.onfetch(landing.event);
+    assert.equal(await (await landing.response()).text(), "TOOL INSTRUCTIONS");
+  });
+
+  test("development tool landing uses the server without a stamped manifest", async () => {
+    const { self } = withGlobals({
+      fetchImpl: async () => new Response("DEV TOOL INSTRUCTIONS"),
+    });
+    await loadWith({
+      buildId: "dev",
+      wasmHash: "dev",
+      activateSource: 'async () => { throw new Error("tool landing booted Rust"); }',
+    });
+    const landing = fetchEvent({
+      method: "GET",
+      mode: "navigate",
+      url: "https://tonk.test/agent/",
+    });
+    self.onfetch(landing.event);
+    assert.equal(await (await landing.response()).text(), "DEV TOOL INSTRUCTIONS");
+  });
+
   test("doctor remains reachable when Rust initialization has failed", async () => {
     const { self, caches } = withGlobals();
     self.clients.get = async () => ({ frameType: "top-level" });
@@ -841,6 +881,10 @@ describe("immutable generation install", () => {
     let install;
     self.oninstall({ waitUntil: (promise) => { install = promise; } });
     await install;
+    // Activation moves this worker out of the installing slot; only then can a
+    // page ask it to claim.
+    self.registration.active = self.registration.installing;
+    self.registration.installing = null;
 
     const pending = [];
     self.onmessage({
@@ -1944,7 +1988,7 @@ describe("immutable generation caches", () => {
     assert.deepEqual(cache.mutations, [], "no old entry may be overwritten or deleted");
   });
 
-  test("Rust deferred imports read their sealed library generation offline", async () => {
+  test("Rust bundled assets read their sealed library generation offline", async () => {
     let fetches = 0;
     const { caches } = withGlobals({ fetchImpl: async () => {
       fetches++;
@@ -1952,7 +1996,7 @@ describe("immutable generation caches", () => {
     }});
     const mod = await loadWith({ exports: ["SHELL_CACHE"] });
     const cache = await caches.open(mod.SHELL_CACHE);
-    for (const path of ["/library/onboarding-demos.yaml", "/library/welcome-image.webp"]) {
+    for (const path of ["/library/core.yaml", "/library/welcome-image.webp"]) {
       await cache.put("https://tonk.test" + path, new Response("retained bytes"));
       assert.equal(await (await self.tonkBundledAsset(path)).text(), "retained bytes");
     }
@@ -2157,6 +2201,91 @@ describe("immutable generation caches", () => {
       /set_status\(503\)/,
       "the Rust-side miss must return the same coherent retained-generation failure",
     );
+  });
+});
+
+describe("session overlay handoff", () => {
+  const CACHE = "TONK_OVERLAY_HANDOFF";
+  const SNAPSHOT = "/__tonk/overlay-handoff";
+  const PENDING = "/__tonk/overlay-handoff-pending";
+  const settled = (promises) => {
+    let done = false;
+    Promise.all(promises).then(() => { done = true; });
+    return () => done;
+  };
+  const turns = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  test("activation holds for an announced predecessor snapshot", async () => {
+    const { self, caches } = withGlobals();
+    await loadWith({});
+    const handoff = await caches.open(CACHE);
+    await handoff.put(PENDING, new Response("announced"));
+
+    const pending = [];
+    self.onactivate({ waitUntil: (promise) => pending.push(promise) });
+    const done = settled(pending);
+    await turns(150);
+    assert.equal(done(), false, "activation must wait for the snapshot");
+
+    await handoff.put(SNAPSHOT, new Response(new Uint8Array([1])));
+    await Promise.all(pending);
+    assert.equal(await handoff.match(PENDING), undefined, "the announcement is consumed");
+    assert.ok(await handoff.match(SNAPSHOT), "the snapshot is left for the Rust worker to take");
+  });
+
+  test("activation without an announcement does not wait", async () => {
+    const { self } = withGlobals();
+    await loadWith({});
+    const pending = [];
+    self.onactivate({ waitUntil: (promise) => pending.push(promise) });
+    const done = settled(pending);
+    await turns(50);
+    assert.equal(done(), true);
+  });
+
+  test("a predecessor that never writes its snapshot stalls activation only briefly", async () => {
+    const { self, caches } = withGlobals();
+    await loadWith({});
+    await (await caches.open(CACHE)).put(PENDING, new Response("announced"));
+    const started = Date.now();
+    const pending = [];
+    self.onactivate({ waitUntil: (promise) => pending.push(promise) });
+    await Promise.all(pending);
+    const waited = Date.now() - started;
+    assert.ok(waited >= 900 && waited < 3_000, `waited ${waited}ms`);
+    assert.equal(await (await caches.open(CACHE)).match(PENDING), undefined);
+  });
+
+  test("the incumbent announces while a successor installs and withdraws if it fails", async () => {
+    const listeners = new Map();
+    const candidateListeners = new Map();
+    const candidate = {
+      state: "installing",
+      addEventListener: (type, fn) => candidateListeners.set(type, fn),
+      removeEventListener: () => {},
+    };
+    const registration = {
+      active: null,
+      waiting: null,
+      installing: null,
+      addEventListener: (type, fn) => listeners.set(type, fn),
+    };
+    const { self, caches } = withGlobals({ registration });
+    registration.active = self.serviceWorker;
+    await loadWith({});
+    await (await caches.open(CACHE)).put(SNAPSHOT, new Response("left over"));
+
+    registration.installing = candidate;
+    listeners.get("updatefound")();
+    await turns(20);
+    const handoff = await caches.open(CACHE);
+    assert.ok(await handoff.match(PENDING), "the incumbent announces the handoff");
+    assert.equal(await handoff.match(SNAPSHOT), undefined, "a leftover snapshot is dropped");
+
+    candidate.state = "redundant";
+    candidateListeners.get("statechange")();
+    await turns(20);
+    assert.equal(await handoff.match(PENDING), undefined, "a failed successor withdraws it");
   });
 });
 

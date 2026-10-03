@@ -41,9 +41,49 @@ pub(crate) fn guest_content(site: &str) -> String {
     )
 }
 
+/// The embedder's own `<style>` / `<link>` markup, hoisted into the guest
+/// document ahead of its content.
+///
+/// A portal's styling is the EMBEDDER's opinion, not the element's: the
+/// profile site and a space site are different surfaces that happen to
+/// share some tokens. Light-DOM children let whoever mounts the site say
+/// so in markup, instead of the host donating its whole app stylesheet to
+/// every guest regardless of what that guest renders.
+///
+/// `outer_html` is each child's serialized markup, already filtered to the
+/// tags a document head may carry. Emitted in source order, before the
+/// content, so it applies from the first parsed node.
+///
+/// NOTE a hoisted `<link rel=stylesheet href=/…>` does NOT load in a guest
+/// that carries a synthetic `<base>`: the relative href resolves against an
+/// origin that does not exist, and the load errors. Inline `<style>` works
+/// everywhere. Until resources are fetched over the bridge, a `<link>` here
+/// is a declaration the guest cannot yet satisfy on its own.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn head_markup(outer_html: &[String]) -> String {
+    outer_html.concat()
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    #[dialog_common::test]
+    fn it_hoists_nothing_when_the_embedder_supplied_nothing() {
+        assert_eq!(head_markup(&[]), "");
+    }
+
+    #[dialog_common::test]
+    fn it_hoists_the_embedders_styles_in_source_order() {
+        let markup = head_markup(&[
+            "<style>a{color:red}</style>".to_owned(),
+            "<style>b{color:blue}</style>".to_owned(),
+        ]);
+        assert_eq!(
+            markup,
+            "<style>a{color:red}</style><style>b{color:blue}</style>"
+        );
+    }
 
     #[dialog_common::test]
     fn it_mounts_the_site_display_for_the_given_entity() {

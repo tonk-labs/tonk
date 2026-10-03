@@ -18,115 +18,59 @@ The platform packages' `bin/tonk` binaries are **build artifacts**, not
 committed (`.gitignore`d). Release CI (or the local pack test below)
 injects them before publishing.
 
-Adding a platform later = one nix build matrix row in
-`.github/workflows/cli-npm.yml`, a new `<platform>/package.json` here,
+Adding a platform later = one nix build matrix row in each of
+`.github/workflows/cli-npm.yml` and `release.yml`, a new `<platform>/package.json` here,
 and an entry in the wrapper's `optionalDependencies`.
 
 ## Publishing (maintainers)
 
-Publishing runs in CI so every platform binary is built reproducibly —
+Publishing runs in CI so every platform binary is built reproducibly;
 you cannot build the Linux binary from a Mac. npm Trusted Publishing is
-attached to `.github/workflows/cli-npm.yml`; the workflow uses GitHub
-OIDC and `npm publish`, with no repository npm token.
+attached to `.github/workflows/cli-npm.yml`, which uses GitHub OIDC and
+`npm publish` with no repository npm token.
 
-The bump and the tag are separate acts on separate machines, and have to
-be. Rulesets on `staging` require a pull request and forbid
-non-fast-forward with no bypass, so nobody can push a release commit
-directly; and because merge commits are disabled, merging rewrites the
-SHA, so a tag created locally would point at a commit that never lands.
-So `cargo release` makes only the commit, and `release-tag.yml` creates
-the `v<version>` tag in CI once that commit is on `staging`.
+A release is a `v*` tag on a commit already on `main`. Push one with git:
 
-1. Cut the bump on a `release/*` branch off current `staging`:
+```sh
+git fetch origin
+git tag v0.7.0-rc.1 origin/main
+git push origin v0.7.0-rc.1
+```
 
-   ```sh
-   git fetch origin && git switch -c release/0.6.4 origin/staging
-   nix develop            # cargo-release lives in the devshell
-   cargo release patch --execute   # 0.6.3 -> 0.6.4
-   ```
+or draft a release in the GitHub UI with a new tag targeting `main`. The
+tag decides everything else:
 
-   Dry-run is the default; `--execute` acts. `release.toml` sets
-   `push = false` and `tag = false`, so this writes exactly one commit,
-   `chore: release 0.6.4` (`Cargo.toml` plus `Cargo.lock`), and touches
-   nothing else. A release is refused from any branch but `staging` or
-   `release/*`, and refused outright if the tree is dirty.
+| Tag | Channel | Web | CLI release | npm |
+| --- | --- | --- | --- | --- |
+| `v0.7.0-rc.1` (has a `-`) | staging | staging | pre-release, and the rolling `tonk-staging` | `next` |
+| `v0.7.0` (no `-`) | stable | tonk.network | GitHub `latest` | `latest` |
 
-   Which level to use:
+The tag is the version. CI stamps it into `[workspace.package] version`
+and `Cargo.lock` before building, so `tonk --version` and all three
+`package.json`s match the tag. The version committed in `Cargo.toml` is
+only what untagged builds report.
 
-   | Command | From | To | npm result after merge |
-   | --- | --- | --- | --- |
-   | `cargo release patch` (also `minor`, `major`) | 0.6.3 | 0.6.4 | tagged; unpublished until stable promotion |
-   | `cargo release rc` | 0.6.3 | 0.6.4-rc.1 | publish `@next` |
-   | `cargo release rc` | 0.6.4-rc.1 | 0.6.4-rc.2 | publish `@next` |
-   | `cargo release release` | 0.6.4-rc.2 | 0.6.4 | tagged; unpublished until stable promotion |
+A final release is normally the same commit as its last rc, so stable
+runs exactly what staging ran:
 
-   `release` **only strips an existing prerelease**. Run from a final
-   version it has nothing to strip, so it changes no version and makes
-   no commit while still exiting 0 — which reads as success. To cut a
-   final directly, use `patch`, `minor`, or `major`.
-
-   The first `rc` fixes the target version and there is no combined
-   level-plus-prerelease flag, so if scope grows mid-cycle, re-target
-   explicitly: `cargo release 0.7.0-rc.1 --execute`.
-
-2. Open a PR for that one commit and merge it to `staging`. On the
-   merge, `release-tag.yml` notices that `[workspace.package] version`
-   changed across the pushed range, creates the annotated tag
-   `v0.6.4` at the merged commit. A prerelease tag immediately dispatches
-   `cli-npm.yml` and publishes `next`. A final tag is created but remains
-   unpublished until the same commit reaches `stable`.
-
-   It tags on a version *change* only. A missing `v<version>` is never
-   on its own a reason to tag, which is why staging can sit well past
-   0.6.3 with no `v0.6.3` and nothing fires.
-
-3. For a final release, wait for `v<version>` to be created, verify the
-   version has no prerelease suffix, then fast-forward `stable` **to the
-   release commit itself**:
-
-   ```sh
-   git push origin v0.6.4:refs/heads/stable
-   ```
-
-   `stable` is always an ancestor of `staging`, so that is a
-   fast-forward. If it is rejected as non-fast-forward, something put a
-   commit on `stable` that is not on `staging` — sort that out rather
-   than forcing it.
-
-   The push starts `CLI npm`, which proves that the checkout, the
-   immutable version tag, and `origin/stable` are the same commit before
-   publishing `latest`. Watch that workflow run through all platform
-   and wrapper packages. A later staging commit is not a valid promotion
-   target, even when it is a descendant of the release.
+```sh
+git tag v0.7.0 'v0.7.0-rc.2^{commit}'
+git push origin v0.7.0
+```
 
 ### Recovery
 
-Never mint a replacement tag or move an existing one. To retry a partial
-prerelease publish, dispatch the existing prerelease tag:
-
-```sh
-gh workflow run cli-npm.yml --ref v0.6.4-rc.1
-```
-
-To retry a final publish, use the same command at the final tag, but only
-after verifying `origin/stable` resolves to that tag commit:
-
-```sh
-git fetch --no-tags origin refs/heads/stable:refs/remotes/origin/stable
-test "$(git rev-parse origin/stable)" = "$(git rev-parse 'v0.6.4^{commit}')"
-gh workflow run cli-npm.yml --ref v0.6.4
-```
-
-The channel policy rejects a premature final retry. Publication retains
-the existing partial-failure behavior: packages already present at that
-version are skipped while missing platform or wrapper packages continue.
+Never move or re-push an existing tag. Re-run the failed workflow run for
+that tag instead. npm skips versions that already landed and continues
+with the missing platform or wrapper packages; the GitHub release is
+updated in place.
 
 ### Dist-tags
 
 | Tag | Points at | Install |
 | --- | --- | --- |
-| `next` | newest explicitly released prerelease from `staging` | `npx @tonk/cli@next` |
-| `latest` | final release commit held by `stable` | `npx @tonk/cli` |
+| `next` | newest prerelease tag | `npx @tonk/cli@next` |
+| `latest` | newest final tag | `npx @tonk/cli` |
 
 Bare `npx @tonk/cli` and `npm install -g @tonk/cli` are stable installs.
 Prereleases always require the explicit `next` tag.
@@ -150,9 +94,6 @@ tmp=$(mktemp -d) && npm --prefix "$tmp" install ./tonk-cli-darwin-arm64-*.tgz ./
 "$tmp/node_modules/.bin/tonk" --help
 ```
 
-There is one version in this repo: `version.workspace` in the root
-`Cargo.toml`, which `cargo release` bumps. CI stamps it into all three
-`package.json`s at publish time, so `tonk --version` always matches the
-published `@tonk/cli` version. The versions committed in those
-`package.json`s are placeholders — nothing reads them, and hand-editing
-them to "keep up" is the manual step this process removed.
+The versions committed in the `package.json`s are placeholders. CI
+stamps the release tag's version into all three at publish time, and
+nothing else reads them.

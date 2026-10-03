@@ -36,7 +36,8 @@ pub(super) fn build_body(
     event: &Event,
     bound: &Element,
 ) -> Option<Value> {
-    let with = descriptor.get("with").and_then(Value::as_object)?;
+    let required = descriptor.get("with").and_then(Value::as_object)?;
+    let optional = descriptor.get("maybe").and_then(Value::as_object);
     let event_js: &JsValue = event.as_ref();
     let bound_js: &JsValue = bound.as_ref();
 
@@ -45,7 +46,10 @@ pub(super) fn build_body(
         // A source for a field the command does not declare is dropped
         // rather than posted: `tonk_template::event::check` reports it
         // at lowering, and an extra parameter would be a wire error.
-        let Some(entry) = with.get(field) else {
+        let Some(entry) = required
+            .get(field)
+            .or_else(|| optional.and_then(|fields| fields.get(field)))
+        else {
             continue;
         };
         let as_type = entry.get("as").and_then(Value::as_str).unwrap_or("Text");

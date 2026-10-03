@@ -15,8 +15,7 @@
 //! Code blocks embed `<tonk-code>` (when defined) which lazy-loads its
 //! per-language chunks the same way.
 //!
-//! # Why a JS bundle (and not a Rust-side `CustomElement` like
-//! `tonk-sigil`)?
+//! # Why a JS bundle (and not a Rust-side `CustomElement`)?
 //!
 //! Same trade-off as `tonk-code`: ProseMirror is a sizable TypeScript
 //! library composed of many ES modules. Bundling on the JS side keeps

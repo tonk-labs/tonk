@@ -19,7 +19,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dialog_operator::Profile;
+use dialog_capability::Principal as _;
+use dialog_credentials::SignerCredential;
 use parking_lot::{Mutex, RwLock};
 
 mod branch;
@@ -29,6 +30,8 @@ mod error;
 mod export;
 mod formula;
 mod import;
+mod intent;
+pub use intent::{Interpretation, interpret};
 mod overlay;
 mod pull;
 mod push;
@@ -53,7 +56,7 @@ pub use error::ReactorError;
 pub use export::{Export, ExportError};
 pub use formula::{FormulaError, resolve_formula};
 pub use import::{Import, ImportError};
-pub use overlay::{OverlayBuilder, OverlayWrite};
+pub use overlay::{OverlayBuilder, OverlaySnapshot, OverlayWrite};
 pub use pull::Pull;
 pub use push::Push;
 pub use query::QueryEffect;
@@ -70,19 +73,19 @@ pub use transaction::{Commit, TransactionBuilder};
 /// A reactive layer over dialog branches. Owned by the consumer's
 /// application state (e.g. the worker's `TonkState`).
 pub struct Reactor {
-    profile: Profile,
+    profile: SignerCredential,
+    /// The key the profile's own repository is cached and named under:
+    /// the profile's DID.
+    profile_key: String,
     /// Serializes every subscription registration/adoption with terminal
     /// shutdown. Once closed, the gate never reopens: a registration that
     /// wins the lock is guaranteed to be drained by the following shutdown,
     /// while one that loses is refused instead of recreating a sender after
     /// the drain has passed it.
     subscription_lifecycle: SubscriptionLifecycle,
+    /// Every repository acquired so far, by key. The profile's own is
+    /// among them, under [`Self::profile_key`].
     repos: RwLock<HashMap<String, Arc<RepositoryState>>>,
-    /// Cached `RepositoryState` for the profile-as-repository.
-    /// Lazily populated on first `profile_repository().acquire()`
-    /// call; lives outside `repos` because the profile is a
-    /// singleton with no name in the routing namespace.
-    profile_repo: RwLock<Option<Arc<RepositoryState>>>,
     /// Branches whose subscriptions need re-evaluation but haven't
     /// been polled yet. A mutation that changes query results —
     /// a durable [`Commit`] or a session-overlay write — schedules
@@ -119,6 +122,8 @@ pub struct PendingSubscription {
     pub query: dialog_query::ConceptQuery,
     /// The client this subscriber serves, for stale-client pruning.
     pub client: Option<String>,
+    /// The consumer's nesting level — see [`Subscription::level`](crate::Subscription::level).
+    pub level: u32,
     /// Sender the adopted subscription broadcasts into — already wired
     /// to the consumer's open SSE stream, which is why the hand-off is
     /// invisible to the page: it just starts receiving frames.
@@ -155,15 +160,16 @@ impl SubscriptionLifecycle {
 }
 
 impl Reactor {
-    /// Construct a reactor over the given profile. The reactor
-    /// doesn't own an operator — every effect takes one at
-    /// `perform` time, matching dialog's command/perform pattern.
-    pub fn new(profile: Profile) -> Self {
+    /// Construct a reactor over the given profile: the key of the peer
+    /// whose home repository is the profile. The reactor doesn't own an
+    /// operator — every effect takes one at `perform` time, matching
+    /// dialog's command/perform pattern.
+    pub fn new(profile: SignerCredential) -> Self {
         Self {
+            profile_key: profile.did().to_string(),
             profile,
             subscription_lifecycle: SubscriptionLifecycle::new(),
             repos: RwLock::new(HashMap::new()),
-            profile_repo: RwLock::new(None),
             pending_polls: Mutex::new(Vec::new()),
             pending_subscriptions: Mutex::new(HashMap::new()),
         }
@@ -200,9 +206,10 @@ impl Reactor {
         session: &BranchSession,
         query: dialog_query::ConceptQuery,
         client: Option<String>,
+        level: u32,
     ) -> Result<Subscriber, ReactorError> {
         self.subscription_lifecycle
-            .register(|| session.subscribe(query, client))
+            .register(|| session.subscribe(query, client, level))
             .ok_or(ReactorError::Shutdown)?
     }
 
@@ -221,7 +228,12 @@ impl Reactor {
                 return;
             }
             for pending in pending {
-                state.adopt_subscriber(pending.query, pending.client, pending.sender);
+                state.adopt_subscriber(
+                    pending.query,
+                    pending.client,
+                    pending.level,
+                    pending.sender,
+                );
             }
             // Evaluate once so adopted subscribers get a real frame now.
             self.schedule_poll(Arc::clone(state));
@@ -286,13 +298,10 @@ impl Reactor {
                 let mut map = self.repos.write();
                 std::mem::take(&mut *map)
             };
-            // The profile-as-repository lives in its own slot, not in
-            // `repos`. The Hub subscribes to its main branch
-            // (`/api/profile/branch/main/query` SSE), so it must be drained
-            // too — otherwise that one stream stays open and pins the
-            // outgoing worker in `waiting` on every update.
-            let profile = self.profile_repo.write().take();
-            for repo in repos.into_values().chain(profile) {
+            // The profile's own repository is among them: the Hub
+            // subscribes to its main branch, and that stream left open
+            // would pin the outgoing worker in `waiting` on every update.
+            for repo in repos.into_values() {
                 let branches = {
                     let mut map = repo.branches().write();
                     std::mem::take(&mut *map)
@@ -386,8 +395,8 @@ impl Reactor {
         Ok(())
     }
 
-    /// Snapshot every cached branch state, across named repositories
-    /// and the profile-as-repository. Used by liveness sweeps that
+    /// Snapshot every cached branch state, across every repository, the
+    /// profile's own included. Used by liveness sweeps that
     /// reconcile per-client state (overlay facts, tagged subscribers)
     /// against the set of live clients — only cached branches can
     /// hold any, since both live on the in-memory [`BranchState`].
@@ -396,10 +405,8 @@ impl Reactor {
             let map = self.repos.read();
             map.values().cloned().collect()
         };
-        let profile = self.profile_repo.read().clone();
         repos
             .into_iter()
-            .chain(profile)
             .flat_map(|repo| {
                 let branches = repo.branches().read();
                 branches.values().cloned().collect::<Vec<_>>()
@@ -407,20 +414,34 @@ impl Reactor {
             .collect()
     }
 
-    /// Begin a chain scoped to the named repository.
+    /// Begin a chain scoped to the repository `name` is the key of.
     pub fn repository<'a>(&'a self, name: &'a str) -> RepositoryReference<'a> {
-        RepositoryReference::Named {
+        RepositoryReference {
             reactor: self,
             name,
         }
     }
 
-    /// Begin a chain scoped to the profile-as-repository. The
-    /// profile lives outside the named-repo namespace; everything
-    /// downstream (branch/transaction/sync) reuses the same chain
-    /// surface as a named repository.
+    /// Begin a chain scoped to the profile's own repository: the one
+    /// [`Self::profile_key`] names, like any other.
     pub fn profile_repository(&self) -> RepositoryReference<'_> {
-        RepositoryReference::Profile { reactor: self }
+        self.repository(&self.profile_key)
+    }
+
+    /// The key the profile's own repository goes by: the profile's DID.
+    pub fn profile_key(&self) -> &str {
+        &self.profile_key
+    }
+
+    /// The keys of the cached repositories other than the profile's own:
+    /// the spaces opened so far.
+    pub fn spaces(&self) -> Vec<String> {
+        self.repos
+            .read()
+            .keys()
+            .filter(|key| key.as_str() != self.profile_key)
+            .cloned()
+            .collect()
     }
 
     /// Borrow the cache map. Public so the chain handles
@@ -431,29 +452,15 @@ impl Reactor {
         &self.repos
     }
 
-    /// Snapshot the cached profile-as-repository state, if any.
-    /// Used by `RepositoryReference::Profile::acquire` for the
-    /// fast-path branch.
+    /// Snapshot the cached state of the profile's own repository, if it
+    /// was acquired.
     pub fn profile_repo_state(&self) -> Option<Arc<RepositoryState>> {
-        self.profile_repo.read().clone()
+        self.repos.read().get(&self.profile_key).cloned()
     }
 
-    /// Install the profile-as-repository state into the cache.
-    /// Returns the resident value — if another caller raced and
-    /// installed first, theirs wins (state is fungible).
-    pub fn set_profile_repo_state(&self, state: Arc<RepositoryState>) -> Arc<RepositoryState> {
-        let mut slot = self.profile_repo.write();
-        if let Some(existing) = slot.clone() {
-            existing
-        } else {
-            *slot = Some(Arc::clone(&state));
-            state
-        }
-    }
-
-    /// Borrow the profile so chain handles can open
+    /// Borrow the profile's key so chain handles can open
     /// repositories on cache miss.
-    pub fn profile(&self) -> &Profile {
+    pub fn profile(&self) -> &SignerCredential {
         &self.profile
     }
 }

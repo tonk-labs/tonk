@@ -63,32 +63,51 @@ fn generation_cache() -> String {
     format!("{GENERATION_PREFIX}{}", build_id())
 }
 
-/// Read text from this worker's immutable asset generation.
+/// Read bytes from this worker's immutable asset generation.
 ///
-/// `None` is returned only for development and a first install that has not
-/// begun publishing a generation, where the running deployment is the only
-/// available source. Once a stamped generation marker exists, a missing asset
-/// fails closed so a retained worker cannot mix a newer deployment's bytes
-/// into its own library input.
-pub(crate) async fn immutable_asset_text(path: &str) -> Result<Option<String>, JsValue> {
+/// `None` is returned for development and for a generation that is not
+/// adopted yet (an install still copying its assets), where the running
+/// deployment is the only available source. Once the generation is adopted,
+/// a missing asset fails closed so a retained worker cannot mix a newer
+/// deployment's bytes into its own library input.
+pub(crate) async fn immutable_asset_bytes(path: &str) -> Result<Option<Vec<u8>>, JsValue> {
+    let Some(response) = immutable_asset(path).await? else {
+        return Ok(None);
+    };
+    let buffer = JsFuture::from(response.array_buffer()?).await?;
+    Ok(Some(js_sys::Uint8Array::new(&buffer).to_vec()))
+}
+
+async fn immutable_asset(path: &str) -> Result<Option<Response>, JsValue> {
     if build_id() == "dev" {
         return Ok(None);
     }
     let origin = worker_origin().ok_or_else(|| JsValue::from_str("worker origin unavailable"))?;
     let request = Request::new_with_str(&format!("{origin}{path}"))?;
     if let Some(response) = cache_match(&request).await? {
-        let text = JsFuture::from(response.text()?).await?;
-        return text
-            .as_string()
-            .map(Some)
-            .ok_or_else(|| JsValue::from_str("cached asset body is not text"));
+        return Ok(Some(response));
     }
     let marker_url = Request::new_with_str(&format!("{origin}/.tonk-generation-{}", build_id()))?;
     let options = CacheQueryOptions::new();
     options.set_cache_name(&generation_cache());
     let marker =
         JsFuture::from(caches()?.match_with_request_and_options(&marker_url, &options)).await?;
-    if !marker.is_null() && !marker.is_undefined() {
+    if marker.is_null() || marker.is_undefined() {
+        return Ok(None);
+    }
+    // The install writes the marker (`building`, then `publishing`) before
+    // it copies a single asset, and only marks the generation `adopted` once
+    // every asset is in place. Until then this build's generation is not
+    // retained yet and the running deployment is still its only source —
+    // failing closed here broke every library read during a first install
+    // (creating a space mid-install reported core.yaml missing).
+    let marker: Response = marker.dyn_into()?;
+    let text = JsFuture::from(marker.text()?).await?;
+    let adopted = text
+        .as_string()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|marker| marker["state"] == "adopted");
+    if adopted {
         return Err(JsValue::from_str(&format!(
             "asset {path} is missing from retained generation {}",
             build_id()

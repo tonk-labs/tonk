@@ -20,6 +20,24 @@ use tonk_common::log;
 /// redirect is lost, and the user can navigate from the Hub.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
+    post_navigate(client, href, false);
+}
+
+/// [`notify_navigate`] as a fresh load that replaces the page's current
+/// history entry (`{ type: "navigate", href, replace: true }`), rather than
+/// a client-side route change.
+///
+/// For a command that switched the page's profile: a document bound to the
+/// profile it started on is refused until it loads again, so a route change
+/// would leave it showing errors. Replacing the entry also keeps the
+/// address it came from out of the history.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
+    post_navigate(client, href, true);
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn post_navigate(client: Option<&crate::router::ClientId>, href: &str, replace: bool) {
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::{JsFuture, spawn_local};
 
@@ -71,6 +89,9 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
             &JsValue::from_str("href"),
             &JsValue::from_str(&href),
         );
+        if replace {
+            let _ = js_sys::Reflect::set(&message, &JsValue::from_str("replace"), &JsValue::TRUE);
+        }
         if let Err(e) = client.post_message(&message) {
             log!("navigate: post_message(navigate) failed: {e:?}");
         }
@@ -86,6 +107,12 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
 pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
     let _ = client;
     log!("navigate: no page on this host; the target was {href}");
+}
+
+/// No page on this host either; see [`notify_navigate`].
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
+    notify_navigate(client, href);
 }
 
 /// Ask every other top-level document to reload after the active browser
@@ -138,6 +165,59 @@ pub(crate) fn notify_profile_changed(except: Option<&crate::router::ClientId>) {
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn notify_profile_changed(_except: Option<&crate::router::ClientId>) {}
+
+/// Ask the ORIGINATING document to reload after the active branch changes
+/// under it. Its own requests are fenced from here on (a stale context
+/// generation answers 409), and a command cannot be awaited from the page
+/// the way the old endpoints were, so the worker says when the swap is
+/// done rather than the page guessing.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn notify_profile_changed_to(client: Option<&crate::router::ClientId>) {
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::{JsFuture, spawn_local};
+
+    let Some(client) = client else {
+        log!("profile change: no originating client; nothing to reload");
+        return;
+    };
+    let client_id = client.0.clone();
+    let global: web_sys::ServiceWorkerGlobalScope = match js_sys::global().dyn_into() {
+        Ok(global) => global,
+        Err(_) => {
+            log!("profile change: not in a service worker scope; skipping reload");
+            return;
+        }
+    };
+    spawn_local(async move {
+        let client = match JsFuture::from(global.clients().get(&client_id)).await {
+            Ok(value) if !value.is_undefined() && !value.is_null() => value,
+            Ok(_) => {
+                log!("profile change: originating client {client_id} is gone; skipping reload");
+                return;
+            }
+            Err(error) => {
+                log!("profile change: clients.get failed: {error:?}");
+                return;
+            }
+        };
+        let Ok(client) = client.dyn_into::<web_sys::Client>() else {
+            log!("profile change: clients.get did not yield a Client; skipping reload");
+            return;
+        };
+        let message = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &message,
+            &JsValue::from_str("type"),
+            &JsValue::from_str("profile-changed"),
+        );
+        if let Err(error) = client.post_message(&message) {
+            log!("profile change: reload message to the origin failed: {error:?}");
+        }
+    });
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn notify_profile_changed_to(_client: Option<&crate::router::ClientId>) {}
 
 /// Post a typed launch-funnel success to the originating page.
 ///
@@ -373,4 +453,13 @@ pub(crate) async fn request_webauthn_with(
     Err(crate::TonkWorkerError::Conflict(
         "no page is available on this host to run a passkey ceremony".to_string(),
     ))
+}
+
+/// Go home: send the page that asked back to the hub.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::Home> for crate::router::CommandEnv {
+    async fn execute(&self, _command: tonk_schema::command::Home) {
+        notify_navigate(self.client(), "/");
+    }
 }
