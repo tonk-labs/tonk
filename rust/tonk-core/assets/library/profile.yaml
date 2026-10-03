@@ -1337,7 +1337,7 @@ view!:
 # ============================================================
 #
 # The profile is itself a routable target: `<tonk-site path=…>` posts to
-# `/api/profile/branch/main/site`, the SW asserts this tab's `tonk:site` on this
+# `/api/repository/profile:tonk/branch/main/site`, the SW asserts this tab's `tonk:site` on this
 # branch (matching the path against the `route!` table below), and the element
 # renders `<tonk-display entity=site:… model=tonk:site>`. The site view nests the
 # matched `{concept}` on the same site entity — the same indirection a space uses.
@@ -2868,7 +2868,7 @@ view!:
 # you can explore the profile DB (the hub's replicas, the member name,
 # sync state) directly. `<tonk-inspector>` and `<tonk-tree>` resolve their
 # repository from their own `with` — here the profile endpoint — so they
-# query `/api/profile/branch/main/query` rather than a named space.
+# query `/api/repository/profile:tonk/branch/main/query` rather than a named space.
 #
 # Both take that `with` from the SITE, exactly as core.yaml's route views do,
 # rather than naming the profile endpoint literally. The site's `repo` is a
@@ -3038,6 +3038,34 @@ route!: &route/space-sub
   this: id:tonk:route/space-sub
   path: "/space/{id}/{*rest}"
   concept: tonk:space/chrome
+
+# The profile's own repository, as the space chrome reads any space.
+#
+# The chrome below decides a space is here by resolving `tonk:repository`
+# on the space's own branch, and takes a branch that does not carry the
+# concept for a space this device has not replicated. The profile's
+# repository is a space like any other and is always here, but its
+# branch carries this library rather than a space's, so without the
+# concept `/space/<profile did>` answered "open this space" over a
+# repository that had loaded.
+#
+# The same shape `core.yaml` declares for a space, so the name is read
+# the same way if the profile's repository is ever given one.
+concept!: &profile/repository
+  this: tonk:repository
+  description: The profile's own repository, addressed as a space.
+  with:
+    name:
+      description: The repository's display name.
+      the: xyz.tonk.repo/name
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:repository
+  show:
+    title: |
+      <tab-title text="{name} — Tonk"></tab-title>
 
 # The space chrome model. `{id}` (the repository) and `{rest}` (the sub-path) are
 # captured from the path and stamped on the site; the view reads them. `rest` is

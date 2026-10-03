@@ -41,18 +41,8 @@ const ROUTES: &[&str] = &[
     "/api/local-space-link/provision",
     "/api/migrate/repo-vs-profile",
     "/api/profile",
-    "/api/profile/branch/{branch}/evaluate",
-    // Raw data plane: serves the profile branch's tree as bytes, selected by
-    // Accept (CSV rows or a CARv1 snapshot). No user intent to carry as a
-    // fact, and the caller reads the body once — the same shape as the
-    // repository branch's `export` below.
-    "/api/profile/branch/{branch}/export",
-    "/api/profile/branch/{branch}/query",
-    "/api/profile/branch/{branch}/site",
-    "/api/profile/branch/{branch}/transact",
     "/api/profile/join",
     "/api/profile/library",
-    "/api/profile/repository",
     "/api/profiles",
     "/api/profiles/activate",
     "/api/profiles/add",
