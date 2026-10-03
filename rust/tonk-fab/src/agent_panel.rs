@@ -290,6 +290,7 @@ fn show_connection_feedback(host: &HtmlElement) {
             {
                 notice.set_text_content(None);
             }
+            shadow::emit(&bar, "fabb-notice-retired", &wasm_bindgen::JsValue::NULL);
         }
     });
     let _ =
