@@ -1,0 +1,466 @@
+//! What a rendered slot is, described without reference to the DOM.
+//!
+//! A *slot* is one place a template interpolation landed: the text
+//! node `{title}` filled, or the attribute `with="main@{repo}"` wrote.
+//! The renderer already knows all of them — it keeps the binding plan
+//! and the last string each binding produced — so describing a mounted
+//! view is a walk over state that exists, not a re-parse of the DOM.
+//!
+//! These types are the wire between that walk and the overlay that
+//! paints it. They are pure `std` + `serde` so they can be tested
+//! natively and, later, serialized to a panel running in another frame.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+/// Where a slot's value came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Origin {
+    /// A field projected from the model concept — the interesting
+    /// case, and the one a concept panel can cross-highlight.
+    Concept,
+    /// `{this}`: the subject URI of the conclusion being rendered,
+    /// synthesized rather than projected.
+    Subject,
+    /// `{dom.host/<attr>}`: copied off the outer host element's
+    /// attributes, not from the branch at all.
+    Host,
+    /// `{<field>/key}`: the key of the current row inside an
+    /// iteration over a many-valued field.
+    Key,
+}
+
+impl Origin {
+    /// Classify a field name as it appears between `{` and `}`.
+    pub fn of(field: &str) -> Self {
+        if field == "this" {
+            Self::Subject
+        } else if field.starts_with(tonk_template::fields::HOST_NAMESPACE) {
+            Self::Host
+        } else if field.ends_with("/key") {
+            Self::Key
+        } else {
+            Self::Concept
+        }
+    }
+}
+
+/// Where a slot's output lands in the DOM.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum SlotKind {
+    /// The slot fills a text node. This is the only kind with a
+    /// visible region of its own — the overlay can box the glyphs it
+    /// produced.
+    Text,
+    /// The slot writes an element attribute or property. It has no
+    /// region; the overlay marks the element that carries it and
+    /// leaves the detail to the panel.
+    Attribute {
+        /// The attribute (or property) name written.
+        name: String,
+        /// The author wrote `html:name={x}`, forcing `setAttribute`
+        /// over a property assignment.
+        forced: bool,
+    },
+}
+
+/// Which rendering scope a slot belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "scope", rename_all = "kebab-case")]
+pub enum SlotScope {
+    /// Outside the repeat: rendered once against the lead conclusion.
+    Chrome,
+    /// Inside a repeat row for one subject.
+    Row {
+        /// The row's subject URI.
+        this: String,
+    },
+    /// Inside an iteration over one many-valued field of a subject.
+    Iteration {
+        /// The row's subject URI.
+        this: String,
+        /// The field being iterated.
+        field: String,
+        /// The key of this particular iteration row.
+        key: String,
+    },
+}
+
+/// One rendered slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Slot {
+    /// A stable-per-snapshot identifier, so the overlay can talk
+    /// about a slot without holding its node.
+    pub id: u32,
+    /// Every field the slot reads, in template order. A plain
+    /// `{title}` has one; `with="main@{repo}"` has one plus literal
+    /// text; `"{a}-{b}"` has two.
+    pub fields: Vec<String>,
+    /// The origin of `fields[0]` — what the slot is *mostly* about.
+    /// A mixed slot is rare enough that the panel can spell out the
+    /// rest from `fields`.
+    pub origin: Origin,
+    /// Text or attribute.
+    pub kind: SlotKind,
+    /// Which scope it rendered in.
+    pub scope: SlotScope,
+    /// The string the renderer last wrote here.
+    pub value: String,
+}
+
+impl Slot {
+    /// The short label the overlay puts on the slot's badge:
+    /// `title`, `a+b`, or `@with` for an attribute.
+    pub fn label(&self) -> String {
+        let fields = self
+            .fields
+            .iter()
+            .map(|field| field.trim_start_matches(tonk_template::fields::HOST_NAMESPACE))
+            .collect::<Vec<_>>()
+            .join("+");
+        match &self.kind {
+            SlotKind::Text => fields,
+            SlotKind::Attribute { name, .. } => format!("{name}={fields}"),
+        }
+    }
+
+    /// The text the page marker shows when you rest on it.
+    ///
+    /// A text slot shows its field name, because its value is already
+    /// on screen — repeating it would be the one thing a reader does
+    /// not need. An attribute slot shows the value, because that is
+    /// what is invisible: `with="main@{repo}"` renders nothing you can
+    /// look at, and `data-subject=this` tells you the shape of the
+    /// binding while withholding the only part you came for.
+    pub fn badge(&self) -> String {
+        match &self.kind {
+            SlotKind::Text => self.label(),
+            SlotKind::Attribute { name, .. } => {
+                format!("{name}: {}", elide(&self.value))
+            }
+        }
+    }
+
+    /// Whether this slot reads `field`. Used to cross-highlight from
+    /// a concept panel row back onto the rendered page.
+    pub fn reads(&self, field: &str) -> bool {
+        self.fields.iter().any(|candidate| candidate == field)
+    }
+}
+
+/// Shorten a value to badge length, from the middle — the ends of an
+/// entity URI say more than its waist.
+fn elide(value: &str) -> String {
+    const LIMIT: usize = 32;
+    let characters: Vec<char> = value.chars().collect();
+    if characters.is_empty() {
+        return "\u{2014}".to_owned();
+    }
+    if characters.len() <= LIMIT {
+        return value.to_owned();
+    }
+    let head: String = characters[..LIMIT / 2 - 1].iter().collect();
+    let tail: String = characters[characters.len() - LIMIT / 2 + 2..]
+        .iter()
+        .collect();
+    format!("{head}\u{2026}{tail}")
+}
+
+/// Everything the overlay knows about one observed `<tonk-display>`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// The `model` attribute as the author wrote it.
+    pub model: Option<String>,
+    /// The concept URI that attribute resolved to.
+    pub model_entity: Option<String>,
+    /// The show facet actually rendered (`ui`, `directory`, ...).
+    pub facet: Option<String>,
+    /// Directory mode — every instance of the model, not one entity.
+    pub directory: bool,
+    /// Every subject in the last frame, with its projected values.
+    pub entities: Vec<Entity>,
+    /// The concept's bookmark name, for the declaration's `&anchor`.
+    pub model_name: Option<String>,
+    /// The lowered concept descriptor, as the display resolved it.
+    /// What the model panel renders.
+    pub descriptor: Option<String>,
+    /// Every facet the model's `show` dictionary declares, not just
+    /// the one rendered — the view panel switches between them.
+    pub facets: BTreeMap<String, String>,
+    /// The facet whose template is mounted, so the view panel opens
+    /// on what is actually on screen.
+    pub template: Option<String>,
+    /// Every command the mounted templates bind, with the descriptor
+    /// each resolved to.
+    pub commands: Vec<Definition>,
+    /// The fields the model concept declares, from its descriptor's
+    /// `with:` and `maybe:` maps. The concept panel's rows.
+    pub fields: Vec<Field>,
+    /// Every slot the mounted view rendered.
+    pub slots: Vec<Slot>,
+    /// Where the display is in its recorded history.
+    pub timeline: super::recorder::Timeline,
+}
+
+/// A resolved declaration a panel can render: a command, and later
+/// anything else with a descriptor behind a name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Definition {
+    /// The name as a template writes it (`prose/edit`).
+    pub name: String,
+    /// The lowered descriptor, or `None` when the name resolved to
+    /// nothing — which is the interesting case, since a template can
+    /// bind a command that does not exist.
+    pub descriptor: Option<String>,
+}
+
+impl Snapshot {
+    /// How many subjects the frame carries.
+    pub fn subject_count(&self) -> usize {
+        self.entities.len()
+    }
+
+    /// The declaration for `name`, if the concept has one.
+    pub fn declared(&self, name: &str) -> Option<&Field> {
+        self.fields.iter().find(|field| field.name == name)
+    }
+
+    /// The fields the concept declares that no slot reads — declared
+    /// but unrendered. Worth surfacing: it is the usual reason a value
+    /// "isn't showing up".
+    pub fn unbound_fields(&self) -> Vec<&str> {
+        self.fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .filter(|field| !self.slots.iter().any(|slot| slot.reads(field)))
+            .collect()
+    }
+
+    /// The concept fields a slot reads that the concept does not
+    /// declare — a typo in the template, or a field the model lost.
+    pub fn undeclared_fields(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for slot in &self.slots {
+            for field in &slot.fields {
+                if Origin::of(field) == Origin::Concept
+                    && self.declared(field).is_none()
+                    && !out.contains(&field.as_str())
+                {
+                    out.push(field);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// One field a model concept declares.
+///
+/// The panel needs more than the name: the declared type decides how a
+/// value is spelled back, and `cardinality: one` versus many decides
+/// whether an absent value is a hole or an empty list. Editing (a later
+/// step) needs both, plus the attribute, to build the retraction that
+/// supersedes a value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Field {
+    /// The field name as a template writes it between braces.
+    pub name: String,
+    /// The attribute it projects (`the:`), e.g. `xyz.tonk.task/title`.
+    pub attribute: Option<String>,
+    /// The declared value type (`as:`), e.g. `Text`, `Boolean`.
+    pub value_type: Option<String>,
+    /// `one` or `many`. Absent when the descriptor does not say.
+    pub cardinality: Option<String>,
+    /// Declared under `maybe:` rather than `with:` — an entity
+    /// without it still matches the concept.
+    pub optional: bool,
+}
+
+impl Field {
+    /// How the panel spells the declaration: `Text one` / `Text many?`.
+    pub fn signature(&self) -> String {
+        let mut out = self.value_type.clone().unwrap_or_else(|| "?".to_owned());
+        if let Some(cardinality) = &self.cardinality {
+            out.push(' ');
+            out.push_str(cardinality);
+        }
+        if self.optional {
+            out.push('?');
+        }
+        out
+    }
+}
+
+/// One subject in the rendered frame, with its projected values
+/// already spelled as strings.
+///
+/// Stringified here rather than in the panel because the renderer
+/// spells a value exactly one way when it writes it into a slot, and a
+/// panel that spelled it differently would be reporting a value the
+/// page never showed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Entity {
+    /// The subject URI.
+    pub this: String,
+    /// Field name -> the value as the renderer spelled it. What the
+    /// concept rows show, so the panel never reports a value in a
+    /// spelling the page did not use.
+    pub fields: BTreeMap<String, String>,
+    /// Field name -> the value itself. What the data panel renders
+    /// from, because notation spells a string, an entity URI and a
+    /// list differently and a pre-flattened string cannot tell them
+    /// apart.
+    pub values: BTreeMap<String, ipld_core::ipld::Ipld>,
+}
+
+/// The fields a model concept's descriptor declares, in declaration
+/// order across its `with:` (required) and `maybe:` (optional) maps.
+///
+/// These are the rows a concept panel lists and the names a template's
+/// `{field}` references are checked against. A descriptor that will not
+/// parse yields nothing rather than an error — an introspection overlay
+/// showing no fields is a better failure than one that will not open.
+pub fn declared_fields(descriptor_json: &str) -> Vec<Field> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(descriptor_json) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Field> = Vec::new();
+    for (block, optional) in [("with", false), ("maybe", true)] {
+        let Some(map) = value.get(block).and_then(|v| v.as_object()) else {
+            continue;
+        };
+        for (name, spec) in map {
+            if out.iter().any(|field| &field.name == name) {
+                continue;
+            }
+            let text = |key: &str| spec.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+            out.push(Field {
+                name: name.clone(),
+                attribute: text("the"),
+                value_type: text("as"),
+                cardinality: text("cardinality"),
+                optional,
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn declared(names: &[&str]) -> Vec<Field> {
+        names
+            .iter()
+            .map(|name| Field {
+                name: (*name).to_owned(),
+                attribute: None,
+                value_type: None,
+                cardinality: None,
+                optional: false,
+            })
+            .collect()
+    }
+
+    fn slot(id: u32, fields: &[&str], kind: SlotKind) -> Slot {
+        Slot {
+            id,
+            fields: fields.iter().map(|f| (*f).to_owned()).collect(),
+            origin: Origin::of(fields[0]),
+            kind,
+            scope: SlotScope::Chrome,
+            value: String::new(),
+        }
+    }
+
+    #[test]
+    fn it_classifies_a_plain_field_as_a_concept_field() {
+        assert_eq!(Origin::of("title"), Origin::Concept);
+    }
+
+    #[test]
+    fn it_classifies_the_subject_and_host_and_key_references() {
+        assert_eq!(Origin::of("this"), Origin::Subject);
+        assert_eq!(Origin::of("dom.host/data-active"), Origin::Host);
+        assert_eq!(Origin::of("tags/key"), Origin::Key);
+    }
+
+    #[test]
+    fn a_text_slot_is_labelled_by_its_fields() {
+        assert_eq!(slot(0, &["a", "b"], SlotKind::Text).label(), "a+b");
+    }
+
+    #[test]
+    fn an_attribute_slot_names_the_attribute_it_writes() {
+        let kind = SlotKind::Attribute {
+            name: "with".to_owned(),
+            forced: false,
+        };
+        assert_eq!(slot(0, &["repo"], kind).label(), "with=repo");
+    }
+
+    #[test]
+    fn a_host_slot_label_drops_the_namespace() {
+        assert_eq!(
+            slot(0, &["dom.host/data-active"], SlotKind::Text).label(),
+            "data-active"
+        );
+    }
+
+    #[test]
+    fn it_reports_a_declared_field_that_no_slot_renders() {
+        let snapshot = Snapshot {
+            fields: declared(&["title", "body"]),
+            slots: vec![slot(0, &["title"], SlotKind::Text)],
+            ..Snapshot::default()
+        };
+        assert_eq!(snapshot.unbound_fields(), vec!["body"]);
+    }
+
+    #[test]
+    fn it_reports_a_rendered_field_the_concept_does_not_declare() {
+        let snapshot = Snapshot {
+            fields: declared(&["title"]),
+            slots: vec![
+                slot(0, &["title"], SlotKind::Text),
+                slot(1, &["titel"], SlotKind::Text),
+            ],
+            ..Snapshot::default()
+        };
+        assert_eq!(snapshot.undeclared_fields(), vec!["titel"]);
+    }
+
+    #[test]
+    fn synthesized_references_are_never_undeclared() {
+        let snapshot = Snapshot {
+            fields: declared(&["title"]),
+            slots: vec![
+                slot(0, &["this"], SlotKind::Text),
+                slot(1, &["dom.host/data-active"], SlotKind::Text),
+                slot(2, &["title/key"], SlotKind::Text),
+            ],
+            ..Snapshot::default()
+        };
+        assert!(snapshot.undeclared_fields().is_empty());
+    }
+
+    #[test]
+    fn it_reads_required_and_optional_fields_out_of_a_descriptor() {
+        let descriptor = r#"{
+            "with": { "title": { "the": "x/title" }, "body": { "the": "x/body" } },
+            "maybe": { "cover": { "the": "x/cover" } }
+        }"#;
+        let fields = declared_fields(descriptor);
+        let found: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+        assert_eq!(found, ["title", "body", "cover"]);
+    }
+
+    #[test]
+    fn an_unparseable_descriptor_declares_nothing() {
+        assert!(declared_fields("not json").is_empty());
+    }
+}

@@ -1303,6 +1303,17 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `devtools/inspect` — open the introspection overlay in the tab
+        /// that asked, to pick a display to look inside.
+        pub mod inspect {
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so asking again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.inspect")]
+            pub struct Time(pub f64);
+        }
+
         /// `tonk/home` — take the page that asked back to the hub.
         pub mod home {
             use dialog_query::Attribute;

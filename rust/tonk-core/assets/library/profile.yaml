@@ -1298,6 +1298,23 @@ command!: &space/connect
   with:
     time: connect-space/time
 
+# Look inside the page. Opens the introspection overlay in the asking tab:
+# every display on the page is outlined, and choosing one opens the
+# inspector on it — its parts, data, concept, view and commands. Recorded
+# on the tab's site like the bar's acts, but answered by the overlay in the
+# frame that holds the displays rather than by the bar.
+attribute!: &inspect/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.command.inspect/time
+  as: float
+  role: now
+
+command!: &devtools/inspect
+  description: Pick something on this page and look inside it.
+  action: ["inspect", "inspect this page", "devtools"]
+  with:
+    time: inspect/time
+
 # The FAB fallback seat — the nearest corner restored on the next page load,
 # stored on `state:fab`. The live page keeps the exact point along the nearest
 # edge; element.rs persists this compatible corner after every pointer-up drop.

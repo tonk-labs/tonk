@@ -94,3 +94,14 @@ impl dialog_capability::Provider<tonk_schema::command::ConnectSpace> for Command
         ask(self, "connect", command.time.0).await;
     }
 }
+
+/// Not one of the bar's controls: the introspection overlay in the frame
+/// whose site this is answers it, and relays a pick to the frames inside,
+/// so the frame that holds the displays is the one that opens.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::Inspect> for CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::Inspect) {
+        ask(self, "inspect", command.time.0).await;
+    }
+}
