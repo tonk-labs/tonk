@@ -57,12 +57,10 @@ concept!: &replica
     subject:
       description: The repository this replica is a view of.
       the: xyz.tonk.replica/subject
-      cardinality: one
       as: entity
     profile:
       description: The peer holding it; `profile` is dialog's word for it.
       the: xyz.tonk.replica/profile
-      cardinality: one
       as: entity
 
 # A branch of a repository on this device.
@@ -80,17 +78,14 @@ concept!: &branch
     name:
       description: The branch's name on this replica.
       the: xyz.tonk.branch/name
-      cardinality: one
       as: text
     replica:
       description: The replica this branch lives on.
       the: xyz.tonk.branch/replica
-      cardinality: one
       as: entity
     revision:
       description: The current revision — where this branch is now.
       the: dialog.branch/revision
-      cardinality: one
       as: entity
 
 # What a local branch tracks.
@@ -115,7 +110,6 @@ concept!: &branch/upstream
     upstream:
       description: The branch this one tracks.
       the: tonk.dialog.branch/upstream
-      cardinality: one
       as: entity
 
 # Which branch this replica is on.
@@ -132,5 +126,4 @@ concept!: &replica/active-branch
     branch:
       description: The active branch.
       the: tonk.dialog.replica/active-branch
-      cardinality: one
       as: entity

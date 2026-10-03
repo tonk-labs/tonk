@@ -132,20 +132,22 @@ pub(crate) fn parse_attribute_fields(
                 })?;
                 shape.insert("as".into(), serde_json::Value::String(normalized.into()));
             }
+            // The older spelling of a policy: `one` is `select: last`,
+            // the default, and `many` is `select: all`. Accepted so
+            // existing documents lower; a `select:` beside it wins.
             "cardinality" => {
                 let value_str = stringify_simple_value(field)?;
                 let normalized = normalize_cardinality_name(&value_str).ok_or_else(|| {
                     AnalyzeErrorKind::InvalidAttributeBody {
                         reason: format!(
                             "unknown cardinality {value_str:?} — \
-                             expected `one` or `many`"
+                             expected `one` or `many`; prefer `select: last` or `select: all`"
                         ),
                     }
                 })?;
-                shape.insert(
-                    "cardinality".into(),
-                    serde_json::Value::String(normalized.into()),
-                );
+                if normalized == "many" && !shape.contains_key("select") {
+                    shape.insert("select".into(), serde_json::Value::String("all".into()));
+                }
             }
             "the" => {
                 let value_str = stringify_simple_value(field)?;

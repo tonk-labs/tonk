@@ -43,7 +43,6 @@ concept!: &notebook
     title:
       description: The notebook's title.
       the: xyz.tonk.notebook/title
-      cardinality: one
       as: text
     block:
       description: The notebook's blocks, in document order.
@@ -53,7 +52,7 @@ concept!: &notebook
       # template then substitutes `{block}` once instead of iterating
       # the entries, so the order rows never render and every block
       # reads as unplaced.
-      cardinality: many
+      select: all
       as: {[position]: entity}
 
 # The title alone, so a create or a rename writes one field rather than
@@ -91,7 +90,6 @@ concept!: &block/position
     at:
       description: The position itself.
       the: xyz.tonk.notebook.block/at
-      cardinality: one
       as: text
 
 # One block of a notebook. Carries a pointer back to its notebook so the
@@ -103,12 +101,10 @@ concept!: &notebook/block
     notebook:
       description: The notebook this block belongs to.
       the: xyz.tonk.notebook.block/notebook
-      cardinality: one
       as: entity
     source:
       description: The block's markdown source.
       the: xyz.tonk.notebook.block/source
-      cardinality: one
       as: text
 
 # A block and the block that FOLLOWS it, or `case:none` at the document tail.
@@ -127,7 +123,6 @@ concept!: &block/chain
     next:
       description: The following block, or `case:none` at the tail.
       the: xyz.tonk.notebook.block/next
-      cardinality: one
       as: entity
 
 # ---------------------------------------------------------------------------
@@ -233,12 +228,10 @@ concept!: &notebook/index-route
     repo:
       description: The space repository, picked off the site entity.
       the: xyz.tonk.site/repo
-      cardinality: one
       as: text
     branch:
       description: The space branch, picked off the site entity.
       the: xyz.tonk.site/branch
-      cardinality: one
       as: text
 
 # The index IS a notebook — a DRAFT one.
@@ -279,17 +272,14 @@ concept!: &notebook/route
     entity:
       description: The notebook entity from the path, picked off the site.
       the: xyz.tonk.site/entity
-      cardinality: one
       as: entity
     repo:
       description: The space repository, picked off the site entity.
       the: xyz.tonk.site/repo
-      cardinality: one
       as: text
     branch:
       description: The space branch, picked off the site entity.
       the: xyz.tonk.site/branch
-      cardinality: one
       as: text
 
 view!:
