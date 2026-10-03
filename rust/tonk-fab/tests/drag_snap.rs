@@ -18,6 +18,10 @@ use web_sys::{
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+// In a subdirectory, so Cargo does not build it as a test suite of its own.
+#[path = "support/settle.rs"]
+mod settle;
+
 fn pointer_event(kind: &str, x: f64, y: f64, buttons: i32) -> Event {
     pointer_event_with_type(kind, x, y, buttons, "mouse")
 }
@@ -75,24 +79,51 @@ fn active_animations(element: &Element) -> u32 {
 }
 
 async fn wait_for_corner_settled(fab: &HtmlElement, root: &ShadowRoot, panel_open: bool) {
-    let wrapper = root.query_selector(".w").unwrap().expect("wrapper");
-    let mut settled_samples = 0;
-    for _ in 0..60 {
-        yield_for(50).await;
-        // Flush pending style changes before asking whether transitions have
-        // finished, and require two frames so observer work can be delivered.
-        let _ = fab.get_bounding_client_rect();
-        let open = root.query_selector(".w.has-panel").unwrap().is_some();
-        if open == panel_open && active_animations(fab) == 0 && active_animations(&wrapper) == 0 {
-            settled_samples += 1;
-            if settled_samples == 2 {
-                return;
-            }
-        } else {
-            settled_samples = 0;
+    let open = || root.query_selector(".w.has-panel").unwrap().is_some();
+    // Opening lands at once; a close lands on the drawer's `transitionend`,
+    // which the FAB announces. A close with no width to give back has
+    // already landed by the time this looks.
+    if open() != panel_open {
+        let closed = settle::next_event(fab, "fabb-drawer-closed");
+        settle::finish_animations(fab);
+        if open() != panel_open {
+            settle::arrived(closed, "the drawer closes").await;
         }
     }
-    panic!("corner layout did not settle with panel_open={panel_open}");
+    settle::finish_animations(fab);
+    assert_eq!(
+        open(),
+        panel_open,
+        "corner layout settles with panel_open={panel_open}"
+    );
+}
+
+/// The host's running CSS `left` transition: the edge glide.
+fn left_transition(fab: &HtmlElement) -> JsValue {
+    let _ = fab.get_bounding_client_rect();
+    js_sys::Reflect::get(fab, &"getAnimations".into())
+        .unwrap()
+        .unchecked_into::<js_sys::Function>()
+        .call0(fab)
+        .unwrap()
+        .unchecked_into::<js_sys::Array>()
+        .iter()
+        .find(|animation| {
+            js_sys::Reflect::get(animation, &"transitionProperty".into())
+                .ok()
+                .and_then(|value| value.as_string())
+                .as_deref()
+                == Some("left")
+        })
+        .expect("the edge glide is a CSS left transition")
+}
+
+fn animation_call(target: &JsValue, method: &str) -> JsValue {
+    js_sys::Reflect::get(target, &method.into())
+        .unwrap()
+        .unchecked_into::<js_sys::Function>()
+        .call0(target)
+        .unwrap()
 }
 
 fn px(style: &web_sys::CssStyleDeclaration, property: &str) -> f64 {
@@ -364,13 +395,27 @@ async fn release_glides_to_the_nearest_edge_without_losing_its_free_coordinate()
         "release jumped: {release_left} -> {start}"
     );
     assert!(active_animations(&fab) > 0, "edge glide must be active");
-    yield_for(100).await;
+    // Sample the glide halfway along its own timeline: under a busy browser
+    // a timer says nothing about how far it has got.
+    let glide = left_transition(&fab);
+    animation_call(&glide, "pause");
+    let duration = js_sys::Reflect::get(
+        &animation_call(
+            &js_sys::Reflect::get(&glide, &"effect".into()).unwrap(),
+            "getComputedTiming",
+        ),
+        &"endTime".into(),
+    )
+    .unwrap()
+    .as_f64()
+    .unwrap();
+    js_sys::Reflect::set(&glide, &"currentTime".into(), &(duration / 2.0).into()).unwrap();
     let intermediate = fab.get_bounding_client_rect().left();
     assert!(
         intermediate > 16.0 && intermediate < start,
         "expected intermediate glide position, got {intermediate}"
     );
-    yield_for(400).await;
+    animation_call(&glide, "finish");
     assert!((fab.get_bounding_client_rect().left() - 16.0).abs() < 1.0);
 
     fab.remove();

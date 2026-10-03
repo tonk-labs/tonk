@@ -14,6 +14,10 @@ use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+// In a subdirectory, so Cargo does not build it as a test suite of its own.
+#[path = "support/settle.rs"]
+mod settle;
+
 fn mount() -> HtmlElement {
     tonk_fab::register();
     let document = window().unwrap().document().unwrap();
@@ -418,50 +422,26 @@ fn deliver_receipts(agent: &HtmlElement, receipts: &[&str], update: bool) {
         .unwrap();
 }
 
-async fn next_frame() {
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
-        window().unwrap().request_animation_frame(&resolve).unwrap();
-    });
-    JsFuture::from(promise).await.unwrap();
+fn assert_width(bar: &HtmlElement, expected: f64) {
+    let width = shadow(bar, ".w").get_bounding_client_rect().width();
+    assert!(
+        (width - expected).abs() < 1.0,
+        "FAB settles at {expected}px, not {width}px"
+    );
 }
 
-async fn await_width(bar: &HtmlElement, expected: f64) {
-    let deadline = js_sys::Date::now() + 5_000.0;
-    let mut settled = 0;
-    while js_sys::Date::now() < deadline {
-        next_frame().await;
-        let width = shadow(bar, ".w").get_bounding_client_rect().width();
-        settled = if (width - expected).abs() < 1.0 {
-            settled + 1
-        } else {
-            0
-        };
-        if settled >= 3 {
-            return;
-        }
-    }
-    panic!("FAB did not settle at {expected}px");
-}
-
-async fn await_feedback_height(bar: &HtmlElement, expanded: bool) {
-    let deadline = js_sys::Date::now() + 5_000.0;
-    let mut settled = 0;
-    while js_sys::Date::now() < deadline {
-        next_frame().await;
-        let height = shadow(bar, ".agent-feedback")
-            .get_bounding_client_rect()
-            .height();
-        let reached = if expanded {
+fn assert_feedback_height(bar: &HtmlElement, expanded: bool) {
+    let height = shadow(bar, ".agent-feedback")
+        .get_bounding_client_rect()
+        .height();
+    assert!(
+        if expanded {
             height >= 90.0
         } else {
             height < 1.0
-        };
-        settled = if reached { settled + 1 } else { 0 };
-        if settled >= 3 {
-            return;
-        }
-    }
-    panic!("connection popup did not reach expanded={expanded}");
+        },
+        "connection popup reaches expanded={expanded}: {height}px"
+    );
 }
 
 #[dialog_common::test]
@@ -493,11 +473,14 @@ async fn connection_feedback_is_local_transient_and_restores_the_collapsed_fab()
         .click();
     // This is the collapsed presentation; feedback must not change its state.
     shadow(&bar, ".w").class_list().add_1("collapsed").unwrap();
-    await_width(&bar, 51.0).await;
+    settle::finish_animations(&bar);
+    assert_width(&bar, 51.0);
     deliver_receipts(&agent, &["someone-elses"], true);
     assert!(!bar.has_attribute("data-agent-connected"));
     deliver_receipts(&other, &[mine], true);
     assert!(!viewer.has_attribute("data-agent-connected"));
+    // The notice retires on its own timer; listen before it can start.
+    let retired = settle::next_event(&bar, "fabb-notice-retired");
     deliver_receipts(&agent, &[mine], true);
     assert!(bar.has_attribute("data-agent-connected"));
     assert_eq!(
@@ -517,8 +500,9 @@ async fn connection_feedback_is_local_transient_and_restores_the_collapsed_fab()
         "confirmation must animate the FAB width"
     );
     let expanded = 360.0_f64.min(window().unwrap().inner_width().unwrap().as_f64().unwrap() - 32.0);
-    await_width(&bar, expanded).await;
-    await_feedback_height(&bar, true).await;
+    settle::finish_animations(&bar);
+    assert_width(&bar, expanded);
+    assert_feedback_height(&bar, true);
     assert!(
         shadow(&bar, ".w").get_bounding_client_rect().height() > 130.0,
         "the notice must pop out as a message surface, not replace the header label"
@@ -527,8 +511,10 @@ async fn connection_feedback_is_local_transient_and_restores_the_collapsed_fab()
         shadow(&bar, ".space .n").text_content().as_deref(),
         Some("Project Atlas")
     );
-    await_width(&bar, 51.0).await;
-    await_feedback_height(&bar, false).await;
+    settle::arrived(retired, "the connection notice retires").await;
+    settle::finish_animations(&bar);
+    assert_width(&bar, 51.0);
+    assert_feedback_height(&bar, false);
     assert!(!bar.has_attribute("data-agent-connected"));
     assert!(shadow(&bar, ".w").class_list().contains("collapsed"));
     deliver_receipts(&agent, &[mine], false);
