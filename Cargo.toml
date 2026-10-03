@@ -226,6 +226,14 @@ strip = "debuginfo"
 lto = "thin"
 codegen-units = 1
 
+# The release test archive: release optimizations without link-time
+# optimization. LTO re-optimizes every crate a binary pulls in at each
+# link, and the archive links one binary per test target, which put the
+# release test build past CI's time limit. Shipped builds keep `release`.
+[profile.release-test]
+inherits = "release"
+lto = false
+
 [profile.wasm-release]
 inherits = "release"
 opt-level = "s"
