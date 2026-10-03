@@ -4613,20 +4613,30 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
     let library = fetch_standard_library(&current.source)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch '{}': {e}", current.source)))?;
-    let mut upgraded = install_seed(tonk, &key, &session, current, library).await?;
+    let upgraded = install_seed(tonk, &key, &session, current, library).await?;
+    Ok(upgrade_components(tonk, &key, &session).await? | upgraded)
+}
 
-    // Then every component the space installed, each from its own source.
-    let components: Vec<InstalledSeed> = installed_seeds(tonk, &session)
+/// Bring every component space `key` installed up to its shipped version,
+/// each from its own source, as [`upgrade_seed`] does after the seed.
+/// Whether any of them changed.
+async fn upgrade_components(
+    tonk: &TonkState,
+    key: &str,
+    session: &crate::reactor::BranchSession,
+) -> Result<bool, RepositoryError> {
+    let components: Vec<InstalledSeed> = installed_seeds(tonk, session)
         .await
         .map_err(|e| RepositoryError::Internal(format!("read seed record: {e}")))?
         .into_iter()
         .filter(|seed| lineage(&seed.source) != "main")
         .collect();
+    let mut upgraded = false;
     for component in components {
-        let library = fetch_standard_library(&component.source)
+        let library = fetch_library_document(&component.source)
             .await
             .map_err(|e| RepositoryError::Internal(format!("fetch '{}': {e}", component.source)))?;
-        upgraded |= install_seed(tonk, &key, &session, component, library).await?;
+        upgraded |= install_seed(tonk, key, session, component, library).await?;
     }
     Ok(upgraded)
 }
@@ -4643,7 +4653,7 @@ pub(super) async fn install_component(
     branch: &str,
     source: &str,
 ) -> Result<bool, RepositoryError> {
-    let library = fetch_standard_library(source)
+    let library = fetch_library_document(source)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch '{source}': {e}")))?;
     let session = tonk
@@ -5050,7 +5060,7 @@ async fn uninstall_claims(
 /// ships it. Empty when it cannot be read (a seed whose source is offline):
 /// an upgrade of another library then protects less, and goes on.
 async fn declared_by(seed: &InstalledSeed) -> Vec<super::claim::RawClaim> {
-    let library = match fetch_standard_library(&seed.source).await {
+    let library = match fetch_library_document(&seed.source).await {
         Ok(library) => library,
         Err(error) => {
             log!(
@@ -5425,6 +5435,21 @@ async fn fetch_profile_library() -> Result<String, TonkWorkerError> {
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown", test)))]
 async fn fetch_profile_library() -> Result<String, TonkWorkerError> {
     fetch_standard_library(PROFILE_LIBRARY_URL).await
+}
+
+/// A shipped library document that installed components are read from:
+/// installing or updating one, and what one declares when another library
+/// upgrades. Wasm tests run outside the service-worker scope the fetch
+/// needs, so they read the checked-in bytes, as [`fetch_profile_library`]
+/// does.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown", test))]
+async fn fetch_library_document(url: &str) -> Result<String, TonkWorkerError> {
+    embedded_standard_library(url)
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown", test)))]
+async fn fetch_library_document(url: &str) -> Result<String, TonkWorkerError> {
+    fetch_standard_library(url).await
 }
 
 /// The native sibling of the fetch above: the same documents the
@@ -6679,7 +6704,7 @@ async fn install_claims_for(source: &str, library: &str) -> Result<LibraryClaims
     if !super::library::is_component_url(source) {
         return library_claims(library, "space library").await;
     }
-    let core = fetch_standard_library(STANDARD_LIBRARY_URL)
+    let core = fetch_library_document(STANDARD_LIBRARY_URL)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}")))?;
     library_claims_after(Some(&core), library, source).await
@@ -15103,11 +15128,21 @@ name!:
                 .expect("installing again reads"),
             "an installed, current component is left alone"
         );
+        // What a mount runs: the seed against its shipped document, then
+        // every component. (`upgrade_seed` fetches the seed's own, which
+        // only a service worker can.)
+        let session = content(&tonk, &key).await;
         assert!(
-            !upgrade_seed(&tonk, &key)
+            !install_seed(&tonk, &key, &session, still, CORE.to_owned())
                 .await
-                .expect("the mount upgrade runs"),
-            "a mount finds the seed and the component current"
+                .expect("the seed's upgrade runs"),
+            "a mount finds the seed current"
+        );
+        assert!(
+            !upgrade_components(&tonk, &key, &session)
+                .await
+                .expect("the components' upgrade runs"),
+            "a mount finds the component current"
         );
     }
 
@@ -15202,7 +15237,7 @@ attribute!: &probe/next
                 .await
                 .expect("the component installs")
         );
-        let shipped = fetch_standard_library(NOTEBOOK_SOURCE)
+        let shipped = fetch_library_document(NOTEBOOK_SOURCE)
             .await
             .expect("the component is shipped");
         assert!(
@@ -15215,7 +15250,7 @@ attribute!: &probe/next
         // Where core says something else of the same thing (a description
         // of an attribute both declare), the library installed last says
         // it: those are contested, not lost.
-        let core = fetch_standard_library(STANDARD_LIBRARY_URL)
+        let core = fetch_library_document(STANDARD_LIBRARY_URL)
             .await
             .expect("core is shipped");
         let core_says: std::collections::HashMap<(String, String), String> =
