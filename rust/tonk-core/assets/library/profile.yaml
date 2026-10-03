@@ -50,18 +50,27 @@ concept!: &space
     presence:
       description: >
         Where this space stands ON THIS DEVICE: case:remote when no
-        replica is held here, case:seeding while its content branch is
-        still being seeded, case:replicated once it is. A remote row
-        renders as a hollow space that replicates on first visit.
+        replica is held here, case:replicating while one is being
+        pulled, case:seeding while its content branch is still being
+        seeded, case:replicated once it is. A remote row renders as a
+        hollow space that replicates on first visit.
 
         Derived by the rules below from this device's replica rather
-        than stored, so it cannot drift from it. The remote case is a
-        negated premise (`unless: space/replica`) rather than an absent
-        fact, so every row carries a presence and a view can select on
-        it. The Hub card reflects this via [data-presence].
+        than stored, so it cannot drift from it. Every rule states a
+        case positively; the field reads the first listed case any
+        rule derives, so a replica that is seeding reads as seeding
+        although it is also a replica, and a space nothing else
+        speaks for reads as remote. The Hub card reflects this via
+        [data-presence].
       the: xyz.tonk.space/presence
       cardinality: one
       as: entity
+      select: top
+      among:
+        - case:seeding
+        - case:replicating
+        - case:replicated
+        - case:remote
     name:
       description: >
         The directory mirror of the space's display name — written at
@@ -3508,25 +3517,35 @@ concept!: &account/onboarding
 # the facts it summarises; deriving it means the summary cannot drift from
 # what actually happened.
 #
-# The four cases are mutually exclusive, and each rule below states the
-# whole condition rather than relying on rule order:
+# Each rule below states one case from the fact that proves it, and the
+# field reads the first listed case any rule derives, so the cases rank
+# rather than exclude one another:
 #
-#   case:onboarding  a locally custodied account, not yet registered
-#   case:registered  enrolled, and neither activated nor suspended
-#   case:active      activated and not suspended
 #   case:suspended   the service withdrew
+#   case:active      activated
+#   case:registered  enrolled
+#   case:retired     an onboarding account a real one replaced
+#   case:onboarding  a locally custodied account
 concept!: &account/status
   this: tonk:account/status
   description: The account's status, derived from its registration facts.
   with:
     status:
       description: >
-        `case:onboarding`, `case:registered`, `case:active`, or
-        `case:suspended` — an entity label rather than text, so a typo
-        cannot silently read as a different state.
+        `case:suspended`, `case:active`, `case:registered`,
+        `case:retired` or `case:onboarding` — an entity label rather
+        than text, so a typo cannot silently read as a different
+        state. The first listed case any rule derives is the status.
       the: xyz.tonk.account/status
       cardinality: one
       as: entity
+      select: top
+      among:
+        - case:suspended
+        - case:active
+        - case:registered
+        - case:retired
+        - case:onboarding
 
 view!:
   this: tonk:account/status
@@ -3547,13 +3566,12 @@ view!:
 #
 # The replica is resolved FORWARD from the session: a replica entity is
 # derived from `(profile, subject)`, so binding the space and the session's
-# profile determines the row. Both rules therefore bind `?replica` in
-# `when:`, which is what lets the second one negate over it — a negated
-# premise may not introduce bindings, its own entity included.
+# profile determines the row.
 #
-# There is no `remote` rule for that reason: remote is the ABSENCE of a
-# replica row, and negating it would have to introduce the very entity it
-# is testing for. Absence of `presence` carries that case instead.
+# A deductive rule states its case positively and never negates: the
+# `presence` field ranks the cases (`select: top`), so `remote` is the
+# rule every space with a session satisfies, and any better-ranked case
+# a replica supports wins over it.
 #
 # Seeding is genuinely per-replica: only the device that CREATED a space
 # ever sees it mid-seed, since any other device holding it pulled content
@@ -3661,13 +3679,23 @@ concept!: &space/presence
   description: Where a space stands on this device.
   with:
     presence:
-      description: '`case:remote`, `case:replicating`, `case:seeding`, or `case:replicated`.'
+      description: >
+        `case:seeding`, `case:replicating`, `case:replicated` or
+        `case:remote`: the first listed case any rule derives.
       the: xyz.tonk.space/presence
       cardinality: one
       as: entity
+      select: top
+      among:
+        - case:seeding
+        - case:replicating
+        - case:replicated
+        - case:remote
 
+# Every space with a session is remote until a better-ranked case says
+# otherwise.
 rule!:
-  description: A space this device holds no replica of and is not pulling is remote
+  description: A space is remote unless a replica or a pull says otherwise
   assert: space/presence
   when:
     - assert: space
@@ -3681,14 +3709,6 @@ rule!:
       where:
         this: ?presence
         is: case:remote
-  unless:
-    - assert: space/replica
-      where:
-        subject: ?subject
-        profile: ?profile
-    - assert: space/replicating
-      where:
-        subject: ?subject
 
 # A pull in flight, whether an explicit `space/replicate` asked for it or
 # the lazy first-use path tripped it. Distinct from `case:seeding`: that
@@ -3739,8 +3759,10 @@ rule!:
         this: ?presence
         is: case:seeding
 
+# A replica is replicated; while it is still seeding, the seeding case
+# outranks this one.
 rule!:
-  description: A replica that is no longer seeding is replicated
+  description: A replica held on this device is replicated
   assert: space/presence
   when:
     - assert: space
@@ -3759,14 +3781,10 @@ rule!:
       where:
         this: ?presence
         is: case:replicated
-  unless:
-    - assert: space/replica-status
-      where:
-        this: ?replica
-        status: tonk:blank
 
+# ACCOUNT STATUS — one positive rule per case; the field ranks them.
 rule!:
-  description: A live onboarding account is interim
+  description: A locally custodied account is onboarding
   assert: account/status
   when:
     - assert: account/onboarding
@@ -3775,18 +3793,20 @@ rule!:
       where:
         this: ?status
         is: case:onboarding
-  unless:
-    - assert: account/registered
-      where: { this: ?this }
-    - assert: account/onboarding
-      where: { this: ?this, retired-at: _ }
-
-# Registered is the fallback: enrolled, and neither later fact has
-# arrived. Both are excluded, not just activation — a suspended account
-# still carries its registration, so testing activation alone would derive
-# two cases at once.
+# Retirement is the presence of `retired-at`: a positive fact, read by
+# binding it.
 rule!:
-  description: An account that is neither active nor suspended is registered
+  description: An onboarding account a real one replaced is retired
+  assert: account/status
+  when:
+    - assert: account/onboarding
+      where: { this: ?this, retired-at: ?retired }
+    - assert: ==
+      where:
+        this: ?status
+        is: case:retired
+rule!:
+  description: An enrolled account is registered
   assert: account/status
   when:
     - assert: account/registered
@@ -3796,15 +3816,8 @@ rule!:
       where:
         this: ?status
         is: case:registered
-  unless:
-    - assert: account/active
-      where: { this: ?this }
-    - assert: account/suspended
-      where: { this: ?this }
-
-# Activated and not withdrawn.
 rule!:
-  description: An activated account that is not suspended is active
+  description: An activated account is active
   assert: account/status
   when:
     - assert: account/active
@@ -3813,11 +3826,6 @@ rule!:
       where:
         this: ?status
         is: case:active
-  unless:
-    - assert: account/suspended
-      where: { this: ?this }
-
-# Suspension wins outright.
 rule!:
   description: A suspended account is suspended
   assert: account/status
@@ -3828,7 +3836,6 @@ rule!:
       where:
         this: ?status
         is: case:suspended
-
 # Where anything sealed for this account is addressed.
 #
 # A device that holds a space seed seals it to this address and publishes

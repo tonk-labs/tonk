@@ -673,6 +673,7 @@ pub(crate) fn derive_head_intent(
             | FieldValue::Include(_)
             | FieldValue::Blank
             | FieldValue::Nested(_)
+            | FieldValue::Sequence(_)
             | FieldValue::Premises(_) => {
                 return Err(AnalyzeError::at(
                     AnalyzeErrorKind::UnsupportedFieldValue {
@@ -864,7 +865,10 @@ fn digest_into(
             // Unbound variables, blanks and premises carry no content
             // identity: a variable is not a value yet, a blank is an
             // absence, and premises are a rule body.
-            FieldValue::Variable(_) | FieldValue::Blank | FieldValue::Premises(_) => continue,
+            FieldValue::Variable(_)
+            | FieldValue::Blank
+            | FieldValue::Premises(_)
+            | FieldValue::Sequence(_) => continue,
             FieldValue::Include(include) => {
                 return Err(
                     super::field::unexpanded_include(include, None).with_range(field.value_range)

@@ -151,6 +151,50 @@ pub(crate) fn parse_attribute_fields(
                 let value_str = stringify_simple_value(field)?;
                 shape.insert("the".into(), serde_json::Value::String(value_str));
             }
+            // How a field reads its relation (see dialog's `Select`):
+            // `last` (the default for cardinality one), `all` (for
+            // many), `top` among the listed values, `max`, `min`,
+            // `sum`, `count`, `count-distinct`, `avg`. Dialog checks
+            // the policy against the attribute when the concept is
+            // built.
+            "select" => {
+                let value_str = stringify_simple_value(field)?;
+                let policy = value_str.trim().to_ascii_lowercase();
+                const POLICIES: [&str; 9] = [
+                    "last", "all", "top", "max", "min", "sum", "count", "count-distinct", "avg",
+                ];
+                if !POLICIES.contains(&policy.as_str()) {
+                    return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                        reason: format!(
+                            "unknown select policy {value_str:?} — expected one of: {}",
+                            POLICIES.join(", ")
+                        ),
+                    }
+                    .into());
+                }
+                shape.insert("select".into(), serde_json::Value::String(policy));
+            }
+            // The values a `top` read ranks among, best first.
+            "among" => {
+                let FieldValue::Sequence(items) = &field.value else {
+                    return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                        reason: "`among:` lists the values a `top` read ranks by, best first"
+                            .into(),
+                    }
+                    .into());
+                };
+                let mut listed = Vec::with_capacity(items.len());
+                for item in items {
+                    let scalar = tonk_notation::Field {
+                        name: field.name.clone(),
+                        value: item.clone(),
+                        name_range: field.name_range,
+                        value_range: field.value_range,
+                    };
+                    listed.push(serde_json::Value::String(stringify_simple_value(&scalar)?));
+                }
+                shape.insert("among".into(), serde_json::Value::Array(listed));
+            }
             "description" => {
                 let value_str = require_string_description(field)?;
                 shape.insert("description".into(), serde_json::Value::String(value_str));
@@ -973,6 +1017,7 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
         FieldValue::Variable(_)
         | FieldValue::Blank
         | FieldValue::Nested(_)
+        | FieldValue::Sequence(_)
         | FieldValue::Premises(_) => {
             return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: field.name.clone(),

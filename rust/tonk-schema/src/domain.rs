@@ -1655,9 +1655,10 @@ pub mod account {
     #[cardinality(one)]
     pub struct SuspendedAt(pub u64);
 
-    /// The derived status label: `case:onboarding`, `case:registered`,
-    /// `case:active`, or `case:suspended`. Never written directly — the
-    /// deductive rules in `profile.yaml` conclude it.
+    /// The derived status label: `case:suspended`, `case:active`,
+    /// `case:registered`, `case:retired` or `case:onboarding`, the
+    /// first listed that a rule derives. Never written directly — the
+    /// deductive rules in `profile.yaml` conclude it, one per case.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
     #[cardinality(one)]

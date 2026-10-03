@@ -1086,12 +1086,25 @@ fn walk_field_value(
             }
             Some(FieldValue::Nested(nested))
         }
-        YamlData::Sequence(_) => {
-            out.push(error(
-                range_of(value),
-                r#"Sequence values are not supported in this notation. Use repeated assertions for cardinality-many writes."#,
-            ));
-            None
+        YamlData::Sequence(items) => {
+            // A sequence lists scalars: the values an attribute's
+            // `among:` ranks by. A cardinality-many write is still
+            // repeated assertions, not a sequence.
+            let mut listed = Vec::with_capacity(items.len());
+            for item in items {
+                match &item.data {
+                    YamlData::Mapping(_) | YamlData::Sequence(_) => {
+                        out.push(error(
+                            range_of(item),
+                            r#"A sequence lists scalars only. Use repeated assertions for cardinality-many writes."#,
+                        ));
+                        return None;
+                    }
+                    _ => {}
+                }
+                listed.push(walk_field_value(item, rule_body, out)?);
+            }
+            Some(FieldValue::Sequence(listed))
         }
         YamlData::Tagged(tag, _) if include_form(Some(tag)).is_some() => {
             let form = include_form(Some(tag)).expect("guarded");
@@ -3043,6 +3056,56 @@ page!:
         assert_eq!(premises.len(), 2);
         assert_eq!(premises[0].concept.value, "ack");
         assert_eq!(premises[1].bindings.len(), 2);
+    }
+
+    /// A sequence of scalars parses to [`FieldValue::Sequence`]: the
+    /// listed values an attribute's `among:` ranks by. A sequence
+    /// holding a mapping is refused.
+    #[dialog_common::test]
+    fn it_parses_a_sequence_of_scalars() {
+        let syntax = parse_clean(
+            r#"attribute!: &status
+  description: "where it stands"
+  the: job/status
+  as: entity
+  select: top
+  among:
+    - case:suspended
+    - case:active
+    - "plain"
+"#,
+        );
+        let Expression::Claim(Effectful { inner: app, .. }) = &syntax.expressions[0] else {
+            panic!("expected Claim");
+        };
+        let FieldValue::Sequence(items) = &app
+            .fields
+            .iter()
+            .find(|f| f.name == "among")
+            .unwrap()
+            .value
+        else {
+            panic!("among value must be a Sequence");
+        };
+        assert_eq!(items.len(), 3);
+        assert!(matches!(&items[0], FieldValue::Uri(uri) if uri == "case:suspended"));
+        assert!(matches!(&items[2], FieldValue::Literal(Scalar::String(s)) if s == "plain"));
+
+        let parsed = parse(
+            r#"attribute!: &status
+  the: job/status
+  among:
+    - case: nested
+"#,
+        );
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("lists scalars only")),
+            "a mapping inside a sequence is refused: {:?}",
+            parsed.diagnostics
+        );
     }
 
     /// `unless:` parses to a premise list too, and `description:`

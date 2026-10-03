@@ -1215,6 +1215,73 @@ mod tests {
         fixture.analyze(syntax).await
     }
 
+    /// An attribute declares how a field reads it: `select:` names
+    /// dialog's policy and `among:` lists the values a `top` read
+    /// ranks by. An unknown policy is refused by the analyzer, and a
+    /// policy its attribute cannot read under by dialog.
+    #[dialog_common::test]
+    fn it_lowers_a_select_policy_with_its_listed_values() {
+        let syntax = must_parse(
+            "\
+concept!: &job
+  description: \"a job\"
+  with:
+    status:
+      description: \"where it stands\"
+      the: x.y/status
+      cardinality: one
+      as: entity
+      select: top
+      among:
+        - case:suspended
+        - case:active
+",
+        );
+        let result = super::analyze_local(&syntax);
+        assert!(result.is_ok(), "a ranked read lowers: {:?}", result.err());
+
+        let syntax = must_parse(
+            "\
+concept!: &job
+  description: \"a job\"
+  with:
+    status:
+      description: \"where it stands\"
+      the: x.y/status
+      cardinality: one
+      as: entity
+      select: newest
+",
+        );
+        let result = super::analyze_local(&syntax);
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|error| format!("{error:?}").contains("unknown select policy")),
+            "an unknown policy is refused: {result:?}"
+        );
+
+        let syntax = must_parse(
+            "\
+concept!: &job
+  description: \"a job\"
+  with:
+    status:
+      description: \"where it stands\"
+      the: x.y/status
+      cardinality: one
+      as: entity
+      select: top
+",
+        );
+        let result = super::analyze_local(&syntax);
+        assert!(
+            result.is_err(),
+            "a top read without listed values is refused by dialog: {result:?}"
+        );
+    }
+
     /// An instance head's `&anchor` must be resolvable by a later
     /// field reference in the same document, under both the full
     /// (branch-backed) pipeline and the env-free local path.
