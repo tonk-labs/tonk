@@ -1432,16 +1432,6 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
             crate::router::navigate::notify_navigate(self.client(), "/");
             return;
         }
-        // The invite principal's seed is custodied under the account
-        // as part of the join. A linked device whose root record
-        // predates the encryption key asks the originating page for a
-        // passkey assertion here, before the state lock is taken.
-        if let Err(error) =
-            crate::router::custody::ensure_recipient(self.state(), self.client()).await
-        {
-            log!("join refused: {error}");
-            return;
-        }
         run_join(self, command).await;
     }
 }

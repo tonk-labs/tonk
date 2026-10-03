@@ -753,23 +753,6 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
         None => None,
     };
 
-    // The space's seed is custodied under the account before the
-    // space exists. A linked device whose root record predates the
-    // encryption key asks the originating page for a passkey
-    // assertion here, outside the state lock, and resumes once the
-    // page has saved the key.
-    if let Err(error) = super::custody::ensure_recipient(env.state(), env.client()).await {
-        log!("CreateSpace '{}' refused: {}", name, error);
-        report_space_creation(
-            env.state(),
-            &receipt,
-            "failed",
-            "Space creation wasn't approved. Try again and complete the passkey prompt.",
-        )
-        .await;
-        return;
-    }
-
     // 1. Always create local-only first, so the space appears
     //    whether or not a remote was given (and never vanishes on
     //    a remote failure). The create mints a fresh identity and
