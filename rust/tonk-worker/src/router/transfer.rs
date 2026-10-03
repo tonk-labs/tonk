@@ -65,7 +65,14 @@ fn strip_governance_rows(csv: &str) -> String {
 pub async fn export(
     State(state): State<AppState>,
     Path(path): Path<EvaluatePath>,
+    headers: HeaderMap,
 ) -> Result<Response, TonkWorkerError> {
+    if super::names_profile(&state, &path.repo).await {
+        let path = ProfileExportPath {
+            branch: path.branch,
+        };
+        return export_profile(State(state), Path(path), headers).await;
+    }
     log!("export repo={}, branch={}", path.repo, path.branch);
     let tonk_state = state.write().await;
     let tonk_branch = tonk_state
@@ -79,7 +86,7 @@ pub async fn export(
     ))
 }
 
-/// `GET /api/profile/branch/{branch}/export`
+/// `GET /api/repository/profile:tonk/branch/{branch}/export`
 ///
 /// The profile's counterpart to [`export`]. The profile is a singleton,
 /// so there is no `repo` segment and the branch resolves through

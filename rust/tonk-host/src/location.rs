@@ -6,11 +6,12 @@
 //! - `main@did:key:zAlice` — the `main` branch of Alice's repository.
 //! - `did:key:zAlice` — a bare repo means its default branch.
 //! - `main@profile:tonk` — a `profile:<name>` repo token names the
-//!   profile-as-repository endpoint (`/api/profile/branch/…`), not a
-//!   named repository. The name (`tonk`, the profile the worker
-//!   opens) is carried for forward compatibility; today the profile
-//!   endpoint is singular. (Future: address the profile by its
-//!   `did:key` like any repository, retiring the prefix.)
+//!   profile's own repository. It is a repository like any other,
+//!   stored under the profile's `did:key`; a view cannot know that DID
+//!   ahead of time, so it names the profile by this alias and the
+//!   worker resolves it (`/api/repository/profile:tonk/branch/…`). The
+//!   name (`tonk`) is carried for forward compatibility; the worker
+//!   serves one profile.
 //!
 //! An **allow list** names the set of locations a site permits its
 //! descendants to reach, as space-separated tokens mirroring the
@@ -38,8 +39,7 @@ const PROFILE_PREFIX: &str = "profile:";
 /// name) or the profile endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Repo {
-    /// The profile-as-repository endpoint (`/api/profile/branch/…`),
-    /// with the profile's name (`profile:<name>`).
+    /// The profile's own repository, by its alias (`profile:<name>`).
     Profile(String),
     /// A named repository (`/api/repository/{name}/branch/…`).
     Named(String),

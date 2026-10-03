@@ -64,6 +64,12 @@ pub async fn query(
     headers: HeaderMap,
     request: Request,
 ) -> Result<Response, TonkWorkerError> {
+    if super::names_profile(&state, &path.repo).await {
+        let path = ProfileQueryPath {
+            branch: path.branch,
+        };
+        return query_profile(State(state), Path(path), headers, request).await;
+    }
     let client = request_client(&request);
     let tonk = state.read().await;
     // First use of a directory-listed space this device has not
@@ -82,16 +88,13 @@ pub async fn query(
     query_on_branch(&tonk, branch, headers, request, client).await
 }
 
-/// `POST /api/profile/branch/{branch}/query`
-///
-/// Profile-side counterpart to [`query`]. The profile is its own
-/// repository but lives outside the named-repo namespace, so the
-/// route surface is parallel rather than nested. Same body / `Accept`
-/// / response contract — only the branch reference differs. Lets a
-/// `<tonk-display>` read the profile's meta branch (e.g. the Hub's
-/// list of spaces) the same way it reads any repository branch.
+/// [`query`] for the profile's own repository, which [`query`] hands a
+/// request naming it. Same body / `Accept` / response contract; there is
+/// no space to mount. Lets a `<tonk-display>` read the profile's meta
+/// branch (e.g. the Hub's list of spaces) the same way it reads any
+/// repository branch.
 #[wasm_compat]
-pub async fn query_profile(
+async fn query_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileQueryPath>,
     headers: HeaderMap,

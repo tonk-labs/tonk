@@ -369,11 +369,6 @@ pub(crate) async fn persist_root(
         .as_deref()
         .map(parse_encryption_key)
         .transpose()?;
-    // An operation may be waiting on exactly this: a page answered the
-    // worker's request for a passkey assertion by saving the key.
-    if let Some(recipient) = &encryption_key {
-        super::custody::notify_encryption_key(recipient);
-    }
     Ok(status(LocalRoot {
         root_did: chain.issuer().clone(),
         device_did: state.profile.did(),

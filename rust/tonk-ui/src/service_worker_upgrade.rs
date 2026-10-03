@@ -1433,7 +1433,7 @@ pub(crate) mod tests {
                 const query = arguments[0];
                 const done = arguments[arguments.length - 1];
                 (async () => {
-                    const queryResponse = await fetch("/api/profile/branch/main/query", {
+                    const queryResponse = await fetch("/api/repository/profile:tonk/branch/main/query", {
                         method: "POST",
                         headers: {
                             "content-type": "application/json",
@@ -1484,7 +1484,7 @@ pub(crate) mod tests {
                     return { status, type };
                 };
                 Promise.all([
-                    open("/api/profile/branch/main/query", {
+                    open("/api/repository/profile:tonk/branch/main/query", {
                         method: "POST",
                         headers: {
                             "content-type": "application/json",
@@ -1552,7 +1552,7 @@ pub(crate) mod tests {
                     // loop ends with the document's alignment reload.
                     navigator.serviceWorker.controller.postMessage({ type: "connectivity" });
                     const profiles = await (await fetch("/api/profiles")).json();
-                    const queryUrl = `/api/profile/branch/${profiles.active}/query`;
+                    const queryUrl = `/api/repository/profile:tonk/branch/${profiles.active}/query`;
                     (async () => {
                         for (;;) {
                             try { await (await fetch(asset)).arrayBuffer(); } catch {}
@@ -1709,7 +1709,7 @@ pub(crate) mod tests {
                 const done = arguments[arguments.length - 1];
                 (async () => {
                     const profiles = await (await fetch("/api/profiles")).json();
-                    const response = await fetch(`/api/profile/branch/${profiles.active}/query`, {
+                    const response = await fetch(`/api/repository/profile:tonk/branch/${profiles.active}/query`, {
                         method: "POST",
                         headers: { "content-type": "application/json" },
                         body: JSON.stringify(query),
