@@ -1,11 +1,18 @@
 name: 'Release'
 
 # A pushed `v*` tag is a release. `v0.7.0-rc.1` is a staging pre-release,
-# `v0.7.0` is a stable release. Cut one with git:
+# `v0.7.0` is a stable release. Cut a candidate from `main`, which also
+# moves the `staging` branch to it and deploys staging from there:
 #
 #   git tag v0.7.0-rc.1 origin/main && git push origin v0.7.0-rc.1
 #
-# or from the GitHub UI by drafting a release with a new tag on `main`.
+# then promote the candidate staging runs by tagging the branch:
+#
+#   git fetch origin staging && git tag v0.7.0 origin/staging && git push origin v0.7.0
+#
+# A stable tag on a commit without one of its own candidates is refused.
+# Either can also be cut from the GitHub UI by drafting a release with a
+# new tag on `main` or `staging`.
 # Either way GitHub pushes the tag, which starts this workflow alongside
 # `publish.yml` (web deployment) and `cli-npm.yml` (npm). A release made in
 # the UI already exists by the time this runs; the publish below updates it
