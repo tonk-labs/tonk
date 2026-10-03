@@ -425,6 +425,42 @@ async fn closing_a_drawer_contracts_its_column_without_stretching_the_menu() {
     parent.remove();
 }
 
+/// The prompt's own CSS animation, paused so the test sets its time.
+///
+/// Read off the animation rather than by sleeping: on a busy runner the
+/// page's animation clock can lag `setTimeout` by more than the whole
+/// 600 ms the prompt takes, which read as a prompt that never appeared.
+fn pause_prompt_animation(element: &Element) -> JsValue {
+    let _ = element.get_bounding_client_rect();
+    let animation = animations(element)
+        .iter()
+        .find(|animation| {
+            Reflect::get(animation, &"animationName".into())
+                .ok()
+                .and_then(|value| value.as_string())
+                .as_deref()
+                == Some("fabb-gate-in")
+        })
+        .expect("the prompt fades in through its CSS animation");
+    animation_method(&animation, "pause");
+    animation
+}
+
+fn opacity(element: &Element) -> f64 {
+    window()
+        .unwrap()
+        .get_computed_style(element)
+        .unwrap()
+        .unwrap()
+        .get_property_value("opacity")
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+/// The drawer widens over 400 ms; each account prompt stays invisible for
+/// that long and only then fades in, so its text never reflows across a
+/// drawer still changing width.
 #[dialog_common::test]
 async fn account_prompts_appear_after_the_drawer_finishes_widening() {
     let (parent, fab) = mount(1100);
@@ -435,37 +471,19 @@ async fn account_prompts_appear_after_the_drawer_finishes_widening() {
 
     for (action, prompt) in [(".share", ".share-continue"), (".agent", ".agent-continue")] {
         shadow(&fab, action).unchecked_into::<HtmlElement>().click();
-        yield_for(80).await;
         let prompt = shadow(&fab, prompt);
-        let style = window()
-            .unwrap()
-            .get_computed_style(&prompt)
-            .unwrap()
-            .unwrap();
-        let early_opacity: f64 = style
-            .get_property_value("opacity")
-            .unwrap()
-            .parse()
-            .unwrap();
+        let animation = pause_prompt_animation(&prompt);
+
+        seek_transition(&animation, 390.0);
         assert!(
-            early_opacity < 0.05,
-            "{action} text stays hidden while widening"
+            opacity(&prompt) < 0.05,
+            "{action} text stays hidden while the drawer widens"
         );
-        let mut late_opacity = 0.0;
-        for _ in 0..20 {
-            yield_for(50).await;
-            late_opacity = style
-                .get_property_value("opacity")
-                .unwrap()
-                .parse()
-                .unwrap();
-            if late_opacity > 0.95 {
-                break;
-            }
-        }
+        seek_transition(&animation, 600.0);
+        let late = opacity(&prompt);
         assert!(
-            late_opacity > 0.95,
-            "{action} text appears at full width; opacity={late_opacity}"
+            late > 0.95,
+            "{action} text appears at full width; opacity={late}"
         );
         shadow(&fab, action).unchecked_into::<HtmlElement>().click();
     }
