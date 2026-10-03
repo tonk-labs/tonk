@@ -2790,7 +2790,6 @@ attribute!: &install-component/time
   role: now
 
 command!: &library/install
-  this: tonk:library/install
   description: Install a library component into this space, or update it.
   action: ["install"]
   with:

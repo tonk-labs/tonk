@@ -4187,16 +4187,10 @@ async fn read_installed_seed_in(
 /// release from before wrote beside a complete one goes too. The
 /// `seed/available` half stays: it says the seed exists and where it came
 /// from, which is still true of a seed no longer running.
-async fn live_install_records(
-    tonk: &TonkState,
-    session: &crate::reactor::BranchSession,
-) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
-    live_install_records_in(tonk, session, "main").await
-}
-
-/// [`live_install_records`] for the installs of one `lineage` (see
-/// [`lineage`]): upgrading a component withdraws its own records, and the
-/// main seed's and other components' stay.
+///
+/// Only the installs of one `lineage` (see [`lineage`]): upgrading a
+/// component withdraws its own records, and the main seed's and other
+/// components' stay.
 async fn live_install_records_in(
     tonk: &TonkState,
     session: &crate::reactor::BranchSession,
@@ -5015,7 +5009,10 @@ async fn uninstall_claims(
         recorded_install_versions(tonk, session, &current.source).await?
     };
     let in_lineage = lineage(&current.source).to_owned();
-    // What the other installed libraries assert, which this one leaves.
+    // What the other installed libraries declare, which this one leaves.
+    // Read from their documents, not their install histories: an install
+    // commit records only what it changed, so a component installed after
+    // core holds none of what core already asserted, though it declares it.
     let mut seen = std::collections::HashSet::new();
     for other in installed_seeds(tonk, session)
         .await
@@ -5023,15 +5020,8 @@ async fn uninstall_claims(
         .into_iter()
         .filter(|seed| lineage(&seed.source) != in_lineage)
     {
-        let theirs = if other.complete {
-            vec![other.version]
-        } else {
-            recorded_install_versions(tonk, session, &other.source).await?
-        };
-        for version in &theirs {
-            for claim in assertions_at_version(tonk, session, version).await? {
-                seen.insert(claim_identity(&claim));
-            }
+        for claim in declared_by(&other).await {
+            seen.insert(claim_identity(&claim));
         }
     }
     let mut claims = Vec::new();
@@ -5054,6 +5044,32 @@ async fn uninstall_claims(
     }
     claims.extend(live_install_records_in(tonk, session, &in_lineage).await?);
     Ok(claims)
+}
+
+/// What the library an install was fetched from declares, as this worker
+/// ships it. Empty when it cannot be read (a seed whose source is offline):
+/// an upgrade of another library then protects less, and goes on.
+async fn declared_by(seed: &InstalledSeed) -> Vec<super::claim::RawClaim> {
+    let library = match fetch_standard_library(&seed.source).await {
+        Ok(library) => library,
+        Err(error) => {
+            log!(
+                "seed upgrade: '{}' unreadable, not protected: {error}",
+                seed.source
+            );
+            return Vec::new();
+        }
+    };
+    match install_claims_for(&seed.source, &library).await {
+        Ok(claims) => claims.durable,
+        Err(error) => {
+            log!(
+                "seed upgrade: '{}' unanalyzable, not protected: {error}",
+                seed.source
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// The routes the space library pinned to fixed entities before it shipped
@@ -14272,7 +14288,7 @@ name!:
             .await
             .expect("the install's history reads");
         retract.extend(
-            live_install_records(tonk, &session)
+            live_install_records_in(tonk, &session, "main")
                 .await
                 .expect("the install records read"),
         );
@@ -15095,40 +15111,66 @@ name!:
         );
     }
 
-    /// Updating a component reverts what its last version asserted, but not
-    /// a claim the seed asserts too: a fact has no owner, and the seed still
-    /// relies on it.
+    /// An attribute two libraries can each declare, word for word, under
+    /// names of their own (one document names a thing once).
+    fn shared_attribute(name: &str) -> String {
+        format!(
+            r#"
+attribute!: &{name}
+  description: "Declared by more than one library."
+  the: xyz.example.probe/shared
+  as: text
+"#
+        )
+    }
+
+    /// Updating a component reverts what its last version asserted, and
+    /// leaves what the seed declares too.
     #[dialog_common::test]
-    async fn updating_a_component_keeps_what_the_seed_also_asserts() {
+    async fn updating_a_component_keeps_what_the_seed_also_declares() {
         let tonk = test_state().await;
-        let (key, _) = new_space(&tonk, CORE, "Garden").await;
-        install_component(&tonk, &key, CONTENT_BRANCH, NOTEBOOK_SOURCE)
+        let seed_library = format!("{CORE}\n{}", shared_attribute("probe/in-seed"));
+        let (key, _) = new_space(&tonk, &seed_library, "Garden").await;
+        let first = format!(
+            "{}\n{}",
+            shared_attribute("probe/in-component"),
+            r#"
+attribute!: &probe/first
+  description: "The first version's own."
+  the: xyz.example.probe/first
+  as: text
+"#
+        );
+        install_fresh_from(&tonk, &key, CONTENT_BRANCH, NOTEBOOK_SOURCE, &first, &[])
             .await
             .expect("the component installs");
-        let seed = running(&tonk, &key).await;
-        let notebook = component(&tonk, &key, NOTEBOOK_SOURCE)
+        let installed = component(&tonk, &key, NOTEBOOK_SOURCE)
             .await
             .expect("the component is installed");
-        let core = install_claims(&tonk, &key, &seed).await;
-        let ours = install_claims(&tonk, &key, &notebook).await;
-        let shared: Vec<&Triple> = ours.intersection(&core).collect();
-        let only_ours: Vec<&Triple> = ours.difference(&core).collect();
-        assert!(
-            !shared.is_empty(),
-            "the notebook library declares some of core again"
-        );
-        assert!(!only_ours.is_empty());
+        let in_seed = durable_claims(&shared_attribute("a")).await;
+        let shared: Vec<Triple> = durable_claims(&shared_attribute("b"))
+            .await
+            .intersection(&in_seed)
+            .cloned()
+            .collect();
+        assert!(!shared.is_empty());
+        let only_first: Vec<Triple> = install_claims(&tonk, &key, &installed)
+            .await
+            .into_iter()
+            .filter(|claim| claim.0.contains("probe") || claim.2.contains("probe"))
+            .filter(|claim| !shared.contains(claim))
+            .collect();
+        assert!(!only_first.is_empty());
 
-        // A version of the component that drops everything it had.
         let next = r#"
-attribute!: &probe/note
-  description: "A note."
-  the: xyz.example.probe/note
+attribute!: &probe/next
+  description: "The next version's own."
+  the: xyz.example.probe/next
   as: text
 "#;
         let session = content(&tonk, &key).await;
         assert!(
-            install_seed(&tonk, &key, &session, notebook, next.to_owned())
+            install_seed(&tonk, &key, &session, installed, next.to_owned())
                 .await
                 .expect("the update commits")
         );
@@ -15138,23 +15180,68 @@ attribute!: &probe/note
                 "the seed's {claim:?} stays"
             );
         }
-        for claim in only_ours.iter().take(20) {
+        for claim in &only_first {
             assert!(
                 !holds(&tonk, &key, claim).await,
                 "the old version's {claim:?} goes"
             );
         }
-        assert_eq!(
-            running(&tonk, &key).await.seed,
-            seed.seed,
-            "the seed's record stays"
-        );
-        assert_ne!(
-            component(&tonk, &key, NOTEBOOK_SOURCE)
+    }
+
+    /// Upgrading the seed leaves every claim an installed component declares.
+    /// The component's own install did not record what the seed had put on
+    /// the branch first, so the upgrade reads the component's document to
+    /// know what it still relies on.
+    #[dialog_common::test]
+    async fn upgrading_the_seed_keeps_what_a_component_declares() {
+        let tonk = test_state().await;
+        let seed_library = format!("{CORE}\n{}", shared_attribute("probe/in-seed"));
+        let (key, _) = new_space(&tonk, &seed_library, "Garden").await;
+        assert!(
+            install_component(&tonk, &key, CONTENT_BRANCH, NOTEBOOK_SOURCE)
                 .await
-                .expect("the component is still installed")
-                .seed,
-            seed.seed
+                .expect("the component installs")
+        );
+        let shipped = fetch_standard_library(NOTEBOOK_SOURCE)
+            .await
+            .expect("the component is shipped");
+        assert!(
+            install(&tonk, &key, CORE).await,
+            "the seed moves to plain core"
+        );
+        let declared = install_claims_for(NOTEBOOK_SOURCE, &shipped)
+            .await
+            .expect("the component analyzes");
+        // Where core says something else of the same thing (a description
+        // of an attribute both declare), the library installed last says
+        // it: those are contested, not lost.
+        let core = fetch_standard_library(STANDARD_LIBRARY_URL)
+            .await
+            .expect("core is shipped");
+        let core_says: std::collections::HashMap<(String, String), String> =
+            install_claims_for(STANDARD_LIBRARY_URL, &core)
+                .await
+                .expect("core analyzes")
+                .durable
+                .iter()
+                .map(claim_identity)
+                .map(|(the, of, is)| ((the, of), is))
+                .collect();
+        let mut missing = Vec::new();
+        for claim in declared.durable.iter().map(claim_identity) {
+            let contested = claim.0 == "db.meta/description"
+                && core_says
+                    .get(&(claim.0.clone(), claim.1.clone()))
+                    .is_some_and(|is| *is != claim.2);
+            if !contested && !holds(&tonk, &key, &claim).await {
+                missing.push(claim);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "the component lost {} claims: {:?}",
+            missing.len(),
+            missing.iter().take(5).collect::<Vec<_>>()
         );
     }
 }

@@ -162,7 +162,16 @@ pub async fn interpret<Env: SelectProvider>(
     input: &str,
     site: Option<&str>,
 ) -> Result<Interpretation, FormulaError> {
-    let (source, memory) = load(branch, env).await?;
+    let (mut source, memory) = load(branch, env).await?;
+    // Which commands, not what fills them: rules derive an entity field's
+    // candidates onto the intent this records, so none exist yet. Read any
+    // text there ("install notebook") as possibly naming one; `suggest`
+    // then fills the field from what was derived, or leaves it empty.
+    for attribute in &mut source.attributes {
+        if attribute.fields.get("type").and_then(Json::as_str) == Some("Entity") {
+            attribute.fields.insert("type".to_owned(), json!("Text"));
+        }
+    }
     let selection = match site {
         Some(site) => site_selection(branch, env, site).await?,
         None => None,

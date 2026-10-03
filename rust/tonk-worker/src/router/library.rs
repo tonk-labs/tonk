@@ -169,10 +169,6 @@ impl dialog_capability::Provider<tonk_schema::command::InstallComponent>
             tonk_common::log!("library/install: '{component}' is not a library component");
             return;
         };
-        if self.from_profile() {
-            tonk_common::log!("library/install: components install into a space, not the profile");
-            return;
-        }
         let (repo, branch) = (self.origin().repo.clone(), self.origin().branch.clone());
         let tonk = self.state().read().await;
         match super::repository::install_component(&tonk, &repo, &branch, &source).await {

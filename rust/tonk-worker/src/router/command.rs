@@ -142,7 +142,9 @@ pub struct CommandProviders {
     /// refusal publishes there), and — until membership moves fully
     /// profile-side —
     /// [`ExpelMember`](tonk_schema::command::ExpelMember), whose target
-    /// is likewise the origin space.
+    /// is likewise the origin space, and installing a library component
+    /// ([`InstallComponent`](tonk_schema::command::InstallComponent)) into
+    /// the origin space, which the profile has none of.
     space: CommandRegistry<CommandEnv>,
 }
 
@@ -240,7 +242,6 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::SwitchProfile>()
         .command::<tonk_schema::command::SignOut>()
         .command::<tonk_schema::command::Home>()
-        .command::<tonk_schema::command::InstallComponent>()
         // The bar's own acts: each records a request on the asking tab's
         // site, which that tab's bar performs (see `site_request`).
         .command::<tonk_schema::command::AddAccount>()
@@ -281,6 +282,9 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // request would have to arrive on the branch it is asking for.
         .command::<tonk_schema::command::CheckUpdate>()
         .command::<super::repository::AgentHandoffRequest>()
+        // A space installs a library component into itself; the profile
+        // has no components to install.
+        .command::<tonk_schema::command::InstallComponent>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
 }
