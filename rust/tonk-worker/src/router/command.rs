@@ -142,7 +142,9 @@ pub struct CommandProviders {
     /// refusal publishes there), and — until membership moves fully
     /// profile-side —
     /// [`ExpelMember`](tonk_schema::command::ExpelMember), whose target
-    /// is likewise the origin space.
+    /// is likewise the origin space, and installing a library component
+    /// ([`InstallComponent`](tonk_schema::command::InstallComponent)) into
+    /// the origin space, which the profile has none of.
     space: CommandRegistry<CommandEnv>,
 }
 
@@ -280,6 +282,9 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // request would have to arrive on the branch it is asking for.
         .command::<tonk_schema::command::CheckUpdate>()
         .command::<super::repository::AgentHandoffRequest>()
+        // A space installs a library component into itself; the profile
+        // has no components to install.
+        .command::<tonk_schema::command::InstallComponent>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
 }

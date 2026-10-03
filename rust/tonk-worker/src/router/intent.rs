@@ -791,3 +791,81 @@ async fn it_evaluates_many_rows() {
         );
     }
 }
+
+/// "install note" completes to the notebook component, and running the
+/// reading installs it beside the space's seed: the space records its
+/// install under the component's source.
+#[dialog_common::test]
+async fn it_installs_a_component_from_the_palette() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+
+    let page = "site:6f0d2c8e-4b1a-4c3d-9e2f-1a2b3c4d5e6f";
+    let expression = "intent:test-install";
+    interpreted(&app, &space, expression, "install note", page, 1.0).await;
+    let rows = readings(&app, &space, expression, &subject).await;
+    let top = rows
+        .first()
+        .unwrap_or_else(|| panic!("install is suggested: {rows:?}"));
+    assert_eq!(field(top, "text"), "install [notebook]", "{rows:?}");
+    let claim = field(top, "claim")
+        .as_str()
+        .unwrap_or_else(|| panic!("the reading runs as it is: {top:?}"))
+        .to_owned();
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        claim,
+    )
+    .await;
+
+    // The handler runs after the transact returns.
+    let mut sources = Value::Null;
+    for _ in 0..500 {
+        sources = send(
+            &app,
+            "POST",
+            &format!("{space}/query"),
+            "application/json",
+            json!({
+                "predicate": { "with": {
+                    "source": { "the": "xyz.tonk.seed/source", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": {
+                    "this": { "?": { "name": "this" } },
+                    "source": { "?": { "name": "source" } }
+                }
+            })
+            .to_string(),
+        )
+        .await;
+        if sources.as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row["fields"]["source"] == "/library/notebook.yaml")
+        }) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the notebook component was never installed: {sources}");
+}

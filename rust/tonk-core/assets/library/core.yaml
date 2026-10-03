@@ -2736,6 +2736,76 @@ view!:
     label: |
       {name}
 
+# The library's components a space can install, each beside the others
+# and beside the space's seed: issue, meta, notebook, prose, table (every
+# library file but `core.yaml`, which every space runs, and `profile.yaml`,
+# the profile's). An install is recorded like the seed's and brought up to
+# date the same way when the space mounts; installing one already there
+# updates it, or does nothing when it is current.
+concept!: &library/component
+  description: A library component a space can install.
+  with:
+    name:
+      description: The component's name, the file it is in without `.yaml`.
+      the: xyz.tonk.library.component/name
+      cardinality: one
+      as: text
+
+view!:
+  this: library/component
+  show:
+    label: |
+      {name}
+
+library/component!:
+  this: tonk:library/issue
+  name: "issue"
+
+library/component!:
+  this: tonk:library/meta
+  name: "meta"
+
+library/component!:
+  this: tonk:library/notebook
+  name: "notebook"
+
+library/component!:
+  this: tonk:library/prose
+  name: "prose"
+
+library/component!:
+  this: tonk:library/table
+  name: "table"
+
+attribute!: &install-component/component
+  description: Which component to install, `tonk:library/<name>`.
+  the: xyz.tonk.command.install-component/component
+  as: entity
+  role: object
+
+attribute!: &install-component/time
+  description: The moment it was asked; makes each dispatch a distinct transient.
+  the: xyz.tonk.command.install-component/time
+  as: float
+  role: now
+
+command!: &library/install
+  description: Install a library component into this space, or update it.
+  action: ["install"]
+  with:
+    component: install-component/component
+    time: install-component/time
+
+# What "install" can be said of: every component.
+rule!:
+  description: A library component is one an install from the palette can name.
+  assert: install-component/component
+  when:
+    - assert: intent
+      where: { this: ?this, command: library/install }
+    - assert: library/component
+      where: { this: ?component }
+
 # What "expel" can be said of: this space's members.
 rule!:
   description: A member of this space is someone an expel from its palette can name.
