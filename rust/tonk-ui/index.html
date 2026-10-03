@@ -17,7 +17,7 @@
                 if (/^(profile|b[a-z2-7]{40,})(-[a-z0-9]+)?$/.test(label)) {
                     globalThis.tonkSiteOrigin = true;
                     window.stop();
-                    location.replace("/space-origin.html");
+                    location.replace(label.startsWith("profile") ? "/profile.html" : "/space.html");
                 }
             })();
         </script>
@@ -898,7 +898,7 @@
                 connector.hidden = true;
                 connector.title = "profile";
                 connector.setAttribute("sandbox", "allow-scripts allow-same-origin");
-                connector.src = `${origin}/space-origin.html#connector`;
+                connector.src = `${origin}/profile.html#connector`;
                 // The frame can take a port only once its shell is listening,
                 // which it says by asking for one.
                 let listening = false;
@@ -1145,7 +1145,8 @@
         />
         <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
         <!-- Served on every space origin: its shell and its worker. -->
-        <link data-trunk rel="copy-file" href="./assets/space-origin.html" />
+        <link data-trunk rel="copy-file" href="./assets/space.html" />
+        <link data-trunk rel="copy-file" href="./assets/profile.html" />
         <link data-trunk rel="copy-file" href="./assets/space_worker.js" />
         <link data-trunk rel="copy-file" href="./assets/doctor.mjs" />
         <link

@@ -44,7 +44,6 @@ import init, { activate } from "./worker.js";
 // what the browser compares when it looks for an update.
 const WORKER_WASM_HASH = "dev";
 
-const SHELL_PATH = "/space-origin.html";
 const SHELL_CACHE = "tonk-space-shell";
 // What this origin runs: this worker's wasm, and the app's static assets as
 // they are loaded. Kept so the site works offline once it has loaded.
@@ -64,13 +63,17 @@ const ASSET_PATH = /^\/asset:([1-9A-HJ-NP-Za-km-z]+)$/;
 // before reading anything, so a large reply does not trip this.
 const PORT_TIMEOUT_MS = 5_000;
 const ACK_TIMEOUT_MS = 3_000;
-// The contract between this worker and the shell (`space-origin.html`). The
-// shell replaces a worker that does not answer with the same number.
+// The contract between this worker and its shell. The shell replaces a worker
+// that does not answer with the same number.
 const PROTOCOL = 2;
 
 // Which kind of site this origin is. A profile's label starts with
 // `profile`; a space's is its key in base32, which never does.
 const PROFILE = self.location.hostname.split(".")[0].startsWith("profile");
+
+// The shell this origin's frames load first: the same page on every origin,
+// at a path of its own on the profile's so the two are told apart.
+const SHELL_PATH = PROFILE ? "/profile.html" : "/space.html";
 
 const log = (...args) => console.log(PROFILE ? "[Profile Worker]" : "[Space Worker]", ...args);
 

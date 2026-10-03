@@ -26,7 +26,7 @@ test("it leaves the dev deployment's own sites alone", () => {
 });
 
 test("it sends a dev site to the dev worker", async () => {
-    const response = await router.fetch(new Request("https://profile.tonk.foundation/space-origin.html"), env());
+    const response = await router.fetch(new Request("https://profile.tonk.foundation/profile.html"), env());
     assert.equal(await response.text(), "dev:profile.tonk.foundation");
 });
 

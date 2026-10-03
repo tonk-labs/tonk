@@ -33,7 +33,11 @@
 /space_worker.js
   Cache-Control: no-store
 
-/space-origin.html
+/space.html
+  Cache-Control: no-cache
+  Permissions-Policy: publickey-credentials-get=(), publickey-credentials-create=()
+
+/profile.html
   Cache-Control: no-cache
   Permissions-Policy: publickey-credentials-get=(), publickey-credentials-create=()
 

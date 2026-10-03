@@ -17,7 +17,7 @@ use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
 use crate::bridge::{self, PortalState};
 use crate::site_content::head_markup as build_head_markup;
-use crate::space_origin::{SANDBOX, SHELL_PATH, site_origin, site_pattern, watch_shell};
+use crate::space_origin::{SANDBOX, shell_url, site_origin, site_pattern, watch_shell};
 
 /// The tags an embedder may place in a portal's light DOM to style its
 /// guest. Anything else a caller nests is ignored: the head is not a
@@ -154,7 +154,7 @@ pub(crate) fn connect_portal(
         // The frame loads its origin's shell, which asks for this document
         // once the space worker is in control.
         Some(origin) => {
-            let shell = format!("{origin}{SHELL_PATH}");
+            let shell = shell_url(&origin);
             state
                 .borrow_mut()
                 .set_origin_document(origin, srcdoc, site_pattern);
@@ -201,7 +201,7 @@ pub(crate) fn reload_portal(host: &Element, state: &Rc<RefCell<PortalState>>) {
     match origin {
         // Re-navigate to the shell; it asks for the fresh document.
         Some(origin) => {
-            let shell = format!("{origin}{SHELL_PATH}");
+            let shell = shell_url(&origin);
             let site_pattern = s.site_pattern.clone();
             s.set_origin_document(origin, srcdoc, site_pattern);
             watch_shell(host, &iframe, state, s.shell.get().load);

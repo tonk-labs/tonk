@@ -308,7 +308,7 @@ Three kinds of origin:
 
 How it hangs together:
 
-- **A site frame loads `/space-origin.html`**, which registers `/space_worker.js`, waits for control, and asks its parent for its document. The same Rust worker runs on every origin. The script tells a profile from a space by the first label of its hostname.
+- **A site frame loads `/space.html` (`/profile.html` on the profile's origin)**, which registers `/space_worker.js`, waits for control, and asks its parent for its document. The same Rust worker runs on every origin. The script tells a profile from a space by the first label of its hostname.
 - **Workers talk over ports that pages open.** A page frames an origin and hands each worker an end. The app's page frames the profile's origin unseen for this (`#connector`); the profile's page does the same for a space that is not on screen, and drops the frame once the space has been quiet for a minute.
 - **Requests go down a port, answers come back up it**: status and headers, then the body in pieces, so a subscription keeps flowing. The app's worker passes the profile's every `/api/` request; the profile's passes a space's everything under one of the space's branches.
 - **A port message does not wake a stopped worker.** While something is being answered the asking worker probes, and a silent worker's port is given up: the page is asked for a new one, and handing it over is what starts the worker again. A read that was being answered is asked again of the new worker; a write is failed back to whoever made it, since it may have landed.

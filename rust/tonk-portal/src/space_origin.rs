@@ -14,7 +14,7 @@
 //! neither: it is what nests the space frame, and a frame nested in an opaque
 //! one inherits its sandbox and is opaque as well.
 //!
-//! The frame first loads a static shell ([`SHELL_PATH`]), which registers the
+//! The frame first loads a static shell ([`shell_url`]), which registers the
 //! site's worker and then asks for its document. The host answers with the
 //! same bootstrap markup a sealed frame receives as `srcdoc`, so the bridge
 //! handshake and the runtime injection run unchanged.
@@ -52,8 +52,22 @@ use web_sys::{
 use crate::bridge::PortalState;
 use crate::shared::reload_portal;
 
-/// The static page every site origin loads first.
-pub(crate) const SHELL_PATH: &str = "/space-origin.html";
+/// The static page a space's origin loads first.
+const SPACE_SHELL: &str = "/space.html";
+
+/// The static page the profile's origin loads first: the same shell as a
+/// space's, at a path of its own so the two are told apart when debugging.
+const PROFILE_SHELL: &str = "/profile.html";
+
+/// The shell `origin` loads first.
+pub(crate) fn shell_url(origin: &str) -> String {
+    let profile = Url::new(origin)
+        .ok()
+        .and_then(|url| url.hostname().split('.').next().map(str::to_owned))
+        .is_some_and(|label| label.starts_with(PROFILE_LABEL));
+    let path = if profile { PROFILE_SHELL } else { SPACE_SHELL };
+    format!("{origin}{path}")
+}
 
 /// The label of the profile's origin, `profile.{host}`. A space label is the
 /// multibase encoding of its key, so it always starts with `b` and is far
@@ -446,7 +460,7 @@ fn reach(with: &Location) {
     iframe.set_hidden(true);
     let _ = iframe.set_attribute("sandbox", "allow-scripts allow-same-origin");
     let _ = iframe.set_attribute("title", "space");
-    iframe.set_src(&format!("{origin}{SHELL_PATH}#connector"));
+    iframe.set_src(&format!("{}#connector", shell_url(&origin)));
     let Some(body) = document.body() else {
         return;
     };
