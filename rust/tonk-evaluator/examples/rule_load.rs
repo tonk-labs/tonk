@@ -24,10 +24,15 @@
 mod load {
     use std::time::{Duration, Instant};
 
-    use dialog_peer::helpers::{test_repo, test_session_with_peer};
+    use dialog_capability::Subject;
+    use dialog_effects::storage::Location;
+    use dialog_peer::helpers::{open_peer, test_owned, test_storage, unique_name};
     use dialog_query::query::Output as _;
     use dialog_query::{ConceptQuery, Parameters, Term};
     use dialog_repository::Branch;
+    use dialog_repository::RepositoryExt as _;
+    use dialog_storage::NativeTempSpace;
+    use dialog_storage::provider::storage::Storage;
     use serde_json::json;
     use tonk_evaluator::evaluate::SyntaxEvaluateExt as _;
     use tonk_notation::{expand, parse, parse_at};
@@ -59,10 +64,32 @@ mod load {
         }
     }
 
-    type Env =
-        dialog_peer::Peer<dialog_storage::provider::storage::VolatileSpace, dialog_peer::Session>;
+    /// What the harness asks of an environment: everything the
+    /// evaluator does, which covers what queries and subscriptions do.
+    pub trait HarnessEnv:
+        tonk_evaluator::evaluate::EvaluateEnv
+        + dialog_capability::Provider<dialog_effects::blob::Size>
+        + dialog_capability::Provider<dialog_effects::blob::Import>
+        + dialog_capability::Provider<dialog_effects::archive::Import>
+        + dialog_capability::Provider<dialog_effects::authority::Attest>
+        + 'static
+    {
+    }
+    impl<T> HarnessEnv for T where
+        T: tonk_evaluator::evaluate::EvaluateEnv
+            + dialog_capability::Provider<dialog_effects::blob::Size>
+            + dialog_capability::Provider<dialog_effects::blob::Import>
+            + dialog_capability::Provider<dialog_effects::archive::Import>
+            + dialog_capability::Provider<dialog_effects::authority::Attest>
+            + 'static
+    {
+    }
 
-    async fn commit(branch: &Branch, operator: &Env, text: &str) -> anyhow::Result<Duration> {
+    async fn commit<Env: HarnessEnv>(
+        branch: &Branch,
+        operator: &Env,
+        text: &str,
+    ) -> anyhow::Result<Duration> {
         let parsed = parse(text);
         anyhow::ensure!(
             parsed.diagnostics.is_empty(),
@@ -84,7 +111,7 @@ mod load {
         Ok(start.elapsed())
     }
 
-    async fn seed_library(
+    async fn seed_library<Env: HarnessEnv>(
         branch: &Branch,
         operator: &Env,
         file: &str,
@@ -113,7 +140,11 @@ mod load {
         Ok(start.elapsed())
     }
 
-    async fn rows(branch: &Branch, operator: &Env, query: &ConceptQuery) -> anyhow::Result<usize> {
+    async fn rows<Env: HarnessEnv>(
+        branch: &Branch,
+        operator: &Env,
+        query: &ConceptQuery,
+    ) -> anyhow::Result<usize> {
         let rows = branch
             .select(QueryPlan::from(query.clone()))
             .perform(operator)
@@ -125,7 +156,7 @@ mod load {
 
     /// Time `runs` evaluations of `query` after one warm-up, reporting the
     /// median and the row count.
-    async fn time_query(
+    async fn time_query<Env: HarnessEnv>(
         label: &str,
         branch: &Branch,
         operator: &Env,
@@ -155,15 +186,48 @@ mod load {
         duration.as_secs_f64() * 1e3
     }
 
+    /// `STORAGE=disk` keeps the peer's blocks on the filesystem under
+    /// the temp directory, so block reads and writes are real; the
+    /// default is the volatile in-memory storage.
     pub async fn run() -> anyhow::Result<()> {
+        if std::env::var("STORAGE").is_ok_and(|storage| storage == "disk") {
+            let storage = test_owned(Storage::<NativeTempSpace>::temp()).await;
+            let peer = open_peer(storage, Location::profile(unique_name("load"))).await?;
+            let operator = peer
+                .session(b"load")
+                .space(peer.state())
+                .allow(Subject::any())
+                .await?;
+            let repo = peer
+                .space(unique_name("repo"))
+                .open()
+                .perform(&operator)
+                .await?;
+            let branch = repo.branch("main").open().perform(&operator).await?;
+            load(operator, branch).await
+        } else {
+            let peer =
+                open_peer(test_storage().await, Location::profile(unique_name("load"))).await?;
+            let operator = peer
+                .session(b"load")
+                .space(peer.state())
+                .allow(Subject::any())
+                .await?;
+            let repo = peer
+                .space(unique_name("repo"))
+                .open()
+                .perform(&operator)
+                .await?;
+            let branch = repo.branch("main").open().perform(&operator).await?;
+            load(operator, branch).await
+        }
+    }
+
+    async fn load<Env: HarnessEnv>(operator: Env, branch: Branch) -> anyhow::Result<()> {
         let accounts = size("ACCOUNTS", 2000);
         let spaces = size("SPACES", 500);
         let blocks = size("BLOCKS", 500);
         let runs = size("RUNS", 20);
-
-        let (operator, profile) = test_session_with_peer().await;
-        let repo = test_repo(&operator, &profile).await;
-        let branch = repo.branch("main").open().perform(&operator).await?;
 
         println!("library seed");
         for (file, text) in [
