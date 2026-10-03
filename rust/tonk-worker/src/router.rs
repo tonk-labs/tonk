@@ -155,11 +155,16 @@ mod blob;
 
 mod migration;
 
+mod interpret;
 mod navigate;
+mod site_request;
+mod site_select;
 
 mod command;
 pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch};
 
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod intent;
 #[cfg(test)]
 mod route_table;
 #[cfg(test)]

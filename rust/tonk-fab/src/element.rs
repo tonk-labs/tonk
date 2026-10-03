@@ -117,9 +117,18 @@ impl CustomElement for TonkFab {
     }
 
     fn inject_children(&mut self, this: &HtmlElement) {
-        this.set_inner_html(&crate::markup::stacks_html(
-            &this.get_attribute("space").unwrap_or_default(),
-        ));
+        // Appended, not assigned: what the page authors inside the bar (the
+        // `command` slot's occupant) stays where it was put. A `latent` bar
+        // is on a page with no space (the hub, settings), so it holds only
+        // what serves the profile. Keyed on `latent`, a static attribute,
+        // not on `space`: the page stamps a bound `space={id}` after the bar
+        // connects, so its absence here does not mean there is no space.
+        let stacks = if this.has_attribute("latent") {
+            crate::markup::PROFILE_STACKS_HTML.to_owned()
+        } else {
+            crate::markup::stacks_html(&this.get_attribute("space").unwrap_or_default())
+        };
+        let _ = this.insert_adjacent_html("beforeend", &stacks);
     }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
@@ -950,6 +959,12 @@ fn install_imperative_api(this: &HtmlElement, state: &bar::Shared) {
     let close = Closure::<dyn FnMut()>::new(move || bar::close(&host, &shared));
     let _ = Reflect::set(this, &"close".into(), close.as_ref());
     close.forget();
+
+    let host = this.clone();
+    let shared = state.clone();
+    let expand = Closure::<dyn FnMut()>::new(move || bar::expand(&host, &shared));
+    let _ = Reflect::set(this, &"expand".into(), expand.as_ref());
+    expand.forget();
 
     let host = this.clone();
     let shared = state.clone();

@@ -1608,6 +1608,60 @@ rule!:
         assert!(analysis.analysis.rule_installs().is_empty());
     }
 
+    /// An attribute is a concept with one field: a rule can conclude an
+    /// attribute by name, and what it concludes is the very concept a
+    /// one-field `concept!` over that attribute declares, whatever that
+    /// concept calls its field.
+    #[dialog_common::test]
+    async fn it_concludes_an_attribute_as_its_one_field_concept() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("ping", one_text_field("io.gozala.ping", "tag"))
+            .await;
+
+        let conclusion = |doc: String| {
+            let fixture = &fixture;
+            async move {
+                let syntax = parse(&doc).syntax.expect("parsed syntax");
+                let analysis = fixture.analyze(&syntax).await.expect("analyze succeeds");
+                let installs = analysis.analysis.deductive_rule_installs();
+                assert_eq!(installs.len(), 1, "one deductive rule in {doc}");
+                installs[0].conclusion().this()
+            }
+        };
+        let attribute = r#"attribute!: &probe/subject
+  description: "What a probe is about."
+  the: io.gozala.probe/subject
+  as: Text
+"#;
+        let by_attribute = conclusion(format!(
+            r#"{attribute}
+rule!:
+  assert: probe/subject
+  when:
+    - assert: ping
+      where: {{ this: ?this, tag: ?subject }}
+"#
+        ))
+        .await;
+        let by_concept = conclusion(format!(
+            r#"{attribute}
+concept!: &probe/about
+  description: "A probe's subject, under another field name."
+  with:
+    about: probe/subject
+
+rule!:
+  assert: probe/about
+  when:
+    - assert: ping
+      where: {{ this: ?this, tag: ?about }}
+"#
+        ))
+        .await;
+        assert_eq!(by_attribute, by_concept);
+    }
+
     /// Retracting an installed deductive rule by entity
     /// (`rule!: this: <entity> ..: _`) lifts to a
     /// `Statement::Retract(Application::DeductiveRule)`, the symmetric

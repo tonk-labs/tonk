@@ -10,6 +10,10 @@ use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+// In a subdirectory, so Cargo does not build it as a test suite of its own.
+#[path = "support/settle.rs"]
+mod settle;
+
 fn mount() -> (HtmlElement, HtmlElement) {
     tonk_fab::register();
     let document = window().unwrap().document().unwrap();
@@ -290,13 +294,7 @@ async fn invitation_graph_updates_late_provenance_and_removes_stale_edges() {
         .unchecked_into::<HtmlElement>()
         .click();
     settle().await;
-    let settled = Promise::new(&mut |resolve, _| {
-        window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 500)
-            .unwrap();
-    });
-    JsFuture::from(settled).await.unwrap();
+    drawer_opened(&bar).await;
     let centre = shadow(&bar, ".member-space").get_bounding_client_rect();
     let bounds = panel.get_bounding_client_rect();
     assert!((centre.x() + centre.width() / 2.0 - bounds.x() - bounds.width() / 2.0).abs() < 2.0);
@@ -371,15 +369,21 @@ async fn invitation_graph_updates_late_provenance_and_removes_stale_edges() {
     bar.remove();
 }
 
-// Scroll events run during a browser rendering update, which a 20 ms timer
-// does not guarantee on a busy runner. Wait for the real handler's effect;
-// keep a deadline so a missing handler or broken lens still fails the test.
-async fn wait_for_lens(condition: impl Fn() -> bool, description: &str) {
-    let deadline = js_sys::Date::now() + 2_000.0;
-    while !condition() {
-        assert!(js_sys::Date::now() < deadline, "{description}");
-        settle().await;
-    }
+/// Let the members drawer finish opening and the map centre in it: the
+/// drawer's transition jumps to its end, and the map follows the size it
+/// ends at a rendering step later, which the FAB announces.
+async fn drawer_opened(bar: &HtmlElement) {
+    settle::finish_animations(bar);
+    let lens = settle::next_event(bar, "fabb-lens");
+    settle::arrived(lens, "the map centres in the opened drawer").await;
+}
+
+/// Scroll the map and wait for the lens to follow: scroll events arrive
+/// during a rendering update, after the scroll that caused them.
+async fn scrolled(bar: &HtmlElement, panel: &HtmlElement, top: f64) {
+    let lens = settle::next_event(bar, "fabb-lens");
+    panel.set_scroll_top(top);
+    settle::arrived(lens, "the lens follows the scroll").await;
 }
 
 #[dialog_common::test]
@@ -396,13 +400,7 @@ async fn panning_shrinks_peripheral_nodes_and_keeps_edges_attached() {
     shadow(&bar, ".members")
         .unchecked_into::<HtmlElement>()
         .click();
-    let settled = Promise::new(&mut |resolve, _| {
-        window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 500)
-            .unwrap();
-    });
-    JsFuture::from(settled).await.unwrap();
+    drawer_opened(&bar).await;
     let panel: HtmlElement = shadow(&bar, ".members-list").unchecked_into();
     let root: HtmlElement = shadow(&bar, ".member-space").unchecked_into();
     let dot = shadow(&bar, ".member-space .member-dot");
@@ -417,8 +415,7 @@ async fn panning_shrinks_peripheral_nodes_and_keeps_edges_attached() {
     let full_width = dot.get_bounding_client_rect().width();
     assert!((centred - 1.0).abs() < 0.001);
     let home = panel.scroll_top();
-    panel.set_scroll_top(0.0);
-    wait_for_lens(|| scale() < 0.6, "scrolling to the edge updates the lens").await;
+    scrolled(&bar, &panel, 0.0).await;
     let peripheral = scale();
     assert!(peripheral < 0.6, "the edge shrinks the root: {peripheral}");
     assert!((dot.get_bounding_client_rect().width() / full_width - peripheral).abs() < 0.01);
@@ -431,12 +428,7 @@ async fn panning_shrinks_peripheral_nodes_and_keeps_edges_attached() {
         (gap - (15.0 * peripheral + 4.0)).abs() < 0.01,
         "edge follows the smaller disc"
     );
-    panel.set_scroll_top(home);
-    wait_for_lens(
-        || (scale() - centred).abs() < 0.001,
-        "scrolling home restores the lens",
-    )
-    .await;
+    scrolled(&bar, &panel, home).await;
     assert!(
         (scale() - centred).abs() < 0.001,
         "panning back restores full size"

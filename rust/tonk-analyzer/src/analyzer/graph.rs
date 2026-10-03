@@ -37,8 +37,8 @@ use tonk_schema::rule::{Rule, StoredRuleError, stored_rule};
 
 use super::assertion::{body_digest, derive_head_intent};
 use super::declaration::{
-    DeclaredApplication, attribute_application, build_concept_retractions, concept_application,
-    parse_attribute_body, parse_concept_body,
+    DeclaredApplication, action_application, attribute_application, build_concept_retractions,
+    concept_application, parse_attribute_body, parse_concept_body, role_application,
 };
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::rule::{collect_rule_concepts, is_rule_retract_body, parse_rule_this_entity};
@@ -782,7 +782,11 @@ impl Graph {
                         pending.index,
                         DeclaredApplication {
                             application: Some(application),
-                            inline_attributes: Vec::new(),
+                            inline_attributes: plan
+                                .role
+                                .iter()
+                                .map(|role| role_application(&entity, role))
+                                .collect(),
                             retractions: Vec::new(),
                         },
                     );
@@ -850,7 +854,23 @@ impl Graph {
                     let inline_attributes = plan
                         .inline_attributes
                         .into_iter()
-                        .map(|attr| attribute_application(&attr.descriptor, &attr.entity, None))
+                        .flat_map(|attr| {
+                            let role = attr
+                                .role
+                                .as_deref()
+                                .map(|role| role_application(&attr.entity, role));
+                            std::iter::once(attribute_application(
+                                &attr.descriptor,
+                                &attr.entity,
+                                None,
+                            ))
+                            .chain(role)
+                        })
+                        .chain(
+                            plan.action
+                                .iter()
+                                .map(|name| action_application(&entity, name)),
+                        )
                         .collect();
                     // Field retractions (`with: { f: _ }` / `..: _`)
                     // dissociate stored fields read off the branch.
@@ -904,6 +924,25 @@ impl Graph {
                         )
                     })?;
                     if let Some(def) = found {
+                        scope.record_concept(Some(name), def);
+                        continue;
+                    }
+                    // No concept by that name: an attribute is a concept
+                    // with one field (see `scope::attribute_concept`).
+                    let attribute = match scope.attribute(name) {
+                        Some(attribute) => Some(attribute),
+                        None => resolver.attribute(name).await.map_err(|e| {
+                            AnalyzeError::at(
+                                AnalyzeErrorKind::ResolverFailed {
+                                    context: format!("attribute {name:?}"),
+                                    reason: e.to_string(),
+                                },
+                                *range,
+                            )
+                        })?,
+                    };
+                    if let Some(def) = attribute.as_ref().and_then(super::scope::attribute_concept)
+                    {
                         scope.record_concept(Some(name), def);
                     }
                 }

@@ -9,6 +9,10 @@ use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+// In a subdirectory, so Cargo does not build it as a test suite of its own.
+#[path = "support/settle.rs"]
+mod settle;
+
 async fn yield_for(ms: i32) {
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
         window()
@@ -33,10 +37,6 @@ fn animations(element: &Element) -> js_sys::Array {
         .expect("animation list")
 }
 
-fn active_animations(element: &Element) -> u32 {
-    animations(element).length()
-}
-
 fn animation_method(animation: &JsValue, method: &str) -> JsValue {
     Reflect::get(animation, &method.into())
         .unwrap()
@@ -46,12 +46,10 @@ fn animation_method(animation: &JsValue, method: &str) -> JsValue {
         .unwrap()
 }
 
-// Sample the real CSS transition on its own timeline. Concurrent browser tabs
-// can delay rendering independently of setTimeout, so sleeping for 400 ms is
-// neither proof of completion nor a reliable way to capture an intermediate frame.
-fn pause_width_transition(element: &Element) -> JsValue {
+/// The running CSS width transition on `element`.
+fn width_transition(element: &Element) -> JsValue {
     let _ = element.get_bounding_client_rect();
-    let animation = animations(element)
+    animations(element)
         .iter()
         .find(|animation| {
             Reflect::get(animation, &"transitionProperty".into())
@@ -60,7 +58,14 @@ fn pause_width_transition(element: &Element) -> JsValue {
                 .as_deref()
                 == Some("width")
         })
-        .expect("a real CSS width transition must be running");
+        .expect("a real CSS width transition must be running")
+}
+
+// Sample the real CSS transition on its own timeline. Concurrent browser tabs
+// can delay rendering independently of setTimeout, so sleeping for 400 ms is
+// neither proof of completion nor a reliable way to capture an intermediate frame.
+fn pause_width_transition(element: &Element) -> JsValue {
+    let animation = width_transition(element);
     animation_method(&animation, "pause");
     animation
 }
@@ -116,41 +121,23 @@ fn mount(width: i32) -> (HtmlElement, HtmlElement) {
 }
 
 async fn resize(parent: &HtmlElement, width: i32) {
-    let previous_width = parent.client_width();
-    let fab = parent.query_selector("tonk-fab").unwrap().expect("fab");
-    let wrapper = fab
-        .shadow_root()
+    let fab = parent
+        .query_selector("tonk-fab")
         .unwrap()
-        .query_selector(".w")
-        .unwrap()
-        .expect("wrapper");
-    let wrapper_style = wrapper.unchecked_ref::<HtmlElement>().style();
-    let previous_room = wrapper_style.get_property_value("--_room").unwrap();
+        .expect("fab")
+        .unchecked_into::<HtmlElement>();
+    // The room reaches the rail through a ResizeObserver, a rendering step
+    // after the container changes; the FAB says when it has taken it. A
+    // container that keeps its width changes nothing to wait for.
+    let room = (parent.client_width() != width).then(|| settle::next_event(&fab, "fabb-room"));
     parent
         .style()
         .set_property("width", &format!("{width}px"))
         .expect("parent width");
-    // The ResizeObserver updates --_room before the width transition starts.
-    // Wait for that update and two settled samples so an idle frame before
-    // the observer callback cannot report the old rail as the new size.
-    let mut settled_samples = 0;
-    for _ in 0..60 {
-        yield_for(50).await;
-        let _ = wrapper.get_bounding_client_rect();
-        let room = wrapper_style.get_property_value("--_room").unwrap();
-        if (previous_width == width || room != previous_room)
-            && active_animations(&fab) == 0
-            && active_animations(&wrapper) == 0
-        {
-            settled_samples += 1;
-            if settled_samples == 2 {
-                return;
-            }
-        } else {
-            settled_samples = 0;
-        }
+    if let Some(room) = room {
+        settle::arrived(room, &format!("the {width}px rail takes its room")).await;
     }
-    panic!("the {width}px rail did not finish resizing");
+    settle::finish_animations(&fab);
 }
 
 #[dialog_common::test]
@@ -315,7 +302,7 @@ async fn long_agent_prompt_scrolls_without_growing_the_drawer() {
     shadow(&fab, ".agent")
         .unchecked_into::<HtmlElement>()
         .click();
-    yield_for(450).await;
+    settle::finish_animations(&fab);
 
     let bar = shadow(&fab, ".bar");
     let panel = shadow(&fab, "#agent-panel");
@@ -362,13 +349,15 @@ async fn clicking_an_open_drawer_action_returns_to_the_menu() {
             !shadow(&fab, panel).has_attribute("hidden"),
             "{action} opens"
         );
+        let closed = settle::next_event(&fab, "fabb-drawer-closed");
         button.click();
         assert_eq!(
             shadow(&fab, panel).get_attribute("aria-hidden").as_deref(),
             Some("true"),
             "{action} drawer becomes inert while closing"
         );
-        yield_for(450).await;
+        settle::finish_animations(&fab);
+        settle::arrived(closed, &format!("{action} closes")).await;
         assert!(
             shadow(&fab, panel).has_attribute("hidden"),
             "{action} closes"
@@ -410,16 +399,10 @@ async fn closing_a_drawer_contracts_its_column_without_stretching_the_menu() {
     assert!(!panel.has_attribute("hidden"));
     animation_method(&pause_width_transition(&wrapper), "finish");
     assert!(wrapper.get_bounding_client_rect().width() > 500.0);
+    let closed = settle::next_event(&fab, "fabb-drawer-closed");
     button.click();
-    // The close handler and final rendered width can settle on different
-    // frames. Require both, rather than treating either as proof of the other.
-    for _ in 0..60 {
-        let _ = wrapper.get_bounding_client_rect();
-        if panel.has_attribute("hidden") && active_animations(&wrapper) == 0 {
-            break;
-        }
-        yield_for(50).await;
-    }
+    settle::finish_animations(&fab);
+    settle::arrived(closed, "the drawer closes").await;
     assert!(wrapper.get_bounding_client_rect().width() < 362.0);
     assert!(panel.has_attribute("hidden"));
     parent.remove();
@@ -485,7 +468,10 @@ async fn account_prompts_appear_after_the_drawer_finishes_widening() {
             late > 0.95,
             "{action} text appears at full width; opacity={late}"
         );
+        let closed = settle::next_event(&fab, "fabb-drawer-closed");
         shadow(&fab, action).unchecked_into::<HtmlElement>().click();
+        settle::finish_animations(&fab);
+        settle::arrived(closed, &format!("{action} closes")).await;
     }
     parent.remove();
 }
@@ -525,7 +511,7 @@ async fn panels_join_inward_and_stack_on_short_room() {
     shadow(&fab, ".agent")
         .unchecked_into::<HtmlElement>()
         .click();
-    yield_for(300).await;
+    settle::finish_animations(&fab);
     let wrapper = shadow(&fab, ".w");
     let bar = shadow(&fab, ".bar");
     let panel = shadow(&fab, "#agent-panel");
@@ -554,7 +540,7 @@ async fn panels_join_inward_and_stack_on_short_room() {
         );
         fab.set_attribute("flip", "").expect("right-side seat");
     }
-    yield_for(300).await;
+    settle::finish_animations(&fab);
     let bar_rect = bar.get_bounding_client_rect();
     let panel_rect = panel.get_bounding_client_rect();
     if initially_flipped {
@@ -608,7 +594,7 @@ async fn header_follows_the_horizontal_dock_and_menu_follows_the_vertical_dock()
         shadow(&fab, ".share")
             .unchecked_into::<HtmlElement>()
             .click();
-        yield_for(450).await;
+        settle::finish_animations(&fab);
         let disc_rect = disc.get_bounding_client_rect();
         let name_rect = name.get_bounding_client_rect();
         let header_rect = header.get_bounding_client_rect();

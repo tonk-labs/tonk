@@ -844,13 +844,21 @@ concept!: &member
 # being read by no other command — the attribute doubling as the command's
 # shape. `xyz.tonk.command.expel-member/member` is that distinctness by
 # construction, so the name can just say what it means.
+#
+# The field is a named attribute rather than an inline one so the palette's
+# rule below can conclude it. The descriptor is the same, so the command's
+# identity is unchanged.
+attribute!: &expel-member/member
+  description: The DID of the member to remove.
+  the: xyz.tonk.command.expel-member/member
+  as: entity
+  role: object
+
 command!: &member/expel
   description: Remove a member from this space.
+  action: ["expel", "remove member"]
   with:
-    member:
-      description: The DID of the member to remove.
-      the: xyz.tonk.command.expel-member/member
-      as: entity
+    member: expel-member/member
 
 view!:
   this: tonk:member
@@ -1083,17 +1091,24 @@ event!: &on/repository-rename
     subject: ".currentTarget.dataset.subject"
     name: ".currentTarget.value"
 
+#
+# Named attributes for the same reason as `member/expel`'s: the palette's
+# arguments below point at them.
+attribute!: &rename-repository/subject
+  description: The repository being renamed.
+  the: xyz.tonk.rename-repository/subject
+  as: entity
+
+attribute!: &rename-repository/name
+  description: The new name.
+  the: xyz.tonk.rename-repository/name
+  as: text
+
 command!: &tonk/rename-repository
   description: Rename the repository.
   with:
-    subject:
-      description: The repository being renamed.
-      the: xyz.tonk.rename-repository/subject
-      as: entity
-    name:
-      description: The new name.
-      the: xyz.tonk.rename-repository/name
-      as: text
+    subject: rename-repository/subject
+    name: rename-repository/name
 
 # Apply the rename: assert the new `tonk/repository` name against the
 # repository entity named by the command's `subject`. Binding `subject`
@@ -1693,7 +1708,37 @@ concept!: &site
       the: xyz.tonk.site/concept
       cardinality: one
       as: entity
+  maybe:
+    selection:
+      description: >
+        The text selected in the tab's page, as the page reports it through
+        `site/select`. Absent when nothing is selected. A session fact like the
+        rest of the site: it goes with the tab.
+      the: xyz.tonk.site/selection
+      cardinality: one
+      as: text
 
+
+# What the page in a tab has selected. The page (`bootstrap.js` in every
+# guest) reports it as it settles; the handler records it on the tab's site
+# as `selection`, in the session overlay, so rules and the palette read it as
+# a site fact. An empty `text` clears it.
+command!: &site/select
+  this: tonk:site-select
+  description: Report what the page in a tab has selected.
+  with:
+    site:
+      description: The tab's site entity (`window.tonk.context.site`).
+      the: xyz.tonk.command.site-select/site
+      as: entity
+    text:
+      description: The selected text; empty when the selection was cleared.
+      the: xyz.tonk.command.site-select/text
+      as: text
+    time:
+      description: When it changed, so reporting the same selection again re-fires.
+      the: xyz.tonk.command.site-select/time
+      as: float
 # A site renders the route model it matched. The shell mounts a fixed
 # `<tonk-display entity=site:… model=tonk:site>`; this view nests into the
 # matched `{concept}` on the SAME site entity, so the route model
@@ -2566,3 +2611,141 @@ element!: &drag-frame
       (self) => {
         window.removeEventListener('resize', self.__resize);
       }
+
+# The command palette.
+#
+# `<command-palette>` parses typed text against what commands declare, the
+# way Ubiquity's Parser 2 did:
+#
+# - `action:` on a `command!:` — the words that say it (one, or a list),
+#   each an `intent/action` fact on the command.
+# - `role:` on a command's field — the grammatical slot it fills (object,
+#   goal, source, location, time, instrument, format, modifier, alias; or
+#   `now` for the moment it runs). The words that introduce a slot ("to"
+#   for goal) belong to the parser's grammar for a language. An empty
+#   slot shows the field's name ("expel [member]").
+# - Rules — what can fill an entity field: a rule concludes the field's
+#   attribute on the palette's `intent` (an attribute is a concept with
+#   one field). Typed words match those values by the `label` facet of
+#   the concept they are rows of. A text field takes what is typed.
+#
+# The parser is `rust/tonk-lingo`, a port of Ubiquity's Parser 2; see
+# plan/command-palette-ubiquity.md for how that parser worked.
+concept!: &intent/action
+  description: Words that say a command. Asserted on the command itself.
+  with:
+    name:
+      description: A word or phrase the command answers to.
+      the: tonk.dialog.intent.action/name
+      cardinality: many
+      as: text
+
+# The command palette's interpretation of what was typed, as session facts.
+# The palette makes an `expression` per opening and sends
+# `intent/interpret` as the line changes; its handler (the parser) records
+# the expression and one `intent` per command the line could mean, in the
+# session overlay. Rules derive values for a command's fields onto its
+# intent, each as a one-field concept on the field's own attribute with the
+# field named after the attribute (`subject` for `…/subject`), scoped to the
+# command (`intent` where `command: <the command>`). `intent/suggest`
+# reads the intents and those values back as readings.
+command!: &intent/interpret
+  this: tonk:intent-interpret
+  description: Interpret what was typed in the command palette, where it was opened.
+  with:
+    expression:
+      description: The palette opening it belongs to, made by the page.
+      the: tonk.dialog.intent.interpret/expression
+      as: entity
+    input:
+      description: Exactly what is typed.
+      the: tonk.dialog.intent.interpret/input
+      as: text
+    site:
+      description: The tab's site entity.
+      the: tonk.dialog.intent.interpret/site
+      as: entity
+    time:
+      description: When it was typed, so typing the same line again re-fires.
+      the: tonk.dialog.intent.interpret/time
+      as: float
+
+concept!: &intent/expression
+  description: One opening of the command palette, as interpreted so far. Session facts.
+  with:
+    input:
+      description: What is typed.
+      the: tonk.dialog.intent.expression/input
+      cardinality: one
+      as: text
+    site:
+      description: The tab's site, where the palette was opened.
+      the: tonk.dialog.intent.expression/site
+      cardinality: one
+      as: entity
+    time:
+      description: When the line was last interpreted.
+      the: tonk.dialog.intent.expression/time
+      cardinality: one
+      as: float
+  maybe:
+    selection:
+      description: The text selected in the tab's page, when there was some.
+      the: tonk.dialog.intent.expression/selection
+      cardinality: one
+      as: text
+
+concept!: &intent
+  description: What an expression could mean as one command. Rules derive the command's field values onto it.
+  with:
+    expression:
+      description: The expression it was read from.
+      the: tonk.dialog.intent/expression
+      cardinality: one
+      as: entity
+    command:
+      description: The command it would run.
+      the: tonk.dialog.intent/command
+      cardinality: one
+      as: entity
+
+# A member as the account `member/expel` wants. A roster row is the
+# membership, derived from (space, account); the command takes the
+# account's DID, which is the row's `member` field. This concept's rows
+# ARE the accounts, so a chosen row's entity is the field value as is.
+# Derived on query: nothing is stored, and it follows the roster.
+concept!: &member/account
+  description: A member account of this space, by its DID.
+  with:
+    name:
+      description: The display name the member uses in this space.
+      the: xyz.tonk.member.account/name
+      cardinality: one
+      as: text
+
+rule!:
+  description: Every roster member is an account, named by its membership.
+  assert: member/account
+  when:
+    - assert: member
+      where: { member: ?this, name: ?name }
+
+view!:
+  this: member/account
+  show:
+    label: |
+      {name}
+
+# What "expel" can be said of: this space's members.
+rule!:
+  description: A member of this space is someone an expel from its palette can name.
+  assert: expel-member/member
+  when:
+    - assert: intent
+      where: { this: ?this, command: member/expel }
+    - assert: member/account
+      where: { this: ?member }
+
+# `tonk/rename-repository` has no verb here: the profile's own rename
+# (`rename space`, the FABB's) says the same thing, and the palette reads
+# both branches, so a verb here would offer every rename twice.

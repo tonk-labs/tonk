@@ -1252,6 +1252,67 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `account/add` — start adding an account to this profile.
+        pub mod add_account {
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so asking again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.add-account")]
+            pub struct Time(pub f64);
+        }
+
+        /// `space/share-link` — copy a link that invites someone into the space.
+        pub mod share_link {
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so asking again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.share-link")]
+            pub struct Time(pub f64);
+        }
+
+        /// `space/view-members` — show who is in the space.
+        pub mod view_members {
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so asking again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.view-members")]
+            pub struct Time(pub f64);
+        }
+
+        /// `agent/connect` — invite an agent into the space.
+        pub mod connect_agent {
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so asking again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.connect-agent")]
+            pub struct Time(pub f64);
+        }
+
+        /// `space/connect` — connect this space, or confirm the email that
+        /// would, as the bar's condition offers.
+        pub mod connect_space {
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so asking again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.connect-space")]
+            pub struct Time(pub f64);
+        }
+
+        /// `tonk/home` — take the page that asked back to the hub.
+        pub mod home {
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so going home twice re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.home")]
+            pub struct Time(pub f64);
+        }
+
         /// `tonk/add-profile` — rotate onto a fresh profile and open the
         /// account ceremony on it.
         pub mod add_profile {
@@ -1440,6 +1501,55 @@ pub mod command {
             /// decoding as the transient the previous one already made.
             #[derive(Attribute, Clone, PartialEq, PartialOrd)]
             #[domain("xyz.tonk.command.check-update")]
+            pub struct Time(pub f64);
+        }
+
+        /// `intent/interpret` — what was typed in the command palette.
+        pub mod intent_interpret {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The palette opening it belongs to: one per opening, made by
+            /// the page.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("tonk.dialog.intent.interpret")]
+            pub struct Expression(pub Entity);
+
+            /// Exactly what is typed.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("tonk.dialog.intent.interpret")]
+            pub struct Input(pub String);
+
+            /// The tab's site entity.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("tonk.dialog.intent.interpret")]
+            pub struct Site(pub Entity);
+
+            /// When it was typed, so typing the same line again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("tonk.dialog.intent.interpret")]
+            pub struct Time(pub f64);
+        }
+
+        /// `site/select` — what the page in a tab has selected.
+        pub mod site_select {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The tab's site entity (`window.tonk.context.site`).
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.site-select")]
+            pub struct Site(pub Entity);
+
+            /// The selected text; empty when the selection was cleared.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.site-select")]
+            pub struct Text(pub String);
+
+            /// When it changed, so the same selection reported again
+            /// re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.site-select")]
             pub struct Time(pub f64);
         }
     }

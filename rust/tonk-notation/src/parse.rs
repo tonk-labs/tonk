@@ -990,6 +990,13 @@ fn walk_field(
     let value_range = range_of(value);
     let field_value = if rule_body && (name == "when" || name == "unless") {
         Some(FieldValue::Premises(parse_premise_list(value, out)))
+    } else if let (true, YamlData::Sequence(items)) = (name == "action", &value.data) {
+        // A command's several names: `action: ["home", "go home"]`.
+        let items = items
+            .iter()
+            .map(|item| walk_field_value(item, rule_body, out))
+            .collect::<Option<Vec<_>>>()?;
+        Some(FieldValue::List(items))
     } else {
         walk_field_value(value, rule_body, out)
     }?;

@@ -30,6 +30,8 @@ mod error;
 mod export;
 mod formula;
 mod import;
+mod intent;
+pub use intent::{Interpretation, interpret};
 mod overlay;
 mod pull;
 mod push;
