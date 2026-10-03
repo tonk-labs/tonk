@@ -6,13 +6,15 @@
 //! template's `{field}` slots. That pipeline is invisible once it has
 //! run — the page is just DOM. This module makes it visible again.
 //!
-//! The interaction, in one paragraph: hold Alt and the display under
-//! the pointer outlines. Rest there and observation switches on — the
-//! slots the template filled are boxed and labelled with the field
-//! that fed them, and a change to any of them flashes where it landed.
-//! Alt-click to pin the observation so you can move the pointer away;
-//! alt-click again to let it go. [`mode`] holds that state machine,
-//! free of the DOM so it can be tested without a browser.
+//! The interaction, in one paragraph: run `inspect` from the command
+//! palette and every display on the page is outlined and tagged with
+//! the model it renders. Rest the pointer on one and observation
+//! switches on — the slots the template filled are boxed and labelled
+//! with the field that fed them, and a change to any of them flashes
+//! where it landed. Click it, or its tag, to pin the inspector to it so
+//! you can move the pointer away; click it again to let it go. [`mode`]
+//! holds that state machine, free of the DOM so it can be tested
+//! without a browser, and [`request`] how the command is heard.
 //!
 //! What the overlay paints comes from [`slot::Snapshot`], which the
 //! renderer builds out of state it already keeps: the binding plan
@@ -42,6 +44,7 @@ pub mod inspect;
 pub mod mode;
 pub mod notation;
 pub mod recorder;
+pub mod request;
 pub mod slot;
 pub mod source;
 

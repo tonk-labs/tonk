@@ -1,49 +1,52 @@
 //! `<tonk-introspect>` — the overlay that paints what the machine
 //! decides.
 //!
-//! One instance per document, auto-mounted by [`register`]. It is
-//! inert until Alt goes down: the only thing installed while the hood
-//! is closed is a document `mousemove` listener whose first act is to
-//! read `altKey` and return.
+//! One instance per document, auto-mounted by [`register`]. It does
+//! nothing until asked: no gesture is read off the page, and the only
+//! thing installed while it is idle is a document `mousemove` listener
+//! whose first act is to see that nothing is being picked and return.
 //!
-//! Alt state is read off the *pointer* event rather than remembered
-//! from a `keydown`. A guest iframe that never had focus receives no
-//! key events at all, but every mouse event it does receive carries
-//! the modifier flags — so hovering works in a frame that has never
-//! been clicked, which is the common case for a page of sealed views.
-//! `keyup` is still listened for, as the one way to notice Alt going
-//! up while the pointer sits perfectly still.
+//! ## Asking
+//!
+//! The palette's `inspect` asks. Its handler cannot open anything — it
+//! runs in the service worker — so it records the request on the tab's
+//! site, and this overlay hears it there (see [`super::request`]).
+//! Every frame in the tab hears it; a frame answers only if it has
+//! displays a reader can see, so the frame holding the page's content
+//! picks and the frames around it stay out of the way.
+//!
+//! Picking outlines every display the reader could mean and tags each
+//! with the model it renders. The tags are the suggestions — placed on
+//! the things they name rather than in a list that has to be matched
+//! back to them. Rest the pointer on a display to preview it; click it
+//! or its tag to inspect it. `done` on the pill, or Escape in a focused
+//! frame, stops.
+//!
+//! This replaced holding Alt. A held modifier is a mode you have to
+//! keep pressing, and it is read off key events a frame that never had
+//! focus does not receive; a command is a mode you enter once, from
+//! wherever the palette is.
 //!
 //! ## The selector
 //!
-//! There is a second way in, and it is the deliberate one. The FAB's
-//! bar tears off a teardrop whose square corner is its hotspot; drop
-//! it on something and the chrome marks what it hit
-//! ([`SELECTED`]) while the page draws — the FAB study's law 6, in
-//! both directions. This overlay is the page in that sentence: it
-//! watches for the mark and pins itself on whatever carries it.
+//! There is a second way in, and it is the direct one. The teardrop
+//! parked on an inspected display tears off and sticks to whatever it
+//! is dropped on, marking it [`SELECTED`]; this overlay watches for the
+//! mark and inspects whatever carries it. The FAB study's selector
+//! makes the same mark, so when the bar grows its own teardrop nothing
+//! here changes. Keeping the seam at an attribute is what lets the two
+//! crates stay apart: `tonk-fab` does not know the inspector exists.
 //!
-//! Keeping the seam at an attribute is what lets the two crates stay
-//! apart. `tonk-fab` does not know the inspector exists, the
-//! inspector does not know how the teardrop got there, and anything
-//! else that wants to point at a display can do so by setting one
-//! attribute.
+//! ## Choosing without taking a gesture
 //!
-//! ## Pinning without taking a gesture
-//!
-//! Observation is pinned by clicking the overlay's own pin affordance,
-//! not by a modifier-click on the page. A modifier-click would have to
-//! be swallowed — inspecting a button must never dispatch the command
-//! that button carries — and that means taking the gesture away from
-//! every app for as long as the overlay is mounted. The pin is overlay
-//! chrome with `pointer-events: auto`, so it costs the page nothing.
-//! `<tonk-introspect alt-click>` restores alt-click pinning for a page
-//! that wants it and knows what it is giving up.
-//!
-//! Moving the pointer onto the overlay's own chrome does not count as
-//! moving off the display: the machine ignores pointer events whose
-//! target retargets to the overlay host, which is what makes reaching
-//! for the pin possible at all.
+//! While a display is under the pointer, a transparent shield covers
+//! it, and a click on the shield chooses it. Because the shield is the
+//! overlay's own, the click never reaches the page — so a button being
+//! inspected is never also pressed, and nothing has to be swallowed.
+//! Hit-testing is by point (`elementsFromPoint`, skipping the overlay
+//! host) rather than by event target, because everything in the shadow
+//! root retargets to one host and a target test cannot tell the shield
+//! from the inspector.
 //!
 //! ## Marking something with no extent
 //!
@@ -130,6 +133,9 @@ pub struct TonkIntrospect {
     /// Watches the document for the selector's mark. Dropping it
     /// disconnects the observer.
     watcher: RefCell<Option<Watch>>,
+    /// The subscription that hears the palette's `inspect`. Dropping it
+    /// cancels the subscription.
+    listening: Rc<RefCell<Option<super::request::Listening>>>,
 }
 
 /// A listener plus the closure owning its JS memory.
@@ -167,6 +173,16 @@ struct Overlay {
     /// The pin affordance. The one thing on the layer that takes
     /// pointer events.
     pin: Element,
+    /// While picking: a tag and an outline per display a reader could
+    /// mean. These are the suggestions — on the page, where the thing
+    /// is, rather than in a list that has to be matched back to it.
+    picks: Element,
+    /// The candidates the picks layer is currently drawing.
+    candidates: Vec<Candidate>,
+    /// While picking: says so, and is the one reliable way out — Escape
+    /// only reaches a frame that has focus, and a sealed guest the
+    /// pointer has merely crossed does not.
+    pill: Element,
     /// The selector: a teardrop that tears off, follows the pointer,
     /// and sticks to whatever it is dropped on.
     drop: Element,
@@ -190,8 +206,8 @@ struct Overlay {
     age: u32,
     /// Whether anything is currently drawn. Together with the
     /// machine's phase this is what keeps an idle pointer free: a
-    /// `mousemove` with Alt up over a page that has nothing painted
-    /// asks for no frame at all.
+    /// `mousemove` over a page nobody asked to inspect, with nothing
+    /// painted, asks for no frame at all.
     painting: bool,
     /// The repeat row the pointer is over, by its stamped subject. In
     /// a directory this is what the panel follows: point at a card,
@@ -216,6 +232,13 @@ struct Overlay {
     /// The display currently recording, so recording starts and stops
     /// exactly once per observation.
     recording: Option<TargetId>,
+}
+
+/// One display offered while picking.
+struct Candidate {
+    display: Element,
+    outline: Element,
+    tag: Element,
 }
 
 /// The painted state for one observed display.
@@ -354,11 +377,23 @@ impl CustomElement for TonkIntrospect {
         watch_selection(&document, &overlay, &mut self.watcher.borrow_mut());
         // Something may already be selected when the overlay mounts.
         follow_selection(&document, &overlay);
+        // The palette's `inspect`, heard through the tab's site.
+        let weak = Rc::downgrade(&overlay);
+        super::request::listen(
+            &host,
+            self.listening.clone(),
+            Rc::new(move || {
+                if let Some(overlay) = weak.upgrade() {
+                    start_picking(&overlay);
+                }
+            }),
+        );
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
         self.listeners.borrow_mut().clear();
         self.watcher.borrow_mut().take();
+        self.listening.borrow_mut().take();
         if let Some(overlay) = self.inner.borrow_mut().take() {
             overlay.borrow_mut().clear();
         }
@@ -378,15 +413,16 @@ impl CustomElement for TonkIntrospect {
 /// Register `<tonk-introspect>` and mount one into the document.
 ///
 /// Mounting is automatic because the whole point is that the hood
-/// opens without preparation — you hold Alt over something that looks
-/// wrong, in whatever frame it happens to be rendering in. Remove the
-/// element to opt out; nothing re-adds it.
+/// opens without preparation — you type `inspect` while looking at
+/// something wrong, in whatever frame it happens to be rendering in.
+/// Remove the element to opt out; nothing re-adds it.
 pub fn register() {
     let Some(win) = window() else {
         return;
     };
     if win.custom_elements().get(NAME).is_undefined() {
         TonkIntrospect::define(NAME);
+        super::request::install_shims(NAME);
     }
     let Some(document) = win.document() else {
         return;
@@ -416,6 +452,15 @@ impl Overlay {
         let outline = element(document, "div", "outline")?;
         let pin = element(document, "button", "pin")?;
         pin.set_text_content(Some("pin"));
+        let picks = element(document, "div", "picks")?;
+        let pill = element(document, "div", "pill")?;
+        let pill_text = element(document, "span", "pill-text")?;
+        pill_text.set_text_content(Some("inspect \u{00b7} choose a display"));
+        let stop = element(document, "button", "pill-stop")?;
+        stop.set_text_content(Some("done"));
+        let _ = stop.set_attribute("data-action", "stop");
+        let _ = pill.append_child(&pill_text);
+        let _ = pill.append_child(&stop);
         let drop = element(document, "div", "drop")?;
         let _ = drop.set_attribute("title", "drag onto a display to stick the inspector to it");
         let marks = element(document, "div", "marks")?;
@@ -426,6 +471,8 @@ impl Overlay {
         // symptom of getting this wrong.
         let _ = layer.append_child(&marks);
         let _ = layer.append_child(&shield);
+        let _ = layer.append_child(&picks);
+        let _ = layer.append_child(&pill);
         let _ = layer.append_child(&outline);
         let _ = layer.append_child(&pin);
         let _ = layer.append_child(&drop);
@@ -438,6 +485,9 @@ impl Overlay {
             shield,
             outline,
             pin,
+            picks,
+            candidates: Vec::new(),
+            pill,
             drop,
             tearing: None,
             aimed: None,
@@ -487,6 +537,8 @@ impl Overlay {
         hide(&self.pin);
         hide(&self.shield);
         hide(&self.drop);
+        hide(&self.pill);
+        self.drop_candidates();
         if let Some(aimed) = self.aimed.take() {
             let _ = aimed.remove_attribute(AIM);
         }
@@ -503,6 +555,13 @@ impl Overlay {
             && let Some(win) = window()
         {
             let _ = win.cancel_animation_frame(handle);
+        }
+    }
+
+    fn drop_candidates(&mut self) {
+        for candidate in self.candidates.drain(..) {
+            candidate.outline.remove();
+            candidate.tag.remove();
         }
     }
 
@@ -552,10 +611,10 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
             }
             // The whole cost of a closed hood. Everything below this
             // hit-tests the document, so nothing below it may run on
-            // the mousemoves of a page nobody is inspecting. Alt up
-            // with nothing painted means there is neither anything to
-            // start nor anything to stop.
-            if !mouse.alt_key() && !overlay.borrow().painting {
+            // the mousemoves of a page nobody is inspecting. Not
+            // asked, with nothing painted, means there is neither
+            // anything to start nor anything to stop.
+            if !overlay.borrow().machine.is_active() && !overlay.borrow().painting {
                 return;
             }
             // Resting on the panel or the pin is not leaving the
@@ -577,22 +636,12 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
                 state.target_of(&host)
             });
             let input = Input::Pointer {
-                alt: mouse.alt_key(),
                 over,
                 at: js_sys::Date::now(),
             };
             overlay.borrow_mut().machine.apply(input);
         },
     ));
-
-    bound.push(listen(&target, "keyup", true, overlay, |overlay, event| {
-        let Some(key) = event.dyn_ref::<KeyboardEvent>() else {
-            return;
-        };
-        if key.key() == "Alt" {
-            overlay.borrow_mut().machine.apply(Input::AltReleased);
-        }
-    }));
 
     bound.push(listen(
         &target,
@@ -604,6 +653,56 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
                 return;
             };
             if key.key() == "Escape" {
+                overlay.borrow_mut().machine.apply(Input::Clear);
+            }
+        },
+    ));
+
+    // A tag names a display; clicking it inspects that display. The
+    // way to choose one the pointer cannot easily reach — a card under
+    // another, or one behind the inspector.
+    let picks = overlay.borrow().picks.clone();
+    bound.push(listen(
+        picks.as_ref(),
+        "click",
+        false,
+        overlay,
+        |overlay, event| {
+            event.stop_propagation();
+            let index = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+                .and_then(|element| element.closest(".tag").ok().flatten())
+                .and_then(|tag| tag.get_attribute("data-candidate"))
+                .and_then(|index| index.parse::<usize>().ok());
+            let display = index.and_then(|index| {
+                overlay
+                    .borrow()
+                    .candidates
+                    .get(index)
+                    .map(|candidate| candidate.display.clone())
+            });
+            if let Some(display) = display {
+                let over = overlay.borrow_mut().target_of(&display);
+                overlay.borrow_mut().machine.apply(Input::Choose { over });
+            }
+        },
+    ));
+
+    // The pill's `done`: stop picking, and let go of anything held.
+    let pill = overlay.borrow().pill.clone();
+    bound.push(listen(
+        pill.as_ref(),
+        "click",
+        false,
+        overlay,
+        |overlay, event| {
+            event.stop_propagation();
+            let stopping = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+                .is_some_and(|element| element.matches("[data-action=stop]").unwrap_or(false));
+            if stopping {
                 overlay.borrow_mut().machine.apply(Input::Clear);
             }
         },
@@ -623,7 +722,7 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
             event.stop_propagation();
             let over = overlay.borrow().machine.highlighted();
             if let Some(over) = over {
-                overlay.borrow_mut().machine.apply(Input::Toggle { over });
+                overlay.borrow_mut().machine.apply(Input::Choose { over });
             }
         },
     ));
@@ -735,7 +834,7 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
             event.stop_propagation();
             let over = overlay.borrow().machine.highlighted();
             if let Some(over) = over {
-                overlay.borrow_mut().machine.apply(Input::Toggle { over });
+                overlay.borrow_mut().machine.apply(Input::Choose { over });
             }
         },
     ));
@@ -889,11 +988,11 @@ fn follow_selection(document: &Document, overlay: &Rc<RefCell<Overlay>>) {
             let over = overlay.borrow_mut().target_of(&host);
             let already = overlay.borrow().machine.observed() == Some(over);
             if !already {
-                overlay.borrow_mut().machine.apply(Input::Toggle { over });
+                overlay.borrow_mut().machine.apply(Input::Choose { over });
             }
         }
         None => {
-            if overlay.borrow().machine.is_latched() {
+            if overlay.borrow().machine.is_pinned() {
                 overlay.borrow_mut().machine.apply(Input::Clear);
             }
         }
@@ -913,7 +1012,7 @@ fn on_chrome(overlay: &Rc<RefCell<Overlay>>, mouse: &MouseEvent) -> bool {
     let state = overlay.borrow();
     let x = mouse.client_x();
     let y = mouse.client_y();
-    [&state.panel.root().clone(), &state.pin]
+    [&state.panel.root().clone(), &state.pin, &state.pill]
         .into_iter()
         .any(|element| {
             let rect = element.get_bounding_client_rect();
@@ -1196,7 +1295,7 @@ fn schedule(overlay: &Rc<RefCell<Overlay>>) {
         return;
     }
     // Nothing tracked and nothing drawn — there is no frame to paint.
-    if state.machine.highlighted().is_none() && !state.painting {
+    if !state.machine.is_active() && !state.painting {
         return;
     }
     let Some(tick) = state.tick.clone() else {
@@ -1222,12 +1321,13 @@ fn paint(overlay: &Rc<RefCell<Overlay>>) {
     registry::set_armed(observed.is_some());
     follow_recording(overlay, observed);
 
-    if highlighted.is_none() {
+    if !overlay.borrow().machine.is_active() {
         overlay.borrow_mut().clear();
         return;
     }
     overlay.borrow_mut().painting = true;
 
+    paint_picks(overlay);
     paint_frame(overlay, highlighted);
     paint_selector(overlay);
     match observed {
@@ -1251,6 +1351,7 @@ fn paint_frame(overlay: &Rc<RefCell<Overlay>>, target: Option<TargetId>) {
     let Some(element) = target.and_then(|target| state.element(target)) else {
         hide(&state.outline);
         hide(&state.pin);
+        hide(&state.shield);
         return;
     };
     let rect = element.get_bounding_client_rect();
@@ -1263,7 +1364,7 @@ fn paint_frame(overlay: &Rc<RefCell<Overlay>>, target: Option<TargetId>) {
     );
     let _ = state.outline.set_attribute("style", &box_style);
     let _ = state.shield.set_attribute("style", &box_style);
-    let latched = state.machine.is_latched();
+    let latched = state.machine.is_pinned();
     let _ = state
         .outline
         .set_attribute("class", if latched { "outline pinned" } else { "outline" });
@@ -1301,6 +1402,199 @@ fn paint_frame(overlay: &Rc<RefCell<Overlay>>, target: Option<TargetId>) {
         "style",
         &format!("display:block;left:{}px;top:{top}px", rect.left()),
     );
+}
+
+/// The smallest display worth offering, in CSS pixels a side. Below
+/// this a tag would be bigger than the thing it names.
+const CANDIDATE_MIN: f64 = 16.0;
+
+/// The most displays offered at once. A directory of hundreds of cards
+/// would otherwise bury the page in tags.
+const CANDIDATE_CAP: usize = 48;
+
+/// Tag geometry, in CSS pixels.
+const TAG_HEIGHT: f64 = 17.0;
+
+/// Start picking, if this frame has anything to pick.
+///
+/// Every frame in the tab hears the same `inspect`, and the frame the
+/// reader means is the one whose displays they can see. A frame whose
+/// displays are all hidden under a nested guest — the bar's frame,
+/// under the space it hosts — has nothing to offer, and stays out of
+/// the way rather than drawing a second picker over the first.
+fn start_picking(overlay: &Rc<RefCell<Overlay>>) {
+    if candidates_in(overlay).is_empty() {
+        return;
+    }
+    overlay.borrow_mut().machine.apply(Input::Pick);
+    schedule(overlay);
+}
+
+/// Every display in this frame a reader could mean: laid out, at least
+/// partly on screen, and not covered by something else at its visible
+/// centre. Covered is the case that matters — the bar's frame lays out
+/// displays that a nested guest's iframe then sits on top of, and
+/// those are not this frame's to offer.
+fn candidates_in(overlay: &Rc<RefCell<Overlay>>) -> Vec<Element> {
+    let Some(win) = window() else {
+        return Vec::new();
+    };
+    let Some(document) = win.document() else {
+        return Vec::new();
+    };
+    let Ok(list) = document.query_selector_all("tonk-display") else {
+        return Vec::new();
+    };
+    let width = win
+        .inner_width()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let height = win
+        .inner_height()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let host = overlay.borrow().host.clone();
+    let mut out = Vec::new();
+    for index in 0..list.length() {
+        if out.len() >= CANDIDATE_CAP {
+            break;
+        }
+        let Some(display) = list
+            .item(index)
+            .and_then(|node| node.dyn_into::<Element>().ok())
+        else {
+            continue;
+        };
+        let rect = display.get_bounding_client_rect();
+        if rect.width() < CANDIDATE_MIN || rect.height() < CANDIDATE_MIN {
+            continue;
+        }
+        let left = rect.left().max(0.0);
+        let top = rect.top().max(0.0);
+        let right = rect.right().min(width);
+        let bottom = rect.bottom().min(height);
+        if right <= left || bottom <= top {
+            continue;
+        }
+        let (x, y) = ((left + right) / 2.0, (top + bottom) / 2.0);
+        let topmost = topmost_at(&document, &host, x, y);
+        if topmost.is_some_and(|element| display.contains(Some(element.as_ref()))) {
+            out.push(display);
+        }
+    }
+    out
+}
+
+/// The topmost page element at a point, looking through the overlay.
+fn topmost_at(document: &Document, host: &Element, x: f64, y: f64) -> Option<Element> {
+    let stack = document.elements_from_point(x as f32, y as f32);
+    for index in 0..stack.length() {
+        let Ok(element) = stack.get(index).dyn_into::<Element>() else {
+            continue;
+        };
+        if element.is_same_node(Some(host.as_ref())) {
+            continue;
+        }
+        return Some(element);
+    }
+    None
+}
+
+/// What a candidate's tag says: the model it renders, and the facet if
+/// the display names one.
+fn tag_text(display: &Element) -> String {
+    let model = display
+        .get_attribute("model")
+        .filter(|model| !model.is_empty())
+        .unwrap_or_else(|| "tonk-display".to_owned());
+    match display
+        .get_attribute("view")
+        .filter(|view| !view.is_empty())
+    {
+        Some(view) => format!("{model} \u{00b7} {view}"),
+        None => model,
+    }
+}
+
+/// Draw the pick: an outline and a tag per candidate, and the pill.
+fn paint_picks(overlay: &Rc<RefCell<Overlay>>) {
+    if !overlay.borrow().machine.is_picking() {
+        let mut state = overlay.borrow_mut();
+        hide(&state.pill);
+        state.drop_candidates();
+        return;
+    }
+    let found = candidates_in(overlay);
+
+    let unchanged = {
+        let state = overlay.borrow();
+        state.candidates.len() == found.len()
+            && state
+                .candidates
+                .iter()
+                .zip(&found)
+                .all(|(candidate, display)| candidate.display.is_same_node(Some(display.as_ref())))
+    };
+    if !unchanged {
+        let Some(document) = window().and_then(|w| w.document()) else {
+            return;
+        };
+        let mut state = overlay.borrow_mut();
+        state.drop_candidates();
+        for (index, display) in found.into_iter().enumerate() {
+            let (Some(outline), Some(tag)) = (
+                element(&document, "div", "cand"),
+                element(&document, "button", "tag"),
+            ) else {
+                continue;
+            };
+            tag.set_text_content(Some(&tag_text(&display)));
+            let _ = tag.set_attribute("data-candidate", &index.to_string());
+            let _ = tag.set_attribute("title", "inspect this display");
+            let _ = state.picks.append_child(&outline);
+            let _ = state.picks.append_child(&tag);
+            state.candidates.push(Candidate {
+                display,
+                outline,
+                tag,
+            });
+        }
+    }
+
+    let state = overlay.borrow();
+    let _ = state.pill.set_attribute("style", "display:flex");
+    // Tags that would land on one another are pushed down, the way the
+    // slot badges are; a dense page still reads.
+    let mut placed: Vec<(f64, f64, f64)> = Vec::new();
+    for candidate in &state.candidates {
+        let rect = candidate.display.get_bounding_client_rect();
+        let _ = candidate.outline.set_attribute(
+            "style",
+            &format!(
+                "display:block;left:{}px;top:{}px;width:{}px;height:{}px",
+                rect.left(),
+                rect.top(),
+                rect.width(),
+                rect.height()
+            ),
+        );
+        let left = rect.left().max(0.0);
+        let width = tag_text(&candidate.display).chars().count() as f64 * BADGE_CHAR + 14.0;
+        let mut top = rect.top().max(0.0);
+        while placed.iter().any(|(other_left, other_top, other_right)| {
+            (top - other_top).abs() < TAG_HEIGHT
+                && left < *other_right
+                && left + width > *other_left
+        }) {
+            top += TAG_HEIGHT + 1.0;
+        }
+        placed.push((left, top, left + width));
+        let _ = candidate
+            .tag
+            .set_attribute("style", &format!("display:block;left:{left}px;top:{top}px"));
+    }
 }
 
 /// Draw the selector: under the pointer while torn, parked on the
@@ -1876,6 +2170,22 @@ const CSS: &str = "\
        background: var(--tonk-circle, #3d6da8); border: 0; border-radius: 0; }
 .pin:hover { filter: brightness(1.15); }
 .pin.pinned { background: var(--tonk-triangle, #c89a2b); }
+/* Picking: every display a reader could mean, outlined and named. The
+   tags are the suggestions, placed on the things they name. */
+.picks { position: fixed; inset: 0; pointer-events: none; z-index: 3; }
+.cand { position: fixed; display: none; box-sizing: border-box; pointer-events: none;
+        border: 1px dashed color-mix(in srgb, var(--tonk-circle, #3d6da8) 70%, transparent); }
+.tag { position: fixed; display: none; pointer-events: auto; cursor: pointer; height: 17px;
+       padding: 0 7px; font: inherit; line-height: 17px; white-space: nowrap; color: #17171a;
+       background: var(--tonk-circle, #3d6da8); border: 0; border-radius: 0; }
+.tag:hover { background: var(--tonk-triangle, #c89a2b); }
+.pill { position: fixed; display: none; z-index: 6; left: 50%; bottom: 16px;
+        transform: translateX(-50%); align-items: center; gap: 12px; pointer-events: auto;
+        padding: 6px 6px 6px 14px; color: #e6e3de; background: #17171a;
+        border: 1px solid #2c2a27; box-shadow: 0 8px 26px rgba(0,0,0,.45); }
+.pill-stop { min-height: 24px; padding: 3px 12px; font: inherit; cursor: pointer;
+             color: #17171a; background: var(--tonk-triangle, #c89a2b); border: 0;
+             border-radius: 0; }
 /* The selector: a 36 circle with one square corner, and the corner is
    the hotspot — the way a pointer's tip is. */
 .drop { position: fixed; display: none; z-index: 6; pointer-events: auto; cursor: grab;

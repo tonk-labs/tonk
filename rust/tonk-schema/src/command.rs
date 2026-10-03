@@ -546,6 +546,14 @@ bar_command!(
     ConnectSpace,
     connect_space
 );
+bar_command!(
+    /// Open the introspection overlay in the tab that asked, to pick a
+    /// display to look inside. Not the bar's own act, but the same shape
+    /// for the same reason: opening an overlay is a page capability, so
+    /// the handler can only record that it was asked.
+    Inspect,
+    inspect
+);
 
 /// `intent/interpret`: what was typed in the command palette, where it
 /// was opened. The handler is the parser: it records the expression (the
