@@ -109,6 +109,13 @@ jobs:
         with:
           name: tonk-linux-x86_64
           path: artifacts/linux-x86_64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: ./.github/actions/smoke-linux-cli
+        with:
+          binary-path: artifacts/linux-x86_64/tonk
+          expected-version: ${{ needs.resolve.outputs.version }}
       - name: Prepare release assets
         run: |
           set -euo pipefail
