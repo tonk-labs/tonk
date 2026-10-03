@@ -347,7 +347,7 @@ async fn it_records_a_pages_selection_on_its_site() {
     .await;
     let key = created["name"].as_str().unwrap().to_owned();
     let space = format!("/api/repository/{key}/branch/main");
-    let profile = "/api/profile/branch/main";
+    let profile = "/api/repository/profile:tonk/branch/main";
     send(
         &app,
         "POST",
@@ -636,7 +636,7 @@ async fn send_as(app: &Router, client: &str, uri: &str, body: String) -> Value {
 async fn it_runs_every_menu_act_from_the_palette() {
     let (app, state, _lsp) = api_router_with_state(test_state().await);
     let branch = state.read().await.active_branch.clone();
-    let profile = format!("/api/profile/branch/{branch}");
+    let profile = format!("/api/repository/profile:tonk/branch/{branch}");
     let client = "tab";
     let site = format!("site:{client}");
     for library in [CORE, PROFILE] {

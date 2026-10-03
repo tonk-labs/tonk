@@ -374,6 +374,34 @@ const FORM_CONTROL_PREFIX: &str = "dom.event.current-target.elements.";
 /// is what this catches. The trap is naming the field and its leaf
 /// after the same thing (`revocation/revocation-url`): the leaf is a JS
 /// property, not a label.
+/// The space chrome takes a branch that does not carry `tonk:repository`
+/// for a space this device has not replicated, and hides the site behind
+/// the absent-space panel. The profile's own repository is addressed as
+/// a space by its DID and its branch carries this library, so the
+/// concept has to be declared here or `/space/<profile did>` answers
+/// "open this space" over a repository that loaded.
+#[dialog_common::test]
+fn it_declares_the_repository_concept_the_space_chrome_resolves() {
+    let chrome = "<tonk-display with={id} entity={id} model=tonk:repository view=title>";
+    assert!(
+        PROFILE_LIBRARY.contains(chrome),
+        "the space chrome decides a space is here by resolving `tonk:repository`"
+    );
+    let declared = PROFILE_LIBRARY.split("\nconcept!:").any(|concept| {
+        let head = concept.split("\nview!:").next().unwrap_or_default();
+        head.contains("\n  this: tonk:repository\n") && head.contains("the: xyz.tonk.repo/name")
+    });
+    assert!(
+        declared,
+        "the profile library must declare `tonk:repository` over `xyz.tonk.repo/name`, \
+         or its own repository reads as a space that has not arrived"
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("view!:\n  this: tonk:repository\n  show:\n    title: |"),
+        "the chrome asks for the `title` view; without it the display reports `no-view`"
+    );
+}
+
 fn assert_form_reads_resolve(label: &str, document: &str) {
     for (index, _) in document.match_indices(FORM_CONTROL_PREFIX) {
         let rest = &document[index + FORM_CONTROL_PREFIX.len()..];

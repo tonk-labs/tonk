@@ -387,7 +387,7 @@ async fn record_account_replica(
 }
 
 /// Record the account as a branch of the profile repository, and make
-/// it the active one.
+/// it the active one when the profile has none.
 ///
 /// The link written above indexes the account replica on profile main,
 /// which is what the sync drain routes by. This records the same link
@@ -430,8 +430,17 @@ pub(crate) async fn record_account_branch(
         .assert(served)
         .assert(upstream.clone())
         .assert(local.clone())
-        .assert(BranchUpstream::new(&local, &upstream))
-        .assert(ReplicaActiveBranch::new(&replica, &local));
+        .assert(BranchUpstream::new(&local, &upstream));
+
+    // Only a profile with no active branch on record takes one here.
+    // This runs from the detached account catch-up, which holds the
+    // state it started with: by the time it gets here a sign-out, or an
+    // added account, may have moved the profile to a branch following
+    // nothing, and asserting this state's branch would move it back.
+    // Every later move is `set_active_branch`'s or `leave_account`'s.
+    if super::profile::active_branch(tonk).await.is_none() {
+        transaction = transaction.assert(ReplicaActiveBranch::new(&replica, &local));
+    }
 
     // Where the serving peer answers, keyed by the `did:web` its
     // endpoint names rather than by this account: a service serving
@@ -1658,6 +1667,50 @@ pub(crate) mod tests {
             resolved,
             account.this(),
             "linking makes the account's branch the active one",
+        );
+    }
+
+    /// A link pass that started before the profile left the account does
+    /// not bring it back.
+    ///
+    /// The account catch-up runs detached and holds the state it started
+    /// with, so it can reach this write after a sign-out, or an added
+    /// account, already moved the profile to a branch that follows
+    /// nothing. Re-asserting its own branch as the active one there
+    /// undoes the move: the next page reads the account's branch off
+    /// `meta` and renders signed in. Only a profile with no active
+    /// branch on record takes one from a link.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_leaves_the_active_branch_where_the_profile_moved_it() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+
+        let state = crate::router::tests::test_state().await;
+        let account = Ed25519Signer::import(&[98; 32]).await.unwrap().did();
+        super::record_account_branch(&state, &account, &probe_address()).await;
+
+        crate::router::profile::leave_account(&state).await;
+        let landed =
+            crate::router::profile::active_branch_name(&state.reactor, &state.operator).await;
+        assert_ne!(
+            landed.as_deref(),
+            Some(state.active_branch.as_str()),
+            "leaving moves the profile off the account's branch",
+        );
+
+        // The pass that was still running when the profile left.
+        super::record_account_branch(&state, &account, &probe_address()).await;
+
+        assert_eq!(
+            crate::router::profile::active_branch_name(&state.reactor, &state.operator).await,
+            landed,
+            "a late link pass leaves the active branch where the profile moved it",
+        );
+        assert_eq!(
+            crate::router::profile::active_account(&state).await,
+            None,
+            "the profile stays signed out",
         );
     }
 

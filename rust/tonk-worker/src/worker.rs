@@ -570,8 +570,10 @@ mod route_for_tests {
             });
         let event = js_sys::Object::new();
         js_sys::Reflect::set(&event, &"waitUntil".into(), wait_until.as_ref()).unwrap();
-        let request =
-            Request::new_with_str("https://tonk.test/api/profile/branch/main/query").unwrap();
+        let request = Request::new_with_str(
+            "https://tonk.test/api/repository/profile:tonk/branch/main/query",
+        )
+        .unwrap();
         js_sys::Reflect::set(&event, &"request".into(), &request).unwrap();
         let scheduler = SyncScheduler::default();
 
@@ -2447,8 +2449,7 @@ const SYNC_LOOP_MS: u64 = 2_000;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn has_syncable_repo(state: &AppState) -> bool {
     let tonk = state.read().await;
-    let repos: Vec<String> = tonk.reactor.repos().read().keys().cloned().collect();
-    for repo in repos {
+    for repo in tonk.reactor.spaces() {
         if crate::router::is_sync_enabled(&tonk, &repo, "main").await {
             return true;
         }
@@ -2462,17 +2463,9 @@ async fn has_syncable_repo(state: &AppState) -> bool {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn has_live_subscribers(state: &AppState) -> bool {
     let tonk = state.read().await;
-    {
-        let repos = tonk.reactor.repos().read();
-        for repo in repos.values() {
-            for branch in repo.branches().read().values() {
-                if !branch.subscriptions().lock().is_empty() {
-                    return true;
-                }
-            }
-        }
-    }
-    if let Some(repo) = tonk.reactor.profile_repo_state() {
+    // The profile's own repository is among the cached ones.
+    let repos = tonk.reactor.repos().read();
+    for repo in repos.values() {
         for branch in repo.branches().read().values() {
             if !branch.subscriptions().lock().is_empty() {
                 return true;

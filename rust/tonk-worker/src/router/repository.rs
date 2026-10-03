@@ -753,23 +753,6 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
         None => None,
     };
 
-    // The space's seed is custodied under the account before the
-    // space exists. A linked device whose root record predates the
-    // encryption key asks the originating page for a passkey
-    // assertion here, outside the state lock, and resumes once the
-    // page has saved the key.
-    if let Err(error) = super::custody::ensure_recipient(env.state(), env.client()).await {
-        log!("CreateSpace '{}' refused: {}", name, error);
-        report_space_creation(
-            env.state(),
-            &receipt,
-            "failed",
-            "Space creation wasn't approved. Try again and complete the passkey prompt.",
-        )
-        .await;
-        return;
-    }
-
     // 1. Always create local-only first, so the space appears
     //    whether or not a remote was given (and never vanishes on
     //    a remote failure). The create mints a fresh identity and
@@ -7155,6 +7138,9 @@ pub async fn get_repository(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<RepositoryInfo>, TonkWorkerError> {
+    if super::names_profile(&state, &name).await {
+        return get_profile_repository(State(state)).await;
+    }
     log!("GET /api/repository/{}", name);
 
     let tonk = state.read().await;
@@ -7198,7 +7184,7 @@ pub async fn get_repository(
 
 /// Return [`RepositoryInfo`] for the profile-as-repository.
 ///
-/// Handler for `GET /api/profile/repository`. The profile lives
+/// Handler for `GET /api/repository/profile:tonk`. The profile lives
 /// outside the named-repo namespace, so it has its own route.
 /// Mirrors the data the `info.profile` field of
 /// `GET /api/profile` carries — exposed separately so the UI can
@@ -7209,7 +7195,7 @@ pub async fn get_repository(
 pub async fn get_profile_repository(
     State(state): State<AppState>,
 ) -> Result<Json<RepositoryInfo>, TonkWorkerError> {
-    log!("GET /api/profile/repository");
+    log!("GET /api/repository/profile:tonk");
 
     let tonk = state.read().await;
     let repository = tonk
@@ -8209,7 +8195,7 @@ mod space_creation_feedback_tests {
         for receipt in ["urn:uuid:rename-first", "urn:uuid:rename-unchanged"] {
             post(
                 &app,
-                &format!("/api/profile/branch/{branch}/transact"),
+                &format!("/api/repository/profile:tonk/branch/{branch}/transact"),
                 serde_json::json!({
                     "claims": [{ "op": "assert", "application": {
                         "predicate": { "kind": "transient", "concept": { "with": {
@@ -8220,7 +8206,7 @@ mod space_creation_feedback_tests {
                 }),
             )
             .await;
-            let rows = post(&app, &format!("/api/profile/branch/{branch}/query"), serde_json::json!({
+            let rows = post(&app, &format!("/api/repository/profile:tonk/branch/{branch}/query"), serde_json::json!({
                 "predicate": { "with": {
                     "status": { "the": "xyz.tonk.profile-rename/status", "as": "Text", "cardinality": "one" },
                     "detail": { "the": "xyz.tonk.profile-rename/detail", "as": "Text", "cardinality": "one" }
@@ -8241,11 +8227,11 @@ mod space_creation_feedback_tests {
         claim["claims"][0]["application"]["parameters"]["this"] = "urn:uuid:removal-create".into();
         post(
             &app,
-            &format!("/api/profile/branch/{branch}/transact"),
+            &format!("/api/repository/profile:tonk/branch/{branch}/transact"),
             claim,
         )
         .await;
-        let created = post(&app, &format!("/api/profile/branch/{branch}/query"), serde_json::json!({
+        let created = post(&app, &format!("/api/repository/profile:tonk/branch/{branch}/query"), serde_json::json!({
             "predicate": { "with": { "detail": { "the": "xyz.tonk.space-creation/detail", "as": "Text", "cardinality": "one" } } },
             "terms": { "this": "urn:uuid:removal-create", "detail": { "?": { "name": "detail" } } }
         })).await;
@@ -8276,7 +8262,7 @@ mod space_creation_feedback_tests {
             ("urn:uuid:removal-success", subject, "removed"),
             ("urn:uuid:removal-failure", profile, "failed"),
         ] {
-            post(&app, &format!("/api/profile/branch/{branch}/transact"), serde_json::json!({
+            post(&app, &format!("/api/repository/profile:tonk/branch/{branch}/transact"), serde_json::json!({
                 "claims": [{ "op": "assert", "application": {
                     "predicate": { "kind": "transient", "concept": { "with": {
                         "subject": { "the": "xyz.tonk.command.remove-space/subject", "as": "Entity" }
@@ -8284,7 +8270,7 @@ mod space_creation_feedback_tests {
                     "parameters": { "this": receipt, "subject": subject }
                 } }]
             })).await;
-            let rows = post(&app, &format!("/api/profile/branch/{branch}/query"), serde_json::json!({
+            let rows = post(&app, &format!("/api/repository/profile:tonk/branch/{branch}/query"), serde_json::json!({
                 "predicate": { "with": {
                     "status": { "the": "xyz.tonk.space-removal/status", "as": "Text", "cardinality": "one" },
                     "detail": { "the": "xyz.tonk.space-removal/detail", "as": "Text", "cardinality": "one" }
@@ -8306,7 +8292,7 @@ mod space_creation_feedback_tests {
         claim["claims"][0]["application"]["parameters"]["this"] = receipt.into();
         post(
             &app,
-            &format!("/api/profile/branch/{branch}/transact"),
+            &format!("/api/repository/profile:tonk/branch/{branch}/transact"),
             claim,
         )
         .await;
@@ -8317,7 +8303,12 @@ mod space_creation_feedback_tests {
             } },
             "terms": { "this": receipt, "status": { "?": { "name": "status" } }, "detail": { "?": { "name": "detail" } } }
         });
-        let rows = post(&app, &format!("/api/profile/branch/{branch}/query"), query).await;
+        let rows = post(
+            &app,
+            &format!("/api/repository/profile:tonk/branch/{branch}/query"),
+            query,
+        )
+        .await;
         assert_eq!(rows[0]["this"], receipt);
         assert_eq!(rows[0]["fields"]["status"], "created", "{rows}");
         let href = rows[0]["fields"]["detail"].as_str().unwrap();
