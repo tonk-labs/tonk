@@ -1,8 +1,9 @@
 # Popping the hood on `<tonk-display>`
 
-**Goal:** make the rendering pipeline visible at the point of use. Hold Alt
-over a rendered view and see which concept it matched, which template it
-mounted, which slot each `{field}` filled, and which of them just changed.
+**Goal:** make the rendering pipeline visible at the point of use. Run
+`inspect`, pick a rendered view, and see which concept it matched, which
+template it mounted, which slot each `{field}` filled, and which of them just
+changed.
 
 **Why it is possible at all:** everything the tool needs already exists in
 memory. `<tonk-display>` keeps the resolved concept descriptor, the effective
@@ -20,10 +21,12 @@ renderer is the only thing that knows.
 ## Shape
 
 `<tonk-introspect>`, registered and auto-mounted by `tonk_display::register()`,
-one per document. Inert until Alt goes down.
+one per document. Does nothing until the palette's `inspect` asks.
 
-- `introspect/mode.rs` — the arm/observe/latch state machine. No DOM, so it
+- `introspect/mode.rs` — the pick/observe/pin state machine. No DOM, so it
   tests under plain `cargo test`.
+- `introspect/request.rs` — hearing `inspect` on the tab's site; the
+  "is this a new request?" decision is pure and native-tested.
 - `introspect/slot.rs` — what a slot is: its fields, their origin (concept
   field / `{this}` / `{dom.host/*}` / iteration key), where it wrote, what it
   last rendered. Plus the `Snapshot` a display reports. Pure, native-tested.
@@ -40,47 +43,62 @@ one per document. Inert until Alt goes down.
 
 | gesture | effect |
 | --- | --- |
-| Alt + hover a display | outline it, with a **pin** button above its top-left |
-| rest there past 300ms | observation on: slots and commands marked |
+| `inspect` in the palette | pick: every visible display outlined and tagged with its model |
+| rest on a display past 300ms | observation on: slots and commands marked, inspector open |
 | move to another display | dwell restarts there |
-| move off / release Alt | observation off |
-| click the tracked display | pin the observation; survives Alt release |
+| move off every display | outline goes after `LEAVE_MS`; picking does not |
+| click a display, or its tag | pin the inspector to it; picking ends |
 | click it again | release it |
-| Escape | release everything |
+| `done` on the pill, or Escape | stop |
 
-Pinning went through three designs before one worked, and the failures are
-worth keeping because each was invisible to the tests:
+**Asking replaced holding Alt.** A held modifier is a mode you have to keep
+pressing, and it is read off key events a sealed guest that never had focus does
+not receive — which is why the Alt version needed `altKey` off every mousemove
+and still could not notice Alt going up under a still pointer. A command is a
+mode you enter once, from wherever the palette is.
 
-1. **Alt-click, swallowed in the capture phase.** Correct, but it takes the
-   gesture from every app for as long as the overlay is mounted, so it was made
-   opt-in behind an attribute — which nothing set, so nothing could pin.
-2. **A pin button above the outline's corner.** Unreachable: the walk to it
-   crossed page that is not a display, and every mousemove on the way read as
-   giving up. The state machine was right and the geometry was wrong.
-3. **A shield over the whole tracked display.** The display itself is the
-   target, so there is nothing to aim at, and the shield is overlay chrome, so
-   the click never reaches the page — no gesture taken, nothing swallowed.
+**How the command reaches the overlay.** `devtools/inspect` is built like the
+bar's own acts (`account/add`, `space/share-link`): opening an overlay is a page
+capability, so the worker's handler can only record that it was asked — on the
+asking tab's site, `xyz.tonk.site/request = inspect` in the profile's session
+overlay. The bar's `<ui-site-request>` presses a control per request and has
+none for this one; the overlay subscribes to the same site instead. The first
+frame primes, so reloading a page once inspected does not start inspecting it.
 
-Two supports make it reachable. Hit-testing is by point
+**Which frame answers.** Every frame in a tab shares its site, because a sealed
+guest's requests are made on its behalf by the tab — that is what lets the
+space nested inside the bar's frame hear a command typed into the bar. So every
+frame hears `inspect`, and each answers only for displays a reader can actually
+see: laid out, on screen, and not covered at their visible centre. The bar's
+frame lays out displays that the nested space's iframe then sits on top of;
+those are not its to offer, and it stays out of the way rather than drawing a
+second picker over the first.
+
+**Suggestions are on the page.** Picking tags each candidate with the model it
+renders. A list in the palette would have to be matched back to the page by
+eye; a tag is already on the thing. Palette-level suggestions (`inspect prose`)
+would need the page to report its mounted displays as facts on the expression,
+the way it reports the selection, so rules can derive them as candidates for a
+field on the command. Not done: the page-side tags answer the same question
+without a round trip per keystroke.
+
+**Choosing goes through a shield.** While a display is under the pointer a
+transparent surface covers it and a click on it chooses. The shield is the
+overlay's own, so the click never reaches the page: a button being inspected is
+never also pressed, and nothing has to be swallowed. Hit-testing is by point
 (`elementsFromPoint`, skipping the overlay host) rather than by event target,
 because everything in the shadow root retargets to one host and a target test
-cannot tell the shield from the panel — which would blind the machine to a
-display nested inside a shielded one. And the machine holds its target for
-`LEAVE_MS` after the pointer leaves every display, because the page between a
-display and the panel is not a display either.
+cannot tell the shield from the inspector — which would blind the machine to a
+display nested inside a shielded one.
 
-The panel picks the corner furthest from the observed display, and can be
-dragged by its header. Markers paint on their own sub-layer beneath it, so a
-badge is never drawn across the thing you are reading.
+Pinning went through three designs before the shield, each invisible to the
+tests: Alt-click swallowed in the capture phase (made opt-in to spare apps the
+gesture, behind an attribute nothing set); a pin button above the outline
+(unreachable — walking to it crossed page that is not a display); and then the
+shield. The leave grace is what made any of them reachable.
 
-Alt state is read off the *pointer* event, not remembered from a `keydown`. A
-sealed guest iframe that has never had focus receives no key events, but every
-mouse event it gets carries `altKey` — so hovering works in a frame that was
-never clicked, which is the common case. `keyup` is still listened for, as the
-only way to notice Alt going up under a pointer that is not moving.
-
-Alt-click is swallowed in the capture phase. Inspecting a button must never
-dispatch the command that button carries.
+The inspector picks the corner furthest from the observed display, and can be
+dragged by its header. Markers paint on their own sub-layer beneath it.
 
 ## Frames
 
@@ -120,17 +138,15 @@ At most 160 markers are painted at once; the readout says when that bit.
 
 ## Cost when closed
 
-One document `mousemove` listener per frame whose first act is to read `altKey`
-and return, plus a `Cell<bool>` read on the renderer's change path. Nothing
+One document `mousemove` listener per frame whose first act is to see that
+nothing is being picked or painted and return, one subscription to the tab's
+site requests, and a `Cell<bool>` read on the renderer's change path. Nothing
 else runs, no rAF loop is scheduled, and no snapshot is built.
 
-This was not true as first written: the handler read `altKey` into the machine
-but ran `closest("tonk-display")` before it, so every mousemove on every page
-walked the DOM whether or not anyone was inspecting. The guard is now the
+This was not true as first written: the Alt-era handler read `altKey` into the
+machine but ran `closest("tonk-display")` before it, so every mousemove on every
+page walked the DOM whether or not anyone was inspecting. The guard is the
 handler's first statement, and everything that touches the DOM sits below it.
-The condition is `!alt && !painting` rather than `!alt`, because a pinned
-observation has to keep tracking with Alt up, and a tracked one has to be able
-to stop when Alt goes up under a still pointer.
 
 ## Steps
 

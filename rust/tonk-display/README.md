@@ -72,11 +72,14 @@ In both modes the query engine emits one flat row per tuple, so cardinality-many
 ## Introspection
 
 `tonk_display::register()` also registers and mounts `<tonk-introspect>`, an
-overlay that makes this pipeline visible at the point of use. Hold Alt and the
-display under the pointer outlines, with a **pin** button in its corner;
-rest there for 300ms and observation switches on. Click it — anywhere on it — to keep the observation while
-the pointer goes elsewhere; click again, or press Escape, to release. Tracking survives the pointer leaving every display for a moment, so
-walking over to the panel does not drop it.
+overlay that makes this pipeline visible at the point of use. Run **`inspect`**
+from the command palette (Cmd/Ctrl+K) and every display on the page is
+outlined and tagged with the model it renders — the tags are the suggestions,
+placed on the things they name. Rest the pointer on one for 300ms and
+observation switches on; click it, or its tag, to keep the observation while
+the pointer goes elsewhere. Click it again to let it go; `done` on the pill
+stops picking. Tracking survives the pointer leaving every display for a
+moment, so walking over to the inspector does not drop it.
 
 Observation marks two things:
 
@@ -142,9 +145,15 @@ surface, so a display nested inside a tracked one is still reachable.
 The panel places itself in the corner furthest from what you are observing, and
 can be dragged by its header.
 
-It is inert until Alt goes down — one `mousemove` listener that reads `altKey`
-and returns, plus a bool read on the renderer's change path. Remove the element
-to opt out entirely.
+It does nothing until asked — one `mousemove` listener that sees nothing is
+being picked and returns, plus a bool read on the renderer's change path. It
+reads no gesture off the page. Remove the element to opt out entirely.
+
+`inspect` is a command like the bar's own acts: its handler cannot open
+anything, so it records the request on the asking tab's site, and the overlay
+hears it there. Every frame in a tab shares that site, so the frame holding the
+page's content hears a command typed into the bar; each frame answers only for
+displays a reader can see, so the frames around it stay out of the way.
 
 The inspector also opens on anything marked `data-fabb-selected` — the
 attribute the FAB's selector stamps on what it is dropped on. The chrome marks,
