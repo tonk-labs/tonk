@@ -44,6 +44,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
+mod live;
+
 /// In-memory shortcut store: object key → (unix-seconds expiry, target).
 type Shortcuts = Arc<RwLock<HashMap<String, (u64, String)>>>;
 
@@ -95,6 +97,8 @@ struct RegistrationState {
     /// The backing S3 store `/object/` performs against, with the
     /// credential the worker's R2 binding stands in for.
     objects: ObjectStore,
+    /// Each space's socket, and the watches a write is told to.
+    live: live::Live,
 }
 
 /// The S3 store the native mirror serves objects from.
@@ -172,6 +176,7 @@ impl AccessServer {
         // chain walk. It reads the same index `/ucan/revoke` writes, so
         // a revocation recorded by one request governs the next.
         let revocations: Arc<crate::revocation::index::MemoryRevocationIndex> = Default::default();
+        let live = live::Live::new(address.clone(), credential.clone(), revocations.clone());
         let authorizer = Arc::new(RwLock::new(
             UcanAuthorizer::new(address, Some(credential)).with_revocations(
                 crate::revocation::checker::IndexedRevocations(revocations.clone()),
@@ -233,6 +238,7 @@ impl AccessServer {
             permit_key,
             endpoint: endpoint.clone(),
             objects,
+            live,
         });
 
         let shortcuts: Shortcuts = Arc::new(RwLock::new(HashMap::new()));
@@ -261,6 +267,7 @@ impl AccessServer {
                                 });
                                 let _ = http1::Builder::new()
                                     .serve_connection(TokioIo::new(stream), service)
+                                    .with_upgrades()
                                     .await;
                             });
                         }
@@ -366,6 +373,11 @@ async fn handle_request(
             HeaderValue::from_static(crate::PREFLIGHT_MAX_AGE),
         );
         return Ok(response);
+    }
+
+    // A space's socket, at the endpoint itself, as the worker keeps it.
+    if req.method() == Method::GET && req.uri().path() == "/ucan/" && live::is_upgrade(&req) {
+        return Ok(live::upgrade(req, registration));
     }
 
     if req.method() == Method::GET && req.uri().path() == "/.well-known/tonk" {
@@ -952,6 +964,18 @@ async fn handle_request(
                         response.headers_mut().insert(name, value);
                     }
                 }
+                // A cell written here is told to the watches on its
+                // space's sockets, as the worker reports it to the
+                // space's object.
+                if response.status().is_success()
+                    && let Some((space, cell)) = crate::socket::cell_written(&chain)
+                {
+                    let subject = chain.subject().to_string();
+                    let registration = registration.clone();
+                    tokio::spawn(async move {
+                        registration.live.changed(&subject, &space, &cell).await;
+                    });
+                }
             }
             Ok(cors_response(response))
         }
@@ -1040,11 +1064,16 @@ fn unix_now() -> u64 {
 
 /// Provision `subject` under a synthetic active customer, so the
 /// provisioning gate serves it. Idempotent, and derived from the
-/// subject so two subjects never collide on one provider row.
+/// subject, email included, so two subjects never collide on one
+/// provider row or on the one customer an address may register.
 async fn provision_for_tests(store: &SqliteStore, subject: &str) -> anyhow::Result<()> {
     use crate::store::{SIGNUP_PLAN, Store, SubscriptionKind};
 
     let provider = format!("did:test:provider-for-{subject}");
+    let email = format!(
+        "tests+{}@example.com",
+        subject.rsplit(':').next().unwrap_or(subject)
+    );
     if store
         .customer(&provider)
         .await
@@ -1054,7 +1083,7 @@ async fn provision_for_tests(store: &SqliteStore, subject: &str) -> anyhow::Resu
         store
             .enroll_customer(Enrollment {
                 did: &provider,
-                email: "tests@example.com",
+                email: &email,
                 plan: SIGNUP_PLAN,
                 ledger: &provider,
                 custody: "did:key:zTestCustody",

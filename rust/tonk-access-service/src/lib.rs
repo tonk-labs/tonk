@@ -67,6 +67,7 @@ pub mod revocation;
 pub mod revoke;
 pub mod service;
 pub mod shortcut;
+pub mod socket;
 pub mod store;
 pub mod vault;
 

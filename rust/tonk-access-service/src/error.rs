@@ -91,7 +91,6 @@ impl Refusal {
 
     /// The JSON-encoded reason: what a refused request's body carries,
     /// and what a socket's answer carries in its place.
-    #[cfg(target_arch = "wasm32")]
     pub fn body(&self) -> Vec<u8> {
         let body = match self {
             Self::Authorization(reason) => serde_json::to_vec(reason),

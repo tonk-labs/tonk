@@ -334,29 +334,9 @@ fn invoked(bytes: &[u8]) -> Option<Invoked> {
     Some(Invoked {
         invocation: chain.invocation.to_cid().to_string(),
         subject: chain.subject().to_string(),
-        writes: cell_written(&chain),
+        writes: crate::socket::cell_written(&chain),
         container,
     })
-}
-
-/// The cell `chain`'s invocation writes, `(space, cell)`, when it is a
-/// cell's publish or retract.
-pub(crate) fn cell_written<S: dialog_varsig::Signature>(
-    chain: &InvocationChain<S>,
-) -> Option<(String, String)> {
-    let command: Vec<&str> = chain.command().0.iter().map(String::as_str).collect();
-    if !matches!(
-        command.as_slice(),
-        ["use", "put", "memory", "cell"] | ["use", "delete", "memory", "cell"]
-    ) {
-        return None;
-    }
-    let arguments = chain.arguments();
-    let named = |key: &str| match arguments.get(key) {
-        Some(dialog_ucan_core::promise::Promised::String(value)) => Some(value.clone()),
-        _ => None,
-    };
-    Some((named("space")?, named("cell")?))
 }
 
 /// Hand a socket upgrade for `/ucan/?sub=<space>` to the space's object.

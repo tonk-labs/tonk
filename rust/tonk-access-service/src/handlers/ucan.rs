@@ -491,7 +491,7 @@ async fn perform(
     let screened = Date::now().as_millis();
     let described = crate::describe::describe(verified.chain());
     // A cell write is reported to its space's watches once it lands.
-    let written = crate::live::cell_written(verified.chain())
+    let written = crate::socket::cell_written(verified.chain())
         .map(|(space, cell)| (verified.subject().to_string(), space, cell));
 
     // A write's bytes are the body, metered as declared; the layer
