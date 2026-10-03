@@ -39,6 +39,7 @@ use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
 use crate::bridge::PortalState;
 use crate::shared::{connect_portal, install_method_shims};
+use crate::space_origin::{site_origin, site_pattern};
 
 /// Shared cell holding the portal state once the iframe is up. An `Rc` so the
 /// async site-registration task can hold it across the await and hand it to
@@ -298,6 +299,9 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
             && s.iframe.as_ref().is_some_and(|f| f.is_connected())
             && s.same_route(&with, &allow)
     });
+    // A site on an origin of its own claims its load there, against the
+    // worker it reads its stamp from (see `bootstrap.js`).
+    let own_origin = on_own_origin(&host, &with);
     let host_for_task = host.clone();
     spawn_local(async move {
         if !reuse {
@@ -305,12 +309,21 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
         } else if let Some(state) = cell.borrow().as_ref() {
             crate::bridge::refresh_context(&host_for_task, state);
         }
+        if own_origin {
+            return;
+        }
         if let Err(error) =
             tonk_host::consumer::claim(&host_for_task.clone().into(), &request).await
         {
             tonk_common::log!("tonk-site: load claim failed for {path}: {error:?}");
         }
     });
+}
+
+/// Whether `host` renders `with` in a frame on an origin of its own. Such a
+/// frame stamps its site in its own worker and heals the stamp itself.
+fn on_own_origin(host: &Element, with: &Location) -> bool {
+    site_pattern(host).is_some_and(|pattern| site_origin(with, &pattern).is_some())
 }
 
 /// Install the self-heal subscription: watch this site's own `tonk:site`
@@ -358,6 +371,12 @@ fn install_self_heal(this: &HtmlElement, slot: Rc<RefCell<Option<Subscription>>>
             .get_attribute("with")
             .filter(|v| !v.is_empty() && !v.contains('{'))
         {
+            if with
+                .parse::<Location>()
+                .is_ok_and(|with| on_own_origin(&host, &with))
+            {
+                return;
+            }
             let _ = probe.set_attribute("with", &with);
         } else {
             // No usable routing context yet — a later re-resolve installs

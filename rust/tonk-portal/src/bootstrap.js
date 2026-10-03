@@ -73,8 +73,8 @@
   // A space rendered on its own origin keeps its database in its own worker
   // (`sitePattern` says it is on one, `repo` that it renders a space). Its reads
   // and writes to that space go there directly instead of up the relay, and
-  // it claims `tonk:load` there for its path: the host stamps its site in the
-  // host's worker, which this frame no longer reads from.
+  // it claims `tonk:load` there for its path: the page around it claims
+  // nothing for a frame on an origin of its own.
   function ownSpace(){
     var c=(window.tonk&&window.tonk.context)||{};
     return location.origin!=="null"&&c.sitePattern&&c.repo?c:null;
@@ -117,8 +117,31 @@
     contextHeaders().forEach(function(h){ request.headers.set(h[0],h[1]); });
     return nativeFetch(request);
   }
+  // The profile on its own origin is on whichever branch its worker says:
+  // read it there, so the page around this frame need not ask.
+  var profileBranch=null;
+  function readProfileBranch(){
+    return nativeFetch("/api/profiles").then(function(response){
+      return response.ok?response.json():null;
+    }).then(function(profiles){
+      profileBranch=profiles&&profiles.active||null;
+    },function(error){ console.warn("tonk: reading the profile's branch failed",error); });
+  }
+  function onProfileBranch(context){
+    if(profileBranch){ context.branch=profileBranch; context.with=profileBranch+"@profile:tonk"; }
+    return context;
+  }
+  // Where this frame claims `tonk:load`: its own worker, for the space or the
+  // profile it renders on an origin of its own. None in a sealed frame.
+  function claimTarget(){
+    var c=ownSpace();
+    if(c) return "/api/repository/"+c.repo+"/branch/"+(c.branch||"main")+"/transact";
+    if(ownProfile()) return "/api/profile/branch/"+(tonk.context.branch||"main")+"/transact";
+    return null;
+  }
   function claimLoad(){
-    var c=ownSpace(); if(!c||!c.siteEntity) return;
+    var c=(window.tonk&&window.tonk.context)||{}; var target=claimTarget();
+    if(!target||!c.siteEntity) return;
     // `<tonk-site>` carries its in-site path as the route template wrote it,
     // without the leading slash the route table matches against.
     var path=c.sitePath||"/"; if(path.charAt(0)!=="/"){ path="/"+path; }
@@ -126,7 +149,7 @@
       predicate:{kind:"transient",concept:{with:{path:{the:"xyz.tonk.site/path",as:"Text",cardinality:"one"}}}},
       parameters:{"this":c.siteEntity,path:path}
     }}]};
-    nativeWithContext("/api/repository/"+c.repo+"/branch/"+(c.branch||"main")+"/transact",{
+    nativeWithContext(target,{
       method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)
     }).catch(function(error){ console.warn("tonk: claiming this site failed",error); });
   }
@@ -137,7 +160,7 @@
   // once a second, so a stamp that cannot land does not loop.
   var lastClaim=0;
   function healLoad(){
-    if(!ownSpace()) return;
+    if(!claimTarget()) return;
     var now=Date.now(); if(now-lastClaim<1000) return;
     lastClaim=now; claimLoad();
   }
@@ -283,9 +306,14 @@
   port.onmessage=function(event){
     var env=event.data; if(!env) return;
     switch(env.type){
-      case "ready": tonk.context=env.context; resolveReady(); claimLoad(); return;
-      case "context": {
+      case "ready": {
         tonk.context=env.context;
+        var settle=function(){ onProfileBranch(tonk.context); resolveReady(); claimLoad(); };
+        if(ownProfile()) readProfileBranch().then(settle); else settle();
+        return;
+      }
+      case "context": {
+        tonk.context=onProfileBranch(env.context);
         claimLoad();
         // The page moved without reloading; elements that read the
         // location re-derive from the new context.

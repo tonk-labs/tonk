@@ -247,16 +247,26 @@ fn render_root(shell: &web_sys::Element) {
     }
 
     // The site mounts on the branch the profile is on, which only the
-    // worker knows: read it off `meta` first. A navigation while that
-    // read is in flight must not mount a second site.
+    // worker knows: read it off `meta` first, unless the profile renders on
+    // an origin of its own, whose frame reads it there. A navigation while
+    // that read is in flight must not mount a second site.
     if shell.has_attribute("data-mounting") {
         return;
     }
     let _ = shell.set_attribute("data-mounting", "");
     let shell = shell.clone();
     wasm_bindgen_futures::spawn_local(async move {
-        let with = tonk_host::bridge::resolve_profile_with().await;
         let site_pattern = site_pattern().await;
+        let with = if site_pattern.is_some() {
+            // The account dialogs on this page still read the profile here,
+            // so the branch is learned for them, without holding the site.
+            wasm_bindgen_futures::spawn_local(async {
+                tonk_host::bridge::resolve_profile_branch().await;
+            });
+            tonk_host::bridge::profile_with()
+        } else {
+            tonk_host::bridge::resolve_profile_with().await
+        };
         let _ = shell.remove_attribute("data-mounting");
         shell.set_inner_html("");
         let Some(document) = shell.owner_document() else {
