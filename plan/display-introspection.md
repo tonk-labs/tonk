@@ -65,14 +65,22 @@ overlay. The bar's `<ui-site-request>` presses a control per request and has
 none for this one; the overlay subscribes to the same site instead. The first
 frame primes, so reloading a page once inspected does not start inspecting it.
 
-**Which frame answers.** Every frame in a tab shares its site, because a sealed
-guest's requests are made on its behalf by the tab — that is what lets the
-space nested inside the bar's frame hear a command typed into the bar. So every
-frame hears `inspect`, and each answers only for displays a reader can actually
-see: laid out, on screen, and not covered at their visible centre. The bar's
-frame lays out displays that the nested space's iframe then sits on top of;
-those are not its to offer, and it stays out of the way rather than drawing a
-second picker over the first.
+**Which frame hears it.** Only the frame whose site the command named. This was
+first written assuming every frame in a tab shares one site; running it showed
+otherwise — the bar's frame is one site and the space nested inside it
+registers another, so the space, which holds the content, never heard
+`inspect`, and the bar's frame picked its own chrome instead. So the frame that
+hears it relays a pick down the frame tree (`postMessage` to each child
+iframe, accepted only from `window.parent`), each frame passing it on — the
+cascade the theme and press signals already travel.
+
+**Which frame answers.** Each frame the pick reaches answers only for displays a
+reader can actually see: laid out, on screen, and with this document's own
+content at their visible centre. "Own content" excludes an iframe even when the
+iframe sits inside the display: the bar's frame wraps the space it hosts, so
+`tonk:site` and `tonk:space/chrome` *contain* the space's iframe, and a test that
+only asked "is the topmost element inside this display?" offered them — which
+is the second thing running it caught.
 
 **Suggestions are on the page.** Picking tags each candidate with the model it
 renders. A list in the palette would have to be matched back to the page by

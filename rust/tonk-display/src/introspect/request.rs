@@ -8,11 +8,12 @@
 //! worker's `site_request`). Whatever is meant to act subscribes to that
 //! site and acts on a request newer than any it has seen.
 //!
-//! Every frame in a tab shares its site, because a sealed guest's
-//! requests are made on its behalf by the tab. That is what lets the
-//! frame holding the displays — usually a space nested inside the
-//! bar's frame — hear a command typed into the bar. Each frame's
-//! overlay listens, and each answers for its own displays.
+//! Only the frame whose site the command named hears it — in a space,
+//! that is the bar's frame. A space nested inside it registers a site
+//! of its own and never sees the request. So this module is only how
+//! the *top* of the tab learns of `inspect`; the overlay then relays a
+//! pick down the frame tree, and the frame holding the content hears it
+//! that way (see `relay_pick` in the overlay).
 //!
 //! The first frame of the subscription only primes what has been seen.
 //! A request made before this overlay connected is not replayed:

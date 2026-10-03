@@ -151,9 +151,10 @@ reads no gesture off the page. Remove the element to opt out entirely.
 
 `inspect` is a command like the bar's own acts: its handler cannot open
 anything, so it records the request on the asking tab's site, and the overlay
-hears it there. Every frame in a tab shares that site, so the frame holding the
-page's content hears a command typed into the bar; each frame answers only for
-displays a reader can see, so the frames around it stay out of the way.
+hears it there. Only the frame whose site that is hears it — the bar's frame,
+in a space — so it relays a pick down the frame tree, the way the theme signal
+travels. Each frame answers only for displays a reader can see, so the frame
+holding the page's content picks and the frames around it stay out of the way.
 
 The inspector also opens on anything marked `data-fabb-selected` — the
 attribute the FAB's selector stamps on what it is dropped on. The chrome marks,

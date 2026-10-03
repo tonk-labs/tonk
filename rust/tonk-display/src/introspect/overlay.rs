@@ -11,9 +11,12 @@
 //! The palette's `inspect` asks. Its handler cannot open anything — it
 //! runs in the service worker — so it records the request on the tab's
 //! site, and this overlay hears it there (see [`super::request`]).
-//! Every frame in the tab hears it; a frame answers only if it has
-//! displays a reader can see, so the frame holding the page's content
-//! picks and the frames around it stay out of the way.
+//! Only the frame whose site that is hears it — the bar's frame, in a
+//! space — so it relays a pick down to the frames inside it, and each
+//! does the same, the cascade the theme and press signals already
+//! travel. A frame answers only if it has displays a reader can see,
+//! so the frame holding the page's content picks and the frames around
+//! it stay out of the way.
 //!
 //! Picking outlines every display the reader could mean and tags each
 //! with the model it renders. The tags are the suggestions — placed on
@@ -708,6 +711,23 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
         },
     ));
 
+    // A pick relayed from the frame above: this frame's site is not the
+    // one `inspect` was recorded on, so this is how it hears.
+    if let Some(win) = window() {
+        let target: web_sys::EventTarget = win.into();
+        bound.push(listen(
+            &target,
+            "message",
+            false,
+            overlay,
+            |overlay, event| {
+                if is_relayed_pick(event) {
+                    start_picking(overlay);
+                }
+            },
+        ));
+    }
+
     // The shield: the whole tracked display, clickable. This is the
     // big hit target — the pin is only its label — and because it is
     // overlay chrome the click never reaches the page, so no gesture
@@ -1257,12 +1277,16 @@ fn panel_position(overlay: &Overlay, display: Option<&Element>) -> String {
     let Some(rect) = display.map(|display| display.get_bounding_client_rect()) else {
         return "right:8px;bottom:8px".to_owned();
     };
-    let horizontal = if rect.left() + rect.width() / 2.0 < width / 2.0 {
+    // Ties break toward the bottom right. A display that fills the
+    // viewport has its centre exactly at the middle, and the top left is
+    // where its own name chip and the pick's tags sit — the one corner
+    // the inspector must not land on.
+    let horizontal = if rect.left() + rect.width() / 2.0 <= width / 2.0 {
         "right:8px;left:auto"
     } else {
         "left:8px;right:auto"
     };
-    let vertical = if rect.top() + rect.height() / 2.0 < height / 2.0 {
+    let vertical = if rect.top() + rect.height() / 2.0 <= height / 2.0 {
         "bottom:8px;top:auto"
     } else {
         "top:8px;bottom:auto"
@@ -1417,17 +1441,69 @@ const TAG_HEIGHT: f64 = 17.0;
 
 /// Start picking, if this frame has anything to pick.
 ///
-/// Every frame in the tab hears the same `inspect`, and the frame the
-/// reader means is the one whose displays they can see. A frame whose
-/// displays are all hidden under a nested guest — the bar's frame,
-/// under the space it hosts — has nothing to offer, and stays out of
-/// the way rather than drawing a second picker over the first.
+/// Every frame the pick reaches considers it, and the frame the reader
+/// means is the one whose displays they can see. A frame whose displays
+/// are all hidden under a nested guest — the bar's frame, under the
+/// space it hosts — has nothing to offer, and stays out of the way
+/// rather than drawing a second picker over the first.
 fn start_picking(overlay: &Rc<RefCell<Overlay>>) {
+    // Pass it down first, whether or not this frame answers. The frame
+    // that heard `inspect` is the one whose site the command named — the
+    // bar's — and the content is usually a frame below it with a site of
+    // its own, which therefore never hears the request at all.
+    relay_pick();
     if candidates_in(overlay).is_empty() {
         return;
     }
     overlay.borrow_mut().machine.apply(Input::Pick);
     schedule(overlay);
+}
+
+/// What a frame tells the frames inside it to start picking.
+const RELAY: &str = "__tonkIntrospect";
+
+/// Tell every frame directly inside this one to start picking. Each
+/// does the same in turn, so one message reaches every depth — the
+/// cascade the theme and press signals already travel.
+fn relay_pick() {
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Ok(frames) = document.query_selector_all("iframe") else {
+        return;
+    };
+    let message = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&message, &RELAY.into(), &"pick".into());
+    for index in 0..frames.length() {
+        let Some(frame) = frames
+            .item(index)
+            .and_then(|node| node.dyn_into::<web_sys::HtmlIFrameElement>().ok())
+        else {
+            continue;
+        };
+        if let Some(child) = frame.content_window() {
+            let _ = child.post_message(&message, "*");
+        }
+    }
+}
+
+/// Whether a `message` event is the relay, sent by this frame's parent.
+/// Only the parent: a sibling or a page this frame happens to embed has
+/// no business starting a pick here.
+fn is_relayed_pick(event: &Event) -> bool {
+    let Some(win) = window() else {
+        return false;
+    };
+    let from_parent = match (js_sys::Reflect::get(event, &"source".into()), win.parent()) {
+        (Ok(source), Ok(Some(parent))) => js_sys::Object::is(&source, &parent),
+        _ => false,
+    };
+    from_parent
+        && js_sys::Reflect::get(event, &"data".into())
+            .ok()
+            .and_then(|data| js_sys::Reflect::get(&data, &RELAY.into()).ok())
+            .and_then(|value| value.as_string())
+            .is_some_and(|value| value == "pick")
 }
 
 /// Every display in this frame a reader could mean: laid out, at least
@@ -1479,8 +1555,15 @@ fn candidates_in(overlay: &Rc<RefCell<Overlay>>) -> Vec<Element> {
             continue;
         }
         let (x, y) = ((left + right) / 2.0, (top + bottom) / 2.0);
+        // Visible here means the point is this document's own content.
+        // An iframe at the centre is another frame's content even when
+        // the iframe sits inside this display — the bar's frame wraps
+        // the space it hosts, and what you see there is the space.
         let topmost = topmost_at(&document, &host, x, y);
-        if topmost.is_some_and(|element| display.contains(Some(element.as_ref()))) {
+        if topmost.is_some_and(|element| {
+            display.contains(Some(element.as_ref()))
+                && !element.tag_name().eq_ignore_ascii_case("iframe")
+        }) {
             out.push(display);
         }
     }
