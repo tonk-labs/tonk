@@ -3,10 +3,11 @@
 //! Seeds the profile and notebook libraries into a fresh branch the way
 //! the worker does, asserts a population of accounts, spaces and
 //! notebook blocks in the shapes the rules read, and times the queries
-//! the UI subscribes to: the account's status (four rules electing one
-//! case, three of them negated), a space's presence on this device
-//! (four rules over the replica facts), and a notebook's block
-//! positions (a keyed collection read through the rule's base case).
+//! the UI subscribes to: the account's status (five rules each stating
+//! a case, the field ranking them), a space's presence on this device
+//! (four rules over the replica facts, ranked the same way), and a
+//! notebook's block positions (a keyed collection read through the
+//! rule's base case).
 //! Then it subscribes to each and times the incremental re-poll after
 //! a commit that moves a few rows between cases.
 //!
@@ -49,10 +50,11 @@ mod load {
     }
 
     /// A one-field concept query, `this` and the field free, as the UI's
-    /// subscriptions spell them.
-    fn query(field: &str, the: &str, kind: &str) -> ConceptQuery {
+    /// subscriptions spell them. `kind` is the field's `as`: a type name,
+    /// or the cases a ranked field lists best first.
+    fn query(field: &str, the: &str, kind: serde_json::Value) -> ConceptQuery {
         let descriptor = serde_json::from_value(json!({
-            "with": { field: { "the": the, "as": kind, "cardinality": "one" } }
+            "with": { field: { "the": the, "as": kind } }
         }))
         .expect("descriptor parses");
         let mut terms = Parameters::new();
@@ -240,7 +242,7 @@ mod load {
 
         // The device profile the session reports: what a replica of a space
         // on this device is keyed by.
-        let session = query("profile", "dialog.session/profile", "Entity");
+        let session = query("profile", "dialog.session/profile", json!("Entity"));
         let sessions = branch
             .select(QueryPlan::from(session))
             .perform(&operator)
@@ -339,15 +341,15 @@ mod load {
                 ),
                 (
                     "probe3",
-                    "    - assert: ==\n      where: {this: ?presence, is: case:remote}\n  unless:\n    - assert: space/replicating\n      where: {subject: ?subject}\n",
+                    "    - assert: space/replicating\n      where: {subject: ?subject}\n    - assert: ==\n      where: {this: ?presence, is: case:replicating}\n",
                 ),
                 (
                     "probe4",
-                    "    - assert: db/session\n      where: {profile: ?profile}\n    - assert: ==\n      where: {this: ?presence, is: case:remote}\n  unless:\n    - assert: space/replica\n      where: {subject: ?subject, profile: ?profile}\n",
+                    "    - assert: db/session\n      where: {profile: ?profile}\n    - assert: space/replica\n      where: {subject: ?subject, profile: ?profile}\n    - assert: ==\n      where: {this: ?presence, is: case:replicated}\n",
                 ),
                 (
                     "probe5",
-                    "    - assert: db/session\n      where: {profile: ?profile}\n    - assert: ==\n      where: {this: ?presence, is: case:remote}\n  unless:\n    - assert: space/replica\n      where: {subject: ?subject, profile: ?profile}\n    - assert: space/replicating\n      where: {subject: ?subject}\n",
+                    "    - assert: db/session\n      where: {profile: ?profile}\n    - assert: space/replica\n      where: {subject: ?subject, profile: ?profile}\n    - assert: space/replicating\n      where: {subject: ?subject}\n    - assert: ==\n      where: {this: ?presence, is: case:seeding}\n",
                 ),
             ];
             for (name, body) in probes {
@@ -359,19 +361,23 @@ mod load {
                     _ => "    - assert: space\n      where: {this: ?this, subject: ?subject}\n",
                 };
                 let doc = format!(
-                    "concept!: &{name}\n  this: tonk:{name}\n  description: \"a probe concept\"\n  with:\n    presence:\n      description: \"a probe field\"\n      the: xyz.tonk.{name}/presence\n      cardinality: one\n      as: entity\n\nrule!:\n  description: \"a probe rule\"\n  assert: {name}\n  when:\n{lead}{body}"
+                    "concept!: &{name}\n  this: tonk:{name}\n  description: \"a probe concept\"\n  with:\n    presence:\n      description: \"a probe field\"\n      the: xyz.tonk.{name}/presence\n      as: entity\n\nrule!:\n  description: \"a probe rule\"\n  assert: {name}\n  when:\n{lead}{body}"
                 );
                 commit(&branch, &operator, &doc).await?;
-                let probe = query("presence", &format!("xyz.tonk.{name}/presence"), "Entity");
+                let probe = query(
+                    "presence",
+                    &format!("xyz.tonk.{name}/presence"),
+                    json!("Entity"),
+                );
                 let count = rows(&branch, &operator, &probe).await?;
                 println!("  {name:<8} rows={count}");
             }
-            let spaces_query = query("subject", "xyz.tonk.space/subject", "Entity");
+            let spaces_query = query("subject", "xyz.tonk.space/subject", json!("Entity"));
             println!(
                 "  space subjects rows={}",
                 rows(&branch, &operator, &spaces_query).await?
             );
-            let session_query = query("profile", "dialog.session/profile", "Entity");
+            let session_query = query("profile", "dialog.session/profile", json!("Entity"));
             println!(
                 "  db/session rows={}",
                 rows(&branch, &operator, &session_query).await?
@@ -379,9 +385,31 @@ mod load {
             return Ok(());
         }
 
-        let status = query("status", "xyz.tonk.account/status", "Entity");
-        let presence = query("presence", "xyz.tonk.space/presence", "Entity");
-        let position = query("at", "xyz.tonk.notebook.block/at", "Text");
+        // The status and presence fields list their cases best first,
+        // as the library declares them: the read elects the best case
+        // any rule derives.
+        let status = query(
+            "status",
+            "xyz.tonk.account/status",
+            json!([
+                "case:suspended",
+                "case:active",
+                "case:registered",
+                "case:retired",
+                "case:onboarding"
+            ]),
+        );
+        let presence = query(
+            "presence",
+            "xyz.tonk.space/presence",
+            json!([
+                "case:seeding",
+                "case:replicating",
+                "case:replicated",
+                "case:remote"
+            ]),
+        );
+        let position = query("at", "xyz.tonk.notebook.block/at", json!("Text"));
         let mut one = status.clone();
         one.terms.insert(
             "this".to_string(),

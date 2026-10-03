@@ -180,7 +180,7 @@ pub(crate) fn field_value_to_term(
             return Err(AnalyzeError::at(
                 AnalyzeErrorKind::UnsupportedFieldValue {
                     field: field_name.into(),
-                    form: "a sequence (only an attribute's `among:` lists values)",
+                    form: "a sequence (only an attribute's `the:` or `as:` lists)",
                 },
                 range,
             ));

@@ -61,9 +61,7 @@ concept!: &space
         speaks for reads as remote. The Hub card reflects this via
         [data-presence].
       the: xyz.tonk.space/presence
-      as: entity
-      select: top
-      among:
+      as:
         - case:seeding
         - case:replicating
         - case:replicated
@@ -3467,9 +3465,7 @@ concept!: &account/status
         than text, so a typo cannot silently read as a different
         state. The first listed case any rule derives is the status.
       the: xyz.tonk.account/status
-      as: entity
-      select: top
-      among:
+      as:
         - case:suspended
         - case:active
         - case:registered
@@ -3498,7 +3494,7 @@ view!:
 # profile determines the row.
 #
 # A deductive rule states its case positively and never negates: the
-# `presence` field ranks the cases (`select: top`), so `remote` is the
+# `presence` field lists its cases best first, so `remote` is the
 # rule every space with a session satisfies, and any better-ranked case
 # a replica supports wins over it.
 #
@@ -3605,9 +3601,7 @@ concept!: &space/presence
         `case:seeding`, `case:replicating`, `case:replicated` or
         `case:remote`: the first listed case any rule derives.
       the: xyz.tonk.space/presence
-      as: entity
-      select: top
-      among:
+      as:
         - case:seeding
         - case:replicating
         - case:replicated
@@ -3616,7 +3610,7 @@ concept!: &space/presence
 # Every space with a session is remote until a better-ranked case says
 # otherwise.
 rule!:
-  description: A space is remote unless a replica or a pull says otherwise
+  description: A space with a session is remote until a better-ranked case says otherwise
   assert: space/presence
   when:
     - assert: space

@@ -1215,10 +1215,10 @@ mod tests {
         fixture.analyze(syntax).await
     }
 
-    /// An attribute declares how a field reads it: `select:` names
-    /// dialog's policy and `among:` lists the values a `top` read
-    /// ranks by. An unknown policy is refused by the analyzer, and a
-    /// policy its attribute cannot read under by dialog.
+    /// An attribute declares how a field reads it: a listed `as:` or
+    /// `the:` is a ranked choice, and `select:` names any other of
+    /// dialog's policies. An unknown policy is refused by the analyzer,
+    /// and a policy its attribute cannot read under by dialog.
     #[dialog_common::test]
     fn it_lowers_a_select_policy_with_its_listed_values() {
         let syntax = must_parse(
@@ -1229,16 +1229,19 @@ concept!: &job
     status:
       description: \"where it stands\"
       the: x.y/status
-      cardinality: one
-      as: entity
-      select: top
-      among:
+      as:
         - case:suspended
         - case:active
+    handle:
+      description: \"the email, else the phone\"
+      the:
+        - x.y/email
+        - x.y/phone
+      as: text
 ",
         );
         let result = super::analyze_local(&syntax);
-        assert!(result.is_ok(), "a ranked read lowers: {:?}", result.err());
+        assert!(result.is_ok(), "ranked reads lower: {:?}", result.err());
 
         let syntax = must_parse(
             "\
@@ -1248,7 +1251,6 @@ concept!: &job
     status:
       description: \"where it stands\"
       the: x.y/status
-      cardinality: one
       as: entity
       select: newest
 ",
@@ -1270,7 +1272,6 @@ concept!: &job
     status:
       description: \"where it stands\"
       the: x.y/status
-      cardinality: one
       as: entity
       select: top
 ",
@@ -3199,6 +3200,28 @@ attribute!: &foo
 person!:
   this: 42
   name: "x"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+        assert!(matches!(
+            err.kind,
+            AnalyzeErrorKind::UnsupportedFieldValue { .. }
+        ));
+    }
+
+    /// A list on a fact's field is refused: a sequence of scalars is
+    /// a value form only an attribute's `the:` or `as:` reads, as a
+    /// ranked choice. A fact asserting several values is several
+    /// assertions.
+    #[dialog_common::test]
+    async fn it_rejects_a_sequence_on_a_fact_field() {
+        let syntax = must_parse(
+            r#"
+person!:
+  name:
+    - Alice
+    - Bob
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);

@@ -90,6 +90,25 @@ pub(crate) fn parse_attribute_fields(
         //   bare symbols are rejected to discourage one-word
         //   non-descriptions like `description: recipe`.
         match field.name.as_str() {
+            // `as:` names a type, a keyed collection type, or lists the
+            // values the attribute ranks among, best first: a list is a
+            // ranked choice and reads as `top` without saying so.
+            "as" if matches!(field.value, FieldValue::Sequence(_)) => {
+                let FieldValue::Sequence(items) = &field.value else {
+                    unreachable!("guarded");
+                };
+                let mut listed = Vec::with_capacity(items.len());
+                for item in items {
+                    let scalar = tonk_notation::Field {
+                        name: field.name.clone(),
+                        value: item.clone(),
+                        name_range: field.name_range,
+                        value_range: field.value_range,
+                    };
+                    listed.push(serde_json::Value::String(stringify_simple_value(&scalar)?));
+                }
+                shape.insert("as".into(), serde_json::Value::Array(listed));
+            }
             "as" => {
                 let value_field = match &field.value {
                     FieldValue::Nested(inner) => {
@@ -149,41 +168,11 @@ pub(crate) fn parse_attribute_fields(
                     shape.insert("select".into(), serde_json::Value::String("all".into()));
                 }
             }
-            "the" => {
-                let value_str = stringify_simple_value(field)?;
-                shape.insert("the".into(), serde_json::Value::String(value_str));
-            }
-            // How a field reads its relation (see dialog's `Select`):
-            // `last` (the default for cardinality one), `all` (for
-            // many), `top` among the listed values, `max`, `min`,
-            // `sum`, `count`, `count-distinct`, `avg`. Dialog checks
-            // the policy against the attribute when the concept is
-            // built.
-            "select" => {
-                let value_str = stringify_simple_value(field)?;
-                let policy = value_str.trim().to_ascii_lowercase();
-                const POLICIES: [&str; 9] = [
-                    "last", "all", "top", "max", "min", "sum", "count", "count-distinct", "avg",
-                ];
-                if !POLICIES.contains(&policy.as_str()) {
-                    return Err(AnalyzeErrorKind::InvalidAttributeBody {
-                        reason: format!(
-                            "unknown select policy {value_str:?} — expected one of: {}",
-                            POLICIES.join(", ")
-                        ),
-                    }
-                    .into());
-                }
-                shape.insert("select".into(), serde_json::Value::String(policy));
-            }
-            // The values a `top` read ranks among, best first.
-            "among" => {
+            // `the:` names the relation, or lists relations best first:
+            // a ranked choice by relation, read as `top`.
+            "the" if matches!(field.value, FieldValue::Sequence(_)) => {
                 let FieldValue::Sequence(items) = &field.value else {
-                    return Err(AnalyzeErrorKind::InvalidAttributeBody {
-                        reason: "`among:` lists the values a `top` read ranks by, best first"
-                            .into(),
-                    }
-                    .into());
+                    unreachable!("guarded");
                 };
                 let mut listed = Vec::with_capacity(items.len());
                 for item in items {
@@ -195,7 +184,41 @@ pub(crate) fn parse_attribute_fields(
                     };
                     listed.push(serde_json::Value::String(stringify_simple_value(&scalar)?));
                 }
-                shape.insert("among".into(), serde_json::Value::Array(listed));
+                shape.insert("the".into(), serde_json::Value::Array(listed));
+            }
+            "the" => {
+                let value_str = stringify_simple_value(field)?;
+                shape.insert("the".into(), serde_json::Value::String(value_str));
+            }
+            // How a field reads its relation (see dialog's `Select`):
+            // `last` (the default), `all`, `top` (what a listed `as:` or
+            // `the:` implies), `max`, `min`, `sum`, `count`,
+            // `count-distinct`, `avg`. Dialog checks the policy against
+            // the attribute when the concept is built.
+            "select" => {
+                let value_str = stringify_simple_value(field)?;
+                let policy = value_str.trim().to_ascii_lowercase();
+                const POLICIES: [&str; 9] = [
+                    "last",
+                    "all",
+                    "top",
+                    "max",
+                    "min",
+                    "sum",
+                    "count",
+                    "count-distinct",
+                    "avg",
+                ];
+                if !POLICIES.contains(&policy.as_str()) {
+                    return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                        reason: format!(
+                            "unknown select policy {value_str:?} — expected one of: {}",
+                            POLICIES.join(", ")
+                        ),
+                    }
+                    .into());
+                }
+                shape.insert("select".into(), serde_json::Value::String(policy));
             }
             "description" => {
                 let value_str = require_string_description(field)?;
@@ -218,6 +241,12 @@ pub(crate) fn parse_attribute_fields(
     }
     if let Some(keyed) = keyed {
         let the = shape["the"].as_str().unwrap_or_default().to_owned();
+        if the.is_empty() {
+            return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                reason: "a keyed collection reads one relation, not a ranked list".into(),
+            }
+            .into());
+        }
         if the.contains('/') {
             return Err(AnalyzeErrorKind::InvalidAttributeBody {
                 reason: format!(

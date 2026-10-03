@@ -1087,9 +1087,9 @@ fn walk_field_value(
             Some(FieldValue::Nested(nested))
         }
         YamlData::Sequence(items) => {
-            // A sequence lists scalars: the values an attribute's
-            // `among:` ranks by. A cardinality-many write is still
-            // repeated assertions, not a sequence.
+            // A sequence lists scalars: the values or relations an
+            // attribute's `as:` or `the:` ranks. A `select: all` write
+            // is still repeated assertions, not a sequence.
             let mut listed = Vec::with_capacity(items.len());
             for item in items {
                 match &item.data {
@@ -2245,8 +2245,11 @@ note!: &n2
         );
     }
 
+    /// A sequence of scalars is a value form the parser keeps: where a
+    /// list is allowed (an attribute's `the:` or `as:`) is the
+    /// analyzer's decision, which refuses one on a fact's field.
     #[dialog_common::test]
-    fn it_rejects_sequence_value() {
+    fn it_keeps_a_sequence_value_for_the_analyzer() {
         let parsed = parse(
             r#"
 person!:
@@ -2255,13 +2258,15 @@ person!:
     - Bob
 "#,
         );
-        assert!(!parsed.diagnostics.is_empty());
-        assert!(
-            parsed.diagnostics[0]
-                .message
-                .to_lowercase()
-                .contains("sequence")
-        );
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let syntax = parsed.syntax.expect("parsed syntax");
+        let Expression::Claim(Effectful { inner: app, .. }) = &syntax.expressions[0] else {
+            panic!("expected Claim");
+        };
+        assert!(matches!(
+            app.fields.iter().find(|f| f.name == "name").map(|f| &f.value),
+            Some(FieldValue::Sequence(items)) if items.len() == 2
+        ));
     }
 
     #[dialog_common::test]
@@ -3059,7 +3064,7 @@ page!:
     }
 
     /// A sequence of scalars parses to [`FieldValue::Sequence`]: the
-    /// listed values an attribute's `among:` ranks by. A sequence
+    /// values or relations an attribute ranks among. A sequence
     /// holding a mapping is refused.
     #[dialog_common::test]
     fn it_parses_a_sequence_of_scalars() {
@@ -3067,9 +3072,7 @@ page!:
             r#"attribute!: &status
   description: "where it stands"
   the: job/status
-  as: entity
-  select: top
-  among:
+  as:
     - case:suspended
     - case:active
     - "plain"
@@ -3078,14 +3081,10 @@ page!:
         let Expression::Claim(Effectful { inner: app, .. }) = &syntax.expressions[0] else {
             panic!("expected Claim");
         };
-        let FieldValue::Sequence(items) = &app
-            .fields
-            .iter()
-            .find(|f| f.name == "among")
-            .unwrap()
-            .value
+        let FieldValue::Sequence(items) =
+            &app.fields.iter().find(|f| f.name == "as").unwrap().value
         else {
-            panic!("among value must be a Sequence");
+            panic!("as value must be a Sequence");
         };
         assert_eq!(items.len(), 3);
         assert!(matches!(&items[0], FieldValue::Uri(uri) if uri == "case:suspended"));
@@ -3094,7 +3093,7 @@ page!:
         let parsed = parse(
             r#"attribute!: &status
   the: job/status
-  among:
+  as:
     - case: nested
 "#,
         );
