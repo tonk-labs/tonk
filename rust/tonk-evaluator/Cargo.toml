@@ -36,6 +36,9 @@ tonk-schema = { workspace = true }
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-peer = { workspace = true, features = ["helpers"] }
+dialog-storage = { workspace = true }
+futures-util = { workspace = true }
+tonk-library = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 wasm-bindgen-test = { workspace = true }
