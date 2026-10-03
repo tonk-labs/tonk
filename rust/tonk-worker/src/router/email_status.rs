@@ -432,7 +432,7 @@ mod wire_tests {
         for _ in 0..200 {
             let rows = post(
                 app,
-                "/api/profile/branch/main/query",
+                "/api/repository/profile:tonk/branch/main/query",
                 email_status_wire_query(),
             )
             .await;
@@ -458,7 +458,7 @@ mod wire_tests {
         let address = "nobody-has-this@example.com";
         post(
             &app,
-            "/api/profile/branch/main/transact",
+            "/api/repository/profile:tonk/branch/main/transact",
             check_email_claim(address),
         )
         .await;

@@ -139,6 +139,21 @@ pub async fn evaluate(
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
+    if super::names_profile(&state, &path.repo).await {
+        let path = ProfileEvaluatePath {
+            branch: path.branch,
+        };
+        return evaluate_profile(
+            State(state),
+            Path(path),
+            axum::extract::Query(query),
+            client,
+            lifetime,
+            _headers,
+            body,
+        )
+        .await;
+    }
     log!("evaluate repo={}, branch={}", path.repo, path.branch);
     let (response, transients) = {
         // A READ lock, not a write lock. `tokio`'s `RwLock` is write-preferring, so
@@ -219,7 +234,7 @@ pub async fn evaluate(
     Ok(response)
 }
 
-/// `POST /api/profile/branch/{branch}/evaluate`
+/// `POST /api/repository/profile:tonk/branch/{branch}/evaluate`
 ///
 /// Profile-side counterpart to [`evaluate`]. The profile is its
 /// own repository but lives outside the named-repo namespace, so
@@ -683,12 +698,11 @@ async fn evaluate_on_branch_with<'a>(
             if mode == EvaluationMode::LibrarySeedWithRace && attempt == 0 {
                 use dialog_repository::RepositoryExt as _;
 
-                let name = match tonk_branch.repository {
-                    dialog_reactor::RepositoryReference::Named { name, .. } => name,
-                    dialog_reactor::RepositoryReference::Profile { .. } => {
-                        panic!("the test race hook requires a named repository")
-                    }
-                };
+                assert!(
+                    !tonk_branch.repository.is_profile(),
+                    "the test race hook requires a space, not the profile"
+                );
+                let name = tonk_branch.repository.name();
                 let repository = tonk_state
                     .profile
                     .space(name)

@@ -99,7 +99,7 @@ pub async fn resolve_profile_with() -> String {
 /// leaves the cache as it was, so the page still mounts, on `main`.
 #[cfg(target_arch = "wasm32")]
 pub async fn resolve_profile_branch() -> String {
-    const META_QUERY: &str = "/api/profile/branch/meta/query";
+    const META_QUERY: &str = "/api/repository/profile:tonk/branch/meta/query";
     let active = r#"{"predicate":{"with":{"branch":{"the":"tonk.dialog.replica/active-branch","as":"Entity","cardinality":"one"}}},"terms":{"this":{"?":{"name":"this"}},"branch":{"?":{"name":"branch"}}}}"#;
     let Some(entity) = query_field(META_QUERY, active, "branch").await else {
         return profile_branch();
@@ -163,7 +163,7 @@ pub async fn ensure_site(path: &str) -> Result<String, ErrorDetail> {
 
 /// Register this document's site against a per-branch `/site` endpoint (`url`),
 /// matching `path` on that branch. The branch is named in `url` (e.g.
-/// `/api/profile/branch/main/site`), so the SW does no document-path routing.
+/// `/api/repository/profile:tonk/branch/main/site`), so the SW does no document-path routing.
 /// Returns and caches the `site:<client-id>` entity, like [`ensure_site`].
 #[cfg(target_arch = "wasm32")]
 pub async fn ensure_site_on(url: &str, path: &str) -> Result<String, ErrorDetail> {

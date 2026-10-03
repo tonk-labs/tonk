@@ -61,16 +61,6 @@ fn width_transition(element: &Element) -> JsValue {
         .expect("a real CSS width transition must be running")
 }
 
-/// One field of an animation's computed timing, in milliseconds.
-fn timing(animation: &JsValue, field: &str) -> f64 {
-    let effect = Reflect::get(animation, &"effect".into()).unwrap();
-    let computed = animation_method(&effect, "getComputedTiming");
-    Reflect::get(&computed, &field.into())
-        .unwrap()
-        .as_f64()
-        .unwrap()
-}
-
 // Sample the real CSS transition on its own timeline. Concurrent browser tabs
 // can delay rendering independently of setTimeout, so sleeping for 400 ms is
 // neither proof of completion nor a reliable way to capture an intermediate frame.
@@ -418,6 +408,42 @@ async fn closing_a_drawer_contracts_its_column_without_stretching_the_menu() {
     parent.remove();
 }
 
+/// The prompt's own CSS animation, paused so the test sets its time.
+///
+/// Read off the animation rather than by sleeping: on a busy runner the
+/// page's animation clock can lag `setTimeout` by more than the whole
+/// 600 ms the prompt takes, which read as a prompt that never appeared.
+fn pause_prompt_animation(element: &Element) -> JsValue {
+    let _ = element.get_bounding_client_rect();
+    let animation = animations(element)
+        .iter()
+        .find(|animation| {
+            Reflect::get(animation, &"animationName".into())
+                .ok()
+                .and_then(|value| value.as_string())
+                .as_deref()
+                == Some("fabb-gate-in")
+        })
+        .expect("the prompt fades in through its CSS animation");
+    animation_method(&animation, "pause");
+    animation
+}
+
+fn opacity(element: &Element) -> f64 {
+    window()
+        .unwrap()
+        .get_computed_style(element)
+        .unwrap()
+        .unwrap()
+        .get_property_value("opacity")
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+/// The drawer widens over 400 ms; each account prompt stays invisible for
+/// that long and only then fades in, so its text never reflows across a
+/// drawer still changing width.
 #[dialog_common::test]
 async fn account_prompts_appear_after_the_drawer_finishes_widening() {
     let (parent, fab) = mount(1100);
@@ -429,37 +455,18 @@ async fn account_prompts_appear_after_the_drawer_finishes_widening() {
     for (action, prompt) in [(".share", ".share-continue"), (".agent", ".agent-continue")] {
         shadow(&fab, action).unchecked_into::<HtmlElement>().click();
         let prompt = shadow(&fab, prompt);
-        let opacity = || -> f64 {
-            window()
-                .unwrap()
-                .get_computed_style(&prompt)
-                .unwrap()
-                .unwrap()
-                .get_property_value("opacity")
-                .unwrap()
-                .parse()
-                .unwrap()
-        };
+        let animation = pause_prompt_animation(&prompt);
+
+        seek_transition(&animation, 390.0);
         assert!(
-            opacity() < 0.05,
-            "{action} text stays hidden while widening"
+            opacity(&prompt) < 0.05,
+            "{action} text stays hidden while the drawer widens"
         );
-        // Its fade is timed to begin as the drawer's widening ends: read both
-        // off their own timelines rather than racing a timer against them.
-        let widening = width_transition(&shadow(&fab, ".w"));
-        let fade = animations(&prompt)
-            .get(0)
-            .dyn_into::<Object>()
-            .unwrap_or_else(|_| panic!("{action} text fades in"));
+        seek_transition(&animation, 600.0);
+        let late = opacity(&prompt);
         assert!(
-            timing(&fade, "delay") >= timing(&widening, "endTime") - 1.0,
-            "{action} text waits for the drawer to finish widening"
-        );
-        settle::animations_settled(&fab).await;
-        let late_opacity = opacity();
-        assert!(
-            late_opacity > 0.95,
-            "{action} text appears at full width; opacity={late_opacity}"
+            late > 0.95,
+            "{action} text appears at full width; opacity={late}"
         );
         let closed = settle::next_event(&fab, "fabb-drawer-closed");
         shadow(&fab, action).unchecked_into::<HtmlElement>().click();

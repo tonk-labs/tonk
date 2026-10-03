@@ -72,6 +72,12 @@ pub async fn transact(
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
+    if super::names_profile(&state, &path.repo).await {
+        let path = ProfileTransactPath {
+            branch: path.branch,
+        };
+        return transact_profile(State(state), Path(path), client, lifetime, _headers, body).await;
+    }
     log!("transact repo={}, branch={}", path.repo, path.branch);
     // First use of a directory-listed space this device has not
     // replicated mounts it on demand, as `query` and `GET /api/repository`
@@ -149,9 +155,11 @@ pub async fn transact(
     Ok(response)
 }
 
-/// `POST /api/profile/branch/{branch}/transact`
+/// [`transact`] for the profile's own repository, which [`transact`]
+/// hands a request naming it. A sealed guest is refused, and the commit's
+/// origin names no space.
 #[wasm_compat]
-pub async fn transact_profile(
+async fn transact_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileTransactPath>,
     client: Option<Extension<super::ClientId>>,
@@ -357,7 +365,7 @@ mod profile_write_boundary {
     use tokio::sync::RwLock;
     use tonk_schema::claim::TransactRequest;
 
-    use super::transact_profile;
+    use super::{transact, transact_profile};
     use crate::{
         TonkWorkerError,
         router::{AppState, ClientId, ViewBinding},
@@ -412,6 +420,66 @@ mod profile_write_boundary {
             "sealed-guest clients must not write profile/meta, got: {:?}",
             result,
         );
+    }
+
+    /// The profile's repository is reached through the repository route
+    /// by its DID, and the write boundary holds there: a sealed guest
+    /// naming the profile by its key is refused as it is through the
+    /// alias, and the branch is left where it was.
+    #[dialog_common::test]
+    async fn it_rejects_sealed_guest_writes_naming_the_profile_by_its_did() {
+        use dialog_capability::Principal as _;
+
+        let (state, client_id) = test_state_with_view_bound_client().await;
+        let (profile, branch, before) = {
+            let tonk = state.read().await;
+            let head = tonk
+                .reactor
+                .profile_repository()
+                .branch(&tonk.active_branch)
+                .acquire(&tonk.operator)
+                .await
+                .expect("the profile branch opens")
+                .handle()
+                .revision();
+            (
+                tonk.profile.did().to_string(),
+                tonk.active_branch.clone(),
+                head,
+            )
+        };
+        let body_bytes = Bytes::from(
+            serde_json::to_vec(&TransactRequest::default()).expect("TransactRequest serializes"),
+        );
+
+        let result = transact(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(super::TransactPath {
+                repo: profile,
+                branch: branch.clone(),
+            }),
+            Some(Extension(client_id)),
+            None,
+            HeaderMap::new(),
+            body_bytes,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(TonkWorkerError::Forbidden(_))),
+            "a sealed guest must not write the profile by its DID, got: {result:?}",
+        );
+        let tonk = state.read().await;
+        let after = tonk
+            .reactor
+            .profile_repository()
+            .branch(&branch)
+            .acquire(&tonk.operator)
+            .await
+            .expect("the profile branch opens")
+            .handle()
+            .revision();
+        assert_eq!(after, before, "nothing was written");
     }
 }
 
