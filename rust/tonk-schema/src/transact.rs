@@ -638,8 +638,6 @@ fn collect_variable_names(params: &Parameters, out: &mut HashSet<String>) {
 /// skipped on assert and skipped on retract — retract treats
 /// only fields with concrete values as targets.
 fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert: bool) {
-    use dialog_query::Cardinality;
-
     let Some(this) = query.terms.get("this") else {
         return;
     };
@@ -671,22 +669,16 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
             }
         };
         if assert {
-            // A write follows the field's policy: `last` replaces the
-            // prior claims of the cell, `all` appends, and a choosing
-            // policy (`max`, `min`, `top`) succeeds the claim it
-            // elects, which dialog resolves at commit.
+            // A write follows the field's policy: `all` appends, and a
+            // choosing policy (`last`, `max`, `min`, `top`) succeeds the
+            // claim it elects, which dialog resolves at commit.
             match attribute.descriptor().succession() {
                 Some(succession) => {
                     update.succeed(the, this_entity.clone(), value.clone(), succession);
                 }
-                None => match attribute.cardinality() {
-                    Cardinality::One => {
-                        update.associate_unique(the, this_entity.clone(), value.clone());
-                    }
-                    Cardinality::Many => {
-                        update.associate(the, this_entity.clone(), value.clone());
-                    }
-                },
+                None => {
+                    update.associate(the, this_entity.clone(), value.clone());
+                }
             }
         } else {
             update.dissociate(the, this_entity.clone(), value.clone());
