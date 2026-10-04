@@ -1,0 +1,38 @@
+# Conditional local evaluation
+
+Expose POST /api/repository/{repo}/branch/{branch}/evaluate/conditional with JSON:
+`{"document":"inline notation", "expected_revision": <revision object or null>}`.
+The revision field is mandatory; null explicitly means an empty branch. The
+ordinary evaluate route remains backward compatible. A dedicated route makes
+older workers reject the request rather than ignore a condition and write.
+
+The evaluator opens a private handle over the same local branch/storage so its
+checked revision cannot be changed by a concurrent refresh of the reactor's
+cached handle. This does not create another replica or perform sync. Conditional
+builds read durable state, not the cached handle's ephemeral session overlay.
+The existing staged publication CAS enforces the checked head at publication.
+Never retry conditional writes after a CAS race: return HTTP 412, refresh the
+cached reader and ask the caller to read/preview again. Successful commits refresh
+the cached handle before subscription polling and normal dirty-queue processing.
+Delivery or response failure after commit is an uncertain outcome, not authority
+to repeat the document. Transient command documents are rejected before commit: a scoped build tool
+does not dispatch account/runtime commands. DOM render completion remains
+separate from the durable revision acknowledgment.
+
+Tests cover a required revision field, matching apply and immediate cached
+readback, stale rejection, competing writers with one winner, and a forced external
+publish plus cached-handle refresh during evaluation. The latter specifically
+protects against checking a mutable cached revision before an await and then
+staging against a different head. Normal evaluation/seed retry behavior is kept.
+
+Validation command:
+`cargo test -p tonk-worker conditional_ --lib`
+Also run the broader evaluate module and check wasm compilation before rollout.
+
+Validation completed: 14 evaluator-module tests passed, followed by all six
+conditional regressions after the final no-retry guard change. The HTTP test
+confirms missing revision -> 422, successful conditional write -> 200, and stale
+replay -> 412. The Wasm target checks successfully; cargo fmt and diff checks pass.
+Builds emitted existing dead-code warnings in unrelated worker helpers.
+This is native worker execution plus Wasm compilation, not a browser render test
+or a deployment. No staging or production worker has been changed.
