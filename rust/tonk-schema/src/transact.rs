@@ -671,18 +671,22 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
             }
         };
         if assert {
-            // Cardinality-one fields use `associate_unique` so a
-            // re-assert of the same attribute on the same entity
-            // *replaces* the prior value rather than accumulating
-            // multiple claims. Cardinality-many fields stay
-            // additive (the whole point is multiple values).
-            match attribute.cardinality() {
-                Cardinality::One => {
-                    update.associate_unique(the, this_entity.clone(), value.clone());
+            // A write follows the field's policy: `last` replaces the
+            // prior claims of the cell, `all` appends, and a choosing
+            // policy (`max`, `min`, `top`) succeeds the claim it
+            // elects, which dialog resolves at commit.
+            match attribute.descriptor().succession() {
+                Some(succession) => {
+                    update.succeed(the, this_entity.clone(), value.clone(), succession);
                 }
-                Cardinality::Many => {
-                    update.associate(the, this_entity.clone(), value.clone());
-                }
+                None => match attribute.cardinality() {
+                    Cardinality::One => {
+                        update.associate_unique(the, this_entity.clone(), value.clone());
+                    }
+                    Cardinality::Many => {
+                        update.associate(the, this_entity.clone(), value.clone());
+                    }
+                },
             }
         } else {
             update.dissociate(the, this_entity.clone(), value.clone());

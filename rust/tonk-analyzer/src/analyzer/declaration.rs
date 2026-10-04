@@ -190,25 +190,17 @@ pub(crate) fn parse_attribute_fields(
                 let value_str = stringify_simple_value(field)?;
                 shape.insert("the".into(), serde_json::Value::String(value_str));
             }
-            // How a field reads its relation (see dialog's `Select`):
-            // `last` (the default), `all`, `top` (what a listed `as:` or
-            // `the:` implies), `max`, `min`, `sum`, `count`,
-            // `count-distinct`, `avg`. Dialog checks the policy against
-            // the attribute when the concept is built.
+            // How a field chooses among its relation's candidates (see
+            // dialog's `Select`): `last` (the default), `all`, `top`
+            // (what a listed `as:` or `the:` implies), `max`, `min`.
+            // Every policy keeps members of the candidate set; folds
+            // (sums, counts) belong to `reduce` in queries. Dialog
+            // checks the policy against the attribute when the concept
+            // is built.
             "select" => {
                 let value_str = stringify_simple_value(field)?;
                 let policy = value_str.trim().to_ascii_lowercase();
-                const POLICIES: [&str; 9] = [
-                    "last",
-                    "all",
-                    "top",
-                    "max",
-                    "min",
-                    "sum",
-                    "count",
-                    "count-distinct",
-                    "avg",
-                ];
+                const POLICIES: [&str; 5] = ["last", "all", "top", "max", "min"];
                 if !POLICIES.contains(&policy.as_str()) {
                     return Err(AnalyzeErrorKind::InvalidAttributeBody {
                         reason: format!(

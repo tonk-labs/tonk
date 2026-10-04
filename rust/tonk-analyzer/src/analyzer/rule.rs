@@ -2698,13 +2698,14 @@ rule!:
     /// A premise that omits `this:` gets a BLANK entity, not a fresh
     /// named variable.
     ///
-    /// The distinction only bites inside `unless:`, which an inductive
-    /// rule may still write (a deductive rule refuses it). A negation
-    /// marks every non-blank term of its premise REQUIRED — it cannot
-    /// bind anything itself — so a minted `__N` entity became a
+    /// The distinction only bites inside `unless:`. A negation marks
+    /// every non-blank term of its premise REQUIRED — it cannot bind
+    /// anything itself — so a minted `__N` entity became a
     /// required-but-unbound binding and the rule failed to compile,
     /// naming a variable that appears nowhere in the author's source.
-    /// A blank is a wildcard and is skipped.
+    /// A blank is a wildcard and is skipped. A deductive rule admits
+    /// the negation: outside a dependency cycle it is stratified,
+    /// inside one dialog's cycle policy evaluates it.
     #[dialog_common::test]
     async fn it_blanks_an_omitted_premise_entity_so_a_negation_compiles() {
         let fixture = new_fixture().await;
@@ -2719,7 +2720,7 @@ rule!:
         // entity unwritten — the shape that used to fail.
         let doc = r#"rule!:
   description: An owner with no mark is flagged
-  assert!: flag
+  assert: flag
   when:
     - assert: marked
       where:
