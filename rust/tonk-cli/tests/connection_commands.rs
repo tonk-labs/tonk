@@ -676,6 +676,11 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("account directory update failed"),
+        "a scoped content edit must not attempt account directory recording: {stderr}"
+    );
     let edited = tonk_cli::connections::open_bound(&entry.site, &binding, store.clone())
         .await?
         .branch()
