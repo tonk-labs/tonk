@@ -86,7 +86,11 @@ impl<'a> Pull<'a> {
         // commits on the same branch instead of racing the head CAS.
         let revision = {
             let _advancing = cached.state.transactor().lock().await;
-            prepared.commit(env).await?
+            let revision = prepared.commit(env).await?;
+            // The stack reads the branch at the head it captured:
+            // bring the pulled head in.
+            cached.stack().advance(env).await?;
+            revision
         };
 
         // Re-poll subscriptions only if the tree moved. A `None` revision (a

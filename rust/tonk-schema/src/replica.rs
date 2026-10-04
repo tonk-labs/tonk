@@ -157,10 +157,9 @@ impl SpaceLocal {
 /// `(profile, subject)` — derivable before any replica record exists,
 /// so a pull can announce itself before it has mounted anything.
 ///
-/// Its own entity also makes it separately clearable: the overlay's
-/// retract is a TOMBSTONE, not a removal, so clearing this marker means
-/// dropping the entity's overlay facts wholesale. On the directory
-/// entity that would take the locality stamp with it.
+/// Its own entity also makes it separately clearable: the marker is
+/// cleared by forgetting the entity's state-layer facts wholesale. On
+/// the directory entity that would take the locality stamp with it.
 ///
 /// Distinct from the seeding status a fresh space carries. Seeding is
 /// the creating device writing its own first content; replicating is
@@ -172,8 +171,11 @@ pub struct SpaceReplicating {
     pub this: Entity,
     /// The space being pulled, so a rule can join this marker back to
     /// the directory row without a replica record existing yet — there
-    /// is none during the pull that creates it.
-    pub subject: crate::domain::replica::Subject,
+    /// is none during the pull that creates it. The marker's own
+    /// attribute, not the replica's `subject`: the marker is a session
+    /// fact and places what it writes on the state scope, which the
+    /// replica's durable key must never be.
+    pub subject: crate::domain::space::ReplicatingSubject,
     /// Always `true` while a pull runs; the fact's PRESENCE is the
     /// state, so it is retracted rather than set false.
     pub replicating: crate::domain::space::Replicating,
@@ -184,7 +186,7 @@ impl SpaceReplicating {
     pub fn new(profile: Did, subject: Did) -> Self {
         Self {
             this: Replica::new(profile, subject.clone()).this().clone(),
-            subject: crate::domain::replica::Subject(subject.this()),
+            subject: crate::domain::space::ReplicatingSubject(subject.this()),
             replicating: crate::domain::space::Replicating(true),
         }
     }

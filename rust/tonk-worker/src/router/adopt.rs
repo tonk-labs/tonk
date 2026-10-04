@@ -717,7 +717,7 @@ mod tests {
             .await
             .expect("profile main acquires");
         let in_flight: Vec<tonk_schema::SpaceReplicating> = main
-            .handle()
+            .stack()
             .query()
             .select(Query::<tonk_schema::SpaceReplicating> {
                 this: Term::var("this"),
@@ -826,7 +826,11 @@ mod tests {
             .unwrap();
         cached.branches().write().insert(
             "main".into(),
-            std::sync::Arc::new(dialog_reactor::BranchState::new(stale)),
+            std::sync::Arc::new(
+                dialog_reactor::BranchState::open(stale, &tonk.operator)
+                    .await
+                    .unwrap(),
+            ),
         );
         assert!(
             !mounted_configuration_is_current(&tonk, &key, &repository, &configuration)
@@ -909,7 +913,12 @@ mod tests {
             .await
             .unwrap();
         main.state
-            .assert_overlay(tonk_schema::SpaceLocal::new(&key.parse().unwrap(), true));
+            .write(
+                tonk_schema::SpaceLocal::new(&key.parse().unwrap(), true),
+                &tonk.operator,
+            )
+            .await
+            .unwrap();
         main.handle()
             .transaction()
             .assert(tonk_schema::SpaceName::new(
@@ -982,7 +991,11 @@ mod tests {
             .unwrap();
         repo.branches().write().insert(
             "main".into(),
-            std::sync::Arc::new(dialog_reactor::BranchState::new(unrelated)),
+            std::sync::Arc::new(
+                dialog_reactor::BranchState::open(unrelated, &tonk.operator)
+                    .await
+                    .unwrap(),
+            ),
         );
         assert!(!entry.valid(&tonk, &key));
     }
@@ -1612,8 +1625,14 @@ pub(crate) async fn stamp_space_locality(tonk: &TonkState, subject: &dialog_vars
             return;
         }
     };
-    main.state
-        .assert_overlay(tonk_schema::SpaceLocal::new(subject, true));
+    if let Err(error) = main
+        .state
+        .write(tonk_schema::SpaceLocal::new(subject, true), &tonk.operator)
+        .await
+    {
+        log!("locality stamp: write: {error}");
+        return;
+    }
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
@@ -1644,17 +1663,22 @@ pub(crate) async fn stamp_space_replicating(
         }
     };
     let fact = tonk_schema::SpaceReplicating::new(tonk.profile.did(), subject.clone());
-    if replicating {
-        main.state.assert_overlay(fact);
+    let written = if replicating {
+        main.state.write(fact, &tonk.operator).await
     } else {
-        // Cleared by DROPPING the entity's overlay facts, not by
-        // retracting: an overlay retract records a tombstone beside the
-        // assertion rather than removing it, so the fact would still
-        // read back. The marker owns its entity (the replica), so
-        // dropping the entity takes nothing else with it.
-        let entity = fact.this.clone();
+        // Cleared by FORGETTING the entity's state facts, not by
+        // retracting: a retract of a fact this layer holds records a
+        // tombstone beside the assertion rather than removing it, so
+        // the fact would still read back. The marker owns its entity
+        // (the replica), so forgetting the entity takes nothing else
+        // with it.
         main.state
-            .retain_overlay_entities(|overlaid| overlaid != &entity);
+            .forget(vec![fact.this.clone()], &tonk.operator)
+            .await
+    };
+    if let Err(error) = written {
+        log!("replicating stamp: write: {error}");
+        return;
     }
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));

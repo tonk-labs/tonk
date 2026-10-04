@@ -69,7 +69,7 @@ impl dialog_capability::Provider<tonk_schema::command::Interpret> for CommandEnv
         };
         let site_text = site.to_string();
         let interpretation = match dialog_reactor::interpret(
-            session.handle(),
+            &session.state,
             &tonk.operator,
             &input,
             Some(site_text.as_str()),
@@ -86,8 +86,8 @@ impl dialog_capability::Provider<tonk_schema::command::Interpret> for CommandEnv
         // Replace the expression's previous intents: drop every entity that
         // points at it, and the expression itself, then write afresh.
         let prior: BTreeSet<Entity> = session
-            .handle()
-            .overlay()
+            .state
+            .state_layer()
             .export()
             .iter()
             .filter(|(_, attribute, change)| {
@@ -101,11 +101,12 @@ impl dialog_capability::Provider<tonk_schema::command::Interpret> for CommandEnv
             })
             .map(|(entity, _, _)| entity.clone())
             .collect();
-        session
-            .state
-            .retain_overlay_entities(|entity| *entity != expression && !prior.contains(entity));
-
-        let mut overlay = branch().overlay();
+        // The forgets ride the same commit as the new facts, so no reader
+        // sees the expression between its old intents and its new ones.
+        let mut overlay = branch().overlay().forget(expression.clone());
+        for entity in prior {
+            overlay = overlay.forget(entity);
+        }
         let mut facts = vec![
             claim(
                 "tonk.dialog.intent.expression/site",

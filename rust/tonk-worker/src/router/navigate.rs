@@ -2,13 +2,20 @@
 //!
 //! A command handler whose effect is a page capability (loading a new
 //! location) can't perform it itself: the service worker has no
-//! `window`, and a transient command never lands in a branch a
-//! subscription could observe. The only channel back to the page that
-//! asked is a `postMessage` to its originating client; the page's
-//! `<tonk-host>` listens for `navigate` messages and assigns
-//! `window.location`. Used by the join handler (redirect into the
-//! joined space) and the create handler (drop the creator into the
-//! fresh space).
+//! `window`. Within the app it asks through state: the desired location
+//! is asserted as [`SiteTarget`](tonk_schema::SiteTarget) on the tab's
+//! site entity, in the state layer of the branch the site is stamped on.
+//! The tab's `<tonk-site>` already subscribes to its own stamp; it sees
+//! the target, navigates, and the `tonk:load` it then fires re-stamps the
+//! site, which clears the target ([`request_navigation`]). Used by the
+//! join handler (redirect into the joined space), the create handler
+//! (drop the creator into the fresh space) and `tonk:home`.
+//!
+//! What no site can express stays a `postMessage` to the originating
+//! client, which the page's `<tonk-host>` performs: a fresh load that
+//! replaces the history entry after the page's profile changed
+//! ([`notify_replace`]), and a redirect to another deployment
+//! ([`notify_navigate`]).
 
 use tonk_common::log;
 
@@ -113,6 +120,75 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
     notify_navigate(client, href);
+}
+
+/// Ask the originating client's tab to go to `href`.
+///
+/// The client's sites come from the liveness ledger; each is written a
+/// [`SiteTarget`](tonk_schema::SiteTarget) on the branch whose state layer
+/// holds the site's stamp, and that branch is scheduled for a poll so the
+/// tab's subscription delivers the target. The caller drains the scheduled
+/// polls, as after any state write.
+///
+/// Returns `false`, with a log, when nothing was written: the client is
+/// unknown, has stamped no site, or no branch holds its stamp. The
+/// triggering command still succeeded; only the convenience redirect is
+/// lost, and the user can navigate from the Hub.
+pub(crate) async fn request_navigation(
+    tonk: &crate::worker::TonkState,
+    client: Option<&crate::router::ClientId>,
+    href: &str,
+) -> bool {
+    let Some(client) = client else {
+        log!("navigate: no originating client; skipping redirect to {href}");
+        return false;
+    };
+    let sites: Vec<dialog_artifacts::Entity> = tonk
+        .clients
+        .read()
+        .await
+        .get(client)
+        .map(|state| state.sites.iter().filter_map(|s| s.parse().ok()).collect())
+        .unwrap_or_default();
+    if sites.is_empty() {
+        log!(
+            "navigate: client {} has stamped no site; skipping redirect to {href}",
+            client.0
+        );
+        return false;
+    }
+    let mut written = false;
+    for branch in tonk.reactor.cached_branch_states() {
+        for site in &sites {
+            let stamped = !branch
+                .state_layer()
+                .scan(&dialog_artifacts::ArtifactSelector::new().of(site.clone()))
+                .is_empty();
+            if !stamped {
+                continue;
+            }
+            match branch
+                .write(
+                    tonk_schema::SiteTarget::new(site.clone(), href),
+                    &tonk.operator,
+                )
+                .await
+            {
+                Ok(()) => {
+                    written = true;
+                    tonk.reactor.schedule_poll(std::sync::Arc::clone(&branch));
+                }
+                Err(error) => log!("navigate: target write for {site} failed: {error}"),
+            }
+        }
+    }
+    if !written {
+        log!(
+            "navigate: no branch holds a site of client {}; skipping redirect to {href}",
+            client.0
+        );
+    }
+    written
 }
 
 /// Ask every other top-level document to reload after the active browser
@@ -460,6 +536,70 @@ pub(crate) async fn request_webauthn_with(
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::Home> for crate::router::CommandEnv {
     async fn execute(&self, _command: tonk_schema::command::Home) {
-        notify_navigate(self.client(), "/");
+        let tonk = self.state().read().await;
+        request_navigation(&tonk, self.client(), "/").await;
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use super::request_navigation;
+    use crate::router::ClientId;
+
+    /// With no originating client, or one that stamped no site, there is
+    /// no tab to move and nothing is written anywhere.
+    #[dialog_common::test]
+    async fn it_skips_a_redirect_without_a_stamped_site() {
+        let tonk = crate::router::tests::test_state().await;
+        assert!(!request_navigation(&tonk, None, "/space/x").await);
+        let unknown = ClientId("never-seen".into());
+        assert!(!request_navigation(&tonk, Some(&unknown), "/space/x").await);
+    }
+
+    /// A client whose site is stamped on a branch gets the target written
+    /// on that site, in that branch's state layer, and nowhere else.
+    #[dialog_common::test]
+    async fn it_writes_the_target_on_the_clients_stamped_site() {
+        use dialog_artifacts::ArtifactSelector;
+
+        let tonk = crate::router::tests::test_state().await;
+        let client = ClientId("tab-1".into());
+        let site: dialog_artifacts::Entity = "site:tab-1".parse().unwrap();
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let mut stamp = dialog_artifacts::Changes::new();
+        dialog_query::Statement::assert(
+            dialog_query::the!("xyz.tonk.site/path")
+                .of(site.clone())
+                .is("/join".to_string()),
+            &mut stamp,
+        );
+        main.state.write(stamp, &tonk.operator).await.unwrap();
+        tonk.clients
+            .write()
+            .await
+            .entry(client.clone())
+            .or_default()
+            .sites
+            .insert(site.to_string());
+
+        assert!(request_navigation(&tonk, Some(&client), "/space/x").await);
+
+        let target = main.state.state_layer().scan(
+            &ArtifactSelector::new()
+                .of(site.clone())
+                .the("xyz.tonk.site/target".parse().unwrap()),
+        );
+        assert_eq!(target.len(), 1);
+        assert_eq!(
+            target[0].is,
+            dialog_artifacts::Value::String("/space/x".into())
+        );
     }
 }

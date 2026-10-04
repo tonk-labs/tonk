@@ -3,11 +3,11 @@
 //!
 //! The page (`bootstrap.js`, in every guest) reports its selection as it
 //! settles. The handler writes it as `xyz.tonk.site/selection` on the tab's
-//! site, in the session overlay, so rules and the palette read it like any
+//! site, in the branch's state layer, so rules and the palette read it like any
 //! other site fact: rules that run on a space branch next to the space's
 //! data, and the palette's parser through the expression. It is written on
 //! the branch the report came from and on the profile's, because the
-//! palette proposes commands from both. Overlay facts only: nothing is
+//! palette proposes commands from both. State-layer facts only: nothing is
 //! stored, and the selection goes with the tab.
 
 use dialog_artifacts::{Change, Entity, Value};
@@ -23,7 +23,7 @@ const SELECTION: &str = "xyz.tonk.site/selection";
 /// what a command could act on, not content to copy, so a long one is cut.
 const LIMIT: usize = 4096;
 
-/// Replace `site`'s selection with `text` on one branch's overlay, or clear
+/// Replace `site`'s selection with `text` on one branch's state layer, or clear
 /// it when `text` is empty.
 async fn record(
     tonk: &crate::worker::TonkState,
@@ -42,10 +42,10 @@ async fn record(
         }
     };
     // A cardinality-one fact is cleared by retracting the value it holds,
-    // so read what the overlay has now.
+    // so read what the state layer has now.
     let held: Vec<Value> = session
-        .handle()
-        .overlay()
+        .state
+        .state_layer()
         .export()
         .iter()
         .filter(|(entity, attribute, _)| *entity == site && attribute.to_string() == SELECTION)

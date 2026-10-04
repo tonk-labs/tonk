@@ -363,12 +363,17 @@ pub(crate) async fn publish_link(state: &crate::worker::TonkState) {
             return;
         }
     };
-    match linked {
-        Some(account) => main.state.assert_overlay(AccountLink::new(this, account)),
-        None => {
+    let written = match linked {
+        Some(account) => {
             main.state
-                .retain_overlay_entities(|overlaid| overlaid != &this);
+                .write(AccountLink::new(this, account), &state.operator)
+                .await
         }
+        None => main.state.forget(vec![this], &state.operator).await,
+    };
+    if let Err(error) = written {
+        log!("account link row: write: {error}");
+        return;
     }
     state
         .reactor

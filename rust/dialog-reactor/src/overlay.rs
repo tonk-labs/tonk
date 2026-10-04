@@ -1,60 +1,74 @@
 //! [`OverlayBuilder`] and [`OverlayWrite`] — accumulate assert/retract
-//! pairs and apply them to a branch's **session overlay**.
+//! pairs and apply them to a branch's **state layer**.
 //!
-//! The overlay counterpart to [`TransactionBuilder`](crate::TransactionBuilder):
+//! The state-layer counterpart to [`TransactionBuilder`](crate::TransactionBuilder):
 //! same `.assert(…)` / `.retract(…)` / `.perform(&env)` shape, but the changes
-//! land in the in-memory session overlay (ephemeral, never committed, never
-//! replicated) rather than the durable branch tree. Like a commit, a successful
-//! overlay write **schedules** a poll of the branch ([`Reactor::schedule_poll`])
-//! so subscribers are notified of the change — callers don't hand-drive the
-//! poll. The request's dispatcher drains the scheduled set once per turn
-//! ([`Reactor::run_scheduled_polls`]), so an overlay write and a commit on the
-//! same branch coalesce into a single re-evaluation.
+//! land in the process's ephemeral state layer above the branch (never
+//! committed, never replicated) rather than the durable branch tree. Like a
+//! commit, a successful write **schedules** a poll of the branch
+//! ([`Reactor::schedule_poll`]) so subscribers are notified of the change —
+//! callers don't hand-drive the poll. The request's dispatcher drains the
+//! scheduled set once per turn ([`Reactor::run_scheduled_polls`]), so a state
+//! write and a commit on the same branch coalesce into a single re-evaluation.
 //!
-//! Use this for per-request overlay state (the tab's `tonk:site`, the sync
-//! status) instead of `BranchState::assert_overlay` + a manual
-//! `schedule_poll`/`run_scheduled_polls` pair.
+//! Use this for per-request state (the tab's `tonk:site`, the sync status)
+//! instead of [`BranchState::write`](crate::BranchState::write) + a manual
+//! `schedule_poll`/`run_scheduled_polls` pair. A write that must *replace* an
+//! entity's facts rather than merge into them chains
+//! [`forget`](OverlayBuilder::forget) first: the forget and the asserts land
+//! in one commit, so no reader sees the layer between them.
 //!
 //! [`Reactor::schedule_poll`]: crate::Reactor::schedule_poll
 //! [`Reactor::run_scheduled_polls`]: crate::Reactor::run_scheduled_polls
 
 use std::sync::Arc;
 
-use dialog_artifacts::{Changes, Statement};
+use dialog_artifacts::{Changes, Entity, Statement};
 use serde::{Deserialize, Serialize};
 
 use super::BranchReference;
 use super::env::{BranchOpenProvider, LoadProvider};
 use super::error::ReactorError;
 
-/// Builder — accumulates overlay assertions and retractions into a [`Changes`]
-/// batch. Chain off [`BranchReference::overlay`](crate::BranchReference::overlay).
+/// Builder — accumulates state-layer assertions and retractions into a
+/// [`Changes`] batch. Chain off
+/// [`BranchReference::overlay`](crate::BranchReference::overlay).
 /// Lazy: nothing touches the branch until [`OverlayWrite::perform`].
 pub struct OverlayBuilder<'a> {
-    /// The branch whose overlay the write targets.
+    /// The branch whose state layer the write targets.
     pub branch: BranchReference<'a>,
-    /// Accumulated overlay changes (asserts and retracts).
+    /// Accumulated changes (asserts and retracts).
     pub changes: Changes,
+    /// Entities whose state-layer facts the write drops first.
+    pub forgotten: Vec<Entity>,
 }
 
 impl<'a> OverlayBuilder<'a> {
-    /// Begin an empty overlay write.
+    /// Begin an empty write.
     pub fn new(branch: BranchReference<'a>) -> Self {
         Self {
             branch,
             changes: Changes::new(),
+            forgotten: Vec::new(),
         }
     }
 
-    /// Add an assertion to the overlay batch.
+    /// Add an assertion to the batch.
     pub fn assert<S: Statement>(mut self, claim: S) -> Self {
         claim.assert(&mut self.changes);
         self
     }
 
-    /// Add a retraction to the overlay batch.
+    /// Add a retraction to the batch.
     pub fn retract<S: Statement>(mut self, claim: S) -> Self {
         claim.retract(&mut self.changes);
+        self
+    }
+
+    /// Drop every state-layer fact of `entity` before the batch lands,
+    /// in the same commit.
+    pub fn forget(mut self, entity: Entity) -> Self {
+        self.forgotten.push(entity);
         self
     }
 
@@ -63,30 +77,36 @@ impl<'a> OverlayBuilder<'a> {
         OverlayWrite {
             branch: self.branch,
             changes: self.changes,
+            forgotten: self.forgotten,
         }
     }
 }
 
-/// The applicable overlay write — `.perform(&env)` writes the accumulated
-/// changes into the branch's session overlay and schedules a poll.
+/// The applicable write — `.perform(&env)` commits the accumulated
+/// changes into the branch's state layer and schedules a poll.
 pub struct OverlayWrite<'a> {
     branch: BranchReference<'a>,
     changes: Changes,
+    forgotten: Vec<Entity>,
 }
 
 impl OverlayWrite<'_> {
-    /// Apply the accumulated changes to the branch's session overlay and
-    /// schedule a poll so subscribers are notified. The poll is scheduled (not
-    /// run inline) — the request dispatcher drains it once per turn.
+    /// Apply the forgets and the accumulated changes to the branch's state
+    /// layer and schedule a poll so subscribers are notified. The poll is
+    /// scheduled (not run inline) — the request dispatcher drains it once
+    /// per turn.
     pub async fn perform<Env>(self, env: &Env) -> Result<(), ReactorError>
     where
         Env: LoadProvider + BranchOpenProvider,
     {
         let cached = self.branch.acquire(env).await?;
-        // `Changes::assert` preserves both asserts and retracts in the batch, so
-        // this applies the whole overlay write (the new site facts and any
-        // retract of a prior one) in one exclusive-lock write.
-        cached.state.assert_overlay(self.changes);
+        // `Changes` keeps both asserts and retracts in the batch, so this
+        // applies the whole write (the new site facts and any retract of a
+        // prior one) in one stack commit.
+        cached
+            .state
+            .apply(self.forgotten, self.changes, env)
+            .await?;
         self.branch
             .reactor()
             .schedule_poll(Arc::clone(&cached.state));
@@ -94,9 +114,9 @@ impl OverlayWrite<'_> {
     }
 }
 
-/// One branch's session overlay, addressed by where the reactor caches it, so
+/// One branch's state layer, addressed by where the reactor caches it, so
 /// another process (a successor service worker) can restore it into the same
-/// branch. The overlay otherwise lives only in this process's memory.
+/// branch. The layer otherwise lives only in this process's memory.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverlaySnapshot {
     /// The named repository, or `None` for the profile-as-repository.
@@ -108,9 +128,9 @@ pub struct OverlaySnapshot {
 }
 
 impl crate::Reactor {
-    /// Snapshot the session overlay of every cached branch that has one.
-    /// Only cached branches can hold overlay facts, since the overlay lives
-    /// on the cached branch handle.
+    /// Snapshot the state layer of every cached branch that holds facts.
+    /// Only cached branches can hold any, since the layer lives on the
+    /// cached branch state.
     pub fn export_overlays(&self) -> Vec<OverlaySnapshot> {
         // The profile's own repository is exported without a name: its
         // key is the profile's, which a successor restoring the snapshot
@@ -133,7 +153,7 @@ impl crate::Reactor {
                     .map(|(branch, cached)| OverlaySnapshot {
                         repository: repository.clone(),
                         branch: branch.clone(),
-                        changes: cached.branch.overlay().export(),
+                        changes: cached.export(),
                     })
                     .filter(|snapshot| !snapshot.changes.is_empty())
                     .collect::<Vec<_>>()
@@ -141,10 +161,11 @@ impl crate::Reactor {
             .collect()
     }
 
-    /// Restore overlays [exported](Self::export_overlays) by another process,
-    /// opening each branch as needed and scheduling a poll so its subscribers
-    /// see the restored facts. A branch that cannot be opened here is
-    /// skipped. Returns how many overlays were restored.
+    /// Restore state layers [exported](Self::export_overlays) by another
+    /// process, opening each branch as needed and scheduling a poll so its
+    /// subscribers see the restored facts. A branch that cannot be opened
+    /// here, or refuses the write, is skipped. Returns how many were
+    /// restored.
     pub async fn import_overlays<Env>(&self, snapshots: Vec<OverlaySnapshot>, env: &Env) -> usize
     where
         Env: LoadProvider + BranchOpenProvider,
@@ -155,18 +176,19 @@ impl crate::Reactor {
                 Some(name) => self.repository(name),
                 None => self.profile_repository(),
             };
-            match repository.branch(&snapshot.branch).acquire(env).await {
-                Ok(session) => {
-                    session.state.assert_overlay(snapshot.changes);
-                    self.schedule_poll(Arc::clone(&session.state));
-                    restored += 1;
-                }
+            let (repo, branch) = (snapshot.repository.clone(), snapshot.branch.clone());
+            let written = match repository.branch(&snapshot.branch).acquire(env).await {
+                Ok(session) => session
+                    .state
+                    .write(snapshot.changes, env)
+                    .await
+                    .map(|()| self.schedule_poll(Arc::clone(&session.state))),
+                Err(error) => Err(error),
+            };
+            match written {
+                Ok(()) => restored += 1,
                 Err(error) => {
-                    dialog_common::log!(
-                        "overlay restore skipped {:?}/{}: {error}",
-                        snapshot.repository,
-                        snapshot.branch
-                    );
+                    dialog_common::log!("overlay restore skipped {repo:?}/{branch}: {error}");
                 }
             }
         }

@@ -188,6 +188,7 @@ command!: &space/create
 # the affordance is a Hub card on the profile branch, naming precisely
 # the space this device has no replica of.
 command!: &space/replicate
+  scope: memory:state
   this: tonk:space/replicate
   description: Pull a space this device holds no replica of.
   with:
@@ -273,6 +274,7 @@ command!: &tonk/rename-repository
 # here). The worker's `LoadHandler` matches `path` against this branch's `route!`
 # table and stamps `tonk:site` onto the element-supplied `this`.
 command!: &tonk/load
+  scope: memory:state
   this: tonk:load
   description: Stamp the requesting tab's site for its current path on this branch.
   with:
@@ -1065,6 +1067,7 @@ event!: &on/profile-rename-submit
     name: ".currentTarget.elements.name.value"
 
 command!: &profile/rename
+  scope: memory:state
   description: Rename the signed-in member (set their display name).
   with:
     name:
@@ -1106,6 +1109,7 @@ command!: &account/resend-activation
 # true of the space, so it must not replicate. `time` makes each ask a
 # distinct transient.
 command!: &tonk/check-update
+  scope: memory:state
   this: tonk:check-update
   description: Ask whether a newer seed is waiting for a space.
   with:
@@ -1131,6 +1135,7 @@ command!: &tonk/check-update
 # crashed worker is identifiable and a second check cannot silently
 # clobber the first.
 concept!: &replica/checking
+  scope: memory:state
   this: tonk:replica/checking
   description: A seed-update check in flight on this device.
   with:
@@ -1145,6 +1150,7 @@ concept!: &replica/checking
 # single status field would have to overwrite the previous result to
 # say "pending", losing the answer the view is showing.
 concept!: &replica/checked
+  scope: memory:state
   this: tonk:replica/checked
   description: When this device last completed a seed-update check.
   with:
@@ -1160,6 +1166,7 @@ concept!: &replica/checked
 # useful part. A space that never recorded a seed is NOT a failure —
 # it simply has no installed-seed fact, and that absence is the answer.
 concept!: &replica/check-failure
+  scope: memory:state
   this: tonk:replica/check-failure
   description: Why this device's last seed-update check failed.
   with:
@@ -1213,6 +1220,7 @@ attribute!: &pause-sync/space
   role: object
 
 command!: &tonk/pause-sync
+  scope: memory:state
   this: tonk:pause-sync
   description: Toggle auto-sync (pause ⇄ resume) for a space.
   action: ["pause sync", "resume sync"]
@@ -1332,6 +1340,7 @@ event!: &on/join
     url: ".detail.href"
 
 command!: &tonk/join
+  scope: memory:state
   this: tonk:join
   description: Redeem an invite URL and join its space.
   with:
@@ -1347,6 +1356,7 @@ command!: &tonk/join
 # handler retracts this and asserts the durable replica instead; the Hub
 # (durable replicas) never shows in-flight or failed joins.
 concept!: &join/status
+  scope: memory:state
   this: tonk:join/status
   description: An in-flight join attempt's state (overlay-only).
   with:
@@ -1361,6 +1371,7 @@ concept!: &join/status
 # pending state (status only) still resolves; the view reads this for the
 # message when failed.
 concept!: &join/failure
+  scope: memory:state
   this: tonk:join/failure
   description: Why a join attempt failed (overlay-only).
   with:
@@ -1439,6 +1450,7 @@ view!:
 
 # A tab's location + the route concept it renders. Mirrors core.yaml's `&site`.
 concept!: &site
+  scope: memory:state
   this: tonk:site
   description: A tab's location and the route concept it renders.
   with:
@@ -1501,6 +1513,11 @@ concept!: &site
         `site/select`. Absent when nothing is selected. A session fact like the
         rest of the site: it goes with the tab.
       the: xyz.tonk.site/selection
+    target:
+      description: |
+          Where this tab has been asked to go. A worker command that ends in
+          a redirect asserts it; the page navigates and its re-stamp clears it.
+      the: xyz.tonk.site/target
       cardinality: one
       as: text
 
@@ -3638,6 +3655,7 @@ concept!: &account/registered
 # Presence is the whole signal, and overlay because the window is
 # temporary: a worker that dies mid-link leaves nothing to clear.
 concept!: &account/linking
+  scope: memory:state
   this: tonk:account/linking
   description: This device is linking the account right now.
   # ENTITY: the account's own DID.
@@ -3855,6 +3873,7 @@ concept!: &space/replica-status
 # killed mid-pull leaves nothing to clear, and the row falls back to
 # remote ready to retry. A durable marker would strand it forever.
 concept!: &space/replicating
+  scope: memory:state
   this: tonk:space/replicating
   description: A replication in flight on this device, keyed on the replica.
   with:
@@ -3862,8 +3881,11 @@ concept!: &space/replicating
       description: >
         The space being pulled. Carried so a rule can join this marker
         to the directory row: during the pull that CREATES the replica
-        there is no replica record to join through yet.
-      the: xyz.tonk.replica/subject
+        there is no replica record to join through yet. Its own
+        attribute, not the replica's `subject`: a scope is a property of
+        an attribute, and this one is session-only where the replica's
+        is durable.
+      the: xyz.tonk.space/replicating-subject
       cardinality: one
       as: entity
     replicating:

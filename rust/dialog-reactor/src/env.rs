@@ -10,7 +10,6 @@
 //! repo load and `BranchOpenProvider` for the branch open), the
 //! bound is `LoadProvider + BranchOpenProvider`.
 
-use dialog_artifacts::{Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Import, Put};
@@ -19,16 +18,21 @@ use dialog_effects::blob::{Import as BlobImport, Read as BlobRead};
 use dialog_effects::memory::{List, Publish, Resolve};
 use dialog_effects::space::Load;
 use dialog_repository::registry::RegistryEnv;
-use dialog_repository::{Hydrate, PeersEnv, RemoteSite, ResolveEnv};
+use dialog_repository::stack::StackSyncEnv;
+use dialog_repository::{PeersEnv, RemoteSite, ResolveEnv};
 
 /// Bound needed to load a repository via the profile: loading opens the
 /// repository's branch registry and upgrades its storage.
 pub trait LoadProvider: Provider<Load> + Provider<List> + RegistryEnv + PeersEnv {}
 impl<T> LoadProvider for T where T: Provider<Load> + Provider<List> + RegistryEnv + PeersEnv {}
 
-/// Bound needed to open a branch on a repository.
-pub trait BranchOpenProvider: Provider<Resolve> + ConditionalSync + 'static {}
-impl<T> BranchOpenProvider for T where T: Provider<Resolve> + ConditionalSync + 'static {}
+/// Bound needed to open a branch on a repository. A branch is held
+/// inside a stack: its state layer is created through the environment
+/// (which holds the ephemeral registry), the stack's wiring is committed
+/// and published, and every later read, write and capture of movement
+/// outside the stack goes through the same bound.
+pub trait BranchOpenProvider: StackSyncEnv + ConditionalSync + 'static {}
+impl<T> BranchOpenProvider for T where T: StackSyncEnv + ConditionalSync + 'static {}
 
 /// Bound needed for raw content-addressed block access — a
 /// `LocalIndex` over the branch archive, reading tree nodes by
@@ -37,37 +41,12 @@ impl<T> BranchOpenProvider for T where T: Provider<Resolve> + ConditionalSync + 
 pub trait GetPutProvider: Provider<Get> + Provider<Put> + ConditionalSync + 'static {}
 impl<T> GetPutProvider for T where T: Provider<Get> + Provider<Put> + ConditionalSync + 'static {}
 
-/// Bound needed to run a query (`branch.query().select(q).perform`).
-pub trait SelectProvider:
-    Provider<Get>
-    + Provider<BlobRead>
-    + Provider<Put>
-    + Provider<Resolve>
-    + Provider<Identify>
-    + Provider<Hydrate>
-    + Provider<Preload>
-    + Provider<Speculation>
-    + Provider<Fork<RemoteSite, Get>>
-    + Provider<Fork<RemoteSite, Resolve>>
-    + ConditionalSync
-    + 'static
-{
-}
-impl<T> SelectProvider for T where
-    T: Provider<Get>
-        + Provider<dialog_effects::blob::Read>
-        + Provider<Put>
-        + Provider<Resolve>
-        + Provider<Identify>
-        + Provider<Hydrate>
-        + Provider<Preload>
-        + Provider<Speculation>
-        + Provider<Fork<RemoteSite, Get>>
-        + Provider<Fork<RemoteSite, Resolve>>
-        + ConditionalSync
-        + 'static
-{
-}
+/// Bound needed to run a query: a read of the branch's stack
+/// (`stack.query().select(q).perform`). A read first captures movement
+/// made outside the stack (a commit through the branch handle, a pull),
+/// which is an advance, so the bound is the stack's sync bound.
+pub trait SelectProvider: StackSyncEnv + ConditionalSync + 'static {}
+impl<T> SelectProvider for T where T: StackSyncEnv + ConditionalSync + 'static {}
 
 /// Bound needed to commit (`branch.commit(stream).perform`).
 pub trait CommitProvider:
@@ -81,9 +60,9 @@ pub trait CommitProvider:
     + Provider<Publish>
     + Provider<Identify>
     + Provider<Attest>
-    + Provider<Hydrate>
-    + Provider<Preload>
-    + Provider<Speculation>
+    + Provider<dialog_repository::Hydrate>
+    + Provider<dialog_artifacts::Preload>
+    + Provider<dialog_artifacts::Speculation>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
     + ConditionalSync
@@ -101,9 +80,9 @@ impl<T> CommitProvider for T where
         + Provider<Publish>
         + Provider<Identify>
         + Provider<Attest>
-        + Provider<Hydrate>
-        + Provider<Preload>
-        + Provider<Speculation>
+        + Provider<dialog_repository::Hydrate>
+        + Provider<dialog_artifacts::Preload>
+        + Provider<dialog_artifacts::Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
