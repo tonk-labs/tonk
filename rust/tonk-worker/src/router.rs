@@ -435,6 +435,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/branch/{branch}/evaluate",
             post(evaluate::evaluate),
         )
+        .route(
+            "/api/repository/{repo}/branch/{branch}/evaluate/conditional",
+            post(evaluate::evaluate_conditional),
+        )
         // CSV export / import — stream the branch's artifacts out as
         // `text/csv`, or commit a CSV body's rows as assertions. See
         // `router/transfer.rs`.
