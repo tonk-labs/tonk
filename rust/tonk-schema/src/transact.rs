@@ -755,7 +755,7 @@ mod tests {
         let width_attr: dialog_artifacts::Attribute = "xyz.tonk.column/width".parse().unwrap();
         let saw_width = changes.into_instructions().into_iter().any(|inst| {
             let artifact = match &inst {
-                Instruction::Assert(a) | Instruction::Replace(a) => a,
+                Instruction::Assert(a) | Instruction::Replace(a) | Instruction::Succeed(a, _) => a,
                 Instruction::Retract(_) => return false,
             };
             artifact.the == width_attr
@@ -787,7 +787,7 @@ mod tests {
             // the desugared `name!` lands as a Replace, not an
             // Assert.
             let artifact = match &inst {
-                Instruction::Assert(a) | Instruction::Replace(a) => a,
+                Instruction::Assert(a) | Instruction::Replace(a) | Instruction::Succeed(a, _) => a,
                 Instruction::Retract(_) => continue,
             };
             if artifact.the == meta_name {

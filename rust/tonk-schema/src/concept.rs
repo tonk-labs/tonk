@@ -1624,7 +1624,7 @@ mod tests {
 
         assert!(
             instructions.iter().any(|inst| match inst {
-                Instruction::Assert(a) | Instruction::Replace(a) => {
+                Instruction::Assert(a) | Instruction::Replace(a) | Instruction::Succeed(a, _) => {
                     a.the == transient_attr && a.of == this && matches!(&a.is, Value::Boolean(true))
                 }
                 _ => false,
@@ -1638,7 +1638,7 @@ mod tests {
         let concept_marker = concept_marker_entity();
         assert!(
             instructions.iter().any(|inst| match inst {
-                Instruction::Assert(a) | Instruction::Replace(a) => {
+                Instruction::Assert(a) | Instruction::Replace(a) | Instruction::Succeed(a, _) => {
                     a.the == concept_marker_attr
                         && a.of == this
                         && matches!(&a.is, Value::Entity(e) if *e == concept_marker)
