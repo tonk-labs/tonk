@@ -348,6 +348,7 @@ mod tests {
                         m.insert("age".into(), serde_json::json!(28));
                         m
                     },
+                    transient: false,
                 }],
             }],
             commits: CommitSummary {
@@ -420,6 +421,7 @@ mod value_spelling_tests {
         let mut result = QueryResult {
             this: "concept:zX".into(),
             fields: Default::default(),
+            transient: false,
         };
         result
             .fields

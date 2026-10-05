@@ -1906,12 +1906,12 @@ command!: &counter/+1
       as: entity
 "#;
         evaluate(&state, repo, declarations, true).await;
-        let counter = evaluate(&state, repo, "counter/model!: &demo/c1\n  count: 0\n", true)
-            .await
-            .matches_after[0]
-            .results[0]
-            .this
-            .clone();
+        let made = evaluate(&state, repo, "counter/model!: &demo/c1\n  count: 0\n", true).await;
+        assert!(
+            !made.matches_after[0].results[0].transient,
+            "a durable entity is not flagged transient",
+        );
+        let counter = made.matches_after[0].results[0].this.clone();
 
         let run = evaluate(&state, repo, "counter/+1!:\n  subject: demo/c1\n", true).await;
         let results = &run.matches_after[0].results;
@@ -1919,6 +1919,10 @@ command!: &counter/+1
             results.len(),
             1,
             "the response carries the command's entity"
+        );
+        assert!(
+            results[0].transient,
+            "the command's entity is flagged transient, so a renderer knows not to re-read it",
         );
         assert_eq!(
             results[0].fields.get("subject"),
