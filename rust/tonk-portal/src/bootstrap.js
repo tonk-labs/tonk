@@ -139,6 +139,26 @@
     if(ownProfile()) return "/api/repository/profile:tonk/branch/"+(tonk.context.branch||"main")+"/transact";
     return null;
   }
+  // Account tasks this document answers: the bar asks for the panel that
+  // adds an account, the document hears `tonk:account-task` and says how it
+  // ended through `tonkAccountTaskDone(id, result)`, and the bar hears the
+  // end as it would from the page around.
+  var accountTasks=new Map();
+  function accountTask(request,relay){
+    var id=request.requestId;
+    if(request.action==="open"){ accountTasks.set(id,{relay:typeof relay==="function"?relay:null}); }
+    else if(!accountTasks.has(id)){ return; }
+    var detail={action:request.action,requestId:id,account:request.account||null,presentation:request.presentation||null};
+    if(request.action==="dismiss"){ endAccountTask(id,"disconnected"); }
+    window.dispatchEvent(new CustomEvent("tonk:account-task",{detail:detail}));
+  }
+  function endAccountTask(id,result){
+    var task=accountTasks.get(id); if(!task) return;
+    accountTasks.delete(id);
+    if(task.relay){ task.relay(result); return; }
+    window.dispatchEvent(new CustomEvent("tonk:task-closed",{detail:{result:result}}));
+  }
+  window.tonkAccountTaskDone=endAccountTask;
   function claimLoad(){
     var c=(window.tonk&&window.tonk.context)||{}; var target=claimTarget();
     if(!target||!c.siteEntity) return;
@@ -262,7 +282,11 @@
     // is parsed and validated by the parent; guest markup never crosses the
     // boundary. The callback receives the terminal result exactly once.
     task:function(payload,relay){
-      var action="";try{action=JSON.parse(payload).action||"";}catch(e){}
+      var request=null;try{request=JSON.parse(payload);}catch(e){}
+      // The profile on its own origin is where the panel that adds an
+      // account lives: its document answers an account task itself.
+      if(ownProfile()&&request&&request.purpose==="account"){ accountTask(request,relay); return; }
+      var action=request&&request.action||"";
       if(action!=="open"){
         ready.then(function(){port.postMessage({v:1,type:"task",payload:payload});});
         return;

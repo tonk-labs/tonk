@@ -3460,11 +3460,34 @@ view!:
            display without adding an element. */
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-site,
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-fab { display: none; }
+        /* The panel that adds an account, where the bar was: the account
+           task seats it at the bar's anchor. */
+        .registration-over-space #tonk-register { position:fixed; inset:0; z-index:30; pointer-events:none; }
+        .registration-over-space #tonk-register .ocol { pointer-events:auto; }
+        .registration-over-space[data-up] #tonk-register .ocol { top:auto; bottom:var(--anchor-bottom, 16px); }
+        .registration-over-space #tonk-register #tonk-register-passkey { order:80; flex-basis:100%; }
+        .registration-over-space .registration-hint { display:none; margin:8px 0 0; }
+        .registration-over-space .registration-hint:is([data-state="invalid"],[data-state="suspended"],[data-state="unavailable"]) { display:block; }
+        .registration-over-space .registration-hint[data-state="invalid"]::before { content:"That doesn’t look like an email address."; }
+        .registration-over-space .registration-hint[data-state="suspended"]::before { content:"This account is suspended. Contact support to restore it."; }
+        .registration-over-space .registration-hint[data-state="unavailable"]::before { content:"We couldn’t reach the account service. Check your connection and try again."; }
       </style>
       <tonk-site data-space-preview with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
       <tonk-fab with="{profile-branch}@profile:tonk" space={id}>
         <command-palette slot="command" space={id} profile="{profile-branch}@profile:tonk"></command-palette>
       </tonk-fab>
+      <account-task>
+        <div class="registration-seat registration-over-space" hidden>
+          <tonk-display model="tonk:registration/address" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/naming" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/ceremony" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/confirming" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/failed" view="panel"></tonk-display>
+        </div>
+        <span hidden data-open-registration on:open-registration=tonk:open-registration></span>
+        <span hidden data-leave-registration on:leave-registration=tonk:dismiss-registration></span>
+        <tonk-display hidden model="state:account-link" view="label" data-account-link></tonk-display>
+      </account-task>
       <tonk-display with={id} entity={id} model=tonk:repository view=title>
         <!-- `no-model` is now the absent-space panel below, which sets its
              own title; a second `no-model` child would render alongside it
@@ -5327,6 +5350,83 @@ view!:
 # so the click can assert it; the deletion phrase arms the submit; the
 # ceremony row is worded; and the seat the top page's passkey cluster
 # anchors to is measured, which only this realm can do.
+# The panel that adds an account, over a space: the space's bar asks for
+# it when sharing needs an account, and this answers. It seats the panel
+# where the bar is, opens and puts it away by command, and tells the bar how
+# it ended: `completed` once this device holds an account, `cancelled` when
+# the panel is put away without one.
+element!: &account-task
+  description: Seats the panel that adds an account over a space's bar, and says how it ended.
+  method:
+    seat: |
+      (self, presentation) => {
+        const anchor = presentation?.anchor;
+        const seat = self.querySelector('.registration-seat');
+        if (!anchor || !seat) return;
+        seat.style.setProperty('--anchor-left', `${anchor.left}px`);
+        seat.style.setProperty('--anchor-width', `${anchor.width}px`);
+        seat.style.setProperty('--anchor-top', `${anchor.top}px`);
+        seat.style.setProperty('--anchor-bottom', `${window.innerHeight - anchor.bottom}px`);
+        seat.toggleAttribute('data-up', presentation.vertical === 'bottom');
+      }
+    linked: |
+      (self) => {
+        const state = self.querySelector('[data-account-link]')?.getAttribute('data-state');
+        return !!state && state !== 'empty' && state !== 'no-entity' && state !== 'no-model';
+      }
+    open: |
+      (self) => !!self.querySelector('.registration-seat tonk-display:not([data-state="empty"])')
+    task: |
+      (self, detail) => {
+        if (detail.action === 'open') {
+          self._task = detail.requestId;
+          self._shown = false;
+          self.seat(detail.presentation);
+          self.querySelector('.registration-seat')?.removeAttribute('hidden');
+          self.querySelector('[data-open-registration]')?.dispatchEvent(new Event('tonk-open-registration', { bubbles: true }));
+        } else if (detail.requestId !== self._task) {
+          return;
+        } else if (detail.action === 'reseat') {
+          self.seat(detail.presentation);
+        } else if (detail.action === 'suspend') {
+          self.querySelector('.registration-seat')?.setAttribute('hidden', '');
+        } else if (detail.action === 'show') {
+          self.querySelector('.registration-seat')?.removeAttribute('hidden');
+        } else if (detail.action === 'dismiss') {
+          self._task = null;
+          self.querySelector('[data-leave-registration]')?.dispatchEvent(new Event('tonk-leave-registration', { bubbles: true }));
+        }
+      }
+    # The panel shows a stage until the worker records none: then the task
+    # is over, and an account linked meanwhile is what it was for. One stage
+    # gives way to the next across two displays, so the panel is taken for
+    # gone only once the displays have settled with none showing.
+    watch: |
+      (self) => {
+        if (!self._task) return;
+        if (self.open()) { self._shown = true; clearTimeout(self._settle); return; }
+        if (!self._shown) return;
+        clearTimeout(self._settle);
+        self._settle = setTimeout(() => {
+          if (!self._task || self.open()) return;
+          const task = self._task;
+          self._task = null;
+          window.tonkAccountTaskDone?.(task, self.linked() ? 'completed' : 'cancelled');
+        }, 400);
+      }
+    connected: |
+      (self) => {
+        self._onTask = (event) => self.task(event.detail);
+        window.addEventListener('tonk:account-task', self._onTask);
+        self._observer = new MutationObserver(() => self.watch());
+        self._observer.observe(self, { subtree: true, attributes: true, attributeFilter: ['data-state'] });
+      }
+    disconnected: |
+      (self) => {
+        if (self._onTask) window.removeEventListener('tonk:account-task', self._onTask);
+        self._observer?.disconnect();
+      }
+
 element!: &account-settings
   description: The settings panel's location-bound acts, deletion arming, ceremony wording and custody seat.
   method:
