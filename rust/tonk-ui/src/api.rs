@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use tonk_worker_api::{AccountStatus, IdentifyResponse, RootStatus, SaveRootRequest};
+use tonk_worker_api::{IdentifyResponse, RootStatus, SaveRootRequest};
 
 use crate::error::AccountTransportKind;
 use crate::error::TonkUiError;
@@ -106,52 +106,6 @@ pub fn origin() -> String {
         .expect("Could not read window location")
 }
 
-/// The branch this profile is on, as the top page resolved it at boot.
-/// The bridge that knows it exists only on the page; off wasm the
-/// endpoints are exercised against `main`.
-pub(crate) fn profile_branch() -> String {
-    #[cfg(target_arch = "wasm32")]
-    {
-        tonk_host::bridge::profile_branch()
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        "main".to_owned()
-    }
-}
-
-/// Profile-side counterpart to [`evaluate`] — POSTs to
-/// Assert a claim on the profile's active branch.
-///
-/// The page's way of causing an effect: a transient lands, its command
-/// runs, and the outcome comes back as facts the page is subscribed to.
-/// Nothing is read from the answer beyond whether the commit landed.
-pub async fn transact_profile(claim: serde_json::Value) -> Result<(), TonkUiError> {
-    tonk_host::ready::wait().await;
-    // The branch this profile is on, not `main`: after a sign-out or an
-    // added account the profile is on another branch, and a ceremony's
-    // commands answer on the branch they were asked on.
-    let branch = profile_branch();
-    let response = reqwest::Client::new()
-        .post(format!(
-            "{}/api/repository/profile:tonk/branch/{branch}/transact",
-            origin()
-        ))
-        .json(&claim)
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/repository/profile:tonk/branch/{branch}/transact returned {status}: {text}"
-        )))
-    }
-}
-
 /// Outcome of [`join`] — invite redemption.
 ///
 /// Distinguishes "name already taken" from other failures so the
@@ -229,30 +183,6 @@ pub async fn save_root(
     }
 }
 
-/// Ask the worker for a sync drain now.
-///
-/// The registering ceremony's activation signal is the account sweep's
-/// own pull turning from refused to served, so its freshness is the
-/// drain cadence. While the ceremony waits it calls this on its own
-/// clock instead of the background heartbeat's; the drain coalesces
-/// concurrent requests, so an extra ask costs nothing.
-pub async fn kick_sync() -> Result<(), TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/sync", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/sync returned {}",
-            response.status()
-        )))
-    }
-}
-
 /// The account's customer registration state: the access service's live
 /// answer joined with the locally recorded enrollment.
 pub async fn customer_state() -> Result<serde_json::Value, TonkUiError> {
@@ -262,79 +192,6 @@ pub async fn customer_state() -> Result<serde_json::Value, TonkUiError> {
         send_account(response, "GET", "/api/customer").await?,
         "GET",
         "/api/customer",
-    )
-    .await
-}
-
-/// Return the current profile's persisted account-link state.
-pub async fn account_status() -> Result<AccountStatus, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let request = reqwest::Client::new().get(format!("{}/api/account", origin()));
-    decode_account(
-        send_account(request, "GET", "/api/account").await?,
-        "GET",
-        "/api/account",
-    )
-    .await
-}
-
-/// Poll until this device holds a recovered credential, or give up.
-///
-/// Custody is the one post-passkey step that can genuinely fail, so it
-/// is the only one whose failure the ceremony reports. `Ready` is the
-/// answer; anything else is not yet.
-pub async fn await_custody() -> bool {
-    poll_until(RECOVERY_ATTEMPTS, || async {
-        matches!(root_status().await, Ok(RootStatus::Ready { .. }))
-    })
-    .await
-}
-
-/// How long custody recovery waits before the ceremony stops narrating
-/// it. Generous, because the point is to describe a slow network rather
-/// than to time it out — but bounded, because a phase that never answers
-/// must not strand the screen.
-const RECOVERY_ATTEMPTS: usize = 120;
-
-/// The beat between polls. Long enough not to hammer the worker, short
-/// enough that a phase which resolves quickly reads as immediate.
-const POLL_EVERY_MS: i32 = 250;
-
-/// Run `check` until it answers true or `attempts` are spent.
-async fn poll_until<F, Fut>(attempts: usize, check: F) -> bool
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    for _ in 0..attempts {
-        if check().await {
-            return true;
-        }
-        let sleep = js_sys::Promise::new(&mut |resolve, _| {
-            if let Some(window) = web_sys::window() {
-                let _ = window
-                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, POLL_EVERY_MS);
-            }
-        });
-        let _ = wasm_bindgen_futures::JsFuture::from(sleep).await;
-    }
-    false
-}
-
-/// Save the account name and wait for its durable write before reporting success.
-pub async fn set_display_name(
-    name: &str,
-) -> Result<tonk_worker_api::AccountDisplayNameResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let request = reqwest::Client::new()
-        .post(format!("{}/api/account/display-name", origin()))
-        .json(&tonk_worker_api::AccountDisplayNameRequest {
-            name: name.to_owned(),
-        });
-    decode_account(
-        send_account(request, "POST", "/api/account/display-name").await?,
-        "POST",
-        "/api/account/display-name",
     )
     .await
 }

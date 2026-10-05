@@ -202,11 +202,6 @@ fn render_root(shell: &web_sys::Element) {
     wasm_bindgen_futures::spawn_local(async move {
         let site_pattern = site_pattern().await;
         let with = if site_pattern.is_some() {
-            // The account dialogs on this page still read the profile here,
-            // so the branch is learned for them, without holding the site.
-            wasm_bindgen_futures::spawn_local(async {
-                tonk_host::bridge::resolve_profile_branch().await;
-            });
             tonk_host::bridge::profile_with()
         } else {
             tonk_host::bridge::resolve_profile_with().await
