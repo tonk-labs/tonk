@@ -6,6 +6,8 @@
 //! ceremony itself runs in the top-level page, the one place WebAuthn
 //! can, which the worker asks for it; everything else is decided here.
 
+use std::cell::Cell;
+
 use dialog_artifacts::Entity;
 use tonk_common::log;
 use tonk_schema::registration::{
@@ -54,6 +56,19 @@ pub(crate) enum Stage {
     },
 }
 
+thread_local! {
+    /// Whether a passkey ceremony is out with the page. Claimed before the
+    /// first await, so two commands in one turn cannot both ask for one;
+    /// recording any other stage gives it up.
+    static ASKING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Claim the one passkey ceremony the panel may have out, or `false` when
+/// it already has one.
+fn claim_ceremony() -> bool {
+    !ASKING.replace(true)
+}
+
 /// What a typed address leads to, given what the lookup said about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Next {
@@ -79,6 +94,7 @@ pub(crate) fn next(answer: &str) -> Next {
 /// Record `stage` as where the panel is, in place of whichever stage was
 /// there. `None` puts the panel away.
 pub(crate) async fn record(tonk: &TonkState, stage: Option<Stage>) {
+    ASKING.set(matches!(stage, Some(Stage::Ceremony { .. })));
     let Ok(this) = ENTITY.parse::<Entity>() else {
         return;
     };
@@ -306,6 +322,10 @@ async fn ask(
     kind: &'static str,
     intent: tonk_worker_api::CustodyIntent,
 ) {
+    if !claim_ceremony() {
+        log!("registration: a passkey ceremony is already out; not asking for another");
+        return;
+    }
     let tonk = env.state().read().await;
     record(&tonk, Some(Stage::Ceremony { kind })).await;
     let failed = |message: &str| Stage::Failed {
@@ -499,12 +519,25 @@ impl dialog_capability::Provider<tonk_schema::command::DismissRegistration>
 
 #[cfg(test)]
 mod tests {
-    use super::{Next, Stage, next, refused, settled};
+    use super::{ASKING, Next, Stage, claim_ceremony, next, refused, settled};
     use tonk_schema::registration::kind;
 
     #[dialog_common::test]
     fn it_names_an_account_for_a_free_address() {
         assert_eq!(next("unregistered"), Next::Name);
+    }
+
+    #[dialog_common::test]
+    fn it_asks_for_one_passkey_at_a_time() {
+        ASKING.set(false);
+        assert!(claim_ceremony());
+        assert!(!claim_ceremony(), "a second ask while one is out");
+        ASKING.set(false);
+        assert!(
+            claim_ceremony(),
+            "a stage other than the ceremony gives it up"
+        );
+        ASKING.set(false);
     }
 
     #[dialog_common::test]
