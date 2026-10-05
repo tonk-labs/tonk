@@ -582,6 +582,8 @@ view!:
       .registration-seat #tonk-register .ocol { pointer-events:auto; }
       .registration-seat #tonk-register #tonk-register-passkey { order:80; flex-basis:100%; }
       .registration-hint { display:none; margin:8px 0 0; }
+      #tonk-register[data-kind="sign-in-via"] [data-retry="registration"],
+      #tonk-register:not([data-kind="sign-in-via"]) [data-retry="sign-in-via"] { display:none; }
       .registration-hint:is([data-state="invalid"],[data-state="suspended"],[data-state="unavailable"]) { display:block; }
       .registration-hint[data-state="invalid"]::before { content:"That doesn’t look like an email address."; }
       .registration-hint[data-state="suspended"]::before { content:"This account is suspended. Contact support to restore it."; }
@@ -2843,6 +2845,7 @@ view!:
              the bar. Each display draws nothing until its stage is there. -->
         <div class="registration-seat">
           <tonk-display model="tonk:registration/address" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/via" view="panel"></tonk-display>
           <tonk-display model="tonk:registration/naming" view="panel"></tonk-display>
           <tonk-display model="tonk:registration/ceremony" view="panel"></tonk-display>
           <tonk-display model="tonk:registration/confirming" view="panel"></tonk-display>
@@ -2941,6 +2944,7 @@ view!:
                   <span hidden data-via-return on:finish-sign-in-via=tonk:finish-sign-in-via></span>
                 </div>
                 <span hidden data-open-registration on:open-registration=tonk:open-registration></span>
+                <span hidden data-open-sign-in-via on:open-sign-in-via=tonk:open-sign-in-via></span>
                 <span hidden data-leave-registration on:leave-registration=tonk:dismiss-registration></span>
                 <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
                 <tonk-display model="state:ceremony" view="settings"></tonk-display>
@@ -3426,7 +3430,6 @@ view!:
           font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
           font-weight:400; line-height:1.55; text-wrap:pretty; }
         .space-unknown-run { display:flex; }
-        .space-unknown-run space-login { display:block; width:100%; }
         .space-unknown-back { align-self:flex-start; min-height:44px;
           display:flex; align-items:center; color:var(--edge-ink);
           text-underline-offset:3px; }
@@ -3462,11 +3465,14 @@ view!:
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-fab { display: none; }
         /* The panel that adds an account, where the bar was: the account
            task seats it at the bar's anchor. */
+        .registration-over-space { --anchor-top:16px; --anchor-left:0px; --anchor-width:calc(100vw - 16px); }
         .registration-over-space #tonk-register { position:fixed; inset:0; z-index:30; pointer-events:none; }
         .registration-over-space #tonk-register .ocol { pointer-events:auto; }
         .registration-over-space[data-up] #tonk-register .ocol { top:auto; bottom:var(--anchor-bottom, 16px); }
         .registration-over-space #tonk-register #tonk-register-passkey { order:80; flex-basis:100%; }
         .registration-over-space .registration-hint { display:none; margin:8px 0 0; }
+        .registration-over-space #tonk-register[data-kind="sign-in-via"] [data-retry="registration"],
+        .registration-over-space #tonk-register:not([data-kind="sign-in-via"]) [data-retry="sign-in-via"] { display:none; }
         .registration-over-space .registration-hint:is([data-state="invalid"],[data-state="suspended"],[data-state="unavailable"]) { display:block; }
         .registration-over-space .registration-hint[data-state="invalid"]::before { content:"That doesn’t look like an email address."; }
         .registration-over-space .registration-hint[data-state="suspended"]::before { content:"This account is suspended. Contact support to restore it."; }
@@ -3477,8 +3483,9 @@ view!:
         <command-palette slot="command" space={id} profile="{profile-branch}@profile:tonk"></command-palette>
       </tonk-fab>
       <account-task>
-        <div class="registration-seat registration-over-space" hidden>
+        <div class="registration-seat registration-over-space">
           <tonk-display model="tonk:registration/address" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/via" view="panel"></tonk-display>
           <tonk-display model="tonk:registration/naming" view="panel"></tonk-display>
           <tonk-display model="tonk:registration/ceremony" view="panel"></tonk-display>
           <tonk-display model="tonk:registration/confirming" view="panel"></tonk-display>
@@ -3533,9 +3540,9 @@ view!:
               <div class="space-unknown-wall">
                 <h1 class="space-unknown-statement">open this space</h1>
                 <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
-                <!-- The recovery control opens the top-page account ceremony. -->
+                <!-- Signing in opens the panel that adds an account. -->
                 <div class="space-unknown-run">
-                  <space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></space-login>
+                  <button type="button" class="space-unknown-home" on:retry-registration=tonk:open-registration>sign in<span aria-hidden="true">&#9656;</span></button>
                 </div>
                 <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
                 <a class="space-unknown-back" href="/">go to home</a>
@@ -3547,9 +3554,9 @@ view!:
               <div class="space-unknown-wall">
                 <h1 class="space-unknown-statement">open this space</h1>
                 <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
-                <!-- The recovery control opens the top-page account ceremony. -->
+                <!-- Signing in opens the panel that adds an account. -->
                 <div class="space-unknown-run">
-                  <space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></space-login>
+                  <button type="button" class="space-unknown-home" on:retry-registration=tonk:open-registration>sign in<span aria-hidden="true">&#9656;</span></button>
                 </div>
                 <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
                 <a class="space-unknown-back" href="/">go to home</a>
@@ -3786,6 +3793,17 @@ concept!: &registration/address
       cardinality: one
       as: text
 
+concept!: &registration/via
+  this: tonk:registration/via
+  description: The panel asks which Tonk holds the account, to sign this browser in through it.
+  # ENTITY: state:registration.
+  with:
+    origin:
+      description: The address typed so far, empty at first.
+      the: xyz.tonk.registration-via/origin
+      cardinality: one
+      as: text
+
 concept!: &registration/naming
   this: tonk:registration/naming
   description: The address is free, and the panel asks what to call the account.
@@ -3825,7 +3843,7 @@ concept!: &registration/failed
   # ENTITY: state:registration.
   with:
     kind:
-      description: "Which ceremony failed: `create` or `log-in`."
+      description: "Which step failed: `create`, `log-in` or `sign-in-via`."
       the: xyz.tonk.registration-failed/kind
       cardinality: one
       as: text
@@ -3879,6 +3897,15 @@ command!: &account/log-in
       the: xyz.tonk.command.log-in/time
       as: float
 
+command!: &account/open-sign-in-via
+  this: tonk:open-sign-in-via
+  description: Raise the panel that signs this browser in through another Tonk.
+  with:
+    time:
+      description: The activation's timestamp, so each click is its own command.
+      the: xyz.tonk.command.open-sign-in-via/time
+      as: float
+
 command!: &account/dismiss-registration
   this: tonk:dismiss-registration
   description: Put the panel that adds an account away, wherever it got to.
@@ -3914,6 +3941,25 @@ event!: &on/open-registration
   type: "tonk-open-registration"
   where:
     time: ".timeStamp"
+
+event!: &on/open-sign-in-via
+  type: "tonk-open-sign-in-via"
+  where:
+    time: ".timeStamp"
+
+event!: &on/retry-sign-in-via
+  type: "click"
+  prevent-default: true
+  where:
+    time: ".timeStamp"
+
+# The Tonk typed into the panel, as the worker reads it: a bare host or an
+# address.
+event!: &on/sign-in-via-typed
+  type: "submit"
+  prevent-default: true
+  where:
+    via: ".currentTarget.elements.via.value"
 
 event!: &on/retry-registration
   type: "click"
@@ -3973,6 +4019,27 @@ view!:
             <p aria-live="polite">Enter your email to continue. We’ll check whether you already have a Tonk account.</p>
             <tonk-display model="tonk:email-status" view="hint"></tonk-display>
           </div>
+          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
+          <button class="obtn" id="tonk-register-action" type="submit">continue</button>
+        </form>
+      </div>
+
+view!:
+  this: tonk:registration/via
+  show:
+    panel: |
+      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="via">
+        <form class="ocol" on:sign-in-via-typed=tonk:sign-in-via>
+          <div class="ostack">
+            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
+            <div class="orow mblk editing">
+              <span class="k">tonk address</span>
+              <span class="v"><input class="ed" name="via" type="text" inputmode="url" enterkeyhint="go"
+                autocomplete="url" spellcheck="false" aria-label="tonk address" placeholder="tonk.network"
+                value={origin} required></span>
+            </div>
+          </div>
+          <div class="oexp mblk"><p aria-live="polite">Enter the address of the Tonk that holds your account. You’ll approve this browser there with your passkey.</p></div>
           <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
           <button class="obtn" id="tonk-register-action" type="submit">continue</button>
         </form>
@@ -4040,7 +4107,8 @@ view!:
           </div>
           <div class="oexp mblk"><p aria-live="polite">{message}</p></div>
           <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
-          <button class="obtn" id="tonk-register-action" type="button" on:retry-registration=tonk:open-registration>try again</button>
+          <button class="obtn" id="tonk-register-action" type="button" data-retry="registration" on:retry-registration=tonk:open-registration>try again</button>
+          <button class="obtn" id="tonk-register-action" type="button" data-retry="sign-in-via" on:retry-sign-in-via=tonk:open-sign-in-via>try again</button>
         </div>
       </div>
 
@@ -4930,21 +4998,6 @@ element!: &inline-editable
         });
       }
 
-# Opens account recovery over the missing-space screen: a click asks the
-# top page to raise the passkey ceremony, which needs a `window` and a
-# user gesture this opaque realm has neither of.
-element!: &space-login
-  description: A click asks the top page to open account recovery.
-  method:
-    connected: |
-      (self) => {
-        if (self.__wired) return;
-        self.__wired = true;
-        self.addEventListener('click', () => {
-          window.tonk?.register?.('{"reason":"space-login"}');
-        });
-      }
-
 element!: &space-actions
   description: Controls a space card menu and its rename and duplicate dialogs.
   method:
@@ -5382,7 +5435,6 @@ element!: &account-task
           self._task = detail.requestId;
           self._shown = false;
           self.seat(detail.presentation);
-          self.querySelector('.registration-seat')?.removeAttribute('hidden');
           self.querySelector('[data-open-registration]')?.dispatchEvent(new Event('tonk-open-registration', { bubbles: true }));
         } else if (detail.requestId !== self._task) {
           return;
@@ -6065,29 +6117,9 @@ element!: &account-settings
       (self) => !!document.querySelector('[data-account-linked], [data-account-name]')
     unlinked: |
       (self) => !self.linked() && document.querySelector('[data-account-link]')?.dataset.state === 'empty'
-    # A ceremony is up: the flag is an attribute so a re-render keeps it.
-    link: |
-      (self, reason) => {
-        self.setAttribute('data-linking', 'true');
-        self._shown = 'show';
-        self._linking = reason;
-        self.place(reason);
-      }
+    # The panel is up: the flag is an attribute so a re-render keeps it.
     unlink: |
       (self) => { self._shown = null; self._linking = null; self.setAttribute('data-linking', 'false'); }
-    # Pass the opener's bounds to the trusted top page. `reason`
-    # distinguishes an opening from a move: a move must never reopen a
-    # ceremony the person has just dismissed.
-    place: |
-      (self, reason) => {
-        const target = matchMedia('(max-width: 600px)').matches
-          ? document.querySelector('[data-account-nav]')
-          : document.querySelector('.hubbar');
-        const box = target?.getBoundingClientRect();
-        const anchor = box && box.width > 0 && box.height > 0 ? { left: box.left, bottom: box.bottom, width: box.width } : null;
-        if (!anchor && reason === 'reseat') return;
-        window.tonk?.register?.(JSON.stringify(anchor ? { reason, space: '', anchor } : { reason, space: '' }));
-      }
     # The link state the account page's rows are keyed on, and the door:
     # the account page or the settings page with no account raises the
     # ceremony itself once the link display has resolved empty. With no
@@ -6127,7 +6159,7 @@ element!: &account-settings
         if (account && self.unlinked() && !self.viaRequest()) {
           const via = self.viaAsk();
           if (!linking || (self._linking === 'sign-in-via') !== via) {
-            if (via) self.link('sign-in-via');
+            if (via) self.openSignInVia();
             else self.openRegistration();
           }
         }
@@ -6136,13 +6168,25 @@ element!: &account-settings
         const shown = account ? 'show' : 'suspend';
         if (linking && self._shown !== shown) {
           self._shown = shown;
-          if (self._linking === 'needs-account') {
-            if (shown === 'suspend') self.leaveRegistration();
-          } else {
-            self.place(shown);
-          }
+          if (shown === 'suspend') self.leaveRegistration();
         }
       }
+    # Assert a command through one of the hidden triggers below. A page can
+    # land here before its view listens, and an event nobody heard is lost,
+    # so an opening is asserted again until a stage shows.
+    fire: |
+      (self, selector, type, landed) => {
+        const trigger = self.querySelector(selector);
+        if (!trigger) return;
+        const fire = (tries) => {
+          trigger.dispatchEvent(new Event(type, { bubbles: true }));
+          if (!landed || tries <= 0) return;
+          setTimeout(() => { if (!landed()) fire(tries - 1); }, 300);
+        };
+        fire(20);
+      }
+    staged: |
+      (self) => !!document.querySelector('.registration-seat tonk-display:not([data-state="empty"])')
     # The panel that adds an account is views of the worker's stages: open
     # it by command, once per visit to the account page.
     open-registration: |
@@ -6150,12 +6194,19 @@ element!: &account-settings
         self.setAttribute('data-linking', 'true');
         self._shown = 'show';
         self._linking = 'needs-account';
-        self.querySelector('[data-open-registration]')?.dispatchEvent(new Event('tonk-open-registration', { bubbles: true }));
+        self.fire('[data-open-registration]', 'tonk-open-registration', () => self.staged());
+      }
+    open-sign-in-via: |
+      (self) => {
+        self.setAttribute('data-linking', 'true');
+        self._shown = 'show';
+        self._linking = 'sign-in-via';
+        self.fire('[data-open-sign-in-via]', 'tonk-open-sign-in-via', () => self.staged());
       }
     leave-registration: |
       (self) => {
         self.unlink();
-        self.querySelector('[data-leave-registration]')?.dispatchEvent(new Event('tonk-leave-registration', { bubbles: true }));
+        self.fire('[data-leave-registration]', 'tonk-leave-registration');
       }
     connected: |
       (self) => {
@@ -6235,16 +6286,6 @@ element!: &account-settings
         const resolved = new MutationObserver(() => self.door());
         resolved.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] });
         self._resolved = resolved;
-        // The top page tears the ceremony down, finished or dismissed.
-        const torn = () => { if (self.getAttribute('data-linking') === 'true') self.unlink(); };
-        window.addEventListener('tonk:registration-closed', torn);
-        self._torn = torn;
-        // Re-seat the ceremony on anything that can move the bar; the top
-        // page ignores the update when no ceremony is open.
-        const moveSeat = () => { if (self.getAttribute('data-linking') === 'true') self.place('reseat'); };
-        window.addEventListener('resize', moveSeat);
-        window.addEventListener('scroll', moveSeat, true);
-        self._moveSeat = moveSeat;
         self.describe();
         self.profiles();
         self.passkeyDates();
@@ -6257,11 +6298,6 @@ element!: &account-settings
         self._resolved?.disconnect();
         self._viaBound?.disconnect();
         self._viaBound = null;
-        if (self._torn) window.removeEventListener('tonk:registration-closed', self._torn);
-        if (self._moveSeat) {
-          window.removeEventListener('resize', self._moveSeat);
-          window.removeEventListener('scroll', self._moveSeat, true);
-        }
         self._teardown?.();
         self._teardown = null;
       }

@@ -73,7 +73,7 @@ pub use account::{
 pub mod registration;
 pub use registration::{
     RegistrationAddress, RegistrationCeremony, RegistrationConfirming, RegistrationFailed,
-    RegistrationNaming,
+    RegistrationNaming, RegistrationVia,
 };
 
 pub mod custody;

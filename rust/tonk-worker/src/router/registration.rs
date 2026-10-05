@@ -10,7 +10,7 @@ use dialog_artifacts::Entity;
 use tonk_common::log;
 use tonk_schema::registration::{
     ENTITY, RegistrationAddress, RegistrationCeremony, RegistrationConfirming, RegistrationFailed,
-    RegistrationNaming, kind,
+    RegistrationNaming, RegistrationVia, kind,
 };
 
 use crate::worker::TonkState;
@@ -23,6 +23,11 @@ pub(crate) enum Stage {
     Address {
         /// The address typed so far.
         email: String,
+    },
+    /// See [`RegistrationVia`].
+    Via {
+        /// The address typed so far.
+        origin: String,
     },
     /// See [`RegistrationNaming`].
     Naming {
@@ -107,6 +112,10 @@ pub(crate) async fn record(tonk: &TonkState, stage: Option<Stage>) {
         Some(Stage::Address { email }) => overlay.assert(RegistrationAddress {
             this,
             email: tonk_schema::domain::registration::address::Email(email),
+        }),
+        Some(Stage::Via { origin }) => overlay.assert(RegistrationVia {
+            this,
+            origin: tonk_schema::domain::registration::via::Origin(origin),
         }),
         Some(Stage::Naming { email }) => overlay.assert(RegistrationNaming {
             this,
@@ -454,6 +463,25 @@ impl dialog_capability::Provider<tonk_schema::command::CreateAccount>
 impl dialog_capability::Provider<tonk_schema::command::LogIn> for crate::router::CommandEnv {
     async fn execute(&self, _command: tonk_schema::command::LogIn) {
         log_in(self).await;
+    }
+}
+
+/// Run `account/open-sign-in-via`: the panel asks which Tonk holds the
+/// account.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::OpenSignInVia>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, _command: tonk_schema::command::OpenSignInVia) {
+        let tonk = self.state().read().await;
+        record(
+            &tonk,
+            Some(Stage::Via {
+                origin: String::new(),
+            }),
+        )
+        .await;
     }
 }
 

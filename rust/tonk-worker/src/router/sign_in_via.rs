@@ -93,12 +93,26 @@ struct Delivered {
 /// reason. `via` may be any address on the deployment; its origin is
 /// what is asked.
 fn approval_url(via: &str, here: &Url, audience: &str, request: &str) -> Result<String, String> {
-    let via = Url::parse(via.trim())
-        .map_err(|_| format!("{via} is not an address a deployment can be asked at"))?;
-    if via.scheme() != "https" || via.host_str().is_none() {
-        return Err(format!("{via} is not an https deployment"));
+    // Typed as a person names a deployment (`tonk.network`) or as an
+    // address: a bare host is the deployment served at it over https.
+    let typed = via.trim();
+    if typed.is_empty() {
+        return Err("Enter the address of the Tonk that holds your account.".to_owned());
+    }
+    let candidate = if typed.contains("://") {
+        typed.to_owned()
+    } else {
+        format!("https://{typed}")
+    };
+    let via = Url::parse(&candidate)
+        .map_err(|_| format!("{typed} is not an address a deployment can be asked at"))?;
+    if via.scheme() != "https" || via.host_str().is_none_or(str::is_empty) {
+        return Err(format!("{typed} is not an https deployment"));
     }
     let origin = via.origin().ascii_serialization();
+    if origin == here.origin().ascii_serialization() {
+        return Err("That is this Tonk. Use your email to sign in here instead.".to_owned());
+    }
     let callback = Url::parse_with_params(
         here.join("settings/link")
             .map_err(|error| format!("this deployment's address is unusable: {error}"))?
@@ -354,8 +368,19 @@ impl dialog_capability::Provider<SignInVia> for super::CommandEnv {
     async fn execute(&self, command: SignInVia) {
         let tonk = self.state().read().await;
         match start(&tonk, &command.via.0).await {
-            Ok(approval) => super::navigate::notify_navigate(self.client(), &approval),
+            Ok(approval) => {
+                super::registration::record(&tonk, None).await;
+                super::navigate::notify_navigate(self.client(), &approval)
+            }
             Err(error) => {
+                super::registration::record(
+                    &tonk,
+                    Some(super::registration::Stage::Failed {
+                        kind: tonk_schema::registration::kind::SIGN_IN_VIA,
+                        message: error.clone(),
+                    }),
+                )
+                .await;
                 super::ceremony::report(
                     &tonk,
                     ceremony::SIGN_IN_VIA,
@@ -445,17 +470,29 @@ mod tests {
 
     #[dialog_common::test]
     fn it_refuses_to_ask_a_deployment_that_is_not_https() {
-        for via in [
-            "http://tonk.network",
-            "tonk.network",
-            "javascript:alert(1)",
-            "",
-        ] {
+        for via in ["http://tonk.network", "javascript:alert(1)", ""] {
             assert!(
                 approval_url(via, &here(), DEVICE, "r1").is_err(),
                 "a grant must not be asked for over {via:?}"
             );
         }
+    }
+
+    /// A deployment is named the way a person names it: a bare host is the
+    /// one served at it over https.
+    #[dialog_common::test]
+    fn it_asks_a_deployment_named_by_its_host_over_https() {
+        let approval = approval_url("other.tonk.test", &here(), DEVICE, "r1").unwrap();
+        assert!(
+            approval.starts_with("https://other.tonk.test/settings/link?"),
+            "{approval}"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_refuses_to_sign_in_through_itself() {
+        let own = here().origin().ascii_serialization();
+        assert!(approval_url(&own, &here(), DEVICE, "r1").is_err());
     }
 
     #[dialog_common::test]

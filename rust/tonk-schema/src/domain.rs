@@ -1567,6 +1567,17 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `account/open-sign-in-via` — raise the panel that signs this
+        /// browser in through another Tonk.
+        pub mod open_sign_in_via {
+            use dialog_query::Attribute;
+
+            /// The activation's timestamp, so each click is its own command.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.open-sign-in-via")]
+            pub struct Time(pub f64);
+        }
+
         /// `account/dismiss-registration` — put the panel away.
         pub mod dismiss_registration {
             use dialog_query::Attribute;
@@ -1780,6 +1791,18 @@ pub mod registration {
         #[domain("xyz.tonk.registration-confirming")]
         #[cardinality(one)]
         pub struct Kind(pub String);
+    }
+
+    /// `tonk:registration/via`: the panel asks which Tonk holds the account,
+    /// to sign this browser in through it.
+    pub mod via {
+        use super::super::Attribute;
+
+        /// The address typed so far, empty at first.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.registration-via")]
+        #[cardinality(one)]
+        pub struct Origin(pub String);
     }
 
     /// `tonk:registration/failed`: the last step did not finish.

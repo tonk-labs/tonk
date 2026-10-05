@@ -223,6 +223,20 @@ impl Command for LogIn {
     type Output = ();
 }
 
+/// Raise the panel that signs this browser in through another Tonk.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct OpenSignInVia {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The activation's timestamp, so each click is its own command.
+    pub time: crate::domain::command::current::open_sign_in_via::Time,
+}
+
+impl Command for OpenSignInVia {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Put the panel away, wherever it got to.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct DismissRegistration {

@@ -777,13 +777,14 @@ pub(crate) async fn deprovision_consumer(
     Ok(())
 }
 
-/// The worker's own origin, which the access service serves. Known only
-/// inside a service-worker scope; callers outside one (native tests)
-/// carry an origin of their own through `RequestOrigin` instead.
+/// The app's origin, which the access service serves: the worker's own,
+/// or the app's where sites have origins of their own. Known only inside a
+/// service-worker scope; callers outside one (native tests) carry an origin
+/// of their own through `RequestOrigin` instead.
 pub(crate) fn service_origin() -> Result<Url, TonkWorkerError> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        let origin = super::repository::worker_origin().ok_or_else(|| {
+        let origin = super::repository::app_origin().ok_or_else(|| {
             TonkWorkerError::Internal("the worker origin is unavailable".to_string())
         })?;
         format!("{origin}/").parse().map_err(|error| {

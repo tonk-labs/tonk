@@ -12,7 +12,7 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
-use crate::domain::registration::{address, ceremony, confirming, failed, naming};
+use crate::domain::registration::{address, ceremony, confirming, failed, naming, via};
 
 /// The entity every stage is recorded on.
 pub const ENTITY: &str = "state:registration";
@@ -23,6 +23,8 @@ pub mod kind {
     pub const CREATE: &str = "create";
     /// Logging in with a passkey the account already has.
     pub const LOG_IN: &str = "log-in";
+    /// Signing in through another Tonk that holds the account.
+    pub const SIGN_IN_VIA: &str = "sign-in-via";
 }
 
 /// The panel asks for an address.
@@ -32,6 +34,16 @@ pub struct RegistrationAddress {
     pub this: Entity,
     /// The address typed so far, empty at first.
     pub email: address::Email,
+}
+
+/// The panel asks which Tonk holds the account, to sign this browser in
+/// through it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RegistrationVia {
+    /// Always [`ENTITY`].
+    pub this: Entity,
+    /// The address typed so far, empty at first.
+    pub origin: via::Origin,
 }
 
 /// The address is free, and the panel asks what to call the account.

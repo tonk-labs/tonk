@@ -589,7 +589,9 @@ fn it_recovers_from_every_absent_space_directory_state() {
         "both absence states must explain how to obtain an invite link"
     );
     assert_eq!(
-        directory_probe.matches("<space-login>").count(),
+        directory_probe
+            .matches("on:retry-registration=tonk:open-registration")
+            .count(),
         2,
         "both absence states must offer sign-in recovery"
     );
@@ -645,7 +647,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         "class=\"space-unknown-wall\"",
         "open this space",
         "class=\"space-unknown-back\" href=\"/\">go to home",
-        "<space-login><button type=\"button\"",
+        "<button type=\"button\" class=\"space-unknown-home\" on:retry-registration=tonk:open-registration>",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
