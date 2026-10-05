@@ -577,6 +577,15 @@ view!:
       .settings-back:active { background:var(--wash-2); }
       .hub-page:has(hub-bar[path="/account"]) :is(.settings-title,.settings-back) { display:none; }
       .hub-page account-settings { display:block; }
+      .registration-seat #tonk-register { position:fixed; inset:0; z-index:20; pointer-events:none;
+        --anchor-top:79px; --anchor-left:0px; --anchor-width:calc(100vw - 42px); }
+      .registration-seat #tonk-register .ocol { pointer-events:auto; }
+      .registration-seat #tonk-register #tonk-register-passkey { order:80; flex-basis:100%; }
+      .registration-hint { display:none; margin:8px 0 0; }
+      .registration-hint:is([data-state="invalid"],[data-state="suspended"],[data-state="unavailable"]) { display:block; }
+      .registration-hint[data-state="invalid"]::before { content:"That doesn’t look like an email address."; }
+      .registration-hint[data-state="suspended"]::before { content:"This account is suspended. Contact support to restore it."; }
+      .registration-hint[data-state="unavailable"]::before { content:"We couldn’t reach the account service. Check your connection and try again."; }
       .hub-page account-settings .s-body { min-width:0; min-height:0; max-height:none;
         overflow:visible; padding:0; background:transparent; border:0; color:var(--ink); }
       .hub-page account-settings .pane[hidden] { display:none; }
@@ -2830,6 +2839,15 @@ view!:
           </nav>
         </hub-bar>
         </header>
+        <!-- The panel that adds an account: whichever stage it is at, under
+             the bar. Each display draws nothing until its stage is there. -->
+        <div class="registration-seat">
+          <tonk-display model="tonk:registration/address" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/naming" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/ceremony" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/confirming" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/failed" view="panel"></tonk-display>
+        </div>
         <main class="hubcol">
         <h1 class="visually-hidden">Spaces</h1>
         <hub-discover data-spaces-view collection="spaces" catalog-url="https://goblinoats.github.io/honky-tonks/catalog.json">
@@ -2922,6 +2940,8 @@ view!:
                   </div>
                   <span hidden data-via-return on:finish-sign-in-via=tonk:finish-sign-in-via></span>
                 </div>
+                <span hidden data-open-registration on:open-registration=tonk:open-registration></span>
+                <span hidden data-leave-registration on:leave-registration=tonk:dismiss-registration></span>
                 <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
                 <tonk-display model="state:ceremony" view="settings"></tonk-display>
                 <div data-custody-seat aria-hidden="true"></div>
@@ -3844,6 +3864,170 @@ command!: &account/dismiss-registration
       description: The activation's timestamp, so each click is its own command.
       the: xyz.tonk.command.dismiss-registration/time
       as: float
+
+# The address check's answer, which the panel shows under the address.
+# Written by `account/check-email` and `account/start-registration`.
+concept!: &account/email-status
+  this: tonk:email-status
+  description: What the access service said about an address typed into the panel.
+  # ENTITY: state:email-status.
+  with:
+    address:
+      description: The address the answer is about.
+      the: xyz.tonk.email-status/address
+      cardinality: one
+      as: text
+    state:
+      description: >
+        `checking`, `unregistered`, `active`, `pending`, `suspended`,
+        `invalid` or `unavailable`.
+      the: xyz.tonk.email-status/state
+      cardinality: one
+      as: text
+
+# The page opens the panel when it lands on the account page with no
+# account, by dispatching this on its hidden trigger.
+event!: &on/open-registration
+  type: "tonk-open-registration"
+  where:
+    time: ".timeStamp"
+
+event!: &on/retry-registration
+  type: "click"
+  prevent-default: true
+  where:
+    time: ".timeStamp"
+
+event!: &on/start-registration
+  type: "submit"
+  prevent-default: true
+  where:
+    email: ".currentTarget.elements.email.value"
+
+event!: &on/create-account
+  type: "submit"
+  prevent-default: true
+  where:
+    email: ".currentTarget.dataset.email"
+    name: ".currentTarget.elements.name.value"
+
+event!: &on/log-in
+  type: "click"
+  prevent-default: true
+  where:
+    time: ".timeStamp"
+
+event!: &on/dismiss-registration
+  type: "click"
+  prevent-default: true
+  where:
+    time: ".timeStamp"
+
+# The page leaves the account page with the panel up: put it away.
+event!: &on/leave-registration
+  type: "tonk-leave-registration"
+  where:
+    time: ".timeStamp"
+
+# The panel, one view per stage. Each is the same card, under the bar;
+# what it asks for is the stage's.
+view!:
+  this: tonk:registration/address
+  show:
+    panel: |
+      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="address">
+        <form class="ocol" on:start-registration=tonk:start-registration>
+          <div class="ostack">
+            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
+            <div class="orow mblk editing">
+              <span class="k">email address</span>
+              <span class="v"><input class="ed" name="email" type="email" inputmode="email" enterkeyhint="go"
+                autocomplete="email" aria-label="email address" value={email} required></span>
+            </div>
+            <button class="obtn" id="tonk-register-passkey" type="button" on:log-in=tonk:log-in>log in with a passkey</button>
+          </div>
+          <div class="oexp mblk">
+            <p aria-live="polite">Enter your email to continue. We’ll check whether you already have a Tonk account.</p>
+            <tonk-display model="tonk:email-status" view="hint"></tonk-display>
+          </div>
+          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
+          <button class="obtn" id="tonk-register-action" type="submit">continue</button>
+        </form>
+      </div>
+
+view!:
+  this: tonk:registration/naming
+  show:
+    panel: |
+      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="naming">
+        <form class="ocol" data-email={email} on:create-account=tonk:create-account>
+          <div class="ostack">
+            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
+            <div class="orow mblk"><span class="k">email</span><span class="v">{email}</span></div>
+            <div class="orow mblk editing">
+              <span class="k">display name</span>
+              <span class="v"><input class="ed" name="name" type="text" enterkeyhint="go" autocomplete="name"
+                aria-label="display name" required maxlength="50"></span>
+            </div>
+          </div>
+          <div class="oexp mblk"><p aria-live="polite">What should people see when you share a space? Your passkey comes next.</p></div>
+          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
+          <button class="obtn" id="tonk-register-action" type="submit">create a passkey</button>
+        </form>
+      </div>
+
+view!:
+  this: tonk:registration/ceremony
+  show:
+    panel: |
+      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="ceremony" data-kind={kind}>
+        <div class="ocol">
+          <div class="ostack">
+            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
+          </div>
+          <div class="oexp mblk"><p aria-live="polite">Waiting for your passkey…</p></div>
+          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
+          <button class="obtn wait" id="tonk-register-action" type="button" disabled aria-busy="true">waiting for device</button>
+        </div>
+      </div>
+
+view!:
+  this: tonk:registration/confirming
+  show:
+    panel: |
+      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="confirming" data-kind={kind}>
+        <div class="ocol">
+          <div class="ostack">
+            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
+            <div class="orow mblk"><span class="k">email</span><span class="v">awaiting confirmation</span></div>
+          </div>
+          <div class="oexp mblk"><p aria-live="polite">Open the confirmation link we emailed you to finish. You can leave this page open.</p></div>
+          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>close</button>
+        </div>
+      </div>
+
+view!:
+  this: tonk:registration/failed
+  show:
+    panel: |
+      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="failed" data-kind={kind}>
+        <div class="ocol">
+          <div class="ostack">
+            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
+          </div>
+          <div class="oexp mblk"><p aria-live="polite">{message}</p></div>
+          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
+          <button class="obtn" id="tonk-register-action" type="button" on:retry-registration=tonk:open-registration>try again</button>
+        </div>
+      </div>
+
+# What the address check said, under the address. Only the answers that
+# stop the panel need words: the others move it on.
+view!:
+  this: tonk:email-status
+  show:
+    hint: |
+      <p class="registration-hint" data-state={state} data-address={address}></p>
 
 concept!: &account/active
   this: tonk:account/active
@@ -5844,13 +6028,34 @@ element!: &account-settings
           const via = self.viaAsk();
           if (!linking || (self._linking === 'sign-in-via') !== via) {
             if (via) self.link('sign-in-via');
-            else self.link('needs-account');
+            else self.openRegistration();
           }
         }
         // Route changes can suspend and restore the ceremony with its
         // typed address intact.
         const shown = account ? 'show' : 'suspend';
-        if (linking && self._shown !== shown) { self._shown = shown; self.place(shown); }
+        if (linking && self._shown !== shown) {
+          self._shown = shown;
+          if (self._linking === 'needs-account') {
+            if (shown === 'suspend') self.leaveRegistration();
+          } else {
+            self.place(shown);
+          }
+        }
+      }
+    # The panel that adds an account is views of the worker's stages: open
+    # it by command, once per visit to the account page.
+    open-registration: |
+      (self) => {
+        self.setAttribute('data-linking', 'true');
+        self._shown = 'show';
+        self._linking = 'needs-account';
+        self.querySelector('[data-open-registration]')?.dispatchEvent(new Event('tonk-open-registration', { bubbles: true }));
+      }
+    leave-registration: |
+      (self) => {
+        self.unlink();
+        self.querySelector('[data-leave-registration]')?.dispatchEvent(new Event('tonk-leave-registration', { bubbles: true }));
       }
     connected: |
       (self) => {

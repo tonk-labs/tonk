@@ -224,8 +224,12 @@ fn it_raises_the_signup_from_an_unlinked_account_cell() {
         "the panel must be able to tell whether an account is linked",
     );
     assert!(
-        panel.contains("self.link('needs-account');"),
-        "and raise the ceremony in place when none is",
+        panel.contains("else self.openRegistration();"),
+        "and open the panel that adds an account when none is",
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("on:open-registration=tonk:open-registration"),
+        "by the command the worker records the panel's first stage for",
     );
     assert!(
         PROFILE_LIBRARY.contains(
