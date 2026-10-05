@@ -16,7 +16,8 @@
 //!   arrive without it.
 //!
 //! The server sends no CORS headers, so a browser lets no other origin
-//! read a response even when a request does arrive.
+//! read a response even when a request does arrive. WebSockets are not
+//! covered by CORS, so the stream route also checks the `Origin` header.
 //!
 //! Sealed guest frames (opaque origins) never fetch from here directly:
 //! the portal bootstrap relays their fetches through the top document,
@@ -27,6 +28,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::{self, Next};
@@ -34,6 +36,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use tonk_worker::axum::RequestOrigin;
 use tonk_worker::{AppState, ClientId};
+use futures_util::StreamExt as _;
 use tower::ServiceExt as _;
 
 /// Name of the cookie that carries the launch token.
@@ -93,6 +96,7 @@ impl Server {
         Router::new()
             .route("/__tonk/launch", get(launch))
             .route("/api/health", get(health))
+            .route("/__tonk/stream", get(stream))
             .fallback(dispatch)
             .layer(middleware::from_fn_with_state(self.clone(), guard))
             .with_state(self)
@@ -168,24 +172,124 @@ async fn health() -> &'static str {
 }
 
 /// `/api/...` goes to the worker; everything else is the built UI.
-async fn dispatch(State(server): State<Server>, mut request: Request) -> Response {
+async fn dispatch(State(server): State<Server>, request: Request) -> Response {
     if request.uri().path().starts_with("/api/") || request.uri().path() == "/api" {
-        let extensions = request.extensions_mut();
-        extensions.insert(ClientId(CLIENT_ID.to_owned()));
-        match RequestOrigin::parse(&format!("{}/", server.origin())) {
-            Ok(origin) => {
-                extensions.insert(origin);
-            }
-            Err(_) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, "bad origin").into_response();
-            }
-        }
-        return match server.worker.clone().oneshot(request).await {
-            Ok(response) => response,
-            Err(never) => match never {},
-        };
+        return to_worker(&server, request).await;
     }
     serve_static(&server.dist, request.method(), request.uri()).await
+}
+
+/// Run `request` through the worker's router, with the extensions the
+/// service worker would have attached.
+async fn to_worker(server: &Server, mut request: Request) -> Response {
+    let extensions = request.extensions_mut();
+    extensions.insert(ClientId(CLIENT_ID.to_owned()));
+    match RequestOrigin::parse(&format!("{}/", server.origin())) {
+        Ok(origin) => {
+            extensions.insert(origin);
+        }
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "bad origin").into_response(),
+    }
+    match server.worker.clone().oneshot(request).await {
+        Ok(response) => response,
+        Err(never) => match never {},
+    }
+}
+
+/// A streaming `/api` request, as the page's native-host script sends it
+/// over a WebSocket (see `native_host.js`).
+#[derive(serde::Deserialize)]
+struct StreamRequest {
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+    body: String,
+}
+
+/// The response head, sent as the first message on the socket.
+#[derive(serde::Serialize)]
+struct StreamHead {
+    status: u16,
+    headers: Vec<(String, String)>,
+}
+
+/// Carry one streaming `/api` request over a WebSocket.
+///
+/// Browsers allow six HTTP/1.1 connections to one host, and every live
+/// query holds one open for as long as it is watched, so a page watching
+/// more than six stalls. WebSockets do not count against that limit.
+async fn stream(
+    State(server): State<Server>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let origin = headers.get(header::ORIGIN).and_then(|value| value.to_str().ok());
+    if origin != Some(server.origin().as_str()) {
+        return (StatusCode::FORBIDDEN, "not this window").into_response();
+    }
+    upgrade.on_upgrade(move |socket| relay(server, socket))
+}
+
+/// Read the request off `socket`, answer it from the worker, and send the
+/// response back until its body ends or the page closes the socket.
+async fn relay(server: Server, mut socket: WebSocket) {
+    let Some(Ok(Message::Text(text))) = socket.recv().await else {
+        return;
+    };
+    let Ok(sent) = serde_json::from_str::<StreamRequest>(&text) else {
+        return;
+    };
+    // Only `/api` goes through here; the socket must not become a way
+    // around the static-file rules.
+    if !sent.path.starts_with("/api/") {
+        return;
+    }
+    let mut builder = Request::builder().method(sent.method.as_str()).uri(sent.path);
+    for (name, value) in &sent.headers {
+        builder = builder.header(name, value);
+    }
+    let Ok(request) = builder.body(Body::from(sent.body)) else {
+        return;
+    };
+
+    let response = to_worker(&server, request).await;
+    let head = StreamHead {
+        status: response.status().as_u16(),
+        headers: response
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| Some((name.to_string(), value.to_str().ok()?.to_owned())))
+            .collect(),
+    };
+    let Ok(head) = serde_json::to_string(&head) else {
+        return;
+    };
+    if socket.send(Message::Text(head.into())).await.is_err() {
+        return;
+    }
+
+    let mut body = response.into_body().into_data_stream();
+    loop {
+        tokio::select! {
+            chunk = body.next() => match chunk {
+                Some(Ok(bytes)) => {
+                    if socket.send(Message::Binary(bytes)).await.is_err() {
+                        return;
+                    }
+                }
+                // The body ended, or failed: either way the stream is over.
+                _ => break,
+            },
+            // Anything from the page after the request is a close, or a
+            // dropped connection. Ending here drops the body, which ends
+            // the worker's subscription.
+            message = socket.recv() => match message {
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
+                Some(Ok(_)) => {}
+            },
+        }
+    }
+    let _ = socket.send(Message::Close(None)).await;
 }
 
 /// Serve a file from the built UI. A path with no file behind it is an

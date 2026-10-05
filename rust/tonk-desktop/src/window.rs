@@ -7,10 +7,14 @@ use tao::window::WindowBuilder;
 use tokio::runtime::Runtime;
 use wry::WebViewBuilder;
 
-/// Defined before any page script runs, in every frame. The page reads
-/// it to skip registering a service worker.
-const NATIVE_HOST_SCRIPT: &str =
-    "globalThis.tonkNativeHost = Object.freeze({ kind: \"desktop\" });";
+/// Runs before any page script, in every frame: marks the page as
+/// natively hosted and carries live queries over WebSockets.
+const NATIVE_HOST_SCRIPT: &str = include_str!("native_host.js");
+
+/// The native-host script for a page served from `origin`.
+pub fn native_host_script(origin: &str) -> String {
+    NATIVE_HOST_SCRIPT.replace("__TONK_ORIGIN__", origin)
+}
 
 /// Open the window on `launch_url` and run the event loop until it
 /// closes. `runtime` serves the page meanwhile, so it lives as long as
@@ -24,7 +28,7 @@ pub fn run(runtime: Runtime, launch_url: String, origin: String) -> Result<()> {
 
     let builder = WebViewBuilder::new()
         .with_url(&launch_url)
-        .with_initialization_script(NATIVE_HOST_SCRIPT)
+        .with_initialization_script(&native_host_script(&origin))
         .with_navigation_handler({
             let origin = origin.clone();
             move |url| {

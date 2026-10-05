@@ -15,12 +15,14 @@ description = "Tonk in a native window: the worker runs in-process instead of as
 
 [dependencies]
 anyhow = "1"
-axum = { version = "0.8", default-features = false, features = ["tokio", "http1", "query"] }
+axum = { version = "0.8", default-features = false, features = ["tokio", "http1", "query", "ws"] }
 clap = { version = "4", features = ["derive", "env"] }
 dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
 dirs = "5"
+futures-util = "0.3"
 rand = "0.9"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tao = "0.37"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "signal"] }
 tonk-worker = { path = "../tonk-worker" }

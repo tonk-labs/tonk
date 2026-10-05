@@ -47,10 +47,15 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     port: u16,
 
-    /// Serve without opening a window, and print the launch URL. For
+    /// Serve without opening a window, and log the launch URL. For
     /// driving the page from another browser in tests.
     #[arg(long)]
     serve_only: bool,
+
+    /// With `--serve-only`, write the script the window would run before
+    /// the page here, for the other browser to run in its place.
+    #[arg(long, requires = "serve_only")]
+    host_script: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -116,7 +121,12 @@ fn main() -> Result<()> {
     })?;
 
     if args.serve_only {
-        println!("{}", server.launch_url());
+        // Logged to stderr: the worker logs to stdout, and a test reading
+        // the URL must not have to pick it out of those.
+        eprintln!("launch: {}", server.launch_url());
+        if let Some(path) = args.host_script {
+            std::fs::write(&path, window::native_host_script(&server.origin()))?;
+        }
         runtime.block_on(tokio::signal::ctrl_c())?;
         return Ok(());
     }

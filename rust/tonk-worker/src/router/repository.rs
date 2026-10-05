@@ -3733,10 +3733,6 @@ where
 /// Spawn the background seed + status flip for a freshly created
 /// repository. Returns immediately; the work runs after the PUT
 /// response is sent.
-///
-/// Native builds have no service-worker scope (and no `spawn_local`
-/// runtime here), so they no-op — the seed/status path is browser-only.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn spawn_seed(
     state: AppState,
     display_name: String,
@@ -3744,7 +3740,7 @@ fn spawn_seed(
     subject: Did,
     branches: Vec<String>,
 ) {
-    wasm_bindgen_futures::spawn_local(async move {
+    crate::detach(async move {
         if let Err(e) =
             seed_and_initialize(&state, &display_name, None, &key, &subject, &branches).await
         {
@@ -3753,16 +3749,6 @@ fn spawn_seed(
         let tonk = state.read().await;
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     });
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-fn spawn_seed(
-    _state: AppState,
-    _display_name: String,
-    _key: String,
-    _subject: Did,
-    _branches: Vec<String>,
-) {
 }
 
 /// Whether `subject` still has a recorded [`Replica`] on the profile's
