@@ -50,3 +50,15 @@ execution aborted with `failed to initiate panic, error 5`. `cargo fmt --all --
 passed. Nix verified all five checks on aarch64-darwin, including workspace
 Clippy with all targets/features and warnings denied. Hosted Linux CI must
 still run on the pushed commit.
+
+The next hosted run passed lint, all end-to-end shards, and the five Wasm
+conditional execution tests, but web-debug failed the pinned route-table guard:
+the conditional endpoint was registered without its matching `ROUTES` entry.
+Add that entry in sorted order. This is the existing evaluation data plane with
+a revision precondition; a transient command cannot provide the required
+pre-commit guard, and older workers must reject the distinct endpoint rather
+than silently perform an unconditional write.
+
+Validation after the table edit: both native `router::route_table` tests passed,
+as did `cargo fmt --all -- --check` and `git diff --check`. The full hosted web
+suite remains to be rerun on the new commit.
