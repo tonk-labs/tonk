@@ -159,6 +159,84 @@ impl Command for RegisterAccount {
     type Output = ();
 }
 
+/// Raise the panel that adds an account to this profile.
+///
+/// The panel is views of the [`crate::registration`] stages, so raising
+/// it is recording its first stage.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct OpenRegistration {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The activation's timestamp, so each click is its own command.
+    pub time: crate::domain::command::current::open_registration::Time,
+}
+
+impl Command for OpenRegistration {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Go on with the address typed into the panel: name a new account for a
+/// free address, or log in to the one an address already has.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StartRegistration {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The address given.
+    pub email: crate::domain::command::current::start_registration::Email,
+}
+
+impl Command for StartRegistration {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Create the account for a free address, with a new passkey the page is
+/// asked to make.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CreateAccount {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The account's address.
+    pub email: crate::domain::command::current::create_account::Email,
+    /// What to call the account.
+    pub name: crate::domain::command::current::create_account::Name,
+}
+
+impl Command for CreateAccount {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Log in with a passkey the person picks: the page asks the browser for
+/// any passkey this site has, and the one picked names the account.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct LogIn {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The activation's timestamp, so each click is its own command.
+    pub time: crate::domain::command::current::log_in::Time,
+}
+
+impl Command for LogIn {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Put the panel away, wherever it got to.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct DismissRegistration {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The activation's timestamp, so each click is its own command.
+    pub time: crate::domain::command::current::dismiss_registration::Time,
+}
+
+impl Command for DismissRegistration {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Request to create a new space (repository) by local name.
 ///
 /// Asserted transiently when a create form submits. The handler records

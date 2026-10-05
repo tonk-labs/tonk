@@ -153,10 +153,10 @@ async fn mediate(
 /// Post a custody hand-off to the worker that holds the account. Where the
 /// profile renders on an origin of its own that is the profile's worker,
 /// reached through the profile's frame on this page, which installs
-/// `tonkProfileCustody` to do it. Otherwise it is this page's own worker.
+/// `tonkProfileWorker` to do it. Otherwise it is this page's own worker.
 fn hand_to_custodian(message: &JsValue, transfer: &js_sys::Array) -> Result<(), JsValue> {
     let global = js_sys::global();
-    if let Ok(relay) = Reflect::get(&global, &"tonkProfileCustody".into())
+    if let Ok(relay) = Reflect::get(&global, &"tonkProfileWorker".into())
         .and_then(|relay| relay.dyn_into::<js_sys::Function>())
     {
         return relay.call2(&global, message, transfer).map(|_| ());

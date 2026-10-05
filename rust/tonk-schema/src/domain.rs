@@ -1521,6 +1521,62 @@ pub mod command {
             pub struct Email(pub String);
         }
 
+        /// `account/open-registration` — raise the panel that adds an
+        /// account.
+        pub mod open_registration {
+            use dialog_query::Attribute;
+
+            /// The activation's timestamp, so each click is its own command.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.open-registration")]
+            pub struct Time(pub f64);
+        }
+
+        /// `account/start-registration` — go on with a typed address.
+        pub mod start_registration {
+            use dialog_query::Attribute;
+
+            /// The address given.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.start-registration")]
+            pub struct Email(pub String);
+        }
+
+        /// `account/create` — create the account with a new passkey.
+        pub mod create_account {
+            use dialog_query::Attribute;
+
+            /// The account's address.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-account")]
+            pub struct Email(pub String);
+
+            /// What to call the account.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-account")]
+            pub struct Name(pub String);
+        }
+
+        /// `account/log-in` — log in with a passkey the person picks.
+        pub mod log_in {
+            use dialog_query::Attribute;
+
+            /// The activation's timestamp, so each click is its own command.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.log-in")]
+            pub struct Time(pub f64);
+        }
+
+        /// `account/dismiss-registration` — put the panel away.
+        pub mod dismiss_registration {
+            use dialog_query::Attribute;
+
+            /// The activation's timestamp, so each click is its own command.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.dismiss-registration")]
+            pub struct Time(pub f64);
+        }
+
         /// `tonk/add-passkey` — seal the account under a second passkey.
         pub mod add_passkey {
             use dialog_artifacts::Entity;
@@ -1675,6 +1731,73 @@ pub mod ceremony_status {
     #[domain("xyz.tonk.ceremony")]
     #[cardinality(one)]
     pub struct Detail(pub String);
+}
+
+/// The stages of adding an account to this profile, one concept each on
+/// the profile's overlay (see [`crate::registration`]).
+pub mod registration {
+    /// `tonk:registration/address`: the panel asks for an address.
+    pub mod address {
+        use super::super::Attribute;
+
+        /// The address typed so far, empty at first.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.registration-address")]
+        #[cardinality(one)]
+        pub struct Email(pub String);
+    }
+
+    /// `tonk:registration/naming`: the address is free; the panel asks
+    /// what to call the account.
+    pub mod naming {
+        use super::super::Attribute;
+
+        /// The address the account will have.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.registration-naming")]
+        #[cardinality(one)]
+        pub struct Email(pub String);
+    }
+
+    /// `tonk:registration/ceremony`: the passkey is being asked for.
+    pub mod ceremony {
+        use super::super::Attribute;
+
+        /// `create` or `log-in`, see [`crate::registration::kind`].
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.registration-ceremony")]
+        #[cardinality(one)]
+        pub struct Kind(pub String);
+    }
+
+    /// `tonk:registration/confirming`: the account waits for its emailed
+    /// link to be opened.
+    pub mod confirming {
+        use super::super::Attribute;
+
+        /// `create` or `log-in`: which ceremony brought the account here.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.registration-confirming")]
+        #[cardinality(one)]
+        pub struct Kind(pub String);
+    }
+
+    /// `tonk:registration/failed`: the last step did not finish.
+    pub mod failed {
+        use super::super::Attribute;
+
+        /// `create` or `log-in`: which ceremony failed.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.registration-failed")]
+        #[cardinality(one)]
+        pub struct Kind(pub String);
+
+        /// What went wrong, in words a person can act on.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.registration-failed")]
+        #[cardinality(one)]
+        pub struct Message(pub String);
+    }
 }
 
 pub mod email_status {

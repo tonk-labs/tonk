@@ -101,14 +101,24 @@ pub(crate) async fn receive(
         }
         None => true,
     };
+    // The panel that adds an account follows the ceremonies it asked for.
+    let registration = super::registration::kind_in(&data);
     let answer = if !context_current {
         Err("profile changed; reload required".to_string())
     } else {
         match custodian_from(&data).await {
-            Ok(custodian) => perform(state, source.as_ref(), &data, custodian).await,
+            Ok(custodian) => perform(state.clone(), source.as_ref(), &data, custodian).await,
             Err(error) => Err(error),
         }
     };
+    if let Some(kind) = registration {
+        let outcome = match &answer {
+            Ok(_) => Ok(()),
+            Err(error) => Err(split_refusal(error)),
+        };
+        let tonk = state.read().await;
+        super::registration::settle(&tonk, kind, outcome).await;
+    }
 
     let reply = js_sys::Object::new();
     match answer {

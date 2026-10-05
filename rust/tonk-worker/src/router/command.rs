@@ -223,6 +223,12 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<super::ceremony::AuthorizeDeviceRequest>()
         // Signing in through another deployment is new, so neither half
         // has a legacy shape to migrate.
+        // Adding an account to this profile, stage by stage.
+        .command::<tonk_schema::command::OpenRegistration>()
+        .command::<tonk_schema::command::StartRegistration>()
+        .command::<tonk_schema::command::CreateAccount>()
+        .command::<tonk_schema::command::LogIn>()
+        .command::<tonk_schema::command::DismissRegistration>()
         .command::<tonk_schema::command::SignInVia>()
         .command::<tonk_schema::command::FinishSignInVia>()
         .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>()

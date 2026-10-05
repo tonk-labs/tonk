@@ -70,6 +70,12 @@ pub use account::{
     email_state,
 };
 
+pub mod registration;
+pub use registration::{
+    RegistrationAddress, RegistrationCeremony, RegistrationConfirming, RegistrationFailed,
+    RegistrationNaming,
+};
+
 pub mod custody;
 pub use custody::{Replacement, SecretMessage, SecretPrincipal, SeedKind};
 

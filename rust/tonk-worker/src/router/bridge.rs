@@ -112,6 +112,15 @@ pub async fn handle_message(
     let envelope_type = envelope.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match envelope_type {
         "hello" => handle_hello(state, client, ports).await,
+        // The top-level page could not run a passkey ceremony the panel that
+        // adds an account asked for: the prompt was closed, or the browser
+        // would not show it. Nothing reached the worker to fail here, so the
+        // page says so.
+        "ceremony-refused" => {
+            let field = |name: &str| envelope.get(name).and_then(|v| v.as_str()).unwrap_or("");
+            let tonk = state.read().await;
+            super::registration::ceremony_refused(&tonk, field("kind"), field("name")).await;
+        }
         other => {
             log!(
                 "bridge: SW global received unexpected envelope type '{other}' from {client:?} \

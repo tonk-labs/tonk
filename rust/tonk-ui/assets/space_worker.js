@@ -222,10 +222,11 @@ self.addEventListener("message", event => {
         bindSpacePort(event.ports[0], event.data);
         return;
     }
-    // What a custody ceremony on the app's page derived, handed down by the
-    // profile's frame there. The ceremony is the app's page's; the account it
-    // opens is this worker's.
-    if (type === "custody" && PROFILE) {
+    // What came of a passkey ceremony on the app's page, handed down by the
+    // profile's frame there: what a custody ceremony derived, or that one
+    // was refused. The ceremony is the app's page's; the account it opens is
+    // this worker's.
+    if ((type === "custody" || type === "ceremony-refused") && PROFILE) {
         event.waitUntil(messaged(event.data, event.ports, event.source?.id ?? ""));
         return;
     }

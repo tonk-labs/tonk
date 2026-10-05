@@ -3727,6 +3727,124 @@ view!:
     label: |
       <span data-account-link-row data-of={this}><span data-account-linked hidden></span><tonk-display model="tonk:account/name" entity={account} view="directory"><span slot="no-entity"></span></tonk-display></span>
 
+# Adding an account to this profile, one stage at a time. Each stage is a
+# concept of its own on the profile's overlay, all on `state:registration`,
+# and the worker records at most one at a time: a view draws the stage it
+# matches. No stage is the panel put away; a finished account is what the
+# account's own facts say. Overlay only: the panel is this device's.
+concept!: &registration/address
+  this: tonk:registration/address
+  description: The panel that adds an account asks for an address.
+  # ENTITY: state:registration.
+  with:
+    email:
+      description: The address typed so far, empty at first.
+      the: xyz.tonk.registration-address/email
+      cardinality: one
+      as: text
+
+concept!: &registration/naming
+  this: tonk:registration/naming
+  description: The address is free, and the panel asks what to call the account.
+  # ENTITY: state:registration.
+  with:
+    email:
+      description: The address the account will have.
+      the: xyz.tonk.registration-naming/email
+      cardinality: one
+      as: text
+
+concept!: &registration/ceremony
+  this: tonk:registration/ceremony
+  description: The page has been asked for the passkey.
+  # ENTITY: state:registration.
+  with:
+    kind:
+      description: "`create` for a new passkey, `log-in` for one the account has."
+      the: xyz.tonk.registration-ceremony/kind
+      cardinality: one
+      as: text
+
+concept!: &registration/confirming
+  this: tonk:registration/confirming
+  description: The account waits for its emailed link to be opened.
+  # ENTITY: state:registration.
+  with:
+    kind:
+      description: "Which ceremony brought the account here: `create` or `log-in`."
+      the: xyz.tonk.registration-confirming/kind
+      cardinality: one
+      as: text
+
+concept!: &registration/failed
+  this: tonk:registration/failed
+  description: The last step of adding an account did not finish.
+  # ENTITY: state:registration.
+  with:
+    kind:
+      description: "Which ceremony failed: `create` or `log-in`."
+      the: xyz.tonk.registration-failed/kind
+      cardinality: one
+      as: text
+    message:
+      description: What went wrong, in words a person can act on.
+      the: xyz.tonk.registration-failed/message
+      cardinality: one
+      as: text
+
+command!: &account/open-registration
+  this: tonk:open-registration
+  description: Raise the panel that adds an account to this profile.
+  with:
+    time:
+      description: The activation's timestamp, so each click is its own command.
+      the: xyz.tonk.command.open-registration/time
+      as: float
+
+command!: &account/start-registration
+  this: tonk:start-registration
+  description: >
+    Go on with the address typed into the panel: name a new account for a
+    free address, or log in to the one an address already has.
+  with:
+    email:
+      description: The address given.
+      the: xyz.tonk.command.start-registration/email
+      as: text
+
+command!: &account/create
+  this: tonk:create-account
+  description: Create the account for a free address, with a new passkey.
+  with:
+    email:
+      description: The account's address.
+      the: xyz.tonk.command.create-account/email
+      as: text
+    name:
+      description: What to call the account.
+      the: xyz.tonk.command.create-account/name
+      as: text
+
+command!: &account/log-in
+  this: tonk:log-in
+  description: >
+    Log in with a passkey the person picks: the browser lists this site's
+    passkeys, and the one picked names the account.
+  with:
+    time:
+      description: The activation's timestamp, so each click is its own command.
+      the: xyz.tonk.command.log-in/time
+      as: float
+
+command!: &account/dismiss-registration
+  this: tonk:dismiss-registration
+  description: Put the panel that adds an account away, wherever it got to.
+  with:
+    time:
+      description: The activation's timestamp, so each click is its own command.
+      the: xyz.tonk.command.dismiss-registration/time
+      as: float
+
 concept!: &account/active
   this: tonk:account/active
   description: The account confirmed its address and is served.

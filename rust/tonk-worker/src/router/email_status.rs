@@ -87,23 +87,30 @@ impl dialog_capability::Provider<tonk_schema::command::CheckEmail> for crate::ro
         if email.trim().is_empty() {
             return;
         }
-        // Say the lookup is in flight BEFORE making it. The form
-        // renders the row and nothing else, so without this the
-        // wait would have to be painted into the DOM by the form
-        // itself, leaving two sources of truth that disagree while
-        // the lookup runs.
-        publish(self, &email, state::CHECKING).await;
-        let (state, service) = lookup(&email).await;
-        publish(self, &email, state).await;
-        // The document says where the account syncs as well as who
-        // it is, so one lookup answers both. Held for the login
-        // that follows: a device with only an address has nowhere
-        // else to learn the service, and the origin is a guess that
-        // is right only when both devices are on one deployment.
-        if let Some(service) = service {
-            remember_service(&service);
-        }
+        let tonk = self.state().read().await;
+        check(&tonk, &email).await;
     }
+}
+
+/// Look `email` up, record the answer on the profile overlay, and return
+/// it.
+pub(crate) async fn check(tonk: &crate::worker::TonkState, email: &str) -> &'static str {
+    // Say the lookup is in flight BEFORE making it. The form renders the
+    // row and nothing else, so without this the wait would have to be
+    // painted into the DOM by the form itself, leaving two sources of
+    // truth that disagree while the lookup runs.
+    record(tonk, email, state::CHECKING).await;
+    let (state, service) = lookup(email).await;
+    record(tonk, email, state).await;
+    // The document says where the account syncs as well as who it is, so
+    // one lookup answers both. Held for the login that follows: a device
+    // with only an address has nowhere else to learn the service, and the
+    // origin is a guess that is right only when both devices are on one
+    // deployment.
+    if let Some(service) = service {
+        remember_service(&service);
+    }
+    state
 }
 
 /// Ask the access service about `email`.

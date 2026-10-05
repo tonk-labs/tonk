@@ -18,7 +18,7 @@ use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 use crate::bridge::{self, PortalState};
 use crate::site_content::head_markup as build_head_markup;
 use crate::space_origin::{
-    SANDBOX, expose_profile_custody, shell_url, site_origin, site_pattern, watch_shell,
+    SANDBOX, expose_profile_worker, shell_url, site_origin, site_pattern, watch_shell,
 };
 
 /// The tags an embedder may place in a portal's light DOM to style its
@@ -159,7 +159,7 @@ pub(crate) fn connect_portal(
         Some(origin) => {
             let shell = shell_url(&origin);
             if profile {
-                expose_profile_custody(&iframe, &origin);
+                expose_profile_worker(&iframe, &origin);
             }
             state
                 .borrow_mut()

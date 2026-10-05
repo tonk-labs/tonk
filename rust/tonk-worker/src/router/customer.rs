@@ -1220,6 +1220,10 @@ pub(crate) async fn record_customer_status(
         super::email_status::state_for_customer(status),
     )
     .await;
+    // A panel waiting for the emailed link has nothing left to wait for.
+    if status == CustomerStatus::Active {
+        super::registration::activated(state).await;
+    }
 
     Ok(())
 }

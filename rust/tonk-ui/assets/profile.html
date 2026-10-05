@@ -47,16 +47,18 @@
                         },
                         true,
                     );
-                    // The app's page runs the passkey ceremonies, and hands
-                    // what a custody ceremony derived to the worker that
-                    // holds the account, this origin's, by way of this frame.
+                    // The app's page runs the passkey ceremonies, and tells
+                    // the worker that holds the account, this origin's, what
+                    // came of one by way of this frame: what a custody
+                    // ceremony derived, or that a ceremony was refused.
+                    var TO_WORKER = ["custody", "ceremony-refused"];
                     window.addEventListener(
                         "message",
                         function (e) {
-                            if (e.source !== parent || !e.data || e.data.__tonkOrigin !== "custody") return;
+                            if (e.source !== parent || !e.data || e.data.__tonkOrigin !== "to-worker") return;
                             e.stopImmediatePropagation();
                             var message = e.data.message;
-                            if (!message || message.type !== "custody" || !sw.controller) return;
+                            if (!message || TO_WORKER.indexOf(message.type) < 0 || !sw.controller) return;
                             sw.controller.postMessage(message, Array.prototype.slice.call(e.ports));
                         },
                         true,

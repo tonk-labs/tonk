@@ -331,12 +331,71 @@ fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
     }
 }
 
-/// Which ceremony a guest-asserted command runs: adding a passkey creates
-/// one, everything else asserts the account's.
+/// Which ceremony a guest-asserted command runs: creating an account or
+/// adding a passkey makes one, everything else asserts the account's.
 fn command_method(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
     match intent {
+        tonk_worker_api::CustodyIntent::CreateAccount(_) => "createPasskey",
         tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
         _ => "usePasskey",
+    }
+}
+
+/// Which of the panel's ceremonies `intent` is, when the panel that adds an
+/// account asked for it: that panel waits on the worker to say how it went.
+fn registration_kind(intent: &tonk_worker_api::CustodyIntent) -> Option<&'static str> {
+    match intent {
+        tonk_worker_api::CustodyIntent::CreateAccount(_) => {
+            Some(tonk_schema::registration::kind::CREATE)
+        }
+        tonk_worker_api::CustodyIntent::Login(_) => Some(tonk_schema::registration::kind::LOG_IN),
+        _ => None,
+    }
+}
+
+/// The browser's name for a refused ceremony.
+fn refusal_name(refusal: tonk_identity::passkey::CeremonyRefusal) -> &'static str {
+    use tonk_identity::passkey::CeremonyRefusal;
+    match refusal {
+        CeremonyRefusal::NotAllowed => "NotAllowedError",
+        CeremonyRefusal::InvalidState => "InvalidStateError",
+        CeremonyRefusal::NotSupported | CeremonyRefusal::NoPrf => "NotSupportedError",
+        CeremonyRefusal::Security => "SecurityError",
+        CeremonyRefusal::Other => "Error",
+    }
+}
+
+/// Tell the worker that holds the account that the browser refused a
+/// ceremony the panel that adds an account asked for. A refusal from the
+/// service comes back through the custody hand-off, which the worker
+/// already sees; this is for one that never got that far: `error` is the
+/// browser's, or `None` when the person put the card away.
+fn report_refusal(intent: &tonk_worker_api::CustodyIntent, error: Option<&CeremonyError>) {
+    let Some(kind) = registration_kind(intent) else {
+        return;
+    };
+    let name = match error {
+        None => "NotAllowedError",
+        Some(error) => match error.refusal {
+            Some(refusal) => refusal_name(refusal),
+            None => return,
+        },
+    };
+    let message = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&message, &"type".into(), &"ceremony-refused".into());
+    let _ = js_sys::Reflect::set(&message, &"kind".into(), &kind.into());
+    let _ = js_sys::Reflect::set(&message, &"name".into(), &name.into());
+    let global = js_sys::global();
+    if let Ok(relay) = js_sys::Reflect::get(&global, &"tonkProfileWorker".into())
+        .and_then(|relay| relay.dyn_into::<js_sys::Function>())
+    {
+        let _ = relay.call2(&global, &message, &js_sys::Array::new());
+        return;
+    }
+    if let Some(worker) =
+        web_sys::window().and_then(|window| window.navigator().service_worker().controller())
+    {
+        let _ = worker.post_message(&message);
     }
 }
 
@@ -395,7 +454,10 @@ fn assert_on_the_click(intent: tonk_worker_api::CustodyIntent, credential_id: Op
         ) {
             run_command_ceremony(intent, credential_id);
             set_card_message(&said);
-        } else if !BUSY.with(|busy| busy.replace(true)) {
+            return;
+        }
+        report_refusal(&intent, Some(&error));
+        if !BUSY.with(|busy| busy.replace(true)) {
             let anchored = matches!(&intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_));
             if mount_card(anchored).is_some() {
                 set_card_text(&said);
@@ -433,7 +495,13 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
     };
     set_card_message("Confirm this account action with your passkey.");
     tonk_common::log!("custody: consent card raised for {}", intent_label(&intent));
-    on_click(&host, "#tonk-custody-dismiss", remove_card);
+    {
+        let intent = intent.clone();
+        on_click(&host, "#tonk-custody-dismiss", move || {
+            report_refusal(&intent, None);
+            remove_card();
+        });
+    }
 
     let method = command_method(&intent);
     let action = command_action(&intent);
@@ -441,17 +509,22 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
         set_card_text("Waiting for passkey…");
         tonk_common::log!("custody: continue clicked for {}", intent_label(&intent));
         match begin_with(method, intent.clone(), credential_id.clone()) {
-            Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
-                if let Err(error) = mediation.finish().await {
-                    report(&error.message);
-                    set_card_text(&user_error::ceremony(action, &error));
-                    remove_card_after(4000);
-                } else {
-                    remove_card();
-                }
-            }),
+            Ok(mediation) => {
+                let intent = intent.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Err(error) = mediation.finish().await {
+                        report(&error.message);
+                        report_refusal(&intent, Some(&error));
+                        set_card_text(&user_error::ceremony(action, &error));
+                        remove_card_after(4000);
+                    } else {
+                        remove_card();
+                    }
+                })
+            }
             Err(error) => {
                 report(&error.message);
+                report_refusal(&intent, Some(&error));
                 set_card_text(&user_error::ceremony(action, &error));
                 remove_card_after(4000);
             }
