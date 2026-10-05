@@ -77,10 +77,10 @@ impl<'a> WriteSession<'a> {
             return SyncReport::default();
         }
 
-        let push = if self.enabled {
+        let (push_status, push) = if self.enabled {
             push_after(self.site).await
         } else {
-            None
+            ("disabled", None)
         };
         let account_directory = crate::account_spaces::record_current(self.site)
             .await
@@ -88,19 +88,40 @@ impl<'a> WriteSession<'a> {
             .map(|error| format!("{error:#}"));
         SyncReport {
             push,
+            push_status,
             account_directory,
         }
     }
 }
 
 /// Best-effort work that settled after a durable local commit.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SyncReport {
     push: Option<SyncError>,
+    push_status: &'static str,
     account_directory: Option<String>,
 }
 
+impl Default for SyncReport {
+    fn default() -> Self {
+        Self {
+            push: None,
+            push_status: "not-committed",
+            account_directory: None,
+        }
+    }
+}
+
 impl SyncReport {
+    /// Remote delivery is distinct from local commit and read-back verification.
+    pub fn receipt(&self) -> serde_json::Value {
+        serde_json::json!({
+            "push": self.push_status,
+            "pushError": self.push.as_ref().map(ToString::to_string),
+            "accountDirectoryError": self.account_directory,
+        })
+    }
+
     /// Render recovery for an eval whose receipt is already on stdout.
     ///
     /// Repeating asserted notation can create a second non-idempotent write,
@@ -147,10 +168,22 @@ pub async fn run_eval(
     options: Options,
     sync: bool,
 ) -> Result<Outcome, eval::EvalError> {
+    let (outcome, report) = run_eval_with_report(site, source, options, sync).await?;
+    report.warn_eval();
+    Ok(outcome)
+}
+
+/// As `run_eval`, retaining remote delivery status for structured write receipts.
+pub async fn run_eval_with_report(
+    site: &TonkSite,
+    source: Source,
+    options: Options,
+    sync: bool,
+) -> Result<(Outcome, SyncReport), eval::EvalError> {
     let session = WriteSession::begin(site, sync).await;
     let outcome = eval::run_against_site(site, source, options).await?;
-    session.finish(outcome.committed).await.warn_eval();
-    Ok(outcome)
+    let report = session.finish(outcome.committed).await;
+    Ok((outcome, report))
 }
 
 /// Sync around any committing write, not just an eval.
@@ -187,10 +220,11 @@ async fn pull_before(site: &TonkSite) {
 /// Push the local branch to its upstream after a write. A missing
 /// upstream is a silent skip; any other failure is a warning — the
 /// local write is already committed.
-async fn push_after(site: &TonkSite) -> Option<SyncError> {
+async fn push_after(site: &TonkSite) -> (&'static str, Option<SyncError>) {
     match sync::push(site).await {
-        Ok(_) | Err(SyncError::UpstreamNotConfigured { .. }) => None,
-        Err(error) => Some(error),
+        Ok(_) => ("pushed", None),
+        Err(SyncError::UpstreamNotConfigured { .. }) => ("no-upstream", None),
+        Err(error) => ("failed", Some(error)),
     }
 }
 
