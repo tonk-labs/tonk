@@ -249,6 +249,9 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::ViewMembers>()
         .command::<tonk_schema::command::ConnectAgent>()
         .command::<tonk_schema::command::ConnectSpace>()
+        // Opens the introspection overlay; the same site-request shape,
+        // answered by the overlay rather than the bar.
+        .command::<tonk_schema::command::Inspect>()
         // What the page in a tab has selected, recorded on its site.
         .command::<tonk_schema::command::SiteSelect>()
         // What was typed in the command palette, interpreted.
