@@ -3148,6 +3148,23 @@ person!:
         );
     }
 
+    /// A name dialog would accept as `id:<name>` but the notation
+    /// can't reference back (`Demo` reads as a string, `42` as a
+    /// number) is refused at the `&name` that writes it, with the
+    /// anchor's own error, not later at a `this:` that uses it.
+    #[dialog_common::test]
+    async fn it_rejects_unreferenceable_anchor_name_at_anchor() {
+        for name in ["Demo", "demo_1", "42", "true", "demo/Q"] {
+            let syntax = must_parse(&format!("person!: &{name}\n  name: \"Alice\"\n"));
+            let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+            let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+            assert!(
+                matches!(&err.kind, AnalyzeErrorKind::UnreferenceableAnchorName { name: n } if n == name),
+                "&{name} should be refused as unreferenceable, got {err:?}"
+            );
+        }
+    }
+
     /// `this: demo/1` resolves a numbered anchor name declared by an
     /// earlier expression (`&demo/1`). Regression: the reference
     /// used to parse as a string literal and fail with

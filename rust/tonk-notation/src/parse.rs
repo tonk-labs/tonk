@@ -1165,6 +1165,19 @@ pub fn classify_plain_value(text: &str) -> FieldValue {
     FieldValue::Literal(Scalar::String(text.to_owned()))
 }
 
+/// Can `name` be written after `&` and then referenced back as a
+/// bare value? True exactly when the reference grammar reads `name`
+/// as a [`FieldValue::Symbol`].
+///
+/// Dialog accepts any `id:<name>` that is a valid URI, which is
+/// wider than the notation can reference: a bare `Demo`, `demo_1`,
+/// `42` or `true` reads as a literal, and `io.x/y` reads as a URI.
+/// Anchoring checks this so such a name is refused where it is
+/// written, not later where it is used.
+pub fn is_reference_name(name: &str) -> bool {
+    matches!(classify_plain_value(name), FieldValue::Symbol(_))
+}
+
 /// Does `text` look like a notation URI?
 ///
 /// Two accepted shapes:
@@ -2867,6 +2880,31 @@ concept!:
                 matches!(classify_plain_value(text), FieldValue::Literal(_)),
                 "{text:?} should be a literal, got {:?}",
                 classify_plain_value(text),
+            );
+        }
+    }
+
+    /// `is_reference_name` is the anchoring gate: a name passes only
+    /// if writing it back as a bare value reads as a symbol, so no
+    /// anchor can be declared that `this:` can't then resolve.
+    #[dialog_common::test]
+    fn it_accepts_anchor_names_only_if_they_read_back_as_symbols() {
+        for name in ["alice", "demo/1", "counter/+1", "space/route/view"] {
+            assert!(is_reference_name(name), "{name:?} should be referenceable");
+        }
+        for name in [
+            "Demo",
+            "demo_1",
+            "42",
+            "true",
+            "?x",
+            "_",
+            "demo/",
+            "io.gozala/x",
+        ] {
+            assert!(
+                !is_reference_name(name),
+                "{name:?} should not be referenceable"
             );
         }
     }
