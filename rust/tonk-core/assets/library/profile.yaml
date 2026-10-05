@@ -998,14 +998,21 @@ view!:
     # The name is the directory mirror (`xyz.tonk.space/name`), written
     # at create and kept current by rename, which exists so a device
     # that has not replicated a space can still label it.
+    # It says "downloading" only while something is: `<space-arrival>` asks
+    # the space's own worker, and when that worker has nothing left to pull
+    # and the space still has not opened, the wall says so and offers the
+    # way home instead of waiting on nothing.
     downloading: |
       <div class="space-unknown">
         <tab-title text="{name} — Tonk"></tab-title>
         <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
-        <div class="space-unknown-wall">
-          <h1 class="space-unknown-statement">downloading {name}</h1>
-          <p class="space-unknown-narrator">This space is on its way to this device. It opens as soon as enough of it has arrived.</p>
-        </div>
+        <space-arrival class="space-unknown-wall" space={this}>
+          <h1 class="space-unknown-statement" data-arriving>downloading {name}</h1>
+          <p class="space-unknown-narrator" data-arriving>This space is on its way to this device. It opens as soon as enough of it has arrived.</p>
+          <h1 class="space-unknown-statement" data-stalled hidden>nothing to download</h1>
+          <p class="space-unknown-narrator" data-stalled hidden>This space has no content on this device, and nothing more is arriving from where it syncs. It may not have finished being created.</p>
+          <a class="space-unknown-back" data-stalled hidden href="/">go to home</a>
+        </space-arrival>
       </div>
 
 
@@ -5417,6 +5424,56 @@ view!:
 # where the bar is, opens and puts it away by command, and tells the bar how
 # it ended: `completed` once this device holds an account, `cancelled` when
 # the panel is put away without one.
+element!: &space-arrival
+  description: >
+    Watches a space that has not opened yet arrive: asks the space's own
+    worker to pull and how its branch stands, and says so when nothing is
+    left to arrive.
+  method:
+    # One look: pull, then read how `main` stands against where it syncs.
+    # Only `behind` means more is on its way.
+    look: |
+      async (self) => {
+        const space = self.getAttribute('space');
+        if (!space) return 'unknown';
+        const at = `/api/repository/${encodeURIComponent(space)}/branch/main/sync`;
+        try {
+          await fetch(`${at}/pull`, { method: 'POST' });
+          const answer = await fetch(`${at}/status`);
+          if (!answer.ok) return 'unknown';
+          return (await answer.json()).state === 'behind' ? 'arriving' : 'settled';
+        } catch {
+          return 'unknown';
+        }
+      }
+    show: |
+      (self, stalled) => {
+        for (const node of self.querySelectorAll('[data-arriving]')) node.hidden = stalled;
+        for (const node of self.querySelectorAll('[data-stalled]')) node.hidden = !stalled;
+      }
+    # Two settled looks in a row, or a worker that cannot say for a while,
+    # and nothing is arriving. A space that does arrive replaces this whole
+    # panel, so there is nothing to do for that here.
+    watch: |
+      async (self) => {
+        let quiet = 0;
+        while (self.isConnected && self._watching) {
+          const seen = await self.look();
+          quiet = seen === 'arriving' ? 0 : quiet + (seen === 'settled' ? 2 : 1);
+          if (!self.isConnected || !self._watching) return;
+          self.show(quiet >= 4);
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
+      }
+    connected: |
+      (self) => {
+        if (self._watching) return;
+        self._watching = true;
+        self.watch();
+      }
+    disconnected: |
+      (self) => { self._watching = false; }
+
 element!: &registration-address
   description: >
     The address step of the panel that adds an account: asks about the

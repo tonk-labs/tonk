@@ -654,16 +654,27 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
             "the absent-space markup must preserve `{contract}`"
         );
     }
-    // Downloading has one narrator. Both missing-directory states offer
-    // sign-in and invite guidance. A space that is merely still arriving
-    // must never be sent through either recovery path.
+    // Both missing-directory states offer sign-in and invite guidance. A
+    // space that is merely still arriving must never be sent through either
+    // recovery path: its two narrators say it is arriving, or that nothing
+    // is.
     assert_eq!(
         PROFILE_LIBRARY
             .matches("class=\"space-unknown-narrator\"")
             .count(),
-        5,
-        "the absent-space panel must explain downloading, login, and invite recovery"
+        6,
+        "the absent-space panel must explain arrival, a stall, login and invite recovery"
     );
+    for contract in [
+        "<space-arrival class=\"space-unknown-wall\" space={this}>",
+        "data-arriving>This space is on its way to this device.",
+        "data-stalled hidden>This space has no content on this device",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the waiting room must say when nothing is arriving: `{contract}`"
+        );
+    }
     assert!(
         PROFILE_LIBRARY.contains("model=space view=downloading"),
         "the absent-space panel must consult the directory row before accusing the link"
