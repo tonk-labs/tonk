@@ -1,0 +1,37 @@
+[package]
+name = "tonk-desktop"
+version = "0.6.16-rc.1"
+authors = ["Tonk Labs"]
+edition = "2024"
+license = "MIT"
+description = "Tonk in a native window: the worker runs in-process instead of as a service worker"
+
+# Its own workspace, not a member of the root one. The window links the
+# platform webview (WebKitGTK on Linux), and the root workspace's CI
+# gates build every member with `--all-features`; joining it would make
+# every CI lane need WebKitGTK. The tonk crates are reached by path, so
+# they still inherit their dependencies from the root workspace.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["tokio", "http1", "query"] }
+clap = { version = "4", features = ["derive"] }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
+dirs = "5"
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+tao = "0.37"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync"] }
+tonk-worker = { path = "../tonk-worker" }
+tower = { version = "0.5", features = ["util"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+webbrowser = "1.0"
+wry = "0.57"
+
+[profile.dev]
+opt-level = 1
+strip = "debuginfo"
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -308,8 +308,13 @@
         <!-- Must define `serviceWorkerActivates` before the Wasm blob loads:
          the shell awaits it before issuing any /api/* fetch. -->
         <script type="module">
+            // A native host (the desktop shell) serves the worker's routes
+            // itself, so there is no service worker to register or wait for.
+            // It defines `tonkNativeHost` before any page script runs.
+            if (globalThis.tonkNativeHost) {
+                self.serviceWorkerActivates = () => Promise.resolve();
             // Doctor observes the existing registration without starting or updating it.
-            if (!globalThis.tonkDoctorRoute) {
+            } else if (!globalThis.tonkDoctorRoute) {
             const serviceWorkersSupported = "serviceWorker" in navigator;
 
             // Poke the worker to re-check connectivity. Sent BEFORE the app's
@@ -898,7 +903,12 @@
          the idempotent terminal state without even the first reload. -->
         <script>
             (() => {
-                if (globalThis.tonkDoctorRoute || !("serviceWorker" in navigator)) return;
+                if (
+                    globalThis.tonkDoctorRoute ||
+                    globalThis.tonkNativeHost ||
+                    !("serviceWorker" in navigator)
+                )
+                    return;
                 const RETRIES = "tonk:boot-retries";
                 const STALL_MS = 30_000;
                 let lastLife = Date.now();

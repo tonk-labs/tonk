@@ -2510,12 +2510,15 @@ pub(super) fn worker_origin() -> Option<String> {
             .map(|global| global.location().origin())
             .filter(|origin| !origin.is_empty())
     }
-    // A native host serves no origin of its own; the access-service
-    // address must come from recorded facts (an account provider) or
-    // host configuration, so "derive it from where I am serving" has no
-    // native answer. Callers already treat `None` as "the service is
-    // unknown" and refuse or degrade visibly.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    // A native host serves from loopback, which is no service at all, so
+    // "derive it from where I am serving" has no native answer: the
+    // address comes from host configuration. Callers treat `None` as
+    // "the service is unknown" and refuse or degrade visibly.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::native::service_origin()
+    }
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
     {
         None
     }

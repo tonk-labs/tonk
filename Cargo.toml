@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# Its own workspace: it links the platform webview (see its Cargo.toml).
+exclude = ["rust/tonk-desktop"]
 members = [
   "rust/dialog-reactor",
   "rust/tonk-access-service",
