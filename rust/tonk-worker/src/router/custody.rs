@@ -116,8 +116,7 @@ pub(crate) async fn receive(
             Ok(_) => Ok(()),
             Err(error) => Err(split_refusal(error)),
         };
-        let tonk = state.read().await;
-        super::registration::settle(&tonk, kind, outcome).await;
+        super::registration::settle(&state, kind, outcome).await;
     }
 
     let reply = js_sys::Object::new();

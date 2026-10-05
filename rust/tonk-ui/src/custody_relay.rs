@@ -414,6 +414,7 @@ fn report_refusal(intent: &tonk_worker_api::CustodyIntent, error: Option<&Ceremo
     let _ = js_sys::Reflect::set(&message, &"type".into(), &"ceremony-refused".into());
     let _ = js_sys::Reflect::set(&message, &"kind".into(), &kind.into());
     let _ = js_sys::Reflect::set(&message, &"name".into(), &name.into());
+    tonk_common::log!("custody: telling the worker the {kind} passkey was refused ({name})");
     let global = js_sys::global();
     if let Ok(relay) = js_sys::Reflect::get(&global, &"tonkProfileWorker".into())
         .and_then(|relay| relay.dyn_into::<js_sys::Function>())
@@ -693,7 +694,14 @@ impl Mediation {
             .unwrap_or(false)
             && let Some(window) = web_sys::window()
         {
-            let _ = window.location().reload();
+            // The account page is where the panel that adds an account was
+            // up, and an account it added is done with it: back to the
+            // spaces. A space keeps its place.
+            if window.location().pathname().as_deref() == Ok("/account") {
+                let _ = window.location().assign("/");
+            } else {
+                let _ = window.location().reload();
+            }
         }
         Ok(())
     }

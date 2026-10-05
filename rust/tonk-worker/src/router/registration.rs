@@ -285,15 +285,48 @@ async fn served(tonk: &TonkState) -> bool {
     )
 }
 
-/// Record where a custody hand-off for `kind` left the panel.
+/// Record where a custody hand-off for `kind` left the panel, and wait out
+/// the emailed link when that is where it is.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn settle(
-    tonk: &TonkState,
+    state: &crate::router::AppState,
     kind: &'static str,
     outcome: Result<(), (Option<&str>, &str)>,
 ) {
-    let active = outcome.is_ok() && served(tonk).await;
-    record(tonk, settled(kind, outcome, active)).await;
+    let tonk = state.read().await;
+    let active = outcome.is_ok() && served(&tonk).await;
+    let stage = settled(kind, outcome, active);
+    log!("registration: the {kind} hand-off leaves the panel at {stage:?}");
+    let waiting = matches!(stage, Some(Stage::Confirming { .. }));
+    record(&tonk, stage).await;
+    drop(tonk);
+    if waiting {
+        await_confirmation(state.clone());
+    }
+}
+
+/// While the panel waits for the emailed link, ask the service every few
+/// seconds how the account stands. The link can be opened on another
+/// device, which reaches this one only through the service; the probe that
+/// hears `Active` records it, and that puts the panel away.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn await_confirmation(state: crate::router::AppState) {
+    thread_local! {
+        static WAITING: Cell<bool> = const { Cell::new(false) };
+    }
+    if WAITING.replace(true) {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            let _ = crate::r#async::sleep(web_time::Duration::from_secs(4)).await;
+            let tonk = state.read().await;
+            if !confirming(&tonk).await || served(&tonk).await {
+                break;
+            }
+        }
+        WAITING.set(false);
+    });
 }
 
 /// A passkey ceremony the page asked for was refused before anything
@@ -305,6 +338,7 @@ pub(crate) async fn ceremony_refused(tonk: &TonkState, kind: &str, name: &str) {
         kind::CREATE => kind::CREATE,
         _ => kind::LOG_IN,
     };
+    log!("registration: the page refused the {kind} passkey ({name})");
     let message = refused(name);
     record(tonk, Some(Stage::Failed { kind, message })).await;
 }
