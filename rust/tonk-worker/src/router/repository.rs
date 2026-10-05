@@ -3185,7 +3185,7 @@ async fn remove_replica_from_profile(
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                unique: false,
+                policy: dialog_artifacts::Policy::All,
             });
         }
     }
@@ -3216,7 +3216,7 @@ async fn remove_replica_from_profile(
             the: artifact.the,
             of: artifact.of,
             is: artifact.is,
-            unique: false,
+            policy: dialog_artifacts::Policy::All,
         });
     }
     if !found {
@@ -3317,13 +3317,13 @@ pub(crate) async fn carry_replica_rows(
             the: artifact.the.clone(),
             of: artifact.of.clone(),
             is: artifact.is.clone(),
-            unique: false,
+            policy: dialog_artifacts::Policy::All,
         });
         there = there.retract(super::claim::RawClaim {
             the: artifact.the,
             of: artifact.of,
             is: artifact.is,
-            unique: false,
+            policy: dialog_artifacts::Policy::All,
         });
     }
     let revision = here
@@ -4195,7 +4195,7 @@ async fn live_install_records(
                 the: claim.the,
                 of: claim.of,
                 is: claim.is,
-                unique: false,
+                policy: dialog_artifacts::Policy::All,
             }),
             _ => None,
         })
@@ -4775,14 +4775,12 @@ async fn stage_reinstall(
     let mut last = installed.transaction();
     for instruction in record(&version) {
         last = match instruction {
-            dialog_artifacts::Instruction::Assert(artifact)
-            | dialog_artifacts::Instruction::Replace(artifact)
-            | dialog_artifacts::Instruction::Succeed(artifact, _) => {
+            dialog_artifacts::Instruction::Assert(artifact, _) => {
                 last.assert(super::claim::RawClaim {
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    unique: false,
+                    policy: dialog_artifacts::Policy::All,
                 })
             }
             dialog_artifacts::Instruction::Retract(artifact) => {
@@ -4790,7 +4788,7 @@ async fn stage_reinstall(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    unique: false,
+                    policy: dialog_artifacts::Policy::All,
                 })
             }
         };
@@ -4951,7 +4949,7 @@ async fn live_claims(
                 the: found.the,
                 of: found.of,
                 is: found.is,
-                unique: false,
+                policy: dialog_artifacts::Policy::All,
             });
         }
     }
@@ -4986,14 +4984,14 @@ fn repository_name_claims(
         the: attribute("xyz.tonk.repo/name")?,
         of: of.clone(),
         is: dialog_artifacts::Value::String(display_name.to_owned()),
-        unique: true,
+        policy: dialog_artifacts::Policy::Last,
     }];
     if let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) {
         claims.push(super::claim::RawClaim {
             the: attribute("xyz.tonk.repo/description")?,
             of,
             is: dialog_artifacts::Value::String(description.to_owned()),
-            unique: true,
+            policy: dialog_artifacts::Policy::Last,
         });
     }
     Ok(claims)
@@ -5086,7 +5084,7 @@ async fn assertions_at_version(
             the: claim.the.clone(),
             of: claim.of.clone(),
             is: claim.is.clone(),
-            unique: false,
+            policy: dialog_artifacts::Policy::All,
         });
     }
     Ok(claims)
@@ -6540,26 +6538,11 @@ async fn library_claims(library: &str, what: &str) -> Result<LibraryClaims, Repo
             .into_instructions()
             .into_iter()
             .filter_map(|instruction| match instruction {
-                Instruction::Assert(artifact) => Some(super::claim::RawClaim {
+                Instruction::Assert(artifact, policy) => Some(super::claim::RawClaim {
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    unique: false,
-                }),
-                Instruction::Replace(artifact) => Some(super::claim::RawClaim {
-                    the: artifact.the,
-                    of: artifact.of,
-                    is: artifact.is,
-                    unique: true,
-                }),
-                // A succession is the assertion of its value; the raw
-                // claim carries no policy, so the claim stands beside
-                // what the cell holds and the read elects.
-                Instruction::Succeed(artifact, _) => Some(super::claim::RawClaim {
-                    the: artifact.the,
-                    of: artifact.of,
-                    is: artifact.is,
-                    unique: false,
+                    policy,
                 }),
                 Instruction::Retract(_) => None,
             })
@@ -6646,7 +6629,7 @@ async fn assertions_are_current(
         let entry = grouped
             .entry((expected.of.clone(), expected.the.clone()))
             .or_insert_with(|| (false, Vec::new()));
-        entry.0 |= expected.unique;
+        entry.0 |= expected.policy.elects();
         if !entry.1.contains(&expected.is) {
             entry.1.push(expected.is.clone());
         }
@@ -6726,16 +6709,14 @@ fn raw_seed_metadata(installation: &ProfileInstallation) -> Vec<super::claim::Ra
         .into_iter()
         .map(|instruction| {
             let artifact = match instruction {
-                dialog_artifacts::Instruction::Assert(artifact)
-                | dialog_artifacts::Instruction::Replace(artifact)
-                | dialog_artifacts::Instruction::Succeed(artifact, _)
+                dialog_artifacts::Instruction::Assert(artifact, _)
                 | dialog_artifacts::Instruction::Retract(artifact) => artifact,
             };
             super::claim::RawClaim {
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                unique: false,
+                policy: dialog_artifacts::Policy::All,
             }
         })
         .collect()
@@ -8123,10 +8104,7 @@ mod remote_from_facts_tests {
             .into_instructions()
             .into_iter()
             .map(|instruction| match instruction {
-                Instruction::Assert(artifact)
-                | Instruction::Replace(artifact)
-                | Instruction::Succeed(artifact, _)
-                | Instruction::Retract(artifact) => artifact,
+                Instruction::Assert(artifact, _) | Instruction::Retract(artifact) => artifact,
             })
             .collect()
     }
@@ -8333,10 +8311,7 @@ mod invite_space_from_facts_tests {
             .into_instructions()
             .into_iter()
             .map(|instruction| match instruction {
-                Instruction::Assert(artifact)
-                | Instruction::Replace(artifact)
-                | Instruction::Succeed(artifact, _)
-                | Instruction::Retract(artifact) => artifact,
+                Instruction::Assert(artifact, _) | Instruction::Retract(artifact) => artifact,
             })
             .collect()
     }
@@ -9756,13 +9731,13 @@ route!: &foreign-profile-route
                 the: the.clone(),
                 of: of.clone(),
                 is: desired.clone(),
-                unique: false,
+                policy: dialog_artifacts::Policy::All,
             })
             .assert(super::super::claim::RawClaim {
                 the: the.clone(),
                 of: of.clone(),
                 is: dialog_artifacts::Value::String("stale account writer".to_owned()),
-                unique: false,
+                policy: dialog_artifacts::Policy::All,
             })
             .commit()
             .publish()
@@ -9803,7 +9778,7 @@ route!: &foreign-profile-route
                 .assertions
                 .into_iter()
                 .find(|claim| {
-                    claim.unique
+                    claim.policy.elects()
                         && claim.of.to_string() == "tonk:space"
                         && claim.the.to_string() == "xyz.tonk.view/directory"
                 })
@@ -9814,7 +9789,7 @@ route!: &foreign-profile-route
                 is: dialog_artifacts::Value::String(
                     "<div data-stale-profile-library></div>".to_owned(),
                 ),
-                unique: false,
+                policy: dialog_artifacts::Policy::All,
             };
             let session = tonk
                 .reactor
@@ -9827,7 +9802,7 @@ route!: &foreign-profile-route
             if stale_first {
                 txn = txn.retract(expected.clone()).assert(stale.clone()).assert(
                     super::super::claim::RawClaim {
-                        unique: false,
+                        policy: dialog_artifacts::Policy::All,
                         ..expected.clone()
                     },
                 );
@@ -12802,9 +12777,7 @@ mod seed_tests {
         facts
             .iter()
             .map(|instruction| match instruction {
-                dialog_artifacts::Instruction::Assert(artifact)
-                | dialog_artifacts::Instruction::Replace(artifact)
-                | dialog_artifacts::Instruction::Succeed(artifact, _)
+                dialog_artifacts::Instruction::Assert(artifact, _)
                 | dialog_artifacts::Instruction::Retract(artifact) => artifact.the.to_string(),
             })
             .collect()
@@ -12867,9 +12840,7 @@ mod seed_tests {
         let attributes: Vec<String> = facts
             .iter()
             .map(|instruction| match instruction {
-                dialog_artifacts::Instruction::Assert(artifact)
-                | dialog_artifacts::Instruction::Replace(artifact)
-                | dialog_artifacts::Instruction::Succeed(artifact, _)
+                dialog_artifacts::Instruction::Assert(artifact, _)
                 | dialog_artifacts::Instruction::Retract(artifact) => artifact.the.to_string(),
             })
             .collect();

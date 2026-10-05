@@ -343,14 +343,12 @@ pub(super) async fn stage_and_publish(
     let mut next = batch.transaction();
     for instruction in instructions {
         next = match instruction {
-            dialog_artifacts::Instruction::Assert(artifact)
-            | dialog_artifacts::Instruction::Replace(artifact)
-            | dialog_artifacts::Instruction::Succeed(artifact, _) => {
+            dialog_artifacts::Instruction::Assert(artifact, _) => {
                 next.assert(crate::router::claim::RawClaim {
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    unique: false,
+                    policy: dialog_artifacts::Policy::All,
                 })
             }
             dialog_artifacts::Instruction::Retract(artifact) => {
@@ -358,7 +356,7 @@ pub(super) async fn stage_and_publish(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    unique: false,
+                    policy: dialog_artifacts::Policy::All,
                 })
             }
         };
@@ -713,7 +711,7 @@ async fn evaluate_on_branch_with<'a>(
                         the: "xyz.tonk.test/raced-head".parse().expect("test attribute"),
                         of: "test:evaluate-race".parse().expect("test entity"),
                         is: dialog_artifacts::Value::String("advanced".to_owned()),
-                        unique: false,
+                        policy: dialog_artifacts::Policy::All,
                     })
                     .commit()
                     .perform(&tonk_state.operator)

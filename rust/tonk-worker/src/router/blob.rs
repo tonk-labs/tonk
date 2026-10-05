@@ -272,13 +272,13 @@ pub async fn upload(
             the: ct_attr,
             of: entity.clone(),
             is: Value::String(content_type.clone()),
-            unique: true,
+            policy: dialog_artifacts::Policy::Last,
         })
         .assert(RawClaim {
             the: name_attr,
             of: entity.clone(),
             is: Value::String(name.clone()),
-            unique: true,
+            policy: dialog_artifacts::Policy::Last,
         });
     tx.commit()
         .perform(&tonk.operator)

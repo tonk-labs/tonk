@@ -708,7 +708,7 @@ struct RawClaim {
 
 impl dialog_artifacts::Statement for RawClaim {
     fn assert(self, update: &mut impl dialog_artifacts::Update) {
-        update.associate(self.the, self.of, self.is);
+        update.associate(self.the, self.of, self.is, dialog_artifacts::Policy::All);
     }
     fn retract(self, update: &mut impl dialog_artifacts::Update) {
         update.dissociate(self.the, self.of, self.is);

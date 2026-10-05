@@ -907,7 +907,11 @@ mod when_syncing_with_an_upstream {
         };
         branch
             .transaction()
-            .integrate(vec![Instruction::Assert(artifact)].into_iter().collect())
+            .integrate(
+                vec![Instruction::Assert(artifact, dialog_artifacts::Policy::All)]
+                    .into_iter()
+                    .collect(),
+            )
             .commit()
             .publish()
             .perform(&test.site.operator)

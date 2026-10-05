@@ -2354,12 +2354,15 @@ pub(crate) mod tests {
         // An account in use: enough facts that its tree has an index node.
         let facts: Vec<_> = (0..2048)
             .map(|n| {
-                Instruction::Assert(Artifact {
-                    the: "test/fact".parse().expect("a valid attribute"),
-                    of: format!("test:{n}").parse().expect("a valid entity"),
-                    is: Value::UnsignedInt(n),
-                    cause: None,
-                })
+                Instruction::Assert(
+                    Artifact {
+                        the: "test/fact".parse().expect("a valid attribute"),
+                        of: format!("test:{n}").parse().expect("a valid entity"),
+                        is: Value::UnsignedInt(n),
+                        cause: None,
+                    },
+                    dialog_artifacts::Policy::All,
+                )
             })
             .collect();
         home.reactor

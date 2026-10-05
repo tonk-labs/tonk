@@ -564,7 +564,14 @@ impl AnonymousConcept {
 
 impl Statement for AnonymousConcept {
     fn assert(self, update: &mut impl Update) {
-        emit_concept_facts(&self.this, &self.descriptor, update, Update::associate);
+        emit_concept_facts(
+            &self.this,
+            &self.descriptor,
+            update,
+            |update, the, of, is| {
+                Update::associate(update, the, of, is, dialog_artifacts::Policy::All)
+            },
+        );
     }
     fn retract(self, update: &mut impl Update) {
         emit_concept_facts(&self.this, &self.descriptor, update, Update::dissociate);
@@ -662,7 +669,14 @@ fn meta_attr_typed(domain: &str, name: &str) -> dialog_query::attribute::The {
 
 impl Statement for TransientConcept {
     fn assert(self, update: &mut impl Update) {
-        emit_concept_facts(&self.this, &self.descriptor, update, Update::associate);
+        emit_concept_facts(
+            &self.this,
+            &self.descriptor,
+            update,
+            |update, the, of, is| {
+                Update::associate(update, the, of, is, dialog_artifacts::Policy::All)
+            },
+        );
         dialog_repository::Transient(self.this).assert(update);
     }
 
@@ -1624,7 +1638,7 @@ mod tests {
 
         assert!(
             instructions.iter().any(|inst| match inst {
-                Instruction::Assert(a) | Instruction::Replace(a) | Instruction::Succeed(a, _) => {
+                Instruction::Assert(a, _) => {
                     a.the == transient_attr && a.of == this && matches!(&a.is, Value::Boolean(true))
                 }
                 _ => false,
@@ -1638,7 +1652,7 @@ mod tests {
         let concept_marker = concept_marker_entity();
         assert!(
             instructions.iter().any(|inst| match inst {
-                Instruction::Assert(a) | Instruction::Replace(a) | Instruction::Succeed(a, _) => {
+                Instruction::Assert(a, _) => {
                     a.the == concept_marker_attr
                         && a.of == this
                         && matches!(&a.is, Value::Entity(e) if *e == concept_marker)
@@ -1671,7 +1685,7 @@ mod tests {
             .into_instructions()
             .into_iter()
             .any(|inst| match inst {
-                Instruction::Assert(a) => a.the == marker_attr && a.is == marker_value,
+                Instruction::Assert(a, _) => a.the == marker_attr && a.is == marker_value,
                 _ => false,
             });
         assert!(

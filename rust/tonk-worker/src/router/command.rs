@@ -317,9 +317,7 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
                     .into_instructions()
                     .into_iter()
                     .map(|instruction| match instruction {
-                        dialog_artifacts::Instruction::Assert(artifact)
-                        | dialog_artifacts::Instruction::Replace(artifact)
-                        | dialog_artifacts::Instruction::Succeed(artifact, _)
+                        dialog_artifacts::Instruction::Assert(artifact, _)
                         | dialog_artifacts::Instruction::Retract(artifact) => {
                             artifact.the.to_string()
                         }
@@ -607,9 +605,7 @@ pub(crate) mod tests {
                     .assert(&mut changes);
                 // One entity → its facts.
                 match changes.into_instructions().into_iter().next().unwrap() {
-                    dialog_artifacts::Instruction::Assert(a)
-                    | dialog_artifacts::Instruction::Replace(a)
-                    | dialog_artifacts::Instruction::Succeed(a, _)
+                    dialog_artifacts::Instruction::Assert(a, _)
                     | dialog_artifacts::Instruction::Retract(a) => vec![a],
                 }
             };

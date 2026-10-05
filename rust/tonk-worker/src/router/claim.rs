@@ -12,7 +12,7 @@ use ::axum::{
 use axum::extract::Query as AxumQuery;
 use axum_wasm_macros::wasm_compat;
 use base64::Engine;
-use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Statement, Update, Value};
+use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Policy, Statement, Update, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -93,27 +93,22 @@ pub struct QueryResponse {
 /// route's captured params as `xyz.tonk.site/{name}` facts whose names aren't
 /// known until match time.
 ///
-/// `unique` selects the assert cardinality: `false` → [`Update::associate`]
-/// (cardinality-many, the claim endpoints' semantics); `true` →
-/// [`Update::associate_unique`], which emits a replace so a prior value at the
-/// same `(entity, attribute)` is superseded across commits — required for the
-/// per-tab site params, which must reflect only the latest navigation rather than
-/// accumulate one value per visited route.
+/// `policy` is the policy the write carries: `all` appends (the claim
+/// endpoints' semantics); `last` succeeds the claim a `last` read returns, so
+/// a prior value at the same `(entity, attribute)` is superseded across
+/// commits — required for the per-tab site params, which must reflect only the
+/// latest navigation rather than accumulate one value per visited route.
 #[derive(Clone)]
 pub(crate) struct RawClaim {
     pub(crate) the: Attribute,
     pub(crate) of: Entity,
     pub(crate) is: Value,
-    pub(crate) unique: bool,
+    pub(crate) policy: Policy,
 }
 
 impl Statement for RawClaim {
     fn assert(self, update: &mut impl Update) {
-        if self.unique {
-            update.associate_unique(self.the, self.of, self.is);
-        } else {
-            update.associate(self.the, self.of, self.is);
-        }
+        update.associate(self.the, self.of, self.is, self.policy);
     }
 
     fn retract(self, update: &mut impl Update) {
@@ -243,7 +238,7 @@ pub async fn assert_claim(
         the: attribute,
         of: entity,
         is: value,
-        unique: false,
+        policy: dialog_artifacts::Policy::All,
     };
 
     tonk_state
@@ -316,7 +311,7 @@ pub async fn retract_claim(
         the: attribute,
         of: entity,
         is: value,
-        unique: false,
+        policy: dialog_artifacts::Policy::All,
     };
 
     tonk_state

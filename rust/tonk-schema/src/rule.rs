@@ -148,11 +148,11 @@ mod tests {
         let induces: dialog_artifacts::Attribute = "dialog.rule/induces".parse().unwrap();
         assert!(instructions.iter().any(|i| matches!(
             i,
-            Instruction::Assert(a) if a.the == source && a.of == this
+            Instruction::Assert(a, dialog_artifacts::Policy::All) if a.the == source && a.of == this
         )));
         assert!(instructions.iter().any(|i| matches!(
             i,
-            Instruction::Assert(a) if a.the == induces && a.of == this
+            Instruction::Assert(a, dialog_artifacts::Policy::All) if a.the == induces && a.of == this
         )));
 
         let _ = Cardinality::One; // keep the shared import used across cfgs
