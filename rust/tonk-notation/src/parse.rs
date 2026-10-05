@@ -1290,9 +1290,21 @@ fn is_symbol(text: &str) -> bool {
 /// [`is_attribute_identifier`].
 fn is_qualified_symbol(text: &str) -> bool {
     match text.split_once('/') {
-        Some((first, rest)) => is_symbol(first) && rest.split('/').all(is_symbol),
+        Some((first, rest)) => is_symbol(first) && rest.split('/').all(is_name_segment),
         None => false,
     }
+}
+
+/// A segment after the first `/` of a qualified symbol. Unlike the
+/// leading segment it may start with a digit, because anchor names
+/// like `&demo/1` are numbered and must be referable as `demo/1`.
+/// The leading segment still has to be a symbol, so numeric and
+/// date-shaped literals (`1/2`, `2026/10/05`) stay literals.
+fn is_name_segment(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '+'))
 }
 
 fn is_blank_scalar(value: &MarkedYaml<'_>) -> bool {
@@ -2834,6 +2846,29 @@ concept!:
             "got {:?}",
             body.value,
         );
+    }
+
+    /// A numbered anchor name (`&demo/1`) can be referenced back as
+    /// `demo/1`: a segment after the `/` may start with a digit.
+    /// Regression: `this: demo/1` parsed as a string literal, so
+    /// `/evaluate` rejected it with "expected `?var`, a bare symbol,
+    /// or a URI". Literals that merely contain a `/` stay literals.
+    #[dialog_common::test]
+    fn it_parses_digit_led_qualified_name_as_symbol() {
+        for text in ["demo/1", "counter/model-2", "demo/1/2", "demo/1a.b+c"] {
+            assert!(
+                matches!(classify_plain_value(text), FieldValue::Symbol(ref s) if s == text),
+                "{text:?} should be a symbol, got {:?}",
+                classify_plain_value(text),
+            );
+        }
+        for text in ["1/2", "2026/10/05", "demo/", "demo//1", "Demo/1", "demo/Q"] {
+            assert!(
+                matches!(classify_plain_value(text), FieldValue::Literal(_)),
+                "{text:?} should be a literal, got {:?}",
+                classify_plain_value(text),
+            );
+        }
     }
 
     /// MIME-type-shaped plain scalars (`text/html`) now read as

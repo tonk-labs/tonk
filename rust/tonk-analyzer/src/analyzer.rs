@@ -3148,6 +3148,38 @@ person!:
         );
     }
 
+    /// `this: demo/1` resolves a numbered anchor name declared by an
+    /// earlier expression (`&demo/1`). Regression: the reference
+    /// used to parse as a string literal and fail with
+    /// `UnsupportedFieldValue` on `this`.
+    #[dialog_common::test]
+    async fn it_resolves_digit_led_qualified_symbol_in_this() {
+        let syntax = must_parse(
+            r#"
+person!: &demo/1
+  name: "Alice"
+person!:
+  this: demo/1
+  name: "Renamed"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
+        let entity = analysis
+            .declarations
+            .get("demo/1")
+            .expect("demo/1 should be declared")
+            .clone();
+        let Statement::Assert(Application::Concept { this, .. }) = &analysis.mutate.statements[1]
+        else {
+            panic!("expected Assert(Concept) for second expression");
+        };
+        assert!(
+            matches!(this, ThisIntent::Uri(e) if e == &entity),
+            "expected ThisIntent::Uri(<demo/1>), got {this:?}"
+        );
+    }
+
     /// `this: alice` resolves through the in-doc anchor table
     /// — `&alice` declared by an earlier expression in the same
     /// document means a later `this: alice` lands on that
