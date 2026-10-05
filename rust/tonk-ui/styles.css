@@ -3285,15 +3285,9 @@ tonk-notebook-index {
     text-align: left;
   }
 
-  /* The editor: inline text with the browser's native caret. */
-  /* A real `<input>`, not the study's contenteditable span.
-     Conditional mediation is the reason: WebAuthn will only offer a
-     discoverable passkey through `autocomplete="username webauthn"` on
-     an actual form control, so a span could never surface the autofill
-     this ceremony is built around. Styled to sit in the row like the
-     study's editor — no chrome and wearing the row's own type. */
-  /* A real input wearing the study's editor, with native text-entry
-     behavior and no extra control chrome. */
+  /* The editor: inline text with the browser's native caret. A real
+     input wearing the study's editor, with native text-entry behavior
+     and no extra control chrome. */
   .tonk-ceremony .ed {
     appearance: none; -webkit-appearance: none;
     box-sizing: border-box;
@@ -3507,7 +3501,14 @@ tonk-notebook-index {
     text-decoration: none;
     font: 600 17px/1.1 var(--cond);
   }
-  #tonk-register[data-fabb-task] .ocol:has(.obtn[hidden]) .ghost {
+  #tonk-register[data-fabb-task] .ocol:has(#tonk-register-action[hidden]) .ghost {
+    flex-basis: 100%;
+  }
+  /* Logging in with a passkey picked without an address: a row of its
+     own under the address, ahead of what the dialog says. */
+  #tonk-register[data-anchored] #tonk-register-passkey,
+  #tonk-register[data-fabb-task] #tonk-register-passkey {
+    order: 80;
     flex-basis: 100%;
   }
 

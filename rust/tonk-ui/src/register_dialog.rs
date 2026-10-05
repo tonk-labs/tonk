@@ -7,11 +7,9 @@
 //! gesture, and neither the service worker nor the profile frame that
 //! hosts the bar has both.
 //!
-//! Being the top page is also what makes **conditional mediation**
-//! possible. The address input carries `autocomplete="username webauthn"`
-//! and a non-modal `credentials.get` runs alongside it, so a returning
-//! user on a new browser but the same OS picks their passkey out of the
-//! input's own autofill and never types an address at all.
+//! Someone who already has an account need not type an address: "log in
+//! with a passkey" asks the browser for any passkey this site has, and
+//! the one picked names the account.
 //!
 //! What the dialog does NOT do is decide anything. It asserts
 //! `account/check-email` as the user types and renders whatever the
@@ -110,14 +108,13 @@ const CONFIRM_ROW: &str = "#tonk-register-confirm-row";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const PASSKEY_ROW: &str = "#tonk-register-passkey-row";
 
+/// Signs in with a passkey the person picks, before any address is given.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const PASSKEY_LOGIN: &str = "#tonk-register-passkey";
+
 /// `wa-*` throughout, the same vocabulary the rest of the app uses. The
 /// loader on this page auto-registers any `<wa-…>` it finds, so these
 /// upgrade without anything imported here.
-///
-/// `autocomplete="username webauthn"` is what conditional mediation
-/// binds to: the browser offers a discoverable passkey inside this
-/// input's autofill. `wa-input` forwards the attribute to the inner
-/// native input, which is where it has to land.
 ///
 /// `type="email"` gives the field its native semantics and mobile keyboard;
 /// [`is_plausible`] still gates lookups while the address is incomplete.
@@ -131,7 +128,7 @@ const DIALOG_HTML: &str = r##"
     <div class="orow mblk editing" id="tonk-register-email-row">
       <span class="k">email</span>
       <span class="v"><input class="ed" id="tonk-register-email" type="email"
-            inputmode="email" enterkeyhint="go" autocomplete="username webauthn"
+            inputmode="email" enterkeyhint="go" autocomplete="email"
             aria-label="email" placeholder="you@example.com"></span>
     </div>
     <!-- Unfolds once the address is committed and the lookup answers:
@@ -139,6 +136,10 @@ const DIALOG_HTML: &str = r##"
          passkey" for one that is taken. Which of the two is the whole
          reason the address is checked before any ceremony runs. -->
     <button class="obtn pre" id="tonk-register-action" hidden></button>
+    <!-- Someone who already has an account can skip the address: the
+         browser lists this site's passkeys, and the one picked names the
+         account. -->
+    <button class="obtn" id="tonk-register-passkey">log in with a passkey</button>
   </div>
   <div class="oexp mblk">
     <p id="tonk-register-status" aria-live="polite">Enter your email address. We’ll tell you whether to create a passkey or sign in.</p>
@@ -517,6 +518,8 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     on_click(&host, ACTION, submit);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    on_click(&host, PASSKEY_LOGIN, run_passkey_login);
     watch_address(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     commit_on_enter(&host);
@@ -1989,6 +1992,14 @@ pub(crate) fn run_signup_ceremony() {
     // attention is earned by blinking, never by hue.
     set_action("waiting for device", false);
 
+    run_ceremony(existing, Some(email), display_name);
+}
+
+/// Run the passkey step: sign in with an existing passkey (`existing`) or
+/// create the account. `email` is the address the person gave, `None` when
+/// they picked a passkey without one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn run_ceremony(existing: bool, email: Option<String>, display_name: String) {
     let account_action = if existing {
         AccountAction::LogIn
     } else {
@@ -2019,7 +2030,10 @@ pub(crate) fn run_signup_ceremony() {
         let outcome = match login {
             Some(Ok(mediation)) => mediation.finish().await,
             Some(Err(error)) => Err(error),
-            None => crate::ceremony::run_account_ceremony(&email, &display_name, set_status).await,
+            None => {
+                let email = email.clone().unwrap_or_default();
+                crate::ceremony::run_account_ceremony(&email, &display_name, set_status).await
+            }
         };
         match outcome {
             // The account exists and registered, but nobody has opened
@@ -2057,7 +2071,12 @@ pub(crate) fn run_signup_ceremony() {
                 // back. One tap resumes: the ceremony needs a fresh
                 // assertion anyway, since its derivation handles were
                 // dropped with the failed handoff.
-                poll_lookup_until_active(email.clone());
+                match email.clone() {
+                    Some(email) => poll_lookup_until_active(email),
+                    // A passkey picked without an address: there is no
+                    // address to ask after. Offer the passkey again.
+                    None => offer_passkey_login(),
+                }
             }
             Err(error) => {
                 tonk_common::log!("register: the ceremony did not complete: {error}");
@@ -2069,14 +2088,18 @@ pub(crate) fn run_signup_ceremony() {
                 set_status(&problem.message);
                 // Back to something clickable: a control left mid-flight
                 // refuses every later attempt.
-                set_action(
-                    if existing {
-                        "log in with passkey"
-                    } else {
-                        "create a passkey"
-                    },
-                    true,
-                );
+                if email.is_none() {
+                    offer_passkey_login();
+                } else {
+                    set_action(
+                        if existing {
+                            "log in with passkey"
+                        } else {
+                            "create a passkey"
+                        },
+                        true,
+                    );
+                }
             }
             Ok(()) => {
                 // The account exists as of this line — created, or
@@ -2149,6 +2172,41 @@ pub(crate) fn run_signup_ceremony() {
             }
         }
     });
+}
+
+/// Sign in with whichever passkey the person picks, without asking for an
+/// address first. The browser lists the passkeys this site has on the
+/// device, and the worker finds the account from the one chosen.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn run_passkey_login() {
+    if !begin_action() {
+        return;
+    }
+    if let Some(host) = host_element() {
+        let _ = host.set_attribute(CEREMONY_KIND_ATTR, "login");
+        for selector in [EMAIL_ROW, PASSKEY_LOGIN] {
+            if let Some(element) = host.query_selector(selector).ok().flatten() {
+                let _ = element.set_attribute("hidden", "");
+            }
+        }
+    }
+    set_action("waiting for device", false);
+    run_ceremony(true, None, String::new());
+}
+
+/// Offer the address-less passkey login again, after one that did not
+/// finish: the address row and the passkey button come back.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn offer_passkey_login() {
+    hide_action();
+    finish_action();
+    if let Some(host) = host_element() {
+        for selector in [EMAIL_ROW, PASSKEY_LOGIN] {
+            if let Some(element) = host.query_selector(selector).ok().flatten() {
+                let _ = element.remove_attribute("hidden");
+            }
+        }
+    }
 }
 
 /// Observe activation directly while signup waits, even if its subscription
