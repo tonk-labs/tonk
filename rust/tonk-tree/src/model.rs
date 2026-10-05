@@ -176,7 +176,7 @@ pub struct Loader {
 impl Loader {
     /// Build a loader for a routing [`Location`] — a named space
     /// (`/api/repository/{repo}/branch/{branch}/query`) or the profile
-    /// endpoint (`/api/profile/branch/{branch}/query`). The profile has
+    /// endpoint (`/api/repository/profile:tonk/branch/{branch}/query`). The profile has
     /// no repository segment, so a `main@profile:tonk` context targets
     /// the parallel profile surface rather than a named repo.
     ///
@@ -190,7 +190,7 @@ impl Loader {
         let branch = location.effective_branch();
         let url = match location.space() {
             Some(repo) => format!("/api/repository/{repo}/branch/{branch}/query"),
-            None => format!("/api/profile/branch/{branch}/query"),
+            None => format!("/api/repository/profile:tonk/branch/{branch}/query"),
         };
         Self { url }
     }

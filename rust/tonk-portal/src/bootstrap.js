@@ -136,7 +136,7 @@
   function claimTarget(){
     var c=ownSpace();
     if(c) return "/api/repository/"+c.repo+"/branch/"+(c.branch||"main")+"/transact";
-    if(ownProfile()) return "/api/profile/branch/"+(tonk.context.branch||"main")+"/transact";
+    if(ownProfile()) return "/api/repository/profile:tonk/branch/"+(tonk.context.branch||"main")+"/transact";
     return null;
   }
   function claimLoad(){
@@ -310,6 +310,15 @@
         tonk.context=env.context;
         var settle=function(){ onProfileBranch(tonk.context); resolveReady(); claimLoad(); };
         if(ownProfile()) readProfileBranch().then(settle); else settle();
+        return;
+      }
+      case "key": {
+        // The chord pressed in the parent document (the top page relays
+        // the command palette's down): dispatch it here, where focus now
+        // is, as if pressed here. Untrusted, so it is not forwarded back.
+        var target=document.activeElement||document.body||document;
+        target.dispatchEvent(new KeyboardEvent("keydown",{key:env.key,ctrlKey:!!env.ctrlKey,
+          metaKey:!!env.metaKey,shiftKey:!!env.shiftKey,altKey:!!env.altKey,bubbles:true,cancelable:true,composed:true}));
         return;
       }
       case "context": {
@@ -505,6 +514,53 @@
   };
   window.tonk=tonk;
 
+  // The command palette's chord (Ctrl/Cmd+K, Ctrl/Cmd+Shift+P) belongs to the
+  // chrome, but focus is usually inside a sealed frame like this one, whose
+  // keys never reach the parent document. Forward it; the portal re-dispatches
+  // it from its own element, so it bubbles through the parent as if pressed
+  // there. Only a chord nothing here handled (an editor binding Ctrl+K keeps
+  // it), and only a trusted one: the re-dispatched event is untrusted, so a
+  // chord climbs at most one frame per press.
+  document.addEventListener("keydown",function(event){
+    if(!event.isTrusted||event.defaultPrevented) return;
+    if(!(event.metaKey||event.ctrlKey)) return;
+    var key=(event.key||"").toLowerCase();
+    if(!(key==="k"||(event.shiftKey&&key==="p"))) return;
+    event.preventDefault();
+    ready.then(function(){port.postMessage({v:1,type:"key",key:event.key,
+      ctrlKey:event.ctrlKey,metaKey:event.metaKey,shiftKey:event.shiftKey,altKey:event.altKey});});
+  });
+
+  // What the page has selected, reported on the tab's site as it settles
+  // (`site/select`), so rules and the command palette can use it: "rename"
+  // with a heading selected offers the heading as the new name. Text being
+  // edited in a form field belongs to the field, so a selection made while an
+  // input or text area has focus is not reported (that includes the palette's
+  // own line). Debounced, and sent only when the text changes; an empty
+  // selection clears what was reported.
+  var selectionTimer=null, reportedSelection="";
+  document.addEventListener("selectionchange",function(){
+    if(selectionTimer) clearTimeout(selectionTimer);
+    selectionTimer=setTimeout(function(){
+      selectionTimer=null;
+      var active=document.activeElement;
+      if(active&&(active.tagName==="INPUT"||active.tagName==="TEXTAREA")) return;
+      var site=((window.tonk&&window.tonk.context)||{}).site;
+      if(!site) return;
+      var text=String(document.getSelection()||"").trim().slice(0,4096);
+      if(text===reportedSelection) return;
+      reportedSelection=text;
+      tonk.transact({claims:[{op:"assert",application:{
+        predicate:{kind:"transient",concept:{
+          description:"Report what the page in a tab has selected.",
+          with:{
+            site:{the:"xyz.tonk.command.site-select/site",as:"Entity"},
+            text:{the:"xyz.tonk.command.site-select/text",as:"Text"},
+            time:{the:"xyz.tonk.command.site-select/time",as:"Float"}}}},
+        parameters:{site:site,text:text,time:Date.now()}}}]}).catch(function(){});
+    },250);
+  });
+
   // The product-owned agent prompt lives in rendered guest markup, outside
   // the Rust component tree. Observe only its reviewed copy control and send
   // a content-free lifecycle; never read or forward the copied value.
@@ -566,7 +622,7 @@
   // overrides Request fields. Body is read to text (our /api bodies are JSON
   // strings); a Request body is consumed via .text() so we return a Promise.
   function relayRequest(url,input,init){
-    var method="GET", headers=contextHeaders(), bodyP=Promise.resolve(undefined);
+    var method="GET", headers=[], bodyP=Promise.resolve(undefined);
     var reqLike=(typeof input==="object"&&input)?input:null;
     if(reqLike){ method=reqLike.method||method; }
     if(init&&init.method){ method=init.method; }
@@ -576,6 +632,11 @@
       else if(Array.isArray(hsrc)){ headers=headers.concat(hsrc); }
       else { for(var k in hsrc){ if(Object.prototype.hasOwnProperty.call(hsrc,k)){headers.push([k,hsrc[k]]);} } }
     }
+    // A context header the request sets itself is the request's: adding the
+    // context's too would send two, which arrive joined (`a, b`) as one
+    // value nothing can parse.
+    var own={}; headers.forEach(function(h){ own[String(h[0]).toLowerCase()]=true; });
+    headers=contextHeaders().filter(function(h){ return !own[h[0]]; }).concat(headers);
     if(init&&"body"in init){ bodyP=Promise.resolve(init.body); }
     else if(reqLike&&!reqLike.bodyUsed&&reqLike.body){ bodyP=reqLike.clone().text(); }
     return bodyP.then(function(body){

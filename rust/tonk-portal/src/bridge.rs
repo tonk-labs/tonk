@@ -93,6 +93,10 @@ pub(crate) struct PortalState {
     /// The current port's `onmessage` dispatcher, kept alive for the
     /// port's lifetime. Replaced on each handshake.
     _dispatcher: Option<Closure<dyn FnMut(MessageEvent)>>,
+    /// The top document's listener that forwards the command palette's
+    /// chord down to this guest (see [`relay_chord_down`]). Replaced on
+    /// each handshake; dropping it removes the listener.
+    chord: Option<ChordRelay>,
     /// The portal's own routing context (its `with`). Relayed guest
     /// operations with no forwarded route are pinned to it explicitly;
     /// `allow`'s `self` entry resolves to it.
@@ -152,6 +156,7 @@ impl PortalState {
             active_task: None,
             port: None,
             _dispatcher: None,
+            chord: None,
             with: None,
             allow: Allow::none(),
             origin: None,
@@ -1344,6 +1349,8 @@ pub(crate) fn bind_port(host: &Element, state: &Rc<RefCell<PortalState>>, port: 
         s._dispatcher = Some(dispatcher);
     }
 
+    state.borrow_mut().chord = relay_chord_down(host, &port, state);
+
     let ready = Object::new();
     set_v1(&ready, "ready");
     let _ = Reflect::set(&ready, &"context".into(), &build_context(host, state));
@@ -1409,6 +1416,7 @@ fn make_dispatcher(
             "task" => handle_task(&state, &port, &data),
             "fetch" => handle_host_fetch(&state, &port, &data),
             "delegate" => handle_delegate(&port, &data),
+            "key" => handle_key(&host, &data),
             _ => {}
         }
     }) as Box<dyn FnMut(MessageEvent)>)
@@ -2033,6 +2041,124 @@ fn task_request(data: &JsValue) -> Option<(String, Option<String>)> {
     Some((payload, token))
 }
 
+/// A keyboard chord pressed inside the guest (the bootstrap forwards only
+/// the command palette's): re-dispatch it from this portal element, so it
+/// bubbles through the document the portal lives in as if pressed there.
+fn handle_key(host: &Element, data: &JsValue) {
+    let flag = |name: &str| {
+        Reflect::get(data, &name.into())
+            .ok()
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    };
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_key(&get_str(data, "key").unwrap_or_default());
+    init.set_ctrl_key(flag("ctrlKey"));
+    init.set_meta_key(flag("metaKey"));
+    init.set_shift_key(flag("shiftKey"));
+    init.set_alt_key(flag("altKey"));
+    init.set_bubbles(true);
+    init.set_composed(true);
+    init.set_cancelable(true);
+    if let Ok(event) = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init) {
+        let _ = host.dispatch_event(&event);
+    }
+}
+
+/// A document `keydown` listener, removed when dropped.
+pub(crate) struct ChordRelay {
+    document: web_sys::Document,
+    listener: Closure<dyn FnMut(web_sys::KeyboardEvent)>,
+}
+
+impl Drop for ChordRelay {
+    fn drop(&mut self) {
+        let _ = self
+            .document
+            .remove_event_listener_with_callback("keydown", self.listener.as_ref().unchecked_ref());
+    }
+}
+
+/// Whether `event` is the command palette's chord: Ctrl/Cmd+K or
+/// Ctrl/Cmd+Shift+P.
+fn is_chord(event: &web_sys::KeyboardEvent) -> bool {
+    let key = event.key().to_lowercase();
+    (event.meta_key() || event.ctrl_key()) && (key == "k" || (event.shift_key() && key == "p"))
+}
+
+/// Forward the command palette's chord from the top document down into
+/// this portal's guest.
+///
+/// The palette lives in the profile's frame, but on a fresh load focus is
+/// in the top document, whose keys never reach a frame; the chord did
+/// nothing until the page was clicked. The guest bootstrap forwards a
+/// chord UP (see `handle_key`); this is the other direction. Only the top
+/// document relays down, so a chord pressed in the profile frame is not
+/// also pushed into the space frame below it. Only a trusted, unhandled
+/// chord is relayed (the re-dispatched upward copy is untrusted, so a
+/// chord never bounces), and not while a modal dialog of the top page
+/// owns the keyboard. The guest's frame is focused first: a sandboxed
+/// guest cannot take focus from its parent, and the palette focuses its
+/// line. Only the site (the page's own frame) is relayed to, never a
+/// content portal.
+fn relay_chord_down(
+    host: &Element,
+    port: &MessagePort,
+    state: &Rc<RefCell<PortalState>>,
+) -> Option<ChordRelay> {
+    if !host.tag_name().eq_ignore_ascii_case("tonk-site") {
+        return None;
+    }
+    let window = window()?;
+    let top = window.top().ok().flatten()?;
+    if !Object::is(&top, &window) {
+        return None;
+    }
+    let document = window.document()?;
+    let port = port.clone();
+    let weak = Rc::downgrade(state);
+    let modal_host = document.clone();
+    let listener = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+        if !event.is_trusted() || event.default_prevented() || !is_chord(&event) {
+            return;
+        }
+        if modal_host
+            .query_selector("dialog:modal")
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return;
+        }
+        let Some(state) = weak.upgrade() else {
+            return;
+        };
+        if state.borrow().disposed {
+            return;
+        }
+        event.prevent_default();
+        if let Some(iframe) = state.borrow().iframe.clone() {
+            let _ = iframe.focus();
+        }
+        let envelope = Object::new();
+        set_v1(&envelope, "key");
+        let _ = Reflect::set(&envelope, &"key".into(), &event.key().into());
+        for (name, value) in [
+            ("ctrlKey", event.ctrl_key()),
+            ("metaKey", event.meta_key()),
+            ("shiftKey", event.shift_key()),
+            ("altKey", event.alt_key()),
+        ] {
+            let _ = Reflect::set(&envelope, &name.into(), &value.into());
+        }
+        let _ = port.post_message(&envelope);
+    }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+    document
+        .add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref())
+        .ok()?;
+    Some(ChordRelay { document, listener })
+}
+
 fn handle_title(data: &JsValue) {
     let Some(text) = title_text(data) else {
         return;
@@ -2216,18 +2342,25 @@ fn handle_host_fetch(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data:
 }
 
 /// The repository reach a relayed path targets, if any:
-/// `/api/repository/{repo}`, `/api/profile/repository`,
-/// `/api/repository/{repo}/branch/{branch}/…`, or
-/// `/api/profile/branch/{branch}/…`. Non-data-plane paths (assets, the
-/// guest bundle, `/api/sync`, and repository control routes) return `None`.
+/// `/api/repository/{repo}` or `/api/repository/{repo}/branch/{branch}/…`.
+/// Non-data-plane paths (assets, the guest bundle, `/api/sync`, and
+/// repository control routes) return `None`.
 ///
-/// The profile endpoint is singular and its URL carries no name, so a
-/// profile path canonicalizes to the portal's own profile name when the
+/// A `profile:<name>` repository segment names the profile's own
+/// repository. The worker serves one profile whatever name the segment
+/// carries, so it canonicalizes to the portal's own profile name when the
 /// portal is profile-pinned, else the worker's default (`tonk`).
 fn data_plane_location(path: &str, state: &Rc<RefCell<PortalState>>) -> Option<Location> {
     use tonk_host::location::Repo;
     let path = path.split_once('?').map_or(path, |(path, _)| path);
-    if path == "/api/profile/repository" {
+    let rest = path.strip_prefix("/api/repository/")?;
+    let mut segments = rest.split('/');
+    let repo = segments.next().filter(|s| !s.is_empty())?;
+    let profile = repo.starts_with("profile:")
+        || repo
+            .get(..10)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("profile%3a"));
+    let repo = if profile {
         let name = state
             .borrow()
             .with
@@ -2237,47 +2370,19 @@ fn data_plane_location(path: &str, state: &Rc<RefCell<PortalState>>) -> Option<L
                 Repo::Named(_) => None,
             })
             .unwrap_or_else(|| "tonk".to_owned());
-        return Some(Location {
-            repo: Repo::Profile(name),
-            branch: Some("main".to_owned()),
-        });
-    }
-    if let Some(rest) = path.strip_prefix("/api/repository/") {
-        let mut segments = rest.split('/');
-        let repo = segments.next().filter(|s| !s.is_empty())?;
-        match segments.next() {
-            None => {
-                return Some(Location {
-                    repo: Repo::Named(repo.to_owned()),
-                    branch: Some("main".to_owned()),
-                });
-            }
-            Some("branch") => {}
-            _ => return None,
-        }
-        let branch = segments.next().filter(|s| !s.is_empty())?;
-        return Some(Location {
-            repo: Repo::Named(repo.to_owned()),
-            branch: Some(branch.to_owned()),
-        });
-    }
-    if let Some(rest) = path.strip_prefix("/api/profile/branch/") {
-        let branch = rest.split('/').next().filter(|s| !s.is_empty())?;
-        let name = state
-            .borrow()
-            .with
-            .as_ref()
-            .and_then(|own| match &own.repo {
-                Repo::Profile(name) => Some(name.clone()),
-                Repo::Named(_) => None,
-            })
-            .unwrap_or_else(|| "tonk".to_owned());
-        return Some(Location {
-            repo: Repo::Profile(name),
-            branch: Some(branch.to_owned()),
-        });
-    }
-    None
+        Repo::Profile(name)
+    } else {
+        Repo::Named(repo.to_owned())
+    };
+    let branch = match segments.next() {
+        None => "main",
+        Some("branch") => segments.next().filter(|s| !s.is_empty())?,
+        _ => return None,
+    };
+    Some(Location {
+        repo,
+        branch: Some(branch.to_owned()),
+    })
 }
 
 /// Build a `Request` for a relayed guest fetch from the envelope's
@@ -2729,7 +2834,18 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     // it, not by the guest's own `guest:…` id. Guest content that renders the
     // routing indirection binds `entity` to this so it resolves the facts the SW
     // actually stamped.
-    let site = tonk_host::bridge::site_id();
+    //
+    // A routed portal is hosted by a `<tonk-site>`, which names its own site
+    // (`data-site`, the entity its route is stamped on, on the branch it
+    // shows). That is the guest's site: what its page reports (its
+    // selection) and what the palette interprets against.
+    let site = host
+        .closest("[data-site]")
+        .ok()
+        .flatten()
+        .and_then(|site| site.get_attribute("data-site"))
+        .filter(|site| !site.is_empty())
+        .unwrap_or_else(tonk_host::bridge::site_id);
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
@@ -3092,7 +3208,7 @@ mod tests {
 
         let profile = routed_state(Some("main@profile:tonk"), "main@profile:tonk");
         assert_eq!(
-            data_plane_location("/api/profile/repository", &profile),
+            data_plane_location("/api/repository/profile:tonk", &profile),
             Some("main@profile:tonk".parse().unwrap()),
         );
     }

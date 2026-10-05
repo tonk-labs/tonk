@@ -366,11 +366,14 @@ async function messaged(data, ports, frame) {
 // content is that space's worker's to answer; anything else is this origin's
 // database's.
 async function api(event) {
+    const worker = await siteWorker();
     if (PROFILE) {
+        // The profile's own repository is reached by the same routes, by its
+        // DID: that one is this worker's.
         const space = spaceOf(event.request);
-        if (space) return askSpace(event.request, space);
+        if (space && space !== spaceKey(await worker.profileDid())) return askSpace(event.request, space);
     }
-    return (await siteWorker()).onfetch(event);
+    return worker.onfetch(event);
 }
 
 // ---- A profile's spaces ---------------------------------------------------

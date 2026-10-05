@@ -16,10 +16,10 @@
 //! context — missing context will produce a 405.
 //!
 //! A `profile` annotation (from `<tonk-repository profile>`) targets
-//! the profile-as-repository surface (`/api/profile/branch/{branch}/…`)
-//! instead of the named-repo namespace. The profile lives outside
-//! `/api/repository/{name}`, so its routes are parallel; the `space`
-//! name is irrelevant in profile mode.
+//! the profile's own repository. It is a repository like any other,
+//! reached through the same routes under the `profile:tonk` alias the
+//! worker resolves to the profile's key; the `space` name is irrelevant
+//! in profile mode.
 //!
 //! A branch with no space is not a route: outside profile mode the
 //! repository segment is required, and there is no default space to
@@ -74,7 +74,7 @@ pub(crate) fn evaluate_url(
 fn endpoint(space: Option<&str>, branch: Option<&str>, profile: bool, route: &str) -> String {
     if profile {
         return format!(
-            "/api/profile/branch/{}/{route}",
+            "/api/repository/profile:tonk/branch/{}/{route}",
             branch.unwrap_or(DEFAULT_BRANCH),
         );
     }

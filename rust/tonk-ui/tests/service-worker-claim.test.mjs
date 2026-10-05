@@ -619,7 +619,7 @@ test("a failed stream release is retried on the next incumbent fetch", async () 
   const pending = [];
   let response;
   result.scope.onfetch({
-    request: new Request("https://tonk.test/api/profile/branch/main/query"),
+    request: new Request("https://tonk.test/api/repository/profile:tonk/branch/main/query"),
     waitUntil(promise) { pending.push(promise); },
     respondWith(promise) { response = Promise.resolve(promise); },
   });

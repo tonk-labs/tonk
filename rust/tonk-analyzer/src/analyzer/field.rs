@@ -176,6 +176,15 @@ pub(crate) fn field_value_to_term(
         FieldValue::Include(include) => {
             return Err(unexpanded_include(include, None).with_range(range));
         }
+        FieldValue::List(_) => {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::UnsupportedFieldValue {
+                    field: field_name.into(),
+                    form: "a list (only a command's `action:` takes one)",
+                },
+                range,
+            ));
+        }
         FieldValue::Premises(_) => {
             // Premises only make sense as the value of `when:` /
             // `unless:` inside a `rule!:` claim body — the rule

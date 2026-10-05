@@ -825,6 +825,9 @@ fn apply_fisheye(panel: &HtmlElement) {
             }
         }
     }
+    // Scroll events arrive during a rendering update, after the scroll that
+    // caused them; say when the lens has followed.
+    shadow::emit(panel, "fabb-lens", &JsValue::NULL);
 }
 
 /// Delegate from the stable host: the shadow buttons are built after this

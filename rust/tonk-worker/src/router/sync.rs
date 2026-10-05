@@ -581,7 +581,7 @@ pub fn branches_to_sync(branches: &HashMap<String, BranchConfiguration>) -> Vec<
 pub async fn mark_offline(state: &AppState) {
     let open: Vec<String> = {
         let tonk = state.read().await;
-        tonk.reactor.repos().read().keys().cloned().collect()
+        tonk.reactor.spaces()
     };
     for repo in open {
         let info = match super::repository::get_repository(State(state.clone()), Path(repo.clone()))
@@ -1428,7 +1428,7 @@ pub async fn drain_sync(state: &AppState) {
         if tonk.spaces_elsewhere() {
             Vec::new()
         } else {
-            tonk.reactor.repos().read().keys().cloned().collect()
+            tonk.reactor.spaces()
         }
     };
 

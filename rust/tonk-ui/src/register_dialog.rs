@@ -1816,7 +1816,7 @@ async fn read_invite_link(space: &str) -> Option<String> {
         }
     });
     let endpoint = format!(
-        "{}/api/profile/branch/{}/query",
+        "{}/api/repository/profile:tonk/branch/{}/query",
         crate::api::origin(),
         crate::api::profile_branch()
     );
@@ -1865,7 +1865,7 @@ async fn account_display_name() -> Option<String> {
         }
     });
     let endpoint = format!(
-        "{}/api/profile/branch/{}/query",
+        "{}/api/repository/profile:tonk/branch/{}/query",
         crate::api::origin(),
         crate::api::profile_branch()
     );

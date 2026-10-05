@@ -248,6 +248,12 @@ pub async fn register_site_on_repo(
     ::axum::extract::Path(path): ::axum::extract::Path<crate::router::transact::TransactPath>,
     request: Request,
 ) -> Result<Json<SiteResponse>, TonkWorkerError> {
+    if super::names_profile(&state, &path.repo).await {
+        let path = crate::router::transact::ProfileTransactPath {
+            branch: path.branch,
+        };
+        return register_site_on_profile(State(state), ::axum::extract::Path(path), request).await;
+    }
     let (site, client) = client_site(&request)?;
     let body = read_site_request(request).await?;
     let tonk = state.read().await;
@@ -280,11 +286,11 @@ pub async fn register_site_on_repo(
     Ok(Json(SiteResponse { site }))
 }
 
-/// `POST /api/profile/branch/{branch}/site` — the profile counterpart of
-/// [`register_site_on_repo`]. The profile is a singleton repository, so the URL
-/// carries only the branch.
+/// [`register_site_on_repo`] for the profile's own repository, which that
+/// route hands a request naming it: the site is stamped as the profile's,
+/// under the profile's name.
 #[wasm_compat]
-pub async fn register_site_on_profile(
+async fn register_site_on_profile(
     State(state): State<AppState>,
     ::axum::extract::Path(path): ::axum::extract::Path<
         crate::router::transact::ProfileTransactPath,
@@ -1129,7 +1135,7 @@ mod tests {
 
         let mut request = Request::builder()
             .method("POST")
-            .uri("/api/profile/branch/main/site")
+            .uri("/api/repository/profile:tonk/branch/main/site")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"path":"/"}"#))
             .unwrap();
@@ -1139,9 +1145,13 @@ mod tests {
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let repo = stamped_repo(&app, "probe", "/api/profile/branch/main/query")
-            .await
-            .expect("the profile site stamps a repo field");
+        let repo = stamped_repo(
+            &app,
+            "probe",
+            "/api/repository/profile:tonk/branch/main/query",
+        )
+        .await
+        .expect("the profile site stamps a repo field");
         assert!(
             repo.starts_with("profile:"),
             "stamped repo {repo:?} must be a `profile:<name>` location token, not a bare name: \
@@ -1248,7 +1258,7 @@ mod tests {
 
         let mut request = Request::builder()
             .method("POST")
-            .uri("/api/profile/branch/main/site")
+            .uri("/api/repository/profile:tonk/branch/main/site")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"path":"/notebook"}"#))
             .unwrap();
@@ -1261,15 +1271,20 @@ mod tests {
         // fallback. Compared against the NOT-FOUND model rather than a
         // literal: the index concept is anchor-named, so its entity derives
         // from its body and no URI is stable to assert.
-        let concept = stamped_field(&app, "nb", "concept", "/api/profile/branch/main/query")
-            .await
-            .expect("the notebook route stamps a concept");
+        let concept = stamped_field(
+            &app,
+            "nb",
+            "concept",
+            "/api/repository/profile:tonk/branch/main/query",
+        )
+        .await
+        .expect("the notebook route stamps a concept");
         // What `/` resolves to is the profile's Hub; `/notebook` must NOT be
         // that, and must not be the not-found fallback either.
         let home = {
             let mut request = Request::builder()
                 .method("POST")
-                .uri("/api/profile/branch/main/site")
+                .uri("/api/repository/profile:tonk/branch/main/site")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"path":"/"}"#))
                 .unwrap();
@@ -1278,9 +1293,14 @@ mod tests {
                 .insert(ClientId("nb-home".to_owned()));
             let response = app.clone().oneshot(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
-            stamped_field(&app, "nb-home", "concept", "/api/profile/branch/main/query")
-                .await
-                .expect("the home route stamps a concept")
+            stamped_field(
+                &app,
+                "nb-home",
+                "concept",
+                "/api/repository/profile:tonk/branch/main/query",
+            )
+            .await
+            .expect("the home route stamps a concept")
         };
         assert_eq!(home, "tonk:hub", "the profile's `/` is the Hub");
         assert_ne!(
@@ -1293,12 +1313,17 @@ mod tests {
         );
 
         // And the location its view builds reaches the profile endpoint.
-        let repo = stamped_repo(&app, "nb", "/api/profile/branch/main/query")
+        let repo = stamped_repo(&app, "nb", "/api/repository/profile:tonk/branch/main/query")
             .await
             .expect("the notebook route stamps a repo");
-        let branch = stamped_field(&app, "nb", "branch", "/api/profile/branch/main/query")
-            .await
-            .expect("the notebook route stamps a branch");
+        let branch = stamped_field(
+            &app,
+            "nb",
+            "branch",
+            "/api/repository/profile:tonk/branch/main/query",
+        )
+        .await
+        .expect("the notebook route stamps a branch");
         let with = format!("{branch}@{repo}");
         assert!(
             with.starts_with("main@profile:") && with.len() > "main@profile:".len(),

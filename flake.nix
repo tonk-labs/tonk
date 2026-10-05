@@ -552,9 +552,13 @@
             args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
           };
 
+          # Built with `release-test`: release optimizations without LTO,
+          # which made this archive outrun CI's time limit.
           tests-native-release = buildTestArchive {
             name = "native-release";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests --release";
+            profile = "release-test";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests --cargo-profile release-test";
+            depsExtraArgs = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
           };
 
           tests-web-debug = buildTestArchive {

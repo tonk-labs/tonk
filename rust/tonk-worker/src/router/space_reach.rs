@@ -121,7 +121,9 @@ pub(crate) async fn run(
 ) -> Result<(), TonkWorkerError> {
     let path = match surface {
         Surface::Space => format!("/api/repository/{space}/branch/{CONTENT_BRANCH}/transact"),
-        Surface::Profile => format!("/api/profile/branch/{PROFILE_BRANCH}/transact"),
+        Surface::Profile => {
+            format!("/api/repository/profile:tonk/branch/{PROFILE_BRANCH}/transact")
+        }
     };
     ask(space, "POST", &path, Some(claims)).await.map(|_| ())
 }

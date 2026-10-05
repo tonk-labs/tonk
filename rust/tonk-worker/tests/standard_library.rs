@@ -374,6 +374,34 @@ const FORM_CONTROL_PREFIX: &str = "dom.event.current-target.elements.";
 /// is what this catches. The trap is naming the field and its leaf
 /// after the same thing (`revocation/revocation-url`): the leaf is a JS
 /// property, not a label.
+/// The space chrome takes a branch that does not carry `tonk:repository`
+/// for a space this device has not replicated, and hides the site behind
+/// the absent-space panel. The profile's own repository is addressed as
+/// a space by its DID and its branch carries this library, so the
+/// concept has to be declared here or `/space/<profile did>` answers
+/// "open this space" over a repository that loaded.
+#[dialog_common::test]
+fn it_declares_the_repository_concept_the_space_chrome_resolves() {
+    let chrome = "<tonk-display with={id} entity={id} model=tonk:repository view=title>";
+    assert!(
+        PROFILE_LIBRARY.contains(chrome),
+        "the space chrome decides a space is here by resolving `tonk:repository`"
+    );
+    let declared = PROFILE_LIBRARY.split("\nconcept!:").any(|concept| {
+        let head = concept.split("\nview!:").next().unwrap_or_default();
+        head.contains("\n  this: tonk:repository\n") && head.contains("the: xyz.tonk.repo/name")
+    });
+    assert!(
+        declared,
+        "the profile library must declare `tonk:repository` over `xyz.tonk.repo/name`, \
+         or its own repository reads as a space that has not arrived"
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("view!:\n  this: tonk:repository\n  show:\n    title: |"),
+        "the chrome asks for the `title` view; without it the display reports `no-view`"
+    );
+}
+
 fn assert_form_reads_resolve(label: &str, document: &str) {
     for (index, _) in document.match_indices(FORM_CONTROL_PREFIX) {
         let rest = &document[index + FORM_CONTROL_PREFIX.len()..];
@@ -1673,6 +1701,22 @@ fn every_handled_command_matches_attributes_its_declaration_carries() {
 fn parse_command_attributes(
     document: &str,
 ) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    // Named attributes (`attribute!: &name` … `  the: x`), so a field
+    // that references one by name (`    member: expel-member/member`)
+    // counts as carrying it, exactly as the analyzer resolves it.
+    let mut named = std::collections::BTreeMap::new();
+    let mut pending: Option<String> = None;
+    for line in document.lines() {
+        if let Some(name) = line.strip_prefix("attribute!: &") {
+            pending = name.split_whitespace().next().map(str::to_owned);
+        } else if let (Some(name), Some(the)) = (&pending, line.strip_prefix("  the: ")) {
+            named.insert(name.clone(), the.trim().to_string());
+            pending = None;
+        } else if !line.starts_with(' ') && !line.trim().is_empty() {
+            pending = None;
+        }
+    }
+
     let mut out = std::collections::BTreeMap::new();
     let mut lines = document.lines().peekable();
     while let Some(line) = lines.next() {
@@ -1704,6 +1748,14 @@ fn parse_command_attributes(
             // declaration however it happens to begin.
             if let Some(attribute) = body.strip_prefix("      the: ") {
                 attributes.insert(attribute.trim().to_string());
+            }
+            // A field four spaces in whose value is a named attribute.
+            if let Some(field) = body.strip_prefix("    ")
+                && !field.starts_with(' ')
+                && let Some((_, value)) = field.split_once(": ")
+                && let Some(the) = named.get(value.trim())
+            {
+                attributes.insert(the.clone());
             }
         }
         out.insert(name, attributes);
