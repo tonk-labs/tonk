@@ -570,12 +570,16 @@ async function existingGenerationIsComplete(
     // CacheStorage.match is deliberately read-only. Storage pressure can evict
     // a retained cache after the names inventory; opening it here would
     // silently recreate an empty old-generation cache during verification.
-    const wasm = await caches.match(WORKER_WASM_URL, { cacheName: workerCache });
-    if (!wasm) return false;
-    if (WORKER_WASM_HASH !== "dev") {
-        const actual = await digestOf(await wasm.arrayBuffer());
-        if (actual.slice(0, WORKER_WASM_HASH.length) !== WORKER_WASM_HASH) {
-            return false;
+    // Where sites have origins of their own this worker runs no database,
+    // so its generation holds no Wasm to verify.
+    if (!siteOrigins) {
+        const wasm = await caches.match(WORKER_WASM_URL, { cacheName: workerCache });
+        if (!wasm) return false;
+        if (WORKER_WASM_HASH !== "dev") {
+            const actual = await digestOf(await wasm.arrayBuffer());
+            if (actual.slice(0, WORKER_WASM_HASH.length) !== WORKER_WASM_HASH) {
+                return false;
+            }
         }
     }
     for (const [path, hash] of entries) {
@@ -707,9 +711,11 @@ async function installGeneration() {
         const build = parseFinalWorkerGeneration(name);
         return build != null && build !== BUILD_ID;
     });
+    // The worker's caches are opened either way, as the names the
+    // generation protocol accounts for; only the Wasm is left out.
     const [assets, wasmBytes] = await Promise.all([
         fetchVerifiedAssets(entries, reusableShellCaches),
-        fetchVerifiedWorkerWasm([RUNTIME_CACHE, ...reusableWorkerCaches]),
+        siteOrigins ? null : fetchVerifiedWorkerWasm([RUNTIME_CACHE, ...reusableWorkerCaches]),
     ]);
 
     const nonce = freshStageNonce();
@@ -729,12 +735,14 @@ async function installGeneration() {
             staged += 1;
             await reportInstallProgress("stage", staged, assets.length);
         }
-        await workerStage.put(
-            WORKER_WASM_URL,
-            new Response(wasmBytes, {
-                headers: { "content-type": "application/wasm" },
-            }),
-        );
+        if (wasmBytes) {
+            await workerStage.put(
+                WORKER_WASM_URL,
+                new Response(wasmBytes, {
+                    headers: { "content-type": "application/wasm" },
+                }),
+            );
+        }
         if (!(await existingGenerationIsComplete(entries, marker.shellStage, marker.workerStage))) {
             throw new Error("staged generation cache is incomplete");
         }
@@ -752,12 +760,14 @@ async function installGeneration() {
             published += 1;
             await reportInstallProgress("publish", published, assets.length);
         }
-        await worker.put(
-            WORKER_WASM_URL,
-            new Response(wasmBytes, {
-                headers: { "content-type": "application/wasm" },
-            }),
-        );
+        if (wasmBytes) {
+            await worker.put(
+                WORKER_WASM_URL,
+                new Response(wasmBytes, {
+                    headers: { "content-type": "application/wasm" },
+                }),
+            );
+        }
         if (!(await existingGenerationIsComplete(entries))) {
             throw new Error("published generation cache is incomplete");
         }
@@ -973,12 +983,16 @@ self.oninstall = event => {
         if (/^(profile|b[a-z2-7]{40,})(-[a-z0-9]+)?$/.test(label)) {
             throw new Error("the app's worker does not install on a site's origin");
         }
+        // What the deployment says about sites decides what this worker
+        // holds: where they have origins of their own it runs no database,
+        // and neither fetches nor keeps the Wasm that would.
+        await learnSiteOrigins();
         // A first page must not wait for the whole offline graph. Pin only the
         // worker's glue-bound Wasm, then assemble the graph under later
         // fetch/message lifetimes. An update still fills behind its live
         // incumbent before takeover, preserving offline-safe replacement.
         if (self.registration.active == null) {
-            await installWorkerRuntime();
+            if (!siteOrigins) await installWorkerRuntime();
         } else {
             await installGeneration();
         }
@@ -1544,6 +1558,27 @@ const sitesKnown = (async () => {
         log("Could not read the deployment's configuration:", error);
     }
 })();
+
+// Read the deployment's configuration from the server before installing,
+// unless what is kept already names site origins. It is kept here only when
+// it does name them: an install that learns nothing new leaves CacheStorage
+// as it found it. A server that cannot be reached leaves what is known as it
+// was.
+async function learnSiteOrigins() {
+    await sitesKnown;
+    if (siteOrigins) return;
+    try {
+        const response = await fetch(DEPLOYMENT_KEY, { cache: "no-store" });
+        if (!response.ok) return;
+        const config = await response.clone().json().catch(() => null);
+        if (config?.sites == null) return;
+        const cache = await caches.open(DEPLOYMENT_CACHE);
+        await cache.put(DEPLOYMENT_KEY, response);
+        noteSiteOrigins(config);
+    } catch (error) {
+        log("Could not read the deployment's configuration at install:", error);
+    }
+}
 
 // Answer with what `live` (the ordinary route to the server) says, keeping a
 // good answer; when it fails, answer with the last one kept.

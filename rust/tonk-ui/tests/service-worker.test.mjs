@@ -802,11 +802,55 @@ describe("immutable generation install", () => {
     await install;
 
     assert.equal(activationRequests, 1);
-    assert.deepEqual(fetches, [{ path: "/worker_bg.wasm", cache: "no-store" }]);
+    // The deployment's configuration is asked for first; it could not be
+    // read here, so the worker holds its runtime as it always did.
+    assert.deepEqual(fetches, [
+      { path: "/.well-known/tonk", cache: "no-store" },
+      { path: "/worker_bg.wasm", cache: "no-store" },
+    ]);
     const runtime = await caches.open(mod.RUNTIME_CACHE);
     assert.deepEqual(
       new Uint8Array(await (await runtime.match(mod.WORKER_WASM_URL)).arrayBuffer()),
       wasm,
+    );
+  });
+
+  test("a first install fetches no worker runtime where sites have origins of their own", async () => {
+    const fetches = [];
+    const { self, caches } = withGlobals({
+      registration: { active: null, waiting: null, installing: {}, addEventListener() {} },
+      fetchImpl: async (input) => {
+        const path = new URL(typeof input === "string" ? input : input.url).pathname;
+        fetches.push(path);
+        if (path === "/.well-known/tonk") {
+          return new Response(JSON.stringify({ sites: { host: "tonk.test" } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`a worker that runs no database fetched ${path}`);
+      },
+    });
+    let activationRequests = 0;
+    self.skipWaiting = async () => {
+      activationRequests += 1;
+    };
+    const mod = await loadWith({
+      buildId: "site-origins-build",
+      wasmHash: "0000000000000000",
+      exports: ["RUNTIME_CACHE", "WORKER_WASM_URL"],
+    });
+
+    let install;
+    self.oninstall({ waitUntil: (promise) => { install = promise; } });
+    await install;
+
+    assert.equal(activationRequests, 1);
+    assert.deepEqual(fetches, ["/.well-known/tonk"]);
+    assert.equal(
+      await caches.match(mod.WORKER_WASM_URL, { cacheName: mod.RUNTIME_CACHE }),
+      undefined,
+      "no runtime is pinned for a worker that starts no database",
     );
   });
 
@@ -1180,6 +1224,7 @@ describe("immutable generation install", () => {
     await install;
 
     assert.deepEqual(fetches.map(({ path }) => path).sort(), [
+      "/.well-known/tonk",
       "/asset-manifest.json",
       "/ui-new.js",
       "/worker_bg.wasm",
@@ -1228,7 +1273,7 @@ describe("immutable generation install", () => {
     self.oninstall({ waitUntil: (promise) => { install = promise; } });
     await install;
 
-    assert.deepEqual(fetched, ["/asset-manifest.json"]);
+    assert.deepEqual(fetched, ["/.well-known/tonk", "/asset-manifest.json"]);
   });
 
   test("rejects bad reuse candidates and leaves them untouched", async () => {
