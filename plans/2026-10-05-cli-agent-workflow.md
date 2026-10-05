@@ -86,3 +86,41 @@ Final validation after the last source change:
 - Complete within the scoped slice: exact text/boolean filters only, assert
   receipts only, no pagination or browser/remote benchmark execution. Changes
   remain uncommitted.
+
+## CI follow-up: worker session fixture isolation
+
+Native debug job `111769282046` failed in
+`session::tests::it_bounds_the_session_within_the_ttl` while opening its profile,
+before the TTL assertion: `nothing grants ... the storage of ...`.
+Native release was canceled without a test failure in its log.
+
+The session fixture varies the profile name but shares `Directory::Temp` and its
+`tonk-system` credential with other processes. Storage ownership is loaded once
+when constructing storage and again when opening the profile; concurrent first
+creation of that shared key can make those owners differ. The existing device
+fixture already isolates its native directory for this reason. These worker
+paths are unchanged from the PR base.
+
+Smallest fix: use one native credential directory per session fixture, retaining
+that same directory across the durable reopen test. Keep browser setup unchanged.
+Add a deterministic fixture regression requiring independent storage owners;
+prove it fails before isolation, then run the session tests and repeated parallel
+cold starts after the change. No production credential-store redesign in this PR.
+
+Before-change evidence:
+- The freshly compiled original TTL test reproduced the exact CI storage-grant
+  error locally. Log: `/private/tmp/tonk-pr1056-session-before.log`.
+- `it_isolates_scratch_profile_storage_owners` failed because both profiles had
+  the same storage-owner DID. Log: `/private/tmp/tonk-pr1056-isolation-before.log`.
+- The fixture change follows `device::tests::scratch`: native credentials use
+  `Directory::At(temp_dir/unique_name)`; the browser still uses `Directory::Temp`.
+  The reopen test derives the same directory from its retained unique name.
+- Final validation: all nine session tests passed with four test threads:
+  `cargo test -p tonk-worker --lib --features integration-tests session::tests -- --test-threads=4`.
+  Log: `/private/tmp/tonk-pr1056-session-after.log`.
+- The original TTL test passed 48 separate process runs in three cold temporary
+  directories, with 16 processes starting together per directory. Evidence:
+  `/private/tmp/tonk-session-race-after-jzfjmqbo`; harness:
+  `/private/tmp/tonk-pr1056-stress.py`.
+- Formatting and whitespace checks passed. No full workspace rerun or claim of
+  a production credential-store fix; remote CI must validate the pushed commit.
