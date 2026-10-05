@@ -1390,8 +1390,8 @@ mod tests {
         )
         .await;
         assert_ne!(a.is_ok(), b.is_ok());
-        let error = if a.is_err() {
-            a.unwrap_err()
+        let error = if let Err(error) = a {
+            error
         } else {
             b.unwrap_err()
         };

@@ -36,3 +36,17 @@ replay -> 412. The Wasm target checks successfully; cargo fmt and diff checks pa
 Builds emitted existing dead-code warnings in unrelated worker helpers.
 This is native worker execution plus Wasm compilation, not a browser render test
 or a deployment. No staging or production worker has been changed.
+
+## PR #1055 CI repair
+
+The initial CI run failed Clippy's `unnecessary_unwrap` in the competing-writers
+regression. The end-to-end aggregate also failed because lint failure skipped
+its shards. Replace the checked unwrap with `if let Err(error)`, preserving the
+one-winner and precondition-failure assertions.
+
+Validation: all six conditional tests passed with host access after sandboxed
+execution aborted with `failed to initiate panic, error 5`. `cargo fmt --all --
+--check`, `git diff --check`, and `nix --accept-flake-config develop .#ci -c lint`
+passed. Nix verified all five checks on aarch64-darwin, including workspace
+Clippy with all targets/features and warnings denied. Hosted Linux CI must
+still run on the pushed commit.
