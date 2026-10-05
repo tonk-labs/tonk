@@ -577,17 +577,13 @@ view!:
       .settings-back:active { background:var(--wash-2); }
       .hub-page:has(hub-bar[path="/account"]) :is(.settings-title,.settings-back) { display:none; }
       .hub-page account-settings { display:block; }
-      .registration-seat #tonk-register { position:fixed; inset:0; z-index:20; pointer-events:none;
-        --anchor-top:79px; --anchor-left:0px; --anchor-width:calc(100vw - 42px); }
-      .registration-seat #tonk-register .ocol { pointer-events:auto; }
-      .registration-seat #tonk-register #tonk-register-passkey { order:80; flex-basis:100%; }
-      .registration-hint { display:none; margin:8px 0 0; }
+      /* A modal over the spaces: the page behind is dimmed and takes no
+         clicks. Its surface is the app's raised one, not the hub's card. */
+      .registration-seat #tonk-register { position:fixed; inset:0; z-index:20; background:var(--dim);
+        --card:#fcfbfb; --anchor-top:79px; --anchor-left:0px; --anchor-width:calc(100vw - 42px); }
+      @media (prefers-color-scheme: dark){ .registration-seat #tonk-register { --card:#261f20; } }
       #tonk-register[data-kind="sign-in-via"] [data-retry="registration"],
       #tonk-register:not([data-kind="sign-in-via"]) [data-retry="sign-in-via"] { display:none; }
-      .registration-hint:is([data-state="invalid"],[data-state="suspended"],[data-state="unavailable"]) { display:block; }
-      .registration-hint[data-state="invalid"]::before { content:"That doesn’t look like an email address."; }
-      .registration-hint[data-state="suspended"]::before { content:"This account is suspended. Contact support to restore it."; }
-      .registration-hint[data-state="unavailable"]::before { content:"We couldn’t reach the account service. Check your connection and try again."; }
       .hub-page account-settings .s-body { min-width:0; min-height:0; max-height:none;
         overflow:visible; padding:0; background:transparent; border:0; color:var(--ink); }
       .hub-page account-settings .pane[hidden] { display:none; }
@@ -3466,17 +3462,12 @@ view!:
         /* The panel that adds an account, where the bar was: the account
            task seats it at the bar's anchor. */
         .registration-over-space { --anchor-top:16px; --anchor-left:0px; --anchor-width:calc(100vw - 16px); }
-        .registration-over-space #tonk-register { position:fixed; inset:0; z-index:30; pointer-events:none; }
-        .registration-over-space #tonk-register .ocol { pointer-events:auto; }
+        .registration-over-space #tonk-register { position:fixed; inset:0; z-index:30; background:var(--dim);
+          backdrop-filter:blur(3px); --card:#fcfbfb; }
+        @media (prefers-color-scheme: dark){ .registration-over-space #tonk-register { --card:#261f20; } }
         .registration-over-space[data-up] #tonk-register .ocol { top:auto; bottom:var(--anchor-bottom, 16px); }
-        .registration-over-space #tonk-register #tonk-register-passkey { order:80; flex-basis:100%; }
-        .registration-over-space .registration-hint { display:none; margin:8px 0 0; }
         .registration-over-space #tonk-register[data-kind="sign-in-via"] [data-retry="registration"],
         .registration-over-space #tonk-register:not([data-kind="sign-in-via"]) [data-retry="sign-in-via"] { display:none; }
-        .registration-over-space .registration-hint:is([data-state="invalid"],[data-state="suspended"],[data-state="unavailable"]) { display:block; }
-        .registration-over-space .registration-hint[data-state="invalid"]::before { content:"That doesn’t look like an email address."; }
-        .registration-over-space .registration-hint[data-state="suspended"]::before { content:"This account is suspended. Contact support to restore it."; }
-        .registration-over-space .registration-hint[data-state="unavailable"]::before { content:"We couldn’t reach the account service. Check your connection and try again."; }
       </style>
       <tonk-site data-space-preview with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
       <tonk-fab with="{profile-branch}@profile:tonk" space={id}>
@@ -3862,6 +3853,15 @@ command!: &account/open-registration
       the: xyz.tonk.command.open-registration/time
       as: float
 
+command!: &account/check-email
+  this: tonk:check-email
+  description: Ask the access service whether an address already has an account.
+  with:
+    email:
+      description: The address to look up.
+      the: xyz.tonk.command.check-email/email
+      as: text
+
 command!: &account/start-registration
   this: tonk:start-registration
   description: >
@@ -3967,6 +3967,13 @@ event!: &on/retry-registration
   where:
     time: ".timeStamp"
 
+# The address as typed, once typing pauses: `<registration-address>` raises
+# this on the field.
+event!: &on/check-email
+  type: "tonk-check-email"
+  where:
+    email: ".currentTarget.value"
+
 event!: &on/start-registration
   type: "submit"
   prevent-default: true
@@ -4005,23 +4012,25 @@ view!:
   show:
     panel: |
       <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="address">
+        <registration-address>
         <form class="ocol" on:start-registration=tonk:start-registration>
           <div class="ostack">
             <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
             <div class="orow mblk editing">
               <span class="k">email address</span>
               <span class="v"><input class="ed" name="email" type="email" inputmode="email" enterkeyhint="go"
-                autocomplete="email" aria-label="email address" value={email} required></span>
+                autocomplete="email" aria-label="email address" value={email} required
+                on:check-email=tonk:check-email></span>
             </div>
-            <button class="obtn" id="tonk-register-passkey" type="button" on:log-in=tonk:log-in>log in with a passkey</button>
           </div>
           <div class="oexp mblk">
-            <p aria-live="polite">Enter your email to continue. We’ll check whether you already have a Tonk account.</p>
+            <p aria-live="polite" data-address-says>Enter your email to continue. We’ll check whether you already have a Tonk account.</p>
             <tonk-display model="tonk:email-status" view="hint"></tonk-display>
           </div>
           <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
-          <button class="obtn" id="tonk-register-action" type="submit">continue</button>
+          <button class="obtn" id="tonk-register-action" type="submit" disabled>continue</button>
         </form>
+        </registration-address>
       </div>
 
 view!:
@@ -4118,7 +4127,7 @@ view!:
   this: tonk:email-status
   show:
     hint: |
-      <p class="registration-hint" data-state={state} data-address={address}></p>
+      <span hidden data-email-status data-state={state} data-address={address}></span>
 
 concept!: &account/active
   this: tonk:account/active
@@ -5408,6 +5417,63 @@ view!:
 # where the bar is, opens and puts it away by command, and tells the bar how
 # it ended: `completed` once this device holds an account, `cancelled` when
 # the panel is put away without one.
+element!: &registration-address
+  description: >
+    The address step of the panel that adds an account: asks about the
+    address once typing pauses, and offers what the answer allows.
+  method:
+    # What the service said about the address as it is typed now. An answer
+    # about an address since edited away says nothing.
+    answer: |
+      (self) => {
+        const typed = self.querySelector('input[name="email"]')?.value.trim() ?? '';
+        const status = self.querySelector('[data-email-status]');
+        return typed && status?.dataset.address === typed ? status.dataset.state : '';
+      }
+    offer: |
+      (self) => {
+        const action = self.querySelector('#tonk-register-action');
+        const says = self.querySelector('[data-address-says]');
+        if (!action || !says) return;
+        const [label, ready, text] = ({
+          unregistered: ['create a passkey', true, 'No account has this address yet. Create one with a passkey.'],
+          active: ['log in with passkey', true, 'This address has an account. Log in with its passkey.'],
+          pending: ['log in with passkey', true, 'This address has an account. Log in with its passkey.'],
+          checking: ['checking…', false, 'Checking this address…'],
+          invalid: ['continue', false, 'That doesn’t look like an email address.'],
+          suspended: ['continue', false, 'This account is suspended. Contact support to restore it.'],
+          unavailable: ['continue', false, 'We couldn’t reach the account service. Check your connection and try again.'],
+        })[self.answer()] ?? ['continue', false, 'Enter your email to continue. We’ll check whether you already have a Tonk account.'];
+        if (action.textContent !== label) action.textContent = label;
+        action.disabled = !ready;
+        if (says.textContent !== text) says.textContent = text;
+      }
+    ask: |
+      (self) => {
+        const field = self.querySelector('input[name="email"]');
+        if (field?.value.trim()) field.dispatchEvent(new Event('tonk-check-email', { bubbles: true }));
+      }
+    connected: |
+      (self) => {
+        self._typed = () => {
+          self.offer();
+          clearTimeout(self._pause);
+          self._pause = setTimeout(() => self.ask(), 350);
+        };
+        self.addEventListener('input', self._typed);
+        self._answered = new MutationObserver(() => self.offer());
+        self._answered.observe(self, { subtree: true, childList: true, attributes: true,
+          attributeFilter: ['data-state', 'data-address'] });
+        self.offer();
+        self.querySelector('input[name="email"]')?.focus();
+      }
+    disconnected: |
+      (self) => {
+        clearTimeout(self._pause);
+        if (self._typed) self.removeEventListener('input', self._typed);
+        self._answered?.disconnect();
+      }
+
 element!: &account-task
   description: Seats the panel that adds an account over a space's bar, and says how it ended.
   method:
@@ -5435,7 +5501,21 @@ element!: &account-task
           self._task = detail.requestId;
           self._shown = false;
           self.seat(detail.presentation);
-          self.querySelector('[data-open-registration]')?.dispatchEvent(new Event('tonk-open-registration', { bubbles: true }));
+          // Once the display around the trigger listens: an event raised
+          // before that has nobody to hear it.
+          const trigger = self.querySelector('[data-open-registration]');
+          const display = trigger?.closest('tonk-display');
+          const ask = () => trigger?.dispatchEvent(new Event('tonk-open-registration', { bubbles: true }));
+          if (!display || display.hasAttribute('data-bound')) {
+            ask();
+          } else {
+            const bound = new MutationObserver(() => {
+              if (!display.hasAttribute('data-bound')) return;
+              bound.disconnect();
+              if (self._task === detail.requestId) ask();
+            });
+            bound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
+          }
         } else if (detail.requestId !== self._task) {
           return;
         } else if (detail.action === 'reseat') {
@@ -6119,7 +6199,7 @@ element!: &account-settings
       (self) => !self.linked() && document.querySelector('[data-account-link]')?.dataset.state === 'empty'
     # The panel is up: the flag is an attribute so a re-render keeps it.
     unlink: |
-      (self) => { self._shown = null; self._linking = null; self.setAttribute('data-linking', 'false'); }
+      (self) => { self._shown = null; self._linking = null; self._staged = false; self.setAttribute('data-linking', 'false'); }
     # The link state the account page's rows are keyed on, and the door:
     # the account page or the settings page with no account opens the
     # panel that adds one once the link display has resolved empty.
@@ -6160,27 +6240,43 @@ element!: &account-settings
             else self.openRegistration();
           }
         }
-        // Route changes can suspend and restore the ceremony with its
-        // typed address intact.
+        // Leaving the account page puts the panel away.
         const shown = account ? 'show' : 'suspend';
         if (linking && self._shown !== shown) {
           self._shown = shown;
           if (shown === 'suspend') self.leaveRegistration();
         }
+        // The panel went away on the account page, however it ended: back
+        // to the spaces, or it would only open again. One stage gives way to
+        // the next across two displays, so it is taken for gone once they
+        // have settled with none showing.
+        if (!linking) return;
+        if (self.staged()) { self._staged = true; clearTimeout(self._unstaged); self._unstaged = null; return; }
+        if (!self._staged || self._unstaged) return;
+        self._unstaged = setTimeout(() => {
+          self._unstaged = null;
+          if (self.staged() || self.getAttribute('data-linking') !== 'true') return;
+          self._staged = false;
+          self.unlink();
+          if (self.context().path === '/account') window.tonk?.navigate?.('/');
+        }, 400);
       }
-    # Assert a command through one of the hidden triggers below. A page can
-    # land here before its view listens, and an event nobody heard is lost,
-    # so an opening is asserted again until a stage shows.
+    # Assert a command through one of the hidden triggers below, once the
+    # display around it listens: an event raised before that has nobody to
+    # hear it.
     fire: |
-      (self, selector, type, landed) => {
+      (self, selector, type) => {
         const trigger = self.querySelector(selector);
         if (!trigger) return;
-        const fire = (tries) => {
-          trigger.dispatchEvent(new Event(type, { bubbles: true }));
-          if (!landed || tries <= 0) return;
-          setTimeout(() => { if (!landed()) fire(tries - 1); }, 300);
-        };
-        fire(20);
+        const display = trigger.closest('tonk-display');
+        const send = () => trigger.dispatchEvent(new Event(type, { bubbles: true }));
+        if (!display || display.hasAttribute('data-bound')) { send(); return; }
+        const bound = new MutationObserver(() => {
+          if (!display.hasAttribute('data-bound')) return;
+          bound.disconnect();
+          send();
+        });
+        bound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
       }
     staged: |
       (self) => !!document.querySelector('.registration-seat tonk-display:not([data-state="empty"])')
@@ -6191,14 +6287,14 @@ element!: &account-settings
         self.setAttribute('data-linking', 'true');
         self._shown = 'show';
         self._linking = 'needs-account';
-        self.fire('[data-open-registration]', 'tonk-open-registration', () => self.staged());
+        self.fire('[data-open-registration]', 'tonk-open-registration');
       }
     open-sign-in-via: |
       (self) => {
         self.setAttribute('data-linking', 'true');
         self._shown = 'show';
         self._linking = 'sign-in-via';
-        self.fire('[data-open-sign-in-via]', 'tonk-open-sign-in-via', () => self.staged());
+        self.fire('[data-open-sign-in-via]', 'tonk-open-sign-in-via');
       }
     leave-registration: |
       (self) => {

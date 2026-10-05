@@ -124,7 +124,7 @@ async fn lookup(email: &str) -> (&'static str, Option<String>) {
     let Some((domain, local)) = split_address(email) else {
         return (state::INVALID, None);
     };
-    let Some(origin) = super::repository::worker_origin() else {
+    let Some(origin) = super::repository::app_origin() else {
         return (state::UNAVAILABLE, None);
     };
     let Ok(endpoint) = format!("{origin}/customer/{domain}/{local}/did.json").parse() else {
