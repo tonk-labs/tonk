@@ -1148,12 +1148,7 @@ mod when_listing_concepts {
             .iter()
             .find(|c| c.name == "task")
             .expect("the user-defined `task` concept should appear in the listing");
-        // Concept descriptions don't round-trip through the
-        // anonymous-concept dispatch path the listing uses; see
-        // the fidelity-gap note on `tonk_cli::schema`. Asserting
-        // `None` pins that behaviour so a future fix lights up
-        // the test as a reminder to revisit.
-        assert!(task.description.is_none());
+        assert_eq!(task.description.as_deref(), Some("a task"));
         let mut fields = task.fields.clone();
         fields.sort();
         assert_eq!(fields, vec!["done", "title"]);

@@ -11,6 +11,9 @@ use dialog_query::{ConceptDescriptor, Type};
 /// against a concept's descriptor.
 #[derive(Debug, thiserror::Error)]
 pub enum DataError {
+    /// A query filter cannot be represented by the supported typed syntax.
+    #[error("{0}")]
+    Filter(String),
     /// A `--field` name isn't in the concept's `with:` map.
     #[error("unknown field '{field}' on {concept}; valid fields: {}", valid.join(", "))]
     UnknownField {
@@ -31,6 +34,61 @@ pub enum DataError {
         /// The offending raw value.
         raw: String,
     },
+}
+
+/// Build a read-only concept query with typed equality constraints.
+/// Literal constraints remain in the query, so Dialog does the filtering.
+pub fn build_query(
+    descriptor: &ConceptDescriptor,
+    concept: &str,
+    entity: Option<&str>,
+    filters: &[String],
+) -> Result<String, DataError> {
+    let mut constraints = std::collections::BTreeMap::new();
+    for filter in filters {
+        let (field, raw) = filter.split_once('=').ok_or_else(|| {
+            DataError::Filter(
+                "expected --where FIELD=VALUE (for example --where done=false)".into(),
+            )
+        })?;
+        let Some((_, fd)) = descriptor.with().iter().find(|(name, _)| *name == field) else {
+            return Err(DataError::UnknownField {
+                concept: concept.into(),
+                field: field.into(),
+                valid: valid_fields(descriptor),
+            });
+        };
+        if !matches!(fd.content_type(), Some(Type::String | Type::Boolean)) {
+            return Err(DataError::Filter(format!(
+                "--where currently supports text and boolean fields; use `tonk eval` to filter '{field}'"
+            )));
+        }
+        let value = render_value(fd.content_type(), raw).map_err(|error| match error {
+            DataError::BadValue { ty, raw, .. } => DataError::BadValue {
+                field: field.into(),
+                ty,
+                raw,
+            },
+            error => error,
+        })?;
+        if constraints.insert(field, value).is_some() {
+            return Err(DataError::Filter(format!(
+                "duplicate --where field '{field}'; use each field once"
+            )));
+        }
+    }
+    let mut doc = format!(
+        "{concept}:\n  this: {}\n",
+        entity.unwrap_or("?__tonk_entity")
+    );
+    for (index, (field, _)) in descriptor.with().iter().enumerate() {
+        let value = constraints
+            .get(field)
+            .cloned()
+            .unwrap_or_else(|| format!("?__tonk_field_{index}"));
+        doc.push_str(&format!("  {field}: {value}\n"));
+    }
+    Ok(doc)
 }
 
 /// Render one raw CLI value into its notation form given the field's
@@ -149,6 +207,17 @@ pub fn build_supersede(
 ) -> Result<String, DataError> {
     let body = render_pairs(descriptor, concept, fields)?.join("\n");
     Ok(format!("{concept}!:\n  this: {entity}\n{body}\n"))
+}
+
+/// Read back an entity while constraining every requested value.
+pub fn build_match(
+    descriptor: &ConceptDescriptor,
+    concept: &str,
+    entity: &str,
+    fields: &[(String, String)],
+) -> Result<String, DataError> {
+    let body = render_pairs(descriptor, concept, fields)?.join("\n");
+    Ok(format!("{concept}:\n  this: {entity}\n{body}\n"))
 }
 
 /// Build a retraction document: a single field (`field: _`) or the

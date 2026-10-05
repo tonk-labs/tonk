@@ -100,11 +100,18 @@ pub struct EvaluateQuery {
     /// behavior. Accepts `true`/`false`, `1`/`0`, `yes`/`no`.
     #[serde(default = "default_true", deserialize_with = "deserialize_bool")]
     pub transact: bool,
+    /// Set only by the conditional JSON endpoint. Outer None means unconditional;
+    /// Some(None) requires an empty branch, Some(Some(revision)) an exact head.
+    #[serde(skip)]
+    pub expected_revision: Option<Option<Revision>>,
 }
 
 impl Default for EvaluateQuery {
     fn default() -> Self {
-        Self { transact: true }
+        Self {
+            transact: true,
+            expected_revision: None,
+        }
     }
 }
 
@@ -234,6 +241,47 @@ pub async fn evaluate(
     Ok(response)
 }
 
+/// Explicit conditional endpoint: an older worker returns 404, never an
+/// unconditional write with a silently ignored query parameter.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConditionalEvaluateRequest {
+    pub document: String,
+    // Custom deserialization makes the field required while permitting JSON null.
+    #[serde(deserialize_with = "Option::<Revision>::deserialize")]
+    pub expected_revision: Option<Revision>,
+}
+
+#[wasm_compat]
+pub async fn evaluate_conditional(
+    state: State<AppState>,
+    path: Path<EvaluatePath>,
+    client: Option<Extension<super::ClientId>>,
+    lifetime: Option<Extension<crate::worker::FetchLifetime>>,
+    headers: HeaderMap,
+    Json(request): Json<ConditionalEvaluateRequest>,
+) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
+    evaluate(
+        state,
+        path,
+        axum::extract::Query(EvaluateQuery {
+            transact: true,
+            expected_revision: Some(request.expected_revision),
+        }),
+        client,
+        lifetime,
+        headers,
+        Bytes::from(request.document),
+    )
+    .await
+}
+
+fn revision_conflict() -> TonkWorkerError {
+    TonkWorkerError::PreconditionFailed(
+        "The space changed since preview. Read and preview again before applying.".to_owned(),
+    )
+}
+
 /// `POST /api/repository/profile:tonk/branch/{branch}/evaluate`
 ///
 /// Profile-side counterpart to [`evaluate`]. The profile is its
@@ -328,14 +376,20 @@ pub type SeedRecord<'a> = &'a (
             + Sync
     );
 
+/// The space's head among a stack's heads: the bottom layer's, `None`
+/// while the branch is empty.
+fn bottom_head(heads: &[dialog_repository::Head]) -> Option<dialog_artifacts::Revision> {
+    match heads.first() {
+        Some(dialog_repository::Head::Tree(revision)) => revision.clone(),
+        _ => None,
+    }
+}
+
 /// The space's revision among a stack's heads: the bottom layer's.
 fn bottom_revision(
     heads: &[dialog_repository::Head],
 ) -> Result<dialog_artifacts::Revision, dialog_repository::StackError> {
-    match heads.first() {
-        Some(dialog_repository::Head::Tree(Some(revision))) => Ok(revision.clone()),
-        _ => Err(dialog_repository::CommitError::Detached.into()),
-    }
+    bottom_head(heads).ok_or_else(|| dialog_repository::CommitError::Detached.into())
 }
 
 /// Commit the evaluated transaction, optionally chaining a second commit
@@ -479,7 +533,10 @@ pub(super) async fn seed_on_branch<'a>(
         tonk_state,
         tonk_branch,
         Document::Text(Bytes::from(body.into_bytes())),
-        EvaluateQuery { transact: true },
+        EvaluateQuery {
+            transact: true,
+            ..Default::default()
+        },
         Retractions::Fixed(Vec::new()),
         None,
         EvaluationMode::LibrarySeed,
@@ -500,7 +557,10 @@ pub(super) async fn seed_syntax_on_branch<'a>(
         tonk_state,
         tonk_branch,
         Document::Parsed(syntax),
-        EvaluateQuery { transact: true },
+        EvaluateQuery {
+            transact: true,
+            ..Default::default()
+        },
         Retractions::Fixed(Vec::new()),
         None,
         EvaluationMode::LibrarySeed,
@@ -584,7 +644,19 @@ async fn evaluate_on_branch_with<'a>(
     // document's statements are idempotent asserts/retracts, so replay is safe.
     let evaluate_once = || async {
         evaluation_passes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let revision_before = session.handle().revision();
+        // The head this evaluation reads at and a commit builds on: the
+        // bottom layer's captured head, not the handle's live revision. A
+        // pull the stack has not captured is movement this evaluation
+        // cannot see, and the publish CASes against the captured head, so
+        // a conditional request is checked against the same head. The
+        // stack only advances under the branch transactor, which the
+        // committing path holds from this check through its publish.
+        let revision_before = bottom_head(&session.stack().captured());
+        if let Some(expected) = &query.expected_revision
+            && expected != &revision_before
+        {
+            return Err(revision_conflict());
+        }
         // The document evaluates and commits through the branch's stack,
         // like every other write: the transaction's as-if-committed view
         // is the composite a `query`/`subscribe` reads, state layer
@@ -611,6 +683,11 @@ async fn evaluate_on_branch_with<'a>(
             .perform(&tonk_state.operator)
             .await
             .map_err(map_evaluate_error)?;
+        if query.expected_revision.is_some() && !evaluated.transients.is_empty() {
+            return Err(TonkWorkerError::Forbidden(
+                "Conditional builds accept durable changes only; transient commands are unavailable".into(),
+            ));
+        }
         let eval_ms = t_eval.elapsed().as_millis();
         // Post-evaluation matches: the txn's overlay already reflects every
         // mutation and induce-pass derivation, so this is the same answer a
@@ -696,17 +773,7 @@ async fn evaluate_on_branch_with<'a>(
     // the commit consumes it — and after an advance the evaluation must run
     // against the new head anyway. Bounded so a flapping head can't spin.
     const EVALUATE_RETRY_LIMIT: usize = 4;
-    let (
-        revision_before,
-        revision_after,
-        matches_after,
-        matches_before,
-        commits,
-        transients,
-        eval_ms,
-        matches_ms,
-        commit_ms,
-    ) = {
+    let outcome = {
         let mut attempt = 0;
         loop {
             let (evaluated, revision_before, matches_after, eval_ms, matches_ms) =
@@ -762,6 +829,16 @@ async fn evaluate_on_branch_with<'a>(
                     .perform(&tonk_state.operator)
                     .await
                     .map_err(|e| TonkWorkerError::Internal(format!("test race: {e}")))?;
+                // Also move the cached handle, as a pull landing during the
+                // evaluation would: the stack's captured head, which the
+                // conditional publish CASes against, must not follow it.
+                if query.expected_revision.is_some() {
+                    session
+                        .handle()
+                        .refresh(&tonk_state.operator)
+                        .await
+                        .map_err(|e| TonkWorkerError::Internal(format!("test refresh: {e}")))?;
+                }
             }
             // Extract what the response needs before the commit consumes the
             // transaction (it isn't `Clone`, and `commit()` takes it by
@@ -781,7 +858,7 @@ async fn evaluate_on_branch_with<'a>(
                     let witnessed = session.state.drain_commands();
                     let mut transients = witnessed;
                     dialog_artifacts::Statement::assert(requested, &mut transients);
-                    break (
+                    break Ok((
                         revision_before,
                         revision_after,
                         matches_after,
@@ -791,10 +868,27 @@ async fn evaluate_on_branch_with<'a>(
                         eval_ms,
                         matches_ms,
                         t_commit.elapsed().as_millis(),
-                    );
+                    ));
+                }
+                Err(dialog_repository::StackError::Publish {
+                    source:
+                        dialog_repository::CommitError::Publish(
+                            dialog_repository::PublishError::VersionMismatch { .. },
+                        ),
+                    ..
+                }) if query.expected_revision.is_some() => {
+                    // Never replay an authorized document on a different
+                    // revision. The head moved through another handle in the
+                    // capture→publish window; capture it while the lock is
+                    // held, and subscribers learn of it from the poll below.
+                    if let Err(error) = session.stack().advance(&tonk_state.operator).await {
+                        log!("evaluate advance after a conditional conflict failed: {error}");
+                    }
+                    break Err(revision_conflict());
                 }
                 Err(e)
-                    if e.to_string().contains("Version mismatch")
+                    if query.expected_revision.is_none()
+                        && e.to_string().contains("Version mismatch")
                         && attempt + 1 < EVALUATE_RETRY_LIMIT =>
                 {
                     attempt += 1;
@@ -818,12 +912,23 @@ async fn evaluate_on_branch_with<'a>(
         }
     };
 
-    // Re-poll subscriptions so SSE clients see the new state. The chain commits
-    // via dialog directly; the reactor's subscription registry is the worker's
-    // responsibility.
+    // Re-poll subscriptions so SSE clients see the new state, after a commit
+    // and after a conditional conflict alike. The poll settles the stack under
+    // the transactor, so the lock is released first.
     drop(_committing);
     let t_poll = web_time::Instant::now();
     session.poll(&tonk_state.operator).await;
+    let (
+        revision_before,
+        revision_after,
+        matches_after,
+        matches_before,
+        commits,
+        transients,
+        eval_ms,
+        matches_ms,
+        commit_ms,
+    ) = outcome?;
     let poll_ms = t_poll.elapsed().as_millis();
     let total_ms = total_start.elapsed().as_millis();
     let passes = evaluation_passes.load(std::sync::atomic::Ordering::Relaxed);
@@ -867,7 +972,10 @@ pub async fn evaluate_body(
     transact: bool,
 ) -> Result<EvaluateResponse, TonkWorkerError> {
     let tonk_branch = tonk_state.reactor.repository(repo).branch(branch);
-    let query = EvaluateQuery { transact };
+    let query = EvaluateQuery {
+        transact,
+        ..Default::default()
+    };
     let bytes = Bytes::from(body.into_bytes());
     evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
         .await
@@ -889,7 +997,10 @@ pub async fn evaluate_body_with_transients(
     transact: bool,
 ) -> Result<(EvaluateResponse, Option<Changes>), TonkWorkerError> {
     let tonk_branch = tonk_state.reactor.repository(repo).branch(branch);
-    let query = EvaluateQuery { transact };
+    let query = EvaluateQuery {
+        transact,
+        ..Default::default()
+    };
     let bytes = Bytes::from(body.into_bytes());
     evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
         .await
@@ -913,7 +1024,10 @@ pub async fn evaluate_body_recording(
     record: SeedRecord<'_>,
 ) -> Result<EvaluateResponse, TonkWorkerError> {
     let tonk_branch = tonk_state.reactor.repository(repo).branch(branch);
-    let query = EvaluateQuery { transact: true };
+    let query = EvaluateQuery {
+        transact: true,
+        ..Default::default()
+    };
     let bytes = Bytes::from(body.into_bytes());
     evaluate_on_branch_with(
         tonk_state,
@@ -944,7 +1058,10 @@ pub async fn evaluate_with_retractions(
     record: SeedRecord<'_>,
 ) -> Result<EvaluateResponse, TonkWorkerError> {
     let tonk_branch = tonk_state.reactor.repository(repo).branch(branch);
-    let query = EvaluateQuery { transact: true };
+    let query = EvaluateQuery {
+        transact: true,
+        ..Default::default()
+    };
     let bytes = Bytes::from(body.into_bytes());
     evaluate_on_branch_with(
         tonk_state,
@@ -970,7 +1087,10 @@ pub async fn evaluate_profile_body_recording(
     record: SeedRecord<'_>,
 ) -> Result<EvaluateResponse, TonkWorkerError> {
     let tonk_branch = tonk_state.reactor.profile_repository().branch(branch);
-    let query = EvaluateQuery { transact: true };
+    let query = EvaluateQuery {
+        transact: true,
+        ..Default::default()
+    };
     let bytes = Bytes::from(body.into_bytes());
     evaluate_on_branch_with(
         tonk_state,
@@ -1002,7 +1122,10 @@ pub(super) async fn evaluate_profile_with_retraction_plan<'a>(
         tonk_state,
         tonk_branch,
         Document::Text(Bytes::from(body.into_bytes())),
-        EvaluateQuery { transact: true },
+        EvaluateQuery {
+            transact: true,
+            ..Default::default()
+        },
         Retractions::Planned { retract, desired },
         Some(record),
         EvaluationMode::LibrarySeed,
@@ -1029,7 +1152,10 @@ pub async fn evaluate_profile_body(
     transact: bool,
 ) -> Result<EvaluateResponse, TonkWorkerError> {
     let tonk_branch = tonk_state.reactor.profile_repository().branch(branch);
-    let query = EvaluateQuery { transact };
+    let query = EvaluateQuery {
+        transact,
+        ..Default::default()
+    };
     let bytes = Bytes::from(body.into_bytes());
     evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
         .await
@@ -1106,17 +1232,220 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    #[cfg(target_arch = "wasm32")]
     use axum::body::Body;
-    #[cfg(target_arch = "wasm32")]
     use axum::http::{Request, StatusCode};
-    #[cfg(target_arch = "wasm32")]
     use tower::ServiceExt;
 
     use super::{EvaluateResponse, evaluate_body};
     use crate::router::AppState;
     #[cfg(target_arch = "wasm32")]
     use crate::router::{RepositoryInfo, api_router_with_state, tests::test_state};
+
+    #[test]
+    fn conditional_request_requires_explicit_revision() {
+        assert!(
+            serde_json::from_str::<super::ConditionalEvaluateRequest>(r#"{"document":"person:"}"#)
+                .is_err()
+        );
+        assert!(
+            serde_json::from_str::<super::ConditionalEvaluateRequest>(
+                r#"{"document":"person:","expected_revision":null}"#
+            )
+            .is_ok()
+        );
+        assert!(
+            serde_json::from_str::<super::ConditionalEvaluateRequest>(
+                r#"{"document":"person:","expected_revision":"bogus"}"#
+            )
+            .is_err()
+        );
+    }
+
+    async fn conditional(
+        state: &AppState,
+        repo: &str,
+        body: &str,
+        expected: Option<dialog_repository::Revision>,
+    ) -> Result<EvaluateResponse, crate::TonkWorkerError> {
+        let tonk = state.read().await;
+        super::evaluate_on_branch(
+            &tonk,
+            tonk.reactor.repository(repo).branch("main"),
+            body.to_owned().into(),
+            super::EvaluateQuery {
+                transact: true,
+                expected_revision: Some(expected),
+            },
+        )
+        .await
+        .map(|(response, _)| response.0)
+    }
+
+    #[dialog_common::test]
+    async fn conditional_http_route_requires_revision_and_returns_precondition_failed() {
+        let (state, repo) = state_with_repo("conditional-http").await;
+        let initial = evaluate(&state, &repo, CONCEPTS, true).await.revision_after;
+        let (app, _) = crate::router::api_router_from_state(state.clone());
+        let url = format!("/api/repository/{repo}/branch/main/evaluate/conditional");
+        let document = "person!:\n  this: id:http\n  name: HTTP\n  age: 1\n";
+        for (body, status) in [
+            (
+                serde_json::json!({"document": document}),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                serde_json::json!({"document": document, "expected_revision": initial}),
+                StatusCode::OK,
+            ),
+            (
+                serde_json::json!({"document": document, "expected_revision": initial}),
+                StatusCode::PRECONDITION_FAILED,
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(&url)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+        }
+        assert_eq!(
+            evaluate(&state, &repo, "person:\n", false)
+                .await
+                .matches_after[0]
+                .results
+                .len(),
+            1
+        );
+    }
+
+    #[dialog_common::test]
+    async fn conditional_write_commits_once_and_rejects_stale_preview() {
+        let (state, repo) = state_with_repo("conditional-write").await;
+        let initial = evaluate(&state, &repo, CONCEPTS, true).await;
+        let first = "person!:\n  this: id:first\n  name: First\n  age: 1\n";
+        let second = "person!:\n  this: id:second\n  name: Second\n  age: 2\n";
+        let response = conditional(&state, &repo, first, initial.revision_after.clone())
+            .await
+            .unwrap();
+        assert_eq!(response.revision_before, initial.revision_after);
+        assert_ne!(response.revision_before, response.revision_after);
+        // The normal cached reader must immediately see this conditional commit.
+        let read = evaluate(&state, &repo, "person:\n", false).await;
+        assert_eq!(read.revision_after, response.revision_after);
+        assert_eq!(read.matches_after[0].results.len(), 1);
+        let error = conditional(&state, &repo, second, initial.revision_after)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::TonkWorkerError::PreconditionFailed(_)
+        ));
+        let after = evaluate(&state, &repo, "person:\n", false).await;
+        assert_eq!(after.revision_after, response.revision_after);
+        assert_eq!(after.matches_after[0].results.len(), 1);
+    }
+
+    #[dialog_common::test]
+    async fn conditional_build_rejects_transient_commands_without_committing() {
+        let (state, repo) = state_with_repo("conditional-commands").await;
+        evaluate(&state, &repo, CONCEPTS, true).await;
+        let initial = evaluate(&state, &repo, RULE, true).await.revision_after;
+        let error = conditional(
+            &state,
+            &repo,
+            "person-entered!:\n  this: id:command\n  name: Forbidden\n  age: 1\n",
+            initial.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, crate::TonkWorkerError::Forbidden(_)));
+        let read = evaluate(&state, &repo, "person:\n", false).await;
+        assert_eq!(read.revision_after, initial);
+        assert!(read.matches_after[0].results.is_empty());
+    }
+
+    #[dialog_common::test]
+    async fn conditional_competing_writers_have_one_winner() {
+        let (state, repo) = state_with_repo("conditional-contenders").await;
+        let initial = evaluate(&state, &repo, CONCEPTS, true).await.revision_after;
+        let (a, b) = futures_util::future::join(
+            conditional(
+                &state,
+                &repo,
+                "person!:\n  this: id:a\n  name: A\n  age: 1\n",
+                initial.clone(),
+            ),
+            conditional(
+                &state,
+                &repo,
+                "person!:\n  this: id:b\n  name: B\n  age: 2\n",
+                initial,
+            ),
+        )
+        .await;
+        assert_ne!(a.is_ok(), b.is_ok());
+        let error = if let Err(error) = a {
+            error
+        } else {
+            b.unwrap_err()
+        };
+        assert!(matches!(
+            error,
+            crate::TonkWorkerError::PreconditionFailed(_)
+        ));
+        assert_eq!(
+            evaluate(&state, &repo, "person:\n", false)
+                .await
+                .matches_after[0]
+                .results
+                .len(),
+            1
+        );
+    }
+
+    #[dialog_common::test]
+    async fn conditional_write_does_not_retry_after_external_head_race() {
+        let (state, repo) = state_with_repo("conditional-race").await;
+        let initial = evaluate(&state, &repo, CONCEPTS, true).await.revision_after;
+        let tonk = state.read().await;
+        let result = super::evaluate_on_branch_with(
+            &tonk,
+            tonk.reactor.repository(&repo).branch("main"),
+            super::Document::Text(
+                "person!:\n  this: id:must-not-exist\n  name: Stale\n  age: 1\n"
+                    .to_owned()
+                    .into(),
+            ),
+            super::EvaluateQuery {
+                transact: true,
+                expected_revision: Some(initial),
+            },
+            super::Retractions::Fixed(Vec::new()),
+            None,
+            super::EvaluationMode::LibrarySeedWithRace,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(crate::TonkWorkerError::PreconditionFailed(_))
+        ));
+        drop(tonk);
+        assert!(
+            evaluate(&state, &repo, "person:\n", false)
+                .await
+                .matches_after[0]
+                .results
+                .is_empty()
+        );
+    }
 
     /// Create the test repository via `PUT /api/repository/{name}`,
     /// then hand back the wrapped [`AppState`] so tests can call
@@ -1351,7 +1680,10 @@ mod tests {
             &tonk,
             tonk.reactor.repository(&repo).branch("main"),
             super::Document::Text(CONCEPTS.to_owned().into()),
-            super::EvaluateQuery { transact: true },
+            super::EvaluateQuery {
+                transact: true,
+                ..Default::default()
+            },
             super::Retractions::Planned {
                 retract: &retractions,
                 desired: &[],

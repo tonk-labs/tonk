@@ -146,9 +146,15 @@ fn close_delay_ms(state: &Rc<RefCell<HostState>>, entry_id: EntryId) -> i32 {
 /// the consumer's current `with` ancestry. A cancelled entry or a
 /// disconnected consumer ends the retry chain (`refresh_entry` prunes it).
 fn schedule_resubscribe(state: &Rc<RefCell<HostState>>, entry_id: EntryId, delay_ms: i32) {
+    let Some(attempt) = state.borrow().registry.get(entry_id).map(|e| e.attempt) else {
+        return;
+    };
     let state = state.clone();
     spawn_local(async move {
         wait_ms(delay_ms).await;
+        if !state.borrow().registry.is_current(entry_id, attempt) {
+            return;
+        }
         refresh_entry(&state, entry_id).await;
     });
 }
@@ -526,9 +532,11 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
             depth,
             abort: None,
             awaiting_controller: false,
+            attempt: 0,
         })
     };
 
+    let attempt = 0;
     // Spawn the SSE open. When the future completes, install the
     // abort handle on the registry entry (or drop it if the entry
     // has been removed in the meantime).
@@ -548,6 +556,9 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
             &url,
             &body,
             move |frame: &str| {
+                if !state_frame.borrow().registry.is_current(entry_id, attempt) {
+                    return;
+                }
                 if handle_control_frame(&state_frame, entry_id, frame) {
                     return;
                 }
@@ -577,6 +588,9 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
                 deliver_frame(&consumer_frame, &frame_js, tag_frame.as_ref(), false);
             },
             move |err: ErrorDetail| {
+                if !state_err.borrow().registry.is_current(entry_id, attempt) {
+                    return;
+                }
                 if consumer_err.is_connected() {
                     invoke_method(&consumer_err, "error", &error_to_js(&err), tag_err.as_ref());
                 }
@@ -586,6 +600,9 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
                 resubscribe_after_error(&state_err, entry_id, &err);
             },
             move || {
+                if !state_close.borrow().registry.is_current(entry_id, attempt) {
+                    return;
+                }
                 // Clean server close (the SW releasing in-flight streams on
                 // update): reconnect silently — the subscription isn't over,
                 // its transport is. A close announced as INTENTIONAL holds
@@ -595,10 +612,17 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
             },
         )
         .await;
+        if !state_for_spawn
+            .borrow()
+            .registry
+            .is_current(entry_id, attempt)
+        {
+            return;
+        }
         match abort {
             Ok(handle) => {
                 let mut s = state_for_spawn.borrow_mut();
-                s.registry.install_abort(entry_id, handle);
+                s.registry.install_abort(entry_id, attempt, handle);
             }
             Err(err) => {
                 if consumer_for_spawn.is_connected() {
@@ -737,21 +761,22 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
     // Abort the existing upstream and clear its handle so the
     // refresh's new subscription is the only live one.
     let url = subscribe_url(space.as_deref(), branch.as_deref(), profile, depth);
-    {
+    let attempt = {
         let mut s = state.borrow_mut();
-        if s.registry.get(entry_id).is_some() {
-            if let Some(e) = s.registry.entries_mut().get_mut(&entry_id) {
-                e.abort.take();
-                e.space = space.clone();
-                e.branch = branch.clone();
-                // A fresh issue starts unheld; a new intentional-drop
-                // signal re-marks it.
-                e.awaiting_controller = false;
-            }
-        } else {
+        let Some(e) = s.registry.entries_mut().get_mut(&entry_id) else {
             return;
-        }
-    }
+        };
+        // Invalidate even an older open that has no abort handle yet.
+        e.attempt = e
+            .attempt
+            .checked_add(1)
+            .expect("subscription attempt exhaustion");
+        e.abort.take();
+        e.space = space.clone();
+        e.branch = branch.clone();
+        e.awaiting_controller = false;
+        e.attempt
+    };
 
     // Re-open the SSE. Same shape as `handle_subscribe` but
     // against the new url, reusing the stored query + tag.
@@ -773,6 +798,9 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
         &url,
         &body_ipld,
         move |frame: &str| {
+            if !state_frame.borrow().registry.is_current(entry_id, attempt) {
+                return;
+            }
             if handle_control_frame(&state_frame, entry_id, frame) {
                 return;
             }
@@ -803,21 +831,30 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
             );
         },
         move |err: ErrorDetail| {
+            if !state_err.borrow().registry.is_current(entry_id, attempt) {
+                return;
+            }
             if consumer_err.is_connected() {
                 invoke_method(&consumer_err, "error", &error_to_js(&err), tag_err.as_ref());
             }
             resubscribe_after_error(&state_err, entry_id, &err);
         },
         move || {
+            if !state_close.borrow().registry.is_current(entry_id, attempt) {
+                return;
+            }
             let delay = close_delay_ms(&state_close, entry_id);
             schedule_resubscribe(&state_close, entry_id, delay);
         },
     )
     .await;
+    if !state.borrow().registry.is_current(entry_id, attempt) {
+        return;
+    }
     match abort_result {
         Ok(handle) => {
             let mut s = state.borrow_mut();
-            s.registry.install_abort(entry_id, handle);
+            s.registry.install_abort(entry_id, attempt, handle);
         }
         Err(err) => {
             if consumer.is_connected() {
@@ -1086,6 +1123,245 @@ mod tests {
         let frame = Array::new();
         frame.push(&JsValue::from_str("c0"));
         frame.into()
+    }
+
+    /// Controlled fetch responses exercise the real SSE/open/refresh path.
+    struct PendingFetch {
+        old: JsValue,
+        probe: Object,
+    }
+    impl PendingFetch {
+        fn new() -> Self {
+            let win = window().unwrap();
+            let old = Reflect::get(&win, &"fetch".into()).unwrap();
+            let probe: Object = Function::new_no_args(r#"
+                const pending = [];
+                return {
+                    pending,
+                    fetch(url, options) {
+                        return new Promise((resolve, reject) => pending.push({url, options, resolve, reject}));
+                    },
+                    open(index) {
+                        const p = pending[index];
+                        const stream = new ReadableStream({start(c) { p.controller = c; }});
+                        p.resolve(new Response(stream, {headers: {'content-type': 'text/event-stream'}}));
+                    },
+                    reject(index) { pending[index].reject(new Error("old request failed")); },
+                    frame(index, frame) {
+                        try { pending[index].controller.enqueue(new TextEncoder().encode('data: ' + frame + '\n\n')); return true; }
+                        catch (_) { return false; } // A canceled reader legitimately closes its stream.
+                    }
+                };
+            "#).call0(&JsValue::UNDEFINED).unwrap().dyn_into().unwrap();
+            Reflect::set(
+                &win,
+                &"fetch".into(),
+                &Reflect::get(&probe, &"fetch".into()).unwrap(),
+            )
+            .unwrap();
+            Self { old, probe }
+        }
+        fn pending(&self) -> u32 {
+            Reflect::get(&self.probe, &"pending".into())
+                .unwrap()
+                .dyn_into::<Array>()
+                .unwrap()
+                .length()
+        }
+        fn call(&self, method: &str, index: u32, value: &JsValue) {
+            let f: Function = Reflect::get(&self.probe, &method.into())
+                .unwrap()
+                .dyn_into()
+                .unwrap();
+            f.call2(&self.probe, &index.into(), value).unwrap();
+        }
+    }
+    impl Drop for PendingFetch {
+        fn drop(&mut self) {
+            Reflect::set(&window().unwrap(), &"fetch".into(), &self.old).unwrap();
+        }
+    }
+    async fn until(done: impl Fn() -> bool) {
+        for _ in 0..100 {
+            if done() {
+                return;
+            }
+            wait_ms(1).await;
+        }
+        assert!(done(), "controlled callback did not arrive");
+    }
+
+    #[dialog_common::test]
+    async fn it_ignores_an_old_open_that_finishes_after_navigation() {
+        let fetch = PendingFetch::new();
+        let consumer = FakeConsumer::new();
+        window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .body()
+            .unwrap()
+            .append_child(&consumer.element)
+            .unwrap();
+        consumer
+            .element
+            .set_attribute("with", "main@old-space")
+            .unwrap();
+        let state = Rc::new(RefCell::new(HostState {
+            registry: crate::registry::Registry::new(),
+        }));
+        let id = state.borrow_mut().registry.insert(Entry {
+            consumer: consumer.element.clone(),
+            space: Some("old-space".into()),
+            branch: Some("main".into()),
+            query: Object::new().into(),
+            tag: Some("entity".into()),
+            depth: 0,
+            abort: None,
+            awaiting_controller: false,
+            attempt: 0,
+        });
+        let old_state = state.clone();
+        spawn_local(async move {
+            refresh_entry(&old_state, id).await;
+        });
+        until(|| fetch.pending() == 1).await;
+        consumer
+            .element
+            .set_attribute("with", "main@new-space")
+            .unwrap();
+        let new_state = state.clone();
+        spawn_local(async move {
+            refresh_entry(&new_state, id).await;
+        });
+        until(|| fetch.pending() == 2).await;
+        fetch.call("open", 1, &JsValue::UNDEFINED);
+        wait_ms(0).await;
+        fetch.call(
+            "frame",
+            1,
+            &r#"{"kind":"snapshot","conclusions":["new"]}"#.into(),
+        );
+        until(|| consumer.len() == 1).await;
+        fetch.call("open", 0, &JsValue::UNDEFINED);
+        wait_ms(0).await;
+        fetch.call(
+            "frame",
+            0,
+            &r#"{"kind":"snapshot","conclusions":["old"]}"#.into(),
+        );
+        wait_ms(5).await;
+        let after_old = consumer.len();
+        // Check that the stale completion did not replace the new abort handle.
+        fetch.call(
+            "frame",
+            1,
+            &r#"{"kind":"snapshot","conclusions":["newer"]}"#.into(),
+        );
+        wait_ms(5).await;
+        let after_new = consumer.len();
+        state.borrow_mut().registry.remove(id);
+        consumer.element.remove();
+        assert_eq!(
+            after_old, 1,
+            "late old snapshot reached the connected consumer"
+        );
+        assert_eq!(after_new, 2, "late old open replaced the current transport");
+        assert_eq!(method_of(&consumer.call(1)), "reset");
+        assert_eq!(
+            Array::from(&payload_of(&consumer.call(1)))
+                .get(0)
+                .as_string()
+                .as_deref(),
+            Some("newer")
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_ignores_a_canceled_initial_open_error_and_its_retry() {
+        let fetch = PendingFetch::new();
+        let consumer = FakeConsumer::new();
+        window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .body()
+            .unwrap()
+            .append_child(&consumer.element)
+            .unwrap();
+        consumer
+            .element
+            .set_attribute("with", "main@old-space")
+            .unwrap();
+        let state = Rc::new(RefCell::new(HostState {
+            registry: crate::registry::Registry::new(),
+        }));
+        let _listeners = attach_all(consumer.element.as_ref(), state.clone());
+        fn subscribe(el: &Element) -> Object {
+            let detail = Object::new();
+            Reflect::set(&detail, &"query".into(), &Object::new()).unwrap();
+            Reflect::set(&detail, &"tag".into(), &"entity".into()).unwrap();
+            let init = CustomEventInit::new();
+            init.set_detail(&detail);
+            init.set_cancelable(true);
+            el.dispatch_event(
+                &CustomEvent::new_with_event_init_dict(events::SUBSCRIBE, &init).unwrap(),
+            )
+            .unwrap();
+            Reflect::get(&detail, &"subscription".into())
+                .unwrap()
+                .dyn_into()
+                .unwrap()
+        }
+        let old = subscribe(&consumer.element);
+        until(|| fetch.pending() == 1).await;
+        let cancel: Function = Reflect::get(&old, &"cancel".into())
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        cancel.call0(&old).unwrap();
+        consumer
+            .element
+            .set_attribute("with", "main@new-space")
+            .unwrap();
+        let new = subscribe(&consumer.element);
+        until(|| fetch.pending() == 2).await;
+        let current = state.borrow().registry.ids()[0];
+        // A queued retry must also become obsolete after a newer refresh.
+        schedule_resubscribe(&state, current, 30);
+        let refreshed = state.clone();
+        spawn_local(async move {
+            refresh_entry(&refreshed, current).await;
+        });
+        until(|| fetch.pending() == 3).await;
+        fetch.call("open", 2, &JsValue::UNDEFINED);
+        wait_ms(0).await;
+        fetch.call(
+            "frame",
+            2,
+            &r#"{"kind":"snapshot","conclusions":[]}"#.into(),
+        );
+        until(|| consumer.len() == 1).await;
+        fetch.call("reject", 0, &JsValue::UNDEFINED);
+        fetch.call("reject", 1, &JsValue::UNDEFINED);
+        wait_ms(50).await;
+        let calls = consumer.len();
+        let opens = fetch.pending();
+        let cancel: Function = Reflect::get(&new, &"cancel".into())
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        cancel.call0(&new).unwrap();
+        consumer.element.remove();
+        assert_eq!(
+            calls, 1,
+            "retired initial-open errors reached the replacement consumer"
+        );
+        assert_eq!(
+            opens, 3,
+            "an obsolete retry reopened the current subscription"
+        );
+        assert!(state.borrow().registry.is_empty());
     }
 
     /// A snapshot frame routes to `reset` with the tag forwarded on opts.
