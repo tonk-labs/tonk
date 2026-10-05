@@ -539,7 +539,10 @@ mod when_nothing_is_registered {
         let output = run(state.path(), &["assert", "--help"], &[]);
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
-        assert!(stdout.contains("query <CONCEPT> --json"), "{stdout}");
+        assert!(
+            stdout.contains("query <CONCEPT> --where <field>=<value> --json"),
+            "{stdout}"
+        );
         assert!(
             stdout.contains("assert task <ENTITY> --done true"),
             "{stdout}"
@@ -790,18 +793,26 @@ mod when_using_space_agent_context {
     use super::*;
 
     #[dialog_common::test]
-    fn it_explains_how_to_create_a_missing_claim() {
+    fn missing_instructions_are_an_empty_success() {
         let state = tempfile::tempdir().expect("tempdir");
         space_with_remotes(state.path(), &[]);
 
         let output = run(state.path(), &["space", "agents"], &[]);
-        assert!(!output.status.success());
-        let stderr = stderr_of(&output);
-        assert!(stderr.contains("no AGENTS.md claim"), "{stderr}");
+        assert!(output.status.success(), "{}", stderr_of(&output));
         assert!(
-            stderr.contains("tonk space agents set AGENTS.md"),
-            "{stderr}"
+            stdout_of(&output).contains("No space-specific instructions; continue with the task.")
         );
+        let output = run(state.path(), &["space", "agents", "get", "--json"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let json: serde_json::Value = serde_json::from_str(&stdout_of(&output)).unwrap();
+        assert_eq!(json["schemaVersion"], "tonk.agents-get.v1");
+        assert_eq!(json["rows"], serde_json::json!([]));
+        let unknown = run(
+            state.path(),
+            &["--space", "missing", "space", "agents", "get"],
+            &[],
+        );
+        assert!(!unknown.status.success());
     }
 
     #[dialog_common::test]
@@ -2009,7 +2020,34 @@ mod when_reading {
 
         let schema = run(state.path(), &["show"], env);
         assert!(schema.status.success(), "{}", stderr_of(&schema));
-        assert!(stdout_of(&schema).contains("concept!: &task"));
+        let overview = stdout_of(&schema);
+        assert!(overview.contains("Space: demo"), "{overview}");
+        assert!(overview.contains("task  title: text"), "{overview}");
+        assert!(!overview.contains("tonk/repository"), "{overview}");
+        assert!(!overview.contains("attribute!:"), "{overview}");
+        assert!(overview.lines().count() < 25, "{overview}");
+
+        let all = run(state.path(), &["show", "--all"], env);
+        assert!(all.status.success(), "{}", stderr_of(&all));
+        assert!(stdout_of(&all).contains("tonk/repository"));
+
+        let notation = run(state.path(), &["show", "--notation"], env);
+        assert!(notation.status.success(), "{}", stderr_of(&notation));
+        assert!(stdout_of(&notation).contains("concept!: &task"));
+        assert!(stdout_of(&notation).contains("attribute!:"));
+        assert!(stdout_of(&notation).contains("concept!: &tonk/repository"));
+
+        let json = run(state.path(), &["show", "--json"], env);
+        assert!(json.status.success(), "{}", stderr_of(&json));
+        let json: serde_json::Value = serde_json::from_str(&stdout_of(&json)).expect("schema JSON");
+        assert_eq!(json["schemaVersion"], "tonk.show-schema.v1");
+        assert!(
+            json["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["name"] == "tonk/repository")
+        );
 
         let concept = run(state.path(), &["show", "task", "--json"], env);
         assert!(concept.status.success(), "{}", stderr_of(&concept));

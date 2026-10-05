@@ -130,6 +130,57 @@ fn parsed(parsed: tonk_notation::Parsed) -> Result<Syntax, TonkWorkerError> {
         .ok_or_else(|| TonkWorkerError::Internal("library is empty".to_owned()))
 }
 
+/// The library's components a space can install from the palette
+/// (`library/install`): every library document but the two each branch is
+/// seeded with, `core.yaml` (every space) and `profile.yaml` (the profile
+/// branch). Only these: a component names a library file by its name, so
+/// the list is what keeps an install to the library.
+pub(super) const COMPONENTS: [&str; 5] = ["issue", "meta", "notebook", "prose", "table"];
+
+/// Whether `source` is a component's library file (`/library/<name>.yaml`).
+pub(super) fn is_component_url(source: &str) -> bool {
+    source
+        .strip_prefix("/library/")
+        .and_then(|file| file.strip_suffix(".yaml"))
+        .is_some_and(|name| COMPONENTS.contains(&name))
+}
+
+/// The library file a component entity (`tonk:library/<name>`) names, when
+/// it is one of [`COMPONENTS`].
+pub(super) fn component_url(component: &str) -> Option<String> {
+    let name = component.strip_prefix("tonk:library/")?;
+    COMPONENTS
+        .contains(&name)
+        .then(|| format!("/library/{name}.yaml"))
+}
+
+/// Install a library component into the space it was asked in, or bring
+/// the installed one up to the shipped version. Like the space's seed, a
+/// component is recorded and upgraded on mount; unlike it, a space can have
+/// several (see `repository::install_component`).
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::InstallComponent>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::InstallComponent) {
+        let component = command.component.0.to_string();
+        let Some(source) = component_url(&component) else {
+            tonk_common::log!("library/install: '{component}' is not a library component");
+            return;
+        };
+        let (repo, branch) = (self.origin().repo.clone(), self.origin().branch.clone());
+        let tonk = self.state().read().await;
+        match super::repository::install_component(&tonk, &repo, &branch, &source).await {
+            Ok(true) => tonk_common::log!("library/install: {source} installed in {repo}"),
+            Ok(false) => tonk_common::log!("library/install: {source} is current in {repo}"),
+            Err(error) => {
+                tonk_common::log!("library/install: {source} into {repo} failed: {error}")
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -388,17 +388,51 @@ event!: &on/block-remove
 # heading of the document. The element watches the projected document and
 # emits `titlechange` when that heading changes, so renaming a notebook is
 # just editing its `# Heading`.
+# A named attribute rather than an inline field so the palette's rule
+# below can conclude it. The descriptor is the same, so the command's
+# identity is unchanged.
+attribute!: &notebook/retitle-subject
+  description: The notebook entity.
+  the: xyz.tonk.notebook.retitle/subject
+  as: entity
+  role: object
+
 command!: &notebook/retitle
   description: Set a notebook's title from its leading heading.
+  action: ["rename", "retitle"]
   with:
-    subject:
-      description: The notebook entity.
-      the: xyz.tonk.notebook.retitle/subject
-      as: entity
+    subject: notebook/retitle-subject
     title:
       description: The heading text, without its `#` markers.
       the: xyz.tonk.notebook.retitle/title
       as: text
+      role: goal
+
+# Said from the command palette on a notebook's page, "rename to Plans"
+# renames that notebook: the notebook the page shows is derived onto the
+# retitle's intent as its subject. The title comes from what was typed, or
+# from the text selected in the page.
+rule!:
+  description: The notebook a page shows is the one a retitle from its palette renames.
+  assert: notebook/retitle-subject
+  when:
+    - assert: intent
+      where:
+        this: ?this
+        command: notebook/retitle
+        expression: ?expression
+    - assert: intent/expression
+      where:
+        this: ?expression
+        site: ?site
+    - assert: site
+      where:
+        this: ?site
+        concept: notebook/route
+    - assert: notebook/route
+      where:
+        this: ?site
+        entity: ?subject
 
 command!: &block/edit
   description: Write one notebook block's source.

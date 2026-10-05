@@ -49,7 +49,27 @@ pub(crate) struct DeclaredApplication {
 pub(crate) struct AttributeBody {
     pub descriptor: AttributeDescriptor,
     pub entity: Entity,
+    /// The intent role the attribute plays in its command (`role:`),
+    /// kept out of the descriptor so it never changes the attribute's
+    /// identity. Emitted as its own fact by [`role_application`].
+    pub role: Option<String>,
 }
+
+/// The roles an attribute can play when the palette fills a command:
+/// the grammar's roles, plus `now` for the nonce fields nothing typed
+/// fills.
+const ROLES: [&str; 10] = [
+    "object",
+    "goal",
+    "source",
+    "location",
+    "time",
+    "instrument",
+    "format",
+    "modifier",
+    "alias",
+    "now",
+];
 
 pub(crate) fn parse_attribute_body(
     assertion: &SyntaxApplication,
@@ -71,6 +91,7 @@ pub(crate) fn parse_attribute_fields(
     // bracketed key kind, and the type of each entry's value. `the:`
     // then names a domain rather than one attribute.
     let mut keyed: Option<&'static str> = None;
+    let mut role: Option<String> = None;
     for field in fields {
         // `this:` and `..:` are reserved meta-keys handled by the
         // outer assertion-binding flow; they don't contribute to
@@ -93,8 +114,8 @@ pub(crate) fn parse_attribute_fields(
             // `as:` names a type, a keyed collection type, or lists the
             // values the attribute ranks among, best first: a list is a
             // ranked choice and reads as `top` without saying so.
-            "as" if matches!(field.value, FieldValue::Sequence(_)) => {
-                let FieldValue::Sequence(items) = &field.value else {
+            "as" if matches!(field.value, FieldValue::List(_)) => {
+                let FieldValue::List(items) = &field.value else {
                     unreachable!("guarded");
                 };
                 let mut listed = Vec::with_capacity(items.len());
@@ -170,8 +191,8 @@ pub(crate) fn parse_attribute_fields(
             }
             // `the:` names the relation, or lists relations best first:
             // a ranked choice by relation, read as `top`.
-            "the" if matches!(field.value, FieldValue::Sequence(_)) => {
-                let FieldValue::Sequence(items) = &field.value else {
+            "the" if matches!(field.value, FieldValue::List(_)) => {
+                let FieldValue::List(items) = &field.value else {
                     unreachable!("guarded");
                 };
                 let mut listed = Vec::with_capacity(items.len());
@@ -215,6 +236,19 @@ pub(crate) fn parse_attribute_fields(
             "description" => {
                 let value_str = require_string_description(field)?;
                 shape.insert("description".into(), serde_json::Value::String(value_str));
+            }
+            "role" => {
+                let value_str = stringify_simple_value(field)?;
+                if !ROLES.contains(&value_str.as_str()) {
+                    return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                        reason: format!(
+                            "unknown role {value_str:?} — expected one of: {}",
+                            ROLES.join(", ")
+                        ),
+                    }
+                    .into());
+                }
+                role = Some(value_str);
             }
             other => {
                 return Err(AnalyzeErrorKind::UnknownField {
@@ -278,7 +312,11 @@ pub(crate) fn parse_attribute_fields(
             .map_err(|e| AnalyzeErrorKind::InvalidAttributeBody {
                 reason: format!("descriptor URI did not parse as entity: {e:?}"),
             })?;
-    Ok(AttributeBody { descriptor, entity })
+    Ok(AttributeBody {
+        descriptor,
+        entity,
+        role,
+    })
 }
 
 /// A field the concept body asks to retract via `field: _`,
@@ -326,6 +364,10 @@ pub(crate) struct ConceptBody {
     /// and `db.meta/description` claims so the attribute is
     /// queryable via `attribute:` after the `concept!` commits.
     pub inline_attributes: Vec<AttributeBody>,
+    /// The command's names in the palette (`action:`, one name or a
+    /// list), each lowered to an `intent/action` fact on the concept by
+    /// [`action_application`].
+    pub action: Vec<String>,
 }
 
 pub(crate) fn parse_concept_body(
@@ -334,6 +376,7 @@ pub(crate) fn parse_concept_body(
 ) -> Result<ConceptBody, AnalyzeError> {
     let mut description: Option<String> = None;
     let mut transient: bool = false;
+    let mut action: Vec<String> = Vec::new();
     // Each entry: (field name, definition, optional). `with:` fields
     // are required; `maybe:` fields are optional.
     let mut fields: Vec<(String, AttributeDefinition, bool)> = Vec::new();
@@ -370,6 +413,27 @@ pub(crate) fn parse_concept_body(
             }
             "transient" => {
                 transient = parse_transient_tag(field)?;
+            }
+            "action" => {
+                let names = match &field.value {
+                    FieldValue::List(items) => items
+                        .iter()
+                        .map(|value| {
+                            stringify_simple_value(&tonk_notation::Field {
+                                value: value.clone(),
+                                ..field.clone()
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    _ => vec![stringify_simple_value(field)?],
+                };
+                if names.is_empty() || names.iter().any(|name| name.trim().is_empty()) {
+                    return Err(AnalyzeErrorKind::InvalidConceptBody {
+                        reason: "`action:` names the command; a name can't be empty".into(),
+                    }
+                    .into());
+                }
+                action = names;
             }
             "with" => {
                 parse_concept_field_block(
@@ -475,6 +539,7 @@ pub(crate) fn parse_concept_body(
         asserts_nothing,
         transient,
         inline_attributes,
+        action,
     })
 }
 
@@ -897,6 +962,58 @@ fn concept_field_retraction(
 
 /// Build the `dialog.attribute` built-in schema descriptor. Its
 /// fields map to the 5 EAVs every named attribute writes.
+/// Build the `Application` asserting an attribute's intent role: one
+/// fact, `tonk.dialog.intent.attribute/role`, on the attribute entity.
+pub(crate) fn role_application(entity: &Entity, role: &str) -> Application {
+    let mut terms = Parameters::new();
+    terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+    terms.insert(
+        "role".into(),
+        Term::Constant(Value::String(role.to_owned())),
+    );
+    Application::Concept {
+        query: ConceptQuery {
+            terms,
+            predicate: role_schema(),
+        },
+        join: Vec::new(),
+        this: ThisIntent::Uri(entity.clone()),
+        name: None,
+    }
+}
+
+/// Build the `Application` asserting a command's palette name: one
+/// `tonk.dialog.intent.action/name` fact on the command's concept.
+pub(crate) fn action_application(entity: &Entity, name: &str) -> Application {
+    let mut terms = Parameters::new();
+    terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+    terms.insert(
+        "name".into(),
+        Term::Constant(Value::String(name.to_owned())),
+    );
+    let predicate: ConceptDescriptor = serde_json::from_value(serde_json::json!({
+        "with": {
+            "name": { "the": "tonk.dialog.intent.action/name", "as": "Text", "cardinality": "many" },
+        }
+    }))
+    .expect("action schema is well-formed");
+    Application::Concept {
+        query: ConceptQuery { terms, predicate },
+        join: Vec::new(),
+        this: ThisIntent::Uri(entity.clone()),
+        name: None,
+    }
+}
+
+fn role_schema() -> ConceptDescriptor {
+    let json = serde_json::json!({
+        "with": {
+            "role": { "the": "tonk.dialog.intent.attribute/role", "as": "Text", "cardinality": "one" },
+        }
+    });
+    serde_json::from_value(json).expect("role schema is well-formed")
+}
+
 fn attribute_schema() -> ConceptDescriptor {
     fn cardinality_one() -> serde_json::Value {
         serde_json::Value::String("one".into())
@@ -1037,10 +1154,16 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
                 super::field::unexpanded_include(include, None).with_range(field.value_range)
             );
         }
+        FieldValue::List(_) => {
+            return Err(AnalyzeErrorKind::UnsupportedFieldValue {
+                field: field.name.clone(),
+                form: "a list (only an attribute's `the:` or `as:` and a command's `action:` take one)",
+            }
+            .into());
+        }
         FieldValue::Variable(_)
         | FieldValue::Blank
         | FieldValue::Nested(_)
-        | FieldValue::Sequence(_)
         | FieldValue::Premises(_) => {
             return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: field.name.clone(),

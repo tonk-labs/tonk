@@ -53,6 +53,9 @@ pub(crate) struct Entry {
     /// controller change (long fallback only) instead of dialing the
     /// outgoing worker on the usual short timer. Cleared on re-issue.
     pub awaiting_controller: bool,
+    /// Monotonic identity of the current transport open, including opens that
+    /// have not returned an abort handle yet.
+    pub attempt: u64,
 }
 
 /// The host's subscription table.
@@ -78,14 +81,21 @@ impl Registry {
     }
 
     /// Install an abort handle on an existing entry. If the entry
-    /// is gone (canceled during the await that produced the
-    /// handle), the handle is dropped immediately, cancelling the
+    /// is gone or its open attempt was superseded during the await that
+    /// produced the handle, the handle is dropped immediately, cancelling the
     /// upstream.
-    pub(crate) fn install_abort(&mut self, id: EntryId, abort: EventSource) {
+    pub(crate) fn install_abort(&mut self, id: EntryId, attempt: u64, abort: EventSource) {
         match self.entries.get_mut(&id) {
-            Some(e) => e.abort = Some(abort),
-            None => drop(abort),
+            Some(e) if e.attempt == attempt => e.abort = Some(abort),
+            _ => drop(abort),
         }
+    }
+
+    /// True only for the latest open of a still-live subscription.
+    pub(crate) fn is_current(&self, id: EntryId, attempt: u64) -> bool {
+        self.entries
+            .get(&id)
+            .is_some_and(|entry| entry.attempt == attempt)
     }
 
     /// Remove an entry by id, returning it. Dropping the entry

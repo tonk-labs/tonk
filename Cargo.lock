@@ -1270,6 +1270,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tonk-evaluator",
+ "tonk-intent",
+ "tonk-lingo",
  "tonk-schema",
  "wasm-bindgen-test",
  "web-sys",
@@ -5048,6 +5050,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-intent"
+version = "0.6.16-rc.1"
+dependencies = [
+ "ipld-core",
+ "serde",
+ "serde_json",
+ "tonk-lingo",
+ "tonk-template",
+]
+
+[[package]]
 name = "tonk-invite"
 version = "0.6.16-rc.1"
 dependencies = [
@@ -5102,6 +5115,14 @@ dependencies = [
  "tokio",
  "tonk-notation",
  "wasm-bindgen-test",
+]
+
+[[package]]
+name = "tonk-lingo"
+version = "0.6.16-rc.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

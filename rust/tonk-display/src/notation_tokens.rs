@@ -209,9 +209,6 @@ fn walk_value(
                 walk_field(field, text, line_starts, out);
             }
         }
-        // A sequence's items share the sequence's range: the list
-        // paints as one value.
-        FieldValue::Sequence(_) => {}
         FieldValue::Premises(premises) => {
             // A premise's `where:` bindings paint as ordinary
             // field values; the `assert: <concept>` key paints as
@@ -223,7 +220,10 @@ fn walk_value(
                 }
             }
         }
-        FieldValue::Literal(_) => {}
+        // A list's items share the list's range (a ranked `the:` or
+        // `as:`, a command's `action:` names): the list paints as one
+        // value.
+        FieldValue::Literal(_) | FieldValue::List(_) => {}
     }
 }
 

@@ -974,6 +974,10 @@ fn byte_offset_to_position(source: &str, offset: usize) -> Position {
 /// claim is over the `rule` predicate, in which case `when:` and
 /// `unless:` field values are parsed as premise lists rather than
 /// rejected as generic sequences.
+/// The fields whose value may be a list: an attribute's ranked
+/// relations or values, and a command's several names.
+const LISTING_FIELDS: [&str; 3] = ["the", "as", "action"];
+
 fn walk_field(
     key: &MarkedYaml<'_>,
     value: &MarkedYaml<'_>,
@@ -990,6 +994,17 @@ fn walk_field(
     let value_range = range_of(value);
     let field_value = if rule_body && (name == "when" || name == "unless") {
         Some(FieldValue::Premises(parse_premise_list(value, out)))
+    } else if matches!(value.data, YamlData::Sequence(_))
+        && !LISTING_FIELDS.contains(&name.as_str())
+    {
+        // A list is a ranked choice (`the:`, `as:`) or a command's
+        // several names (`action:`); nowhere else, and a
+        // cardinality-many write repeats the assertion.
+        out.push(error(
+            value_range,
+            r#"Sequence values are not supported in this notation outside an attribute's `the:` or `as:` and a command's `action:`. Use repeated assertions for cardinality-many writes."#,
+        ));
+        return None;
     } else {
         walk_field_value(value, rule_body, out)
     }?;
@@ -1088,8 +1103,9 @@ fn walk_field_value(
         }
         YamlData::Sequence(items) => {
             // A sequence lists scalars: the values or relations an
-            // attribute's `as:` or `the:` ranks. A `select: all` write
-            // is still repeated assertions, not a sequence.
+            // attribute's `as:` or `the:` ranks, or the several names a
+            // command's `action:` answers to. A `select: all` write is
+            // still repeated assertions, not a sequence.
             let mut listed = Vec::with_capacity(items.len());
             for item in items {
                 match &item.data {
@@ -1104,7 +1120,7 @@ fn walk_field_value(
                 }
                 listed.push(walk_field_value(item, rule_body, out)?);
             }
-            Some(FieldValue::Sequence(listed))
+            Some(FieldValue::List(listed))
         }
         YamlData::Tagged(tag, _) if include_form(Some(tag)).is_some() => {
             let form = include_form(Some(tag)).expect("guarded");
@@ -2245,11 +2261,12 @@ note!: &n2
         );
     }
 
-    /// A sequence of scalars is a value form the parser keeps: where a
-    /// list is allowed (an attribute's `the:` or `as:`) is the
-    /// analyzer's decision, which refuses one on a fact's field.
+    /// A sequence of scalars is a value only where a field lists: an
+    /// attribute's `the:` or `as:` and a command's `action:`. On a
+    /// fact's field the parser refuses it, since a cardinality-many
+    /// write repeats the assertion.
     #[dialog_common::test]
-    fn it_keeps_a_sequence_value_for_the_analyzer() {
+    fn it_refuses_a_sequence_outside_the_listing_fields() {
         let parsed = parse(
             r#"
 person!:
@@ -2258,15 +2275,13 @@ person!:
     - Bob
 "#,
         );
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let syntax = parsed.syntax.expect("parsed syntax");
-        let Expression::Claim(Effectful { inner: app, .. }) = &syntax.expressions[0] else {
-            panic!("expected Claim");
-        };
-        assert!(matches!(
-            app.fields.iter().find(|f| f.name == "name").map(|f| &f.value),
-            Some(FieldValue::Sequence(items)) if items.len() == 2
-        ));
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("Sequence values are not supported")),
+            "diagnostics: {:#?}",
+            parsed.diagnostics
+        );
     }
 
     #[dialog_common::test]
@@ -3063,7 +3078,7 @@ page!:
         assert_eq!(premises[1].bindings.len(), 2);
     }
 
-    /// A sequence of scalars parses to [`FieldValue::Sequence`]: the
+    /// A sequence of scalars parses to [`FieldValue::List`]: the
     /// values or relations an attribute ranks among. A sequence
     /// holding a mapping is refused.
     #[dialog_common::test]
@@ -3081,10 +3096,9 @@ page!:
         let Expression::Claim(Effectful { inner: app, .. }) = &syntax.expressions[0] else {
             panic!("expected Claim");
         };
-        let FieldValue::Sequence(items) =
-            &app.fields.iter().find(|f| f.name == "as").unwrap().value
+        let FieldValue::List(items) = &app.fields.iter().find(|f| f.name == "as").unwrap().value
         else {
-            panic!("as value must be a Sequence");
+            panic!("as value must be a List");
         };
         assert_eq!(items.len(), 3);
         assert!(matches!(&items[0], FieldValue::Uri(uri) if uri == "case:suspended"));

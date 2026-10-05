@@ -286,11 +286,13 @@ pub enum FieldValue {
     /// [`Literal`](FieldValue::Literal). An include that survives to
     /// analysis was never expanded and is rejected there.
     Include(Include),
-    /// A YAML sequence of scalars: the values or relations an
-    /// attribute's `as:` or `the:` lists as a ranked choice. Each item
-    /// is a scalar form (literal, symbol, URI); a nested mapping or
-    /// sequence is not an item.
-    Sequence(Vec<FieldValue>),
+    /// A YAML sequence of scalars. An attribute's `as:` or `the:` lists
+    /// a ranked choice (values or relations, best first); a command's
+    /// `action:` lists the several names it answers to. Each item is a
+    /// scalar form (literal, symbol, URI); a nested mapping or sequence
+    /// is not an item. Everywhere else a list is rejected, and a
+    /// cardinality-many write repeats the assertion.
+    List(Vec<FieldValue>),
 }
 
 /// An `!include` reference, as written.

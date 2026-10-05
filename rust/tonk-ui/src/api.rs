@@ -133,7 +133,10 @@ pub async fn transact_profile(claim: serde_json::Value) -> Result<(), TonkUiErro
     // commands answer on the branch they were asked on.
     let branch = profile_branch();
     let response = reqwest::Client::new()
-        .post(format!("{}/api/profile/branch/{branch}/transact", origin()))
+        .post(format!(
+            "{}/api/repository/profile:tonk/branch/{branch}/transact",
+            origin()
+        ))
         .json(&claim)
         .send()
         .await
@@ -144,7 +147,7 @@ pub async fn transact_profile(claim: serde_json::Value) -> Result<(), TonkUiErro
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
-            "POST /api/profile/branch/{branch}/transact returned {status}: {text}"
+            "POST /api/repository/profile:tonk/branch/{branch}/transact returned {status}: {text}"
         )))
     }
 }

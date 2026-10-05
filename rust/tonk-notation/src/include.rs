@@ -94,7 +94,7 @@ fn collect<'a>(fields: &'a mut [Field], out: &mut Vec<(&'a mut FieldValue, Range
             | FieldValue::Blank
             | FieldValue::Symbol(_)
             | FieldValue::Uri(_)
-            | FieldValue::Sequence(_) => {}
+            | FieldValue::List(_) => {}
         }
     }
 }

@@ -39,6 +39,12 @@ an entity that matches one is an instance with typed fields. Views render
 instances. Reads and writes are notation, evaluated against the space
 (see 'tonk help notation').
 
+working in an existing space
+Run 'tonk show' once if you need the schema. Inspect only the concept or
+entity relevant to the task, make the requested change, and check the write's
+local verification and push status. Avoid querying every concept or reading
+every guide before acting. See 'tonk help tutorial' for the workflow.
+
 start a space (see also: tonk help spaces)
    space      List spaces, create one, or bind this directory to one
    join       Connect this CLI with a scoped tool invitation
@@ -115,7 +121,7 @@ enum Command {
         #[arg(value_name = "COMMAND|GUIDE")]
         name: Option<String>,
     },
-    /// Describe the schema, a concept, an entity, or a view
+    /// Summarize application concepts, or describe a concept, entity, or view
     Show {
         /// Concept, view, entity bookmark, or entity URI.
         #[arg(value_name = "NAME")]
@@ -129,6 +135,9 @@ enum Command {
         /// Emit re-submittable schema notation.
         #[arg(long, conflicts_with = "json")]
         notation: bool,
+        /// Include runtime concepts and all fields in the text overview.
+        #[arg(long, conflicts_with_all = ["name", "json", "notation"])]
+        all: bool,
     },
 
     /// Report how local main relates to its upstream and its current hash
@@ -208,15 +217,18 @@ enum Command {
 
     /// Read instances of a concept, every field bound
     ///
-    /// Reads every instance through a dialog query — read-only,
-    /// nothing commits. Filter flags (e.g. `--where`) are the
-    /// intended future direction; today the whole concept is returned.
-    #[command(after_help = "Examples:\n  tonk query task\n  tonk query task --json")]
+    /// Reads matching instances through a dialog query — nothing commits.
+    #[command(
+        after_help = "Examples:\n  tonk query task\n  tonk query task --where 'title=Draft launch email' --where done=false\n  tonk query task --json"
+    )]
     Query {
         /// Name of the concept to query.
         #[arg(value_name = "CONCEPT")]
         concept: String,
-        /// Emit `EvaluateResponse` as pretty JSON instead of notation.
+        /// Exact text/boolean equality; repeat for AND. Many fields match a value.
+        #[arg(long = "where", value_name = "FIELD=VALUE")]
+        filters: Vec<String>,
+        /// Emit matching instances as a JSON array instead of notation.
         #[arg(long)]
         json: bool,
     },
@@ -1199,8 +1211,13 @@ async fn main() {
             entity,
             json,
             notation,
-        } => show_op(name, entity, json, notation, space.as_deref()).await,
-        Command::Query { concept, json } => query_op(concept, json, space.as_deref()).await,
+            all,
+        } => show_op(name, entity, json, notation, all, space.as_deref()).await,
+        Command::Query {
+            concept,
+            json,
+            filters,
+        } => query_op(concept, json, filters, space.as_deref()).await,
         Command::Assert { concept, rest } => assert_cmd(concept, rest, space.as_deref()).await,
         Command::Retract {
             concept,
@@ -1341,9 +1358,14 @@ async fn agents_op(command: Option<AgentsCommand>, space: Option<&str>) -> ExitC
             let claim = match agents::get(&site).await {
                 Ok(Some(claim)) => claim,
                 Ok(None) => {
-                    return print_error(
-                        "this space has no AGENTS.md claim\ncreate one: tonk space agents set AGENTS.md",
-                    );
+                    return if json {
+                        print_json(&Rows::new(
+                            "tonk.agents-get.v1",
+                            Vec::<agents::SpaceAgents>::new(),
+                        ))
+                    } else {
+                        write_stdout("No space-specific instructions; continue with the task.\n")
+                    };
                 }
                 Err(err) => return print_error(format!("could not read AGENTS.md claim: {err:#}")),
             };
@@ -2910,7 +2932,7 @@ async fn finish_scoped_connection(
     println!("inspect schemas: tonk --space {name} show");
     println!("learn: tonk help tutorial");
     println!(
-        "Read the space instructions and inspect relevant data before editing. If no task is established, ask what the user wants to do."
+        "Read the space instructions, then use show once if you need the schema. Inspect only the concept or entity needed for the task, act, and check the write receipt. A verified local read-back needs no extra show. Do not query every concept before starting. If no task is established, ask what the user wants to do."
     );
     ExitCode::Success
 }
@@ -2975,13 +2997,18 @@ async fn list_concepts_op(site: &site::TonkSite, json: bool) -> ExitCode {
 
 /// Query every instance of `concept` as rendered by
 /// [`data_ops::query`].
-async fn query_op(concept: String, json: bool, space: Option<&str>) -> ExitCode {
+async fn query_op(
+    concept: String,
+    json: bool,
+    filters: Vec<String>,
+    space: Option<&str>,
+) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
 
-    match data_ops::query(&site, &concept, json).await {
+    match data_ops::query_filtered(&site, &concept, json, &filters).await {
         Ok(text) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(text.as_bytes()) {
@@ -3058,23 +3085,28 @@ async fn show_op(
     entity: Option<String>,
     json: bool,
     notation: bool,
+    all: bool,
     space: Option<&str>,
 ) -> ExitCode {
-    let (_, site) = match open_selected(space).await {
+    let (resolved, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
     let Some(name) = name else {
-        if json {
-            return match schema::list_all_concepts(&site).await {
-                Ok(rows) => print_json(&Rows::new("tonk.show-schema.v1", rows)),
+        if notation {
+            return match schema::render(&site).await {
+                Ok(text) => write_stdout(&text),
                 Err(error) => print_failure(error),
             };
         }
-        return match schema::render(&site).await {
-            Ok(text) => write_stdout(&text),
-            Err(error) => print_failure(error),
+        let concepts = match schema::list_all_concepts(&site).await {
+            Ok(concepts) => concepts,
+            Err(error) => return print_failure(error),
         };
+        if json {
+            return print_json(&Rows::new("tonk.show-schema.v1", concepts));
+        }
+        return write_stdout(&schema::render_overview(&resolved.name, &concepts, all));
     };
 
     let concept = match schema::find_concept(&site, &name).await {
@@ -3212,9 +3244,13 @@ const ASSERT_USAGE: &str = "\
 Write facts: create an instance, or update fields on an existing entity.
 
 Workflow:
-  1. tonk query <CONCEPT> --json
+  1. tonk query <CONCEPT> --where <field>=<value> --json
   2. tonk assert <CONCEPT> <ENTITY> --<field> <value>
-  3. tonk show <CONCEPT> <ENTITY> --json
+  3. Check the write's local verification and push status.
+
+A verified receipt confirms the requested fields locally. Read again only if
+verification failed or you need another check; UI changes still need rendering.
+Use --json for a structured receipt, or --dry-run to preview without committing.
 
 Create:
   tonk assert <CONCEPT> --<required-field> <value> ...
@@ -3225,6 +3261,7 @@ See the live typed flags:
 Example:
   tonk query task --json
   tonk assert task <ENTITY> --done true
+  # Read again only if the write receipt did not verify the requested fields.
   tonk show task <ENTITY> --json
 ";
 
@@ -4005,6 +4042,8 @@ mod account_spaces_parser_tests {
     fn status_and_show_replace_context_schema_and_entity_query() {
         for args in [
             &["tonk", "show"][..],
+            &["tonk", "show", "--all"],
+            &["tonk", "show", "--notation"],
             &["tonk", "show", "task"],
             &["tonk", "show", "task", "id:one"],
             &["tonk", "show", "task", "--json"],
@@ -4019,6 +4058,9 @@ mod account_spaces_parser_tests {
             &["tonk", "context"][..],
             &["tonk", "schema"],
             &["tonk", "query", "task", "id:one"],
+            &["tonk", "show", "task", "--all"],
+            &["tonk", "show", "--json", "--all"],
+            &["tonk", "show", "--notation", "--all"],
         ] {
             assert!(
                 Cli::try_parse_from(args).is_err(),

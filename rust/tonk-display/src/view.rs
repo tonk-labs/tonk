@@ -48,6 +48,15 @@ struct Inner {
     renderer: Option<Renderer>,
 }
 
+impl crate::introspect::registry::ViewFacts for Inner {
+    fn slots(&self) -> Vec<(crate::introspect::slot::Slot, Option<web_sys::Node>)> {
+        self.renderer
+            .as_ref()
+            .map(Renderer::describe)
+            .unwrap_or_default()
+    }
+}
+
 /// The custom element.
 #[derive(Default)]
 pub struct TonkView {
@@ -132,6 +141,10 @@ impl CustomElement for TonkView {
 
         let state = Rc::new(RefCell::new(Inner { renderer }));
         *self.inner.borrow_mut() = Some(state.clone());
+        // Let the introspection overlay reach this view's slots. The
+        // registry holds a `Weak`, so registering does not keep a
+        // detached view alive and there is nothing to unregister.
+        crate::introspect::registry::register_view(&host, &state);
 
         // Attach a per-instance `draw(detail)` closure. The
         // prototype `render` method (installed once by `register`)
