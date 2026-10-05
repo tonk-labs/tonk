@@ -154,6 +154,7 @@
 
         inherit (rustHelpers)
           buildCrate
+          buildStaticCli
           buildWasmCrate
           buildTrunkCrate
           buildTestArchive
@@ -590,7 +591,7 @@
             cp ${self.packages.${system}.tests-web-release}/*.tar.zst $out/
           '';
 
-          tonk-cli = buildCrate {
+          tonk-cli = (if pkgs.stdenv.isLinux then buildStaticCli else buildCrate) {
             pname = "tonk-cli";
             cargoExtraArgs = "--package tonk-cli";
             TONK_POSTHOG_KEY = posthogKey;
