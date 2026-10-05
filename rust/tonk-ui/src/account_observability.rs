@@ -14,24 +14,6 @@ use tonk_analytics::account::{
     Journey, Stage, Surface, Trigger,
 };
 
-/// Start an attempt before an asynchronous operation and return the still-open
-/// recorder beside its result. Callers retain the typed error evidence needed
-/// to choose the terminal outcome at the presentation seam.
-pub(crate) async fn observe<F, T, E>(
-    action: AccountAction,
-    surface: Surface,
-    trigger: Trigger,
-    account_state: AccountState,
-    future: F,
-) -> (WebAccountAttempt, Result<T, E>)
-where
-    F: std::future::Future<Output = Result<T, E>>,
-{
-    let attempt = WebAccountAttempt::start(action, surface, trigger, account_state);
-    let result = future.await;
-    (attempt, result)
-}
-
 use crate::user_error::AccountAction;
 
 thread_local! {
@@ -200,18 +182,6 @@ impl WebAccountAttempt {
             outcome,
         ));
     }
-}
-
-/// Record a synchronous operation whose complete lifetime is this call.
-pub(crate) fn record_instant_success(
-    action: AccountAction,
-    surface: Surface,
-    trigger: Trigger,
-    account_state: AccountState,
-    stage: Stage,
-) {
-    let mut attempt = WebAccountAttempt::start(action, surface, trigger, account_state);
-    attempt.finish(stage, AccountOutcome::success());
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

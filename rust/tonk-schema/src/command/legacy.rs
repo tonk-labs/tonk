@@ -104,32 +104,6 @@ pub struct CheckEmail {
     pub email: crate::domain::command::email::Value,
 }
 
-/// Register an account, from the form the registration overlay renders.
-///
-/// The page asserts this and then watches facts: `AccountCustomer`
-/// appears once enrollment lands, and gains a provider at activation.
-/// Nothing is read back from a response, because a command answers with
-/// facts rather than a body.
-///
-/// The provider cannot finish this alone. Creating an account is a
-/// WebAuthn ceremony, which needs a `window` and a user gesture, and the
-/// service worker has neither; it asks the originating client to
-/// authorize with a passkey and continues from what comes back.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RegisterAccount {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The address to register, read from the form's `email` input.
-    pub email: crate::domain::command::email::Value,
-    /// Per-command marker keeping this distinct from [`CheckEmail`],
-    /// which is otherwise the same shape.
-    ///
-    /// Without it every keystroke's lookup also decoded as a
-    /// registration, and a passkey prompt appeared while the user was
-    /// still typing their address.
-    pub marker: crate::domain::command::register::RegisterAccount,
-}
-
 /// `tonk:add-passkey`: seal the account under a second passkey.
 ///
 /// The worker asks the page for both ceremonies — the passkey that
@@ -346,14 +320,6 @@ impl std::fmt::Debug for Join {
             .field("url", &"[redacted]")
             .finish()
     }
-}
-
-impl RegisterAccount {
-    /// The value [`Self::marker`] carries. The current shape needs no
-    /// marker — `xyz.tonk.command.register-account/email` cannot be
-    /// confused with the lookup's `…check-email/email` — so this is part
-    /// of the compatibility surface, not of the command.
-    pub const MARKER: &str = "tonk:register-account";
 }
 
 /// Ordinary login may omit the account constraint added for agent handoffs.

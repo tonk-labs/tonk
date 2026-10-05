@@ -207,18 +207,14 @@ pub struct AccountCreation {
 ///
 /// An enum rather than a bare string so the page's listener must
 /// `match` it: adding a kind then fails to compile until something
-/// handles it. It was a `String` compared with `!=` once, and
-/// [`CREATE_ACCOUNT_REQUEST`] shipped with a sender and no receiver —
-/// the worker asked, the listener returned early, and the dialog
-/// reported success with no ceremony ever run.
+/// handles it. It was a `String` compared with `!=` once, and a kind
+/// shipped with a sender and no receiver: the worker asked, the listener
+/// returned early, and the page reported success with no ceremony run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WebAuthnKind {
     /// See [`ENCRYPTION_KEY_REQUEST`].
     #[serde(rename = "encryption-key")]
     EncryptionKey,
-    /// See [`CREATE_ACCOUNT_REQUEST`].
-    #[serde(rename = "create-account")]
-    CreateAccount,
     /// See [`CUSTODY_REQUEST`].
     #[serde(rename = "custody")]
     Custody,
@@ -229,33 +225,10 @@ impl WebAuthnKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::EncryptionKey => ENCRYPTION_KEY_REQUEST,
-            Self::CreateAccount => CREATE_ACCOUNT_REQUEST,
             Self::Custody => CUSTODY_REQUEST,
         }
     }
 }
-
-/// Ask the page to add an account so a share can proceed.
-///
-/// Sent by the invite handler when a space cannot be shared because
-/// nothing is registered. The page raises the registration UI; the
-/// worker does not wait, and continues when the account facts land.
-///
-/// Distinct from [`WebAuthnRequest`]: that asks for one ceremony and
-/// names what it must produce, whereas this asks for a whole
-/// interaction and carries the space it is on behalf of, so the share
-/// can be finished afterwards.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LinkAccountRequest {
-    /// Fixed message discriminator: [`LINK_ACCOUNT`].
-    #[serde(rename = "type")]
-    pub message_type: String,
-    /// The space whose share is waiting on an account.
-    pub space: String,
-}
-
-/// The `type` a [`LinkAccountRequest`] carries.
-pub const LINK_ACCOUNT: &str = "link-account";
 
 /// The `type` every [`WebAuthnRequest`] message carries.
 pub const WEBAUTHN: &str = "webauthn";
@@ -265,20 +238,10 @@ pub const WEBAUTHN: &str = "webauthn";
 /// The worker waits for that save before continuing.
 pub const ENCRYPTION_KEY_REQUEST: &str = "encryption-key";
 
-/// Create an account: the full signup ceremony, run in the top page
-/// because WebAuthn needs a `window` and a user gesture and the service
-/// worker has neither.
-///
-/// Raised by the registration form's `account/register` command. The
-/// page runs the ceremony, saves the root, links the account and
-/// enrolls it, and the outcome reaches every reader as facts — the
-/// worker is not waiting on a response body.
-pub const CREATE_ACCOUNT_REQUEST: &str = "create-account";
-
 /// Mediate a passkey so the worker can mint custody material.
 ///
 /// The page runs one assertion and posts the two derivation handles it
-/// yields; the worker does the minting and drops them. Unlike
-/// [`CREATE_ACCOUNT_REQUEST`], the page holds no key material and
-/// builds nothing — it only supplies the gesture WebAuthn requires.
+/// yields; the worker does the minting and drops them. The page holds
+/// no key material and builds nothing: it only supplies the gesture
+/// WebAuthn requires.
 pub const CUSTODY_REQUEST: &str = "custody";

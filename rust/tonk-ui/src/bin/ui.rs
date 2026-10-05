@@ -54,81 +54,25 @@ async fn main() {
     // page must never look like one.
     tonk_identity::install();
     tonk_ui::custody_relay::install();
-    // A guest asking to register raises the dialog here, in the only
-    // document that can run the ceremony.
+    // The panel that adds an account is the profile frame's own; what a
+    // frame still asks of this page is where to seat the passkey rows a
+    // settings command raised, beside the column that asked.
     tonk_portal::on_register(|reason, return_focus| {
-        // The guest steers the anchored ceremony from the OTHER side of
-        // the frame boundary — it cannot reach the top-page cluster, so
-        // it asks. Tab switches SUSPEND and SHOW the cluster (a tab bar
-        // hides the background tab's content, it does not destroy it);
-        // dismiss remains the true teardown.
-        let request = tonk_ui::register_dialog::parse_request(reason);
-        match request.reason.as_str() {
-            "custody-anchor" => {
-                tonk_ui::custody_relay::return_to_approval(return_focus);
-                if let Some(anchor) = request.anchor {
-                    tonk_ui::custody_relay::reanchor(anchor);
-                }
-                return;
+        let request = tonk_ui::custody_relay::parse_seat_request(reason);
+        if request.reason == "custody-anchor" {
+            tonk_ui::custody_relay::return_to_approval(return_focus);
+            if let Some(anchor) = request.anchor {
+                tonk_ui::custody_relay::reanchor(anchor);
             }
-            "dismiss" => {
-                tonk_ui::register_dialog::close();
-                return;
-            }
-            "reseat" => {
-                tonk_ui::register_dialog::reseat(&request);
-                return;
-            }
-            "suspend" => {
-                tonk_ui::register_dialog::suspend();
-                return;
-            }
-            "show" => {
-                tonk_ui::register_dialog::resume();
-                return;
-            }
-            // Option on "add an account": sign in through the Tonk that
-            // holds the account rather than with a passkey on this one.
-            "sign-in-via" => {
-                let restore = return_focus.map(|return_focus| {
-                    Box::new(move || return_focus.restore()) as Box<dyn FnOnce()>
-                });
-                tonk_ui::register_dialog::raise_sign_in_via(&request, restore);
-                return;
-            }
-            _ => {}
         }
-        // The email face was asked for: one asking which Tonk gives way.
-        tonk_ui::register_dialog::leave_sign_in_via();
-        if tonk_ui::register_dialog::is_open() {
-            // A standing anchored ceremony keeps its typed state, but the
-            // guest bar may have moved after a scroll or resize.
-            tonk_ui::register_dialog::reanchor(&request);
-            // A repeat request re-shows the standing cluster — everything
-            // typed survives the round trip through the spaces tab.
-            tonk_ui::register_dialog::resume();
-            return;
-        }
-        if request.anchor.is_none() && !request.space.is_empty() {
-            // A blocked share: the linking screen IS the hub's settings
-            // route. The space rides sessionStorage across the navigation
-            // so the finished ceremony still offers the share link.
-            tonk_ui::register_dialog::stash_share(&request.space);
-            if let Some(location) = web_sys::window().map(|window| window.location()) {
-                let _ = location.assign("/settings");
-            }
-            return;
-        }
-        match return_focus {
-            Some(return_focus) => tonk_ui::register_dialog::open_with_return_focus(move || {
-                return_focus.restore();
-            }),
-            None => tonk_ui::register_dialog::open(),
-        }
-        tonk_ui::register_dialog::describe(reason);
-        tonk_ui::register_dialog::adopt_stashed_share();
     });
-    tonk_portal::on_task(tonk_ui::fabb_task::handle);
+    // An account task is the profile frame's to answer. One that reaches
+    // this page has no panel here to open.
+    tonk_portal::on_task(|_request, reply| {
+        if let Some(reply) = reply {
+            reply.finish("invalid");
+        }
+    });
     tonk_ui::activate::register();
 
     // Dev-only hot reload client. `debug_assertions` is on under `trunk serve`

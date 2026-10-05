@@ -89,6 +89,12 @@
     return location.origin!=="null"&&!!c.sitePattern&&!c.repo&&
       location.hostname.split(".")[0].indexOf("profile")===0;
   }
+  // Whether this document renders the profile rather than a space, on an
+  // origin of its own or in a sealed frame.
+  function rendersProfile(){
+    var c=(window.tonk&&window.tonk.context)||{};
+    return !c.repo;
+  }
   function ownsPath(url){
     if(ownProfile()) return url.indexOf("/api/")===0;
     var c=ownSpace();
@@ -283,9 +289,9 @@
     // boundary. The callback receives the terminal result exactly once.
     task:function(payload,relay){
       var request=null;try{request=JSON.parse(payload);}catch(e){}
-      // The profile on its own origin is where the panel that adds an
-      // account lives: its document answers an account task itself.
-      if(ownProfile()&&request&&request.purpose==="account"){ accountTask(request,relay); return; }
+      // A document rendering the profile is where the panel that adds an
+      // account lives: it answers an account task itself.
+      if(rendersProfile()&&request&&request.purpose==="account"){ accountTask(request,relay); return; }
       var action=request&&request.action||"";
       if(action!=="open"){
         ready.then(function(){port.postMessage({v:1,type:"task",payload:payload});});

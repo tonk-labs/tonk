@@ -43,10 +43,9 @@ pub use deployment::{DeploymentConfig, SiteOrigins};
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
 pub use identity::{
-    AccountCreation, AccountPurge, CREATE_ACCOUNT_REQUEST, CUSTODY_REQUEST, CustodyIntent,
-    DeviceAuthorization, DeviceLink, ENCRYPTION_KEY_REQUEST, Enrollment, LINK_ACCOUNT,
-    LinkAccountRequest, PasskeyAddition, PasskeyMetadata, RootStatus, SaveRootRequest, WEBAUTHN,
-    WebAuthnKind, WebAuthnRequest,
+    AccountCreation, AccountPurge, CUSTODY_REQUEST, CustodyIntent, DeviceAuthorization, DeviceLink,
+    ENCRYPTION_KEY_REQUEST, Enrollment, PasskeyAddition, PasskeyMetadata, RootStatus,
+    SaveRootRequest, WEBAUTHN, WebAuthnKind, WebAuthnRequest,
 };
 pub use invite::{
     CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,

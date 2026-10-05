@@ -10,15 +10,17 @@ const LIBRARY = join(UI, "..", "tonk-core", "assets", "library", "profile.yaml")
 
 const accountStyles = readFileSync(join(UI, "src", "account.css"), "utf8");
 const appStyles = readFileSync(join(UI, "styles.css"), "utf8");
-const registration = readFileSync(
-  join(UI, "src", "register_dialog.rs"),
-  "utf8",
-);
 // The settings panel is markup on the profile branch: the
 // `<account-settings>` element's contents, plus the registration view's
 // `settings` facet, which carries the display name and the deletion
 // dialog.
 const library = readFileSync(LIBRARY, "utf8");
+// The panel that adds an account: the profile library's views of the
+// registration stages.
+const registration = library
+  .split("view!:\n  this: tonk:registration/address")[1]
+  ?.split("# What the address check said")[0];
+assert.ok(registration, "the registration stage views must be in the profile library");
 const panel = library.split("<account-settings>\n")[1]?.split("</account-settings>")[0];
 const registered = library
   .split("    settings: |\n      <div data-account-registered>")[1]
@@ -77,11 +79,9 @@ test("the settings display name has visible input affordance", () => {
 });
 
 test("active account fields use a measured two-line row spanning its full width", () => {
-  assert.match(
-    registration,
-    /class="orow mblk editing" id="tonk-register-email-row"/,
-  );
-  assert.match(registration, /class_list\(\)\.remove_1\("editing"\)/);
+  assert.match(registration, /class="orow mblk editing">\s*<span class="k">email address<\/span>/);
+  // A settled answer is the next stage's plain row, not an editing one.
+  assert.match(registration, /<div class="orow mblk"><span class="k">email<\/span><span class="v">\{email\}<\/span><\/div>/);
   assert.match(
     appStyles,
     /\.tonk-ceremony \.orow\.editing \{[\s\S]*?box-sizing: border-box;[\s\S]*?height: 60px;[\s\S]*?grid-template-rows: 13px 20px;[\s\S]*?gap: 7px;/,

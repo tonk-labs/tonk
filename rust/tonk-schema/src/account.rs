@@ -655,8 +655,6 @@ pub mod email_state {
     /// The service could not be reached, so this says nothing about the
     /// address itself.
     pub const UNAVAILABLE: &str = "unavailable";
-    /// A ceremony was raised for this address and has not finished.
-    pub const PENDING_CEREMONY: &str = "registering";
     /// The lookup for this address is in flight.
     ///
     /// Written before the lookup rather than painted into the DOM by
@@ -669,12 +667,11 @@ pub mod email_state {
     /// Whether a state means the form should keep out of the way rather
     /// than offer an action.
     ///
-    /// `registering` is a ceremony already up; `unavailable` is a
-    /// service that did not answer. Neither is a fact about the
-    /// address, so neither should render as "create an account" or
-    /// "sign in".
+    /// `unavailable` is a service that did not answer and `checking` a
+    /// lookup still in flight. Neither is a fact about the address, so
+    /// neither should render as "create an account" or "sign in".
     pub fn is_transient(state: &str) -> bool {
-        matches!(state, PENDING_CEREMONY | UNAVAILABLE | CHECKING)
+        matches!(state, UNAVAILABLE | CHECKING)
     }
 
     /// Whether an answer leaves the user something to do in the form.
@@ -708,7 +705,6 @@ mod email_state_tests {
     /// A state the form should not turn into an offer.
     #[dialog_common::test]
     fn it_knows_which_states_carry_no_offer() {
-        assert!(is_transient(PENDING_CEREMONY), "a ceremony is up");
         assert!(is_transient(UNAVAILABLE), "nobody answered");
         assert!(is_transient(CHECKING), "the lookup is still in flight");
         // These are answers about the address, so each names an action.

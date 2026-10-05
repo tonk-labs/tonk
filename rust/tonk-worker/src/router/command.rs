@@ -237,7 +237,6 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .migrated::<tonk_schema::command::RemoveSpace, tonk_schema::command::legacy::RemoveSpace>()
         .migrated::<tonk_schema::command::Join, tonk_schema::command::legacy::Join>()
         .migrated::<tonk_schema::command::CheckEmail, tonk_schema::command::legacy::CheckEmail>()
-        .migrated::<tonk_schema::command::RegisterAccount, tonk_schema::command::legacy::RegisterAccount>()
         .migrated::<tonk_schema::command::PauseSync, tonk_schema::command::legacy::PauseSync>()
         .migrated::<tonk_schema::command::ProfileRename, tonk_schema::command::legacy::ProfileRename>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()

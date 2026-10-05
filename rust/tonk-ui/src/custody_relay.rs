@@ -19,9 +19,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use tonk_worker_api::{
-    LINK_ACCOUNT, LinkAccountRequest, RootStatus, WEBAUTHN, WebAuthnKind, WebAuthnRequest,
-};
+use tonk_worker_api::{RootStatus, WEBAUTHN, WebAuthnKind, WebAuthnRequest};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use web_sys::{Element, MessageEvent};
@@ -30,7 +28,7 @@ use crate::user_error::{self, AccountAction};
 
 thread_local! {
     static RETURN_FOCUS: RefCell<Option<tonk_portal::RegisterFocusReturn>> = const { RefCell::new(None) };
-    static ANCHOR: RefCell<Option<crate::register_dialog::Anchor>> = const { RefCell::new(None) };
+    static ANCHOR: RefCell<Option<Anchor>> = const { RefCell::new(None) };
     static INSTALLED: Cell<bool> = const { Cell::new(false) };
     /// One card at a time: a second request arriving while the card is
     /// up is already answered by the save the first one performs.
@@ -38,6 +36,37 @@ thread_local! {
 }
 
 const CARD_ID: &str = "tonk-custody-consent";
+
+/// Where the profile's settings seat the passkey rows: the bar's viewport
+/// box, which the frame sends with a `custody-anchor` request.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+pub struct Anchor {
+    /// The bar's left edge.
+    pub left: f64,
+    /// The bar's bottom edge; the rows hang one gap below it.
+    pub bottom: f64,
+    /// The bar's width, which the rows fill.
+    pub width: f64,
+}
+
+/// What a frame asked of this page through `tonk.register`.
+#[derive(Debug, Default, PartialEq, serde::Deserialize)]
+pub struct SeatRequest {
+    /// What is asked for; `custody-anchor` is the one this page answers.
+    #[serde(default)]
+    pub reason: String,
+    /// Where to seat the passkey rows.
+    #[serde(default)]
+    pub anchor: Option<Anchor>,
+}
+
+/// Parse what a frame forwarded, tolerating a bare reason string.
+pub fn parse_seat_request(payload: &str) -> SeatRequest {
+    serde_json::from_str(payload).unwrap_or_else(|_| SeatRequest {
+        reason: payload.to_owned(),
+        anchor: None,
+    })
+}
 
 const CARD_HTML: &str = r#"
 <div style="position:fixed;right:16px;bottom:16px;z-index:2147483647;width:min(432px, calc(100vw - 32px));
@@ -179,7 +208,7 @@ pub fn return_to_approval(focus: Option<tonk_portal::RegisterFocusReturn>) {
 }
 
 /// Keep the top-document passkey rows seated in the guest's dialog column.
-pub fn reanchor(anchor: crate::register_dialog::Anchor) {
+pub fn reanchor(anchor: Anchor) {
     if !anchor.left.is_finite()
         || !anchor.bottom.is_finite()
         || !anchor.width.is_finite()
@@ -542,22 +571,6 @@ pub fn install() {
     };
     let service_worker = window.navigator().service_worker();
     let listener = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
-        // The worker decided a share needs an account and is asking for
-        // one. It carries the space so the share can be finished once
-        // the account exists.
-        if let Ok(link) = serde_wasm_bindgen::from_value::<LinkAccountRequest>(event.data())
-            && link.message_type == LINK_ACCOUNT
-        {
-            crate::register_dialog::open();
-            crate::register_dialog::describe(
-                &serde_json::json!({
-                    "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
-                    "space": link.space,
-                })
-                .to_string(),
-            );
-            return;
-        }
         let Ok(message) = serde_wasm_bindgen::from_value::<WebAuthnRequest>(event.data()) else {
             return;
         };
@@ -565,25 +578,16 @@ pub fn install() {
             return;
         }
         // Exhaustive on purpose. A new ceremony kind must fail to
-        // compile here rather than be dropped: `create-account` was
-        // once filtered out by an `if request != ENCRYPTION_KEY_REQUEST
-        // { return }`, so the worker asked the page to run a signup
-        // ceremony, nothing listened, and the registration dialog still
-        // reported success.
+        // compile here rather than be dropped: one was once filtered out
+        // by an `if request != ENCRYPTION_KEY_REQUEST { return }`, so the
+        // worker asked the page to run a ceremony, nothing listened, and
+        // the page still reported success.
         match message.request {
             WebAuthnKind::EncryptionKey => {
                 if BUSY.with(|busy| busy.replace(true)) {
                     return;
                 }
                 show_consent();
-            }
-            WebAuthnKind::CreateAccount => {
-                // Handled by the registration dialog, which is the only
-                // thing that knows which address the ceremony is for and
-                // is already on screen when this arrives. BUSY is not
-                // taken: that flag guards the consent card this module
-                // owns, and the dialog runs its own ceremony.
-                crate::register_dialog::run_signup_ceremony();
             }
             WebAuthnKind::Custody => {
                 // One assertion, then the handles go to the worker,
@@ -659,15 +663,6 @@ impl std::fmt::Display for CeremonyError {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         out.write_str(&self.message)
     }
-}
-
-/// [`mediate_custody`], awaited: for a caller that has to know whether
-/// the work landed before it moves on.
-pub(crate) async fn mediate_now(
-    method: &'static str,
-    intent: tonk_worker_api::CustodyIntent,
-) -> Result<(), CeremonyError> {
-    run(method, intent).await
 }
 
 /// A page ceremony that has already been invoked and now only needs its
@@ -868,7 +863,7 @@ mod tests {
             rows.style().get_property_value("visibility").unwrap(),
             "hidden"
         );
-        reanchor(crate::register_dialog::Anchor {
+        reanchor(Anchor {
             left: 24.0,
             bottom: 320.0,
             width: 288.0,
@@ -878,7 +873,7 @@ mod tests {
         assert_eq!(rect.left(), 24.0);
         assert_eq!(rect.top(), 327.0);
         assert_eq!(rect.width(), 288.0);
-        reanchor(crate::register_dialog::Anchor {
+        reanchor(Anchor {
             left: 32.0,
             bottom: 160.0,
             width: 576.0,

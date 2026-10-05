@@ -2114,24 +2114,23 @@ async fn run_invite(
             // offer only when a provider exists to attach to.
             let reason = super::create_invite::explain_refusal(&tonk, reason).await;
             log!("Invite for repo '{}' refused: {}", repo_name, reason.code());
-            let subject = repository.did().to_string();
             drop(tonk);
 
             // Whether to issue a link or get an account first is the
             // worker's call, not the caller's. A share that needs an
             // account is not a failure the control should interpret
-            // and repair — it is this handler's next step, so it
-            // asks for the account itself and the share resumes when
-            // the account facts land.
-            //
-            // Not awaited: registration may take a ceremony, an
-            // email round trip, or never finish, and a handler held
-            // open across that is held open forever.
-            if reason.code() == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT
-                && let Some(client) = env.client()
-                && let Err(error) = super::navigate::request_account_link(client, &subject).await
-            {
-                log!("Invite: could not ask the page to add an account: {error}");
+            // and repair: it is this handler's next step, so it opens
+            // the panel that adds an account, and the share resumes
+            // when the account facts land.
+            if reason.code() == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT {
+                let tonk = env.state().read().await;
+                super::registration::record(
+                    &tonk,
+                    Some(super::registration::Stage::Address {
+                        email: String::new(),
+                    }),
+                )
+                .await;
             }
 
             // `not-synced` is not a refusal either: the account has a

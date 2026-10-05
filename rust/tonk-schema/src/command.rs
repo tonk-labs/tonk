@@ -129,36 +129,6 @@ impl Command for CheckEmail {
     type Output = ();
 }
 
-/// Create the account for an address, once the lookup said it is free.
-///
-/// The lookup ([`CheckEmail`]) and this were once the same shape
-/// `{this, email}` under one shared DOM read path, so every keystroke's
-/// lookup also decoded as a registration and the worker started a
-/// passkey ceremony while the user was still typing. A marker attribute
-/// patched that; the two now live in separate namespaces, so the shapes
-/// cannot collide and the marker is gone.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RegisterAccount {
-    /// The command entity, minted per invocation.
-    pub this: Entity,
-    /// The address to register.
-    pub email: crate::domain::command::current::register_account::Email,
-}
-
-impl From<legacy::RegisterAccount> for RegisterAccount {
-    fn from(legacy: legacy::RegisterAccount) -> Self {
-        Self {
-            email: crate::domain::command::current::register_account::Email(legacy.email.0),
-            this: legacy.this,
-        }
-    }
-}
-
-impl Command for RegisterAccount {
-    type Input = Self;
-    type Output = ();
-}
-
 /// Raise the panel that adds an account to this profile.
 ///
 /// The panel is views of the [`crate::registration`] stages, so raising
