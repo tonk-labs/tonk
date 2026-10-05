@@ -6121,11 +6121,8 @@ element!: &account-settings
     unlink: |
       (self) => { self._shown = null; self._linking = null; self.setAttribute('data-linking', 'false'); }
     # The link state the account page's rows are keyed on, and the door:
-    # the account page or the settings page with no account raises the
-    # ceremony itself once the link display has resolved empty. With no
-    # account the spaces collection stays behind the modal. WebAuthn needs
-    # a `window` and a user gesture, which this
-    # opaque realm has neither of, so the top page raises it.
+    # the account page or the settings page with no account opens the
+    # panel that adds one once the link display has resolved empty.
     door: |
       (self) => {
         const linked = self.linked() ? 'true' : self.unlinked() ? 'false' : '';

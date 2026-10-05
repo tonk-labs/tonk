@@ -271,12 +271,19 @@
     analytics:function(event){
       ready.then(function(){port.postMessage({v:1,type:"analytics",event:event});});
     },
-    // Raise the registration dialog on the HOST page. Sharing needs an
-    // account, and only the top page can run the ceremony: WebAuthn wants
-    // a `window` and a user gesture, which the guest's opaque realm and
-    // the service worker both lack. The guest posts the refusal class so
-    // the host can word the prompt. Fire-and-forget (no response).
+    // Ask for an account. A document rendering the profile is where the
+    // panel that adds one lives, so it opens it over the bar, and the asker
+    // hears the end through `relay` as it would from the page around. The
+    // top page answers only the custody card's anchor. Fire-and-forget.
     register:function(reason,relay){
+      var asked=null;try{asked=JSON.parse(reason);}catch(e){}
+      if(rendersProfile()&&asked&&asked.reason!=="custody-anchor"){
+        accountTask({action:"open",requestId:mint(),purpose:"account"},function(){
+          if(typeof relay==="function"){ relay("register-focus"); }
+          else{ window.dispatchEvent(new Event("tonk:registration-closed")); }
+        });
+        return;
+      }
       var opener=document.activeElement;
       if(!opener||opener===document.body){ opener=lastFocused; }
       // Even an unfocused opener needs the ceremony's terminal event.
