@@ -11,9 +11,11 @@
 //!   a name it controls at `127.0.0.1` to make its requests same-origin.
 //! - **Launch token.** The window opens `/__tonk/launch?token=…` with a
 //!   random token minted at startup. That sets an `HttpOnly`,
-//!   `SameSite=Strict` cookie, and every later request must carry it.
-//!   Another page cannot read the cookie, and its cross-site requests
-//!   arrive without it.
+//!   `SameSite=Strict` cookie, and every request that reaches the worker
+//!   must carry it. Another page cannot read the cookie, and its
+//!   cross-site requests arrive without it. The built UI itself is
+//!   public code and needs no token: sealed guest frames load images
+//!   from it directly, and their opaque origin sends no cookie.
 //!
 //! The server sends no CORS headers, so a browser lets no other origin
 //! read a response even when a request does arrive. WebSockets are not
@@ -34,9 +36,9 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
+use futures_util::StreamExt as _;
 use tonk_worker::axum::RequestOrigin;
 use tonk_worker::{AppState, ClientId};
-use futures_util::StreamExt as _;
 use tower::ServiceExt as _;
 
 /// Name of the cookie that carries the launch token.
@@ -82,7 +84,10 @@ impl Server {
     /// The URL the window opens first: it exchanges the token for the
     /// cookie and redirects to the page.
     pub fn launch_url(&self) -> String {
-        format!("http://{}/__tonk/launch?token={}", self.authority, self.token)
+        format!(
+            "http://{}/__tonk/launch?token={}",
+            self.authority, self.token
+        )
     }
 
     /// The origin the page is served from.
@@ -119,12 +124,15 @@ async fn guard(State(server): State<Server>, request: Request, next: Next) -> Re
     if host != Some(server.authority.as_str()) {
         return (StatusCode::MISDIRECTED_REQUEST, "unexpected host").into_response();
     }
-    if request.uri().path() != "/__tonk/launch"
-        && !carries_token(request.headers(), &server.token)
-    {
+    if needs_token(request.uri().path()) && !carries_token(request.headers(), &server.token) {
         return (StatusCode::FORBIDDEN, "not this window").into_response();
     }
     next.run(request).await
+}
+
+/// Whether `path` reaches the worker, and so must carry the launch token.
+fn needs_token(path: &str) -> bool {
+    path == "/api" || path.starts_with("/api/") || path == "/__tonk/stream"
 }
 
 /// Whether the request's cookies include the launch token.
@@ -158,7 +166,10 @@ async fn launch(State(server): State<Server>, Query(launch): Query<Launch>) -> R
     if !constant_time_eq(launch.token.as_bytes(), server.token.as_bytes()) {
         return (StatusCode::FORBIDDEN, "not this window").into_response();
     }
-    let cookie = format!("{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict", server.token);
+    let cookie = format!(
+        "{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict",
+        server.token
+    );
     let mut response = Redirect::to("/").into_response();
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         response.headers_mut().insert(header::SET_COOKIE, value);
@@ -223,7 +234,9 @@ async fn stream(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    let origin = headers.get(header::ORIGIN).and_then(|value| value.to_str().ok());
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
     if origin != Some(server.origin().as_str()) {
         return (StatusCode::FORBIDDEN, "not this window").into_response();
     }
@@ -244,7 +257,9 @@ async fn relay(server: Server, mut socket: WebSocket) {
     if !sent.path.starts_with("/api/") {
         return;
     }
-    let mut builder = Request::builder().method(sent.method.as_str()).uri(sent.path);
+    let mut builder = Request::builder()
+        .method(sent.method.as_str())
+        .uri(sent.path);
     for (name, value) in &sent.headers {
         builder = builder.header(name, value);
     }
@@ -324,7 +339,10 @@ async fn serve_static(dist: &Path, method: &Method, uri: &Uri) -> Response {
     };
     let mut response = Response::new(Body::from(bytes));
     let headers = response.headers_mut();
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type(&path)));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(content_type(&path)),
+    );
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     response
 }
@@ -389,13 +407,28 @@ mod tests {
         assert_eq!(safe_relative("/../etc/passwd"), None);
         assert_eq!(safe_relative("/%2e%2e/etc/passwd"), None);
         assert_eq!(safe_relative("/a/../../b"), None);
-        assert_eq!(safe_relative("/guest/app.wasm"), Some(PathBuf::from("guest/app.wasm")));
+        assert_eq!(
+            safe_relative("/guest/app.wasm"),
+            Some(PathBuf::from("guest/app.wasm"))
+        );
+    }
+
+    #[test]
+    fn it_requires_the_token_only_where_the_worker_answers() {
+        assert!(needs_token("/api/identify"));
+        assert!(needs_token("/api"));
+        assert!(needs_token("/__tonk/stream"));
+        assert!(!needs_token("/images/tonk-wordmark.svg"));
+        assert!(!needs_token("/apish"));
     }
 
     #[test]
     fn it_finds_the_token_among_other_cookies() {
         let mut headers = HeaderMap::new();
-        headers.insert(header::COOKIE, HeaderValue::from_static("a=b; tonk-desktop=xyz"));
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("a=b; tonk-desktop=xyz"),
+        );
         assert!(carries_token(&headers, "xyz"));
         assert!(!carries_token(&headers, "xy"));
     }

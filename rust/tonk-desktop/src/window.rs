@@ -28,7 +28,7 @@ pub fn run(runtime: Runtime, launch_url: String, origin: String) -> Result<()> {
 
     let builder = WebViewBuilder::new()
         .with_url(&launch_url)
-        .with_initialization_script(&native_host_script(&origin))
+        .with_initialization_script(native_host_script(&origin))
         .with_navigation_handler({
             let origin = origin.clone();
             move |url| {
