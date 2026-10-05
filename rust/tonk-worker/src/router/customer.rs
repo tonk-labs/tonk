@@ -237,21 +237,19 @@ impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
     }
 }
 
-/// GET `/api/customer` → the account's registration state: the service's
-/// live answer joined with the locally recorded enrollment.
-#[wasm_compat]
-pub async fn get_state(
-    State(state): State<AppState>,
-    Extension(origin): Extension<RequestOrigin>,
-) -> Result<Json<CustomerState>, TonkWorkerError> {
-    let state = state.read().await;
-    let root = super::identity::root_did(&state).await?;
-    let record = load_customer(&state).await?;
+/// Ask the service at `origin` how this profile's account stands, and
+/// record what it says: the customer record, the account facts, and the
+/// ledger grant. `None` when the service has no customer for it.
+pub(crate) async fn probe(
+    state: &crate::worker::TonkState,
+    origin: &url::Url,
+) -> Result<Option<CustomerStatus>, TonkWorkerError> {
+    let root = super::identity::root_did(state).await?;
+    let record = load_customer(state).await?;
     let endpoint = origin
-        .url()
         .join(&format!("customer/{root}"))
         .map_err(|error| TonkWorkerError::Internal(format!("customer probe url: {error}")))?;
-    let status = match get(&endpoint).await {
+    match get(&endpoint).await {
         Ok(response) => {
             let receipt: Receipt = serde_json::from_slice(&response.body).map_err(|error| {
                 TonkWorkerError::Internal(format!("customer probe answered garbage: {error}"))
@@ -265,7 +263,7 @@ pub async fn get_state(
                     status: receipt.status,
                     ..record.clone()
                 };
-                save_customer(&state, &refreshed).await?;
+                save_customer(state, &refreshed).await?;
             }
             // Reconcile the FACT on every probe, not only when the
             // status changed. Two guards used to stand in the way: a
@@ -282,24 +280,37 @@ pub async fn get_state(
                 .map(|record| record.email.clone())
                 .unwrap_or_default();
             if let Err(error) =
-                record_customer_status(&state, receipt.status, &email, receipt.provider.as_deref())
+                record_customer_status(state, receipt.status, &email, receipt.provider.as_deref())
                     .await
             {
                 log!("account customer status not recorded: {error}");
             }
             // The probe is also where a device that never enrolled
             // first sees the ledger grant, so it retains here too.
-            retain_ledger(&state, &receipt).await;
+            retain_ledger(state, &receipt).await;
             // This probe is what notices activation, so it is where
             // work deferred during the wait gets replayed.
             if receipt.status == CustomerStatus::Active {
-                drain_pending(&state).await;
+                drain_pending(state).await;
             }
-            Some(receipt.status)
+            Ok(Some(receipt.status))
         }
-        Err(HttpError::Upstream(failure)) if failure.status == 404 => None,
-        Err(error) => return Err(error.into()),
-    };
+        Err(HttpError::Upstream(failure)) if failure.status == 404 => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// GET `/api/customer` → the account's registration state: the service's
+/// live answer joined with the locally recorded enrollment.
+#[wasm_compat]
+pub async fn get_state(
+    State(state): State<AppState>,
+    Extension(origin): Extension<RequestOrigin>,
+) -> Result<Json<CustomerState>, TonkWorkerError> {
+    let state = state.read().await;
+    let root = super::identity::root_did(&state).await?;
+    let status = probe(&state, origin.url()).await?;
+    let record = load_customer(&state).await?;
     // Read after the probe: the probe is where a device that never
     // enrolled first records the provider, so this read sees it.
     let provider = provider_address(&state).await;

@@ -242,35 +242,22 @@ pub(crate) fn kind_in(data: &wasm_bindgen::JsValue) -> Option<&'static str> {
     kind_of(&intent)
 }
 
-/// Whether the account this profile holds is served.
+/// Whether the account this profile holds is served, as the service says
+/// now: right after a login the account's own facts have not synced here
+/// yet, so they cannot say.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn served(tonk: &TonkState) -> bool {
-    use dialog_query::{Output as _, Query, Term};
-    use tonk_schema::{AccountActive, prelude::DidExt as _};
+    use tonk_account::customer::CustomerStatus;
 
-    let Ok(account) = super::identity::root_did(tonk).await else {
-        return false;
-    };
-    let Ok(branch) = tonk
-        .reactor
-        .profile_repository()
-        .branch(&tonk.active_branch)
-        .acquire(&tonk.operator)
-        .await
+    let Some(origin) =
+        super::repository::app_origin().and_then(|origin| url::Url::parse(&origin).ok())
     else {
         return false;
     };
-    branch
-        .handle()
-        .query()
-        .select(Query::<AccountActive> {
-            this: Term::from(account.this()),
-            activated_at: Term::var("activated_at"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .is_ok_and(|rows| !rows.is_empty())
+    matches!(
+        super::customer::probe(tonk, &origin).await,
+        Ok(Some(CustomerStatus::Active))
+    )
 }
 
 /// Record where a custody hand-off for `kind` left the panel.
