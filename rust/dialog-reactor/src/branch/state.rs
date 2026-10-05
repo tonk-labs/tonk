@@ -10,7 +10,6 @@ use std::sync::Arc;
 use bytes::Bytes;
 use dialog_artifacts::{Attribute, Changes, Entity, Statement};
 use dialog_query::ConceptQuery;
-use dialog_repository::placement::Target as StoreTarget;
 use dialog_repository::{Branch, Drained, Ephemeral, Observer, Placement, Stack};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
@@ -22,12 +21,15 @@ use crate::subscription::{
     QueryHash, Status, Subscriber, SubscriberSession, Subscription, SubscriptionPoll,
 };
 
-/// The scope name the process's state layer is linked under: session
-/// facts a branch's readers see and nothing replicates or keeps.
-pub const STATE_SCOPE: &str = "memory:state";
+/// The scope name the application's state layer is linked under: the
+/// facts of this one application (a worker shared by every tab, a CLI
+/// process) that every reader of the branch sees, and nothing
+/// replicates or keeps.
+pub const STATE_SCOPE: &str = "memory:application";
 
-/// The scope name the branch itself is linked under.
-pub const SHARED_SCOPE: &str = "memory:shared";
+/// The scope name the space's branch itself is linked under: the
+/// replicated tree, where an attribute with no placement lands.
+pub const SHARED_SCOPE: &str = "memory:space";
 
 /// The attribute namespace a stack records its links under, on the
 /// layer that links: `dialog.link/{from, to, name, revision, ...}`.
@@ -41,13 +43,16 @@ fn scope(name: &str) -> Entity {
 /// read, subscription and write of it goes through, and the
 /// subscriptions standing over it.
 ///
-/// The stack is `[branch, state, top]`: `state` is this process's
+/// The stack is `[branch, state, top]`: `state` is this application's
 /// ephemeral layer, linked under [`STATE_SCOPE`] by a wiring layer
 /// above it, so facts placed on that scope — by the schema's `scope:`
 /// declarations or by a writer through [`write`](Self::write) — land
-/// there and never reach the tree. Commands dispatched through the
-/// stack are witnessed on the layer their scope names, else the
-/// branch's own session store; both are observed, and
+/// there and never reach the tree. Every write goes through the stack:
+/// the reactor's own commits, the evaluate route's documents, and a
+/// library seed alike, so a fact has one home. Commands dispatched
+/// through the stack are witnessed on the layer their scope names,
+/// and a command whose attribute has no placement on the branch's own
+/// session store, the bottom's; both are observed, and
 /// [`drain_commands`](Self::drain_commands) hands back what fired.
 pub struct BranchState {
     /// The branch itself; transactions and pulls address it through
@@ -92,18 +97,19 @@ impl BranchState {
     {
         let state = Ephemeral::create().perform(env).await;
         let top = Ephemeral::create().perform(env).await;
-        // A commit made through the branch handle rather than the stack
-        // (the evaluate route's dialog transaction) still meets facts the
-        // schema places on the state scope; bound to the branch's own
-        // session store they land beside the tree, ephemeral, and the
-        // stack's composite reads them with the branch. Through the stack
-        // the scope resolves to the state layer instead.
-        branch.bind(scope(STATE_SCOPE), StoreTarget::Session);
+        // The branch binds no scope of its own: nothing commits through
+        // the branch handle, so a fact placed on the state scope has the
+        // state layer as its only home and a stack `clear` or `forget`
+        // of the scope reaches all of it.
         let stack = Stack::open(top.clone())
             .link(&top, &state, scope(STATE_SCOPE))
             .link(&state, &branch, scope(SHARED_SCOPE))
             .perform(env)
             .await?;
+        // Where a stack commit witnesses the commands it minted: the
+        // state layer for a command placed on the state scope, the
+        // bottom's session store for one whose attribute has no
+        // placement. Both are this application's; both are drained.
         let witnessed = [
             state.observe_everything(),
             branch.overlay().observe_everything(),
@@ -242,8 +248,9 @@ impl BranchState {
     {
         let _transacting = self.transactor.lock().await;
         // The stack routes at the heads it captured. A commit made outside
-        // it since (the evaluate route, a seed install, a pull) may have
-        // declared placements this write must honour: capture it first.
+        // it since (a pull, a commit through another handle of the branch)
+        // may have declared placements this write must honour: capture it
+        // first.
         if self.stack.behind() {
             self.stack.advance(env).await?;
         }
@@ -458,9 +465,8 @@ impl BranchState {
         });
     }
 
-    /// Capture movement the stack has not seen: a commit made through
-    /// the branch handle rather than the stack (the evaluate route's
-    /// dialog transaction, a direct retract) moves the branch's head
+    /// Capture movement the stack has not seen: a pull, or a commit made
+    /// through another handle of the branch, moves the branch's head
     /// under a stack whose reads are pinned to the head it captured.
     /// Cheap when nothing moved; an advance otherwise. Never called
     /// under the transactor lock: it takes it.

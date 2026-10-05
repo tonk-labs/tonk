@@ -550,10 +550,10 @@ async fn run_query(site: &TonkSite, doc: &str) -> Result<EvaluateResponse> {
         ));
     }
     let session = site.branch().await?;
-    let branch = session.handle();
-    let revision = branch.revision();
+    session.state.settle(&site.operator).await?;
+    let revision = session.handle().revision();
     let evaluated = syntax
-        .evaluate(branch.transaction())
+        .evaluate(session.stack().transaction())
         .perform(&site.operator)
         .await
         .map_err(|e| anyhow!("tonk-schema query failed: {e}"))?;

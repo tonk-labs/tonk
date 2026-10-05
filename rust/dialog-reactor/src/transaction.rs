@@ -229,10 +229,11 @@ impl Commit<'_> {
             names.dedup();
             names.join(",")
         };
-        // A head that moved outside the stack (the evaluate route, a seed
-        // install, a pull) is captured before the first attempt: the stack
-        // routes by the placements at its captured head and publishes
-        // against it, so a stale capture misroutes and then fails the CAS.
+        // A head that moved outside the stack (a pull, a commit through
+        // another handle of the branch) is captured before the first
+        // attempt: the stack routes by the placements at its captured head
+        // and publishes against it, so a stale capture misroutes and then
+        // fails the CAS.
         if cached.stack().behind() {
             cached.stack().advance(env).await?;
         }

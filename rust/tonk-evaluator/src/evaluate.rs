@@ -63,7 +63,7 @@ use dialog_effects::memory::{Publish, Resolve};
 use dialog_query::attribute::Relation;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::{ConceptDescriptor, ConceptQuery, Output as _, Parameters, Term};
-use dialog_repository::{Branch, Hydrate, RemoteSite, Transaction};
+use dialog_repository::{Hydrate, RemoteSite, StackCommit, StackEnv, StackTransaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_notation::Syntax;
@@ -141,13 +141,13 @@ pub enum EvaluateError {
 // Env trait alias                                                  //
 // ---------------------------------------------------------------- //
 
-/// Environment bound for [`run`] — covers both query selects
-/// (via `Branch::query().select(...).perform`) and commits (via
-/// `Branch::commit(...).perform`). Mirrors the union of dialog's
-/// `SelectQuery::perform` and `Commit::perform` bounds so the
+/// Environment bound for evaluation — covers the reads a stack
+/// transaction's view answers (`StackSelect::perform`) and the commit
+/// that stages and publishes it (`StackCommit::perform`), so the
 /// signature stays a single trait alias.
 pub trait EvaluateEnv:
-    Provider<Get>
+    StackEnv
+    + Provider<Get>
     + Provider<dialog_effects::blob::Read>
     + Provider<Put>
     + Provider<Resolve>
@@ -164,7 +164,8 @@ pub trait EvaluateEnv:
 }
 
 impl<T> EvaluateEnv for T where
-    T: Provider<Get>
+    T: StackEnv
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
@@ -299,11 +300,11 @@ pub trait SyntaxEvaluateExt {
     /// baked into its overlay. The chain does *not* commit —
     /// the caller decides whether to commit, drop, or compose
     /// further on `Evaluated::txn`.
-    fn evaluate<'a>(&self, txn: Transaction<&'a Branch>) -> Evaluate<'_, 'a>;
+    fn evaluate<'a>(&self, txn: StackTransaction<'a>) -> Evaluate<'_, 'a>;
 }
 
 impl SyntaxEvaluateExt for Syntax {
-    fn evaluate<'a>(&self, txn: Transaction<&'a Branch>) -> Evaluate<'_, 'a> {
+    fn evaluate<'a>(&self, txn: StackTransaction<'a>) -> Evaluate<'_, 'a> {
         Evaluate { syntax: self, txn }
     }
 }
@@ -312,7 +313,7 @@ impl SyntaxEvaluateExt for Syntax {
 /// transaction until `.perform(env)` consumes them.
 pub struct Evaluate<'s, 'a> {
     syntax: &'s Syntax,
-    txn: Transaction<&'a Branch>,
+    txn: StackTransaction<'a>,
 }
 
 impl<'s, 'a> Evaluate<'s, 'a> {
@@ -512,7 +513,7 @@ pub struct Evaluated<'a> {
     /// Transaction with the document's mutations + induction
     /// applied to its overlay. Caller drives commit / drop /
     /// further composition.
-    pub txn: Transaction<&'a Branch>,
+    pub txn: StackTransaction<'a>,
     /// Pre-mutation per-source-expression match blocks. For
     /// post-mutation matches, call [`Self::matches_after`].
     pub matches: Vec<QueryMatchBlock>,
@@ -561,7 +562,7 @@ impl<'a> Evaluated<'a> {
     /// intermediate destructure. The chain itself never commits;
     /// callers who want to commit call this (or drive
     /// `evaluated.txn.commit()` directly).
-    pub fn commit(self) -> dialog_repository::TransactionCommit<&'a Branch> {
+    pub fn commit(self) -> StackCommit<'a> {
         self.txn.commit()
     }
 }
@@ -628,7 +629,7 @@ struct QueryResults {
 async fn run_query<Env: EvaluateEnv>(
     queries: &[LabeledQuery],
     synthesized: &[SynthesizedQuery],
-    txn: &Transaction<&Branch>,
+    txn: &StackTransaction<'_>,
     env: &Env,
 ) -> Result<QueryResults, EvaluateError> {
     let mut per_expression = Vec::with_capacity(queries.len());
@@ -731,7 +732,7 @@ impl dialog_artifacts::Statement for RawClaim {
 /// so this function only handles `ApplicationPlan::Concept`.
 async fn resolve_retraction_targets<Env: EvaluateEnv>(
     plan: tonk_schema::transact::ConceptPlan,
-    txn: &Transaction<&Branch>,
+    txn: &StackTransaction<'_>,
     env: &Env,
 ) -> Result<Vec<RawClaim>, EvaluateError> {
     let Some(this_term) = plan.statement.terms.get("this") else {
@@ -832,7 +833,7 @@ fn count_emitted_claims(plan: &tonk_schema::transact::ConceptPlan) -> usize {
 /// frame carries every entry's binding.
 async fn collect_matches<Env: EvaluateEnv>(
     application: Application,
-    txn: &Transaction<&Branch>,
+    txn: &StackTransaction<'_>,
     env: &Env,
 ) -> Result<Vec<Parameters>, EvaluateError> {
     if let Application::Concept {
@@ -859,7 +860,7 @@ async fn collect_matches<Env: EvaluateEnv>(
 /// extracts every bound variable from each [`ConceptConclusion`].
 async fn collect_single_matches<Env: EvaluateEnv>(
     application: Application,
-    txn: &Transaction<&Branch>,
+    txn: &StackTransaction<'_>,
     env: &Env,
 ) -> Result<Vec<Parameters>, EvaluateError> {
     // Capture the variable names present in the application's
@@ -1309,6 +1310,7 @@ mod tests {
     use dialog_query::attribute::Cardinality as DialogCardinality;
     use dialog_query::concept::descriptor::ConceptDescriptor;
     use dialog_query::{AttributeDescriptor, the};
+    use dialog_repository::Stack;
     use tonk_notation::parse;
 
     /// Build a 1-field cardinality-one concept descriptor —
@@ -1331,9 +1333,9 @@ mod tests {
     /// facts a concept's fields need so the analyzer can rehydrate
     /// the descriptor from the branch.
     fn install_attribute_facts<'a>(
-        mut txn: Transaction<&'a Branch>,
+        mut txn: StackTransaction<'a>,
         descriptor: &ConceptDescriptor,
-    ) -> Transaction<&'a Branch> {
+    ) -> StackTransaction<'a> {
         for (_, attr) in descriptor.with().iter() {
             let attr_entity: dialog_artifacts::Entity =
                 attr.to_uri().parse().expect("attribute URI");
@@ -1367,11 +1369,11 @@ mod tests {
     /// the existing `name!` desugar through a `db.meta/name`
     /// claim against `id:<name>`.
     fn install_named_concept<'a>(
-        txn: Transaction<&'a Branch>,
+        txn: StackTransaction<'a>,
         name: &str,
         descriptor: &ConceptDescriptor,
         transient: bool,
-    ) -> Transaction<&'a Branch> {
+    ) -> StackTransaction<'a> {
         let entity = descriptor.this();
         // Publish the name — `id:<name>` carries the
         // `db.meta/name` claim pointing at the concept
@@ -1397,6 +1399,7 @@ mod tests {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let docs = [
             // Commit 1: publish two attributes on the branch.
@@ -1438,7 +1441,7 @@ attribute!: &foo/title
             );
             let syntax = parsed.syntax.expect("syntax");
             syntax
-                .evaluate(branch.transaction())
+                .evaluate(stack.transaction())
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
@@ -1462,6 +1465,7 @@ attribute!: &foo/title
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // Commit 1: a transient `ping` concept and a durable `note`
         // concept.
@@ -1490,7 +1494,7 @@ concept!: &note
         parsed
             .syntax
             .expect("syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("setup evaluate failed: {e}"))?
@@ -1506,7 +1510,7 @@ concept!: &note
         let evaluated = parsed
             .syntax
             .expect("syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("ping evaluate failed: {e}"))?;
@@ -1530,7 +1534,7 @@ concept!: &note
         let evaluated = parsed
             .syntax
             .expect("syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("note evaluate failed: {e}"))?;
@@ -1553,6 +1557,7 @@ concept!: &note
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let docs = [
             // Publish the many-valued attribute.
@@ -1582,7 +1587,7 @@ concept!: &note
             );
             let syntax = parsed.syntax.expect("syntax");
             syntax
-                .evaluate(branch.transaction())
+                .evaluate(stack.transaction())
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
@@ -1626,6 +1631,7 @@ concept!: &note
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         for doc in [
             r#"concept!: &deck
@@ -1651,7 +1657,7 @@ concept!: &note
             parsed
                 .syntax
                 .expect("syntax")
-                .evaluate(branch.transaction())
+                .evaluate(stack.transaction())
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
@@ -1667,7 +1673,7 @@ concept!: &note
         let evaluated = parsed
             .syntax
             .expect("syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("query failed: {e}"))?;
@@ -1696,7 +1702,7 @@ concept!: &note
         let evaluated = parsed
             .syntax
             .expect("syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("blank-entry query failed: {e}"))?;
@@ -1725,6 +1731,7 @@ concept!: &note
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         for doc in [
             r#"concept!: &deck
@@ -1756,7 +1763,7 @@ concept!: &note
             parsed
                 .syntax
                 .expect("syntax")
-                .evaluate(branch.transaction())
+                .evaluate(stack.transaction())
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
@@ -1774,7 +1781,7 @@ concept!: &note
         let evaluated = parsed
             .syntax
             .expect("syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("multi-entry query failed: {e}"))?;
@@ -1801,7 +1808,7 @@ concept!: &note
         let evaluated = parsed
             .syntax
             .expect("syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("named multi-entry query failed: {e}"))?;
@@ -1826,7 +1833,7 @@ concept!: &note
         let evaluated = parsed
             .syntax
             .expect("syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("open query failed: {e}"))?;
@@ -1853,7 +1860,7 @@ concept!: &note
         parsed
             .syntax
             .expect("syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("mixed mutation failed: {e}"))?
@@ -1868,7 +1875,7 @@ concept!: &note
         let evaluated = parsed
             .syntax
             .expect("syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("post-retract query failed: {e}"))?;
@@ -1886,7 +1893,7 @@ concept!: &note
         let evaluated = parsed
             .syntax
             .expect("syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("post-assert query failed: {e}"))?;
@@ -1912,6 +1919,7 @@ concept!: &note
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // A concept DECLARES age as unsigned; the raw write stores a
         // deliberately signed value anyway (allowed, with a warning).
@@ -1939,7 +1947,7 @@ concept!: &note
             parsed
                 .syntax
                 .expect("syntax")
-                .evaluate(branch.transaction())
+                .evaluate(stack.transaction())
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
@@ -1960,11 +1968,11 @@ concept!: &note
             parsed.syntax.expect("syntax")
         };
         let ask = |syntax: tonk_notation::Syntax| {
-            let branch = &branch;
+            let stack = &stack;
             let operator = &operator;
             async move {
                 let evaluated = syntax
-                    .evaluate(branch.transaction())
+                    .evaluate(stack.transaction())
                     .perform(operator)
                     .await
                     .map_err(|e| anyhow::anyhow!("query evaluate failed: {e}"))?;
@@ -2031,6 +2039,7 @@ concept!: &note
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let docs = [
             r#"concept!: &person
@@ -2062,7 +2071,7 @@ concept!: &note
             );
             let syntax = parsed.syntax.expect("syntax");
             syntax
-                .evaluate(branch.transaction())
+                .evaluate(stack.transaction())
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
@@ -2106,6 +2115,7 @@ concept!: &note
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let doc = r#"io.test.raw!:
   this: test:raw
@@ -2123,7 +2133,7 @@ concept!: &note
         parsed
             .syntax
             .expect("syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate failed: {e}"))?
@@ -2168,6 +2178,7 @@ concept!: &note
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let docs = [
             r#"concept!: &notebook
@@ -2201,7 +2212,7 @@ concept!: &note
             );
             let syntax = parsed.syntax.expect("syntax");
             syntax
-                .evaluate(branch.transaction())
+                .evaluate(stack.transaction())
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
@@ -2262,6 +2273,7 @@ concept!: &note
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let docs = [
             r#"concept!: &notebook
@@ -2300,7 +2312,7 @@ concept!: &note
             );
             let syntax = parsed.syntax.expect("syntax");
             syntax
-                .evaluate(branch.transaction())
+                .evaluate(stack.transaction())
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
@@ -2357,11 +2369,12 @@ concept!: &note
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // Seed: id:demo's referent points at a target entity.
         let target: dialog_artifacts::Entity = "did:key:zReproTarget".parse()?;
         let id_demo: dialog_artifacts::Entity = "id:demo".parse()?;
-        branch
+        stack
             .transaction()
             .assert(the!("db.name/referent").of(id_demo).is(target.clone()))
             .commit()
@@ -2388,7 +2401,7 @@ name!:
         let syntax = parsed.syntax.expect("syntax");
 
         syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?
@@ -2420,6 +2433,7 @@ name!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let ping = one_text_field("io.gozala.ping", "tag");
         let pong = one_text_field("io.gozala.pong", "tag");
@@ -2429,7 +2443,7 @@ name!:
         // `transient: true` flag; that's a separate parser
         // change. Pre-installing keeps this test focused on
         // the rule-lift path.)
-        let mut install = branch.transaction();
+        let mut install = stack.transaction();
         install = install_attribute_facts(install, &ping);
         install = install_attribute_facts(install, &pong);
         install = install_named_concept(install, "ping", &ping, /*transient=*/ true);
@@ -2455,7 +2469,7 @@ name!:
 
         // First commit: install the rule.
         let evaluated = syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install rule): {e}"))?;
@@ -2496,7 +2510,7 @@ name!:
             .is("hi".to_string())
             .assert(&mut transients);
 
-        branch
+        stack
             .transaction()
             .dispatch(transients)
             .commit()
@@ -2560,6 +2574,7 @@ name!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // One commit: declare two concepts (one transient, one
         // durable) + the rule. Concept!: declarations carry
@@ -2597,7 +2612,7 @@ rule!:
         let syntax = parsed.syntax.expect("syntax");
 
         syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
@@ -2656,7 +2671,7 @@ rule!:
             .is("hi".to_string())
             .assert(&mut transients);
 
-        branch
+        stack
             .transaction()
             .dispatch(transients)
             .commit()
@@ -2714,6 +2729,7 @@ rule!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // First commit: declare the concepts + the summing rule,
         // and seed the durable counter at 0.
@@ -2756,7 +2772,7 @@ counter!: &counter-demo
         parsed
             .syntax
             .expect("setup syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
@@ -2811,7 +2827,7 @@ counter!: &counter-demo
             .is(1u128)
             .assert(&mut transients);
 
-        branch
+        stack
             .transaction()
             .dispatch(transients)
             .commit()
@@ -2856,6 +2872,7 @@ counter!: &counter-demo
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // Commit 1: concepts + the summing rule + a counter seeded
         // at 0. The literal `count: 0` goes through the analyzer's
@@ -2899,7 +2916,7 @@ counter!: &counter-demo
         parsed
             .syntax
             .expect("setup syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
@@ -2928,7 +2945,7 @@ counter!: &counter-demo
             parsed
                 .syntax
                 .expect("increment syntax")
-                .evaluate(branch.transaction())
+                .evaluate(stack.transaction())
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate (increment {round}): {e}"))?
@@ -2991,6 +3008,7 @@ counter!: &counter-demo
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let setup = r#"concept!: &counter
   with:
@@ -3037,7 +3055,7 @@ counter!: &counter-demo
         parsed
             .syntax
             .expect("setup syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
@@ -3052,7 +3070,7 @@ counter!: &counter-demo
         parsed
             .syntax
             .expect("increment syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (increment): {e}"))?
@@ -3110,6 +3128,7 @@ counter!: &counter-demo
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // Commit the concepts the rule references.
         let concepts = r#"concept!: &ping
@@ -3132,7 +3151,7 @@ concept!: &pong
         parse(concepts)
             .syntax
             .expect("concepts syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (concepts): {e}"))?
@@ -3152,7 +3171,7 @@ concept!: &pong
         let evaluated = parse(rule_doc)
             .syntax
             .expect("rule syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (rule): {e}"))?;
@@ -3189,6 +3208,7 @@ concept!: &pong
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // Commit the concepts the rule references.
         let concepts = r#"concept!: &ping
@@ -3211,7 +3231,7 @@ concept!: &pong
         parse(concepts)
             .syntax
             .expect("concepts syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (concepts): {e}"))?
@@ -3232,7 +3252,7 @@ concept!: &pong
         let error = match parse(rule_doc)
             .syntax
             .expect("rule syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
         {
@@ -3259,6 +3279,7 @@ concept!: &pong
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // Commit the concepts the rule references.
         let concepts = r#"concept!: &ping
@@ -3281,7 +3302,7 @@ concept!: &pong
         parse(concepts)
             .syntax
             .expect("concepts syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (concepts): {e}"))?
@@ -3301,7 +3322,7 @@ concept!: &pong
         parse(install_doc)
             .syntax
             .expect("install syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
@@ -3346,7 +3367,7 @@ concept!: &pong
         parse(&retract_doc)
             .syntax
             .expect("retract syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (retract): {e}"))?
@@ -3388,13 +3409,14 @@ concept!: &pong
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let ping = one_text_field("io.gozala.ping", "tag");
         let pong = one_text_field("io.gozala.pong", "tag");
 
         // Concepts + attributes on the branch (both durable; the
         // premise concept is a normal stored one here).
-        let mut setup = branch.transaction();
+        let mut setup = stack.transaction();
         setup = install_attribute_facts(setup, &ping);
         setup = install_attribute_facts(setup, &pong);
         setup = install_named_concept(setup, "ping", &ping, /*transient=*/ false);
@@ -3442,7 +3464,7 @@ concept!: &pong
         parse(install_doc)
             .syntax
             .expect("install syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install rule): {e}"))?
@@ -3483,7 +3505,7 @@ concept!: &pong
         parse(&retract_doc)
             .syntax
             .expect("retract syntax")
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (retract rule): {e}"))?
@@ -3512,6 +3534,7 @@ concept!: &pong
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // Commit each document separately, as a user would across
         // editor cells / sessions: concepts first, then the rule,
@@ -3525,7 +3548,7 @@ concept!: &pong
             );
             let syntax = parsed.syntax.expect("syntax");
             syntax
-                .evaluate(branch.transaction())
+                .evaluate(stack.transaction())
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate ({label}): {e}"))?
@@ -3602,9 +3625,10 @@ concept!: &person
         // db.effect/* facts, not held in memory. This is what
         // a separate /evaluate request does.
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         instance
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (instance): {e}"))?
@@ -3645,6 +3669,7 @@ concept!: &person
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let install = r#"concept!: &ping
   transient:
@@ -3671,7 +3696,7 @@ rule!:
 "#;
         let syntax = parse(install).syntax.expect("install syntax");
         syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
@@ -3691,7 +3716,7 @@ rule!:
         );
         let instance = parsed.syntax.expect("instance syntax");
         instance
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (instance): {e}"))?
@@ -3748,6 +3773,7 @@ rule!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // One document declares both concepts (ping transient, pong
         // durable), installs the inductive rule, and asserts a ping
@@ -3790,7 +3816,7 @@ ping!:
         let syntax = parsed.syntax.expect("syntax");
 
         syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?
@@ -3852,6 +3878,7 @@ ping!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // Declare the workspace model + close rules, then seed a
         // workspace owning three sheets with `a` active, asserted at
@@ -3959,7 +3986,7 @@ workspace!:
         );
         let syntax = parsed.syntax.expect("syntax");
         syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
@@ -4005,7 +4032,7 @@ workspace!:
             .is(sheet_b.clone())
             .assert(&mut transients);
 
-        branch
+        stack
             .transaction()
             .dispatch(transients)
             .commit()
@@ -4070,6 +4097,7 @@ workspace!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let install_doc = r#"
 concept!: &workspace
@@ -4147,7 +4175,7 @@ workspace!:
         );
         let syntax = parsed.syntax.expect("syntax");
         syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
@@ -4173,7 +4201,7 @@ workspace!:
             .is(sheet_b.clone())
             .assert(&mut transients);
 
-        branch
+        stack
             .transaction()
             .dispatch(transients)
             .commit()
@@ -4220,6 +4248,7 @@ workspace!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let install_doc = r#"
 concept!: &workspace
@@ -4342,7 +4371,7 @@ workspace!:
         );
         let syntax = parsed.syntax.expect("syntax");
         syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
@@ -4366,7 +4395,7 @@ workspace!:
             .is("e".to_string())
             .assert(&mut create);
 
-        branch
+        stack
             .transaction()
             .dispatch(create)
             .commit()
@@ -4409,7 +4438,7 @@ workspace!:
             .of(close_entity.clone())
             .is(sheet_b.clone())
             .assert(&mut close);
-        branch
+        stack
             .transaction()
             .dispatch(close)
             .commit()
@@ -4453,6 +4482,7 @@ workspace!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let install_doc = r#"
 concept!: &workspace
@@ -4560,7 +4590,7 @@ workspace!:
         );
         let syntax = parsed.syntax.expect("syntax");
         syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
@@ -4582,7 +4612,7 @@ workspace!:
             .is("bz".to_string())
             .assert(&mut create);
 
-        branch
+        stack
             .transaction()
             .dispatch(create)
             .commit()
@@ -4680,11 +4710,12 @@ workspace!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // Install a `person` concept so the query head resolves
         // against the branch source.
         let person = one_text_field("io.gozala.person", "name");
-        let mut install = branch.transaction();
+        let mut install = stack.transaction();
         install = install_attribute_facts(install, &person);
         install = install_named_concept(install, "person", &person, /*transient=*/ false);
         install.commit().publish().perform(&operator).await?;
@@ -4732,6 +4763,7 @@ workspace!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let doc = r#"concept!: &person
   with:
@@ -4756,7 +4788,7 @@ workspace!:
         let syntax = parsed.syntax.expect("syntax");
 
         syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?
@@ -4844,6 +4876,7 @@ workspace!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         // Declare the concept and assert two people in one commit:
         // alice has a nickname, bob does not.
@@ -4878,7 +4911,7 @@ person!:
         );
         let syntax = parsed.syntax.expect("syntax");
         syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("setup evaluate: {e}"))?
@@ -4902,7 +4935,7 @@ person!:
         );
         let query_syntax = parsed.syntax.expect("query syntax");
         let evaluated = query_syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("query evaluate: {e}"))?;
@@ -4958,6 +4991,7 @@ person!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let setup = r#"concept!: &person
   description: A person
@@ -4987,7 +5021,7 @@ person!:
         );
         let syntax = parsed.syntax.expect("syntax");
         syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("setup evaluate: {e}"))?
@@ -5005,7 +5039,7 @@ person!:
         );
         let query_syntax = parsed.syntax.expect("query syntax");
         let evaluated = query_syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("query evaluate: {e}"))?;
@@ -5049,12 +5083,13 @@ person!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let alice: dialog_artifacts::Entity = "id:alice".parse()?;
         let bob: dialog_artifacts::Entity = "id:bob".parse()?;
 
         // alice has only name; bob has name + bio.
-        branch
+        stack
             .transaction()
             .assert(the!("person/name").of(alice).is("Alice".to_string()))
             .assert(the!("person/name").of(bob.clone()).is("Bob".to_string()))
@@ -5125,6 +5160,7 @@ person!:
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
+        let stack = Stack::open(branch.clone()).perform(&operator).await?;
 
         let setup = r#"concept!: &person
   description: Person
@@ -5137,7 +5173,7 @@ person!:
         let parsed = parse(setup);
         let syntax = parsed.syntax.expect("syntax");
         syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("setup evaluate: {e}"))?
@@ -5150,7 +5186,7 @@ person!:
         let parsed = parse("person!:\n  age: 3\n");
         let query_syntax = parsed.syntax.expect("assert syntax");
         let result = query_syntax
-            .evaluate(branch.transaction())
+            .evaluate(stack.transaction())
             .perform(&operator)
             .await;
         let err = result.err().expect("integer into a text field must error");

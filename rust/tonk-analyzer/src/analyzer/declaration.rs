@@ -296,7 +296,7 @@ pub(crate) struct ConceptBody {
     /// fact in [`concept_application`] so the reactor's effects
     /// loop classifies this concept's facts as transient.
     pub transient: bool,
-    /// The scope named by `scope: <uri>` (e.g. `memory:state`).
+    /// The scope named by `scope: <uri>` (e.g. `memory:application`).
     /// Lowered by [`placement_applications`] into one
     /// `dialog.attribute/scope` placement per attribute of the
     /// concept, so a layer that binds the scope keeps the concept's
@@ -494,7 +494,7 @@ pub(crate) fn parse_concept_body(
 }
 
 /// Read a `concept!`'s `scope:` field as the scope entity its
-/// attributes are placed in. Only a URI (`memory:state`,
+/// attributes are placed in. Only a URI (`memory:application`,
 /// `memory:tab`) names a scope: scopes are layer bindings, not
 /// values a document can compute, so a variable or literal here is
 /// an error rather than a silent no-op.
@@ -512,7 +512,7 @@ fn parse_concept_scope(field: &tonk_notation::Field) -> Result<Entity, AnalyzeEr
         _ => Err(AnalyzeError::at(
             AnalyzeErrorKind::InvalidConceptBody {
                 reason: "`scope:` names the layer scope the concept's facts live in — \
-                         write a scope URI such as `memory:state`"
+                         write a scope URI such as `memory:application`"
                     .into(),
             },
             field.value_range,

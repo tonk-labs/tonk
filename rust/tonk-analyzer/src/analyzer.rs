@@ -1776,7 +1776,7 @@ attribute!: &rename/name
             r#"
 command!: &site
   description: "The site a tab shows"
-  scope: memory:state
+  scope: memory:application
   with:
     path:
       description: "Path"
@@ -1793,7 +1793,7 @@ command!: &site
         let analysis = flat(analyze_empty(&syntax).await.unwrap());
         // 2 inline attrs + 2 placements + 1 concept.
         assert_eq!(analysis.mutate.statements.len(), 5);
-        let scope: Entity = "memory:state".parse().unwrap();
+        let scope: Entity = "memory:application".parse().unwrap();
         let mut placed = Vec::new();
         for statement in &analysis.mutate.statements[2..4] {
             let Statement::Assert(Application::Concept { query, this, .. }) = statement else {
@@ -1835,7 +1835,7 @@ command!: &site
         let syntax = must_parse(
             r#"
 concept!: &site
-  scope: "memory:state"
+  scope: "memory:application"
   with:
     path:
       description: "Path"

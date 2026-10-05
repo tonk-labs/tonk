@@ -328,34 +328,46 @@ pub type SeedRecord<'a> = &'a (
             + Sync
     );
 
+/// The space's revision among a stack's heads: the bottom layer's.
+fn bottom_revision(
+    heads: &[dialog_repository::Head],
+) -> Result<dialog_artifacts::Revision, dialog_repository::StackError> {
+    match heads.first() {
+        Some(dialog_repository::Head::Tree(Some(revision))) => Ok(revision.clone()),
+        _ => Err(dialog_repository::CommitError::Detached.into()),
+    }
+}
+
 /// Commit the evaluated transaction, optionally chaining a second commit
-/// that names the first's version, then publish the whole chain.
+/// that names the first's version, then publish the whole stack.
 ///
 /// The two-commit shape is what lets a fact name its own commit. A
-/// branch transaction's commit STAGES: the revision is minted, so
-/// `batch.version()` is authoritative rather than predicted, but the
-/// branch head has not moved and nothing is visible yet. The record
-/// commits as the next link, and the single `publish` moves the head to
-/// the chain tip — so either both land or neither does, and no reader
-/// ever observes a library without the record describing it.
+/// stack transaction's commit STAGES: the branch layer's revision is
+/// minted, so its version is authoritative rather than predicted, but
+/// no head has moved and nothing is visible yet. The record commits as
+/// the next link of the same staged chain, and the single publish moves
+/// every head to its chain tip — so either both land or neither does,
+/// and no reader ever observes a library without the record describing
+/// it.
 #[cfg_attr(
     not(all(target_arch = "wasm32", target_os = "unknown")),
     allow(dead_code)
 )]
 pub(super) async fn stage_and_publish(
     tonk_state: &crate::worker::TonkState,
-    txn: dialog_repository::Transaction<&dialog_repository::Branch>,
+    txn: dialog_repository::StackTransaction<'_>,
     record: Option<SeedRecord<'_>>,
-) -> Result<dialog_artifacts::Revision, dialog_repository::CommitError> {
-    let batch = txn.commit().perform(&tonk_state.operator).await?;
+) -> Result<dialog_artifacts::Revision, dialog_repository::StackError> {
+    let stack = txn.stack();
+    let staged = txn.commit().perform(&tonk_state.operator).await?;
     let Some(record) = record else {
-        return batch.publish().perform(&tonk_state.operator).await;
+        return bottom_revision(&stack.publish(&tonk_state.operator).await?);
     };
 
     // Authoritative, not predicted: the commit that minted this version
     // has already happened. It just is not visible yet.
-    let instructions = record(&batch.version());
-    let mut next = batch.transaction();
+    let instructions = record(&bottom_revision(&staged)?.version());
+    let mut next = stack.transaction();
     for instruction in instructions {
         next = match instruction {
             dialog_artifacts::Instruction::Assert(artifact)
@@ -377,12 +389,8 @@ pub(super) async fn stage_and_publish(
             }
         };
     }
-    next.commit()
-        .perform(&tonk_state.operator)
-        .await?
-        .publish()
-        .perform(&tonk_state.operator)
-        .await
+    next.commit().perform(&tonk_state.operator).await?;
+    bottom_revision(&stack.publish(&tonk_state.operator).await?)
 }
 
 /// Shared body for [`evaluate`] and [`evaluate_profile`]. Takes a
@@ -576,15 +584,15 @@ async fn evaluate_on_branch_with<'a>(
     // document's statements are idempotent asserts/retracts, so replay is safe.
     let evaluate_once = || async {
         evaluation_passes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let branch = session.handle();
-        let revision_before = branch.revision();
-        // The branch folds its session overlay into every read — the
-        // transaction's as-if-committed view included — so the dry-run preview
-        // sees the same ephemeral facts a `query`/`subscribe` does with no
-        // explicit integrate here, and they never reach the durable write (the
-        // overlay is session-only). Match queries resolve stored `db.rule/*`
-        // rules automatically via the branch query's layer stack.
-        let mut txn = branch.transaction();
+        let revision_before = session.handle().revision();
+        // The document evaluates and commits through the branch's stack,
+        // like every other write: the transaction's as-if-committed view
+        // is the composite a `query`/`subscribe` reads, state layer
+        // included, and each fact it writes lands where its attribute's
+        // placement says, so a fact placed on the state scope has the
+        // state layer as its only home. Match queries resolve stored
+        // `db.rule/*` rules through the same view.
+        let mut txn = session.stack().transaction();
         for claim in retract.resolve().await? {
             txn = txn.retract(claim);
         }
@@ -629,6 +637,13 @@ async fn evaluate_on_branch_with<'a>(
     // the first (lock-free) evaluation shows no commit, return it directly; only
     // a committing document re-enters under the transactor lock.
     if mode == EvaluationMode::Interactive {
+        // The stack reads at the heads it captured; a pull since then is
+        // movement it has not seen. Cheap when nothing moved.
+        session
+            .state
+            .settle(&tonk_state.operator)
+            .await
+            .map_err(|e| map_evaluate_error(EvaluateError::Query(format!("settle: {e}"))))?;
         let (evaluated, revision_before, matches_after, ..) = evaluate_once().await?;
         if !(query.transact && evaluated.analysis.analysis.has_statements()) {
             // Pure-query or dry-run: drop the transaction without committing. The
@@ -654,21 +669,31 @@ async fn evaluate_on_branch_with<'a>(
 
     // Committing path. Serialize on the branch transactor — the same lock the
     // reactor's `Commit::perform` takes for `/transact`. This document's commit
-    // is a *dialog* `Transaction::commit()` (it threads the raw transaction
-    // through the evaluator), which CASes against the head snapshot but never
-    // retries. The lock excludes the common racer — another committer — so those
-    // line up here instead of one losing the CAS. A sync is the exception the
-    // lock can't cover: it advances the head while holding this lock only for
-    // its microsecond cell write, releasing it across its network fetch, so it
-    // can still land in our snapshot→publish window. The retry loop below
-    // handles that residual case by refreshing and re-evaluating, exactly as
+    // is a stack commit (the evaluator threads the stack transaction through),
+    // which publishes against the heads the stack captured but never retries.
+    // The lock excludes the common racer — another committer — so those line
+    // up here instead of one losing the CAS. A sync is the exception the lock
+    // can't cover: it advances the head while holding this lock only for its
+    // microsecond cell write, releasing it across its network fetch, so it can
+    // still land in our capture→publish window. The retry loop below handles
+    // that residual case by advancing the stack and re-evaluating, exactly as
     // `Commit::perform` does for `/transact`.
     let _committing = session.transactor().lock().await;
+    // Capture a head that moved outside the stack (a pull) before the first
+    // attempt: the stack routes by the placements at its captured head and
+    // publishes against it, so a stale capture misroutes and then fails.
+    if session.stack().behind() {
+        session
+            .stack()
+            .advance(&tonk_state.operator)
+            .await
+            .map_err(|e| map_evaluate_error(EvaluateError::Query(format!("advance: {e}"))))?;
+    }
 
-    // Evaluate under the lock and commit, refreshing and re-evaluating on a
-    // `Version mismatch` (a sync landed between our head snapshot and the
-    // publish). Each iteration re-evaluates because `Transaction` isn't `Clone`
-    // and the commit consumes it — and after a refresh the evaluation must run
+    // Evaluate under the lock and commit, advancing and re-evaluating on a
+    // `Version mismatch` (a sync landed between our capture and the publish).
+    // Each iteration re-evaluates because the transaction isn't `Clone` and
+    // the commit consumes it — and after an advance the evaluation must run
     // against the new head anyway. Bounded so a flapping head can't spin.
     const EVALUATE_RETRY_LIMIT: usize = 4;
     let (
@@ -739,8 +764,8 @@ async fn evaluate_on_branch_with<'a>(
                     .map_err(|e| TonkWorkerError::Internal(format!("test race: {e}")))?;
             }
             // Extract what the response needs before the commit consumes the
-            // transaction (`Transaction` isn't `Clone`, and `commit()` takes it
-            // by value). The transients mirror is what post-commit command
+            // transaction (it isn't `Clone`, and `commit()` takes it by
+            // value). The transients mirror is what post-commit command
             // dispatch runs on — the commit sweeps them from the transaction.
             let matches_before = evaluated.matches;
             let commits = evaluated.commits;
@@ -748,11 +773,11 @@ async fn evaluate_on_branch_with<'a>(
             let t_commit = web_time::Instant::now();
             match stage_and_publish(tonk_state, evaluated.txn, record).await {
                 Ok(revision_after) => {
-                    // What the commit witnessed on the branch's session
-                    // store: the document's own commands plus any a rule
-                    // concluded and the next round consumed. The
-                    // evaluator's mirror remains the floor even if only
-                    // one of the two observers overflowed.
+                    // What the commit witnessed on the state layer and the
+                    // branch's session store: the document's own commands
+                    // plus any a rule concluded and the next round
+                    // consumed. The evaluator's mirror remains the floor
+                    // even if an observer overflowed.
                     let witnessed = session.state.drain_commands();
                     let mut transients = witnessed;
                     dialog_artifacts::Statement::assert(requested, &mut transients);
@@ -774,14 +799,14 @@ async fn evaluate_on_branch_with<'a>(
                 {
                     attempt += 1;
                     log!(
-                        "evaluate commit raced a sync (attempt {attempt}); refreshing and retrying"
+                        "evaluate commit raced a sync (attempt {attempt}); advancing and retrying"
                     );
                     session
-                        .handle()
-                        .refresh(&tonk_state.operator)
+                        .stack()
+                        .advance(&tonk_state.operator)
                         .await
                         .map_err(|e| {
-                            map_evaluate_error(EvaluateError::Query(format!("refresh: {e}")))
+                            map_evaluate_error(EvaluateError::Query(format!("advance: {e}")))
                         })?;
                 }
                 Err(e) => {
