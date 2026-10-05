@@ -2369,7 +2369,10 @@ pub(crate) mod tests {
             .await
             .unwrap()
             .handle()
-            .commit(futures_util::stream::iter(facts))
+            .transaction()
+            .integrate(facts.into_iter().collect())
+            .commit()
+            .publish()
             .perform(&home.operator)
             .await
             .unwrap();

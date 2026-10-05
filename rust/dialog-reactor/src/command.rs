@@ -554,7 +554,10 @@ fn group_by_entity(changes: Changes) -> HashMap<dialog_artifacts::Entity, Entity
     let mut by_entity: HashMap<dialog_artifacts::Entity, EntityFacts> = HashMap::new();
     for instruction in changes.into_instructions() {
         let artifact = match instruction {
-            Instruction::Assert(a) | Instruction::Replace(a) | Instruction::Retract(a) => a,
+            Instruction::Assert(a)
+            | Instruction::Replace(a)
+            | Instruction::Succeed(a, _)
+            | Instruction::Retract(a) => a,
         };
         by_entity
             .entry(artifact.of.clone())

@@ -319,6 +319,7 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
                     .map(|instruction| match instruction {
                         dialog_artifacts::Instruction::Assert(artifact)
                         | dialog_artifacts::Instruction::Replace(artifact)
+                        | dialog_artifacts::Instruction::Succeed(artifact, _)
                         | dialog_artifacts::Instruction::Retract(artifact) => {
                             artifact.the.to_string()
                         }
@@ -608,6 +609,7 @@ pub(crate) mod tests {
                 match changes.into_instructions().into_iter().next().unwrap() {
                     dialog_artifacts::Instruction::Assert(a)
                     | dialog_artifacts::Instruction::Replace(a)
+                    | dialog_artifacts::Instruction::Succeed(a, _)
                     | dialog_artifacts::Instruction::Retract(a) => vec![a],
                 }
             };

@@ -344,7 +344,8 @@ pub(super) async fn stage_and_publish(
     for instruction in instructions {
         next = match instruction {
             dialog_artifacts::Instruction::Assert(artifact)
-            | dialog_artifacts::Instruction::Replace(artifact) => {
+            | dialog_artifacts::Instruction::Replace(artifact)
+            | dialog_artifacts::Instruction::Succeed(artifact, _) => {
                 next.assert(crate::router::claim::RawClaim {
                     the: artifact.the,
                     of: artifact.of,

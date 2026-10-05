@@ -864,7 +864,6 @@ mod when_syncing_with_an_upstream {
     use anyhow::Result;
     use dialog_artifacts::{Artifact, Instruction, Value};
     use dialog_repository::Branch;
-    use futures_util::stream;
     use tonk_cli::sync::{self, SyncError};
 
     use crate::common::{self, ATTRIBUTE_DECL};
@@ -907,7 +906,10 @@ mod when_syncing_with_an_upstream {
             cause: None,
         };
         branch
-            .commit(stream::iter(vec![Instruction::Assert(artifact)]))
+            .transaction()
+            .integrate(vec![Instruction::Assert(artifact)].into_iter().collect())
+            .commit()
+            .publish()
             .perform(&test.site.operator)
             .await?;
         Ok(())

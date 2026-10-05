@@ -4776,7 +4776,8 @@ async fn stage_reinstall(
     for instruction in record(&version) {
         last = match instruction {
             dialog_artifacts::Instruction::Assert(artifact)
-            | dialog_artifacts::Instruction::Replace(artifact) => {
+            | dialog_artifacts::Instruction::Replace(artifact)
+            | dialog_artifacts::Instruction::Succeed(artifact, _) => {
                 last.assert(super::claim::RawClaim {
                     the: artifact.the,
                     of: artifact.of,
@@ -6551,6 +6552,15 @@ async fn library_claims(library: &str, what: &str) -> Result<LibraryClaims, Repo
                     is: artifact.is,
                     unique: true,
                 }),
+                // A succession is the assertion of its value; the raw
+                // claim carries no policy, so the claim stands beside
+                // what the cell holds and the read elects.
+                Instruction::Succeed(artifact, _) => Some(super::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    unique: false,
+                }),
                 Instruction::Retract(_) => None,
             })
             .collect()
@@ -6718,6 +6728,7 @@ fn raw_seed_metadata(installation: &ProfileInstallation) -> Vec<super::claim::Ra
             let artifact = match instruction {
                 dialog_artifacts::Instruction::Assert(artifact)
                 | dialog_artifacts::Instruction::Replace(artifact)
+                | dialog_artifacts::Instruction::Succeed(artifact, _)
                 | dialog_artifacts::Instruction::Retract(artifact) => artifact,
             };
             super::claim::RawClaim {
@@ -8114,6 +8125,7 @@ mod remote_from_facts_tests {
             .map(|instruction| match instruction {
                 Instruction::Assert(artifact)
                 | Instruction::Replace(artifact)
+                | Instruction::Succeed(artifact, _)
                 | Instruction::Retract(artifact) => artifact,
             })
             .collect()
@@ -8323,6 +8335,7 @@ mod invite_space_from_facts_tests {
             .map(|instruction| match instruction {
                 Instruction::Assert(artifact)
                 | Instruction::Replace(artifact)
+                | Instruction::Succeed(artifact, _)
                 | Instruction::Retract(artifact) => artifact,
             })
             .collect()
@@ -12791,6 +12804,7 @@ mod seed_tests {
             .map(|instruction| match instruction {
                 dialog_artifacts::Instruction::Assert(artifact)
                 | dialog_artifacts::Instruction::Replace(artifact)
+                | dialog_artifacts::Instruction::Succeed(artifact, _)
                 | dialog_artifacts::Instruction::Retract(artifact) => artifact.the.to_string(),
             })
             .collect()
@@ -12855,6 +12869,7 @@ mod seed_tests {
             .map(|instruction| match instruction {
                 dialog_artifacts::Instruction::Assert(artifact)
                 | dialog_artifacts::Instruction::Replace(artifact)
+                | dialog_artifacts::Instruction::Succeed(artifact, _)
                 | dialog_artifacts::Instruction::Retract(artifact) => artifact.the.to_string(),
             })
             .collect();

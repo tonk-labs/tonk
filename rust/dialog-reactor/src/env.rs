@@ -69,7 +69,7 @@ impl<T> SelectProvider for T where
 {
 }
 
-/// Bound needed to commit (`branch.commit(stream).perform`).
+/// Bound needed to commit a transaction (`branch.transaction()...commit().publish().perform`).
 pub trait CommitProvider:
     Provider<Get>
     + Provider<BlobRead>

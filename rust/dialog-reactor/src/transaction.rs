@@ -202,6 +202,7 @@ impl Commit<'_> {
                 .map(|instruction| match instruction {
                     dialog_artifacts::Instruction::Assert(claim)
                     | dialog_artifacts::Instruction::Replace(claim)
+                    | dialog_artifacts::Instruction::Succeed(claim, _)
                     | dialog_artifacts::Instruction::Retract(claim) => claim.the.to_string(),
                 })
                 .collect();
