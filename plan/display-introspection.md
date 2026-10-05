@@ -1,0 +1,337 @@
+# Popping the hood on `<tonk-display>`
+
+**Goal:** make the rendering pipeline visible at the point of use. Run
+`inspect`, pick a rendered view, and see which concept it matched, which
+template it mounted, which slot each `{field}` filled, and which of them just
+changed.
+
+**Why it is possible at all:** everything the tool needs already exists in
+memory. `<tonk-display>` keeps the resolved concept descriptor, the effective
+facet, the last folded frame and the mounted slide's template text.
+`<tonk-view>`'s `Renderer` keeps the binding plan (where every interpolation
+landed) and a cache of the last string each binding produced. Introspection is
+a read of that state, not a re-parse of the DOM.
+
+**Why it cannot come from the DOM:** a rendered `with="main@repo"` does not say
+which half was a field. A binding applied as a JS property (`Reflect::set`,
+which is what a non-string value does) leaves no attribute behind at all. And a
+text slot's value is indistinguishable from literal text once written. The
+renderer is the only thing that knows.
+
+## Shape
+
+`<tonk-introspect>`, registered and auto-mounted by `tonk_display::register()`,
+one per document. Does nothing until the palette's `inspect` asks.
+
+- `introspect/mode.rs` — the pick/observe/pin state machine. No DOM, so it
+  tests under plain `cargo test`.
+- `introspect/request.rs` — hearing `inspect` on the tab's site; the
+  "is this a new request?" decision is pure and native-tested.
+- `introspect/slot.rs` — what a slot is: its fields, their origin (concept
+  field / `{this}` / `{dom.host/*}` / iteration key), where it wrote, what it
+  last rendered. Plus the `Snapshot` a display reports. Pure, native-tested.
+- `introspect/registry.rs` — thread-local `Weak` registries the elements add
+  themselves to on connect, behind two narrow traits. This is how the overlay
+  reaches element state without JS interop or a global element map.
+- `introspect/overlay.rs` — the element: listeners, the rAF loop, the painted
+  boxes.
+
+`Renderer::describe()` walks plan and mounted tree in lockstep — the same walk
+`update_nodes` does — and returns `(Slot, Option<Node>)` per binding.
+
+## Interaction
+
+| gesture | effect |
+| --- | --- |
+| `inspect` in the palette | pick: every visible display outlined and tagged with its model |
+| rest on a display past 300ms | observation on: slots and commands marked, inspector open |
+| move to another display | dwell restarts there |
+| move off every display | outline goes after `LEAVE_MS`; picking does not |
+| click a display, or its tag | pin the inspector to it; picking ends |
+| click it again | release it |
+| `done` on the pill, or Escape | stop |
+
+**Asking replaced holding Alt.** A held modifier is a mode you have to keep
+pressing, and it is read off key events a sealed guest that never had focus does
+not receive — which is why the Alt version needed `altKey` off every mousemove
+and still could not notice Alt going up under a still pointer. A command is a
+mode you enter once, from wherever the palette is.
+
+**How the command reaches the overlay.** `devtools/inspect` is built like the
+bar's own acts (`account/add`, `space/share-link`): opening an overlay is a page
+capability, so the worker's handler can only record that it was asked — on the
+asking tab's site, `xyz.tonk.site/request = inspect` in the profile's session
+overlay. The bar's `<ui-site-request>` presses a control per request and has
+none for this one; the overlay subscribes to the same site instead. The first
+frame primes, so reloading a page once inspected does not start inspecting it.
+
+**Which frame hears it.** Only the frame whose site the command named. This was
+first written assuming every frame in a tab shares one site; running it showed
+otherwise — the bar's frame is one site and the space nested inside it
+registers another, so the space, which holds the content, never heard
+`inspect`, and the bar's frame picked its own chrome instead. So the frame that
+hears it relays a pick down the frame tree (`postMessage` to each child
+iframe, accepted only from `window.parent`), each frame passing it on — the
+cascade the theme and press signals already travel.
+
+**Which frame answers.** Each frame the pick reaches answers only for displays a
+reader can actually see: laid out, on screen, and with this document's own
+content at their visible centre. "Own content" excludes an iframe even when the
+iframe sits inside the display: the bar's frame wraps the space it hosts, so
+`tonk:site` and `tonk:space/chrome` *contain* the space's iframe, and a test that
+only asked "is the topmost element inside this display?" offered them — which
+is the second thing running it caught.
+
+**Suggestions are on the page.** Picking tags each candidate with the model it
+renders. A list in the palette would have to be matched back to the page by
+eye; a tag is already on the thing. Palette-level suggestions (`inspect prose`)
+would need the page to report its mounted displays as facts on the expression,
+the way it reports the selection, so rules can derive them as candidates for a
+field on the command. Not done: the page-side tags answer the same question
+without a round trip per keystroke.
+
+**Choosing goes through a shield.** While a display is under the pointer a
+transparent surface covers it and a click on it chooses. The shield is the
+overlay's own, so the click never reaches the page: a button being inspected is
+never also pressed, and nothing has to be swallowed. Hit-testing is by point
+(`elementsFromPoint`, skipping the overlay host) rather than by event target,
+because everything in the shadow root retargets to one host and a target test
+cannot tell the shield from the inspector — which would blind the machine to a
+display nested inside a shielded one.
+
+Pinning went through three designs before the shield, each invisible to the
+tests: Alt-click swallowed in the capture phase (made opt-in to spare apps the
+gesture, behind an attribute nothing set); a pin button above the outline
+(unreachable — walking to it crossed page that is not a display); and then the
+shield. The leave grace is what made any of them reachable.
+
+The inspector picks the corner furthest from the observed display, and can be
+dragged by its header. Markers paint on their own sub-layer beneath it.
+
+## Frames
+
+A `<tonk-display>` renders inside a sealed guest iframe, and a nested
+`<tonk-site>` opens more below it. Events do not cross those boundaries and
+neither does hit-testing, so each frame runs its own overlay over its own
+displays. That falls out correctly for hovering — the frame under the pointer
+is the frame that receives the pointer — and it means a panel drawn in a nested
+frame is clipped by that frame. Accepted: sites run full screen, so the clip is
+the viewport. If that stops being true, hoisting panels to the top document
+would go through the `__tonkRuntime` window-message relay the theme and press
+signals already cascade through (`tonk-portal/src/bridge.rs`).
+
+## Marking something with no extent
+
+A slot that rendered an empty string has nothing to box, and that is exactly
+the case an author most wants to see. So a marker is not always a box:
+
+- **Extent** — the slot rendered glyphs. Box them.
+- **Point** — the slot is empty. Tick the caret position it would have
+  occupied: the trailing edge of the previous sibling, else the leading edge
+  of the next, else the parent's content corner. `<p>Hello {name}</p>` with
+  `name` absent ticks immediately after `Hello `, which answers "it would be
+  here" rather than "it is missing somewhere".
+- **Edge** — the slot wrote an element property (`with="main@{repo}"`,
+  `html:hidden={x}`). Tick the element's top edge instead of filling it: the
+  element is where the value went, but the element is not the value, and a
+  filled box says otherwise.
+
+Every marker carries a label badge whatever its placement, so an empty slot is
+still named. Badges that would collide are pushed down and joined to their
+anchor by a dashed leader. Badge width is arithmetic off the label length
+(monospace at 11px), not a layout read, so the collision pass never forces a
+reflow.
+
+At most 160 markers are painted at once; the readout says when that bit.
+
+## Cost when closed
+
+One document `mousemove` listener per frame whose first act is to see that
+nothing is being picked or painted and return, one subscription to the tab's
+site requests, and a `Cell<bool>` read on the renderer's change path. Nothing
+else runs, no rAF loop is scheduled, and no snapshot is built.
+
+This was not true as first written: the Alt-era handler read `altKey` into the
+machine but ran `closest("tonk-display")` before it, so every mousemove on every
+page walked the DOM whether or not anyone was inspecting. The guard is the
+handler's first statement, and everything that touches the DOM sits below it.
+
+## Steps
+
+- [x] **7. Parts, the selector, detachable sections.** See *Directions* above.
+
+- [ ] **8. Navigate the relation.** A line carries its attribute already. Make
+      it a handle: click a relation to ask what else asserts it, click an
+      entity to ask what else is on it. That is a query beyond what the display
+      subscribed to, so it needs its own path through the host rather than a
+      read of state already in hand — the first part of this tool that asks the
+      branch a question of its own.
+
+- [x] **1. Observe values.** The state machine, the slot description, the
+      registry, `Renderer::describe`, the overlay: outline, slot boxes labelled
+      by field and coloured by origin, change flash, a corner readout naming
+      the concept, facet, mode, subject count, slot count, and the two
+      mismatches worth seeing — concept fields no slot renders, and template
+      fields the concept does not declare.
+- [x] **2. Observe commands.** Every element carrying an `on<event>` or
+      `on:<name>` binding is outlined and labelled `click -> space/create`, and
+      bounces when it actually posts. The older form carries its trigger in the
+      attribute name; the newer one names a declaration, and only the
+      `EventTable` says which platform event that declaration reads — so
+      `Delegate` now retains its table. A binding whose declaration did not
+      resolve is drawn **inert** rather than hidden: it installs no listener
+      and will never fire, which was previously invisible. The bounce is raised
+      at the two points the winning binding is known
+      (`delegate::try_binding`, `binding::resolve_binding`), because dispatch
+      walks up until a binding resolves and the element that posted is not
+      always the one clicked.
+- [x] **3. Concept panel.** One row per field either side knows about, whether
+      or not it rendered, each classified by `inspect::Status` — the four
+      answers to "why isn't my value showing up?" that all look like the same
+      blank space on the page. Rows carry the declared type and cardinality and
+      the value as the renderer spelled it (routed through
+      `render_segments_with_shadow`, so the panel cannot report a spelling the
+      page did not use). Resting on a row brings the slots it feeds forward and
+      dims the rest. In directory mode the panel follows the `data-this` the
+      repeat stamps on each row, stickily, so walking off a card towards the
+      panel keeps the panel on the card you came from. The corner readout is
+      gone: everything it said is a row now.
+- [x] **4. View panel.** A second tab showing the mounted template
+      (`Slide::display`), with every `{field}` and command-bound attribute
+      value marked. `introspect::source::pieces` cuts the text using
+      `tonk_template::scan::walk`, the analyzer's own lexer, so the panel and
+      the build cannot disagree about what is in a template — a `{field}` in a
+      comment is prose and one in a `<style>` body is a CSS brace, in both.
+      Unlike `fields::scan`, which keeps one earliest offset per name for
+      diagnostics, this keeps every occurrence, because the panel highlights
+      all of them.
+
+      Highlighting is keyed on the field name in both halves rather than on
+      slot ids, which is what makes it two-way: a concept row, a marked span
+      and a page marker all name the same thing. Command spans key on the
+      command, so they light their interaction markers the same way.
+
+      The command test deliberately mirrors `preprocess::strip_on_prefix`,
+      ambiguity included: that treats any `on<ascii-alpha>…` attribute as a
+      candidate binding and says so in its own comment, so `once="yes"` really
+      is a handler to this renderer and the panel marks it as one. A panel that
+      quietly disagreed would be nicer and would send an author looking for the
+      wrong bug.
+- [x] **5. Flow control.** A recorder per observed display: hold what
+      arrives, step back and forward through what already did. Rewinding is
+      cheap because a frame is the whole folded state, not a delta — replaying
+      frame *i* is handing the renderer frame *i* again, so going back costs
+      what going forward did. `handle_entity_frame` splits so replay bypasses
+      the fold. Recording runs only while a display is observed and is seeded
+      with the frame on screen, so position 1 is always "what I was looking at
+      when I opened the hood"; you cannot rewind past that, which is the price
+      of not having every display on every page retain history forever.
+
+- [ ] **6. Edit.** A concept field edited in the panel becomes a transaction;
+      a template edited in the view panel supersedes the `show` facet. Both go
+      through the ordinary transact path. This is where the real work is:
+      superseding a cardinality-one field needs the prior value to retract,
+      values need coercing back to their declared Ipld types, and a refused
+      write needs somewhere to say so.
+
+## The inspector
+
+Figma's shape, because the problem is the same one: a thing is selected, and
+everything there is to know about it hangs off a bar rather than crowding the
+canvas.
+
+The bar names what is selected and carries one toggle per section — **data**,
+**model**, **view**, **commands** — plus the transport. Sections are
+independent rather than tabbed: the reason to open `view` is usually to read it
+*against* `data`, and a tab bar makes that the one thing you cannot do.
+
+Every section renders notation rather than a table, because notation is what an
+author already reads and writes:
+
+- **data** — the entity as a `head!:` assertion, values spelled as notation
+  spells them (an entity URI bare, prose quoted, a list indented), with the
+  dialog relation shown dim beside each field.
+- **model** — the `concept!:` declaration the display resolved. Rendered from
+  the lowered descriptor, since the YAML a library file was written in is not
+  stored; the two say the same thing.
+- **view** — the template, with a chip per facet the model declares. The
+  mounted facet is only one of them, and "what else could this show?" is not
+  answerable from it.
+- **commands** — a chip per binding, clicking one to see its `command!:`
+  declaration. A binding whose name resolved to nothing is struck through: it
+  installs no listener and will never fire.
+
+All four key on the same thing — a **field name** — so a data line, a
+declaration field, a `{field}` in the template, a command chip and a page
+marker all carry `data-field` and light each other. Lines also carry
+`data-attribute`, the relation under the name, which is the handle step 7 needs.
+
+`<tonk-notation>` is the other way to colour this, and it knows the real
+grammar. What it cannot do is say which line is which field, because it renders
+from a text blob. `introspect::notation` keeps the mapping and accepts a
+simpler tokenizer.
+
+## Marking without shouting
+
+The page shows position; the inspector shows names. Marking every slot *and*
+labelling it at once produced a wall of overlapping badges that hid the thing
+they named — the reported symptom, and the reason this split exists at all.
+
+So every slot is marked, and exactly one is labelled: the smallest marker under
+the pointer, plus anything the inspector is focusing. A text slot's label is
+its field name, because the value is already on screen. An attribute slot's
+label is the *value*, because that is what is invisible — `data-subject=this`
+names the shape of the binding while withholding the only part you came for.
+Commands keep a dashed outline and a corner dot so they read as affordances
+rather than values.
+
+## Directions taken since
+
+Three from use, recorded because each changes the shape rather than adding to
+it.
+
+**The selector.** Built, in the overlay rather than on the FAB's bar. A 36
+circle with one square corner, parked on the outlined display until you drag it
+off; it marks `data-fabb-aim` on what it passes and `data-fabb-selected` on
+what it is dropped on, and the watcher already installed picks that up and
+pins. Dropped on nothing, it releases.
+
+Living here rather than in `tonk-fab` costs nothing later, because the seam is
+the attribute rather than a call: when the bar grows its own teardrop it sets
+the same mark and everything downstream already works. The faithful version —
+tearing off the bar through goo, the ink draining into the bar's edge, the bar
+ending on a line — is the FAB's, and the study is its spec.
+
+**Parts, not prose.** Built, and it is what the inspector opens on. A block per
+attribute and per command, each carrying its kind and wearing its state on its
+left edge — a dashed edge for a field no slot renders, a struck-through name
+for one the concept does not declare or a command that resolved to nothing.
+Clicking one unfolds its value or its declaration underneath. That answers
+"what is here at all" before a word is read, which is the question you arrive
+with; the notation sections answer "what exactly".
+
+**Detachable sections.** Built. Each section header carries a tear-off handle;
+torn, it becomes its own window with the same chrome, draggable by its header,
+and its toggle stays lit because it is still open — just not there. Stacking
+only half-solved reading `view` against `data`: the second is below the fold
+exactly when you want both in the eye at once.
+
+## Known limits
+
+- **A caret position is a guess in the hard cases.** The sibling-edge walk
+  covers `Hello {name}` and `{name} trailing`, but a slot alone in an empty
+  block falls back to the parent's corner, which is the right area and not the
+  right spot. A panel listing every slot (step 3) is the complete answer.
+- **Badge collision is resolved by pushing down only.** It matters much less
+  now that at most a couple of badges are up at once, but a focused field with
+  many slots can still stack.
+- **The panel sits bottom-right and takes pointer events.** A display under it
+  cannot be hovered while it is open. Moving it, or letting it dock, is
+  outstanding.
+- **The snapshot is rebuilt every 30 frames** while observing, so a row
+  appearing shows up within half a second rather than immediately. Positions
+  are recomputed every frame. Slot *values* also only refresh on that cadence,
+  which does not matter yet because nothing displays them — step 3 will need it
+  tightened.
+- **Command enumeration walks every element** under the display on each
+  rebuild. Painting is bounded by the marker cap; the walk is not.
