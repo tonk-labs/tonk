@@ -1,9 +1,9 @@
-name: 'Sign and notarize macOS CLI'
-description: 'Developer ID sign a staged CLI binary and require Apple notarization'
+name: 'Sign and notarize macOS artifact'
+description: 'Developer ID sign a staged CLI binary or app bundle and require Apple notarization'
 
 inputs:
   binary-path:
-    description: 'Writable path to the macOS CLI binary'
+    description: 'Writable path to the macOS CLI binary, or to a .app bundle'
     required: true
   certificate-p12:
     description: 'Base64-encoded Developer ID Application PKCS#12 archive'
@@ -55,7 +55,12 @@ runs:
           fi
         done
 
-        if [[ ! -f "$BINARY_PATH" ]]; then
+        if [[ "$BINARY_PATH" == *.app ]]; then
+          if [[ ! -d "$BINARY_PATH" ]]; then
+            echo "::error::macOS app bundle does not exist at $BINARY_PATH"
+            exit 1
+          fi
+        elif [[ ! -f "$BINARY_PATH" ]]; then
           echo "::error::macOS binary does not exist at $BINARY_PATH"
           exit 1
         fi
@@ -141,7 +146,7 @@ runs:
           --timeout 60m \
           --output-format json > "$notarization_response"
         then
-          echo "::error::could not submit the macOS CLI for notarization"
+          echo "::error::could not submit $BINARY_PATH for notarization"
           if [[ -s "$notarization_response" ]]; then
             cat "$notarization_response"
           fi
@@ -161,7 +166,7 @@ runs:
         echo "Apple notarization $notarization_id: $notarization_status"
 
         if [[ "$notarization_status" != "Accepted" ]]; then
-          echo "::error::Apple rejected the macOS CLI notarization"
+          echo "::error::Apple rejected the notarization of $BINARY_PATH"
           if [[ -n "$notarization_id" ]]; then
             xcrun notarytool log "$notarization_id" \
               --key "$api_key_path" \
@@ -169,6 +174,13 @@ runs:
               --issuer "$APP_STORE_CONNECT_ISSUER_ID" || true
           fi
           exit 1
+        fi
+
+        # An app bundle carries its notarization ticket, so it opens
+        # without Gatekeeper reaching Apple. A bare binary cannot.
+        if [[ "$BINARY_PATH" == *.app ]]; then
+          xcrun stapler staple "$BINARY_PATH"
+          xcrun stapler validate "$BINARY_PATH"
         fi
 
         codesign --verify --strict --verbose=2 "$BINARY_PATH"

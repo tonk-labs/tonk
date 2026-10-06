@@ -60,6 +60,8 @@ jobs:
     name: 'Build desktop app'
     needs: build-ui
     runs-on: ${{ matrix.os }}
+    env:
+      MACOS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -92,10 +94,8 @@ jobs:
           cp rust/tonk-desktop/target/release/tonk-desktop package/tonk-desktop/
           chmod 0755 package/tonk-desktop/tonk-desktop
           tar -czf ${{ matrix.artifact-name }}.tar.gz -C package tonk-desktop
-      - name: 'Package Tonk.app'
+      - name: 'Assemble Tonk.app'
         if: runner.os == 'macOS'
-        # Ad-hoc signed only: Gatekeeper still asks before the first launch.
-        # ditto keeps the bundle's permissions and signature in the zip.
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/tonk-desktop/Cargo.toml | head -1)
           app=bundle/Tonk.app
@@ -120,8 +120,26 @@ jobs:
           </plist>
           PLIST
           plutil -lint "$app/Contents/Info.plist"
-          codesign --force --deep --sign - "$app"
-          ditto -c -k --keepParent "$app" ${{ matrix.artifact-name }}.zip
+      # The same Developer ID signing and notarization the CLI release uses.
+      # A pull request from a fork gets no secrets, so its build is signed
+      # ad hoc instead, and Gatekeeper asks before the first launch.
+      - name: 'Sign and notarize Tonk.app'
+        if: runner.os == 'macOS' && env.MACOS_SIGNING == 'true'
+        uses: ./.github/actions/sign-notarize-macos
+        with:
+          binary-path: bundle/Tonk.app
+          certificate-p12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          app-store-connect-key: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+          app-store-connect-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          app-store-connect-issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      - name: 'Sign Tonk.app ad hoc'
+        if: runner.os == 'macOS' && env.MACOS_SIGNING != 'true'
+        run: codesign --force --deep --sign - bundle/Tonk.app
+      - name: 'Package Tonk.app'
+        if: runner.os == 'macOS'
+        # ditto keeps the bundle's permissions, signature and stapled ticket.
+        run: ditto -c -k --keepParent bundle/Tonk.app ${{ matrix.artifact-name }}.zip
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
@@ -132,6 +150,8 @@ jobs:
     needs: build-desktop
     if: ${{ !cancelled() && needs.build-desktop.result != 'skipped' }}
     runs-on: ubuntu-latest
+    env:
+      MACOS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
     permissions:
       actions: read
       contents: write
@@ -161,8 +181,10 @@ jobs:
               link('tonk-desktop-linux-x86_64', 'Linux x86_64'),
               '',
               '**macOS:** the download unzips to `tonk-desktop-macos-arm64.zip`; open it to get `Tonk.app`. ' +
-                'The app is not notarized, so the first launch is refused: open System Settings, ' +
-                'Privacy & Security, and choose Open Anyway (or run `xattr -dr com.apple.quarantine Tonk.app`). ' +
+                (process.env.MACOS_SIGNING === 'true'
+                  ? 'It is Developer ID signed and notarized, so it opens like any other app. '
+                  : 'This build is not notarized, so the first launch is refused: open System Settings, ' +
+                    'Privacy & Security, and choose Open Anyway. ') +
                 'To see its logs, run `Tonk.app/Contents/MacOS/tonk-desktop` from a terminal.',
               '',
               '**Linux:** unzip, then `tar -xzf tonk-desktop-linux-x86_64.tar.gz && ./tonk-desktop/tonk-desktop`. ' +
@@ -223,8 +245,7 @@ jobs:
           body: |
             The desktop app built from `${{ github.sha }}` on main. Replaced on every merge.
 
-            macOS: unzip to get `Tonk.app`. It is not notarized, so the first launch is
-            refused; open System Settings, Privacy & Security, and choose Open Anyway.
+            macOS: unzip to get `Tonk.app`, Developer ID signed and notarized.
             Linux: extract the tarball and run `tonk-desktop/tonk-desktop`; needs WebKitGTK 4.1.
           prerelease: true
           make_latest: false
