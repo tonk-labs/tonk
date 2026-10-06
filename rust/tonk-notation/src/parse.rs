@@ -1165,6 +1165,19 @@ pub fn classify_plain_value(text: &str) -> FieldValue {
     FieldValue::Literal(Scalar::String(text.to_owned()))
 }
 
+/// Can `name` be written after `&` and then referenced back as a
+/// bare value? True exactly when the reference grammar reads `name`
+/// as a [`FieldValue::Symbol`].
+///
+/// Dialog accepts any `id:<name>` that is a valid URI, which is
+/// wider than the notation can reference: a bare `Demo`, `demo_1`,
+/// `42` or `true` reads as a literal, and `io.x/y` reads as a URI.
+/// Anchoring checks this so such a name is refused where it is
+/// written, not later where it is used.
+pub fn is_reference_name(name: &str) -> bool {
+    matches!(classify_plain_value(name), FieldValue::Symbol(_))
+}
+
 /// Does `text` look like a notation URI?
 ///
 /// Two accepted shapes:
@@ -1290,9 +1303,21 @@ fn is_symbol(text: &str) -> bool {
 /// [`is_attribute_identifier`].
 fn is_qualified_symbol(text: &str) -> bool {
     match text.split_once('/') {
-        Some((first, rest)) => is_symbol(first) && rest.split('/').all(is_symbol),
+        Some((first, rest)) => is_symbol(first) && rest.split('/').all(is_name_segment),
         None => false,
     }
+}
+
+/// A segment after the first `/` of a qualified symbol. Unlike the
+/// leading segment it may start with a digit, because anchor names
+/// like `&demo/1` are numbered and must be referable as `demo/1`.
+/// The leading segment still has to be a symbol, so numeric and
+/// date-shaped literals (`1/2`, `2026/10/05`) stay literals.
+fn is_name_segment(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '+'))
 }
 
 fn is_blank_scalar(value: &MarkedYaml<'_>) -> bool {
@@ -2834,6 +2859,54 @@ concept!:
             "got {:?}",
             body.value,
         );
+    }
+
+    /// A numbered anchor name (`&demo/1`) can be referenced back as
+    /// `demo/1`: a segment after the `/` may start with a digit.
+    /// Regression: `this: demo/1` parsed as a string literal, so
+    /// `/evaluate` rejected it with "expected `?var`, a bare symbol,
+    /// or a URI". Literals that merely contain a `/` stay literals.
+    #[dialog_common::test]
+    fn it_parses_digit_led_qualified_name_as_symbol() {
+        for text in ["demo/1", "counter/model-2", "demo/1/2", "demo/1a.b+c"] {
+            assert!(
+                matches!(classify_plain_value(text), FieldValue::Symbol(ref s) if s == text),
+                "{text:?} should be a symbol, got {:?}",
+                classify_plain_value(text),
+            );
+        }
+        for text in ["1/2", "2026/10/05", "demo/", "demo//1", "Demo/1", "demo/Q"] {
+            assert!(
+                matches!(classify_plain_value(text), FieldValue::Literal(_)),
+                "{text:?} should be a literal, got {:?}",
+                classify_plain_value(text),
+            );
+        }
+    }
+
+    /// `is_reference_name` is the anchoring gate: a name passes only
+    /// if writing it back as a bare value reads as a symbol, so no
+    /// anchor can be declared that `this:` can't then resolve.
+    #[dialog_common::test]
+    fn it_accepts_anchor_names_only_if_they_read_back_as_symbols() {
+        for name in ["alice", "demo/1", "counter/+1", "space/route/view"] {
+            assert!(is_reference_name(name), "{name:?} should be referenceable");
+        }
+        for name in [
+            "Demo",
+            "demo_1",
+            "42",
+            "true",
+            "?x",
+            "_",
+            "demo/",
+            "io.gozala/x",
+        ] {
+            assert!(
+                !is_reference_name(name),
+                "{name:?} should not be referenceable"
+            );
+        }
     }
 
     /// MIME-type-shaped plain scalars (`text/html`) now read as

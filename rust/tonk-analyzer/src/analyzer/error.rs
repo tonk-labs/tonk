@@ -365,6 +365,19 @@ pub enum AnalyzeErrorKind {
         /// Underlying `id:<name>` parse error.
         reason: String,
     },
+    /// An `&anchor` name is a valid `id:<name>` entity URI but the
+    /// notation could not reference it back: a bare `Demo` or `demo_1`
+    /// reads as a string, `42` as a number. Dialog accepts the name;
+    /// the notation's reference grammar is narrower, so the name is
+    /// refused where it is written rather than where it is used.
+    #[error(
+        "anchor name {name:?} can't be referenced — a name must be lowercase segments \
+         (letters, digits, `-`, `.`, `+`) joined by `/`, starting with a letter"
+    )]
+    UnreferenceableAnchorName {
+        /// The anchor name written after `&`.
+        name: String,
+    },
     /// Assertion body had no fields — nothing to write.
     #[error("assertion `{head}!` has no fields — at least one is required")]
     AssertionWithoutFields {
@@ -688,6 +701,7 @@ impl AnalyzeErrorKind {
             Self::UnboundMutationVariable { .. } => "E_UNBOUND_MUTATION_VARIABLE",
             Self::InvalidSubjectUri { .. } => "E_INVALID_SUBJECT_URI",
             Self::InvalidAnchorName { .. } => "E_INVALID_ANCHOR_NAME",
+            Self::UnreferenceableAnchorName { .. } => "E_UNREFERENCEABLE_ANCHOR_NAME",
             Self::AssertionWithoutFields { .. } => "E_ASSERTION_WITHOUT_FIELDS",
             Self::InvalidAttributeBody { .. } => "E_INVALID_ATTRIBUTE_BODY",
             Self::InvalidConceptBody { .. } => "E_INVALID_CONCEPT_BODY",
