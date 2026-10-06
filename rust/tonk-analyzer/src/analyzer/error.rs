@@ -494,6 +494,39 @@ pub enum AnalyzeErrorKind {
         /// Underlying encoder message.
         reason: String,
     },
+    /// `..: _` in a query body. The rest-marker retracts, which only
+    /// an assertion (`head!:`) does; a query has nothing to retract,
+    /// so the marker would otherwise be silently ignored.
+    #[error(
+        "`..: _` retracts the rest of an entity's attributes, so it only applies to an \
+         assertion; did you mean `{head}!:`?"
+    )]
+    RestRetractionInQuery {
+        /// The query's head as written.
+        head: String,
+    },
+    /// `..: _` on a claim-domain head (`xyz.tonk!:`). A domain has no
+    /// schema, so there is no closed set of attributes for the
+    /// rest-marker to retract.
+    #[error(
+        "`..: _` cannot follow claim domain {domain:?}: a domain has no schema, so it has \
+         no set of attributes for `..` to stand for"
+    )]
+    RestRetractionOnDomain {
+        /// The claim domain on the head.
+        domain: String,
+    },
+    /// An `&anchor` on a match deletion (`head!:` with `..: _` and no
+    /// `this:`). The expression deletes every instance its fields
+    /// match, so there is no one entity for the name to publish.
+    #[error(
+        "`&{name}` cannot name a deletion: with `..: _` and no `this:`, the expression \
+         deletes every instance its fields match, so there is no one entity to name"
+    )]
+    AnchoredMatchDeletion {
+        /// The anchor's name.
+        name: String,
+    },
     /// A field in the body doesn't appear in the head concept's
     /// `with` map.
     #[error("field {field:?} is not part of concept {concept:?}")]
@@ -645,9 +678,13 @@ pub enum AnalyzeErrorKind {
     /// - The body contains `..: _` (the rest-marker explicitly
     ///   declares "I know what I'm doing about every other
     ///   field" — the unmentioned fields get retracted).
+    ///
+    /// The message does not offer `..: _` as the way out: with
+    /// `this:` omitted it turns the expression into a deletion of
+    /// every instance the body matches.
     #[error(
         "`{concept}!` body sets only some of the concept's fields ({set:?}; missing: {missing:?}) but {selector_form}. \
-         Either query for an existing entity first (`{concept}:\n  this: ?var\n  …`), set every field, or add `..: _` to acknowledge the partial."
+         Either query for an existing entity first (`{concept}:\n  this: ?var\n  …`) or set every field."
     )]
     IncompleteAssertion {
         /// The concept whose schema was being asserted against.
@@ -715,6 +752,9 @@ impl AnalyzeErrorKind {
             Self::UnknownEventSourceField { .. } => "E_UNKNOWN_EVENT_SOURCE_FIELD",
             Self::InvalidViewBindings { .. } => "E_INVALID_VIEW_BINDINGS",
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",
+            Self::RestRetractionInQuery { .. } => "E_REST_RETRACTION_IN_QUERY",
+            Self::RestRetractionOnDomain { .. } => "E_REST_RETRACTION_ON_DOMAIN",
+            Self::AnchoredMatchDeletion { .. } => "E_ANCHORED_MATCH_DELETION",
             Self::DuplicateConceptField { .. } => "E_DUPLICATE_CONCEPT_FIELD",
             Self::UnknownFormulaOperand { .. } => "E_UNKNOWN_FORMULA_OPERAND",
             Self::MissingFormulaOperand { .. } => "E_MISSING_FORMULA_OPERAND",

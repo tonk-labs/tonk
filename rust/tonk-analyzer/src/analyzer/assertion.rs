@@ -84,6 +84,13 @@ pub(crate) struct AssertionPlan {
     /// effects-fixpoint seed bucket. Always `false` for domain /
     /// URI heads — those name no concept.
     pub transient: bool,
+    /// The query selecting the entities this expression writes,
+    /// when the body selects them rather than naming one. Only a
+    /// match deletion (`..: _` with no `this:`) carries one: its
+    /// named fields pick the instances, and `retract` targets the
+    /// variable this query binds. The evaluator joins it with the
+    /// document's queries, so the retraction runs once per match.
+    pub selector: Option<Application>,
 }
 
 pub(crate) fn build_assertion_application(
@@ -146,6 +153,20 @@ pub(crate) fn build_assertion_application(
             // instances must derive from that same entity for the
             // notation and wire paths to converge.
             let predicate_entity = resolved.entity.clone();
+            // With no `this:` there is no entity to keep the rest of:
+            // the named fields select the instances, and `..: _`
+            // deletes each one whole.
+            if has_rest_retraction && matches!(this, ThisIntent::Derived) {
+                if let Some(anchor) = anchor {
+                    return Err(AnalyzeError::at(
+                        AnalyzeErrorKind::AnchoredMatchDeletion {
+                            name: anchor.name.clone(),
+                        },
+                        anchor.range,
+                    ));
+                }
+                return build_match_deletion(assertion, &descriptor, transient, scope, analysis);
+            }
             let name_range = anchor.map(|a| a.range).unwrap_or(head_range);
             let this_term = this_term_for_assertion(
                 &this,
@@ -495,15 +516,24 @@ pub(crate) fn build_assertion_application(
                 assert: asserts,
                 retract: retracts,
                 transient,
+                selector: None,
             })
         }
         HeadName::Claim(domain) => {
             // Claim heads don't yet support retraction
             // semantics — they have no schema to enumerate, so
             // `..: _` doesn't have a closed set of attributes
-            // to expand into. Field-level `_` is also not
-            // wired here (Stage 2.7+ extension).
-            //
+            // to expand into; refuse it rather than ignore it.
+            // Field-level `_` is also not wired here (Stage 2.7+
+            // extension).
+            if let Some(rest) = assertion.fields.iter().find(|f| f.name == "..") {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::RestRetractionOnDomain {
+                        domain: domain.clone(),
+                    },
+                    rest.name_range,
+                ));
+            }
             // Claim domains have no concept entity; the digest's
             // predicate slot uses an entity derived from the
             // domain string so two assertions in different
@@ -580,6 +610,7 @@ pub(crate) fn build_assertion_application(
                 // Domain (`xyz.tonk …:`) heads name no concept,
                 // so there's no transient marker to consult.
                 transient: false,
+                selector: None,
             })
         }
         HeadName::Uri(uri) => Err(AnalyzeError::at(
@@ -590,6 +621,98 @@ pub(crate) fn build_assertion_application(
             head_range,
         )),
     }
+}
+
+/// Lower a match deletion — `head!:` with `..: _` and no `this:`
+/// — into a selector query plus a whole-instance retraction.
+///
+/// ```yaml
+/// ticket!:
+///   queue: "writer"
+///   ..: _
+/// ```
+///
+/// reads as the query `ticket: {this: ?t, queue: "writer"}` followed
+/// by `ticket!: {this: ?t, ..: _}` for every `?t` it binds. The
+/// named fields select rather than assert, and every attribute of a
+/// selected instance is retracted, the selecting ones included: with
+/// no `this:` there is no entity whose named fields could be kept.
+/// Omitted fields select as `_`, so an instance matches only when it
+/// is a complete instance of the concept, exactly as a query reads it.
+fn build_match_deletion(
+    assertion: &SyntaxApplication,
+    descriptor: &dialog_query::ConceptDescriptor,
+    transient: bool,
+    scope: &Scope,
+    analysis: &Working,
+) -> Result<AssertionPlan, AnalyzeError> {
+    let head_range = assertion.predicate.range;
+    // The selected entity's variable. It must not join with a
+    // variable of the user's, so it borrows the reserved `..` key as
+    // a prefix no one writes by hand; the head's position keeps it
+    // distinct per expression.
+    let selected = format!(
+        "..match@{}:{}",
+        head_range.start.line, head_range.start.character
+    );
+    let mut fields: Vec<Field> = assertion
+        .fields
+        .iter()
+        .filter(|f| f.name != "..")
+        .cloned()
+        .collect();
+    fields.push(Field {
+        name: "this".into(),
+        name_range: head_range,
+        value: FieldValue::Variable(selected.clone()),
+        value_range: head_range,
+    });
+    for (field_name, _) in descriptor.with().iter() {
+        if !fields.iter().any(|f| f.name == field_name) {
+            fields.push(Field {
+                name: field_name.into(),
+                name_range: head_range,
+                value: FieldValue::Blank,
+                value_range: head_range,
+            });
+        }
+    }
+    let selector = super::query::build_query_application(
+        &SyntaxApplication {
+            predicate: assertion.predicate.clone(),
+            fields,
+            range: assertion.range,
+        },
+        scope,
+        analysis,
+    )?;
+
+    let this = ThisIntent::Variable(selected.clone());
+    let mut terms = Parameters::new();
+    terms.insert("this".into(), Term::<dialog_query::Any>::var(&selected));
+    for (field_name, attr) in descriptor.with().iter() {
+        if attr.the().attribute().is_none() {
+            terms.insert(
+                Relation::key_operand(field_name),
+                Term::<dialog_query::Any>::blank(),
+            );
+        }
+        terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
+    }
+    Ok(AssertionPlan {
+        assert: Vec::new(),
+        retract: vec![Application::Concept {
+            query: ConceptQuery {
+                terms,
+                predicate: descriptor.clone(),
+            },
+            join: Vec::new(),
+            this,
+            name: None,
+        }],
+        transient,
+        selector: Some(selector),
+    })
 }
 
 /// Derive the head's source-form intent — `(ThisIntent, name)`

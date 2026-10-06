@@ -52,7 +52,7 @@
 //! `Evaluate::perform` (for `matches_before`) and by
 //! [`EvaluatedCommit::perform`] (for `matches_after` after commit).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use dialog_artifacts::{Changes, Entity, Preload, Speculation, Value};
 use dialog_capability::{Fork, Provider};
@@ -72,7 +72,7 @@ use tonk_analyzer::analysis::{Analysis, ExpressionAnalysis, SynthesizedQuery};
 use tonk_analyzer::analyzer;
 use tonk_schema::concept::{QueryEnv, application_to_plan};
 use tonk_schema::query_source::Source;
-use tonk_schema::transact::{Application, ApplicationPlan, Planner as _, Statement};
+use tonk_schema::transact::{Application, ApplicationPlan, Planner as _, Statement, ThisIntent};
 
 // ---------------------------------------------------------------- //
 // Public response types                                            //
@@ -362,11 +362,22 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         // Pre-mutation reads go through the txn's overlay, which
         // is empty at this point so the answer matches the branch.
         let user_queries = collect_queries(document);
-        let pre_results = if user_queries.is_empty() && document.synthesized.is_empty() {
-            None
-        } else {
-            Some(run_query(&user_queries, &document.synthesized, &txn, env).await?)
-        };
+        let selectors: Vec<Application> = document.selectors().cloned().collect();
+        // The variables the selectors bind — each one a match
+        // deletion's target.
+        let selected: HashSet<String> = selectors
+            .iter()
+            .filter_map(|selector| match selector.this() {
+                ThisIntent::Variable(var) => Some(var.clone()),
+                _ => None,
+            })
+            .collect();
+        let pre_results =
+            if user_queries.is_empty() && document.synthesized.is_empty() && selectors.is_empty() {
+                None
+            } else {
+                Some(run_query(&user_queries, &selectors, &document.synthesized, &txn, env).await?)
+            };
         let pre_matches: Vec<Parameters> = match &pre_results {
             Some(r) if !r.joined.is_empty() => r.joined.clone(),
             _ => vec![Parameters::new()],
@@ -420,6 +431,16 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                     frame.insert(k.clone(), v.clone());
                 }
                 for statement in &statements {
+                    // A match deletion whose selector matched nothing
+                    // has no instance to delete. The empty-join
+                    // fallback frame leaves its variable unbound;
+                    // skip it rather than fail the plan.
+                    if let ThisIntent::Variable(var) = statement.application().this()
+                        && selected.contains(var)
+                        && !frame.contains(var)
+                    {
+                        continue;
+                    }
                     match statement {
                         Statement::Assert(application) => {
                             let plan = application
@@ -561,7 +582,8 @@ impl<'a> Evaluated<'a> {
         let post_results = if user_queries.is_empty() && document.synthesized.is_empty() {
             None
         } else {
-            Some(run_query(&user_queries, &document.synthesized, &self.txn, env).await?)
+            // Selectors only feed mutation planning, which is done.
+            Some(run_query(&user_queries, &[], &document.synthesized, &self.txn, env).await?)
         };
         Ok(render_match_blocks(document, post_results.as_ref()))
     }
@@ -637,8 +659,13 @@ struct QueryResults {
 /// `Application` impls `dialog_query::Application` and dispatches
 /// internally to the right [`tonk_schema::concept::QueryPlan`] (built-in
 /// or branch concept), so this loop is uniform across head kinds.
+///
+/// `selectors` — the match deletions' selector queries — join with
+/// the user queries into `joined`, so a deletion runs once per
+/// instance it selects, but they render no match block of their own.
 async fn run_query<Env: EvaluateEnv>(
     queries: &[LabeledQuery],
+    selectors: &[Application],
     synthesized: &[SynthesizedQuery],
     txn: &Transaction<&Branch>,
     env: &Env,
@@ -648,7 +675,11 @@ async fn run_query<Env: EvaluateEnv>(
         let frames = collect_matches(query.application.clone(), txn, env).await?;
         per_expression.push(frames);
     }
-    let joined = natural_join(&per_expression);
+    let mut relations = per_expression.clone();
+    for selector in selectors {
+        relations.push(collect_matches(selector.clone(), txn, env).await?);
+    }
+    let joined = natural_join(&relations);
 
     // Synthesized snapshots run standalone — never joined into
     // `joined`, so an empty snapshot can't zero mutation
@@ -2368,6 +2399,220 @@ concept!: &note
 
         assert_eq!(counts[0], 0, "the retracted entry is gone");
         assert_eq!(counts[1], 1, "its neighbour is untouched");
+        Ok(())
+    }
+
+    /// Every claim on the branch for the attribute `the`,
+    /// whatever entity carries it.
+    async fn claims_of(
+        branch: &Branch,
+        operator: &impl EvaluateEnv,
+        the: &str,
+    ) -> anyhow::Result<Vec<dialog_query::Claim>> {
+        let the: dialog_artifacts::Attribute = the.parse()?;
+        Ok(branch
+            .query()
+            .select(dialog_query::AttributeQuery::new(
+                Term::Constant(dialog_artifacts::Value::Symbol(the)),
+                Term::<dialog_artifacts::Entity>::var("of"),
+                Term::<dialog_query::Any>::var("is"),
+                Term::blank(),
+                None,
+            ))
+            .perform(operator)
+            .try_vec()
+            .await?)
+    }
+
+    /// Parse, evaluate and commit each document in turn. A macro
+    /// rather than a function: the commit's environment bounds
+    /// are long, and the test operator's type is not nameable here.
+    macro_rules! evaluate_all {
+        ($branch:expr, $operator:expr, $docs:expr) => {
+            for doc in $docs {
+                let parsed = parse(doc);
+                assert!(
+                    parsed.diagnostics.is_empty(),
+                    "parse diagnostics for {doc:?}: {:?}",
+                    parsed.diagnostics
+                );
+                let syntax = parsed.syntax.expect("syntax");
+                syntax
+                    .evaluate($branch.transaction())
+                    .perform($operator)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
+                    .commit()
+                    .publish()
+                    .perform($operator)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
+            }
+        };
+    }
+
+    const TICKET_CONCEPT: &str = r#"concept!: &ticket
+  description: "A ticket filed in a queue"
+  with:
+    title:
+      description: "The ticket's title"
+      the: xyz.test.ticket/title
+      as: text
+    queue:
+      description: "The queue the ticket sits in"
+      the: xyz.test.ticket/queue
+      as: text
+"#;
+
+    /// `..: _` with no `this:` deletes every instance its named
+    /// fields match. The named fields select; every attribute of
+    /// each selected instance — the selecting ones included — is
+    /// retracted, and nothing is asserted.
+    ///
+    /// Regression: the omitted `this:` used to derive a fresh
+    /// entity from the body, so the expression asserted
+    /// `queue: "writer"` on a new, otherwise empty ticket and
+    /// retracted nothing.
+    #[dialog_common::test]
+    async fn it_deletes_every_instance_a_rest_retraction_matches() -> anyhow::Result<()> {
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        evaluate_all!(
+            branch,
+            &operator,
+            [
+                TICKET_CONCEPT,
+                r#"ticket!:
+  this: id:t1
+  title: "First"
+  queue: "writer"
+"#,
+                r#"ticket!:
+  this: id:t2
+  title: "Second"
+  queue: "writer"
+"#,
+                r#"ticket!:
+  this: id:t3
+  title: "Third"
+  queue: "reader"
+"#,
+                // The deletion under test.
+                r#"ticket!:
+  queue: "writer"
+  ..: _
+"#,
+            ]
+        );
+
+        let survivors = |claims: Vec<dialog_query::Claim>| {
+            let mut of: Vec<String> = claims.into_iter().map(|c| c.of.to_string()).collect();
+            of.sort();
+            of
+        };
+        assert_eq!(
+            survivors(claims_of(&branch, &operator, "xyz.test.ticket/queue").await?),
+            vec!["id:t3".to_string()],
+            "only the ticket outside the matched queue keeps its queue, \
+             and no fresh ticket was minted"
+        );
+        assert_eq!(
+            survivors(claims_of(&branch, &operator, "xyz.test.ticket/title").await?),
+            vec!["id:t3".to_string()],
+            "the matched tickets lose their unnamed attributes too"
+        );
+        Ok(())
+    }
+
+    /// A match deletion's named fields may be variables, joining it
+    /// with the document's queries: here it deletes every ticket in
+    /// the queue `id:t2` sits in, `id:t2` included.
+    #[dialog_common::test]
+    async fn it_joins_a_match_deletion_with_a_query() -> anyhow::Result<()> {
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        evaluate_all!(
+            branch,
+            &operator,
+            [
+                TICKET_CONCEPT,
+                r#"ticket!:
+  this: id:t1
+  title: "First"
+  queue: "writer"
+"#,
+                r#"ticket!:
+  this: id:t2
+  title: "Second"
+  queue: "reader"
+"#,
+                r#"ticket!:
+  this: id:t3
+  title: "Third"
+  queue: "reader"
+"#,
+                r#"ticket:
+  this: id:t2
+  queue: ?queue
+
+ticket!:
+  queue: ?queue
+  ..: _
+"#,
+            ]
+        );
+
+        let survivors: Vec<String> = claims_of(&branch, &operator, "xyz.test.ticket/title")
+            .await?
+            .into_iter()
+            .map(|c| c.of.to_string())
+            .collect();
+        assert_eq!(survivors, vec!["id:t1".to_string()]);
+        Ok(())
+    }
+
+    /// A rest retraction whose selector matches nothing is a no-op:
+    /// it neither fails nor writes.
+    #[dialog_common::test]
+    async fn it_deletes_nothing_when_a_rest_retraction_matches_nothing() -> anyhow::Result<()> {
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        evaluate_all!(
+            branch,
+            &operator,
+            [
+                TICKET_CONCEPT,
+                r#"ticket!:
+  this: id:t1
+  title: "First"
+  queue: "reader"
+"#,
+                r#"ticket!:
+  queue: "writer"
+  ..: _
+"#,
+            ]
+        );
+
+        assert_eq!(
+            claims_of(&branch, &operator, "xyz.test.ticket/queue")
+                .await?
+                .len(),
+            1,
+            "the unmatched ticket keeps its queue and nothing new is written"
+        );
+        assert_eq!(
+            claims_of(&branch, &operator, "xyz.test.ticket/title")
+                .await?
+                .len(),
+            1
+        );
         Ok(())
     }
 

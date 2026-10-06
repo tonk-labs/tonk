@@ -349,6 +349,7 @@ fn expand(
                 let anchor;
                 let mut transient_entity: Option<Entity> = None;
                 let mut rule_effect: Option<dialog_query::InductiveRule> = None;
+                let mut selector: Option<Application> = None;
                 let is_declaration;
 
                 if let Some(declaration) = declared.remove(&index) {
@@ -499,6 +500,12 @@ fn expand(
                     // affects naming downstream.
                     let plan =
                         build_assertion_application(a, anchor_node.as_ref(), scope, &mut working)?;
+                    // A match deletion's selector reads like a query:
+                    // it binds the variable the retraction targets.
+                    if let Some(selector) = &plan.selector {
+                        working.queries.push(selector.clone());
+                    }
+                    selector = plan.selector.clone();
                     let probe = plan.assert.first().or(plan.retract.first());
                     predicate = probe
                         .map(|app| predicate_of(app, plan.transient))
@@ -542,6 +549,7 @@ fn expand(
                         labels: claim_labels,
                         transient: transient_entity,
                         effect: rule_effect,
+                        selector,
                     },
                 })));
             }
@@ -4627,6 +4635,130 @@ person:
         // `bogus:` is on line 2 (0-indexed) of the doc — the
         // head is on line 1.
         assert_eq!(range.start.line, 2, "expected `bogus:` line, got {range:?}");
+    }
+
+    fn ticket_concept() -> ConceptSpec {
+        fixed_concept(
+            "ticket",
+            &[
+                ("title", "xyz.test.ticket/title"),
+                ("queue", "xyz.test.ticket/queue"),
+            ],
+        )
+    }
+
+    /// `..: _` in a query is a mistyped deletion (`ticket:` for
+    /// `ticket!:`). It is refused, pointing at the `..` key and
+    /// naming the assertion head the user likely meant — not
+    /// silently read as a query that ignores it.
+    #[dialog_common::test]
+    async fn it_rejects_rest_retraction_in_a_query() {
+        let syntax = must_parse(
+            r#"
+ticket:
+  queue: "writer"
+  ..: _
+"#,
+        );
+        let err = analyze_with(&syntax, &ticket_concept()).await.unwrap_err();
+        assert!(
+            matches!(&err.kind, AnalyzeErrorKind::RestRetractionInQuery { head } if head == "ticket"),
+            "expected RestRetractionInQuery, got {err:?}"
+        );
+        assert_eq!(err.code(), "E_REST_RETRACTION_IN_QUERY");
+        assert!(
+            err.to_string().contains("did you mean `ticket!:`?"),
+            "the message names the assertion head: {err}"
+        );
+        let range = err.range.expect("the error carries a range");
+        assert_eq!(range.start.line, 3, "points at `..:`, got {range:?}");
+    }
+
+    /// `..: _` with no `this:` lowers to a match deletion: no assert
+    /// at all, one retraction of every field, aimed at the variable
+    /// a selector query binds from the named fields.
+    #[dialog_common::test]
+    async fn it_lowers_rest_retraction_without_this_to_a_match_deletion() {
+        let syntax = must_parse(
+            r#"ticket!:
+  queue: "writer"
+  ..: _
+"#,
+        );
+        let tree = analyze_with(&syntax, &ticket_concept()).await.unwrap();
+        let document = &tree.analysis;
+
+        let statements: Vec<_> = document.statements();
+        assert_eq!(statements.len(), 1, "only the retraction: {statements:?}");
+        let Statement::Retract(retract) = &statements[0].statement else {
+            panic!("expected a retraction, got {:?}", statements[0].statement);
+        };
+        let ThisIntent::Variable(selected) = retract.this() else {
+            panic!(
+                "the retraction targets a variable, got {:?}",
+                retract.this()
+            );
+        };
+        let terms = retract.parameters();
+        for field in ["title", "queue"] {
+            assert!(
+                terms.get(field).is_some_and(|t| t.is_blank()),
+                "`{field}` is retracted: {terms:?}"
+            );
+        }
+
+        let selectors: Vec<_> = document.selectors().collect();
+        assert_eq!(selectors.len(), 1);
+        let selector = selectors[0].parameters();
+        assert_eq!(
+            selector.get("this"),
+            Some(&Term::<dialog_query::Any>::var(selected)),
+            "the selector binds the retraction's target"
+        );
+        assert_eq!(
+            selector.get("queue"),
+            Some(&Term::Constant(Value::String("writer".into()))),
+            "the named field selects"
+        );
+        assert!(
+            document.synthesized.is_empty(),
+            "no fresh entity is minted to snapshot"
+        );
+    }
+
+    /// An anchor names the one entity an assertion writes; a match
+    /// deletion has none, so `&name` on it is refused rather than
+    /// dropped.
+    #[dialog_common::test]
+    async fn it_rejects_an_anchor_on_a_match_deletion() {
+        let syntax = must_parse(
+            r#"ticket!: &gone
+  queue: "writer"
+  ..: _
+"#,
+        );
+        let err = analyze_with(&syntax, &ticket_concept()).await.unwrap_err();
+        assert!(
+            matches!(&err.kind, AnalyzeErrorKind::AnchoredMatchDeletion { name } if name == "gone"),
+            "expected AnchoredMatchDeletion, got {err:?}"
+        );
+    }
+
+    /// A claim domain has no schema for `..` to stand for, so the
+    /// rest-marker on a domain head is refused rather than ignored.
+    #[dialog_common::test]
+    async fn it_rejects_rest_retraction_on_a_claim_domain() {
+        let syntax = must_parse(
+            r#"xyz.test!:
+  this: id:thing
+  ..: _
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(&err.kind, AnalyzeErrorKind::RestRetractionOnDomain { domain } if domain == "xyz.test"),
+            "expected RestRetractionOnDomain, got {err:?}"
+        );
     }
 
     /// Category 2 from the user's classification: assertion
