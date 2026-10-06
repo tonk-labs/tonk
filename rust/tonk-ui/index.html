@@ -87,17 +87,29 @@
         <link rel="icon" type="image/png" href="/images/tonk-icon.png" />
         <link rel="apple-touch-icon" href="/images/tonk-icon.png" />
 
-        <!-- Boot-shell critical CSS, inlined so first paint needs ZERO
-       external resources: both stylesheets below load async (media="print"
-       + onload swap), which is safe ONLY while the shell is the body's
-       sole pre-mount content — any other visible pre-mount markup would
-       flash unstyled. Every color/size is `var(--wa-token, literal)`: the
-       literal (resolved from the shoelace palette, the default theme and
-       styles.css's brand remap) paints immediately; the live token takes
-       over — identically, today — when the async CSS lands. light-dark()
-       follows the `color-scheme` meta above, the same OS signal the
-       wa-dark/wa-light classes are toggled by. -->
+        <!-- All the styling this page has. It frames the profile's site,
+       which fills it, shows this boot shell until then, and now and
+       again a passkey prompt; each site loads the app's stylesheet and
+       fonts itself. Colours follow the `color-scheme` meta above. -->
         <style>
+            :root {
+                --ink: light-dark(#38182a, #e2dfdd);
+                --on-ink: light-dark(#f7f6f5, #161313);
+                --card: light-dark(#fcfbfb, #211c1c);
+                --ring: light-dark(rgb(56 24 42 / 85%), rgb(226 223 221 / 85%));
+            }
+            html,
+            body {
+                margin: 0;
+                padding: 0;
+                overscroll-behavior: none;
+                background: light-dark(#e8e6e4, #161313);
+                color: var(--ink);
+                font-family: system-ui, sans-serif;
+            }
+            tonk-site {
+                display: contents;
+            }
             #tonk-boot {
                 position: fixed;
                 inset: 0;
@@ -105,14 +117,8 @@
                 display: flex;
                 flex-direction: column;
                 padding: 26px 38px 30px;
-                background: var(
-                    --wa-color-surface-default,
-                    light-dark(#e8e6e4, #161313)
-                );
-                color: var(
-                    --wa-color-text-normal,
-                    light-dark(#38182a, #e2dfdd)
-                );
+                background: light-dark(#e8e6e4, #161313);
+                color: var(--ink);
             }
             /* CSS-only teardown: the wasm mounts <tonk-site> into <body>
                and this rule fades the shell out — the app never has to
@@ -174,10 +180,7 @@
                 border: 0;
                 font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
                 font-size: 12px;
-                color: var(
-                    --wa-color-text-quiet,
-                    light-dark(#5b4953, #c8c3bf)
-                );
+                color: light-dark(#5b4953, #c8c3bf);
             }
             .tonk-boot-status[data-failed] {
                 position: static;
@@ -220,69 +223,12 @@
             }
         </style>
 
-        <!-- V9  -->
-        <!-- Web Awesome: custom-element UI library (see .claude/skills/webawesome). The loader
-       auto-registers any <wa-*> elements used in the DOM; `data-webawesome` tells it
-       where its bundled assets (icons, etc.) live.
-
-       We use the default theme with the shoelace palette. Two
-       local overrides layer on top (see styles.css): IBM Plex Sans,
-       IBM Plex Sans Condensed, IBM Plex Mono, and a zero border radius.
-
-       webawesome-flat.css is the three entry stylesheets' @import graph
-       (webawesome.css + themes/default.css + color/palettes/shoelace.css)
-       inlined into ONE file by scripts/flatten-webawesome.sh: the nested
-       imports were ~29 render-blocking requests, four levels deep, each
-       level a serial round trip before first paint. Re-run the script
-       after a webawesome vendor bump; the unflattened sources stay in
-       the dist for the loader's lazy per-component chunks.
-
-       Loaded ASYNC (media="print" downloads without blocking render, the
-       onload swap applies it): nothing visible needs these rules until
-       the wasm mounts the app seconds later — the boot shell's own CSS
-       is inlined above. This holds only while the shell is the body's
-       sole pre-mount content. -->
-        <link
-            rel="stylesheet"
-            href="/webawesome/styles/webawesome-flat.css"
-            media="print"
-            onload="this.onload=null;this.media='all'"
-        />
-        <!-- Interface fonts (IBM Plex Sans / IBM Plex Sans Condensed /
-       IBM Plex Mono) are self-hosted: see styles.css
-       for the `@font-face` declarations. Files live in
-       `assets/fonts/` and are copied into the dist by the
-       Trunk `copy-dir` rule below. No external font CDN. -->
         <!-- PostHog analytics, self-hosted (no external CDN, matching
        the font policy above). The bundle only defines window.posthog;
        it is initialized — or left dormant — by the ui binary via
        tonk-analytics, and only when a TONK_POSTHOG_KEY was baked in
        at build time. Opt-out: localStorage "tonk:telemetry" = "off". -->
         <script defer src="/posthog/posthog.js"></script>
-
-        <!-- Inherit the OS light/dark preference. Web Awesome picks up its
-       theme from `.wa-light` / `.wa-dark` on the root element; toggle
-       the class immediately (before paint) and keep it in sync with
-       `prefers-color-scheme` changes. -->
-        <script>
-            (() => {
-                // Activate the default theme with the shoelace palette. Light/dark
-                // is toggled reactively on `prefers-color-scheme` changes.
-                document.documentElement.classList.add(
-                    "wa-theme-default",
-                    "wa-palette-shoelace",
-                );
-
-                const mq = window.matchMedia("(prefers-color-scheme: dark)");
-                const apply = (isDark) => {
-                    const cls = document.documentElement.classList;
-                    cls.toggle("wa-dark", isDark);
-                    cls.toggle("wa-light", !isDark);
-                };
-                apply(mq.matches);
-                mq.addEventListener("change", (e) => apply(e.matches));
-            })();
-        </script>
 
         <!-- This origin's worker answers every address here with this one
          page, and keeps what the page loads so it opens with no network.
@@ -429,25 +375,17 @@
             data-target-path="tonk-table"
         />
 
-        <!-- Async like the webawesome sheet above (trunk forwards the
-         extra attributes to the emitted link, entity-escaped but decoded
-         by the HTML parser). First paint therefore needs no external CSS
-         at all — the boot shell's rules are inline in <head>. -->
-        <link
-            data-trunk
-            rel="css"
-            href="./styles.css"
-            media="print"
-            onload="this.onload=null;this.media='all'"
-        />
+        <!-- The app's stylesheet is the sites' to load, not this page's:
+         copied as a file, named by its content in the guest manifest
+         (`scripts/hash-guest.sh`), and linked by each site's own frame. -->
+        <link data-trunk rel="copy-file" href="./styles.css" />
     </head>
 
     <body>
         <!-- Static boot shell: the ONLY body content until the wasm mounts
-         `<tonk-site>` — the async-stylesheet strategy in <head> depends on
-         that staying true. It shows the shared loading pulse while the Trunk
+         `<tonk-site>`. It shows the shared loading pulse while the Trunk
          initializer reports progress to assistive technology. Styled by the inline
-         critical CSS in <head>; hidden purely by CSS
+         CSS in <head>; hidden purely by CSS
          (`body:has(tonk-site)`) — the wasm never has to know it exists. -->
         <div id="tonk-boot" aria-live="polite">
             <div class="tonk-boot-center">

@@ -64,6 +64,10 @@
       // dark/light), so the injected WA CSS resolves its custom properties
       // identically to the host page.
       if (d.rootClass) document.documentElement.className=d.rootClass;
+      // The theme and palette the app's stylesheet is written for. The page
+      // that frames the outermost site carries no theme of its own to hand
+      // down, so each guest names them itself.
+      document.documentElement.classList.add("wa-theme-default","wa-palette-shoelace");
       // The injected rootClass is a one-time snapshot, so a later OS
       // light/dark switch wouldn't reach the guest (the parent retoggles its
       // own `wa-dark`/`wa-light` on `prefers-color-scheme`, but the guest's

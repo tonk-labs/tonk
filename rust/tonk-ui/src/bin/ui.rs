@@ -27,10 +27,6 @@ async fn main() {
     // and the sites it nests, and this page asks no worker for anything.
     tonk_portal::register_site();
 
-    // What a frame asks of the page around it: navigate, set the title,
-    // pass an analytics event on.
-    tonk_host::install();
-
     // Passkey ceremonies live on the window: `navigator.credentials`
     // does not exist in the service worker, and each ceremony needs a
     // user gesture. The worker never sees root-key material. The hook

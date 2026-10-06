@@ -389,7 +389,15 @@ async fn build_origin_payload() -> Result<(JsValue, JsValue), String> {
     let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
     let _ = Reflect::set(&payload, &"fromOrigin".into(), &JsValue::TRUE);
     let _ = Reflect::set(&payload, &"manifest".into(), &manifest);
-    if let Some(href) = app_stylesheet_href() {
+    // The app's stylesheet, named by the build's manifest; a document that
+    // links one itself (a site's frame bringing up another) names that.
+    let stylesheet = Reflect::get(&manifest, &"css".into())
+        .ok()
+        .and_then(|name| name.as_string())
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("/{name}"))
+        .or_else(app_stylesheet_href);
+    if let Some(href) = stylesheet {
         let _ = Reflect::set(&payload, &"cssHref".into(), &JsValue::from_str(&href));
     }
     let prose = bundle_graph_entries(fetch_tonk_prose_shell().await);
