@@ -86,27 +86,6 @@
     var c=(window.tonk&&window.tonk.context)||{};
     return !c.repo;
   }
-  // A frame on an origin of its own asks its own worker for everything
-  // under `/api/`: nothing of it goes to the page around.
-  function ownsPath(url){
-    return location.origin!=="null"&&url.indexOf("/api/")===0;
-  }
-  // On an origin of its own, the app's static files (the guest runtime, the
-  // stylesheet, images, fonts, the editor bundles) are this origin's too: its worker serves them
-  // and keeps them for offline, which a relayed fetch would go around. So
-  // are the space's assets, `/asset:{hash}`, which that worker reads from
-  // the space's own database.
-  function ownsStatic(url){
-    if(location.origin==="null") return false;
-    var path=url.indexOf(location.origin+"/")===0?url.slice(location.origin.length):url;
-    return /^\/(guest\/|styles-|images\/|fonts\/|tonk-code\/|tonk-prose\/|tonk-table\/|asset:)/.test(path);
-  }
-  // `PUT /` on an origin of its own stores an asset in the space there.
-  function storesAsset(url,input,init){
-    if(location.origin==="null") return false;
-    var method=(init&&init.method)||(typeof input==="object"&&input&&input.method)||"GET";
-    return method.toUpperCase()==="PUT"&&(url==="/"||url===location.origin+"/");
-  }
   function nativeWithContext(input,init){
     var request=new Request(input,init);
     contextHeaders().forEach(function(h){ request.headers.set(h[0],h[1]); });
@@ -563,8 +542,8 @@
   });
 
   // Override window.fetch so guest code (and our own loaders) can fetch
-  // same-origin, SW-routed resources the opaque iframe can't reach itself.
-  // Host-relative requests (`/…`, not `//`) route through `tonk.fetch`, which
+  // same-origin, SW-routed resources an opaque iframe can't reach itself.
+  // There, host-relative requests (`/…`, not `//`) route through `tonk.fetch`, which
   // has the host perform the real fetch and transfer the response stream back;
   // everything else (absolute cross-origin, `blob:`, `data:`) passes through
   // to the native fetch — notably the runtime bootstrap's own blob-URL module
@@ -598,9 +577,13 @@
   }
   window.fetch=function(input,init){
     var url=(typeof input==="string")?input:(input&&input.url)||"";
-    // This space's own data, on its own origin: its own worker answers.
-    if(ownsPath(url)){ return nativeWithContext(input,init); }
-    if(ownsStatic(url)||storesAsset(url,input,init)){ return nativeFetch(input,init); }
+    // On an origin of its own, this frame's worker answers whatever it
+    // asks for: its data, its assets, the files it runs on. Nothing is
+    // asked of the page around it. A request for its data carries the
+    // context the worker routes by.
+    if(location.origin!=="null"){
+      return url.indexOf("/api/")===0?nativeWithContext(input,init):nativeFetch(input,init);
+    }
     // Host-relative (`/…`, not `//`): route through the relay.
     if(url.charAt(0)==="/"&&url.charAt(1)!=="/"){
       return relayRequest(url,input,init);

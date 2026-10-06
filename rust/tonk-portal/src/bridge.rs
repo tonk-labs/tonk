@@ -2049,6 +2049,17 @@ fn handle_host_fetch(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data:
     if !path.starts_with('/') || path.starts_with("//") {
         return post_error(port, "fetch-error", &id, "path must be host-relative");
     };
+    // A guest on an origin of its own has a worker of its own to ask. This
+    // page fetches nothing for it.
+    if state.borrow().origin().is_some() {
+        tonk_common::log!("portal fetch refused: a site on its own origin asked for {path}");
+        return post_error(
+            port,
+            "fetch-error",
+            &id,
+            "a site on its own origin fetches from its own worker",
+        );
+    }
     if let Some(requested) = data_plane_location(&path, state) {
         let s = state.borrow();
         let permitted = s
