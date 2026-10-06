@@ -34,7 +34,7 @@ Roughly half of today's 61 routes are commands wearing HTTP (`/api/account/*`, `
 
 3. **A trigger.** Two forms, both already wired:
    - Declarative, in a view: `command!: &member/promote` in `rust/tonk-core/assets/library/core.yaml`, bound to a form or `onclick=command`. Fields read `dom.event.*` attributes.
-   - Programmatic, from a Rust element: build the same transient as a `TransactRequest` claim and dispatch through `window.tonk.transact(...)`. See `invite_claim_json` / `enable_sync_claim_json` in `rust/tonk-fab/src/logic.rs`.
+   - Programmatic, from a Rust element: build the same transient as a `TransactRequest` claim and `POST` it to the branch's `/transact` (`crate::profile::transact` in `rust/tonk-fab`). See `invite_claim_json` / `enable_sync_claim_json` in `rust/tonk-fab/src/logic.rs`.
 
 4. **Outcomes as facts.** The handler asserts durable facts (a `MemberRole` stamp, a `Membership` row, an `Invitation`) or overlay facts (`state:*` entities for per-session, unreplicated state such as a refusal the share control echoes). The page reads them through the subscription it already has. If the page must be told something that no branch can carry (navigate, set title), post to `env.origin().client` as `tonk:join` does; do not invent a response body.
 

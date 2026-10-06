@@ -22,6 +22,9 @@ wasm_bindgen_test_configure!(run_in_browser);
 #[path = "support/settle.rs"]
 mod settle;
 
+#[path = "support/profile_fetch.rs"]
+mod profile_fetch;
+
 fn pointer_event(kind: &str, x: f64, y: f64, buttons: i32) -> Event {
     pointer_event_with_type(kind, x, y, buttons, "mouse")
 }
@@ -520,19 +523,8 @@ async fn a_touch_tap_expands_but_a_nine_pixel_drag_preserves_the_collapsed_atom(
 #[dialog_common::test]
 async fn shift_space_and_a_500ms_hold_dispatch_pause_without_toggling_collapse() {
     tonk_fab::register();
-    let calls = Rc::new(RefCell::new(Vec::<String>::new()));
-    let sink = calls.clone();
-    let transact = Closure::<dyn FnMut(JsValue)>::new(move |request| {
-        sink.borrow_mut().push(
-            js_sys::JSON::stringify(&request)
-                .map(String::from)
-                .unwrap_or_default(),
-        );
-    });
+    let profile = profile_fetch::install("new Response('{}', { status: 200 })");
     let win = window().expect("window");
-    let tonk = js_sys::Object::new();
-    js_sys::Reflect::set(&tonk, &"transact".into(), transact.as_ref()).unwrap();
-    js_sys::Reflect::set(&win, &"tonk".into(), &tonk).unwrap();
 
     let document = win.document().expect("document");
     let fab = document
@@ -558,7 +550,7 @@ async fn shift_space_and_a_500ms_hold_dispatch_pause_without_toggling_collapse()
             &KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap(),
         )
         .unwrap();
-    assert_eq!(calls.borrow().len(), 1);
+    assert_eq!(profile.requests().await.len(), 1);
 
     let rect = circle.get_bounding_client_rect();
     let x = rect.left() + rect.width() / 2.0;
@@ -571,13 +563,13 @@ async fn shift_space_and_a_500ms_hold_dispatch_pause_without_toggling_collapse()
         .unwrap();
     circle.click();
 
-    assert_eq!(calls.borrow().len(), 2);
-    assert!(calls.borrow().iter().all(|request| {
-        request.contains("xyz.tonk.pause-sync/space") && request.contains("did:key:zPauseSpace")
+    let calls = profile.requests().await;
+    assert_eq!(calls.len(), 2);
+    assert!(calls.iter().all(|(_, claim)| {
+        let claim = claim.to_string();
+        claim.contains("xyz.tonk.pause-sync/space") && claim.contains("did:key:zPauseSpace")
     }));
     assert!(!wrapper.class_list().contains("collapsed"));
 
     fab.remove();
-    let _ = js_sys::Reflect::delete_property(win.unchecked_ref::<js_sys::Object>(), &"tonk".into());
-    drop(transact);
 }

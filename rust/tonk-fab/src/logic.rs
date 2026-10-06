@@ -353,7 +353,7 @@ impl Dock {
 }
 
 /// Resolve the persisted dock from a `/query` result (a `Conclusion[]` JSON
-/// value, the shape `window.tonk.query` yields).
+/// value, the shape a branch's `/query` answers with).
 ///
 /// A conclusion row is `{ this, fields: { dock, … } }`, so the projected
 /// `dock` symbol lives under `fields` — reading it off the row directly
@@ -484,7 +484,7 @@ pub fn clamp_position(
     (left.min(vw - width).max(0.0), top.min(vh - height).max(0.0))
 }
 
-/// Build a `TransactRequest` JSON body for `window.tonk.transact(...)`.
+/// Build a `TransactRequest` JSON body for a branch's `/transact`.
 ///
 /// Asserts the `tonk:fab/dock` concept on `state:fab` with the given dock as an
 /// entity symbol. The JSON shape matches the `TransactRequest` serde derive in
@@ -594,9 +594,8 @@ pub fn promote_claim_json(space: &str, member: &str, chain: &str) -> Value {
 /// It used to carry a third field, the command URI, whose only job was to
 /// keep this shape distinct from `tonk:invite`'s identical `{this, time}`.
 /// The two commands now have their own attribute namespaces, so the marker
-/// is gone. Dispatched
-/// routeless via `window.tonk.transact`, so it lands on the FAB portal's own
-/// `main@profile:tonk` context where the command lives; the worker's handler
+/// is gone. Claimed on
+/// the profile branch, where the command lives; the worker's handler
 /// reads `space` to flip that replica — nothing space-side is required.
 pub fn pause_claim_json(space: &str, time: f64) -> Value {
     json!({
@@ -1228,7 +1227,7 @@ mod persist {
 
     #[test]
     fn reads_the_dock_from_a_conclusion_row() {
-        // The exact `Conclusion[]` shape `window.tonk.query` returns: the
+        // The exact `Conclusion[]` shape `/query` answers with: the
         // projected `dock` lives under `fields`, not on the row. Reading it
         // off the row directly is the regression that stranded restore at
         // its default even though the fact was persisted.
@@ -1833,9 +1832,8 @@ mod profile_name {
 
 /// Build a `TransactRequest` body for `tonk/rename-repository`.
 ///
-/// A transient carrying the target `space` and the new `name`. Dispatched
-/// routeless via `window.tonk.transact`, so it lands on the FAB's own
-/// `main@profile:tonk`; the worker's handler reads `space` to rename that
+/// A transient carrying the target `space` and the new `name`. Claimed
+/// on the profile branch; the worker's handler reads `space` to rename that
 /// repository — nothing space-side is required. `this` is omitted so the
 /// worker mints it from `(descriptor, parameters)`.
 ///

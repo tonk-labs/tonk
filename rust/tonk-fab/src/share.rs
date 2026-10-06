@@ -37,8 +37,8 @@
 //!
 //! There is no `<tonk-display>` delegate installed on this Rust-owned markup
 //! to resolve the button's `onsubmit` binding (see `markup.rs`'s module doc),
-//! so the click handler dispatches `tonk:invite` itself via
-//! `window.tonk.transact`, mirroring `element.rs::dispatch_pause_from_cap`
+//! so the click handler claims `tonk:invite` itself on the profile branch,
+//! mirroring `element.rs::dispatch_pause_from_cap`
 //! and `space_name.rs::dispatch_rename`.
 //!
 //! ## When the mint is refused
@@ -86,7 +86,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use js_sys::{Array, Function, JSON, Object, Promise, Reflect};
+use js_sys::{Array, Function, Object, Promise, Reflect};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
@@ -895,8 +895,7 @@ impl TonkShare {
     }
 }
 
-/// Dispatch the `tonk:invite` claim via `window.tonk.transact`, routeless —
-/// mirroring `element.rs::dispatch_pause_from_cap` and
+/// Claim `tonk:invite` on the profile branch, mirroring `element.rs::dispatch_pause_from_cap` and
 /// `space_name.rs::dispatch_rename`. There is no `<tonk-display>` delegate
 /// installed on this Rust-owned markup to resolve the button's form
 /// submission into a claim, so the click handler dispatches it directly.
@@ -911,29 +910,9 @@ fn dispatch_enable_sync(space: &str, remote: &str, share: bool, time: f64) {
     dispatch_claim(&enable_sync_claim_json(space, remote, share, time));
 }
 
-/// Hand a claim to `window.tonk.transact`. A no-op wherever the bridge is not
-/// installed, rather than an error the user would see.
+/// Claim on the profile branch.
 fn dispatch_claim(claim: &serde_json::Value) {
-    let json_str = match serde_json::to_string(claim) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let Some(win) = window() else { return };
-    let Some(tonk) = Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Object>().ok())
-    else {
-        return;
-    };
-    let Some(transact) = Reflect::get(&tonk, &"transact".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Function>().ok())
-    else {
-        return;
-    };
-    if let Ok(obj) = JSON::parse(&json_str) {
-        transact.call1(&tonk, &obj).ok();
-    }
+    crate::profile::transact(claim);
 }
 
 /// Open a clipboard write against a promise we resolve later.
@@ -1583,6 +1562,14 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
+    // The stand-in `fetch` the integration tests observe claims through.
+    mod profile_fetch {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/profile_fetch.rs"
+        ));
+    }
+
     // Model the browser write as a promise fulfilled when the supplied text arrives.
     // These state tests do not depend on clipboard permission or user activation.
     fn fake_clipboard_write(
@@ -2029,17 +2016,9 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn the_visible_share_action_uses_the_real_headless_mint_once() {
+    async fn the_visible_share_action_uses_the_real_headless_mint_once() {
         crate::register();
-        let calls = Rc::new(RefCell::new(0_u32));
-        let sink = calls.clone();
-        let transact = Closure::<dyn FnMut(JsValue)>::new(move |_| {
-            *sink.borrow_mut() += 1;
-        });
-        let win = window().expect("window");
-        let tonk = Object::new();
-        Reflect::set(&tonk, &"transact".into(), transact.as_ref()).unwrap();
-        Reflect::set(&win, &"tonk".into(), &tonk).unwrap();
+        let profile = profile_fetch::install("new Response('{}', { status: 200 })");
 
         let bar = mounted_bar();
         crate::element::apply_account_ready(&bar, true);
@@ -2064,7 +2043,7 @@ mod tests {
             .unchecked_into();
         assert_eq!(read_state(&control), ShareState::Copying);
         assert_eq!(
-            *calls.borrow(),
+            profile.requests().await.len(),
             1,
             "double-click cannot rotate the invite twice"
         );
@@ -2087,8 +2066,6 @@ mod tests {
 
         bar.remove();
         remove_refusal_dialog();
-        let _ = Reflect::delete_property(win.unchecked_ref::<Object>(), &"tonk".into());
-        drop(transact);
     }
 
     /// A refusal with no repair still has to explain itself. The confirm stays

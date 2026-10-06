@@ -38,7 +38,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
 use crate::bridge::PortalState;
-use crate::shared::{connect_portal, install_method_shims};
+use crate::shared::connect_portal;
 use crate::space_origin::{site_origin, site_pattern};
 
 /// Shared cell holding the portal state once the iframe is up. An `Rc` so the
@@ -119,7 +119,7 @@ impl CustomElement for TonkSite {
 
 /// Tear down the portal iframe held by `cell`, if any.
 ///
-/// TWO-PHASE: sever the comms (aborts + port closes via `clear_subs`),
+/// TWO-PHASE: sever the comms (aborts + port closes via `sever`),
 /// unload the guest realm so it tears down on its own schedule, and only
 /// remove the element a tick later. Synchronously destroying a live nested
 /// guest (running wasm, brokered ports, its own nested frames) from inside a
@@ -136,7 +136,7 @@ fn teardown(cell: &StateCell) {
     if let Some(state) = cell.borrow_mut().take() {
         let mut s = state.borrow_mut();
         s.disposed = true;
-        s.clear_subs();
+        s.sever();
         if let Some(iframe) = s.iframe.take() {
             crate::bridge::unregister_portal(&iframe);
             let _ = iframe.remove_attribute("srcdoc");
@@ -339,10 +339,9 @@ fn on_own_origin(host: &Element, with: &Location) -> bool {
 /// state pushes no further frames.
 ///
 /// The subscription rides a hidden probe child (its own `reset` property),
-/// not the site element itself — the portal's `reset` shim is the bridge
-/// relay's. Ambient `with` resolution walks up from the probe to the site,
-/// and the host's `with` observer re-routes the entry if the context is
-/// restamped. Deferred a microtask: inside a render pass this callback can
+/// not the site element itself. Ambient `with` resolution walks up from
+/// the probe to the site, and the host's `with` observer re-routes the
+/// entry if the context is restamped. Deferred a microtask: inside a render pass this callback can
 /// be delivered after the element was detached again (the reaction-queue
 /// hazard), and the dispatch must come from a connected tree.
 fn install_self_heal(this: &HtmlElement, slot: Rc<RefCell<Option<Subscription>>>) {
@@ -560,12 +559,6 @@ pub fn register() {
         && win.custom_elements().get("tonk-site").is_undefined()
     {
         TonkSite::define("tonk-site");
-        // Install the `reset` / `update` / `error` prototype shims that route
-        // a host subscription's frames into this portal's per-instance
-        // delegates (and thus out to the sealed guest as `subscribe-event`).
-        // Without these the host calls `consumer.reset(...)` on a `<tonk-site>`
-        // that has no such method and the frame is silently dropped.
-        install_method_shims("tonk-site");
     }
 }
 

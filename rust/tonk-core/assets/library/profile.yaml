@@ -2589,6 +2589,50 @@ element!: &space-create
         }
         self.create(form);
       }
+    watch: |
+      (self, query) => {
+        // A subscription is the profile branch's `/query` answered as an
+        // event stream: what holds now, then what each change asserts.
+        const abort = new AbortController();
+        const branch = (window.tonk.context || {}).branch || 'main';
+        // Asked now, not at the first read: the caller claims next, and
+        // the answer to that claim must find the stream already open.
+        const opened = fetch(`/api/repository/profile:tonk/branch/${branch}/query`, {
+          method: 'POST',
+          signal: abort.signal,
+          headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+          body: JSON.stringify(query),
+        });
+        opened.catch(() => {});
+        const frames = (async function* () {
+          const response = await opened;
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+          let text = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) return;
+            text += value;
+            for (let end; (end = text.indexOf('\n\n')) >= 0; text = text.slice(end + 2)) {
+              const frame = text.slice(0, end);
+              if (!frame.startsWith('data:')) continue;
+              const said = JSON.parse(frame.slice(5));
+              yield Array.isArray(said) ? said : said.conclusions || said.asserted || [];
+            }
+          }
+        })();
+        return { read: () => frames.next(), cancel: async () => abort.abort() };
+      }
+    claim: |
+      async (self, request) => {
+        const branch = (window.tonk.context || {}).branch || 'main';
+        const response = await fetch(`/api/repository/profile:tonk/branch/${branch}/transact`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      }
     create: |
       async (self, form) => {
         let reader;
@@ -2626,15 +2670,15 @@ element!: &space-create
             parameters.seed = new URL(seed, window.tonk.context.origin).href;
           }
           const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
-          reader = window.tonk.subscribe({
+          reader = self.watch({
             predicate: { with: {
               status: { the: 'xyz.tonk.space-creation/status', as: 'Text', cardinality: 'one' },
               detail: { the: 'xyz.tonk.space-creation/detail', as: 'Text', cardinality: 'one' },
             } },
             terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
-          }).getReader();
+          });
           self.__reader = reader;
-          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+          await self.claim({ claims: [{ op: 'assert', application: {
             predicate: { kind: 'transient', concept: { with: fields } },
             parameters: { this: id, ...parameters },
           } }] });
@@ -5142,6 +5186,50 @@ element!: &space-remove
         if (button) button.textContent = self.hasAttribute('busy')
           ? (action === 'leave' ? 'leaving…' : 'deleting…') : submit;
       }
+    watch: |
+      (self, query) => {
+        // A subscription is the profile branch's `/query` answered as an
+        // event stream: what holds now, then what each change asserts.
+        const abort = new AbortController();
+        const branch = (window.tonk.context || {}).branch || 'main';
+        // Asked now, not at the first read: the caller claims next, and
+        // the answer to that claim must find the stream already open.
+        const opened = fetch(`/api/repository/profile:tonk/branch/${branch}/query`, {
+          method: 'POST',
+          signal: abort.signal,
+          headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+          body: JSON.stringify(query),
+        });
+        opened.catch(() => {});
+        const frames = (async function* () {
+          const response = await opened;
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+          let text = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) return;
+            text += value;
+            for (let end; (end = text.indexOf('\n\n')) >= 0; text = text.slice(end + 2)) {
+              const frame = text.slice(0, end);
+              if (!frame.startsWith('data:')) continue;
+              const said = JSON.parse(frame.slice(5));
+              yield Array.isArray(said) ? said : said.conclusions || said.asserted || [];
+            }
+          }
+        })();
+        return { read: () => frames.next(), cancel: async () => abort.abort() };
+      }
+    claim: |
+      async (self, request) => {
+        const branch = (window.tonk.context || {}).branch || 'main';
+        const response = await fetch(`/api/repository/profile:tonk/branch/${branch}/transact`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      }
     submit: |
       async (self, form) => {
         let reader;
@@ -5159,15 +5247,15 @@ element!: &space-remove
           await window.tonk.ready;
           if (!self.isConnected) return;
           const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
-          reader = window.tonk.subscribe({
+          reader = self.watch({
             predicate: { with: {
               status: { the: 'xyz.tonk.space-removal/status', as: 'Text', cardinality: 'one' },
               detail: { the: 'xyz.tonk.space-removal/detail', as: 'Text', cardinality: 'one' },
             } },
             terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
-          }).getReader();
+          });
           self.__reader = reader;
-          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+          await self.claim({ claims: [{ op: 'assert', application: {
             predicate: { kind: 'transient', concept: { with: {
               subject: { the: 'xyz.tonk.command.remove-space/subject', as: 'Entity' },
             } } },
@@ -6140,6 +6228,50 @@ element!: &account-settings
         if (submit) submit.disabled = true;
         self.profileNameSave(form, name);
       }
+    watch: |
+      (self, query) => {
+        // A subscription is the profile branch's `/query` answered as an
+        // event stream: what holds now, then what each change asserts.
+        const abort = new AbortController();
+        const branch = (window.tonk.context || {}).branch || 'main';
+        // Asked now, not at the first read: the caller claims next, and
+        // the answer to that claim must find the stream already open.
+        const opened = fetch(`/api/repository/profile:tonk/branch/${branch}/query`, {
+          method: 'POST',
+          signal: abort.signal,
+          headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+          body: JSON.stringify(query),
+        });
+        opened.catch(() => {});
+        const frames = (async function* () {
+          const response = await opened;
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+          let text = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) return;
+            text += value;
+            for (let end; (end = text.indexOf('\n\n')) >= 0; text = text.slice(end + 2)) {
+              const frame = text.slice(0, end);
+              if (!frame.startsWith('data:')) continue;
+              const said = JSON.parse(frame.slice(5));
+              yield Array.isArray(said) ? said : said.conclusions || said.asserted || [];
+            }
+          }
+        })();
+        return { read: () => frames.next(), cancel: async () => abort.abort() };
+      }
+    claim: |
+      async (self, request) => {
+        const branch = (window.tonk.context || {}).branch || 'main';
+        const response = await fetch(`/api/repository/profile:tonk/branch/${branch}/transact`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      }
     profile-name-save: |
       async (self, form, name) => {
         let reader;
@@ -6148,15 +6280,15 @@ element!: &account-settings
           await window.tonk.ready;
           if (!self.isConnected) return;
           const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
-          reader = window.tonk.subscribe({
+          reader = self.watch({
             predicate: { with: {
               status: { the: 'xyz.tonk.profile-rename/status', as: 'Text', cardinality: 'one' },
               detail: { the: 'xyz.tonk.profile-rename/detail', as: 'Text', cardinality: 'one' },
             } },
             terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
-          }).getReader();
+          });
           self._nameReader = reader;
-          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+          await self.claim({ claims: [{ op: 'assert', application: {
             predicate: { kind: 'transient', concept: { with: {
               name: { the: 'xyz.tonk.command.profile-rename/name', as: 'Text' },
             } } },
@@ -6835,7 +6967,7 @@ element!: &command-palette
         const timing = {};
         const interpreted = async (branch) => {
           const field = (name, as) => ({ the: `tonk.dialog.intent.interpret/${name}`, as });
-          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+          await self.post(branch, 'transact', { claims: [{ op: 'assert', application: {
             predicate: { kind: 'transient', concept: {
               description: 'Interpret what was typed in the command palette, where it was opened.',
               with: {
@@ -6843,7 +6975,7 @@ element!: &command-palette
                 site: field('site', 'Entity'), time: field('time', 'Float'),
               } } },
             parameters: { expression, input: typed, site, time: now },
-          } }] }, { with: branch });
+          } }] });
           // The handler runs after the transact returns: wait until it has
           // recorded this line.
           const recorded = { predicate: { with: { input: {
@@ -6851,7 +6983,7 @@ element!: &command-palette
             terms: { this: expression, input: { '?': { name: 'input' } } } };
           for (let tries = 0; tries < 100; tries++) {
             if (self.__asked !== asked) return false;
-            const found = await window.tonk.query(recorded, { with: branch });
+            const found = await self.post(branch, 'query', recorded);
             const rows = Array.isArray(found) ? found : (found && found.rows) || [];
             if (rows.some((row) => (row.fields || {}).input === typed)) return true;
             await new Promise((resolve) => setTimeout(resolve, 10));
@@ -6885,7 +7017,7 @@ element!: &command-palette
           }) : false;
           if (self.__asked !== asked) return [];
           timing[branch] = Math.round(performance.now() - started);
-          return window.tonk.query(done ? ofExpression : ofLine, { with: branch })
+          return self.post(branch, 'query', done ? ofExpression : ofLine)
             .then((found) => (Array.isArray(found) ? found : (found && found.rows) || [])
               .map((row) => read(branch, row)))
             .catch((error) => {
@@ -6954,17 +7086,31 @@ element!: &command-palette
           list.append(row);
         });
       }
+    post: |
+      async (self, branch, operation, body) => {
+        // `branch` is a `{branch}@{repository}` location: its worker
+        // answers that branch's `/query` and `/transact`.
+        const at = branch.indexOf('@');
+        const response = await fetch(
+          `/api/repository/${branch.slice(at + 1)}/branch/${branch.slice(0, at)}/${operation}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+        return response.json();
+      }
     remember: |
       (self, proposal) => {
         const profile = self.getAttribute('profile');
         if (!profile) return;
         const field = (name, as) => ({ the: `tonk.dialog.intent.choice/${name}`, as });
-        window.tonk.transact({ claims: [{ op: 'assert', application: {
+        self.post(profile, 'transact', { claims: [{ op: 'assert', application: {
           predicate: { kind: 'durable', concept: { with: {
             command: field('command', 'Entity'), input: field('input', 'Text'), time: field('time', 'Float'),
           } } },
           parameters: { command: proposal.command, input: proposal.input || '', time: Date.now() },
-        } }] }, { with: profile }).catch((error) => console.warn('<command-palette> not remembered', error));
+        } }] }).catch((error) => console.warn('<command-palette> not remembered', error));
       }
     run: |
       async (self) => {
@@ -6980,7 +7126,7 @@ element!: &command-palette
         // opening one of its own panels (a site request).
         self.dismiss();
         try {
-          await window.tonk.transact(proposal.claim, { with: proposal.branch });
+          await self.post(proposal.branch, 'transact', proposal.claim);
           self.remember(proposal);
         } catch (error) {
           console.error('<command-palette> run failed', error);

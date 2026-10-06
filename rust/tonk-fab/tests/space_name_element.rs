@@ -25,6 +25,10 @@ use web_sys::{CustomEvent, Element, window};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+// In a subdirectory, so Cargo does not build it as a test suite of its own.
+#[path = "support/profile_fetch.rs"]
+mod profile_fetch;
+
 const SPACE: &str = "did:key:z6MkTestSpace";
 
 fn document() -> web_sys::Document {
@@ -136,22 +140,10 @@ async fn it_dispatches_a_subscribe_carrying_the_raw_attribute_query() {
 
 #[dialog_common::test]
 async fn it_dispatches_an_inlined_rename_claim_and_reverts_the_chip_immediately() {
-    // Mock `window.tonk.transact` to capture the routeless dispatch — there is
-    // no installed host in this test (see the module doc), so nothing else
-    // would observe it.
-    let captured: std::rc::Rc<std::cell::RefCell<Option<String>>> =
-        std::rc::Rc::new(std::cell::RefCell::new(None));
-    let sink = captured.clone();
-    let transact_cb = Closure::<dyn FnMut(JsValue)>::new(move |req: JsValue| {
-        let json = js_sys::JSON::stringify(&req)
-            .map(String::from)
-            .unwrap_or_default();
-        *sink.borrow_mut() = Some(json);
-    });
-    let win = window().expect("window");
-    let tonk = js_sys::Object::new();
-    js_sys::Reflect::set(&tonk, &"transact".into(), transact_cb.as_ref()).expect("set transact");
-    js_sys::Reflect::set(&win, &"tonk".into(), &tonk).expect("set window.tonk");
+    // Stand in for `fetch` to capture the claim the element posts to the
+    // profile branch's `/transact`. There is no worker behind this test (see
+    // the module doc), so nothing else would observe it.
+    let profile = profile_fetch::install("new Response('{}', { status: 200 })");
 
     let el = mount();
     let editable = el
@@ -174,12 +166,12 @@ async fn it_dispatches_an_inlined_rename_claim_and_reverts_the_chip_immediately(
     let change = web_sys::Event::new_with_event_init_dict("change", &init).expect("event");
     editable.dispatch_event(&change).expect("dispatch change");
 
-    yield_for(10).await;
-
-    let json = captured
-        .borrow()
-        .clone()
-        .expect("window.tonk.transact must be called on commit");
+    let json = profile
+        .requests()
+        .await
+        .first()
+        .map(|(_, claim)| claim.to_string())
+        .expect("a claim must be posted to the profile on commit");
     // The descriptor rides WITH the claim — nothing seeded is consulted.
     assert!(
         json.contains("xyz.tonk.rename-repository/space"),
@@ -202,9 +194,6 @@ async fn it_dispatches_an_inlined_rename_claim_and_reverts_the_chip_immediately(
         Some("Untitled"),
         "chip must revert to the previous name, not keep the typed one"
     );
-
-    js_sys::Reflect::delete_property(&win, &"tonk".into()).ok();
-    drop(transact_cb);
 }
 
 /// A single conclusion row shaped like a real subscription result:

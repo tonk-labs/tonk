@@ -198,6 +198,37 @@ pub fn navigate_to(href: &str) {
     }
 }
 
+/// Change the address of the current history entry to `href` in place, and
+/// have the page route again as it does for [`navigate_to`].
+///
+/// In a guest, `history.replaceState` is the one its bootstrap put there,
+/// which tells the page that frames it instead.
+pub fn replace_to(href: &str) {
+    use wasm_bindgen::JsValue;
+    let Some(win) = window() else {
+        return;
+    };
+    let replaced = win.history().is_ok_and(|history| {
+        history
+            .replace_state_with_url(&JsValue::NULL, "", Some(href))
+            .is_ok()
+    });
+    if replaced && let Ok(event) = web_sys::Event::new("popstate") {
+        let _ = win.dispatch_event(&event);
+    }
+}
+
+/// Move `delta` entries through the page's history: back for a negative
+/// number, forward for a positive one.
+///
+/// In a guest, `history.go` is the one its bootstrap put there, which asks
+/// the page that frames it instead.
+pub fn traverse(delta: i32) {
+    if let Some(history) = window().and_then(|win| win.history().ok()) {
+        let _ = history.go_with_delta(delta);
+    }
+}
+
 /// Reload the top page, forwarding through every sealed guest boundary.
 ///
 /// Unlike [`navigate_to`], this deliberately refreshes an unchanged route.

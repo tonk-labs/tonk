@@ -33,8 +33,6 @@ pub use bridge::{ContainedTaskReturn, RegisterFocusReturn, on_register, on_task}
 #[cfg(target_arch = "wasm32")]
 mod element;
 #[cfg(target_arch = "wasm32")]
-mod query;
-#[cfg(target_arch = "wasm32")]
 mod shared;
 #[cfg(target_arch = "wasm32")]
 mod site;

@@ -33,6 +33,9 @@ function fixture(kind) {
     querySelectorAll: () => [submit],
   });
   let pending;
+  const element = kind === 'create' ? 'space-create' : 'account-settings';
+  self.watch = query => method(element, 'watch')(self, query);
+  self.claim = request => method(element, 'claim')(self, request);
   self.create = form => { pending = method('space-create', 'create')(self, form); };
   self.profileNameSave = (form, name) => { pending = method('account-settings', 'profile-name-save')(self, form, name); };
   const event = { target: form, prevented: false, stopped: false,
@@ -45,26 +48,30 @@ function bridge(outcome, { reject = false, ended = false } = {}) {
   let calls = 0;
   let cancelled = 0;
   let sent;
-  globalThis.window = { tonk: {
-    ready: Promise.resolve(),
-    subscribe(query) {
-      id = query.terms.this;
-      let reads = 0;
-      return { getReader: () => ({
-        read: async () => ended ? { done: true } : { value: reads++ === 0
-          ? [{ this: 'urn:uuid:another-request', fields: { status: 'failed', detail: 'Unrelated failure' } }]
-          : [{ this: id, fields: outcome }] },
-        cancel: async () => { cancelled++; },
-      }) };
-    },
-    transact: async command => {
-      calls++;
-      sent = command.claims[0].application.parameters;
-      assert.equal(sent.this, id, 'subscribe before dispatch with the same request ID');
-      if (reject) throw new Error('Transport failed');
-    },
-    navigate() {},
-  } };
+  globalThis.window = { tonk: { ready: Promise.resolve(), context: {}, navigate() {} } };
+  const frame = rows => new TextEncoder().encode(`data: ${JSON.stringify(rows)}\n\n`);
+  globalThis.fetch = async (url, init) => {
+    const body = JSON.parse(init.body);
+    if (url.endsWith('/query')) {
+      id = body.terms.this;
+      init.signal.addEventListener('abort', () => { cancelled++; });
+      return new Response(new ReadableStream({
+        start(controller) {
+          if (!ended) {
+            controller.enqueue(frame([{ this: 'urn:uuid:another-request', fields: { status: 'failed', detail: 'Unrelated failure' } }]));
+            controller.enqueue(frame([{ this: id, fields: outcome }]));
+          }
+          controller.close();
+        },
+      }));
+    }
+    assert.ok(url.endsWith('/transact'), `unexpected request to ${url}`);
+    calls++;
+    sent = body.claims[0].application.parameters;
+    assert.equal(sent.this, id, 'subscribe before dispatch with the same request ID');
+    if (reject) throw new Error('Transport failed');
+    return new Response('{}');
+  };
   return { calls: () => calls, cancelled: () => cancelled, sent: () => sent };
 }
 

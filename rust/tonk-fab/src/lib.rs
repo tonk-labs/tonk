@@ -63,6 +63,8 @@ mod member_graph;
 mod member_roster;
 
 #[cfg(target_arch = "wasm32")]
+mod profile;
+#[cfg(target_arch = "wasm32")]
 mod profile_name;
 
 #[cfg(target_arch = "wasm32")]

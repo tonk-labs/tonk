@@ -11,11 +11,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 custom-elements = { workspace = true }
-indexmap = { workspace = true }
-ipld-core = { workspace = true }
 js-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde-wasm-bindgen = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 bs58 = { workspace = true }
@@ -25,7 +22,6 @@ dialog-varsig = { workspace = true }
 tonk-common = { workspace = true }
 tonk-identity = { workspace = true }
 tonk-host = { workspace = true }
-tonk-worker-api = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [

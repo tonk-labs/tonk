@@ -19,8 +19,8 @@
 //! event this element listens for directly — there is no `tonk-display`
 //! delegate here to resolve a declarative `onchange=` binding, since this
 //! markup is Rust-owned. The commit builds an inlined `tonk/rename-repository`
-//! claim (mirroring `pause_claim_json`) and dispatches it routeless via
-//! `window.tonk.transact`, exactly as the FAB's pause affordance does
+//! claim (mirroring `pause_claim_json`) and claims it on the profile branch,
+//! exactly as the FAB's pause affordance does
 //! (`element.rs:dispatch_pause_from_cap`).
 //!
 //! The chip never optimistically keeps the typed text: on commit it reverts
@@ -33,7 +33,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use js_sys::{Function, JSON, Object, Reflect};
+use js_sys::Reflect;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
@@ -372,34 +372,13 @@ fn handle_bar_rename(
     dispatch_rename(&space, &typed);
 }
 
-/// Build the `tonk/rename-repository` claim and dispatch it via
-/// `window.tonk.transact` — routeless, exactly as
-/// `element.rs::dispatch_pause_from_cap` dispatches `tonk:pause-sync`. Lands
-/// on the FAB's own `main@profile:tonk` context; the worker's handler reads
+/// Build the `tonk/rename-repository` claim and claim it on the profile
+/// branch, exactly as `element.rs::dispatch_pause_from_cap` claims
+/// `tonk:pause-sync`; the worker's handler reads
 /// `space` off the command to rename that repository, so nothing space-side
 /// is required.
 fn dispatch_rename(space: &str, name: &str) {
-    let claim = rename_repo_claim_json(space, name);
-    let json_str = match serde_json::to_string(&claim) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let Some(win) = window() else { return };
-    let Some(tonk) = Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Object>().ok())
-    else {
-        return;
-    };
-    let Some(transact) = Reflect::get(&tonk, &"transact".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Function>().ok())
-    else {
-        return;
-    };
-    if let Ok(obj) = JSON::parse(&json_str) {
-        transact.call1(&tonk, &obj).ok();
-    }
+    crate::profile::transact(&rename_repo_claim_json(space, name));
 }
 
 /// Register `<ui-space-name>`. Idempotent. Installs the prototype `reset`/

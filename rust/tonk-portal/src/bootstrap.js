@@ -1,5 +1,5 @@
 (function(){
-  var nextId=0, pending=new Map(), streams=new Map(), subRows=new Map(), registerFocus=new Map(), taskFocus=new Map();
+  var nextId=0, pending=new Map(), registerFocus=new Map(), taskFocus=new Map();
   var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
   var ch=new MessageChannel(), port=ch.port1;
   function mint(){return "r"+(++nextId);}
@@ -46,15 +46,6 @@
     follow.observe(document.documentElement,{childList:true,subtree:true});
     setTimeout(function(){ follow.disconnect(); },2000);
   }
-  // Merge an optional per-call routing context ({with}) into an envelope.
-  // The guest relay passes the `branch@repo` location its in-guest `with`
-  // ancestry resolved. The host parses it and honors it ONLY when the
-  // portal's `allow` permits it (denied with a typed error otherwise), so
-  // this is always safe to send.
-  function withRoute(extra,ctx){
-    if(ctx&&ctx.with){ extra.with=ctx.with; }
-    return extra;
-  }
   // The request-context headers every relayed /api fetch carries, so the SW can
   // tie the request to this tab's SITE and route/contain it. Site, path, and hash
   // come from the injected context (the host's site id + the host's location;
@@ -95,12 +86,10 @@
     var c=(window.tonk&&window.tonk.context)||{};
     return !c.repo;
   }
+  // A frame on an origin of its own asks its own worker for everything
+  // under `/api/`: nothing of it goes to the page around.
   function ownsPath(url){
-    if(ownProfile()) return url.indexOf("/api/")===0;
-    var c=ownSpace();
-    if(!c) return false;
-    return url.indexOf("/api/repository/"+c.repo+"/")===0||
-      url.split("?")[0]==="/api/language-server";
+    return location.origin!=="null"&&url.indexOf("/api/")===0;
   }
   // On an origin of its own, the app's static files (the guest runtime, the
   // stylesheet, images, fonts) are this origin's too: its worker serves them
@@ -206,34 +195,10 @@
       });
     });
   }
-  // In-flight de-duplication for one-shot queries. Many <tonk-display>
-  // elements resolve the SAME concept descriptor (phase-1) or bookmark name
-  // on one page load — e.g. three displays of `tonk:repository` each fire an
-  // identical `db.meta/*` query. Coalesce identical concurrent queries
-  // onto one request keyed by (route + body); every caller shares the single
-  // promise. Purely in-flight (cleared when it settles), so no staleness —
-  // just fewer round-trips. A subscription is never deduped here (it's a
-  // long-lived stream), only the fire-and-forget `query`.
-  var inflightQ=new Map();
-  function dedupQuery(env){
-    var key;
-    try{ key=JSON.stringify(env); }catch(e){ return call("query",env); }
-    var hit=inflightQ.get(key);
-    if(hit) return hit;
-    var p=call("query",env).finally(function(){ inflightQ.delete(key); });
-    inflightQ.set(key,p);
-    return p;
-  }
   var tonk={
     context:{this:"",model:""},
     ready:ready,
     preview:function(request){return call("preview",{request:request});},
-    query:function(body,ctx){return dedupQuery(withRoute({body:body},ctx));},
-    transact:function(request,ctx){return call("transact",withRoute({request:request},ctx));},
-    // Evaluate an asserted-notation document against the branch. `detail` carries
-    // {document, transact}; the parent relays it to the installed host's
-    // consumer path, which performs the typed evaluate and returns its parsed result.
-    evaluate:function(detail){return call("evaluate",{document:(detail&&detail.document)||"",transact:!(detail&&detail.transact===false)});},
     // Ask the HOST page to delegate: the account root lives behind the
     // passkey, and WebAuthn exists only on the top-level window, inside a
     // user gesture. A guest click posts {subject, command, audience} here;
@@ -325,20 +290,6 @@
         });
       });
     },
-    subscribe:function(body,ctx){
-      var id=mint();
-      return new ReadableStream({
-        start:function(controller){
-          streams.set(id,controller);
-          ready.then(function(){port.postMessage(withRoute({v:1,type:"subscribe",id:id,body:body},ctx));},
-                     function(err){streams.delete(id);controller.error(err);});
-        },
-        cancel:function(){
-          streams.delete(id);subRows.delete(id);
-          port.postMessage({v:1,type:"unsubscribe",id:id});
-        }
-      });
-    }
   };
   port.onmessage=function(event){
     var env=event.data; if(!env) return;
@@ -368,14 +319,6 @@
       }
       case "preview-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id); h.resolve(env.value); return;
-      }
-      case "query-result": case "transact-result": {
-        var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
-        h.resolve("rows" in env ? env.rows : env.receipt); return;
-      }
-      case "evaluate-result": {
-        var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
-        h.resolve(env.result); return;
       }
       case "delegate-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
@@ -475,81 +418,53 @@
         h.resolve(rebuilt);
         return;
       }
-      case "query-error": case "transact-error": case "evaluate-error": case "fetch-error": case "delegate-error": {
+      case "fetch-error": case "delegate-error": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.reject(new Error(env.error)); return;
-      }
-      case "subscribe-event": {
-        var c=streams.get(env.id); if(!c) return;
-        // The guest's window.tonk.subscribe() is documented as a stream of
-        // full Conclusion[] snapshots. The host sends either a full set
-        // (env.rows) or a delta (env.delta = {asserted,retracted}); keep a
-        // retained set per stream and always enqueue the full array so the
-        // author-facing contract is unchanged.
-        try{
-          var prev=subRows.get(env.id)||[];
-          var next;
-          if(env.delta){
-            var rej=env.delta.retracted||[];
-            var add=env.delta.asserted||[];
-            var keyOf=function(r){return JSON.stringify(r);};
-            // Value-equality retract, tracking which retracts found no
-            // matching row (drift) and which `this` the delta asserts.
-            // Mirrors tonk-display's apply_delta: an asserted row for an
-            // entity whose retract didn't match a retained row supersedes
-            // that entity's stale (drifted) rows, so a superseded field
-            // leaves ONE row for the entity, not two that a group-by-`this`
-            // fold would collapse to a stale/multi-valued field. Clean
-            // supersessions, pure retracts, and directory multi-valued
-            // entities (retract matches the changed tuple) are unaffected.
-            var gone={};for(var i=0;i<rej.length;i++){gone[keyOf(rej[i])]=true;}
-            var drifted={};for(var i=0;i<rej.length;i++){drifted[rej[i].this]=true;}
-            // Slot identity mirrors tonk-display's row_slots: each field,
-            // refined by the entry key when the value is a single-entry
-            // object (keyed collections arrive one row per entry). The
-            // heal replaces a drifted row only when an asserted row for
-            // the same entity claims one of ITS slots, so a superseded
-            // show{directory} never takes the sibling show{ui} with it.
-            var slotsOf=function(r){
-              var out={};var f=r.fields||{};
-              for(var k in f){ if(k==="this") continue;
-                var v=f[k];var entry=null;
-                if(v&&typeof v==="object"&&!Array.isArray(v)){
-                  var ks=Object.keys(v); if(ks.length===1) entry=ks[0];
-                }
-                out[k+"\u001e"+(entry===null?"":entry)]=true;
-              }
-              return out;
-            };
-            var asserts={};
-            for(var i=0;i<add.length;i++){
-              var t=add[i].this; var slots=asserts[t]||(asserts[t]={});
-              var s2=slotsOf(add[i]); for(var k2 in s2) slots[k2]=true;
-            }
-            next=prev.filter(function(r){
-              if(gone[keyOf(r)]){ delete drifted[r.this]; return false; }
-              return true;
-            }).filter(function(r){
-              if(!drifted[r.this]) return true;
-              var slots=asserts[r.this]; if(!slots) return true;
-              var mine=slotsOf(r);
-              for(var k3 in mine){ if(slots[k3]) return false; }
-              return true;
-            }).concat(add);
-          }else{
-            next=env.rows||[];
-          }
-          subRows.set(env.id,next);
-          c.enqueue(next);
-        }catch(e){streams.delete(env.id);subRows.delete(env.id);} return;
-      }
-      case "subscribe-error": {
-        var c=streams.get(env.id); if(!c) return; streams.delete(env.id);subRows.delete(env.id);
-        c.error(new Error(env.error)); return;
       }
     }
   };
   window.tonk=tonk;
+  // Where this document goes is the address of the page that frames it, so
+  // the host is told and performs it: `history.pushState` and `replaceState`
+  // with an address, and a change of `location` to one on this origin. The
+  // address is resolved here, against this document's base, and sent as the
+  // path in this site.
+  function tellLocation(url,replace){
+    var to; try{ to=new URL(String(url),document.baseURI); }catch(e){ return; }
+    var href=to.pathname+to.search+to.hash;
+    ready.then(function(){port.postMessage({v:1,type:"navigate",href:href,replace:!!replace});});
+  }
+  var stating=false;
+  ["pushState","replaceState"].forEach(function(name){
+    var native=history[name];
+    history[name]=function(state,unused,url){
+      if(url===undefined||url===null){
+        stating=true;
+        try{ return native.call(history,state,unused); } finally{ stating=false; }
+      }
+      tellLocation(url,name==="replaceState");
+    };
+  });
+  // A frame's own history holds none of the page's entries, so moving
+  // through history is asked of the page too.
+  history.go=function(delta){
+    delta=Math.trunc(Number(delta))||0;
+    if(!delta){ location.reload(); return; }
+    ready.then(function(){port.postMessage({v:1,type:"navigate",delta:delta});});
+  };
+  history.back=function(){ history.go(-1); };
+  history.forward=function(){ history.go(1); };
+  if(window.navigation&&location.origin!=="null"){
+    window.navigation.addEventListener("navigate",function(event){
+      if(stating||!event.cancelable||event.hashChange||event.formData||event.downloadRequest!==null) return;
+      if(event.navigationType!=="push"&&event.navigationType!=="replace") return;
+      var to=new URL(event.destination.url);
+      if(to.origin!==location.origin) return;
+      event.preventDefault();
+      tellLocation(to.href,event.navigationType==="replace");
+    });
+  }
 
   // The command palette's chord (Ctrl/Cmd+K, Ctrl/Cmd+Shift+P) belongs to the
   // chrome, but focus is usually inside a sealed frame like this one, whose
@@ -587,14 +502,15 @@
       var text=String(document.getSelection()||"").trim().slice(0,4096);
       if(text===reportedSelection) return;
       reportedSelection=text;
-      tonk.transact({claims:[{op:"assert",application:{
+      var target=claimTarget(); if(!target) return;
+      nativeWithContext(target,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({claims:[{op:"assert",application:{
         predicate:{kind:"transient",concept:{
           description:"Report what the page in a tab has selected.",
           with:{
             site:{the:"xyz.tonk.command.site-select/site",as:"Entity"},
             text:{the:"xyz.tonk.command.site-select/text",as:"Text"},
             time:{the:"xyz.tonk.command.site-select/time",as:"Float"}}}},
-        parameters:{site:site,text:text,time:Date.now()}}}]}).catch(function(){});
+        parameters:{site:site,text:text,time:Date.now()}}}]})}).catch(function(){});
     },250);
   });
 

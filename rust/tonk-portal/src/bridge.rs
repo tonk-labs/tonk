@@ -9,50 +9,45 @@
 //!
 //! [`MessageChannel`]: https://developer.mozilla.org/docs/Web/API/MessageChannel
 //!
-//! The author-facing object is unchanged:
+//! The author-facing object:
 //!
 //! ```text
 //! window.tonk = {
 //!   context: { this, model },
-//!   query(body?)      -> Promise<Conclusion[]>,
-//!   subscribe(body?)  -> ReadableStream<Conclusion[]>,
-//!   transact(request) -> Promise<receipt>,
-//!   navigate(href)    -> void,
+//!   preview(request)   -> Promise<value>,
+//!   delegate(request)  -> Promise<delegation>,
+//!   navigate(href)     -> void,
 //!   reload()           -> void,
-//!   setTitle(text)    -> void,
-//!   open(href)        -> void,
-//!   analytics(event)  -> void,
+//!   setTitle(text)     -> void,
+//!   open(href)         -> void,
+//!   analytics(event)   -> void,
+//!   register(reason, cb) -> void,
 //!   task(payload, cb)  -> void,
+//!   fetch(path, req)   -> Promise<Response>,
 //!   ready: Promise<void>,
 //! }
 //! ```
 //!
-//! `tonk` is defined synchronously when the bootstrap runs, so author
-//! top-level `tonk.query()` keeps working; each method `await`s `ready`
-//! internally before posting.
+//! `tonk` is defined synchronously when the bootstrap runs; each method
+//! `await`s `ready` internally before posting. Data is not relayed
+//! through this object: a guest reads and writes with plain `fetch`.
 //!
 //! The parent is a pure **port relay**. One page-level `message`
 //! listener (installed once) authenticates a `hello` by matching
 //! `event.source` against the registered iframes' live `contentWindow`
-//! — never by `event.origin`, which is `"null"` at an opaque origin.
+//! (never by `event.origin`, which is `"null"` at an opaque origin).
 //! On a match it binds the transferred port to that portal's
 //! [`PortalState`] and posts `ready { context }` back. The per-port
-//! dispatcher then translates each inbound envelope into the existing
-//! `tonk-query` / `tonk-subscribe` / `tonk-claim` consumer events on the
-//! `<tonk-portal>` element, which bubble to the installed host on the
-//! document. Subscription frames arrive back through the
-//! portal's `reset` / `error` methods (the same seam `<tonk-display>`
-//! uses) and are posted to the iframe as `subscribe-event` /
-//! `subscribe-error` envelopes.
+//! dispatcher then answers each inbound envelope (`preview`,
+//! `navigate`, `reload`, `title`, `open`, `analytics`, `register`,
+//! `task`, `fetch`, `delegate`, `key`) on the trusted page.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 
 use js_sys::{Object, Reflect};
-use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
+use tonk_host::bridge::context_field;
 use tonk_host::location::{Allow, Location};
-use tonk_worker_api::Conclusion;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
@@ -68,19 +63,14 @@ use crate::space_origin::{
 };
 
 /// Per-portal bridge + iframe state. Held behind `Rc<RefCell<…>>` so
-/// it is reachable from the element lifecycle, the prototype `reset`
-/// delegate, and the page-level message listener.
+/// it is reachable from the element lifecycle and the page-level
+/// message listener.
 pub(crate) struct PortalState {
     /// The single child iframe. Owned here so attribute callbacks can
     /// reload it and `disconnected_callback` can detach it.
     pub iframe: Option<HtmlIFrameElement>,
     /// Set by `disconnected_callback`; mirrors `<tonk-display>`.
     pub disposed: bool,
-    /// Monotonic counter minting unique host subscription tags.
-    next_tag: u64,
-    /// Live subscriptions keyed by the host tag we minted. Dropping an
-    /// entry cancels its host subscription.
-    subs: BTreeMap<String, BridgeSub>,
     /// Abort handles for every fetch this portal relayed. Aborted (and
     /// drained) on teardown so no response keeps streaming into a
     /// destroyed guest realm.
@@ -97,17 +87,16 @@ pub(crate) struct PortalState {
     /// chord down to this guest (see [`relay_chord_down`]). Replaced on
     /// each handshake; dropping it removes the listener.
     chord: Option<ChordRelay>,
-    /// The portal's own routing context (its `with`). Relayed guest
-    /// operations with no forwarded route are pinned to it explicitly;
-    /// `allow`'s `self` entry resolves to it.
+    /// The portal's own routing context (its `with`). `allow`'s `self`
+    /// entry resolves to it.
     with: Option<Location>,
     /// Which locations this portal permits its guest to reach. A
     /// **privilege of the trusted portal element**, set host-side at
     /// construction — NOT something the guest can assert. `<tonk-site>`
     /// derives it from its `allow` attribute; `<tonk-fab-portal>` grants
     /// `*`; the generic `<tonk-portal>` grants `self`, so a
-    /// synced/untrusted content guest's forwarded route is denied with a
-    /// typed error. See `forwarded_route`.
+    /// synced/untrusted content guest's fetch of another location is
+    /// denied with a typed error. See `handle_host_fetch`.
     allow: Allow,
     /// The space's real origin when this portal renders it there (a
     /// `<tonk-site origin>`), rather than in an opaque `srcdoc` frame.
@@ -134,24 +123,11 @@ pub(crate) struct Shell {
     pub(crate) seen: bool,
 }
 
-/// One live subscription: the iframe's correlation id (so frames are
-/// addressed to the right author stream) plus the host subscription
-/// handle (whose `Drop` cancels upstream). The port to relay frames on
-/// is always the portal's current [`PortalState::port`], never a stored
-/// clone — a subscription cannot outlive the port it was opened under,
-/// since `reload` clears the subs before the next handshake rebinds.
-struct BridgeSub {
-    iframe_id: String,
-    _host_sub: HostSubscription,
-}
-
 impl PortalState {
     pub(crate) fn new() -> Self {
         Self {
             iframe: None,
             disposed: false,
-            next_tag: 0,
-            subs: BTreeMap::new(),
             relays: Vec::new(),
             active_task: None,
             port: None,
@@ -211,15 +187,13 @@ impl PortalState {
         self.with.as_ref() == Some(with) && self.allow == *allow
     }
 
-    /// Cancel and forget every live subscription and relayed fetch.
-    /// Dropping each `BridgeSub` cancels its host subscription, and
-    /// aborting each relay cancels the underlying fetch — including a
+    /// Cancel and forget every relayed fetch, and close the bridge port.
+    /// Aborting each relay cancels the underlying fetch — including a
     /// streaming response whose body was TRANSFERRED into the guest. A
     /// torn-down guest must not leave live pipes into its destroyed
     /// realm: orphaned transferred streams are the prime suspect for the
     /// renderer crash on space→hub navigation.
-    pub(crate) fn clear_subs(&mut self) {
-        self.subs.clear();
+    pub(crate) fn sever(&mut self) {
         for relay in self.relays.drain(..) {
             relay.abort();
         }
@@ -1402,11 +1376,6 @@ fn make_dispatcher(
                     post_result(&port, "preview-result", &id, "value", &value);
                 });
             }
-            "query" => handle_query(&host, &state, &port, &data),
-            "transact" => handle_transact(&host, &state, &port, &data),
-            "evaluate" => handle_evaluate(&host, &port, &data),
-            "subscribe" => handle_subscribe(&host, &state, &port, &data),
-            "unsubscribe" => handle_unsubscribe(&state, &data),
             "navigate" => handle_navigate(&state, &data),
             "reload" => tonk_host::reload_page(),
             "title" => handle_title(&data),
@@ -1422,231 +1391,23 @@ fn make_dispatcher(
     }) as Box<dyn FnMut(MessageEvent)>)
 }
 
-fn handle_query(
-    host: &Element,
-    state: &Rc<RefCell<PortalState>>,
-    port: &MessagePort,
-    data: &JsValue,
-) {
-    let Some(id) = get_str(data, "id") else {
-        return;
-    };
-    let body = match query_body(host, &get_body(data)) {
-        Ok(b) => b,
-        Err(msg) => return post_error(port, "query-error", &id, &msg),
-    };
-    let (space, branch, profile) = match forwarded_route(state, data) {
-        Ok(route) => route,
-        Err(denied) => {
-            tonk_common::log!("portal query {}", denied.message());
-            return post_error(port, "query-error", &id, &denied.message());
-        }
-    };
-    let host = host.clone();
-    let port = port.clone();
-    spawn_local(async move {
-        match host_consumer::query_with_route(
-            &host,
-            &body,
-            space.as_deref(),
-            branch.as_deref(),
-            profile,
-        )
-        .await
-        {
-            Ok(rows) => post_result(&port, "query-result", &id, "rows", &rows),
-            Err(e) => post_error(&port, "query-error", &id, &e.message),
-        }
-    });
-}
-
-/// A forwarded route the portal refuses to relay. `Denied` is
-/// deliberately a distinct variant rather than a collapse to `None`: it
-/// is the seam for a future capability-request flow, where an un-listed
-/// request prompts to extend `allow` rather than simply failing.
+/// A request the portal refuses to relay. A distinct type rather than a
+/// collapse to `None`: it is the seam for a future capability-request
+/// flow, where an un-listed request prompts to extend `allow` rather
+/// than simply failing.
 #[derive(Debug)]
 enum Refused {
-    /// The forwarded `with` did not parse.
-    Malformed {
-        spec: String,
-        error: tonk_host::location::ParseError,
-    },
-    /// The forwarded route parsed but is not in the portal's `allow`.
+    /// The requested location is not in the portal's `allow`.
     Denied { requested: Location },
 }
 
 impl Refused {
     fn message(&self) -> String {
         match self {
-            Refused::Malformed { spec, error } => {
-                format!("malformed forwarded with {spec:?}: {error}")
-            }
             Refused::Denied { requested } => {
                 format!("denied: route {requested} is not permitted by this site's allow")
             }
         }
-    }
-}
-
-/// Resolve the route for a relayed guest operation.
-///
-/// - No forwarded route → the portal's own `with` (the pinned default).
-/// - A forwarded route (the guest's resolved `with` context) → honored
-///   only if this portal's `allow` permits it; otherwise a typed
-///   [`Denied`], which the caller posts back as an error envelope —
-///   never a silent coercion to the pinned context.
-///
-/// The privilege is the trusted portal element's, set host-side
-/// (`PortalState::set_route`); a guest can forward a route but cannot
-/// grant itself the reach to have it honored.
-fn forwarded_route(
-    state: &Rc<RefCell<PortalState>>,
-    data: &JsValue,
-) -> Result<(Option<String>, Option<String>, bool), Refused> {
-    let s = state.borrow();
-
-    let Some(spec) = get_str(data, "with").filter(|w| !w.is_empty()) else {
-        // No forwarded route: pin to the portal's own context, explicitly —
-        // there are no ambient DOM ancestors to fall back on.
-        return Ok(match &s.with {
-            Some(own) => tonk_host::route_of(own),
-            None => (None, None, false),
-        });
-    };
-
-    let requested: Location = spec
-        .parse()
-        .map_err(|error| Refused::Malformed { spec, error })?;
-    if s.allow.permits(&requested) {
-        Ok(tonk_host::route_of(&requested))
-    } else {
-        Err(Refused::Denied { requested })
-    }
-}
-
-fn handle_transact(
-    host: &Element,
-    state: &Rc<RefCell<PortalState>>,
-    port: &MessagePort,
-    data: &JsValue,
-) {
-    let Some(id) = get_str(data, "id") else {
-        return;
-    };
-    let request = Reflect::get(data, &"request".into()).unwrap_or(JsValue::UNDEFINED);
-    let (space, branch, profile) = match forwarded_route(state, data) {
-        Ok(route) => route,
-        Err(denied) => {
-            tonk_common::log!("portal transact {}", denied.message());
-            return post_error(port, "transact-error", &id, &denied.message());
-        }
-    };
-    let host = host.clone();
-    let port = port.clone();
-    spawn_local(async move {
-        match host_consumer::claim_with_route(
-            &host,
-            &request,
-            space.as_deref(),
-            branch.as_deref(),
-            profile,
-        )
-        .await
-        {
-            Ok(receipt) => post_result(&port, "transact-result", &id, "receipt", &receipt),
-            Err(e) => post_error(&port, "transact-error", &id, &e.message),
-        }
-    });
-}
-
-/// Relay an `evaluate` envelope to the installed host's consumer path, which
-/// performs the typed evaluate (POST `/evaluate?transact=`) and returns the
-/// parsed JSON result. The guest's inspector dispatches `tonk-evaluate`; the
-/// guest relay forwards here, so the inspector uses the same host consumer API
-/// as the in-page editor — no direct HTTP, no hand-rolled response types.
-fn handle_evaluate(host: &Element, port: &MessagePort, data: &JsValue) {
-    let Some(id) = get_str(data, "id") else {
-        return;
-    };
-    let document = get_str(data, "document").unwrap_or_default();
-    // Default to a committing evaluate; only an explicit `false` is a dry run.
-    let transact = Reflect::get(data, &"transact".into())
-        .ok()
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    let host = host.clone();
-    let port = port.clone();
-    spawn_local(async move {
-        match host_consumer::evaluate(&host, &document, transact).await {
-            Ok(result) => post_result(&port, "evaluate-result", &id, "result", &result),
-            Err(e) => post_error(&port, "evaluate-error", &id, &e.message),
-        }
-    });
-}
-
-fn handle_subscribe(
-    host: &Element,
-    state: &Rc<RefCell<PortalState>>,
-    port: &MessagePort,
-    data: &JsValue,
-) {
-    let Some(id) = get_str(data, "id") else {
-        return;
-    };
-    let body = match query_body(host, &get_body(data)) {
-        Ok(b) => b,
-        Err(msg) => return post_error(port, "subscribe-error", &id, &msg),
-    };
-    let (space, branch, profile) = match forwarded_route(state, data) {
-        Ok(route) => route,
-        Err(denied) => {
-            tonk_common::log!("portal subscribe {}", denied.message());
-            return post_error(port, "subscribe-error", &id, &denied.message());
-        }
-    };
-
-    let tag = {
-        let mut s = state.borrow_mut();
-        s.next_tag = s.next_tag.wrapping_add(1);
-        format!("portal-sub-{}", s.next_tag)
-    };
-    let tag_js = JsValue::from_str(&tag);
-    match host_consumer::subscribe_with_route(
-        host,
-        &body,
-        Some(&tag_js),
-        space.as_deref(),
-        branch.as_deref(),
-        profile,
-    ) {
-        Ok(host_sub) => {
-            state.borrow_mut().subs.insert(
-                tag,
-                BridgeSub {
-                    iframe_id: id,
-                    _host_sub: host_sub,
-                },
-            );
-        }
-        // No host ancestor / dispatch failure: surface to the author's
-        // stream; nothing is tracked.
-        Err(e) => post_error(port, "subscribe-error", &id, &e.message),
-    }
-}
-
-fn handle_unsubscribe(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
-    let Some(id) = get_str(data, "id") else {
-        return;
-    };
-    let mut s = state.borrow_mut();
-    let tag = s
-        .subs
-        .iter()
-        .find(|(_, sub)| sub.iframe_id == id)
-        .map(|(tag, _)| tag.clone());
-    if let Some(tag) = tag {
-        // Dropping the `BridgeSub` cancels its host subscription.
-        s.subs.remove(&tag);
     }
 }
 
@@ -1655,12 +1416,27 @@ fn handle_unsubscribe(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
 /// trusted parent performs the navigation — as a client-side route change
 /// (`pushState` + `popstate`), never a reload: the top `<tonk-site>` re-routes
 /// its path in place and the running guest re-renders via its `tonk:site`
-/// subscription.
+/// subscription. With `replace` the current history entry changes address
+/// instead of a new one being added, and with `delta` in place of `href` the
+/// page moves that many entries through its history.
 fn handle_navigate(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
+    if let Some(delta) = Reflect::get(data, &"delta".into())
+        .ok()
+        .and_then(|delta| delta.as_f64())
+    {
+        tonk_host::traverse(delta as i32);
+        return;
+    }
     let Some(href) = get_str(data, "href").filter(|h| !h.is_empty()) else {
         return;
     };
-    tonk_host::navigate_to(&real_href(state, &href));
+    let href = real_href(state, &href);
+    let replace = Reflect::get(data, &"replace".into()).is_ok_and(|replace| replace.is_truthy());
+    if replace {
+        tonk_host::replace_to(&href);
+    } else {
+        tonk_host::navigate_to(&href);
+    }
 }
 
 /// Forward a closed analytics envelope toward the top page.
@@ -2744,36 +2520,6 @@ fn headers_to_array(headers: &web_sys::Headers) -> js_sys::Array {
     out
 }
 
-// --- Query-body construction --------------------------------------
-
-/// Build the query body for a bridge call: no argument streams the
-/// scoped entity; an explicit body is forwarded verbatim.
-fn query_body(host: &Element, arg: &JsValue) -> Result<JsValue, String> {
-    if arg.is_undefined() || arg.is_null() {
-        no_arg_entity_query(host)
-    } else {
-        Ok(arg.clone())
-    }
-}
-
-fn no_arg_entity_query(host: &Element) -> Result<JsValue, String> {
-    let entity = host
-        .get_attribute("entity")
-        .filter(|s| !s.is_empty())
-        .ok_or("tonk.subscribe()/query() with no argument requires a scoped `entity`")?;
-    let descriptor = read_descriptor(host)
-        .ok_or("tonk.subscribe()/query() with no argument requires a model descriptor")?;
-    let query = crate::query::entity_query(&descriptor, &entity)
-        .map_err(|e| format!("entity query: {e}"))?;
-    serde_wasm_bindgen::to_value(&query).map_err(|e| format!("query body: {e}"))
-}
-
-fn read_descriptor(host: &Element) -> Option<String> {
-    Reflect::get(host, &"descriptor".into())
-        .ok()
-        .and_then(|v| v.as_string())
-}
-
 /// Build the `context` object (`{ this, model, origin, repo, branch }`) the
 /// iframe receives in its `ready` envelope. `this`/`model` come from the
 /// host's attributes; `origin` is the host page's real origin (the opaque
@@ -2796,26 +2542,35 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     // nesting level; it falls back to `location.origin` at the top document
     // (no parent portal, so `window.tonk` is absent).
     let origin = tonk_host::bridge::context_origin().unwrap_or_default();
-    // The guest's own `window.location` is `about:srcdoc`; its REAL location is
-    // the parent's. Pass the parent's path + search + hash so the guest stamps
-    // them on its requests (the SW reads them to route/contain) and so a
-    // location-reading guest control (e.g. `<page-mount>`, which couriers an
-    // invite's `?access` + `#seed` into the join command) sees the real URL.
-    // `search`/`hash` especially: browsers strip the query only from the
-    // fragment, but the guest can't read EITHER off `about:srcdoc`, and the SW
-    // never sees the fragment on a network request.
-    let path = location
-        .as_ref()
-        .and_then(|l| l.pathname().ok())
-        .unwrap_or_default();
-    let search = location
-        .as_ref()
-        .and_then(|l| l.search().ok())
-        .unwrap_or_default();
-    let hash = location
-        .as_ref()
-        .and_then(|l| l.hash().ok())
-        .unwrap_or_default();
+    // A guest's own `window.location` is not where the page is: a sealed
+    // one reads `about:srcdoc`, and one on a site origin reads that site's
+    // document. The page's location is the top document's, which every host
+    // hands down: this host takes it from its own context when it is itself
+    // a guest, and from `window.location` when it is the page. The guest
+    // stamps it on its requests (the worker routes by it), and a control
+    // that reads the location (e.g. `<page-mount>`, which couriers an
+    // invite's `?access` + `#seed` into the join command) sees the real one.
+    let (path, search, hash) = match context_field("path") {
+        Some(path) => (
+            path,
+            context_field("search").unwrap_or_default(),
+            context_field("hash").unwrap_or_default(),
+        ),
+        None => (
+            location
+                .as_ref()
+                .and_then(|l| l.pathname().ok())
+                .unwrap_or_default(),
+            location
+                .as_ref()
+                .and_then(|l| l.search().ok())
+                .unwrap_or_default(),
+            location
+                .as_ref()
+                .and_then(|l| l.hash().ok())
+                .unwrap_or_default(),
+        ),
+    };
     let (repo, branch, with) = state
         .borrow()
         .with
@@ -2896,7 +2651,7 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
             String::new()
         }
     } else {
-        tonk_host::bridge::context_field("preview")
+        context_field("preview")
             .filter(|space| repo.is_empty() || space == &repo)
             .unwrap_or_default()
     };
@@ -2910,101 +2665,7 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     context
 }
 
-// --- Frame routing (called by the element's reset / error shims) --
-
-/// `reset(conclusions, { tag })` — a subscription frame from the host.
-/// The host serializes conclusions with `serde-wasm-bindgen`, which
-/// renders maps as JS `Map`s (and integers as `BigInt`). Round-trip
-/// through JSON so the wire shape is identical to what `query()` yields
-/// (the host `JSON.parse`s one-shot results) — numbers, not `BigInt`s,
-/// plain objects, not `Map`s — which `postMessage`'s structured clone
-/// would not otherwise guarantee. The plain rows are posted to the
-/// iframe as a `subscribe-event` addressed to the author's stream.
-pub(crate) fn route_reset(state: &Rc<RefCell<PortalState>>, payload: JsValue, opts: JsValue) {
-    let Some(tag) = read_tag(&opts) else {
-        return;
-    };
-    let conclusions: Vec<Conclusion> = match serde_wasm_bindgen::from_value(payload) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    let plain = match serde_json::to_string(&conclusions) {
-        Ok(json) => js_sys::JSON::parse(&json).unwrap_or(JsValue::NULL),
-        Err(_) => return,
-    };
-    let Some((port, iframe_id)) = lookup_sub(state, &tag) else {
-        return;
-    };
-    let env = Object::new();
-    set_v1(&env, "subscribe-event");
-    let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(&iframe_id));
-    let _ = Reflect::set(&env, &"rows".into(), &plain);
-    let _ = port.post_message(&env);
-}
-
-/// `update({ asserted, retracted }, { tag })` — an incremental frame.
-///
-/// Relays the delta to the guest as a `subscribe-event` carrying a
-/// `delta` field (rather than `rows`), normalized through JSON so the
-/// wire shape matches `reset`'s rows. The guest stream enqueues the
-/// tagged frame; the guest consumer applies the delta to its retained
-/// set exactly as the top-level `<tonk-display>` does.
-pub(crate) fn route_update(state: &Rc<RefCell<PortalState>>, payload: JsValue, opts: JsValue) {
-    let Some(tag) = read_tag(&opts) else {
-        return;
-    };
-    // Normalize the `{asserted, retracted}` object through JSON so the
-    // nested `fields` are plain objects, not `Map`s, across postMessage.
-    let plain = match js_sys::JSON::stringify(&payload) {
-        Ok(s) => js_sys::JSON::parse(&String::from(s)).unwrap_or(JsValue::NULL),
-        Err(_) => return,
-    };
-    let Some((port, iframe_id)) = lookup_sub(state, &tag) else {
-        return;
-    };
-    let env = Object::new();
-    set_v1(&env, "subscribe-event");
-    let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(&iframe_id));
-    let _ = Reflect::set(&env, &"delta".into(), &plain);
-    let _ = port.post_message(&env);
-}
-
-/// `error(detail, { tag })` — a transport error on a subscription.
-/// Posts a `subscribe-error` so the matching author stream errors.
-pub(crate) fn route_error(state: &Rc<RefCell<PortalState>>, payload: JsValue, opts: JsValue) {
-    let Some(tag) = read_tag(&opts) else {
-        return;
-    };
-    let Some((port, iframe_id)) = lookup_sub(state, &tag) else {
-        return;
-    };
-    post_error(
-        &port,
-        "subscribe-error",
-        &iframe_id,
-        &error_message(&payload),
-    );
-}
-
-/// Resolve `(current port, iframe correlation id)` for a live tag. The
-/// port is read from `state` at call time, so frames always go to the
-/// portal's current handshake — never a port captured when the
-/// subscription opened.
-fn lookup_sub(state: &Rc<RefCell<PortalState>>, tag: &str) -> Option<(MessagePort, String)> {
-    let s = state.borrow();
-    let iframe_id = s.subs.get(tag)?.iframe_id.clone();
-    let port = s.port.clone()?;
-    Some((port, iframe_id))
-}
-
 // --- Small helpers -------------------------------------------------
-
-fn read_tag(opts: &JsValue) -> Option<String> {
-    if !opts.is_object() {
-        return None;
-    }
-    get_str(opts, "tag")
-}
 
 fn get_str(obj: &JsValue, key: &str) -> Option<String> {
     Reflect::get(obj, &key.into())
@@ -3012,23 +2673,10 @@ fn get_str(obj: &JsValue, key: &str) -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
-fn get_body(data: &JsValue) -> JsValue {
-    Reflect::get(data, &"body".into()).unwrap_or(JsValue::UNDEFINED)
-}
-
 fn read_first_port(event: &MessageEvent) -> Option<MessagePort> {
     let ports = Reflect::get(event, &"ports".into()).ok()?;
     let ports: js_sys::Array = ports.dyn_into().ok()?;
     ports.get(0).dyn_into::<MessagePort>().ok()
-}
-
-/// Read a human message out of an error payload: a string verbatim,
-/// otherwise its `message` field, otherwise its debug form.
-fn error_message(payload: &JsValue) -> String {
-    if let Some(s) = payload.as_string() {
-        return s;
-    }
-    get_str(payload, "message").unwrap_or_else(|| format!("{payload:?}"))
 }
 
 fn set_v1(env: &Object, ty: &str) {
@@ -3097,7 +2745,7 @@ mod tests {
     use js_sys::{Array, Function, Promise};
     use wasm_bindgen_futures::JsFuture;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
-    use web_sys::{CustomEvent, Document, HtmlDialogElement, HtmlElement, MessageChannel};
+    use web_sys::{Document, HtmlDialogElement, HtmlElement, MessageChannel};
 
     wasm_bindgen_test_configure!(run_in_browser);
 
@@ -3114,10 +2762,6 @@ mod tests {
         });
         let _ = JsFuture::from(promise).await;
     }
-
-    const DESCRIPTOR: &str = r#"{"with":{
-        "count": { "the": "counter/count", "as": "UnsignedInteger", "cardinality": "one" }
-    }}"#;
 
     /// The guest resolves every link against its synthetic per-space
     /// origin, so a link to a PROFILE route (`/join`) arrives looking
@@ -3177,7 +2821,7 @@ mod tests {
         );
     }
 
-    // --- forwarded_route: the allow chokepoint -------------------------
+    // --- data_plane_location: what a relayed fetch reaches -------------
 
     /// A portal state pinned to `with` and granting `allow`.
     fn routed_state(with: Option<&str>, allow: &str) -> Rc<RefCell<PortalState>> {
@@ -3187,15 +2831,6 @@ mod tests {
             allow.parse().expect("allow parses"),
         );
         state
-    }
-
-    /// An envelope carrying (only) a forwarded `with` route.
-    fn route_envelope(with: Option<&str>) -> JsValue {
-        let data = Object::new();
-        if let Some(with) = with {
-            let _ = Reflect::set(&data, &"with".into(), &JsValue::from_str(with));
-        }
-        data.into()
     }
 
     #[dialog_common::test]
@@ -3226,98 +2861,12 @@ mod tests {
         );
     }
 
-    #[dialog_common::test]
-    fn it_pins_an_unrouted_operation_to_the_portals_with() {
-        let state = routed_state(Some("main@profile:tonk"), "*");
-        let route = forwarded_route(&state, &route_envelope(None)).expect("pinned route");
-        assert_eq!(route, (None, Some("main".into()), true));
+    // --- FakeHost: where the tests mount portals ---------------------
 
-        let state = routed_state(Some("main@did:key:zA"), "main@did:key:zA");
-        let route = forwarded_route(&state, &route_envelope(None)).expect("pinned route");
-        assert_eq!(
-            route,
-            (Some("did:key:zA".into()), Some("main".into()), false)
-        );
-    }
-
-    #[dialog_common::test]
-    fn it_honors_a_forwarded_route_the_allow_lists() {
-        let state = routed_state(Some("main@profile:tonk"), "*");
-        let route =
-            forwarded_route(&state, &route_envelope(Some("did:key:zB"))).expect("honored route");
-        assert_eq!(route, (Some("did:key:zB".into()), None, false));
-
-        // The sealed shape: allow lists exactly the portal's own location,
-        // and a bare-repo request normalizes to the same reach.
-        let state = routed_state(Some("main@did:key:zA"), "main@did:key:zA");
-        let route = forwarded_route(&state, &route_envelope(Some("did:key:zA")))
-            .expect("own reach honored");
-        assert_eq!(route, (Some("did:key:zA".into()), None, false));
-    }
-
-    #[dialog_common::test]
-    fn it_denies_a_forwarded_route_outside_the_allow() {
-        let state = routed_state(Some("main@did:key:zA"), "main@did:key:zA");
-        let refused = forwarded_route(&state, &route_envelope(Some("main@did:key:zEve")))
-            .expect_err("off-repo route must be refused");
-        assert!(
-            refused.message().starts_with("denied:"),
-            "expected a typed denial, got: {}",
-            refused.message(),
-        );
-        // Another branch of the SAME repo is still outside the allow.
-        let refused = forwarded_route(&state, &route_envelope(Some("draft@did:key:zA")))
-            .expect_err("off-branch route must be refused");
-        assert!(refused.message().starts_with("denied:"));
-    }
-
-    #[dialog_common::test]
-    fn it_refuses_a_malformed_forwarded_route() {
-        let state = routed_state(Some("main@did:key:zA"), "*");
-        let refused = forwarded_route(&state, &route_envelope(Some("main@")))
-            .expect_err("malformed route must be refused");
-        assert!(
-            refused.message().starts_with("malformed"),
-            "expected a malformed refusal, got: {}",
-            refused.message(),
-        );
-    }
-
-    #[dialog_common::test]
-    fn it_denies_every_forwarded_route_for_an_unpinned_portal() {
-        // A portal with no `with` of its own (and thus `Allow::none()`)
-        // relays nothing the guest asks for.
-        let state = routed_state(None, "*");
-        // `*` still honors — the grant is the caller's choice…
-        assert!(forwarded_route(&state, &route_envelope(Some("did:key:zB"))).is_ok());
-        // …but the generic-portal default (no with → none) denies all.
-        let state = Rc::new(RefCell::new(PortalState::new()));
-        let refused = forwarded_route(&state, &route_envelope(Some("did:key:zB")))
-            .expect_err("default portal must deny forwarded routes");
-        assert!(refused.message().starts_with("denied:"));
-    }
-
-    // --- FakeHost: a stand-in installed host --------------------------
-
-    /// A minimal stand-in for the installed host: a container that answers the
-    /// consumer events the relay dispatches with canned data, captures
-    /// the live subscription's consumer + tag, and records cancellation.
+    /// A container in the document that consumers and portals attach
+    /// under.
     struct FakeHost {
         container: Element,
-        state: Rc<RefCell<FakeState>>,
-        _listeners: Vec<Closure<dyn FnMut(CustomEvent)>>,
-    }
-
-    #[derive(Default)]
-    struct FakeState {
-        query_result: Option<JsValue>,
-        claim_result: Option<JsValue>,
-        last_query_body: Option<JsValue>,
-        last_claim_body: Option<JsValue>,
-        sub_consumer: Option<Element>,
-        sub_tag: Option<JsValue>,
-        last_subscribe_body: Option<JsValue>,
-        cancelled: bool,
     }
 
     impl FakeHost {
@@ -3328,148 +2877,19 @@ mod tests {
                 .expect("body")
                 .append_child(&container)
                 .expect("attach container");
-            let state = Rc::new(RefCell::new(FakeState::default()));
-            let mut listeners = Vec::new();
-
-            {
-                let state = state.clone();
-                let cb: Closure<dyn FnMut(CustomEvent)> =
-                    Closure::wrap(Box::new(move |ev: CustomEvent| {
-                        ev.stop_propagation();
-                        ev.prevent_default();
-                        let detail: Object = ev.detail().dyn_into().unwrap();
-                        let query = Reflect::get(&detail, &"query".into()).unwrap();
-                        state.borrow_mut().last_query_body = Some(query);
-                        let result = state
-                            .borrow()
-                            .query_result
-                            .clone()
-                            .unwrap_or(JsValue::from(Array::new()));
-                        let _ = Reflect::set(&detail, &"result".into(), &Promise::resolve(&result));
-                    }) as Box<dyn FnMut(CustomEvent)>);
-                let _ = container
-                    .add_event_listener_with_callback("tonk-query", cb.as_ref().unchecked_ref());
-                listeners.push(cb);
-            }
-            {
-                let state = state.clone();
-                let cb: Closure<dyn FnMut(CustomEvent)> =
-                    Closure::wrap(Box::new(move |ev: CustomEvent| {
-                        ev.stop_propagation();
-                        ev.prevent_default();
-                        let detail: Object = ev.detail().dyn_into().unwrap();
-                        let request = Reflect::get(&detail, &"request".into()).unwrap();
-                        state.borrow_mut().last_claim_body = Some(request);
-                        let result = state
-                            .borrow()
-                            .claim_result
-                            .clone()
-                            .unwrap_or(JsValue::from_str("ok"));
-                        let _ = Reflect::set(&detail, &"result".into(), &Promise::resolve(&result));
-                    }) as Box<dyn FnMut(CustomEvent)>);
-                let _ = container
-                    .add_event_listener_with_callback("tonk-claim", cb.as_ref().unchecked_ref());
-                listeners.push(cb);
-            }
-            {
-                let state = state.clone();
-                let cb: Closure<dyn FnMut(CustomEvent)> =
-                    Closure::wrap(Box::new(move |ev: CustomEvent| {
-                        ev.stop_propagation();
-                        ev.prevent_default();
-                        let detail: Object = ev.detail().dyn_into().unwrap();
-                        let query = Reflect::get(&detail, &"query".into()).unwrap();
-                        let tag = Reflect::get(&detail, &"tag".into()).ok();
-                        let consumer: Element = ev.target().unwrap().dyn_into().unwrap();
-                        {
-                            let mut s = state.borrow_mut();
-                            s.last_subscribe_body = Some(query);
-                            s.sub_consumer = Some(consumer);
-                            s.sub_tag = tag;
-                        }
-                        let sub = Object::new();
-                        let state_for_cancel = state.clone();
-                        let cancel: Closure<dyn FnMut()> = Closure::wrap(Box::new(move || {
-                            state_for_cancel.borrow_mut().cancelled = true;
-                        })
-                            as Box<dyn FnMut()>);
-                        let cancel_fn: Function = cancel.into_js_value().unchecked_into();
-                        let _ = Reflect::set(&sub, &"cancel".into(), &cancel_fn);
-                        let _ = Reflect::set(&detail, &"subscription".into(), &sub);
-                    }) as Box<dyn FnMut(CustomEvent)>);
-                let _ = container.add_event_listener_with_callback(
-                    "tonk-subscribe",
-                    cb.as_ref().unchecked_ref(),
-                );
-                listeners.push(cb);
-            }
-
-            FakeHost {
-                container,
-                state,
-                _listeners: listeners,
-            }
-        }
-
-        fn set_query_result(&self, value: JsValue) {
-            self.state.borrow_mut().query_result = Some(value);
-        }
-        fn set_claim_result(&self, value: JsValue) {
-            self.state.borrow_mut().claim_result = Some(value);
-        }
-        fn last_query_body(&self) -> Option<JsValue> {
-            self.state.borrow().last_query_body.clone()
-        }
-        fn last_claim_body(&self) -> Option<JsValue> {
-            self.state.borrow().last_claim_body.clone()
-        }
-        fn sub_tag(&self) -> Option<JsValue> {
-            self.state.borrow().sub_tag.clone()
-        }
-        fn cancelled(&self) -> bool {
-            self.state.borrow().cancelled
-        }
-
-        /// Push a subscription frame to the captured consumer, mirroring
-        /// how the real host calls `consumer.reset(conclusions, { tag })`.
-        fn push_frame(&self, conclusions: &JsValue) {
-            let (consumer, tag) = {
-                let s = self.state.borrow();
-                (s.sub_consumer.clone(), s.sub_tag.clone())
-            };
-            let Some(consumer) = consumer else { return };
-            let opts = Object::new();
-            if let Some(t) = tag {
-                let _ = Reflect::set(&opts, &"tag".into(), &t);
-            }
-            let reset = Reflect::get(&consumer, &"reset".into()).unwrap();
-            let reset: Function = reset.dyn_into().expect("reset method");
-            let _ = reset.call2(&consumer, conclusions, &opts);
+            FakeHost { container }
         }
     }
 
     /// A consumer element that dispatches the bridge's events: a `<div>`
-    /// under the fake host carrying the scoped `entity` / `model` and the
-    /// model `descriptor` the relay reads for no-argument calls.
-    fn relay_consumer(
-        host: &FakeHost,
-        entity: Option<&str>,
-        model: Option<&str>,
-        descriptor: Option<&str>,
-    ) -> Element {
+    /// under the fake host carrying the scoped `entity` / `model`.
+    fn relay_consumer(host: &FakeHost, entity: Option<&str>, model: Option<&str>) -> Element {
         let consumer = document().create_element("div").expect("div");
         if let Some(e) = entity {
             consumer.set_attribute("entity", e).expect("entity");
         }
         if let Some(m) = model {
             consumer.set_attribute("model", m).expect("model");
-        }
-        if let Some(d) = descriptor {
-            let _ = Reflect::set(
-                consumer.as_ref(),
-                &"descriptor".into(),
-                &JsValue::from_str(d),
-            );
         }
         host.container.append_child(&consumer).expect("attach");
         consumer
@@ -3537,15 +2957,6 @@ mod tests {
         }
     }
 
-    /// Build a `{ v, type, id, ...extra }` envelope to post from the
-    /// test side of the channel.
-    fn envelope(ty: &str, id: &str) -> Object {
-        let env = Object::new();
-        set_v1(&env, ty);
-        let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(id));
-        env
-    }
-
     /// Wire a fresh `MessageChannel`: bind one end to the portal relay
     /// (as a `hello` would) and return the other end's listener + port
     /// for the test to drive.
@@ -3558,30 +2969,12 @@ mod tests {
         (listener, test_port)
     }
 
-    /// A host-shaped subscription frame: `Vec<Conclusion>` serialized
-    /// with `serde-wasm-bindgen` (which renders maps as JS `Map`s), as
-    /// the installed host delivers them.
-    fn host_frame(this: &str, count: i128) -> JsValue {
-        use ipld_core::ipld::Ipld;
-        let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
-        fields.insert("count".to_owned(), Ipld::Integer(count));
-        let conclusions = vec![Conclusion {
-            this: this.to_owned(),
-            fields,
-        }];
-        serde_wasm_bindgen::to_value(&conclusions).expect("serialize frame")
-    }
-
-    fn get_num(obj: &JsValue, key: &str) -> Option<f64> {
-        Reflect::get(obj, &key.into()).ok().and_then(|v| v.as_f64())
-    }
-
-    // --- Relay tests (seam 1) ---------------------------------------
+    // --- Handshake tests ---------------------------------------------
 
     #[dialog_common::test]
     async fn it_posts_ready_with_context_on_bind() {
         let host = FakeHost::install();
-        let consumer = relay_consumer(&host, Some("id:demo-counter"), Some("counter"), None);
+        let consumer = relay_consumer(&host, Some("id:demo-counter"), Some("counter"));
         let state = Rc::new(RefCell::new(PortalState::new()));
         let (listener, _port) = bind(&consumer, &state);
 
@@ -3604,7 +2997,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_refreshes_location_in_a_reused_guest() {
         let host = FakeHost::install();
-        let consumer = relay_consumer(&host, None, None, None);
+        let consumer = relay_consumer(&host, None, None);
         let state = Rc::new(RefCell::new(PortalState::new()));
         let (listener, _port) = bind(&consumer, &state);
         listener.wait_for("ready").await;
@@ -3648,11 +3041,13 @@ mod tests {
         let tonk = Object::new();
         let ctx = Object::new();
         let _ = Reflect::set(&ctx, &"origin".into(), &"https://forwarded.test".into());
+        let _ = Reflect::set(&ctx, &"path".into(), &"/space/x/notes".into());
+        let _ = Reflect::set(&ctx, &"search".into(), &"?access=1".into());
         let _ = Reflect::set(&tonk, &"context".into(), &ctx);
         let _ = Reflect::set(&win, &"tonk".into(), &tonk);
 
         let host = FakeHost::install();
-        let consumer = relay_consumer(&host, Some("id:demo-counter"), Some("counter"), None);
+        let consumer = relay_consumer(&host, Some("id:demo-counter"), Some("counter"));
         let state = Rc::new(RefCell::new(PortalState::new()));
         let (listener, _port) = bind(&consumer, &state);
 
@@ -3668,245 +3063,24 @@ mod tests {
             Some("https://forwarded.test"),
             "a nested portal forwards the parent context origin, not `about:srcdoc`'s null",
         );
-    }
-
-    #[dialog_common::test]
-    async fn it_relays_a_query_envelope_and_returns_rows() {
-        let host = FakeHost::install();
-        let canned = Array::new();
-        canned.push(&JsValue::from_str("row"));
-        host.set_query_result(canned.into());
-        let consumer = relay_consumer(&host, None, None, None);
-        let state = Rc::new(RefCell::new(PortalState::new()));
-        let (listener, port) = bind(&consumer, &state);
-
-        // Explicit body is forwarded verbatim.
-        let env = envelope("query", "r1");
-        let body = Object::new();
-        let _ = Reflect::set(&body, &"marker".into(), &JsValue::from_str("explicit"));
-        let _ = Reflect::set(&env, &"body".into(), &body);
-        port.post_message(&env).expect("post query");
-
-        let result = listener.wait_for("query-result").await;
-        assert_eq!(get_str(&result, "id").as_deref(), Some("r1"));
-        let rows: Array = Reflect::get(&result, &"rows".into())
-            .expect("rows")
-            .dyn_into()
-            .expect("array");
-        assert_eq!(rows.get(0).as_string().as_deref(), Some("row"));
-
-        let dispatched = host.last_query_body().expect("query dispatched");
         assert_eq!(
-            get_str(&dispatched, "marker").as_deref(),
-            Some("explicit"),
-            "explicit body forwarded verbatim",
+            get_str(&context, "path").as_deref(),
+            Some("/space/x/notes"),
+            "a nested portal forwards the page's path, not its own document's",
         );
+        assert_eq!(get_str(&context, "search").as_deref(), Some("?access=1"));
+        assert_eq!(get_str(&context, "hash").as_deref(), Some(""));
     }
 
-    #[dialog_common::test]
-    async fn it_builds_the_no_arg_query_from_descriptor_and_entity() {
-        let host = FakeHost::install();
-        let consumer = relay_consumer(
-            &host,
-            Some("id:demo-counter"),
-            Some("counter"),
-            Some(DESCRIPTOR),
-        );
-        let state = Rc::new(RefCell::new(PortalState::new()));
-        let (listener, port) = bind(&consumer, &state);
-
-        // No `body` field — the relay must build the scoped-entity query.
-        port.post_message(&envelope("query", "r1")).expect("post");
-        let _ = listener.wait_for("query-result").await;
-
-        let body = host.last_query_body().expect("query dispatched");
-        let terms = Reflect::get(&body, &"terms".into()).expect("terms");
-        // `serde-wasm-bindgen` renders the body as nested `Map`s.
-        let this = {
-            let map: js_sys::Map = terms.dyn_into().expect("terms is a Map");
-            map.get(&"this".into())
-        };
-        assert_eq!(this.as_string().as_deref(), Some("id:demo-counter"));
-    }
-
-    #[dialog_common::test]
-    async fn it_relays_a_transact_envelope_to_claim() {
-        let host = FakeHost::install();
-        host.set_claim_result(JsValue::from_str("receipt"));
-        let consumer = relay_consumer(&host, None, None, None);
-        let state = Rc::new(RefCell::new(PortalState::new()));
-        let (listener, port) = bind(&consumer, &state);
-
-        let env = envelope("transact", "r1");
-        let request = Object::new();
-        let _ = Reflect::set(&request, &"assert".into(), &JsValue::from_str("something"));
-        let _ = Reflect::set(&env, &"request".into(), &request);
-        port.post_message(&env).expect("post transact");
-
-        let result = listener.wait_for("transact-result").await;
-        assert_eq!(get_str(&result, "id").as_deref(), Some("r1"));
-        assert_eq!(
-            Reflect::get(&result, &"receipt".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .as_deref(),
-            Some("receipt"),
-        );
-        let body = host.last_claim_body().expect("claim dispatched");
-        assert_eq!(get_str(&body, "assert").as_deref(), Some("something"));
-    }
-
-    #[dialog_common::test]
-    async fn it_opens_a_host_subscription_and_posts_reset_frames() {
-        let host = FakeHost::install();
-        let consumer = relay_consumer(
-            &host,
-            Some("id:demo-counter"),
-            Some("counter"),
-            Some(DESCRIPTOR),
-        );
-        let state = Rc::new(RefCell::new(PortalState::new()));
-        let (listener, port) = bind(&consumer, &state);
-
-        port.post_message(&envelope("subscribe", "r1"))
-            .expect("post subscribe");
-
-        // Wait for the host subscription to open and capture its tag.
-        let mut tag = JsValue::UNDEFINED;
-        for _ in 0..200 {
-            if let Some(t) = host.sub_tag() {
-                tag = t;
-                break;
-            }
-            sleep(5).await;
-        }
-        assert!(!tag.is_undefined(), "subscribe should reach the host");
-
-        // A host frame for that tag must come back as a subscribe-event
-        // addressed to the iframe's correlation id, dot-accessible.
-        route_reset(&state, host_frame("id:demo-counter", 5), tag_opts(&tag));
-        let event = listener.wait_for("subscribe-event").await;
-        assert_eq!(get_str(&event, "id").as_deref(), Some("r1"));
-        let rows: Array = Reflect::get(&event, &"rows".into())
-            .expect("rows")
-            .dyn_into()
-            .expect("array");
-        let me = rows.get(0);
-        assert_eq!(get_str(&me, "this").as_deref(), Some("id:demo-counter"));
-        let fields = Reflect::get(&me, &"fields".into()).expect("fields");
-        assert_eq!(
-            get_num(&fields, "count"),
-            Some(5.0),
-            "integer field is a plain number, not a BigInt",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_errors_the_stream_on_a_reset_error_frame() {
-        let host = FakeHost::install();
-        let consumer = relay_consumer(
-            &host,
-            Some("id:demo-counter"),
-            Some("counter"),
-            Some(DESCRIPTOR),
-        );
-        let state = Rc::new(RefCell::new(PortalState::new()));
-        let (listener, port) = bind(&consumer, &state);
-
-        port.post_message(&envelope("subscribe", "r1"))
-            .expect("post subscribe");
-        let mut tag = JsValue::UNDEFINED;
-        for _ in 0..200 {
-            if let Some(t) = host.sub_tag() {
-                tag = t;
-                break;
-            }
-            sleep(5).await;
-        }
-
-        route_error(&state, JsValue::from_str("upstream gone"), tag_opts(&tag));
-        let event = listener.wait_for("subscribe-error").await;
-        assert_eq!(get_str(&event, "id").as_deref(), Some("r1"));
-        assert_eq!(get_str(&event, "error").as_deref(), Some("upstream gone"));
-    }
-
-    #[dialog_common::test]
-    async fn it_cancels_the_host_subscription_on_unsubscribe() {
-        let host = FakeHost::install();
-        let consumer = relay_consumer(
-            &host,
-            Some("id:demo-counter"),
-            Some("counter"),
-            Some(DESCRIPTOR),
-        );
-        let state = Rc::new(RefCell::new(PortalState::new()));
-        let (_listener, port) = bind(&consumer, &state);
-
-        port.post_message(&envelope("subscribe", "r1"))
-            .expect("post subscribe");
-        for _ in 0..200 {
-            if host.sub_tag().is_some() {
-                break;
-            }
-            sleep(5).await;
-        }
-        assert!(!host.cancelled(), "not cancelled before unsubscribe");
-
-        port.post_message(&envelope("unsubscribe", "r1"))
-            .expect("post unsubscribe");
-        for _ in 0..200 {
-            if host.cancelled() {
-                break;
-            }
-            sleep(5).await;
-        }
-        assert!(
-            host.cancelled(),
-            "unsubscribe drops the BridgeSub, cancelling the host subscription",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_returns_a_query_error_when_there_is_no_host_ancestor() {
-        // A consumer attached to the body with no FakeHost ancestor:
-        // `tonk-query` is not default-prevented, so the relay errors.
-        let consumer = document().create_element("div").expect("div");
-        document()
-            .body()
-            .expect("body")
-            .append_child(&consumer)
-            .expect("attach");
-        let state = Rc::new(RefCell::new(PortalState::new()));
-        let (listener, port) = bind(&consumer, &state);
-
-        let env = envelope("query", "r1");
-        let _ = Reflect::set(&env, &"body".into(), &Object::new());
-        port.post_message(&env).expect("post query");
-
-        let error = listener.wait_for("query-error").await;
-        assert_eq!(get_str(&error, "id").as_deref(), Some("r1"));
-        assert!(
-            get_str(&error, "error").is_some(),
-            "an error message should be relayed",
-        );
-    }
-
-    fn tag_opts(tag: &JsValue) -> JsValue {
-        let opts = Object::new();
-        let _ = Reflect::set(&opts, &"tag".into(), tag);
-        opts.into()
-    }
-
-    // --- End-to-end smoke tests (seam 2) ----------------------------
+    // --- End-to-end smoke tests --------------------------------------
 
     /// Mount a real `<tonk-portal>` (opaque-origin iframe) under the
-    /// fake host with the given attributes + descriptor property.
+    /// fake host with the given attributes.
     fn mount_portal(
         host: &FakeHost,
         content: &str,
         entity: Option<&str>,
         model: Option<&str>,
-        descriptor: Option<&str>,
     ) -> Element {
         crate::register();
         let portal = document()
@@ -3918,9 +3092,6 @@ mod tests {
         }
         if let Some(m) = model {
             portal.set_attribute("model", m).expect("model");
-        }
-        if let Some(d) = descriptor {
-            let _ = Reflect::set(portal.as_ref(), &"descriptor".into(), &JsValue::from_str(d));
         }
         host.container.append_child(&portal).expect("attach portal");
         portal
@@ -4013,7 +3184,7 @@ mod tests {
             tonk.task({open:?});tonk.task({reseat:?});
             </script>"#
         );
-        let portal = mount_portal(&host, &content, None, None, None);
+        let portal = mount_portal(&host, &content, None, None);
         portal
             .set_attribute(
                 "style",
@@ -4131,7 +3302,6 @@ mod tests {
             &format!("<script>tonk.task({open:?})</script>"),
             None,
             None,
-            None,
         );
         for _ in 0..400 {
             if standing
@@ -4160,96 +3330,13 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_runs_a_real_query_across_the_opaque_origin_boundary() {
-        let host = FakeHost::install();
-        let canned = Array::new();
-        canned.push(&JsValue::from_str("row"));
-        host.set_query_result(canned.into());
-        let probe = WindowProbe::install("q");
-
-        // Author code runs at the opaque origin, calls tonk.query(), and
-        // posts the result back to the parent (this test's window).
-        let content = "<script>\
-            tonk.query()\
-              .then(function(rows){parent.postMessage({__test:'q',rows:rows},'*');})\
-              .catch(function(err){parent.postMessage({__test:'q',error:String(err)},'*');});\
-            </script>";
-        mount_portal(
-            &host,
-            content,
-            Some("id:demo-counter"),
-            Some("counter"),
-            Some(DESCRIPTOR),
-        );
-
-        let msg = probe.wait().await;
-        assert!(
-            !msg.is_undefined(),
-            "author iframe should post a result back across the boundary",
-        );
-        assert!(
-            Reflect::get(&msg, &"error".into())
-                .ok()
-                .filter(|v| !v.is_undefined())
-                .is_none(),
-            "query should not error; got: {:?}",
-            Reflect::get(&msg, &"error".into()).ok(),
-        );
-        let rows: Array = Reflect::get(&msg, &"rows".into())
-            .expect("rows")
-            .dyn_into()
-            .expect("array");
-        assert_eq!(rows.get(0).as_string().as_deref(), Some("row"));
-    }
-
-    #[dialog_common::test]
-    async fn it_delivers_subscription_frames_across_the_opaque_origin_boundary() {
-        let host = FakeHost::install();
-        let probe = WindowProbe::install("s");
-
-        // Author subscribes, reads one frame, posts it back.
-        let content = "<script>\
-            var reader = tonk.subscribe().getReader();\
-            reader.read().then(function(r){parent.postMessage({__test:'s',value:r.value},'*');});\
-            </script>";
-        mount_portal(
-            &host,
-            content,
-            Some("id:demo-counter"),
-            Some("counter"),
-            Some(DESCRIPTOR),
-        );
-
-        // Wait for the host subscription to open, then push a frame.
-        for _ in 0..400 {
-            if host.sub_tag().is_some() {
-                break;
-            }
-            sleep(5).await;
-        }
-        assert!(host.sub_tag().is_some(), "subscribe should reach the host");
-        host.push_frame(&host_frame("id:demo-counter", 7));
-
-        let msg = probe.wait().await;
-        assert!(!msg.is_undefined(), "author should post a frame back");
-        let rows: Array = Reflect::get(&msg, &"value".into())
-            .expect("value")
-            .dyn_into()
-            .expect("Conclusion[]");
-        let me = rows.get(0);
-        assert_eq!(get_str(&me, "this").as_deref(), Some("id:demo-counter"));
-        let fields = Reflect::get(&me, &"fields".into()).expect("fields");
-        assert_eq!(get_num(&fields, "count"), Some(7.0));
-    }
-
-    #[dialog_common::test]
     async fn it_ignores_a_hello_from_an_unregistered_source() {
         // A registered portal whose iframe never speaks: the registry is
         // non-empty, but only its live `contentWindow` may complete a
         // handshake.
         install_message_listener();
         let host = FakeHost::install();
-        let consumer = relay_consumer(&host, None, None, None);
+        let consumer = relay_consumer(&host, None, None);
         let iframe = document()
             .create_element("iframe")
             .expect("iframe")
@@ -4300,20 +3387,8 @@ mod tests {
                  </script>"
             )
         };
-        mount_portal(
-            &host,
-            &report("a"),
-            Some("id:alpha"),
-            Some("counter"),
-            Some(DESCRIPTOR),
-        );
-        mount_portal(
-            &host,
-            &report("b"),
-            Some("id:beta"),
-            Some("counter"),
-            Some(DESCRIPTOR),
-        );
+        mount_portal(&host, &report("a"), Some("id:alpha"), Some("counter"));
+        mount_portal(&host, &report("b"), Some("id:beta"), Some("counter"));
 
         let a = probe_a.wait().await;
         let b = probe_b.wait().await;
@@ -4326,46 +3401,6 @@ mod tests {
             get_str(&b, "this").as_deref(),
             Some("id:beta"),
             "portal B's hello must bind B's context",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_cancels_live_subscriptions_when_content_reloads() {
-        let host = FakeHost::install();
-        let content = "<script>tonk.subscribe().getReader().read();</script>";
-        let portal = mount_portal(
-            &host,
-            content,
-            Some("id:demo-counter"),
-            Some("counter"),
-            Some(DESCRIPTOR),
-        );
-
-        // Wait for the subscription to reach the host.
-        for _ in 0..400 {
-            if host.sub_tag().is_some() {
-                break;
-            }
-            sleep(5).await;
-        }
-        assert!(host.sub_tag().is_some(), "subscribe should reach the host");
-        assert!(!host.cancelled(), "not cancelled before reload");
-
-        // New content reloads the iframe; `reload` clears the subs
-        // first, dropping the `BridgeSub` and cancelling the host
-        // subscription so the discarded window leaves no dangling SSE.
-        portal
-            .set_attribute("content", "<p>reloaded</p>")
-            .expect("set content");
-        for _ in 0..400 {
-            if host.cancelled() {
-                break;
-            }
-            sleep(5).await;
-        }
-        assert!(
-            host.cancelled(),
-            "a reload cancels the live host subscription",
         );
     }
 
@@ -4530,7 +3565,7 @@ mod tests {
               .then(function(r){parent.postMessage({__test:'u',url:r.url},'*');})\
               .catch(function(err){parent.postMessage({__test:'u',error:String(err)},'*');});\
             </script>";
-        mount_portal(&host, content, None, None, None);
+        mount_portal(&host, content, None, None);
 
         let msg = probe.wait().await;
         assert!(

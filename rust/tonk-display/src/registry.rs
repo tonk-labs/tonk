@@ -1317,18 +1317,28 @@ mod tests {
             r#"
             const state = { claims: [], navigations: [], cancelled: 0 };
             bridge.ready = Promise.resolve();
-            bridge.subscribe = query => {
-                state.id = query.terms.this;
-                return new ReadableStream({
-                    start(controller) { state.controller = controller; },
-                    cancel() { state.cancelled++; },
-                });
+            state.transact = () => Promise.resolve(new Response('{}'));
+            const native = window.fetch;
+            window.fetch = (url, init) => {
+                if (String(url).endsWith('/transact')) {
+                    state.claims.push(JSON.parse(init.body));
+                    return state.transact();
+                }
+                if (String(url).endsWith('/query')) {
+                    state.id = JSON.parse(init.body).terms.this;
+                    init.signal.addEventListener('abort', () => state.cancelled++);
+                    return Promise.resolve(new Response(new ReadableStream({
+                        start(controller) { state.controller = controller; },
+                    })));
+                }
+                return native(url, init);
             };
-            bridge.transact = claim => { state.claims.push(claim); return Promise.resolve({}); };
             bridge.navigate = href => state.navigations.push(href);
-            state.finish = (status, detail) => state.controller.enqueue([
-                { this: state.id, fields: { status, detail } }
-            ]);
+            state.finish = (status, detail) => state.controller.enqueue(
+                new TextEncoder().encode(`data: ${JSON.stringify([
+                    { this: state.id, fields: { status, detail } }
+                ])}\n\n`)
+            );
             return state;
         "#,
         )
@@ -1444,7 +1454,7 @@ mod tests {
 
         let rejected: Element = host.clone_node_with_deep(true).unwrap().dyn_into().unwrap();
         let reject = js_sys::Function::new_no_args("return Promise.reject(new Error('offline'));");
-        Reflect::set(&host_bridge(), &"transact".into(), &reject).unwrap();
+        Reflect::set(&fixture, &"transact".into(), &reject).unwrap();
         document().body().unwrap().append_child(&rejected).unwrap();
         let form = rejected.query_selector("form").unwrap().unwrap();
         fire(form.unchecked_ref(), "submit");
@@ -1794,17 +1804,27 @@ mod tests {
             r#"
             const state = { claims: [], cancelled: 0 };
             bridge.ready = Promise.resolve();
-            bridge.subscribe = query => {
-                state.id = query.terms.this;
-                return new ReadableStream({
-                    start(controller) { state.controller = controller; },
-                    cancel() { state.cancelled++; },
-                });
+            state.transact = () => Promise.resolve(new Response('{}'));
+            const native = window.fetch;
+            window.fetch = (url, init) => {
+                if (String(url).endsWith('/transact')) {
+                    state.claims.push(JSON.parse(init.body));
+                    return state.transact();
+                }
+                if (String(url).endsWith('/query')) {
+                    state.id = JSON.parse(init.body).terms.this;
+                    init.signal.addEventListener('abort', () => state.cancelled++);
+                    return Promise.resolve(new Response(new ReadableStream({
+                        start(controller) { state.controller = controller; },
+                    })));
+                }
+                return native(url, init);
             };
-            bridge.transact = claim => { state.claims.push(claim); return Promise.resolve({}); };
-            state.finish = (status, detail) => state.controller.enqueue([
-                { this: state.id, fields: { status, detail } }
-            ]);
+            state.finish = (status, detail) => state.controller.enqueue(
+                new TextEncoder().encode(`data: ${JSON.stringify([
+                    { this: state.id, fields: { status, detail } }
+                ])}\n\n`)
+            );
             return state;
         "#,
         )
