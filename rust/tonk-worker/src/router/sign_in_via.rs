@@ -98,7 +98,7 @@ struct Delivered {
 /// and the approving page refuses plain `http` callbacks for the same
 /// reason. `via` may be any address on the deployment; its origin is
 /// what is asked.
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(test)]
 fn approval_url(via: &str, here: &Url, audience: &str, request: &str) -> Result<String, String> {
     let origin = deployment(via)?;
     let callback = page_callback(here, &origin, request)?;
