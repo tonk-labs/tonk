@@ -3148,6 +3148,55 @@ person!:
         );
     }
 
+    /// A name dialog would accept as `id:<name>` but the notation
+    /// can't reference back (`Demo` reads as a string, `42` as a
+    /// number) is refused at the `&name` that writes it, with the
+    /// anchor's own error, not later at a `this:` that uses it.
+    #[dialog_common::test]
+    async fn it_rejects_unreferenceable_anchor_name_at_anchor() {
+        for name in ["Demo", "demo_1", "42", "true", "demo/Q"] {
+            let syntax = must_parse(&format!("person!: &{name}\n  name: \"Alice\"\n"));
+            let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+            let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+            assert!(
+                matches!(&err.kind, AnalyzeErrorKind::UnreferenceableAnchorName { name: n } if n == name),
+                "&{name} should be refused as unreferenceable, got {err:?}"
+            );
+        }
+    }
+
+    /// `this: demo/1` resolves a numbered anchor name declared by an
+    /// earlier expression (`&demo/1`). Regression: the reference
+    /// used to parse as a string literal and fail with
+    /// `UnsupportedFieldValue` on `this`.
+    #[dialog_common::test]
+    async fn it_resolves_digit_led_qualified_symbol_in_this() {
+        let syntax = must_parse(
+            r#"
+person!: &demo/1
+  name: "Alice"
+person!:
+  this: demo/1
+  name: "Renamed"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
+        let entity = analysis
+            .declarations
+            .get("demo/1")
+            .expect("demo/1 should be declared")
+            .clone();
+        let Statement::Assert(Application::Concept { this, .. }) = &analysis.mutate.statements[1]
+        else {
+            panic!("expected Assert(Concept) for second expression");
+        };
+        assert!(
+            matches!(this, ThisIntent::Uri(e) if e == &entity),
+            "expected ThisIntent::Uri(<demo/1>), got {this:?}"
+        );
+    }
+
     /// `this: alice` resolves through the in-doc anchor table
     /// — `&alice` declared by an earlier expression in the same
     /// document means a later `this: alice` lands on that

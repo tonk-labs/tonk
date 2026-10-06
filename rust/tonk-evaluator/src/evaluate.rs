@@ -96,6 +96,18 @@ pub struct QueryResult {
     pub this: String,
     /// Field name → bound value.
     pub fields: BTreeMap<String, serde_json::Value>,
+    /// `true` when this entity was asserted through a transient
+    /// concept (a command): it is returned here, but never written to
+    /// the branch, so re-reading it from the store finds nothing. A
+    /// renderer must draw it from `fields`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub transient: bool,
+}
+
+/// `skip_serializing_if` predicate: keep `transient` off the wire
+/// unless it is set, so existing consumers see an unchanged shape.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Commit-side summary.
@@ -931,6 +943,7 @@ fn render_match_blocks(
         return Vec::new();
     }
 
+    let transient = document.transient_entities();
     let mut blocks = Vec::with_capacity(user_queries.len() + document.synthesized.len());
 
     // User-written queries: each block draws from the joined
@@ -951,11 +964,9 @@ fn render_match_blocks(
                 .map(Vec::as_slice)
                 .unwrap_or(&[])
         };
-        blocks.push(render_block(
-            query.label.clone(),
-            &query.application,
-            source_frames,
-        ));
+        let mut block = render_block(query.label.clone(), &query.application, source_frames);
+        mark_transient(&mut block, &query.application, &transient);
+        blocks.push(block);
     }
 
     // Synthesized snapshot queries: each runs standalone (no
@@ -966,13 +977,33 @@ fn render_match_blocks(
             .get(i)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        blocks.push(render_block(
-            snapshot.label.clone(),
-            &snapshot.application,
-            source_frames,
-        ));
+        let mut block = render_block(snapshot.label.clone(), &snapshot.application, source_frames);
+        mark_transient(&mut block, &snapshot.application, &transient);
+        blocks.push(block);
     }
     blocks
+}
+
+/// Flag every result of a block whose concept is transient.
+///
+/// The document's transient set holds concept entities, the same set
+/// the dispatch step checks `predicate.this()` against. A result of
+/// such a concept is in the response but never reaches the branch, so
+/// a renderer that re-reads it finds nothing.
+fn mark_transient(
+    block: &mut QueryMatchBlock,
+    application: &Application,
+    transient: &std::collections::HashSet<Entity>,
+) {
+    let concept = match application {
+        Application::Concept { query, .. } => query.predicate.this(),
+        _ => return,
+    };
+    if transient.contains(&concept) {
+        for result in &mut block.results {
+            result.transient = true;
+        }
+    }
 }
 
 /// Build one [`QueryMatchBlock`] for `application` over
@@ -1206,7 +1237,11 @@ fn render_one_result(
         fields.insert(field_name.to_owned(), value);
     }
 
-    QueryResult { this, fields }
+    QueryResult {
+        this,
+        fields,
+        transient: false,
+    }
 }
 
 /// Render a resolver expression's rows.
@@ -1264,6 +1299,7 @@ fn render_resolver_block(
         results.push(QueryResult {
             this: String::new(),
             fields,
+            transient: false,
         });
     }
 
