@@ -1938,6 +1938,53 @@ command!: &counter/+1
         );
     }
 
+    /// `view:` finds every committed view, whatever it declares.
+    ///
+    /// `style` and `font` are keyed dictionaries, and to a query an
+    /// absent dictionary is not an empty one: a view that declares no
+    /// style has no `xyz.tonk.view.style/*` fact at all. While the
+    /// built-in `view` concept required both, `view:` matched only a
+    /// view that declared a style AND a font, so the common view (a
+    /// `show` and nothing else) was committed, rendered, and invisible
+    /// to every `view:` query.
+    #[dialog_common::test]
+    async fn it_queries_views_that_declare_no_style_or_font() {
+        let (state, repo) = state_with_repo("test-evaluate-view-queries").await;
+        let repo = repo.as_str();
+        for name in ["a", "b", "c"] {
+            let model = format!(
+                "concept!: &m/{name}\n  description: \"model {name}\"\n  with:\n    count:\n      description: \"the count\"\n      the: xyz.test.{name}/count\n      as: signed-integer\n"
+            );
+            evaluate(&state, repo, &model, true).await;
+        }
+        let show = "  show:\n    ui: |\n      <h1>{count}</h1>\n";
+        let style = "  style:\n    ui: \"h1 { color: red }\"\n";
+        let font = "  font:\n    f: !!binary AAEC\n";
+        for (model, body) in [
+            ("m/a", format!("{show}")),
+            ("m/b", format!("{show}{style}")),
+            ("m/c", format!("{show}{style}{font}")),
+        ] {
+            let document = format!("view!:\n  this: {model}\n{body}");
+            evaluate(&state, repo, &document, true).await;
+        }
+
+        let count = |query: &'static str| {
+            let state = &state;
+            async move {
+                evaluate(state, repo, query, false).await.matches_after[0]
+                    .results
+                    .len()
+            }
+        };
+        assert_eq!(count("view:\n").await, 3, "a bare `view:` finds all three");
+        for model in ["m/a", "m/b", "m/c"] {
+            let query: &'static str =
+                Box::leak(format!("view:\n  this: {model}\n").into_boxed_str());
+            assert_eq!(count(query).await, 1, "`view:` finds the view of {model}");
+        }
+    }
+
     /// The evaluate pipeline must surface a committed document's
     /// transient facts for post-commit command dispatch — the seam
     /// the route and the bridge hand to `router::command::dispatch`,
