@@ -140,8 +140,12 @@ reactor
 
 Leaf effects: `commit` (transaction), `subscribe` (subscription
 read), `pull`, `push`. The one-shot read uses dialog's native
-`Branch::select(...)` directly, after acquiring the session,
-because it returns a stream rather than a materialized `Vec`.
+`Stack::query().select(...)` directly, after acquiring the session,
+because it returns a stream rather than a materialized `Vec`. The
+stack is the branch plus this process's state layer above it, so
+the read sees session facts (a tab's site, a sync status) with the
+tree; `session.handle()` is the bare branch, for durable reads that
+must follow the live head.
 Two-phase keeps the underlying lazy stream visible to the caller
 (who can `try_next` for streaming or `try_vec` to collect):
 
@@ -149,7 +153,7 @@ Two-phase keeps the underlying lazy stream visible to the caller
 let session = reactor.repository("home").branch("meta")
     .acquire(&op).await?;
 
-let conclusions = session.handle()
+let conclusions = session.stack().query()
     .select(q).perform(&op).try_vec().await?;
 // Vec<ConceptConclusion>
 
@@ -269,7 +273,7 @@ impl TransactionBuilder<'_> {
 ```
 
 There is no `Query` (one-shot) effect type. Use the dialog
-`Branch::select(...)` chain on a `BranchSession::handle()` for
+`Stack::query().select(...)` chain on a `BranchSession::stack()` for
 that.
 
 ### Per-operation env traits

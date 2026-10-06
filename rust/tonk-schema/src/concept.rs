@@ -157,7 +157,8 @@ impl ConceptLookupError {
 /// requires; surfacing it as a single trait alias keeps the
 /// builder signatures readable.
 pub trait QueryEnv:
-    Provider<Get>
+    dialog_repository::StackEnv
+    + Provider<Get>
     + Provider<dialog_effects::blob::Read>
     + Provider<Put>
     + Provider<Resolve>
@@ -173,7 +174,8 @@ pub trait QueryEnv:
 }
 
 impl<T> QueryEnv for T where
-    T: Provider<Get>
+    T: dialog_repository::StackEnv
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>

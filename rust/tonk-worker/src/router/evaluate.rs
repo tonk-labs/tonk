@@ -24,7 +24,7 @@ use ::axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::Changes;
-use dialog_repository::{RepositoryExt as _, Revision};
+use dialog_repository::Revision;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -376,34 +376,52 @@ pub type SeedRecord<'a> = &'a (
             + Sync
     );
 
+/// The space's head among a stack's heads: the bottom layer's, `None`
+/// while the branch is empty.
+fn bottom_head(heads: &[dialog_repository::Head]) -> Option<dialog_artifacts::Revision> {
+    match heads.first() {
+        Some(dialog_repository::Head::Tree(revision)) => revision.clone(),
+        _ => None,
+    }
+}
+
+/// The space's revision among a stack's heads: the bottom layer's.
+fn bottom_revision(
+    heads: &[dialog_repository::Head],
+) -> Result<dialog_artifacts::Revision, dialog_repository::StackError> {
+    bottom_head(heads).ok_or_else(|| dialog_repository::CommitError::Detached.into())
+}
+
 /// Commit the evaluated transaction, optionally chaining a second commit
-/// that names the first's version, then publish the whole chain.
+/// that names the first's version, then publish the whole stack.
 ///
 /// The two-commit shape is what lets a fact name its own commit. A
-/// branch transaction's commit STAGES: the revision is minted, so
-/// `batch.version()` is authoritative rather than predicted, but the
-/// branch head has not moved and nothing is visible yet. The record
-/// commits as the next link, and the single `publish` moves the head to
-/// the chain tip — so either both land or neither does, and no reader
-/// ever observes a library without the record describing it.
+/// stack transaction's commit STAGES: the branch layer's revision is
+/// minted, so its version is authoritative rather than predicted, but
+/// no head has moved and nothing is visible yet. The record commits as
+/// the next link of the same staged chain, and the single publish moves
+/// every head to its chain tip — so either both land or neither does,
+/// and no reader ever observes a library without the record describing
+/// it.
 #[cfg_attr(
     not(all(target_arch = "wasm32", target_os = "unknown")),
     allow(dead_code)
 )]
 pub(super) async fn stage_and_publish(
     tonk_state: &crate::worker::TonkState,
-    txn: dialog_repository::Transaction<&dialog_repository::Branch>,
+    txn: dialog_repository::StackTransaction<'_>,
     record: Option<SeedRecord<'_>>,
-) -> Result<dialog_artifacts::Revision, dialog_repository::CommitError> {
-    let batch = txn.commit().perform(&tonk_state.operator).await?;
+) -> Result<dialog_artifacts::Revision, dialog_repository::StackError> {
+    let stack = txn.stack();
+    let staged = txn.commit().perform(&tonk_state.operator).await?;
     let Some(record) = record else {
-        return batch.publish().perform(&tonk_state.operator).await;
+        return bottom_revision(&stack.publish(&tonk_state.operator).await?);
     };
 
     // Authoritative, not predicted: the commit that minted this version
     // has already happened. It just is not visible yet.
-    let instructions = record(&batch.version());
-    let mut next = batch.transaction();
+    let instructions = record(&bottom_revision(&staged)?.version());
+    let mut next = stack.transaction();
     for instruction in instructions {
         next = match instruction {
             dialog_artifacts::Instruction::Assert(artifact)
@@ -425,12 +443,8 @@ pub(super) async fn stage_and_publish(
             }
         };
     }
-    next.commit()
-        .perform(&tonk_state.operator)
-        .await?
-        .publish()
-        .perform(&tonk_state.operator)
-        .await
+    next.commit().perform(&tonk_state.operator).await?;
+    bottom_revision(&stack.publish(&tonk_state.operator).await?)
 }
 
 /// Shared body for [`evaluate`] and [`evaluate_profile`]. Takes a
@@ -614,37 +628,6 @@ async fn evaluate_on_branch_with<'a>(
         .await
         .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
 
-    // Pin a private handle to the SAME local branch/storage for a conditional
-    // evaluation. A cached handle can be refreshed by another task while the
-    // evaluator awaits; its transaction only checkpoints at staging time. This
-    // handle never refreshes, so publication CAS is tied to the checked head.
-    // This is not another replica, account or sync path. Build evaluation reads
-    // durable state; session-only overlay facts do not enter this handle.
-    let conditional_branch = if query.expected_revision.is_some() {
-        if tonk_branch.repository.is_profile() {
-            return Err(TonkWorkerError::Router(
-                "Conditional evaluation requires a space repository".into(),
-            ));
-        }
-        let repository = tonk_state
-            .profile
-            .space(tonk_branch.repository.name())
-            .load()
-            .perform(&tonk_state.operator)
-            .await
-            .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
-        Some(
-            repository
-                .branch(tonk_branch.name)
-                .open()
-                .perform(&tonk_state.operator)
-                .await
-                .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?,
-        )
-    } else {
-        None
-    };
-
     // A document commits when it writes anything. `rule!:` is a mutation (the
     // `!` says so) and the analyzer lifts it into a `Statement::InstallEffect`,
     // so a planned statement is the single commit signal. We can only know this
@@ -661,24 +644,27 @@ async fn evaluate_on_branch_with<'a>(
     // document's statements are idempotent asserts/retracts, so replay is safe.
     let evaluate_once = || async {
         evaluation_passes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let branch = conditional_branch
-            .as_ref()
-            .unwrap_or_else(|| session.handle());
-        let revision_before = branch.revision();
+        // The head this evaluation reads at and a commit builds on: the
+        // bottom layer's captured head, not the handle's live revision. A
+        // pull the stack has not captured is movement this evaluation
+        // cannot see, and the publish CASes against the captured head, so
+        // a conditional request is checked against the same head. The
+        // stack only advances under the branch transactor, which the
+        // committing path holds from this check through its publish.
+        let revision_before = bottom_head(&session.stack().captured());
         if let Some(expected) = &query.expected_revision
             && expected != &revision_before
         {
-            let _ = session.handle().refresh(&tonk_state.operator).await;
-            session.poll(&tonk_state.operator).await;
             return Err(revision_conflict());
         }
-        // The branch folds its session overlay into every read — the
-        // transaction's as-if-committed view included — so the dry-run preview
-        // sees the same ephemeral facts a `query`/`subscribe` does with no
-        // explicit integrate here, and they never reach the durable write (the
-        // overlay is session-only). Match queries resolve stored `db.rule/*`
-        // rules automatically via the branch query's layer stack.
-        let mut txn = branch.transaction();
+        // The document evaluates and commits through the branch's stack,
+        // like every other write: the transaction's as-if-committed view
+        // is the composite a `query`/`subscribe` reads, state layer
+        // included, and each fact it writes lands where its attribute's
+        // placement says, so a fact placed on the state scope has the
+        // state layer as its only home. Match queries resolve stored
+        // `db.rule/*` rules through the same view.
+        let mut txn = session.stack().transaction();
         for claim in retract.resolve().await? {
             txn = txn.retract(claim);
         }
@@ -728,6 +714,13 @@ async fn evaluate_on_branch_with<'a>(
     // the first (lock-free) evaluation shows no commit, return it directly; only
     // a committing document re-enters under the transactor lock.
     if mode == EvaluationMode::Interactive {
+        // The stack reads at the heads it captured; a pull since then is
+        // movement it has not seen. Cheap when nothing moved.
+        session
+            .state
+            .settle(&tonk_state.operator)
+            .await
+            .map_err(|e| map_evaluate_error(EvaluateError::Query(format!("settle: {e}"))))?;
         let (evaluated, revision_before, matches_after, ..) = evaluate_once().await?;
         if !(query.transact && evaluated.analysis.analysis.has_statements()) {
             // Pure-query or dry-run: drop the transaction without committing. The
@@ -753,38 +746,39 @@ async fn evaluate_on_branch_with<'a>(
 
     // Committing path. Serialize on the branch transactor — the same lock the
     // reactor's `Commit::perform` takes for `/transact`. This document's commit
-    // is a *dialog* `Transaction::commit()` (it threads the raw transaction
-    // through the evaluator), which CASes against the head snapshot but never
-    // retries. The lock excludes the common racer — another committer — so those
-    // line up here instead of one losing the CAS. A sync is the exception the
-    // lock can't cover: it advances the head while holding this lock only for
-    // its microsecond cell write, releasing it across its network fetch, so it
-    // can still land in our snapshot→publish window. The retry loop below
-    // handles that residual case by refreshing and re-evaluating, exactly as
+    // is a stack commit (the evaluator threads the stack transaction through),
+    // which publishes against the heads the stack captured but never retries.
+    // The lock excludes the common racer — another committer — so those line
+    // up here instead of one losing the CAS. A sync is the exception the lock
+    // can't cover: it advances the head while holding this lock only for its
+    // microsecond cell write, releasing it across its network fetch, so it can
+    // still land in our capture→publish window. The retry loop below handles
+    // that residual case by advancing the stack and re-evaluating, exactly as
     // `Commit::perform` does for `/transact`.
     let _committing = session.transactor().lock().await;
+    // Capture a head that moved outside the stack (a pull) before the first
+    // attempt: the stack routes by the placements at its captured head and
+    // publishes against it, so a stale capture misroutes and then fails.
+    if session.stack().behind() {
+        session
+            .stack()
+            .advance(&tonk_state.operator)
+            .await
+            .map_err(|e| map_evaluate_error(EvaluateError::Query(format!("advance: {e}"))))?;
+    }
 
-    // Evaluate under the lock and commit, refreshing and re-evaluating on a
-    // `Version mismatch` (a sync landed between our head snapshot and the
-    // publish). Each iteration re-evaluates because `Transaction` isn't `Clone`
-    // and the commit consumes it — and after a refresh the evaluation must run
+    // Evaluate under the lock and commit, advancing and re-evaluating on a
+    // `Version mismatch` (a sync landed between our capture and the publish).
+    // Each iteration re-evaluates because the transaction isn't `Clone` and
+    // the commit consumes it — and after an advance the evaluation must run
     // against the new head anyway. Bounded so a flapping head can't spin.
     const EVALUATE_RETRY_LIMIT: usize = 4;
-    let (
-        revision_before,
-        revision_after,
-        matches_after,
-        matches_before,
-        commits,
-        transients,
-        eval_ms,
-        matches_ms,
-        commit_ms,
-    ) = {
+    let outcome = {
         let mut attempt = 0;
         loop {
             let (evaluated, revision_before, matches_after, eval_ms, matches_ms) =
                 evaluate_once().await?;
+            session.state.drain_commands();
             if mode != EvaluationMode::Interactive && !evaluated.analysis.analysis.has_statements()
             {
                 return Err(TonkWorkerError::Internal(
@@ -835,9 +829,10 @@ async fn evaluate_on_branch_with<'a>(
                     .perform(&tonk_state.operator)
                     .await
                     .map_err(|e| TonkWorkerError::Internal(format!("test race: {e}")))?;
-                // Also advance the cached handle during evaluation: conditional
-                // publication must still CAS against its private checked head.
-                if conditional_branch.is_some() {
+                // Also move the cached handle, as a pull landing during the
+                // evaluation would: the stack's captured head, which the
+                // conditional publish CASes against, must not follow it.
+                if query.expected_revision.is_some() {
                     session
                         .handle()
                         .refresh(&tonk_state.operator)
@@ -846,16 +841,24 @@ async fn evaluate_on_branch_with<'a>(
                 }
             }
             // Extract what the response needs before the commit consumes the
-            // transaction (`Transaction` isn't `Clone`, and `commit()` takes it
-            // by value). The transients mirror is what post-commit command
+            // transaction (it isn't `Clone`, and `commit()` takes it by
+            // value). The transients mirror is what post-commit command
             // dispatch runs on — the commit sweeps them from the transaction.
             let matches_before = evaluated.matches;
             let commits = evaluated.commits;
-            let transients = evaluated.transients;
+            let requested = evaluated.transients;
             let t_commit = web_time::Instant::now();
             match stage_and_publish(tonk_state, evaluated.txn, record).await {
                 Ok(revision_after) => {
-                    break (
+                    // What the commit witnessed on the state layer and the
+                    // branch's session store: the document's own commands
+                    // plus any a rule concluded and the next round
+                    // consumed. The evaluator's mirror remains the floor
+                    // even if an observer overflowed.
+                    let witnessed = session.state.drain_commands();
+                    let mut transients = witnessed;
+                    dialog_artifacts::Statement::assert(requested, &mut transients);
+                    break Ok((
                         revision_before,
                         revision_after,
                         matches_after,
@@ -865,21 +868,23 @@ async fn evaluate_on_branch_with<'a>(
                         eval_ms,
                         matches_ms,
                         t_commit.elapsed().as_millis(),
-                    );
+                    ));
                 }
-                Err(e)
-                    if query.expected_revision.is_some()
-                        && matches!(
-                            &e,
-                            dialog_repository::CommitError::Publish(
-                                dialog_repository::PublishError::VersionMismatch { .. }
-                            )
-                        ) =>
-                {
-                    // Never replay an authorized document on a different revision.
-                    let _ = session.handle().refresh(&tonk_state.operator).await;
-                    session.poll(&tonk_state.operator).await;
-                    return Err(revision_conflict());
+                Err(dialog_repository::StackError::Publish {
+                    source:
+                        dialog_repository::CommitError::Publish(
+                            dialog_repository::PublishError::VersionMismatch { .. },
+                        ),
+                    ..
+                }) if query.expected_revision.is_some() => {
+                    // Never replay an authorized document on a different
+                    // revision. The head moved through another handle in the
+                    // capture→publish window; capture it while the lock is
+                    // held, and subscribers learn of it from the poll below.
+                    if let Err(error) = session.stack().advance(&tonk_state.operator).await {
+                        log!("evaluate advance after a conditional conflict failed: {error}");
+                    }
+                    break Err(revision_conflict());
                 }
                 Err(e)
                     if query.expected_revision.is_none()
@@ -888,14 +893,14 @@ async fn evaluate_on_branch_with<'a>(
                 {
                     attempt += 1;
                     log!(
-                        "evaluate commit raced a sync (attempt {attempt}); refreshing and retrying"
+                        "evaluate commit raced a sync (attempt {attempt}); advancing and retrying"
                     );
                     session
-                        .handle()
-                        .refresh(&tonk_state.operator)
+                        .stack()
+                        .advance(&tonk_state.operator)
                         .await
                         .map_err(|e| {
-                            map_evaluate_error(EvaluateError::Query(format!("refresh: {e}")))
+                            map_evaluate_error(EvaluateError::Query(format!("advance: {e}")))
                         })?;
                 }
                 Err(e) => {
@@ -907,26 +912,23 @@ async fn evaluate_on_branch_with<'a>(
         }
     };
 
-    // The private conditional handle published into the same local storage.
-    // Refresh the cached handle before polling; never repeat a committed write
-    // just because delivery to subscriptions cannot be confirmed.
-    if conditional_branch.is_some() {
-        session
-            .handle()
-            .refresh(&tonk_state.operator)
-            .await
-            .map_err(|e| {
-                TonkWorkerError::Internal(format!(
-                    "Conditional write committed but cached-head refresh failed; do not retry: {e}"
-                ))
-            })?;
-    }
-
-    // Re-poll subscriptions so SSE clients see the new state. The chain commits
-    // via dialog directly; the reactor's subscription registry is the worker's
-    // responsibility.
+    // Re-poll subscriptions so SSE clients see the new state, after a commit
+    // and after a conditional conflict alike. The poll settles the stack under
+    // the transactor, so the lock is released first.
+    drop(_committing);
     let t_poll = web_time::Instant::now();
     session.poll(&tonk_state.operator).await;
+    let (
+        revision_before,
+        revision_after,
+        matches_after,
+        matches_before,
+        commits,
+        transients,
+        eval_ms,
+        matches_ms,
+        commit_ms,
+    ) = outcome?;
     let poll_ms = t_poll.elapsed().as_millis();
     let total_ms = total_start.elapsed().as_millis();
     let passes = evaluation_passes.load(std::sync::atomic::Ordering::Relaxed);
@@ -1756,6 +1758,54 @@ mod tests {
         evaluate_body(&guard, repo, "main", body.to_owned(), transact)
             .await
             .unwrap_or_else(|e| panic!("evaluate_body failed: {e}"))
+    }
+
+    #[dialog_common::test]
+    async fn it_dispatches_only_witnessed_commands_not_state_writes() {
+        use crate::router::claim::RawClaim;
+        use dialog_artifacts::{Changes, Statement, Value};
+        let (state, repo) = state_with_repo("test-witnessed-commands").await;
+        let tonk = state.read().await;
+        let branch = tonk.reactor.repository(&repo).branch("main");
+        let session = branch.acquire(&tonk.operator).await.unwrap();
+        session.state.drain_commands();
+        session
+            .state
+            .write(
+                RawClaim {
+                    the: "test/state".parse().unwrap(),
+                    of: "test:site".parse().unwrap(),
+                    is: Value::String("ready".into()),
+                    unique: false,
+                },
+                &tonk.operator,
+            )
+            .await
+            .unwrap();
+        assert!(
+            session.state.drain_commands().is_empty(),
+            "state writes are not commands"
+        );
+        let mut commands = Changes::new();
+        RawClaim {
+            the: "test/command".parse().unwrap(),
+            of: "test:command".parse().unwrap(),
+            is: Value::String("go".into()),
+            unique: false,
+        }
+        .assert(&mut commands);
+        let mut transaction = branch.transaction();
+        transaction.transients = commands;
+        let (_, witnessed) = transaction
+            .commit()
+            .perform_witnessed(&tonk.operator)
+            .await
+            .unwrap();
+        assert_eq!(witnessed.into_instructions().len(), 1);
+        assert!(
+            session.state.drain_commands().is_empty(),
+            "the commit drains its own commands"
+        );
     }
 
     /// A document declaring the transient `person-entered` concept,

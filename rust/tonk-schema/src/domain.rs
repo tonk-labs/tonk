@@ -201,6 +201,16 @@ pub mod space {
     #[cardinality(one)]
     pub struct Replicating(pub bool);
 
+    /// The space an in-flight replication is pulling, on the replica
+    /// entity beside [`Replicating`]. Its own attribute rather than the
+    /// replica's `subject`: a scope is a property of an attribute, and
+    /// this one is session-only where the replica's is durable, so the
+    /// marker's write may place it without moving the replica's.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[cardinality(one)]
+    pub struct ReplicatingSubject(pub Entity);
+
     /// The account providing this space with the access service. Its
     /// PRESENCE is the record that the space is provisioned; the sync
     /// engine retracts it when the service answers that the subject is
@@ -481,6 +491,16 @@ pub mod site {
     #[domain("xyz.tonk.site")]
     #[cardinality(one)]
     pub struct Concept(pub Entity);
+
+    /// Where this tab has been asked to go: the desired location, as an
+    /// href. A worker command that ends in a redirect (a join, a create)
+    /// asserts it on the tab's site; the page observes it, navigates, and
+    /// its `tonk:load` re-stamp of the site clears it. The stamped
+    /// [`Path`] is the observed half.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct Target(pub String);
 }
 
 /// Attributes for the durable `tonk:route` table the SW reads to build its

@@ -37,6 +37,7 @@ use dialog_storage::Blake3Hash;
 use ipld_core::ipld::Ipld;
 use thiserror::Error;
 
+use crate::BranchState;
 use crate::{Conclusion, Query, SelectProvider};
 
 /// Failure modes for [`resolve_formula`].
@@ -75,13 +76,16 @@ impl From<DialogArtifactsError> for FormulaError {
     }
 }
 
-/// Resolve a formula [`Query`] against `branch`, returning its rows.
+/// Resolve a formula [`Query`] against a cached branch, returning its
+/// rows. The `tree/*` formulas read the branch's blocks; `intent/suggest`
+/// reads the branch's stack, state layer included.
 pub async fn resolve_formula<Env: SelectProvider>(
-    branch: &Branch,
+    state: &BranchState,
     env: &Env,
     query: &Query,
 ) -> Result<Vec<Conclusion>, FormulaError> {
     let name = query.formula().ok_or(FormulaError::NotFormula)?;
+    let branch = &state.branch;
 
     match name {
         // Describe one node. `hash` is optional and defaults to the
@@ -117,7 +121,7 @@ pub async fn resolve_formula<Env: SelectProvider>(
         },
 
         // What a typed command could mean. See [`crate::intent`].
-        crate::intent::NAME => crate::intent::suggest(branch, env, query).await,
+        crate::intent::NAME => crate::intent::suggest(state, env, query).await,
 
         other => Err(FormulaError::Unknown(other.into())),
     }

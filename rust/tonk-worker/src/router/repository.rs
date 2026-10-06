@@ -810,20 +810,20 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     );
 
     // 2. The space is created and seeded — drop the creator into
-    //    it. Same page-capability channel as the join redirect: a
-    //    `{ type: "navigate", href }` posted to the originating
-    //    client. Fired before the remote attach so the navigation
-    //    doesn't wait on the network; the attach continues in the
-    //    worker regardless.
+    //    it. Same channel as the join redirect: the desired location
+    //    asserted on the originating tab's site, which the tab
+    //    observes and follows. Written before the remote attach so
+    //    the navigation doesn't wait on the network; the attach
+    //    continues in the worker regardless.
     let href = format!("/space/{key}");
-    crate::router::navigate::notify_navigate(env.client(), &href);
-    report_space_creation(env.state(), &receipt, "created", &href).await;
-    // Navigation must not wait for every Hub subscription to re-query.
-    // The seed and initialized status are already committed at this point.
     {
         let tonk = env.state().read().await;
+        crate::router::navigate::request_navigation(&tonk, env.client(), &href).await;
+        // Navigation must not wait for every Hub subscription to re-query.
+        // The seed and initialized status are already committed at this point.
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     }
+    report_space_creation(env.state(), &receipt, "created", &href).await;
 
     // 3. If the form carried a remote, attach it best-effort to
     //    the identity just created. A failure here just leaves it
@@ -1530,7 +1530,7 @@ async fn run_connection_invite_for(
                 .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
             use tonk_schema::domain::agent_handoff::{Account, Status};
             let ready: Vec<tonk_schema::command::AgentHandoffState> = branch
-                .handle()
+                .stack()
                 .query()
                 .select(Query::<tonk_schema::command::AgentHandoffState> {
                     this: Term::from(subject.this()),
@@ -1802,7 +1802,7 @@ mod connection_invite_disabled_tests {
             .await
             .unwrap();
         let rows: Vec<tonk_schema::command::AgentHandoffState> = branch
-            .handle()
+            .stack()
             .query()
             .select(Query::<tonk_schema::command::AgentHandoffState> {
                 this: Term::var("this"),
@@ -2422,7 +2422,10 @@ async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::Inv
             return;
         }
     };
-    main.state.assert_overlay(state);
+    if let Err(error) = main.state.write(state, &tonk.operator).await {
+        log!("invite state: write: {error}");
+        return;
+    }
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
@@ -4299,8 +4302,10 @@ impl dialog_capability::Provider<tonk_schema::command::ForgetInvite> for crate::
                 return;
             }
         };
-        main.state
-            .retain_overlay_entities(|overlaid| overlaid != &space);
+        if let Err(error) = main.state.forget(vec![space], &tonk.operator).await {
+            log!("ForgetInvite: forget: {error}");
+            return;
+        }
         tonk.reactor
             .schedule_poll(std::sync::Arc::clone(&main.state));
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
@@ -4800,6 +4805,9 @@ async fn install_seed(
             }
         }
     }
+    // The poll captures the commit just made through the branch handle,
+    // which takes the transactor: release it first.
+    drop(_committing);
     session.poll(&tonk.operator).await;
     Ok(true)
 }
@@ -4849,6 +4857,9 @@ pub(super) async fn install_fresh_from(
     while let Err(error) = stage_reinstall(tonk, &session, &[], &install, &record, own).await {
         retry_after_race(tonk, key, &session, &mut attempt, error).await?;
     }
+    // The poll captures the commit just made through the branch handle,
+    // which takes the transactor: release it first.
+    drop(_committing);
     session.poll(&tonk.operator).await;
     Ok(())
 }
@@ -9127,9 +9138,10 @@ mod invite_chain_tests {
         }
 
         // The minted link carries the space's display name as the
-        // advisory `name` parameter, read back through the overlay
+        // advisory `name` parameter, read back through the state-layer
         // `Credential` the share view renders — so the recipient's Hub
-        // row is labeled before the space's content syncs.
+        // row is labeled before the space's content syncs. The state
+        // layer is above the branch, so the read goes through the stack.
         {
             use tonk_schema::command::Credential;
             let tonk = state.read().await;
@@ -9141,7 +9153,7 @@ mod invite_chain_tests {
                 .await
                 .expect("content branch opens");
             let credentials: Vec<Credential> = branch
-                .handle()
+                .stack()
                 .query()
                 .select(Query::<Credential> {
                     this: Term::var("this"),
@@ -11088,7 +11100,7 @@ mod tests {
         let entity: dialog_artifacts::Entity =
             tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
         let rows: Vec<tonk_schema::ProfileIdentity> = session
-            .handle()
+            .stack()
             .query()
             .select(Query::<tonk_schema::ProfileIdentity> {
                 this: Term::from(entity),
@@ -12136,7 +12148,7 @@ block/insert!:
         let entity: dialog_artifacts::Entity =
             tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
         let rows: Vec<tonk_schema::ProfileIdentity> = session
-            .handle()
+            .stack()
             .query()
             .select(Query::<tonk_schema::ProfileIdentity> {
                 this: Term::from(entity),
@@ -12404,7 +12416,7 @@ block/insert!:
             .await
             .expect("content branch opens");
         let rows: Vec<ShareBlocked> = branch
-            .handle()
+            .stack()
             .query()
             .select(dialog_query::Query::<ShareBlocked> {
                 this: Term::var("this"),
@@ -13203,7 +13215,7 @@ mod seed_tests {
                 .await
                 .expect("profile main acquires");
             let rows: Vec<tonk_schema::ReplicaCheckFailure> = main
-                .handle()
+                .stack()
                 .query()
                 .select(Query::<tonk_schema::ReplicaCheckFailure> {
                     this: Term::from(replica.clone()),
@@ -13231,7 +13243,7 @@ mod seed_tests {
                 .await
                 .expect("profile main acquires");
             let rows: Vec<tonk_schema::ReplicaChecking> = main
-                .handle()
+                .stack()
                 .query()
                 .select(Query::<tonk_schema::ReplicaChecking> {
                     this: Term::from(replica.clone()),
@@ -13594,7 +13606,7 @@ mod connection_invite_overlay_tests {
             .await
             .unwrap();
         branch
-            .handle()
+            .stack()
             .query()
             .select(Query::<tonk_schema::command::AgentHandoffState> {
                 this: Term::var("this"),
@@ -13619,7 +13631,7 @@ mod connection_invite_overlay_tests {
             .await
             .unwrap();
         let rows: Vec<tonk_schema::command::AgentHandoffState> = branch
-            .handle()
+            .stack()
             .query()
             .select(Query::<tonk_schema::command::AgentHandoffState> {
                 this: Term::var("this"),
@@ -13726,7 +13738,7 @@ mod connection_invite_overlay_tests {
             before,
             "notification metadata must not change replicated space content"
         );
-        branch.state.clear_overlay();
+        branch.state.clear(&tonk.operator).await.unwrap();
         let rows = fab_query(&tonk, &repo, &body).await;
         assert!(
             rows.as_array().unwrap().is_empty(),
@@ -14084,7 +14096,9 @@ mod connection_invite_overlay_tests {
                 .await
                 .unwrap()
                 .state
-                .clear_overlay();
+                .clear(&tonk.operator)
+                .await
+                .unwrap();
         }
         for _ in 0..2 {
             run_connection_invite(&env, false).await.unwrap();

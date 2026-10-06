@@ -229,7 +229,11 @@ mod tests {
             .acquire(&tonk.operator)
             .await
             .expect("profile branch");
-        session.state.assert_overlay(fact.clone());
+        session
+            .state
+            .write(fact.clone(), &tonk.operator)
+            .await
+            .expect("state write");
 
         let exported = tonk.reactor.export_overlays();
         assert!(

@@ -52,10 +52,10 @@ pub struct CommandOrigin {
     pub branch: String,
     /// The service-worker client the triggering request originated from,
     /// when known. A handler whose effect is a page capability (e.g.
-    /// navigation) posts a message back to this exact client — the service
-    /// worker has no `window`, and a transient command never lands in a
-    /// branch a subscription could observe, so the originating client is
-    /// the only channel back to the page that asked for the effect.
+    /// navigation) finds the client's tab through it: the site the
+    /// client stamped is where the desired location is asserted, and
+    /// page-only asks (a passkey ceremony, an analytics event) are
+    /// posted to this exact client.
     pub client: Option<crate::router::ClientId>,
 }
 

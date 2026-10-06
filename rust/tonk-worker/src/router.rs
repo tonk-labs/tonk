@@ -1743,7 +1743,7 @@ pub mod tests {
                 .acquire(&tonk.operator)
                 .await
                 .unwrap();
-            session.state.clear_overlay();
+            session.state.clear(&tonk.operator).await.unwrap();
         }
 
         let query = |attr: &str, name: &str| {
@@ -4546,10 +4546,14 @@ employee:
             .acquire(&guard.operator)
             .await
             .expect("acquire");
-        session.state.assert_overlay(tonk_schema::SpaceLocal::new(
-            &subject.parse().unwrap(),
-            true,
-        ));
+        session
+            .state
+            .write(
+                tonk_schema::SpaceLocal::new(&subject.parse().unwrap(), true),
+                &guard.operator,
+            )
+            .await
+            .expect("state write");
 
         // Every query names its term differently, which gives it its own
         // hash and tags its rows with the query they came from.

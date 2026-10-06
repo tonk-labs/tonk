@@ -188,11 +188,18 @@ pub async fn run_against_site(
         .branch()
         .await
         .map_err(|e| EvalError::Io(format!("acquire branch: {e}")))?;
-    let branch = session.handle();
+    // The document evaluates and commits through the branch's stack,
+    // like every other write. The stack reads at the heads it captured;
+    // capture any movement it has not seen first.
+    session
+        .state
+        .settle(&site.operator)
+        .await
+        .map_err(|e| EvalError::Io(format!("settle: {e}")))?;
 
-    let revision_before = branch.revision();
+    let revision_before = session.handle().revision();
     let evaluated = syntax
-        .evaluate(branch.transaction())
+        .evaluate(session.stack().transaction())
         .perform(&site.operator)
         .await
         .map_err(map_evaluate_error)?;
@@ -213,13 +220,17 @@ pub async fn run_against_site(
     // don't pay for (or apply) a commit.
     let (response, committed) = if !options.dry_run && evaluated.analysis.analysis.has_statements()
     {
-        let revision_after = evaluated
+        let heads = evaluated
             .txn
             .commit()
             .publish()
             .perform(&site.operator)
             .await
             .map_err(|e| EvalError::Io(format!("commit failed: {e}")))?;
+        let revision_after = match heads.first() {
+            Some(dialog_repository::Head::Tree(Some(revision))) => revision.clone(),
+            _ => return Err(EvalError::Io("commit left the branch detached".to_owned())),
+        };
         // Re-poll the branch's subscriptions so the reactor's
         // commit contract holds. Tonk opens none, so this is a
         // no-op today, kept for parity with the worker's path.

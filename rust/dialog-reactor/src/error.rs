@@ -1,5 +1,5 @@
 use dialog_query::EvaluationError;
-use dialog_repository::{CommitError, PullError, PushError};
+use dialog_repository::{CommitError, PullError, PushError, StackError};
 use thiserror::Error;
 
 /// Errors surfaced by the reactor's chain effects. Consumers map
@@ -28,6 +28,11 @@ pub enum ReactorError {
     /// A commit against the branch failed.
     #[error("commit failed: {0}")]
     Commit(#[from] CommitError),
+    /// A stack operation (open, advance, or a stack commit) failed.
+    /// Boxed: the stack error carries a head and an address, and would
+    /// otherwise make every reactor result large.
+    #[error("stack failed: {0}")]
+    Stack(Box<StackError>),
     /// A pull from upstream failed.
     #[error("pull failed: {0}")]
     Pull(#[from] PullError),
@@ -37,4 +42,10 @@ pub enum ReactorError {
     /// A push to upstream failed.
     #[error("push failed: {0}")]
     Push(#[from] PushError),
+}
+
+impl From<StackError> for ReactorError {
+    fn from(error: StackError) -> Self {
+        ReactorError::Stack(Box::new(error))
+    }
 }

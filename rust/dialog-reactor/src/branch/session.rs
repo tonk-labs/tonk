@@ -12,7 +12,7 @@ use dialog_query::ConceptQuery;
 use dialog_repository::Branch;
 
 use crate::BranchState;
-use crate::env::SelectProvider;
+use crate::env::{BranchOpenProvider, SelectProvider};
 use crate::error::ReactorError;
 use crate::subscription::{QueryHash, Subscriber, SubscriptionReference};
 
@@ -30,6 +30,11 @@ impl BranchSession {
         &self.state.branch
     }
 
+    /// The stack every read and write of the branch goes through.
+    pub fn stack(&self) -> &dialog_repository::Stack {
+        self.state.stack()
+    }
+
     /// The per-branch transaction lock. A transaction takes it
     /// (`transactor().lock().await`) around its commit so concurrent
     /// transactions on this branch serialize instead of racing the head CAS.
@@ -42,7 +47,10 @@ impl BranchSession {
     ///
     /// `impl Future + 'a` (not `async fn`) so the env lifetime stays
     /// named — see [`SubscriptionPoll::perform`](crate::SubscriptionPoll).
-    pub fn poll<'a, Env: SelectProvider>(&'a self, env: &'a Env) -> impl Future<Output = ()> + 'a {
+    pub fn poll<'a, Env: SelectProvider + BranchOpenProvider>(
+        &'a self,
+        env: &'a Env,
+    ) -> impl Future<Output = ()> + 'a {
         self.state.poll(env)
     }
 

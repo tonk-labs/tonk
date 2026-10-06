@@ -892,7 +892,7 @@ mod tests {
             .await
             .expect("profile branch opens");
         let rows: Vec<ProfileRow> = session
-            .handle()
+            .stack()
             .query()
             .select(Query::<ProfileRow> {
                 this: Term::var("this"),
@@ -947,7 +947,7 @@ mod tests {
             .await
             .expect("profile branch opens");
         let rows: Vec<ProfileRow> = session
-            .handle()
+            .stack()
             .query()
             .select(Query::<ProfileRow> {
                 this: Term::var("this"),
@@ -986,7 +986,7 @@ mod tests {
                 .await
                 .expect("profile branch opens");
             let rows: Vec<ProfileRow> = session
-                .handle()
+                .stack()
                 .query()
                 .select(Query::<ProfileRow> {
                     this: Term::var("this"),

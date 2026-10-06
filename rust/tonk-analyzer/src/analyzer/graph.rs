@@ -38,7 +38,8 @@ use tonk_schema::rule::{Rule, StoredRuleError, stored_rule};
 use super::assertion::{body_digest, derive_head_intent};
 use super::declaration::{
     DeclaredApplication, action_application, attribute_application, build_concept_retractions,
-    concept_application, parse_attribute_body, parse_concept_body, role_application,
+    concept_application, parse_attribute_body, parse_concept_body, placement_applications,
+    role_application,
 };
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::rule::{collect_rule_concepts, is_rule_retract_body, parse_rule_this_entity};
@@ -787,6 +788,7 @@ impl Graph {
                                 .iter()
                                 .map(|role| role_application(&entity, role))
                                 .collect(),
+                            placements: Vec::new(),
                             retractions: Vec::new(),
                         },
                     );
@@ -872,6 +874,13 @@ impl Graph {
                                 .map(|name| action_application(&entity, name)),
                         )
                         .collect();
+                    // `scope:` places every attribute the concept
+                    // names; a retraction-only body names none
+                    // (its descriptor is a stub) and places nothing.
+                    let placements = match (&plan.scope, plan.asserts_nothing) {
+                        (Some(scope), false) => placement_applications(&plan.descriptor, scope),
+                        _ => Vec::new(),
+                    };
                     // Field retractions (`with: { f: _ }` / `..: _`)
                     // dissociate stored fields read off the branch.
                     let resolved = scope.resolved_concept(&entity).flatten();
@@ -899,6 +908,7 @@ impl Graph {
                         DeclaredApplication {
                             application,
                             inline_attributes,
+                            placements,
                             retractions,
                         },
                     );

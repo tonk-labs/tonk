@@ -1,40 +1,80 @@
-//! [`BranchState`] — cached branch handle plus the subscriptions
-//! registered against it. Lives behind an `Arc`; subscription
-//! operations on the branch happen directly on the state without
-//! routing through the reactor's name-keyed lookup.
+//! [`BranchState`] — a branch as the reactor holds it: the branch, the
+//! stack every read, subscription and write of it goes through, and
+//! the subscriptions registered against it. Lives behind an `Arc`;
+//! subscription operations on the branch happen directly on the state
+//! without routing through the reactor's name-keyed lookup.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use dialog_artifacts::Statement;
+use dialog_artifacts::{Attribute, Changes, Entity, Statement};
 use dialog_query::ConceptQuery;
-use dialog_repository::Branch;
+use dialog_repository::{Branch, Drained, Ephemeral, Observer, Placement, Stack};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
-use crate::env::SelectProvider;
+use crate::env::{BranchOpenProvider, SelectProvider};
 use crate::error::ReactorError;
 use crate::subscription::{
     QueryHash, Status, Subscriber, SubscriberSession, Subscription, SubscriptionPoll,
 };
 
-/// Cached branch handle plus the subscriptions registered
-/// against it. Held inside the reactor's cache as
-/// `Arc<BranchState>` so callers can hand the state around
-/// without re-locking the reactor's outer map.
+/// The scope name the application's state layer is linked under: the
+/// facts of this one application (a worker shared by every tab, a CLI
+/// process) that every reader of the branch sees, and nothing
+/// replicates or keeps.
+pub const STATE_SCOPE: &str = "memory:application";
+
+/// The scope name the space's branch itself is linked under: the
+/// replicated tree, where an attribute with no placement lands.
+pub const SHARED_SCOPE: &str = "memory:space";
+
+/// The attribute namespace a stack records its links under, on the
+/// layer that links: `dialog.link/{from, to, name, revision, ...}`.
+const LINK_ATTRIBUTES: &str = "dialog.link/";
+
+fn scope(name: &str) -> Entity {
+    name.parse().expect("a fixed scope name is a valid entity")
+}
+
+/// A branch as the reactor holds it: the branch, the stack every
+/// read, subscription and write of it goes through, and the
+/// subscriptions standing over it.
+///
+/// The stack is `[branch, state, top]`: `state` is this application's
+/// ephemeral layer, linked under [`STATE_SCOPE`] by a wiring layer
+/// above it, so facts placed on that scope — by the schema's `scope:`
+/// declarations or by a writer through [`write`](Self::write) — land
+/// there and never reach the tree. Every write goes through the stack:
+/// the reactor's own commits, the evaluate route's documents, and a
+/// library seed alike, so a fact has one home. Commands dispatched
+/// through the stack are witnessed on the layer their scope names,
+/// and a command whose attribute has no placement on the branch's own
+/// session store, the bottom's; both are observed, and
+/// [`drain_commands`](Self::drain_commands) hands back what fired.
 pub struct BranchState {
-    /// The open dialog branch handle. Cheap to clone (internal
-    /// `Cell<Revision>` keeps this handle current as the branch
-    /// advances).
+    /// The branch itself; transactions and pulls address it through
+    /// the stack.
     pub branch: Branch,
+    state: Ephemeral,
+    top: Ephemeral,
+    stack: Stack,
+    /// Instants on the state layer and on the branch's session store:
+    /// where dispatched commands are witnessed.
+    witnessed: [Observer; 2],
+    /// The attributes this process has placed on the state scope of
+    /// this branch, in the branch's session store, so a writer declares
+    /// each attribute once.
+    placed: Mutex<HashSet<Attribute>>,
     /// Subscriptions on this branch, keyed by query hash, in the order
     /// they were created. [`Self::poll`] walks them lowest level first (see
     /// [`Subscription::level`]), creation order breaking ties.
     subscriptions: Mutex<IndexMap<QueryHash, Subscription>>,
     /// Serializes *transactions* on this branch — concurrent writers (e.g.
     /// two browser tabs committing through one service worker) line up rather
-    /// than racing the head CAS and failing. Guards nothing but the right to be
+    /// than racing the head CAS. Guards nothing but the right to be
     /// the one committing; the commit's data lives on the branch handle.
     ///
     /// An async [`tokio::sync::Mutex`], not `parking_lot`, because the guard is
@@ -49,13 +89,57 @@ pub struct BranchState {
 }
 
 impl BranchState {
-    /// Construct a fresh state over an open branch.
-    pub fn new(branch: Branch) -> Self {
-        Self {
+    /// Open the branch's stack through the environment: a fresh state
+    /// layer and wiring layer, linked above the branch.
+    pub async fn open<Env>(branch: Branch, env: &Env) -> Result<Self, ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        let state = Ephemeral::create().perform(env).await;
+        let top = Ephemeral::create().perform(env).await;
+        // The branch binds no scope of its own: nothing commits through
+        // the branch handle, so a fact placed on the state scope has the
+        // state layer as its only home and a stack `clear` or `forget`
+        // of the scope reaches all of it.
+        let stack = Stack::open(top.clone())
+            .link(&top, &state, scope(STATE_SCOPE))
+            .link(&state, &branch, scope(SHARED_SCOPE))
+            .perform(env)
+            .await?;
+        // Where a stack commit witnesses the commands it minted: the
+        // state layer for a command placed on the state scope, the
+        // bottom's session store for one whose attribute has no
+        // placement. Both are this application's; both are drained.
+        let witnessed = [
+            state.observe_everything(),
+            branch.overlay().observe_everything(),
+        ];
+        Ok(Self {
             branch,
+            state,
+            top,
+            stack,
+            witnessed,
+            placed: Mutex::new(HashSet::new()),
             subscriptions: Mutex::new(IndexMap::new()),
             transactor: tokio::sync::Mutex::new(()),
-        }
+        })
+    }
+
+    /// The stack every read and write of this branch goes through.
+    pub fn stack(&self) -> &Stack {
+        &self.stack
+    }
+
+    /// The process's state layer above the branch.
+    pub fn state_layer(&self) -> &Ephemeral {
+        &self.state
+    }
+
+    /// The wiring layer at the top of the stack, which a per-client
+    /// stack links to reach the state layer.
+    pub fn top_layer(&self) -> &Ephemeral {
+        &self.top
     }
 
     /// The per-branch transaction lock. A transaction takes it
@@ -66,38 +150,191 @@ impl BranchState {
         &self.transactor
     }
 
-    /// Assert a [`Statement`] into the branch's session overlay —
-    /// ephemeral facts folded into every read of the branch (queries,
-    /// transaction views, and standing subscriptions) but never
-    /// committed. Delegates to [`Branch::overlay`]: dialog owns the
-    /// overlay now, folds it in at the single `QueryLayer::from(&Branch)`
-    /// point, and bumps an epoch so the branch's subscriptions re-evaluate
-    /// on their next poll. A cardinality-one re-assert overwrites in place.
+    /// Assert a [`Statement`] into the state layer: session facts every
+    /// read of the branch sees, never committed, never replicated. The
+    /// attributes the claim touches are placed on the state scope by
+    /// the write itself, as this process's own declaration in the
+    /// branch's session store, so the schema need not declare them and
+    /// the tree never changes for it.
     ///
-    /// The overlay holds facts only, so a statement that changes an asset
-    /// is refused; that is a mistake in the caller, reported in the log.
-    pub fn assert_overlay<S: Statement>(&self, claim: S) {
-        if let Err(error) = self.branch.overlay().assert(claim) {
-            dialog_common::log!("overlay assert refused: {error}");
-        }
+    /// A placement is a property of the attribute, on this branch, for
+    /// every writer in this process: a concept written here must own its
+    /// attributes. A session marker that carried a durable concept's
+    /// attribute (a replica's `subject`, say) would place that attribute
+    /// on the state scope and route the durable concept's facts there
+    /// from then on.
+    pub async fn write<S: Statement, Env>(&self, claim: S, env: &Env) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        self.apply(Vec::new(), claim, env).await
     }
 
-    /// Retract a [`Statement`] from the branch's session overlay. A
-    /// statement that changes an asset is refused, as for
-    /// [`assert_overlay`](Self::assert_overlay).
-    pub fn retract_overlay<S: Statement>(&self, claim: S) {
-        if let Err(error) = self.branch.overlay().retract(claim) {
-            dialog_common::log!("overlay retract refused: {error}");
-        }
+    /// Forget `entities` in the state layer and assert `claim` there in
+    /// one commit, so a reader never sees the layer between the two: a
+    /// re-stamp that must replace an entity's facts rather than merge
+    /// into them goes through here.
+    pub async fn apply<S: Statement, Env>(
+        &self,
+        entities: Vec<Entity>,
+        claim: S,
+        env: &Env,
+    ) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        let mut changes = Changes::new();
+        claim.assert(&mut changes);
+        self.commit(entities, changes, env).await
     }
 
-    /// Drop every fact in the branch's session overlay. Used to keep
-    /// exactly one live entry across keys that differ between writes (e.g.
-    /// each invitation is keyed by a fresh membership DID, so a
-    /// cardinality-one re-assert wouldn't replace the prior one — clearing
-    /// does).
-    pub fn clear_overlay(&self) {
-        self.branch.overlay().clear();
+    /// Retract a [`Statement`] from the state layer.
+    pub async fn erase<S: Statement, Env>(&self, claim: S, env: &Env) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        let mut changes = Changes::new();
+        claim.retract(&mut changes);
+        self.commit(Vec::new(), changes, env).await
+    }
+
+    /// Drop every fact in the state layer. Used to keep a process's
+    /// session facts from outliving the profile they were minted for.
+    pub async fn clear<Env>(&self, env: &Env) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        let _transacting = self.transactor.lock().await;
+        if self.stack.behind() {
+            self.stack.advance(env).await?;
+        }
+        self.stack
+            .transaction()
+            .clear(scope(STATE_SCOPE))
+            .commit()
+            .publish()
+            .perform(env)
+            .await?;
+        Ok(())
+    }
+
+    /// Drop every state-layer fact recorded for `entities`: the
+    /// garbage-collection primitive for per-client facts keyed by
+    /// short-lived entities.
+    pub async fn forget<Env>(&self, entities: Vec<Entity>, env: &Env) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        if entities.is_empty() {
+            return Ok(());
+        }
+        self.commit(entities, Changes::new(), env).await
+    }
+
+    /// One stack commit: declare the attributes `changes` touches on the
+    /// state scope where this process has not yet, then forget
+    /// `entities` in the state layer and land `changes` there in one
+    /// instant. The declarations go in the branch's own session store,
+    /// this process's placements: the tree never holds them, no peer
+    /// learns of them, and the commit touches no tree chain.
+    async fn commit<Env>(
+        &self,
+        entities: Vec<Entity>,
+        changes: Changes,
+        env: &Env,
+    ) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        let _transacting = self.transactor.lock().await;
+        // The stack routes at the heads it captured. A commit made outside
+        // it since (a pull, a commit through another handle of the branch)
+        // may have declared placements this write must honour: capture it
+        // first.
+        if self.stack.behind() {
+            self.stack.advance(env).await?;
+        }
+        self.place(&changes)?;
+        let mut transaction = self.stack.transaction();
+        if !entities.is_empty() {
+            transaction = transaction.forget(scope(STATE_SCOPE), entities);
+        }
+        transaction
+            .assert(changes)
+            .commit()
+            .publish()
+            .perform(env)
+            .await?;
+        Ok(())
+    }
+
+    /// Declare on the state scope, in the branch's session store, every
+    /// attribute `changes` touches that this process has not declared on
+    /// this branch yet.
+    fn place(&self, changes: &Changes) -> Result<(), ReactorError> {
+        let mut placed = self.placed.lock();
+        for (_, attribute, _) in changes.iter() {
+            if placed.contains(attribute) {
+                continue;
+            }
+            self.branch
+                .overlay()
+                .assert(Placement::new(attribute.clone(), scope(STATE_SCOPE)))
+                .map_err(|error| ReactorError::Commit(error.into()))?;
+            placed.insert(attribute.clone());
+        }
+        Ok(())
+    }
+
+    /// The state layer's facts, asserts and retracts alike: what a
+    /// successor process restores to carry this one's session across.
+    /// The stack's own wiring (`dialog.link/*`, which the state layer
+    /// holds as the layer linking the branch) stays behind: a successor
+    /// opens a stack of its own and must not inherit this one's links.
+    pub fn export(&self) -> Changes {
+        use dialog_artifacts::{Change, Update as _};
+        let mut changes = Changes::new();
+        for (entity, attribute, change) in self.state.export().iter() {
+            if attribute.as_str().starts_with(LINK_ATTRIBUTES) {
+                continue;
+            }
+            match change {
+                Change::Assert(value) => {
+                    changes.associate(attribute.clone(), entity.clone(), value.clone())
+                }
+                Change::Replace(value) => {
+                    changes.associate_unique(attribute.clone(), entity.clone(), value.clone())
+                }
+                Change::Retract(value) => {
+                    changes.dissociate(attribute.clone(), entity.clone(), value.clone())
+                }
+            }
+        }
+        changes
+    }
+
+    /// The commands witnessed since the last drain, as the facts they
+    /// asserted: what a stack commit dispatched, including a command a
+    /// rule concluded and the next round consumed. A gapped observer
+    /// yields nothing for its store; a command it missed is lost, as a
+    /// command is when its consumer is gone.
+    pub fn drain_commands(&self) -> Changes {
+        use dialog_artifacts::Update as _;
+        let mut changes = Changes::new();
+        for observer in &self.witnessed {
+            let Drained::Instants(instants) = observer.drain() else {
+                continue;
+            };
+            for instant in instants {
+                if !instant.transient {
+                    continue;
+                }
+                for fact in instant.asserted {
+                    changes.associate(fact.the, fact.of, fact.is);
+                }
+            }
+        }
+        changes
     }
 
     /// Borrow the subscription map. Used by [`SubscriptionPoll`]
@@ -119,25 +356,6 @@ impl BranchState {
         self.subscriptions.lock().clear();
     }
 
-    /// Register a fresh subscriber for `query`. Returns a
-    /// [`Subscriber`] carrying the subscription's hash and the
-    /// receiver to read broadcast bytes from. The caller is
-    /// expected to follow up with
-    /// `branch_session.subscription(hash).poll().perform(&env)`
-    /// so the new subscriber's first event is the current snapshot.
-    ///
-    /// Query identity is the blake3 hash of the serialized
-    /// [`Query`] projection. We **don't** re-check `PartialEq`
-    /// against the registered query, even though earlier
-    /// revisions did: `NamedAttributes` in dialog-query derives
-    /// `PartialEq` over a `Vec` whose order is randomized by the
-    /// `HashMap`-mediated `Serialize` / `Deserialize` impls, so
-    /// the same query round-tripped through ser/de can compare
-    /// `!=` even though the hashes match. A genuine blake3
-    /// collision is cryptographically impossible, so trusting
-    /// the hash is the right move here. Track the upstream fix
-    /// in dialog-db (make `NamedAttributes::PartialEq`
-    /// order-insensitive, or serialize in sorted order).
     /// Attach a subscriber that already owns its channel.
     ///
     /// The adoption path for a subscription registered before this
@@ -158,6 +376,25 @@ impl BranchState {
         hash
     }
 
+    /// Register a fresh subscriber for `query`. Returns a
+    /// [`Subscriber`] carrying the subscription's hash and the
+    /// receiver to read broadcast bytes from. The caller is
+    /// expected to follow up with
+    /// `branch_session.subscription(hash).poll().perform(&env)`
+    /// so the new subscriber's first event is the current snapshot.
+    ///
+    /// Query identity is the blake3 hash of the serialized
+    /// [`Query`] projection. We **don't** re-check `PartialEq`
+    /// against the registered query, even though earlier
+    /// revisions did: `NamedAttributes` in dialog-query derives
+    /// `PartialEq` over a `Vec` whose order is randomized by the
+    /// `HashMap`-mediated `Serialize` / `Deserialize` impls, so
+    /// the same query round-tripped through ser/de can compare
+    /// `!=` even though the hashes match. A genuine blake3
+    /// collision is cryptographically impossible, so trusting
+    /// the hash is the right move here. Track the upstream fix
+    /// in dialog-db (make `NamedAttributes::PartialEq`
+    /// order-insensitive, or serialize in sorted order).
     pub fn subscribe(
         &self,
         query: ConceptQuery,
@@ -191,11 +428,14 @@ impl BranchState {
         // `QueryEffect` applies) so a concept-of-concept / command / rule
         // metadata query dispatches to its anonymous-enumeration application
         // instead of scanning for `dialog.meta/*` facts that aren't stored.
-        // The branch folds its own session overlay into every read, so the
-        // subscription sees ephemeral facts with no extra wiring here.
+        // The stack folds the state layer and the branch's session store
+        // into every read, so the subscription sees ephemeral facts with no
+        // extra wiring here.
         let plan = tonk_schema::concept::QueryPlan::from(query);
         let subscription = entry.or_insert_with(|| Subscription {
-            engine: Arc::new(tokio::sync::Mutex::new(Some(self.branch.subscribe(plan)))),
+            engine: Arc::new(tokio::sync::Mutex::new(Some(
+                self.stack.query().subscribe(plan),
+            ))),
             terms,
             subscribers: Vec::new(),
         });
@@ -225,23 +465,32 @@ impl BranchState {
         });
     }
 
-    /// Drop every session-overlay fact recorded for entities that
-    /// fail `keep` — the branch-level surface of
-    /// [`Overlay::retain_entities`](dialog_repository::Overlay).
-    /// Returns whether anything was removed; the caller schedules a
-    /// poll when it was, so live subscribers observe the removal.
-    pub fn retain_overlay_entities<F: FnMut(&dialog_artifacts::Entity) -> bool>(
-        &self,
-        keep: F,
-    ) -> bool {
-        self.branch.overlay().retain_entities(keep)
+    /// Capture movement the stack has not seen: a pull, or a commit made
+    /// through another handle of the branch, moves the branch's head
+    /// under a stack whose reads are pinned to the head it captured.
+    /// Cheap when nothing moved; an advance otherwise. Never called
+    /// under the transactor lock: it takes it.
+    pub async fn settle<Env>(&self, env: &Env) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        if !self.stack.behind() {
+            return Ok(());
+        }
+        let _transacting = self.transactor.lock().await;
+        if self.stack.behind() {
+            self.stack.advance(env).await?;
+        }
+        Ok(())
     }
 
     /// Re-poll every subscription on this branch. Mutating leaf
     /// effects call this on success so changed query results
     /// fan out to subscribers. Each subscription is polled via
     /// the same `SubscriptionPoll::perform` path the public
-    /// chain uses.
+    /// chain uses. Movement made outside the stack is captured
+    /// first, so a poll scheduled after a plain branch commit sees
+    /// that commit.
     ///
     /// Lower levels go first. A display's level is how many displays
     /// enclose it, so it learns of a change before the displays nested
@@ -249,7 +498,13 @@ impl BranchState {
     /// its children away first spares them a frame for an address it is
     /// replacing. Creation order breaks ties (a stable sort over the
     /// insertion-ordered map).
-    pub async fn poll<'a, Env: SelectProvider>(self: &'a Arc<Self>, env: &'a Env) {
+    pub async fn poll<'a, Env: SelectProvider + BranchOpenProvider>(
+        self: &'a Arc<Self>,
+        env: &'a Env,
+    ) {
+        if let Err(error) = self.settle(env).await {
+            dialog_common::log!("reactor poll: advance over moved heads failed: {error}");
+        }
         let hashes: Vec<QueryHash> = {
             let subs = self.subscriptions.lock();
             let mut ordered: Vec<(u32, QueryHash)> = subs

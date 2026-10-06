@@ -35,7 +35,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use dialog_query::{Term, Value};
-use dialog_repository::Branch;
+use dialog_repository::Stack;
+
+use crate::BranchState;
 use futures_util::TryStreamExt as _;
 use ipld_core::ipld::Ipld;
 use serde_json::{Value as Json, json};
@@ -47,16 +49,25 @@ use crate::{Conclusion, FormulaError, Query, project};
 /// The query's name, and every row's `this`.
 pub const NAME: &str = "intent/suggest";
 
-/// Rows for one `intent/suggest` query on `branch`.
+/// Rows for one `intent/suggest` query on a cached branch, read through
+/// its stack so the state layer's intents and selections count.
 pub async fn suggest<Env: SelectProvider>(
-    branch: &Branch,
+    state: &BranchState,
     env: &Env,
     query: &Query,
 ) -> Result<Vec<Conclusion>, FormulaError> {
+    // A head that moved outside the stack (a commit through the branch
+    // handle, a pull) is captured first, so the read is of the branch as
+    // it is now.
+    state
+        .settle(env)
+        .await
+        .map_err(|error| FormulaError::Read(error.to_string()))?;
+    let stack = state.stack();
     let this = text_term(query, "this");
     let now = number_term(query, "now");
     let max = number_term(query, "max").map_or(5, |max| max.max(1.0) as usize);
-    let (mut source, memory) = load(branch, env).await?;
+    let (mut source, memory) = load(stack, env).await?;
 
     // An interpreted expression (`intent/interpret` recorded it, with an
     // intent per command it could mean) supplies the input and selection,
@@ -64,22 +75,22 @@ pub async fn suggest<Env: SelectProvider>(
     // Without one, the terms supply them.
     let (input, selection, commands, site) = match text_term(query, "expression") {
         Some(expression) => {
-            let recorded = expression_input(branch, env, &expression).await?;
+            let recorded = expression_input(stack, env, &expression).await?;
             let input = recorded
                 .or_else(|| text_term(query, "input"))
                 .unwrap_or_default();
-            let selection = expression_selection(branch, env, &expression).await?;
-            let intents = intents(branch, env, &expression).await?;
-            source.fragments = fragments(branch, env, &source, &intents).await?;
+            let selection = expression_selection(stack, env, &expression).await?;
+            let intents = intents(stack, env, &expression).await?;
+            source.fragments = fragments(stack, env, &source, &intents).await?;
             // What labels the derived values: the concepts with a `label`
             // facet. Read only when there is something to label.
             if !source.fragments.is_empty() {
-                source.concepts = labelled(branch, env).await?;
+                source.concepts = labelled(stack, env).await?;
             }
             let commands: BTreeSet<String> =
                 intents.into_iter().map(|(_, command)| command).collect();
             let site = first_entity(
-                branch,
+                stack,
                 env,
                 &expression,
                 "tonk.dialog.intent.expression/site",
@@ -93,7 +104,7 @@ pub async fn suggest<Env: SelectProvider>(
             // the parser tries in every reading, as Ubiquity did.
             let site = text_term(query, "site");
             let selection = match &site {
-                Some(site) => site_selection(branch, env, site).await?,
+                Some(site) => site_selection(stack, env, site).await?,
                 None => None,
             };
             (input, selection, None, site)
@@ -104,7 +115,7 @@ pub async fn suggest<Env: SelectProvider>(
     // for it.
     let mut shown = Vec::new();
     if let Some(site) = &site
-        && let Some(entity) = first_entity(branch, env, site, "xyz.tonk.site/entity").await?
+        && let Some(entity) = first_entity(stack, env, site, "xyz.tonk.site/entity").await?
     {
         shown.push(entity);
     }
@@ -157,12 +168,20 @@ pub struct Interpretation {
 /// Interpret `input`, typed in the tab whose site is `site`, against the
 /// commands `branch` declares.
 pub async fn interpret<Env: SelectProvider>(
-    branch: &Branch,
+    state: &BranchState,
     env: &Env,
     input: &str,
     site: Option<&str>,
 ) -> Result<Interpretation, FormulaError> {
-    let (mut source, memory) = load(branch, env).await?;
+    // A head that moved outside the stack (a commit through the branch
+    // handle, a pull) is captured first, so the read is of the branch as
+    // it is now.
+    state
+        .settle(env)
+        .await
+        .map_err(|error| FormulaError::Read(error.to_string()))?;
+    let stack = state.stack();
+    let (mut source, memory) = load(stack, env).await?;
     // Which commands, not what fills them: rules derive an entity field's
     // candidates onto the intent this records, so none exist yet. Read any
     // text there ("install notebook") as possibly naming one; `suggest`
@@ -173,7 +192,7 @@ pub async fn interpret<Env: SelectProvider>(
         }
     }
     let selection = match site {
-        Some(site) => site_selection(branch, env, site).await?,
+        Some(site) => site_selection(stack, env, site).await?,
         None => None,
     };
     let mut commands: Vec<String> = Vec::new();
@@ -212,30 +231,30 @@ pub async fn interpret<Env: SelectProvider>(
     })
 }
 
-/// Everything `branch` says about its commands, and the parser's memory.
+/// Everything the stack says about its commands, and the parser's memory.
 async fn load<Env: SelectProvider>(
-    branch: &Branch,
+    stack: &Stack,
     env: &Env,
 ) -> Result<(Source, Vec<Row>), FormulaError> {
     let mut source = Source {
         branch: String::new(),
         ..Source::default()
     };
-    source.verbs = rows(branch, env, named("tonk.dialog.intent.action/name", "many")).await?;
-    source.attributes = rows(branch, env, attributes()).await?;
-    source.arguments = arguments(branch, env).await?;
-    let memory = rows(branch, env, choices()).await?;
+    source.verbs = rows(stack, env, named("tonk.dialog.intent.action/name", "many")).await?;
+    source.attributes = rows(stack, env, attributes()).await?;
+    source.arguments = arguments(stack, env).await?;
+    let memory = rows(stack, env, choices()).await?;
     Ok((source, memory))
 }
 
 /// The input recorded for `expression`.
 async fn expression_input<Env: SelectProvider>(
-    branch: &Branch,
+    stack: &Stack,
     env: &Env,
     expression: &str,
 ) -> Result<Option<String>, FormulaError> {
     first_text(
-        branch,
+        stack,
         env,
         expression,
         "tonk.dialog.intent.expression/input",
@@ -245,12 +264,12 @@ async fn expression_input<Env: SelectProvider>(
 
 /// The selection recorded for `expression`, when there was one.
 async fn expression_selection<Env: SelectProvider>(
-    branch: &Branch,
+    stack: &Stack,
     env: &Env,
     expression: &str,
 ) -> Result<Option<String>, FormulaError> {
     Ok(first_text(
-        branch,
+        stack,
         env,
         expression,
         "tonk.dialog.intent.expression/selection",
@@ -262,13 +281,13 @@ async fn expression_selection<Env: SelectProvider>(
 /// Every concept with a `label` facet, with its rows: what shows a value
 /// a rule derived for a command's field.
 async fn labelled<Env: SelectProvider>(
-    branch: &Branch,
+    stack: &Stack,
     env: &Env,
 ) -> Result<BTreeMap<String, ConceptRows>, FormulaError> {
     // A view's facets are a dictionary under `xyz.tonk.view`: the `label`
     // facet is the `xyz.tonk.view/label` attribute on the concept.
     let concepts: BTreeSet<String> = rows(
-        branch,
+        stack,
         env,
         json!({
             "predicate": { "with": { "label": text("xyz.tonk.view/label", "one") } },
@@ -281,7 +300,7 @@ async fn labelled<Env: SelectProvider>(
     .collect();
     let mut labelled = BTreeMap::new();
     for concept in concepts {
-        let rows = noun(branch, env, &concept).await?;
+        let rows = noun(stack, env, &concept).await?;
         labelled.insert(concept, rows);
     }
     Ok(labelled)
@@ -289,13 +308,13 @@ async fn labelled<Env: SelectProvider>(
 
 /// The one entity value of `the` on `this`, if any.
 async fn first_entity<Env: SelectProvider>(
-    branch: &Branch,
+    stack: &Stack,
     env: &Env,
     this: &str,
     the: &str,
 ) -> Result<Option<String>, FormulaError> {
     Ok(rows(
-        branch,
+        stack,
         env,
         json!({
             "predicate": { "with": { "value": entity(the, false) } },
@@ -309,13 +328,13 @@ async fn first_entity<Env: SelectProvider>(
 
 /// The one text value of `the` on `this`, if any.
 async fn first_text<Env: SelectProvider>(
-    branch: &Branch,
+    stack: &Stack,
     env: &Env,
     this: &str,
     the: &str,
 ) -> Result<Option<String>, FormulaError> {
     Ok(rows(
-        branch,
+        stack,
         env,
         json!({
             "predicate": { "with": { "value": text(the, "one") } },
@@ -329,12 +348,12 @@ async fn first_text<Env: SelectProvider>(
 
 /// `expression`'s intents, as (intent entity, command entity).
 async fn intents<Env: SelectProvider>(
-    branch: &Branch,
+    stack: &Stack,
     env: &Env,
     expression: &str,
 ) -> Result<Vec<(String, String)>, FormulaError> {
     Ok(rows(
-        branch,
+        stack,
         env,
         json!({
             "predicate": { "with": {
@@ -363,7 +382,7 @@ async fn intents<Env: SelectProvider>(
 /// a library rule concludes for that field, and the rule answers it; the
 /// rule binds the field by name, which is why the name must match.
 async fn fragments<Env: SelectProvider>(
-    branch: &Branch,
+    stack: &Stack,
     env: &Env,
     source: &Source,
     intents: &[(String, String)],
@@ -398,7 +417,7 @@ async fn fragments<Env: SelectProvider>(
             // `…retitle/subject`).
             let name = selector.rsplit('/').next().unwrap_or(selector);
             let values = rows(
-                branch,
+                stack,
                 env,
                 json!({
                     "predicate": { "with": { name: {
@@ -477,7 +496,7 @@ fn number_term(query: &Query, name: &str) -> Option<f64> {
 /// Run one concept query, written as the page would write it, and read
 /// its rows back as the palette's.
 async fn rows<Env: SelectProvider>(
-    branch: &Branch,
+    stack: &Stack,
     env: &Env,
     body: Json,
 ) -> Result<Vec<Row>, FormulaError> {
@@ -490,7 +509,7 @@ async fn rows<Env: SelectProvider>(
         .into_concept_query()
         .map_err(|_| bad("not a concept query".into()))?;
     let terms = query.terms.clone();
-    let conclusions: Vec<_> = branch
+    let conclusions: Vec<_> = stack
         .query()
         .select(tonk_schema::concept::QueryPlan::from(query))
         .perform(env)
@@ -550,11 +569,11 @@ fn attributes() -> Json {
 /// carries a role (`role:`, as `tonk.dialog.intent.attribute/role`), as a
 /// row of `command`, `field` (the attribute entity) and `role` by name.
 async fn arguments<Env: SelectProvider>(
-    branch: &Branch,
+    stack: &Stack,
     env: &Env,
 ) -> Result<Vec<Row>, FormulaError> {
     let roles: BTreeMap<String, String> = rows(
-        branch,
+        stack,
         env,
         json!({
             "predicate": { "with": { "role": text("tonk.dialog.intent.attribute/role", "one") } },
@@ -575,7 +594,7 @@ async fn arguments<Env: SelectProvider>(
     // A keyed field arrives as one `{ <field>: <attribute> }` object per
     // row.
     let fields = rows(
-        branch,
+        stack,
         env,
         json!({
             "predicate": { "with": { "field": {
@@ -618,12 +637,12 @@ async fn arguments<Env: SelectProvider>(
 
 /// The selection recorded on `site`, if any.
 async fn site_selection<Env: SelectProvider>(
-    branch: &Branch,
+    stack: &Stack,
     env: &Env,
     site: &str,
 ) -> Result<Option<String>, FormulaError> {
     Ok(rows(
-        branch,
+        stack,
         env,
         json!({
             "predicate": { "with": { "selection": text("xyz.tonk.site/selection", "one") } },
@@ -654,12 +673,12 @@ fn choices() -> Json {
 /// A noun concept's rows and its `label` facet, resolved the way
 /// `<tonk-display>` resolves a model: the descriptor from `db.meta/source`.
 async fn noun<Env: SelectProvider>(
-    branch: &Branch,
+    stack: &Stack,
     env: &Env,
     concept: &str,
 ) -> Result<ConceptRows, FormulaError> {
     let described = rows(
-        branch,
+        stack,
         env,
         json!({
             "predicate": { "with": {
@@ -687,13 +706,13 @@ async fn noun<Env: SelectProvider>(
         }
     }
     let instances = rows(
-        branch,
+        stack,
         env,
         json!({ "predicate": descriptor, "terms": terms }),
     )
     .await?;
     let facets = rows(
-        branch,
+        stack,
         env,
         json!({
             "predicate": { "with": { "show": {
