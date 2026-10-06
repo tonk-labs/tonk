@@ -243,18 +243,7 @@ pub async fn push(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
     })
 }
 
-/// Pull from the site's upstream into the main branch, materializing
-/// every block and blob the adopted head references.
-///
-/// A download rather than a bare pull: a pull adopts the upstream head
-/// by reference and hydrates subtrees lazily as reads touch them, which
-/// suits a worker that stays online. The CLI's replica is written to
-/// offline (`eval --no-sync`, an agent working after the issuer closed
-/// its browser), and a commit reads the leaf it lands in, so a head whose
-/// leaves are only partly here fails the first offline write that lands
-/// in a leaf no earlier read happened to warm. Materializing at pull
-/// time makes offline work depend on the pull alone, not on which leaves
-/// earlier operations touched.
+/// Pull from the site's upstream into the main branch.
 pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
     let session = site
         .branch()
@@ -265,7 +254,7 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
     let merged = run_remote(
         "pull main",
         upstream_target(branch),
-        branch.pull().download().perform(&site.operator),
+        branch.pull().perform(&site.operator),
         map_pull_error,
     )
     .await?;
@@ -280,7 +269,7 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         run_remote(
             "pull metadata",
             upstream_target(&meta),
-            meta.pull().download().perform(&site.operator),
+            meta.pull().perform(&site.operator),
             map_pull_error,
         )
         .await?;
