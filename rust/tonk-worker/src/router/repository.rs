@@ -5972,6 +5972,9 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/table.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/table.yaml").to_owned())
         }
+        "/library/tonk.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/tonk.yaml").to_owned())
+        }
         other => Err(TonkWorkerError::Internal(format!(
             "no embedded library for '{other}'"
         ))),
