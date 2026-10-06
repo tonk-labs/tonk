@@ -47,6 +47,23 @@ fn head_markup(host: &Element) -> String {
             parts.push(child.outer_html());
         }
     }
+    // Mount-time presentation flag. Native hosts set the window flag before
+    // Tonk boots; HTML embedders can opt in with <tonk-site hide-fab>.
+    // Carry it into each sealed guest so nested portals inherit it too.
+    let hide_fab = host.has_attribute("hide-fab")
+        || window().is_some_and(|win| {
+            Reflect::get(&win, &JsValue::from_str("__tonkHideFab"))
+                .ok()
+                .and_then(|value| value.as_bool())
+                == Some(true)
+        });
+    if hide_fab {
+        parts.push(
+            "<script>window.__tonkHideFab=true;</script>\
+             <style>tonk-fab{display:none!important}</style>"
+                .to_owned(),
+        );
+    }
     build_head_markup(&parts)
 }
 

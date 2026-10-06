@@ -262,6 +262,52 @@ mod tests {
         );
     }
 
+    #[dialog_common::test]
+    fn it_hides_fab_only_when_the_embedder_opts_in() {
+        let normal = mount(Some("<tonk-fab></tonk-fab>"));
+        assert!(
+            !iframe_of(&normal)
+                .srcdoc()
+                .contains("tonk-fab{display:none!important}")
+        );
+        normal.remove();
+
+        let host = document().create_element("tonk-portal").unwrap();
+        host.set_attribute("hide-fab", "").unwrap();
+        host.set_attribute("content", "<tonk-fab></tonk-fab>")
+            .unwrap();
+        document().body().unwrap().append_child(&host).unwrap();
+        let srcdoc = iframe_of(&host).srcdoc();
+        assert!(srcdoc.contains("window.__tonkHideFab=true"));
+        assert!(
+            srcdoc.find("tonk-fab{display:none!important}").unwrap()
+                < srcdoc.find("<tonk-fab>").unwrap()
+        );
+        // Rebuilding the guest preserves the mount-time flag.
+        host.set_attribute("content", "<tonk-fab space='next'></tonk-fab>")
+            .unwrap();
+        assert!(
+            iframe_of(&host)
+                .srcdoc()
+                .contains("tonk-fab{display:none!important}")
+        );
+        host.remove();
+    }
+
+    #[dialog_common::test]
+    fn it_inherits_the_native_hide_fab_flag() {
+        let win = window().unwrap();
+        let key = wasm_bindgen::JsValue::from_str("__tonkHideFab");
+        let previous = js_sys::Reflect::get(&win, &key).unwrap();
+        js_sys::Reflect::set(&win, &key, &wasm_bindgen::JsValue::TRUE).unwrap();
+        let host = mount(Some("<tonk-fab></tonk-fab>"));
+        let srcdoc = iframe_of(&host).srcdoc();
+        js_sys::Reflect::set(&win, &key, &previous).unwrap();
+        host.remove();
+        assert!(srcdoc.contains("window.__tonkHideFab=true"));
+        assert!(srcdoc.contains("tonk-fab{display:none!important}"));
+    }
+
     /// Styling a guest is the EMBEDDER's call, so a `<style>` nested in the
     /// portal's light DOM rides into the guest document. This is the
     /// mechanism that lets a site dress its own guest instead of inheriting
