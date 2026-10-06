@@ -136,7 +136,11 @@ fn page_callback(here: &Url, via: &str, request: &str) -> Result<String, String>
 fn ask(origin: &str, callback: &str, name: &str, audience: &str) -> Result<String, String> {
     let approval = Url::parse_with_params(
         &format!("{origin}/settings/link"),
-        &[("audience", audience), ("callback", callback), ("name", name)],
+        &[
+            ("audience", audience),
+            ("callback", callback),
+            ("name", name),
+        ],
     )
     .map_err(|error| format!("the approval address did not build: {error}"))?;
     Ok(approval.into())

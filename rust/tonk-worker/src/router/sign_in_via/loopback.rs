@@ -99,8 +99,8 @@ pub(super) async fn listen(
         .route("/", get(bridge).post(deliver))
         .with_state(waiting);
     let task = tokio::spawn(async move {
-        let serving = axum::serve(listener, app)
-            .with_graceful_shutdown(async move { done.notified().await });
+        let serving =
+            axum::serve(listener, app).with_graceful_shutdown(async move { done.notified().await });
         match tokio::time::timeout(DEADLINE, serving).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => log!("sign-in-via: the callback stopped: {error}"),
@@ -244,7 +244,10 @@ mod tests {
     #[test]
     fn it_returns_the_browser_only_to_the_deployment_asked() {
         let via = "https://tonk.network";
-        assert!(redirect_allowed("https://tonk.network/settings?done=1", via));
+        assert!(redirect_allowed(
+            "https://tonk.network/settings?done=1",
+            via
+        ));
         assert!(!redirect_allowed("https://evil.example/", via));
         assert!(!redirect_allowed("http://tonk.network/", via));
         assert!(!redirect_allowed("not a url", via));
