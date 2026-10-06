@@ -143,6 +143,7 @@ pub use query::QueryPath;
 // the SW's routing/containment code reads it locally.
 pub use tonk_schema::{DEFAULT_BRANCH, SpaceRef, parse_space};
 
+mod http_route;
 mod session;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) use session::client_context_is_current;
@@ -498,6 +499,11 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/blob/{entity}",
             get(blob::serve),
+        )
+        // What the branch's `route/http!` routes answer a path with.
+        .route(
+            "/api/repository/{repo}/branch/{branch}/http/{*path}",
+            get(http_route::respond),
         )
         // Inspect operations
         .route(

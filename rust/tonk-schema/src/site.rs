@@ -19,6 +19,7 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
 use crate::domain::route::{Concept as RoutePathConcept, Path as RouteTablePath};
+use crate::domain::route_http::{Body as HttpRouteBody, Path as HttpRoutePath};
 use crate::domain::site::{
     Anchor, Branch, BranchEntity, Concept as SiteConcept, Path, ProfileBranch, Replica,
     Route as SiteRoute, Space,
@@ -199,6 +200,19 @@ pub struct Route {
     pub path: RouteTablePath,
     /// The route model mounted when this path matches.
     pub concept: RoutePathConcept,
+}
+
+/// A route that answers a request itself: a path pattern and the body the
+/// worker responds with. `route/http!` instances populate it; its headers
+/// are the `header` dictionary beside these two facts.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct HttpRoute {
+    /// The route's entity.
+    pub this: Entity,
+    /// The path pattern.
+    pub path: HttpRoutePath,
+    /// The response's body.
+    pub body: HttpRouteBody,
 }
 
 /// A seed-update check IN FLIGHT on this device, keyed on the replica.

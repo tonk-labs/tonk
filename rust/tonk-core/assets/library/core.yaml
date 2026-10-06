@@ -1795,6 +1795,41 @@ concept!: &route
       cardinality: one
       as: entity
 
+# A route that answers a request itself. Where a `route` names the model a
+# page shows, this names what the worker responds with: a request for a
+# matching path (a module import, a fetch, a frame or tab loading it) gets
+# `body` with these headers. Patterns are written as a `route`'s are, and
+# both kinds are matched together, so the more specific path wins whichever
+# kind it is.
+#
+#   route/http!:
+#     path: /hello.js
+#     header:
+#       content-type: "text/javascript"
+#     body: |
+#       export const hello = "world";
+#
+# A header's value is text, so it is quoted: a bare word is a name.
+concept!: &route/http
+  this: tonk:route/http
+  description: A route answered with content, a path pattern and the response to give.
+  with:
+    path:
+      description: The path pattern, in the syntax a `route` uses.
+      the: xyz.tonk.route.http/path
+      cardinality: one
+      as: text
+    body:
+      description: The response's body, as text.
+      the: xyz.tonk.route.http/body
+      cardinality: one
+      as: text
+    header:
+      description: The response's headers, by name. `content-type` says how the body is read.
+      the: xyz.tonk.route.http.header
+      cardinality: many
+      as: {[symbol]: text}
+
 # The routes this library ships are `seed/route` commands, not routes. The
 # rule writes a route for each one whose path no route claims yet, and
 # nothing of the command stays. An upgrade reverts everything the previous

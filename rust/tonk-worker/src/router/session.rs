@@ -444,9 +444,18 @@ async fn stamp_site_on(tonk: &crate::worker::TonkState, client: ClientId, stamp:
         );
         return;
     };
-    let Some(matched) = match_route(tonk, &state, rest).await else {
-        tonk_common::log!("[stamp] {site} SKIPPED: no route match for rest={rest:?}");
-        return;
+    let matched = match match_route(tonk, &state, rest).await {
+        Some(Matched::View(matched)) => matched,
+        // A path answered with content is not a page to show in place: the
+        // worker answers a request for it, and there is no model to mount.
+        Some(Matched::Http(_)) => {
+            tonk_common::log!("[stamp] {site} SKIPPED: rest={rest:?} answers with content");
+            return;
+        }
+        None => {
+            tonk_common::log!("[stamp] {site} SKIPPED: no route match for rest={rest:?}");
+            return;
+        }
     };
 
     // A re-stamp REPLACES this site's overlay facts, not merges into them:
@@ -727,13 +736,29 @@ async fn origin_entity(
 
 /// A matched route: the route-table entry, the model the shell mounts, and the
 /// params captured from the path (`{model}`, `{entity}`, `{view}`, …).
-struct MatchedRoute {
+pub(super) struct MatchedRoute {
     /// The route-table entry's entity.
     route: dialog_artifacts::Entity,
     /// The route model to mount.
     concept: dialog_artifacts::Entity,
     /// The captured path params, by name.
     params: tonk_router::Params,
+}
+
+/// A matched `route/http`: the entry and the body it answers with.
+pub(super) struct MatchedHttp {
+    /// The route-table entry's entity, which its headers are read from.
+    pub(super) route: dialog_artifacts::Entity,
+    /// The response's body.
+    pub(super) body: String,
+}
+
+/// What a path matched: a route a page shows, or one the worker answers.
+pub(super) enum Matched {
+    /// A `route`: the page mounts its model.
+    View(MatchedRoute),
+    /// A `route/http`: a request is answered with its content.
+    Http(MatchedHttp),
 }
 
 /// Order routes for insertion into the router: the space's own routes first,
@@ -760,25 +785,34 @@ fn route_order(routes: &mut [tonk_schema::Route], pinned: &std::collections::Has
 }
 
 /// Match `rest` (the Level 1 remaining path) against the branch's durable
-/// `tonk:route` table.
+/// route tables: `tonk:route`, whose match a page shows, and
+/// `tonk:route/http`, whose match the worker answers with.
 ///
 /// Builds a fresh [`tonk_router::Router`] per call from the queried routes:
-/// each route's `path` pattern compiles via [`Route::parse_pattern`], paired with
-/// its `(route entity, model)`. [`recognize`](tonk_router::Router::recognize)
-/// matches most-specific-first (static > param > catch-all) and returns the
-/// captured params. Routes are inserted in [`route_order`] so equal-specificity
-/// ties resolve deterministically. Returns `None` when nothing matches or a
-/// pattern fails to compile.
+/// each route's `path` pattern compiles via [`Route::parse_pattern`], paired
+/// with what it matches to. [`recognize`](tonk_router::Router::recognize)
+/// matches most-specific-first (static > param > catch-all) across both
+/// kinds and returns the captured params. Routes are inserted in
+/// [`route_order`] so equal-specificity ties resolve deterministically, the
+/// ones answered with content ahead of the ones a page shows. Returns `None`
+/// when nothing matches.
 ///
 /// [`recognize`]: tonk_router::Router::recognize
-async fn match_route(
+pub(super) async fn match_route(
     tonk: &crate::worker::TonkState,
     state: &dialog_reactor::BranchSession,
     rest: &str,
-) -> Option<MatchedRoute> {
+) -> Option<Matched> {
     use dialog_query::{Output as _, Query, Term};
     use tonk_router::Route as RoutePattern;
-    use tonk_schema::Route;
+    use tonk_schema::{HttpRoute, Route};
+
+    /// What a pattern in the router stands for.
+    #[derive(Clone)]
+    enum Target {
+        View(dialog_artifacts::Entity, dialog_artifacts::Entity),
+        Http(dialog_artifacts::Entity, String),
+    }
 
     let mut routes: Vec<Route> = state
         .handle()
@@ -801,32 +835,50 @@ async fn match_route(
         .collect();
     route_order(&mut routes, &pinned);
 
+    let mut answered: Vec<HttpRoute> = state
+        .handle()
+        .query()
+        .select(Query::<HttpRoute> {
+            this: Term::var("this"),
+            path: Term::var("path"),
+            body: Term::var("body"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+    answered.sort_by_key(|route| route.this.to_string());
+
+    let patterns = answered
+        .into_iter()
+        .map(|route| (route.path.0, Target::Http(route.this, route.body.0)))
+        .chain(
+            routes
+                .into_iter()
+                .map(|route| (route.path.0, Target::View(route.this, route.concept.0))),
+        );
+
     let mut router = tonk_router::Router::new();
-    for route in &routes {
-        match RoutePattern::parse_pattern(&route.path.0) {
+    for (path, target) in patterns {
+        match RoutePattern::parse_pattern(&path) {
             Ok(pattern) => {
-                router.insert(pattern, (route.this.clone(), route.concept.0.clone()));
+                router.insert(pattern, target);
             }
             Err(e) => {
-                tonk_common::log!(
-                    "match_route: skipping invalid route {}: {e:?}",
-                    route.path.0
-                );
+                tonk_common::log!("match_route: skipping invalid route {path}: {e:?}");
             }
         }
     }
 
-    match router.recognize(rest) {
-        Ok(matched) => {
-            let (route, concept) = matched.value.clone();
-            Some(MatchedRoute {
-                route,
-                concept,
-                params: matched.params,
-            })
-        }
-        Err(_) => None,
-    }
+    let matched = router.recognize(rest).ok()?;
+    Some(match matched.value.clone() {
+        Target::View(route, concept) => Matched::View(MatchedRoute {
+            route,
+            concept,
+            params: matched.params,
+        }),
+        Target::Http(route, body) => Matched::Http(MatchedHttp { route, body }),
+    })
 }
 
 /// The route entity [`match_route`] picks for `rest`, for tests outside this
@@ -837,9 +889,10 @@ pub(super) async fn matched_route(
     state: &dialog_reactor::BranchSession,
     rest: &str,
 ) -> Option<dialog_artifacts::Entity> {
-    match_route(tonk, state, rest)
-        .await
-        .map(|matched| matched.route)
+    match match_route(tonk, state, rest).await? {
+        Matched::View(matched) => Some(matched.route),
+        Matched::Http(matched) => Some(matched.route),
+    }
 }
 
 /// End-to-end: the route table a branch actually holds, resolved through
@@ -884,9 +937,10 @@ mod match_route_tests {
             .acquire(&tonk.operator)
             .await
             .expect("main acquires");
-        super::match_route(&tonk, &session, path)
-            .await
-            .map(|matched| matched.concept.to_string())
+        match super::match_route(&tonk, &session, path).await? {
+            super::Matched::View(matched) => Some(matched.concept.to_string()),
+            super::Matched::Http(matched) => Some(matched.body),
+        }
     }
 
     /// A route a library ships as a command resolves: the rule wrote it.

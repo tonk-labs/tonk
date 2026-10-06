@@ -15,8 +15,9 @@
 // It answers these requests and refuses the rest:
 //
 // - Navigations get the static shell, carrying the site's CSP, except one
-//   to an asset. The server hands out the same shell for any path, so a deep
-//   link with no worker yet still boots one.
+//   to an asset or to a path the space's routes answer with content. The
+//   server hands out the same shell for any path, so a deep link with no
+//   worker yet still boots one.
 // - `/api/*` is answered by this origin's database. What a profile is asked
 //   about a space's content it passes on to that space's worker.
 // - `/asset:{hash}`, an asset's own URI as a path, is read from a space's
@@ -27,6 +28,9 @@
 // - The app's own static assets (the guest runtime, stylesheet, images and
 //   fonts) come from the server, which serves them on every host, and are
 //   kept so the site loads offline (see "This origin's runtime, offline").
+// - Any other path a space's `route/http!` declares is answered with that
+//   route's headers and body, so a module the space holds can be imported
+//   by its path.
 // - Everything else is a 404. Author code has no network through this worker.
 //
 // Each site has a port UP, to the worker it answers to: a space's to its
@@ -1456,6 +1460,54 @@ async function serveAsset(hash, request) {
     return new Response(body, { status: 206, headers });
 }
 
+// What the space's routes answer a path with: the response a `route/http!`
+// declares for it, or nothing when the path is a page's to show or no route
+// claims it. Read from the space's own database, through the same route a
+// page could ask.
+async function readRoute(pathname) {
+    // The profile's routes are on its active branch, which this script
+    // does not know; only a space's are answered here.
+    if (PROFILE) return null;
+    const space = await heldSpace();
+    if (!space) return null;
+    const worker = await siteWorker();
+    const response = await worker.onfetch({
+        request: new Request(
+            new URL(`/api/repository/${space}/branch/main/http${pathname}`, self.location.origin),
+        ),
+        clientId: "",
+        resultingClientId: "",
+        waitUntil() {},
+    });
+    return response.status === 200 ? response : null;
+}
+
+// Answer a request with what the space's routes declare for its path, or
+// with `otherwise` when they declare nothing. The path names content that
+// can change, so it is revalidated unless the route says how long it keeps.
+// Opened as a document, it is author content and carries the site's policy
+// as an asset does.
+async function serveRoute(request, otherwise) {
+    let reply = null;
+    try {
+        reply = await readRoute(new URL(request.url).pathname);
+    } catch (error) {
+        log("route read failed:", error);
+    }
+    if (!reply) return otherwise();
+    const headers = new Headers(reply.headers);
+    headers.set("x-content-type-options", "nosniff");
+    if (!headers.has("cache-control")) headers.set("cache-control", "no-cache");
+    if (request.mode === "navigate") {
+        headers.set(
+            "content-security-policy",
+            spacePolicy(await siteOrigins(), { framedBySelf: true }),
+        );
+        headers.set("permissions-policy", NO_PASSKEYS);
+    }
+    return new Response(request.method === "HEAD" ? null : reply.body, { headers });
+}
+
 // A single `bytes=` range, clamped to the body. Anything else reads whole.
 function parseRange(header, size) {
     const match = /^bytes=(\d*)-(\d*)$/.exec(header ?? "");
@@ -1492,10 +1544,13 @@ self.addEventListener("fetch", event => {
     const url = new URL(event.request.url);
     if (url.origin !== self.location.origin) return;
     // Every navigation gets the shell, whatever its path, except one to an
-    // asset, which gets the asset.
+    // asset, which gets the asset, and one to a path the space's routes
+    // answer with content. The shell's own path is never looked up, so a
+    // frame's first load waits on no database.
     const asset = ASSET_PATH.exec(url.pathname);
     if (event.request.mode === "navigate" && !asset) {
-        event.respondWith(serveShell());
+        const shell = url.pathname === SHELL_PATH || url.pathname === "/";
+        event.respondWith(shell ? serveShell() : serveRoute(event.request, serveShell));
         return;
     }
     if (asset && (event.request.method === "GET" || event.request.method === "HEAD")) {
@@ -1548,5 +1603,10 @@ self.addEventListener("fetch", event => {
         event.respondWith(serveStatic(event.request));
         return;
     }
-    event.respondWith(new Response("not found", { status: 404 }));
+    const missing = () => new Response("not found", { status: 404 });
+    if (event.request.method === "GET" || event.request.method === "HEAD") {
+        event.respondWith(serveRoute(event.request, missing));
+        return;
+    }
+    event.respondWith(missing());
 });

@@ -501,6 +501,25 @@ pub mod route {
     pub struct Concept(pub Entity);
 }
 
+/// Attributes for the `tonk:route/http` table: a path pattern and what a
+/// request for it is answered with. Its headers are a keyed dictionary in
+/// the `xyz.tonk.route.http.header` domain, read by name, not declared here.
+pub mod route_http {
+    use super::Attribute;
+
+    /// The path pattern, in the same syntax a `route` uses.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.route.http")]
+    #[cardinality(one)]
+    pub struct Path(pub String);
+
+    /// The response's body, as text.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.route.http")]
+    #[cardinality(one)]
+    pub struct Body(pub String);
+}
+
 /// Attributes describing a seed update this device has looked for —
 /// overlay-only, so they die with the worker rather than replicating a
 /// device-local observation.
