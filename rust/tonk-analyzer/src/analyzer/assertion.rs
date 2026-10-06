@@ -627,15 +627,29 @@ pub(crate) fn derive_head_intent(
     // infallibly.
     let name = match anchor {
         None => None,
-        Some(anchor) => Some(AnchorName::try_from(anchor.name.as_str()).map_err(|e| {
-            AnalyzeError::at(
-                AnalyzeErrorKind::InvalidAnchorName {
-                    name: e.name,
-                    reason: e.reason,
-                },
-                anchor.range,
-            )
-        })?),
+        Some(anchor) => {
+            let name = AnchorName::try_from(anchor.name.as_str()).map_err(|e| {
+                AnalyzeError::at(
+                    AnalyzeErrorKind::InvalidAnchorName {
+                        name: e.name,
+                        reason: e.reason,
+                    },
+                    anchor.range,
+                )
+            })?;
+            // Dialog would publish this name, but if the notation
+            // can't write it back as a reference, refuse it here
+            // rather than at the `this:` that later uses it.
+            if !tonk_notation::is_reference_name(&anchor.name) {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::UnreferenceableAnchorName {
+                        name: anchor.name.clone(),
+                    },
+                    anchor.range,
+                ));
+            }
+            Some(name)
+        }
     };
     let this = match fields.iter().find(|f| f.name == "this") {
         None => ThisIntent::Derived,
