@@ -240,6 +240,7 @@ fn intent_label(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
         tonk_worker_api::CustodyIntent::Enroll(_) => "enroll",
         tonk_worker_api::CustodyIntent::CreateAccount(_) => "create-account",
         tonk_worker_api::CustodyIntent::Login(_) => "login",
+        tonk_worker_api::CustodyIntent::Delegate(_) => "delegate",
     }
 }
 
@@ -250,7 +251,8 @@ fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
         tonk_worker_api::CustodyIntent::AddPasskey(_) => AccountAction::AddPasskey,
         tonk_worker_api::CustodyIntent::Enroll(_)
         | tonk_worker_api::CustodyIntent::CreateAccount(_)
-        | tonk_worker_api::CustodyIntent::Login(_) => AccountAction::FinishPreviousAction,
+        | tonk_worker_api::CustodyIntent::Login(_)
+        | tonk_worker_api::CustodyIntent::Delegate(_) => AccountAction::FinishPreviousAction,
     }
 }
 
@@ -517,7 +519,8 @@ pub(crate) fn mediate_custody(intent: tonk_worker_api::CustodyIntent) {
         tonk_worker_api::CustodyIntent::Enroll(_)
         | tonk_worker_api::CustodyIntent::Login(_)
         | tonk_worker_api::CustodyIntent::PurgeAccount(_)
-        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => "usePasskey",
+        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
+        | tonk_worker_api::CustodyIntent::Delegate(_) => "usePasskey",
     };
     mediate_with(method, intent);
 }
@@ -595,6 +598,37 @@ impl Mediation {
     }
 }
 
+/// Ask the worker that holds the account for a delegation, behind the
+/// passkey: `account -> audience` over `subject` at `command`.
+///
+/// The prompt opens before this returns, inside the click that asked, and
+/// the worker mints with the root the passkey recovers. `answer` hears the
+/// chain (base58), or why there is none.
+pub fn delegate(
+    request: tonk_worker_api::RootDelegation,
+    answer: impl FnOnce(Result<String, String>) + 'static,
+) {
+    let mediation = match begin(
+        "usePasskey",
+        tonk_worker_api::CustodyIntent::Delegate(request),
+    ) {
+        Ok(mediation) => mediation,
+        Err(error) => return answer(Err(error.message)),
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        let reply = wasm_bindgen_futures::JsFuture::from(mediation.promise)
+            .await
+            .map_err(|error| CeremonyError::thrown(&error).message);
+        answer(reply.and_then(|reply| {
+            let minted = js_sys::Reflect::get(&reply, &"ok".into()).unwrap_or(reply);
+            js_sys::Reflect::get(&minted, &"delegation".into())
+                .ok()
+                .and_then(|delegation| delegation.as_string())
+                .ok_or_else(|| "the worker answered with no delegation".to_owned())
+        }));
+    });
+}
+
 /// Log a mediation failure, keeping a dismissed prompt quiet: declining
 /// the passkey is a decision, not a fault.
 fn report(error: &str) {
@@ -659,7 +693,8 @@ pub(crate) fn begin_with(
         tonk_worker_api::CustodyIntent::AddPasskey(_)
         | tonk_worker_api::CustodyIntent::Login(_)
         | tonk_worker_api::CustodyIntent::PurgeAccount(_)
-        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => None,
+        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
+        | tonk_worker_api::CustodyIntent::Delegate(_) => None,
     };
 
     let request = serde_wasm_bindgen::to_value(&intent)

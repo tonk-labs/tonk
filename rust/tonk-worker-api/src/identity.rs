@@ -102,6 +102,10 @@ pub enum CustodyIntent {
     /// Delegate the account this passkey holds to a waiting process,
     /// and send the page to its callback with the grant.
     AuthorizeDevice(DeviceAuthorization),
+    /// Mint a delegation from the account this passkey holds: a single
+    /// `account -> audience` hop over `subject` at `command`, answered to
+    /// the page that asked.
+    Delegate(RootDelegation),
     /// Register an existing account as a customer of the access
     /// service.
     Enroll(Enrollment),
@@ -113,6 +117,18 @@ pub enum CustodyIntent {
     /// either can open it. Needs two ceremonies, so the handoff carries
     /// two sets of handles.
     AddPasskey(PasskeyAddition),
+}
+
+/// The delegation [`CustodyIntent::Delegate`] asks the account to make.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RootDelegation {
+    /// The DID the delegation is over.
+    pub subject: String,
+    /// The command it grants, as a path (`/` for everything).
+    pub command: String,
+    /// The DID it is addressed to.
+    pub audience: String,
 }
 
 /// The purge [`CustodyIntent::PurgeAccount`] carries. Empty: the worker

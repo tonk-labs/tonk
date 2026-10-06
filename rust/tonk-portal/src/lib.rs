@@ -29,7 +29,10 @@ mod bridge;
 /// The dialog lives in the shell, which depends on this crate, so the
 /// behaviour is supplied rather than named here.
 #[cfg(target_arch = "wasm32")]
-pub use bridge::{ContainedTaskReturn, RegisterFocusReturn, on_register, on_task};
+pub use bridge::{
+    ContainedTaskReturn, DelegationRequest, DelegationReturn, RegisterFocusReturn, on_delegate,
+    on_register, on_task,
+};
 #[cfg(target_arch = "wasm32")]
 mod element;
 #[cfg(target_arch = "wasm32")]

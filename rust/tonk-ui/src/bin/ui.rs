@@ -48,6 +48,18 @@ async fn main() {
             }
         }
     });
+    // A delegation from the account is signed by the worker that holds the
+    // account, behind a passkey this page asks for.
+    tonk_portal::on_delegate(|request, reply| {
+        tonk_ui::custody_relay::delegate(
+            tonk_worker_api::RootDelegation {
+                subject: request.subject,
+                command: request.command,
+                audience: request.audience,
+            },
+            move |answer| reply.finish(answer),
+        );
+    });
     // An account task is the profile frame's to answer. One that reaches
     // this page has no panel here to open.
     tonk_portal::on_task(|_request, reply| {

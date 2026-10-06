@@ -52,13 +52,6 @@ fn optional_string_property(input: &JsValue, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn string_property(input: &JsValue, name: &str) -> Result<String, JsValue> {
-    Reflect::get(input, &name.into())?
-        .as_string()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| JsValue::from_str(&format!("missing or invalid {name}")))
-}
-
 /// `createPasskey({ name?, displayName? })` → `{ credentialId }`.
 ///
 /// Creates a custody passkey, evaluates its PRF, and hands the service
@@ -305,114 +298,6 @@ fn wait_for_custody_reply(port: web_sys::MessagePort, timeout_ms: i32) -> Promis
     })
 }
 
-/// `signRevocation({ delegationCid, pathHex, endpoint })` →
-/// `{ revocationHex }`.
-///
-/// Parses the public witness before prompting, unlocks the account
-/// through a custody assertion, and signs only when that root issued a
-/// delegation in the target's path prefix.
-async fn sign_revocation(input: JsValue) -> Result<JsValue, JsValue> {
-    let delegation_cid = string_property(&input, "delegationCid")?;
-    let target = delegation_cid
-        .parse::<ipld_core::cid::Cid>()
-        .map_err(|error| JsValue::from_str(&format!("invalid delegationCid: {error}")))?;
-    if target.to_string() != delegation_cid {
-        return Err(JsValue::from_str("delegationCid must be canonical"));
-    }
-    let path_hex = string_property(&input, "pathHex")?;
-    let path_bytes = hex::decode(path_hex)
-        .map_err(|error| JsValue::from_str(&format!("invalid pathHex: {error}")))?;
-    let path = dialog_ucan_core::DelegationChain::try_from(path_bytes.as_slice())
-        .map_err(|error| JsValue::from_str(&format!("invalid revocation path: {error}")))?;
-    if path
-        .proof_cids()
-        .iter()
-        .filter(|cid| **cid == target)
-        .count()
-        != 1
-    {
-        return Err(JsValue::from_str(
-            "revocation path must contain delegationCid exactly once",
-        ));
-    }
-
-    let endpoint = string_property(&input, "endpoint")?;
-    let root = crate::ceremony::unlock_root(&endpoint)
-        .await
-        .map_err(js_error)?;
-    let revocation_hex = crate::ceremony::sign_revocation(root, &path, &target)
-        .await
-        .map_err(js_error)?;
-    let result = Object::new();
-    Reflect::set(&result, &"revocationHex".into(), &revocation_hex.into())?;
-    Ok(result.into())
-}
-
-/// `publishEncryptionKey({ endpoint, credentialId? })` → `{ encryptionKey }`:
-/// one assertion — pinned to `credentialId` (hex) when the root record
-/// carries one — and the account's X25519 recipient. The page saves it
-/// with the root so the worker can set up custody for what it creates.
-async fn publish_encryption_key(input: JsValue) -> Result<JsValue, JsValue> {
-    let endpoint = string_property(&input, "endpoint")?;
-    let credential_id = credential_id_property(&input)?;
-    let key = crate::ceremony::publish_encryption_key(&endpoint, credential_id.as_deref())
-        .await
-        .map_err(js_error)?;
-    let result = Object::new();
-    Reflect::set(&result, &"encryptionKey".into(), &key.into())?;
-    Ok(result.into())
-}
-
-/// The optional `credentialId` property, hex-decoded.
-fn credential_id_property(input: &JsValue) -> Result<Option<Vec<u8>>, JsValue> {
-    optional_string_property(input, "credentialId")
-        .map(|hex| {
-            hex::decode(&hex)
-                .map_err(|error| JsValue::from_str(&format!("credentialId is not hex: {error}")))
-        })
-        .transpose()
-}
-
-/// `authorizeDevice({ deviceDid, remote, endpoint })` → `{ rootDid,
-/// deviceDid, delegationHex }`.
-///
-/// The callback authorization: unlock the account through a custody
-/// assertion and mint the `account → device` powerline, whose signed
-/// `meta` names the sync endpoint. Nothing is sent anywhere — the
-/// caller delivers it.
-async fn authorize_device(input: JsValue) -> Result<JsValue, JsValue> {
-    let device_did = string_property(&input, "deviceDid")?
-        .parse()
-        .map_err(|error| JsValue::from_str(&format!("invalid deviceDid: {error}")))?;
-    let remote = string_property(&input, "remote")?;
-    let endpoint = string_property(&input, "endpoint")?;
-    let root = crate::ceremony::unlock_root(&endpoint)
-        .await
-        .map_err(js_error)?;
-    if let Some(expected) = optional_string_property(&input, "expectedAccount") {
-        use dialog_varsig::Principal as _;
-        if root.did().as_str() != expected {
-            return Err(JsValue::from_str(&format!(
-                "this handoff requires account {expected}; the unlocked passkey belongs to {}",
-                root.did()
-            )));
-        }
-    }
-    let authorized = crate::ceremony::authorize_device(root, device_did, &remote)
-        .await
-        .map_err(js_error)?;
-
-    let output = js_sys::Object::new();
-    for (key, value) in [
-        ("rootDid", authorized.root_did),
-        ("deviceDid", authorized.device_did),
-        ("delegationHex", authorized.delegation_hex),
-    ] {
-        Reflect::set(&output, &key.into(), &value.into())?;
-    }
-    Ok(output.into())
-}
-
 /// Install `window.tonkIdentity` on the page. Idempotent; a no-op
 /// outside a window context.
 pub fn install() {
@@ -420,36 +305,6 @@ pub fn install() {
         return;
     };
     let identity = Object::new();
-
-    let publish_encryption_key = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(publish_encryption_key(input))
-    });
-    let _ = Reflect::set(
-        &identity,
-        &"publishEncryptionKey".into(),
-        publish_encryption_key.as_ref().unchecked_ref(),
-    );
-    publish_encryption_key.forget();
-
-    let authorize_device = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(authorize_device(input))
-    });
-    let _ = Reflect::set(
-        &identity,
-        &"authorizeDevice".into(),
-        authorize_device.as_ref().unchecked_ref(),
-    );
-    authorize_device.forget();
-
-    let sign_revocation = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(sign_revocation(input))
-    });
-    let _ = Reflect::set(
-        &identity,
-        &"signRevocation".into(),
-        sign_revocation.as_ref().unchecked_ref(),
-    );
-    sign_revocation.forget();
 
     let create_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
         future_to_promise(create_passkey(input))
@@ -494,15 +349,19 @@ mod tests {
         install();
         let window = web_sys::window().unwrap();
         let identity = Reflect::get(&window, &"tonkIdentity".into()).unwrap();
-        for name in [
-            "createPasskey",
-            "usePasskey",
-            "addPasskey",
-            "authorizeDevice",
-            "signRevocation",
-        ] {
+        for name in ["createPasskey", "usePasskey", "addPasskey"] {
             let function = Reflect::get(&identity, &name.into()).unwrap();
             assert!(function.is_function(), "{name} must be a function");
+        }
+        // The page asks for passkeys and hands what they yield to the
+        // worker. Nothing here opens the account or signs with it.
+        for name in ["authorizeDevice", "signRevocation", "publishEncryptionKey"] {
+            assert!(
+                Reflect::get(&identity, &name.into())
+                    .unwrap()
+                    .is_undefined(),
+                "{name} would sign with the account on the page"
+            );
         }
     }
 

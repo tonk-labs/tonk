@@ -211,7 +211,76 @@ async fn perform(
                 super::ceremony::authorize_device(&state, &custodian, authorization).await?;
             navigate_reply(&target)
         }
+        tonk_worker_api::CustodyIntent::Delegate(request) => {
+            let delegation = delegate(&state, &custodian, &request).await?;
+            let reply = js_sys::Object::new();
+            js_sys::Reflect::set(
+                &reply,
+                &JsValue::from_str("delegation"),
+                &JsValue::from_str(&delegation),
+            )
+            .map_err(|_| "the reply could not be built".to_string())?;
+            Ok(reply.into())
+        }
     }
+}
+
+/// Mint `account -> audience` over `subject` at `command` with the root the
+/// passkey recovered, as a base58 chain.
+///
+/// The root signs here and nowhere else: the page that asked ran the
+/// passkey prompt and nothing more. Refused when the passkey holds a
+/// different account from the one this profile is signed in to, so a
+/// delegation is always the signed-in account's.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn delegate(
+    state: &AppState,
+    custodian: &tonk_identity::custodian::Custodian,
+    request: &tonk_worker_api::RootDelegation,
+) -> Result<String, String> {
+    use dialog_ucan_core::command::Command;
+    use dialog_ucan_core::subject::Subject;
+    use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+    use dialog_varsig::{Did, Principal as _};
+
+    let subject: Did = request
+        .subject
+        .parse()
+        .map_err(|error| format!("the subject is not a DID: {error:?}"))?;
+    let audience: Did = request
+        .audience
+        .parse()
+        .map_err(|error| format!("the audience is not a DID: {error:?}"))?;
+    let command = Command::parse(&request.command)
+        .map_err(|error| format!("the command does not parse: {error}"))?;
+
+    let account = held_account(custodian).await?;
+    let root = account
+        .signer()
+        .await
+        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
+    let linked = {
+        let tonk = state.read().await;
+        super::identity::local_root(&tonk)
+            .await
+            .map_err(|error| format!("no account is signed in on this profile: {error}"))?
+            .root_did
+    };
+    if root.did() != linked {
+        return Err("this passkey belongs to a different account".into());
+    }
+    let delegation = DelegationBuilder::new()
+        .issuer(root)
+        .audience(&audience)
+        .subject(Subject::Specific(subject))
+        .command(command.segments().clone())
+        .try_build()
+        .await
+        .map_err(|error| format!("failed to mint the delegation: {error}"))?;
+    let bytes = DelegationChain::new(delegation)
+        .to_bytes()
+        .map_err(|error| format!("the delegation did not encode: {error}"))?;
+    Ok(bs58::encode(bytes).into_string())
 }
 
 /// A custody reply telling the page where to go: `{ navigate: href }`.
