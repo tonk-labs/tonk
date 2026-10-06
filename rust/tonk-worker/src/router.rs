@@ -129,6 +129,7 @@ pub use profile::{ProfileInfo, SpaceEntry};
 
 pub(crate) mod profiles;
 
+mod activation;
 mod profile_name;
 
 mod evaluate;

@@ -229,6 +229,7 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::CreateAccount>()
         .command::<tonk_schema::command::LogIn>()
         .command::<tonk_schema::command::OpenSignInVia>()
+        .command::<tonk_schema::command::ActivateAccount>()
         .command::<tonk_schema::command::DismissRegistration>()
         .command::<tonk_schema::command::SignInVia>()
         .command::<tonk_schema::command::FinishSignInVia>()

@@ -3,11 +3,6 @@
 //!
 //! This crate provides the web-based user interface for Tonk.
 
-/// Customer activation page reached from the activation email.
-pub mod activate;
-
-mod account_observability;
-
 /// Running a WebAuthn ceremony on the service worker's behalf.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod custody_relay;

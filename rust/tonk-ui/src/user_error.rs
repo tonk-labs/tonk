@@ -59,14 +59,10 @@ pub(crate) enum AccountAction {
     SyncAccount,
 }
 
-/// Present an internal/browser diagnostic at an account action boundary.
-pub(crate) fn diagnostic(action: AccountAction, detail: &str) -> String {
-    problem_from_diagnostic(action, detail).message
-}
-
 /// Compatibility diagnostics usually have no typed evidence. Their prose may
 /// improve recovery copy while analytics sees `unknown`; the locally emitted,
 /// stable custody-handoff timeout is the one closed diagnostic classified here.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 pub(crate) fn problem_from_diagnostic(action: AccountAction, detail: &str) -> AccountProblem {
     let outcome = if is_custody_handoff_timeout(action, detail) {
         AccountOutcome::retryable(FailureKind::Timeout)
@@ -424,6 +420,11 @@ fn fallback(action: AccountAction) -> &'static str {
 mod tests {
     use super::*;
     use crate::error::AccountTransportKind;
+
+    /// The message a diagnostic is presented as.
+    fn diagnostic(action: AccountAction, detail: &str) -> String {
+        problem_from_diagnostic(action, detail).message
+    }
 
     #[test]
     fn it_turns_passkey_diagnostics_into_specific_recovery_steps() {

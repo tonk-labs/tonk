@@ -3041,6 +3041,224 @@ route!: &route/settings/link
   path: "/settings/link"
   concept: tonk:hub
 
+# The /activate page: where an activation email's link lands. The link
+# carries `?ucan=`, a complete invocation the access service signed, so
+# presenting it is activating: the page needs no key and works on any
+# device, signed in or not. Pressing the button asserts `account/activate`
+# with the invocation; the profile's worker posts it to the service and
+# records how it went on the command's own entity, which the page watches.
+route!: &route/activate
+  this: id:tonk:route/activate
+  path: "/activate"
+  concept: tonk:activate/route
+
+concept!: &activate/route
+  this: tonk:activate/route
+  description: The /activate page, where an activation email's link lands.
+  with:
+    # A route model declares at least one field; the page reads the link's
+    # `ucan` parameter off the location itself.
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+command!: &account/activate
+  this: tonk:activate-account
+  description: Activate the account an activation email was sent for.
+  with:
+    invocation:
+      description: The link's `ucan` parameter, the invocation in base64url.
+      the: xyz.tonk.command.activate-account/invocation
+      as: text
+
+# How an `account/activate` went, on the command's own entity, in the
+# profile's session overlay: nothing of it is stored or synced.
+concept!: &account/activation
+  description: How an activation went, for the page that asked.
+  with:
+    status:
+      description: >
+        `activated`, `refused` (the link can activate nothing, now or
+        later) or `failed` (another press may succeed).
+      the: xyz.tonk.account-activation/status
+      cardinality: one
+      as: text
+    detail:
+      description: What to tell the person when it was not activated.
+      the: xyz.tonk.account-activation/detail
+      cardinality: one
+      as: text
+
+view!:
+  this: activate/route
+  style:
+    activate: !include ./profile/activate.css
+  show:
+    ui: |
+      <link rel="stylesheet" with:src="activate">
+      <tab-title text="Tonk"></tab-title>
+      <account-activate>
+        <main class="account">
+          <div class="account__logo" role="img" aria-label="tonk"></div>
+
+          <div class="account__ceremony">
+            <section id="activate-confirm" class="account__activation-state" aria-labelledby="activate-confirm-title" hidden>
+              <div class="account__stack">
+                <h1 id="activate-confirm-title" class="account__ceremony-head">activate your account</h1>
+                <button id="activate-accept" class="account__run" type="button" aria-describedby="activate-terms activate-working activate-error">accept and activate</button>
+              </div>
+              <div class="account__narrator">
+                <p id="activate-terms">Confirm your email address to activate your account. This allows Tonk to sync your data across browsers and devices, meaning other people and tools can connect to it. By selecting accept and activate, you agree to the <a href="https://tonk.xyz/legal/terms" target="_blank" rel="noopener noreferrer">terms of service</a>.</p>
+              </div>
+            </section>
+
+            <section id="activate-done" class="account__activation-state" aria-labelledby="activate-done-title" hidden>
+              <div class="account__stack">
+                <h1 id="activate-done-title" class="account__ceremony-head">account verified</h1>
+              </div>
+              <div class="account__narrator">
+                <p>You may close this tab. Return to the original tab where you started account setup.</p>
+              </div>
+            </section>
+
+            <p id="activate-working" class="account__working" role="status" aria-live="polite"></p>
+            <p id="activate-error" class="account__error" role="alert" hidden></p>
+          </div>
+        </main>
+      </account-activate>
+
+element!: &account-activate
+  description: Presents an activation link's invocation and says how it went.
+  method:
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.querySelector('#activate-accept')?.addEventListener('click', () => self.activate());
+        window.tonk.ready.then(() => {
+          if (!self.isConnected) return;
+          // The page's address is the host's to know; this frame's own
+          // is its shell's.
+          const search = (window.tonk.context || {}).search || '';
+          const invocation = new URLSearchParams(search).get('ucan') || '';
+          self.__invocation = invocation;
+          // A damaged link shows before the button is pressed: the page's
+          // one job is presenting the invocation it carries.
+          if (!invocation) {
+            self.settle('This activation link is incomplete. Open the exact link from your email.', true);
+          } else if (!/^[A-Za-z0-9_-]+$/.test(invocation)) {
+            self.settle('This activation link is damaged. Open the exact link from your email.', true);
+          } else {
+            self.show('#activate-confirm');
+          }
+        });
+      }
+    disconnected: |
+      (self) => {
+        self.__abort?.abort();
+        self.__abort = null;
+      }
+    show: |
+      (self, selector) => {
+        for (const panel of ['#activate-confirm', '#activate-done']) {
+          self.querySelector(panel)?.toggleAttribute('hidden', panel !== selector);
+        }
+      }
+    status: |
+      (self, text) => {
+        const status = self.querySelector('#activate-working');
+        if (status) status.textContent = text;
+      }
+    busy: |
+      (self, busy, spent) => {
+        const section = self.querySelector('#activate-confirm');
+        if (busy) section?.setAttribute('aria-busy', 'true');
+        else section?.removeAttribute('aria-busy');
+        const button = self.querySelector('#activate-accept');
+        if (button) button.disabled = busy || spent;
+      }
+    settle: |
+      (self, message, spent) => {
+        // `spent`: the link can do nothing more, so the button stays off.
+        self.__spent = self.__spent || spent;
+        self.__pending = false;
+        self.busy(false, self.__spent);
+        self.status('');
+        const error = self.querySelector('#activate-error');
+        if (!error) return;
+        error.textContent = message;
+        error.toggleAttribute('hidden', !message);
+      }
+    activate: |
+      async (self) => {
+        if (self.__spent || self.__pending) return;
+        self.__pending = true;
+        const error = self.querySelector('#activate-error');
+        if (error) { error.textContent = ''; error.setAttribute('hidden', ''); }
+        self.busy(true, false);
+        self.status('Activating…');
+        const abort = new AbortController();
+        self.__abort = abort;
+        const branch = (window.tonk.context || {}).branch || 'main';
+        const at = (operation) => `/api/repository/profile:tonk/branch/${branch}/${operation}`;
+        const post = (operation, body, accept) => fetch(at(operation), {
+          method: 'POST',
+          signal: abort.signal,
+          headers: { 'content-type': 'application/json', ...(accept ? { accept } : {}) },
+          body: JSON.stringify(body),
+        });
+        const id = 'urn:uuid:' + crypto.randomUUID();
+        const field = (name) => ({ the: `xyz.tonk.account-activation/${name}`, as: 'Text', cardinality: 'one' });
+        try {
+          // Watching before asking: the answer must find the stream open.
+          const watching = post('query', {
+            predicate: { with: { status: field('status'), detail: field('detail') } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }, 'text/event-stream');
+          const asked = await post('transact', { claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              invocation: { the: 'xyz.tonk.command.activate-account/invocation', as: 'Text' },
+            } } },
+            parameters: { this: id, invocation: self.__invocation },
+          } }] });
+          if (!asked.ok) throw new Error(`HTTP ${asked.status}`);
+          const stream = await watching;
+          if (!stream.ok) throw new Error(`HTTP ${stream.status}`);
+          const reader = stream.body.pipeThrough(new TextDecoderStream()).getReader();
+          let text = '';
+          let outcome = null;
+          while (!outcome) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('the outcome never arrived');
+            text += value;
+            for (let end; (end = text.indexOf('\n\n')) >= 0; text = text.slice(end + 2)) {
+              const frame = text.slice(0, end);
+              if (!frame.startsWith('data:')) continue;
+              const said = JSON.parse(frame.slice(5));
+              const rows = Array.isArray(said) ? said : said.conclusions || said.asserted || [];
+              outcome = rows.find((row) => row.this === id)?.fields || outcome;
+            }
+          }
+          if (!self.isConnected) return;
+          if (outcome.status === 'activated') {
+            // The service has consumed the one-use link.
+            self.settle('', true);
+            self.show('#activate-done');
+          } else {
+            self.settle(outcome.detail || 'Activation failed. Try again.', outcome.status === 'refused');
+          }
+        } catch (failure) {
+          if (self.isConnected && !abort.signal.aborted) {
+            self.settle('The service could not be reached. Try again.', false);
+          }
+        } finally {
+          abort.abort();
+          if (self.__abort === abort) self.__abort = null;
+        }
+      }
+
 # The /join route: redeem an invite. The shell's top-level `<tonk-site>`
 # routes every path against this table, so without an entry `/join` matched
 # nothing and the site rendered an empty `tonk:site` ("required attribute

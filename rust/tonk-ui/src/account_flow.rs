@@ -1299,6 +1299,7 @@ pub(crate) mod tests {
         let confirm = driver.new_tab().await?;
         driver.switch_to_window(confirm).await?;
         goto(driver, &link).await?;
+        enter_guest(driver).await?;
         element(driver, "#activate-accept").await?.click().await?;
         // Displayed, not merely present: the done panel is in the DOM
         // from page load, only hidden, so a presence wait returns while
@@ -1366,6 +1367,7 @@ pub(crate) mod tests {
         let activation = driver.new_tab().await?;
         driver.switch_to_window(activation).await?;
         goto(&driver, &activation_link(&env, email).await?).await?;
+        enter_guest(&driver).await?;
         element(&driver, "#activate-accept").await?.click().await?;
         wait_for_displayed(&driver, "#activate-done").await?;
         assert!(driver.find_all(By::Css("#tonk-register")).await?.is_empty());
@@ -1416,6 +1418,7 @@ pub(crate) mod tests {
             &activation_link(&env, "link-owner@example.com").await?,
         )
         .await?;
+        enter_guest(&other).await?;
         element(&other, "#activate-accept").await?.click().await?;
         wait_for_displayed(&other, "#activate-done").await?;
         assert!(other.find_all(By::Css("#tonk-register")).await?.is_empty());
@@ -1596,6 +1599,7 @@ pub(crate) mod tests {
         let link = activation_link(env, email).await?;
         let account = driver.current_url().await?;
         goto(driver, &link).await?;
+        enter_guest(driver).await?;
         element(driver, "#activate-accept").await?.click().await?;
         // Displayed, not merely present: the done panel is in the DOM
         // from page load, only hidden, so a presence wait returns while
@@ -1898,7 +1902,8 @@ pub(crate) mod tests {
         let mut activation = env.tonk_web.join("activate")?;
         activation.set_query(Some("ucan=AA"));
         goto(&driver, activation.as_str()).await?;
-        element(&driver, "tonk-activate #activate-confirm").await?;
+        enter_guest(&driver).await?;
+        element(&driver, "account-activate #activate-confirm").await?;
 
         assert!(
             driver.find(By::Css(".account__brand")).await.is_err(),
@@ -1914,7 +1919,7 @@ pub(crate) mod tests {
             .execute(
                 r#"document.documentElement.classList.remove('wa-dark');
                     document.documentElement.classList.add('wa-light');
-                    const host = document.querySelector('tonk-activate');
+                    const host = document.querySelector('account-activate');
                     const main = document.querySelector('.account').getBoundingClientRect();
                     const ceremony = document.querySelector('.account__ceremony').getBoundingClientRect();
                     const logo = document.querySelector('.account__logo').getBoundingClientRect();
@@ -2571,6 +2576,7 @@ pub(crate) mod tests {
         let mut activation = env.tonk_web.join("activate")?;
         activation.set_query(Some("ucan=AA"));
         goto(&driver, activation.as_str()).await?;
+        enter_guest(&driver).await?;
         element(&driver, "#activate-accept").await?;
 
         let count = driver

@@ -55,7 +55,6 @@ async fn main() {
             reply.finish("invalid");
         }
     });
-    tonk_ui::activate::register();
 
     // Dev-only hot reload client. `debug_assertions` is on under `trunk serve`
     // (debug profile) and off for release, so this never loads in production.
@@ -63,18 +62,6 @@ async fn main() {
     inject_hot_swap();
 
     mount_root();
-    if web_sys::window().is_some_and(|window| {
-        matches!(
-            window.location().pathname().as_deref(),
-            Ok("/activate" | "/activate/")
-        )
-    }) {
-        tonk_ui::analytics::finish_startup(
-            tonk_analytics::product::Stage::Ready,
-            tonk_analytics::product::ProductResult::Success,
-            None,
-        );
-    }
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -137,23 +124,7 @@ fn render_root(shell: &web_sys::Element) {
         .ok()
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "/".to_owned());
-    let activate_route = path == "/activate" || path.starts_with("/activate/");
     let current = shell.first_element_child();
-
-    // The activation email lands here on any device, signed in or not,
-    // so the page bypasses sealed guests. Everything else, the account's
-    // settings included, renders inside the routed site.
-    if activate_route {
-        if current.as_ref().map(web_sys::Element::tag_name).as_deref() != Some("TONK-ACTIVATE") {
-            shell.set_inner_html("");
-            if let Some(document) = shell.owner_document()
-                && let Ok(activate) = document.create_element("tonk-activate")
-            {
-                let _ = shell.append_child(&activate);
-            }
-        }
-        return;
-    }
 
     if let Some(site) = current.filter(|element| element.tag_name() == "TONK-SITE") {
         let _ = site.set_attribute("path", &path);

@@ -8,7 +8,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const UI = join(HERE, "..");
 const LIBRARY = join(UI, "..", "tonk-core", "assets", "library", "profile.yaml");
 
-const accountStyles = readFileSync(join(UI, "src", "account.css"), "utf8");
+const accountStyles = readFileSync(join(UI, "..", "tonk-core", "assets", "library", "profile", "activate.css"), "utf8");
 const appStyles = readFileSync(join(UI, "styles.css"), "utf8");
 // The settings panel is markup on the profile branch: the
 // `<account-settings>` element's contents, plus the registration view's

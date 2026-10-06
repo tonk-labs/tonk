@@ -1552,6 +1552,17 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `account/activate` — present the invocation an activation
+        /// email's link carries to the access service.
+        pub mod activate_account {
+            use dialog_query::Attribute;
+
+            /// The link's `ucan` parameter: the invocation, base64url.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.activate-account")]
+            pub struct Invocation(pub String);
+        }
+
         /// `account/open-sign-in-via` — raise the panel that signs this
         /// browser in through another Tonk.
         pub mod open_sign_in_via {

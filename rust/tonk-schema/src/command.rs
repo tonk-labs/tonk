@@ -193,6 +193,26 @@ impl Command for LogIn {
     type Output = ();
 }
 
+/// Activate the account an activation email was sent for.
+///
+/// The link in the email carries a complete, service-signed invocation,
+/// so presenting it is activating: it needs no key and works on any
+/// device. `this` is minted by the page that asks, which reads how it
+/// went off the same entity ([`crate::domain`]'s `account-activation`
+/// status and detail).
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct ActivateAccount {
+    /// The command entity, minted by the page per press.
+    pub this: Entity,
+    /// The link's invocation, base64url.
+    pub invocation: crate::domain::command::current::activate_account::Invocation,
+}
+
+impl Command for ActivateAccount {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Raise the panel that signs this browser in through another Tonk.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct OpenSignInVia {

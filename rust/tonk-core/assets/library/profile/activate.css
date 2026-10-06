@@ -1,8 +1,7 @@
-/* No tokens of its own: the account surfaces read `--page`, `--ink`,
-   and the rest straight from `:root` (styles.css), where they alias the
-   Web Awesome theme. Restating them here is how this file and the
-   ceremony cluster once drifted to two palettes. */
-:is(tonk-account, tonk-activate) {
+/* The activation page's surface. No tokens of its own: it reads `--page`,
+   `--ink` and the rest straight from `:root` (the app's stylesheet), where
+   they alias the Web Awesome theme. */
+account-activate {
     display: grid;
     min-height: 100dvh;
     padding: 48px 16px 80px;
@@ -15,24 +14,24 @@
     -moz-osx-font-smoothing: grayscale;
 }
 
-:is(tonk-account, tonk-activate) *,
-:is(tonk-account, tonk-activate) *::before,
-:is(tonk-account, tonk-activate) *::after {
+account-activate *,
+account-activate *::before,
+account-activate *::after {
     box-sizing: border-box;
 }
 
-:is(tonk-account, tonk-activate) ::selection {
+account-activate ::selection {
     background: var(--ink);
     color: var(--on-ink);
 }
 
-:is(tonk-account, tonk-activate) :where(button, input) {
+account-activate :where(button, input) {
     margin: 0;
     border-radius: 0;
     font: inherit;
 }
 
-:is(tonk-account, tonk-activate) :where(button) {
+account-activate :where(button) {
     min-width: 0;
     padding: 0;
     border: 0;
@@ -44,11 +43,11 @@
     cursor: pointer;
 }
 
-:is(tonk-account, tonk-activate) :where(a) {
+account-activate :where(a) {
     color: inherit;
 }
 
-:is(tonk-account, tonk-activate) :focus-visible {
+account-activate :focus-visible {
     outline: 0;
     box-shadow: inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);
 }
@@ -179,7 +178,7 @@
 }
 
 /* Keep the browser's native insertion caret, tinted to the current theme. */
-:is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]) {
+account-activate input:is([type="text"], [type="email"]) {
     caret-color: var(--ink);
 }
 
@@ -815,7 +814,7 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
 }
 
 @media (max-width: 463px) {
-    :is(tonk-account, tonk-activate) {
+    account-activate {
         padding-top: max(24px, env(safe-area-inset-top));
     }
 
@@ -898,7 +897,7 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
     tonk-account[data-busy="true"] .account__run[data-initiating="true"],
     .account__error[data-flash="true"],
     .account__inline-error[data-flash="true"],
-    :is(tonk-account, tonk-activate) input:is([type="text"], [type="email"]) {
+    account-activate input:is([type="text"], [type="email"]) {
         animation: none;
     }
 }
