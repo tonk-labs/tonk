@@ -86,15 +86,46 @@ jobs:
           name: tonk-desktop-ui
           path: package/tonk-desktop/dist
       - name: 'Package tonk-desktop'
+        if: runner.os == 'Linux'
         # A tarball keeps the executable bit, which an uploaded artifact drops.
         run: |
           cp rust/tonk-desktop/target/release/tonk-desktop package/tonk-desktop/
           chmod 0755 package/tonk-desktop/tonk-desktop
           tar -czf ${{ matrix.artifact-name }}.tar.gz -C package tonk-desktop
+      - name: 'Package Tonk.app'
+        if: runner.os == 'macOS'
+        # Ad-hoc signed only: Gatekeeper still asks before the first launch.
+        # ditto keeps the bundle's permissions and signature in the zip.
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/tonk-desktop/Cargo.toml | head -1)
+          app=bundle/Tonk.app
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp rust/tonk-desktop/target/release/tonk-desktop "$app/Contents/MacOS/"
+          cp -R package/tonk-desktop/dist "$app/Contents/Resources/dist"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>Tonk</string>
+            <key>CFBundleDisplayName</key><string>Tonk</string>
+            <key>CFBundleIdentifier</key><string>network.tonk.desktop</string>
+            <key>CFBundleExecutable</key><string>tonk-desktop</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$version</string>
+            <key>CFBundleVersion</key><string>$version</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint "$app/Contents/Info.plist"
+          codesign --force --deep --sign - "$app"
+          ditto -c -k --keepParent "$app" ${{ matrix.artifact-name }}.zip
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
-          path: ${{ matrix.artifact-name }}.tar.gz
+          path: ${{ matrix.artifact-name }}.${{ runner.os == 'macOS' && 'zip' || 'tar.gz' }}
 
   announce:
     name: 'Share download links'
@@ -129,15 +160,15 @@ jobs:
               link('tonk-desktop-macos-arm64', 'macOS (Apple Silicon)'),
               link('tonk-desktop-linux-x86_64', 'Linux x86_64'),
               '',
-              'Each download is a zip holding a tarball. Unzip it, then:',
+              '**macOS:** the download unzips to `tonk-desktop-macos-arm64.zip`; open it to get `Tonk.app`. ' +
+                'The app is not notarized, so the first launch is refused: open System Settings, ' +
+                'Privacy & Security, and choose Open Anyway (or run `xattr -dr com.apple.quarantine Tonk.app`). ' +
+                'To see its logs, run `Tonk.app/Contents/MacOS/tonk-desktop` from a terminal.',
               '',
-              '```',
-              'tar -xzf tonk-desktop-*.tar.gz',
-              'xattr -dr com.apple.quarantine tonk-desktop   # macOS only: the build is unsigned',
-              './tonk-desktop/tonk-desktop',
-              '```',
+              '**Linux:** unzip, then `tar -xzf tonk-desktop-linux-x86_64.tar.gz && ./tonk-desktop/tonk-desktop`. ' +
+                'Needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-0` on Debian and Ubuntu).',
               '',
-              'Linux needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-0` on Debian and Ubuntu).',
+              'Right-click in the window and choose Inspect to open the Web Inspector.',
             ].join('\n');
             await core.summary.addRaw(body).write();
 
@@ -192,10 +223,11 @@ jobs:
           body: |
             The desktop app built from `${{ github.sha }}` on main. Replaced on every merge.
 
-            Unsigned builds. After extracting on macOS, clear the quarantine flag:
-            `xattr -dr com.apple.quarantine tonk-desktop`. Linux needs WebKitGTK 4.1.
+            macOS: unzip to get `Tonk.app`. It is not notarized, so the first launch is
+            refused; open System Settings, Privacy & Security, and choose Open Anyway.
+            Linux: extract the tarball and run `tonk-desktop/tonk-desktop`; needs WebKitGTK 4.1.
           prerelease: true
           make_latest: false
           files: |
-            tonk-desktop-macos-arm64.tar.gz
+            tonk-desktop-macos-arm64.zip
             tonk-desktop-linux-x86_64.tar.gz

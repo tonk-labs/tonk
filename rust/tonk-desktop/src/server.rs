@@ -116,18 +116,28 @@ fn mint_token() -> String {
 
 /// Refuse a request unless it names this server's address and, past the
 /// launch exchange, carries the launch cookie.
+///
+/// A refused or failed request is logged to stderr with its status, so a
+/// page that misbehaves can be diagnosed from the terminal that ran the app.
 async fn guard(State(server): State<Server>, request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
     let host = request
         .headers()
         .get(header::HOST)
         .and_then(|value| value.to_str().ok());
-    if host != Some(server.authority.as_str()) {
-        return (StatusCode::MISDIRECTED_REQUEST, "unexpected host").into_response();
+    let response = if host != Some(server.authority.as_str()) {
+        (StatusCode::MISDIRECTED_REQUEST, "unexpected host").into_response()
+    } else if needs_token(&path) && !carries_token(request.headers(), &server.token) {
+        (StatusCode::FORBIDDEN, "not this window").into_response()
+    } else {
+        next.run(request).await
+    };
+    let status = response.status();
+    if status.is_client_error() || status.is_server_error() {
+        eprintln!("request failed: {method} {path} -> {status}");
     }
-    if needs_token(request.uri().path()) && !carries_token(request.headers(), &server.token) {
-        return (StatusCode::FORBIDDEN, "not this window").into_response();
-    }
-    next.run(request).await
+    response
 }
 
 /// Whether `path` reaches the worker, and so must carry the launch token.

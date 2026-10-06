@@ -11,6 +11,8 @@
 //! defined before any of its scripts run, and skips registering a
 //! service worker.
 
+#[cfg(target_os = "macos")]
+mod menu;
 mod server;
 mod window;
 
@@ -59,13 +61,20 @@ struct Args {
     host_script: Option<PathBuf>,
 }
 
-/// The UI a packaged build ships: `dist` beside the executable.
+/// The UI a packaged build ships: `dist` beside the executable, or in the
+/// bundle's `Resources` when the executable is in a macOS `.app`.
 fn bundled_dist() -> Result<PathBuf> {
     let executable = std::env::current_exe().context("cannot locate the executable")?;
     let directory = executable
         .parent()
         .context("the executable has no directory")?;
-    Ok(directory.join("dist"))
+    let beside = directory.join("dist");
+    let resources = directory.join("../Resources/dist");
+    Ok(if !beside.exists() && resources.exists() {
+        resources
+    } else {
+        beside
+    })
 }
 
 fn main() -> Result<()> {

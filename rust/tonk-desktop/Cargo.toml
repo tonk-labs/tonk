@@ -29,7 +29,13 @@ tonk-worker = { path = "../tonk-worker" }
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 webbrowser = "1.0"
-wry = "0.57"
+# Web Inspector in release builds too: right-click, Inspect.
+wry = { version = "0.57", features = ["devtools"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The menu bar. Without an Edit menu, macOS delivers no copy or paste to
+# the webview.
+muda = "0.21"
 
 [profile.dev]
 opt-level = 1

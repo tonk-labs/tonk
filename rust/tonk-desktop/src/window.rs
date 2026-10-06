@@ -44,6 +44,9 @@ pub fn destination(origin: &str, href: &str) -> Destination {
 enum Wake {
     /// Load `url` in the webview, replacing the history entry or not.
     Load { url: String, replace: bool },
+    /// A menu item was chosen.
+    #[cfg(target_os = "macos")]
+    Menu(muda::MenuId),
 }
 
 /// Open the window on `launch_url` and run the event loop until it
@@ -67,13 +70,23 @@ pub fn run(runtime: Runtime, launch_url: String, origin: String) -> Result<()> {
             }
         }
     });
+    #[cfg(target_os = "macos")]
+    {
+        let proxy = Mutex::new(event_loop.create_proxy());
+        muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
+            if let Ok(proxy) = proxy.lock() {
+                let _ = proxy.send_event(Wake::Menu(event.id));
+            }
+        }));
+    }
     let window = WindowBuilder::new()
-        .with_title("tonk")
+        .with_title("Tonk")
         .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 860.0))
         .build(&event_loop)?;
 
     let builder = WebViewBuilder::new()
         .with_url(&launch_url)
+        .with_devtools(true)
         .with_initialization_script(native_host_script(&origin))
         .with_navigation_handler({
             let origin = origin.clone();
@@ -107,11 +120,30 @@ pub fn run(runtime: Runtime, launch_url: String, origin: String) -> Result<()> {
         builder.build_gtk(container)?
     };
 
+    // Installed once the app has started, as the menu bar requires.
+    #[cfg(target_os = "macos")]
+    let mut menu: Option<crate::menu::MenuBar> = None;
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         // Owned by the loop so they live exactly as long as it does.
         let _ = &runtime;
         match event {
+            #[cfg(target_os = "macos")]
+            Event::NewEvents(tao::event::StartCause::Init) => match crate::menu::install() {
+                Ok(installed) => menu = Some(installed),
+                Err(error) => eprintln!("the menu bar could not be installed: {error}"),
+            },
+            #[cfg(target_os = "macos")]
+            Event::UserEvent(Wake::Menu(id)) => {
+                match menu.as_ref().and_then(|menu| menu.command(&id)) {
+                    Some(crate::menu::Command::Reload) => {
+                        let _ = webview.reload();
+                    }
+                    Some(crate::menu::Command::Inspect) => webview.open_devtools(),
+                    None => {}
+                }
+            }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
