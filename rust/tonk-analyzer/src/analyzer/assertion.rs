@@ -84,13 +84,6 @@ pub(crate) struct AssertionPlan {
     /// effects-fixpoint seed bucket. Always `false` for domain /
     /// URI heads — those name no concept.
     pub transient: bool,
-    /// The query selecting the entities this expression writes,
-    /// when the body selects them rather than naming one. Only a
-    /// match deletion (`..: _` with no `this:`) carries one: its
-    /// named fields pick the instances, and `retract` targets the
-    /// variable this query binds. The evaluator joins it with the
-    /// document's queries, so the retraction runs once per match.
-    pub selector: Option<Application>,
 }
 
 pub(crate) fn build_assertion_application(
@@ -153,19 +146,10 @@ pub(crate) fn build_assertion_application(
             // instances must derive from that same entity for the
             // notation and wire paths to converge.
             let predicate_entity = resolved.entity.clone();
-            // With no `this:` there is no entity to keep the rest of:
-            // the named fields select the instances, and `..: _`
-            // deletes each one whole.
-            if has_rest_retraction && matches!(this, ThisIntent::Derived) {
-                if let Some(anchor) = anchor {
-                    return Err(AnalyzeError::at(
-                        AnalyzeErrorKind::AnchoredMatchDeletion {
-                            name: anchor.name.clone(),
-                        },
-                        anchor.range,
-                    ));
-                }
-                return build_match_deletion(assertion, &descriptor, transient, scope, analysis);
+            if let Some(error) =
+                check_retraction_has_entity(concept_name, &this, assertion, analysis)
+            {
+                return Err(error);
             }
             let name_range = anchor.map(|a| a.range).unwrap_or(head_range);
             let this_term = this_term_for_assertion(
@@ -195,15 +179,13 @@ pub(crate) fn build_assertion_application(
             // every `with:` field, the user is almost certainly
             // missing a query — they wanted to update an
             // existing entity but the analyzer has no way to
-            // know that. `..: _` is the explicit opt-in for
-            // "yes, I'm creating a partial," so it suppresses
-            // the check.
+            // know that. (A body retracting anything here was
+            // already refused by `check_retraction_has_entity`.)
             if let Some(error) = check_complete_when_unbound(
                 concept_name,
                 &this,
                 &descriptor,
                 &user_fields,
-                has_rest_retraction,
                 analysis,
                 head_range,
             ) {
@@ -516,7 +498,6 @@ pub(crate) fn build_assertion_application(
                 assert: asserts,
                 retract: retracts,
                 transient,
-                selector: None,
             })
         }
         HeadName::Claim(domain) => {
@@ -610,7 +591,6 @@ pub(crate) fn build_assertion_application(
                 // Domain (`xyz.tonk …:`) heads name no concept,
                 // so there's no transient marker to consult.
                 transient: false,
-                selector: None,
             })
         }
         HeadName::Uri(uri) => Err(AnalyzeError::at(
@@ -623,96 +603,43 @@ pub(crate) fn build_assertion_application(
     }
 }
 
-/// Lower a match deletion — `head!:` with `..: _` and no `this:`
-/// — into a selector query plus a whole-instance retraction.
+/// Refuse a retraction whose `this:` reaches no existing entity.
 ///
-/// ```yaml
-/// ticket!:
-///   queue: "writer"
-///   ..: _
-/// ```
-///
-/// reads as the query `ticket: {this: ?t, queue: "writer"}` followed
-/// by `ticket!: {this: ?t, ..: _}` for every `?t` it binds. The
-/// named fields select rather than assert, and every attribute of a
-/// selected instance is retracted, the selecting ones included: with
-/// no `this:` there is no entity whose named fields could be kept.
-/// Omitted fields select as `_`, so an instance matches only when it
-/// is a complete instance of the concept, exactly as a query reads it.
-fn build_match_deletion(
+/// `field: _` and `..: _` retract from the entity `this:` selects.
+/// With `this:` omitted, or a `?var` that no query binds and no
+/// earlier expression minted, that entity is derived fresh from the
+/// body: it holds nothing to retract, and the expression would only
+/// assert its named fields onto a new, partial instance. The named
+/// fields of an assertion always set values, so they cannot double
+/// as a filter choosing what to retract; selecting is a query's job.
+fn check_retraction_has_entity(
+    concept_name: &str,
+    this: &ThisIntent,
     assertion: &SyntaxApplication,
-    descriptor: &dialog_query::ConceptDescriptor,
-    transient: bool,
-    scope: &Scope,
     analysis: &Working,
-) -> Result<AssertionPlan, AnalyzeError> {
-    let head_range = assertion.predicate.range;
-    // The selected entity's variable. It must not join with a
-    // variable of the user's, so it borrows the reserved `..` key as
-    // a prefix no one writes by hand; the head's position keeps it
-    // distinct per expression.
-    let selected = format!(
-        "..match@{}:{}",
-        head_range.start.line, head_range.start.character
-    );
-    let mut fields: Vec<Field> = assertion
+) -> Option<AnalyzeError> {
+    let retraction = assertion
         .fields
         .iter()
-        .filter(|f| f.name != "..")
-        .cloned()
-        .collect();
-    fields.push(Field {
-        name: "this".into(),
-        name_range: head_range,
-        value: FieldValue::Variable(selected.clone()),
-        value_range: head_range,
-    });
-    for (field_name, _) in descriptor.with().iter() {
-        if !fields.iter().any(|f| f.name == field_name) {
-            fields.push(Field {
-                name: field_name.into(),
-                name_range: head_range,
-                value: FieldValue::Blank,
-                value_range: head_range,
-            });
+        .find(|f| f.name != "this" && matches!(f.value, FieldValue::Blank))?;
+    let selector_form = match this {
+        ThisIntent::Uri(_) => return None,
+        ThisIntent::Derived => "`this:` is omitted".to_string(),
+        ThisIntent::Variable(name) => {
+            if analysis.variables.contains_key(name) || query_binds(analysis, name) {
+                return None;
+            }
+            format!("`?{name}` in `this:` isn't bound by any query")
         }
-    }
-    let selector = super::query::build_query_application(
-        &SyntaxApplication {
-            predicate: assertion.predicate.clone(),
-            fields,
-            range: assertion.range,
+    };
+    Some(AnalyzeError::at(
+        AnalyzeErrorKind::RetractionWithoutEntity {
+            concept: concept_name.to_owned(),
+            retracted: format!("`{}: _`", retraction.name),
+            selector_form,
         },
-        scope,
-        analysis,
-    )?;
-
-    let this = ThisIntent::Variable(selected.clone());
-    let mut terms = Parameters::new();
-    terms.insert("this".into(), Term::<dialog_query::Any>::var(&selected));
-    for (field_name, attr) in descriptor.with().iter() {
-        if attr.the().attribute().is_none() {
-            terms.insert(
-                Relation::key_operand(field_name),
-                Term::<dialog_query::Any>::blank(),
-            );
-        }
-        terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
-    }
-    Ok(AssertionPlan {
-        assert: Vec::new(),
-        retract: vec![Application::Concept {
-            query: ConceptQuery {
-                terms,
-                predicate: descriptor.clone(),
-            },
-            join: Vec::new(),
-            this,
-            name: None,
-        }],
-        transient,
-        selector: Some(selector),
-    })
+        retraction.name_range,
+    ))
 }
 
 /// Derive the head's source-form intent — `(ThisIntent, name)`
@@ -1052,26 +979,17 @@ fn scalar_to_value(scalar: &Scalar) -> Value {
 ///   with no preceding query binding for `name`
 /// - AND the user-set field set is a strict subset of the
 ///   concept's `with:` schema
-/// - AND the body has no `..: _` rest-marker (which is the
-///   explicit opt-in for partial assertions)
 ///
-/// Returns `None` otherwise (intentional update, intentional
-/// full assert, or explicit partial via `..: _`).
+/// Returns `None` otherwise (intentional update or intentional
+/// full assert).
 fn check_complete_when_unbound(
     concept_name: &str,
     this: &ThisIntent,
     descriptor: &dialog_query::ConceptDescriptor,
     user_fields: &BTreeMap<&str, (&FieldValue, lsp_types::Range)>,
-    has_rest_retraction: bool,
     analysis: &Working,
     range: lsp_types::Range,
 ) -> Option<AnalyzeError> {
-    // `..: _` is the user's explicit "I know what I'm doing
-    // about every other field" — never trip the check.
-    if has_rest_retraction {
-        return None;
-    }
-
     // Determine whether `this:` reaches an existing entity.
     // `Uri` always does (the user wrote a concrete URI). Any
     // other case where the entity is "fresh" or "unbound"

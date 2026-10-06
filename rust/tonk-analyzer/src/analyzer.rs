@@ -349,7 +349,6 @@ fn expand(
                 let anchor;
                 let mut transient_entity: Option<Entity> = None;
                 let mut rule_effect: Option<dialog_query::InductiveRule> = None;
-                let mut selector: Option<Application> = None;
                 let is_declaration;
 
                 if let Some(declaration) = declared.remove(&index) {
@@ -500,12 +499,6 @@ fn expand(
                     // affects naming downstream.
                     let plan =
                         build_assertion_application(a, anchor_node.as_ref(), scope, &mut working)?;
-                    // A match deletion's selector reads like a query:
-                    // it binds the variable the retraction targets.
-                    if let Some(selector) = &plan.selector {
-                        working.queries.push(selector.clone());
-                    }
-                    selector = plan.selector.clone();
                     let probe = plan.assert.first().or(plan.retract.first());
                     predicate = probe
                         .map(|app| predicate_of(app, plan.transient))
@@ -549,7 +542,6 @@ fn expand(
                         labels: claim_labels,
                         transient: transient_entity,
                         effect: rule_effect,
-                        selector,
                     },
                 })));
             }
@@ -4498,10 +4490,11 @@ person!: &alice
         );
     }
 
-    /// `..: _` is the explicit opt-in for "I know this is
-    /// partial." Accepted.
+    /// `..: _` does not acknowledge a partial fresh entity: a `?var`
+    /// no query binds mints a new entity, which has nothing to
+    /// retract. Refused rather than read as "I know this is partial".
     #[dialog_common::test]
-    async fn it_allows_partial_assertion_with_rest_marker() {
+    async fn it_rejects_partial_assertion_with_rest_marker() {
         let syntax = must_parse(
             r#"
 person!:
@@ -4517,7 +4510,11 @@ person!:
                 ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
-        analyze_with(&syntax, &resolver).await.unwrap();
+        let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::RetractionWithoutEntity { .. }),
+            "expected RetractionWithoutEntity, got {err:?}"
+        );
     }
 
     /// Setting every `with:` field is intentional — pass.
@@ -4585,8 +4582,12 @@ person!:
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
         assert!(
-            matches!(err.kind, AnalyzeErrorKind::IncompleteAssertion { .. }),
-            "expected IncompleteAssertion for `age: _` on unbound entity, got {err:?}"
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::RetractionWithoutEntity { retracted, selector_form, .. }
+                    if retracted == "`age: _`" && selector_form.contains("?alice")
+            ),
+            "expected RetractionWithoutEntity for `age: _` on unbound entity, got {err:?}"
         );
     }
 
@@ -4674,74 +4675,71 @@ ticket:
         assert_eq!(range.start.line, 3, "points at `..:`, got {range:?}");
     }
 
-    /// `..: _` with no `this:` lowers to a match deletion: no assert
-    /// at all, one retraction of every field, aimed at the variable
-    /// a selector query binds from the named fields.
+    /// `..: _` with `this:` omitted has no existing entity to retract
+    /// from: the entity would be derived fresh from the body, so the
+    /// expression would only assert `queue: "writer"` onto a new,
+    /// partial ticket. Refused, pointing at the `..` key — the named
+    /// fields of an assertion set values, they do not select.
     #[dialog_common::test]
-    async fn it_lowers_rest_retraction_without_this_to_a_match_deletion() {
+    async fn it_rejects_rest_retraction_without_this() {
         let syntax = must_parse(
             r#"ticket!:
   queue: "writer"
   ..: _
 "#,
         );
-        let tree = analyze_with(&syntax, &ticket_concept()).await.unwrap();
-        let document = &tree.analysis;
-
-        let statements: Vec<_> = document.statements();
-        assert_eq!(statements.len(), 1, "only the retraction: {statements:?}");
-        let Statement::Retract(retract) = &statements[0].statement else {
-            panic!("expected a retraction, got {:?}", statements[0].statement);
-        };
-        let ThisIntent::Variable(selected) = retract.this() else {
-            panic!(
-                "the retraction targets a variable, got {:?}",
-                retract.this()
-            );
-        };
-        let terms = retract.parameters();
-        for field in ["title", "queue"] {
-            assert!(
-                terms.get(field).is_some_and(|t| t.is_blank()),
-                "`{field}` is retracted: {terms:?}"
-            );
-        }
-
-        let selectors: Vec<_> = document.selectors().collect();
-        assert_eq!(selectors.len(), 1);
-        let selector = selectors[0].parameters();
-        assert_eq!(
-            selector.get("this"),
-            Some(&Term::<dialog_query::Any>::var(selected)),
-            "the selector binds the retraction's target"
-        );
-        assert_eq!(
-            selector.get("queue"),
-            Some(&Term::Constant(Value::String("writer".into()))),
-            "the named field selects"
-        );
+        let err = analyze_with(&syntax, &ticket_concept()).await.unwrap_err();
         assert!(
-            document.synthesized.is_empty(),
-            "no fresh entity is minted to snapshot"
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::RetractionWithoutEntity { concept, retracted, selector_form }
+                    if concept == "ticket"
+                        && retracted == "`..: _`"
+                        && selector_form.contains("omitted")
+            ),
+            "expected RetractionWithoutEntity, got {err:?}"
         );
+        assert_eq!(err.code(), "E_RETRACTION_WITHOUT_ENTITY");
+        let range = err.range.expect("the error carries a range");
+        assert_eq!(range.start.line, 2, "points at `..:`, got {range:?}");
     }
 
-    /// An anchor names the one entity an assertion writes; a match
-    /// deletion has none, so `&name` on it is refused rather than
-    /// dropped.
+    /// The same holds for a `?var` that no query binds: it mints a
+    /// fresh entity, which has nothing to retract.
     #[dialog_common::test]
-    async fn it_rejects_an_anchor_on_a_match_deletion() {
+    async fn it_rejects_rest_retraction_on_an_unbound_variable() {
         let syntax = must_parse(
-            r#"ticket!: &gone
-  queue: "writer"
+            r#"ticket!:
+  this: ?t
   ..: _
 "#,
         );
         let err = analyze_with(&syntax, &ticket_concept()).await.unwrap_err();
         assert!(
-            matches!(&err.kind, AnalyzeErrorKind::AnchoredMatchDeletion { name } if name == "gone"),
-            "expected AnchoredMatchDeletion, got {err:?}"
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::RetractionWithoutEntity { selector_form, .. }
+                    if selector_form.contains("?t")
+            ),
+            "expected RetractionWithoutEntity, got {err:?}"
         );
+    }
+
+    /// A `?var` a query binds does reach existing entities, so the
+    /// query-then-retract form is the accepted way to delete matches.
+    #[dialog_common::test]
+    async fn it_accepts_rest_retraction_on_a_query_bound_variable() {
+        let syntax = must_parse(
+            r#"ticket:
+  this: ?t
+  queue: "writer"
+
+ticket!:
+  this: ?t
+  ..: _
+"#,
+        );
+        analyze_with(&syntax, &ticket_concept()).await.unwrap();
     }
 
     /// A claim domain has no schema for `..` to stand for, so the

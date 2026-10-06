@@ -516,16 +516,25 @@ pub enum AnalyzeErrorKind {
         /// The claim domain on the head.
         domain: String,
     },
-    /// An `&anchor` on a match deletion (`head!:` with `..: _` and no
-    /// `this:`). The expression deletes every instance its fields
-    /// match, so there is no one entity for the name to publish.
+    /// A retraction (`field: _` or `..: _`) on an assertion whose
+    /// `this:` reaches no existing entity — omitted (the entity is
+    /// derived from the body) or a `?var` no query binds (the
+    /// variable mints a fresh entity). A fresh entity has nothing to
+    /// retract, so the expression would only write the named fields
+    /// onto a new, partial instance.
     #[error(
-        "`&{name}` cannot name a deletion: with `..: _` and no `this:`, the expression \
-         deletes every instance its fields match, so there is no one entity to name"
+        "`{concept}!` retracts {retracted} but {selector_form}, so there is no existing \
+         entity to retract from. Set `this:` to the entity: a name, a URI, or a `?var` a \
+         query binds (`{concept}:\n  this: ?var\n  …` then `{concept}!:\n  this: ?var\n  ..: _`)."
     )]
-    AnchoredMatchDeletion {
-        /// The anchor's name.
-        name: String,
+    RetractionWithoutEntity {
+        /// The concept being asserted.
+        concept: String,
+        /// What the body retracts, as written (`` `..: _` `` or
+        /// `` `age: _` ``).
+        retracted: String,
+        /// How `this:` failed to select an entity.
+        selector_form: String,
     },
     /// A field in the body doesn't appear in the head concept's
     /// `with` map.
@@ -671,17 +680,11 @@ pub enum AnalyzeErrorKind {
     /// shape prevents accidentally creating "ghost" entities
     /// with one or two fields set.
     ///
-    /// The error is suppressed in two cases:
-    /// - A preceding query expression binds the `?var` in
-    ///   `this:` (the user is intentionally updating an
-    ///   existing entity, partial updates are fine).
-    /// - The body contains `..: _` (the rest-marker explicitly
-    ///   declares "I know what I'm doing about every other
-    ///   field" — the unmentioned fields get retracted).
-    ///
-    /// The message does not offer `..: _` as the way out: with
-    /// `this:` omitted it turns the expression into a deletion of
-    /// every instance the body matches.
+    /// The error is suppressed when a preceding query expression
+    /// binds the `?var` in `this:` (the user is intentionally
+    /// updating an existing entity, partial updates are fine).
+    /// A body that retracts (`field: _`, `..: _`) here is refused
+    /// earlier, as [`Self::RetractionWithoutEntity`].
     #[error(
         "`{concept}!` body sets only some of the concept's fields ({set:?}; missing: {missing:?}) but {selector_form}. \
          Either query for an existing entity first (`{concept}:\n  this: ?var\n  …`) or set every field."
@@ -754,7 +757,7 @@ impl AnalyzeErrorKind {
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",
             Self::RestRetractionInQuery { .. } => "E_REST_RETRACTION_IN_QUERY",
             Self::RestRetractionOnDomain { .. } => "E_REST_RETRACTION_ON_DOMAIN",
-            Self::AnchoredMatchDeletion { .. } => "E_ANCHORED_MATCH_DELETION",
+            Self::RetractionWithoutEntity { .. } => "E_RETRACTION_WITHOUT_ENTITY",
             Self::DuplicateConceptField { .. } => "E_DUPLICATE_CONCEPT_FIELD",
             Self::UnknownFormulaOperand { .. } => "E_UNKNOWN_FORMULA_OPERAND",
             Self::MissingFormulaOperand { .. } => "E_MISSING_FORMULA_OPERAND",

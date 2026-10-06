@@ -33,8 +33,7 @@ Retraction is not a separate top-level shape — it happens
 *inside* an assertion body, by giving a field the blank value
 `_` (retract that one attribute) or by adding `..: _` (retract
 every attribute in the concept's `with:` map that isn't named
-explicitly elsewhere in the body; with `this:` omitted, delete
-every instance the named fields match). See *Blanks* below.
+explicitly elsewhere in the body). See *Blanks* below.
 
 Heads carry only the concept (or claim domain) and the effect
 marker. They have no bindings; everything about *which* entity
@@ -217,17 +216,16 @@ Within a mapping body, two reserved meta-keys do meta work:
   (`head:`) or claim-domain head carrying it is an error.
 
 If `this:` is omitted from an assertion, the entity is derived
-from the content — except alongside `..: _`, where there is no
-entity to keep the rest of. There the body is a **match
-deletion**: the named fields select, like a query, and every
-attribute of each instance they match is retracted, the
-selecting ones included. These two documents are equivalent:
+from the content. If omitted from a query, `this` is a free
+variable matching any entity.
 
-```yaml tonk=parse
-ticket!:
-  queue: "writer"
-  ..: _
-```
+A retraction (`field: _` or `..: _`) needs `this:` to select an
+existing entity: a name, a URI, or a `?var` a query binds. With
+`this:` omitted, or a `?var` nothing binds, the entity would be
+fresh, with nothing to retract, so the analyzer refuses it. The
+named fields of an assertion always set values; they never
+select. To delete every instance matching some fields, select
+them with a query:
 
 ```yaml tonk=parse
 ticket:
@@ -238,12 +236,6 @@ ticket!:
   this: ?t
   ..: _
 ```
-
-A match deletion that matches nothing writes nothing. It cannot
-carry an `&anchor`: there is no one entity to name.
-
-If `this:` is omitted from a query, `this` is a free variable
-matching any entity.
 
 ## The `this:` meta-key
 
@@ -374,8 +366,7 @@ the expression flavour:
 The reserved field name `..` accepts only `_` as its value, and
 only inside an assertion body. `..: _` retracts every attribute
 in the concept's `with:` map that isn't named elsewhere in the
-body — or, with `this:` omitted, every attribute of every
-instance the named fields match. A bare `_` at the body level (`head!: _`) is a parse
+body. A bare `_` at the body level (`head!: _`) is a parse
 error — entity selection requires a `this:` field, which
 requires a mapping body.
 

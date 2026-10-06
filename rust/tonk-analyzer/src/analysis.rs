@@ -137,16 +137,6 @@ impl DocumentAnalysis {
         })
     }
 
-    /// The selector queries of match deletions, in document order —
-    /// see [`AssertionAnalysis::selector`]. They join into the frames
-    /// that feed mutation planning alongside [`queries`](Self::queries).
-    pub fn selectors(&self) -> impl Iterator<Item = &Application> {
-        self.expressions.iter().filter_map(|e| match &e.analysis {
-            ExpressionAnalysis::Assertion(node) => node.analysis.selector.as_ref(),
-            ExpressionAnalysis::Query(_) => None,
-        })
-    }
-
     /// `true` when the document carries no query expression.
     pub fn has_no_queries(&self) -> bool {
         self.queries().next().is_none()
@@ -501,13 +491,6 @@ pub struct AssertionAnalysis {
     /// `claims` as a [`Statement::InstallEffect`], so the regular
     /// document-order walk picks it up like any other write.
     pub effect: Option<InductiveRule>,
-    /// The query selecting the instances this claim writes, when the
-    /// body selects them rather than naming one: a match deletion
-    /// (`head!:` with `..: _` and no `this:`). Its retraction in
-    /// `claims` targets the variable this query binds, so the
-    /// evaluator joins it with the document's queries when planning
-    /// mutations. It is not a user query and renders no match block.
-    pub selector: Option<Application>,
 }
 
 /// What an assertion's head resolved to.
