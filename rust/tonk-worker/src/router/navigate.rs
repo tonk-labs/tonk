@@ -98,21 +98,27 @@ fn post_navigate(client: Option<&crate::router::ClientId>, href: &str, replace: 
     });
 }
 
-/// Navigation is a page capability, and this host has no page: the
-/// target is logged so a host shell (CLI, TUI) that tails the log can
-/// still present it. The triggering command has already done its work —
-/// only the convenience redirect is absent, mirroring the "client is
-/// gone" path above.
+/// A native host has one page, if any, and loads locations in it through
+/// the navigator it configured (see [`crate::native::set_navigator`]).
+/// A host with no page (CLI, TUI) sets none, and the target is logged so
+/// a shell that tails the log can still present it. The triggering
+/// command has already done its work either way — only the convenience
+/// redirect is absent, mirroring the "client is gone" path above.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
     let _ = client;
-    log!("navigate: no page on this host; the target was {href}");
+    if !crate::native::navigate(href, false) {
+        log!("navigate: no page on this host; the target was {href}");
+    }
 }
 
-/// No page on this host either; see [`notify_navigate`].
+/// [`notify_navigate`] as a load that replaces the current history entry.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
-    notify_navigate(client, href);
+    let _ = client;
+    if !crate::native::navigate(href, true) {
+        log!("navigate: no page on this host; the target was {href}");
+    }
 }
 
 /// Ask every other top-level document to reload after the active browser

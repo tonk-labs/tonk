@@ -124,6 +124,11 @@ fn main() -> Result<()> {
         // Logged to stderr: the worker logs to stdout, and a test reading
         // the URL must not have to pick it out of those.
         eprintln!("launch: {}", server.launch_url());
+        // No window to load in: a test drives the page itself, and reads
+        // where the worker sent it from here.
+        tonk_worker::native::set_navigator(|href, replace| {
+            eprintln!("navigate: {href} replace={replace}");
+        });
         if let Some(path) = args.host_script {
             std::fs::write(&path, window::native_host_script(&server.origin()))?;
         }

@@ -12,6 +12,9 @@
 //! and attaches the account where the grant's signed meta says it syncs,
 //! which is the approving deployment's service, not this one.
 //!
+//! A native host has no https page to come back to, so its callback is a
+//! one-shot loopback listener instead, as the CLI's is (see `loopback`).
+//!
 //! The callback names a one-shot request this profile recorded before it
 //! left. An answer this browser did not ask for, such as someone else's
 //! account handed in through a crafted link, matches no request and is
@@ -24,6 +27,9 @@ use tonk_schema::{ceremony, ceremony_state};
 use url::Url;
 
 use crate::worker::TonkState;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod loopback;
 
 /// Credential-store site holding the request this profile is waiting on.
 const REQUEST_SITE: &str = "tonk-sign-in-via-v1";
@@ -92,31 +98,79 @@ struct Delivered {
 /// and the approving page refuses plain `http` callbacks for the same
 /// reason. `via` may be any address on the deployment; its origin is
 /// what is asked.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 fn approval_url(via: &str, here: &Url, audience: &str, request: &str) -> Result<String, String> {
+    let origin = deployment(via)?;
+    let callback = page_callback(here, &origin, request)?;
+    let name = here.host_str().unwrap_or("a tonk deployment");
+    ask(&origin, &callback, name, audience)
+}
+
+/// The origin of the deployment `via` names, which must be https.
+fn deployment(via: &str) -> Result<String, String> {
     let via = Url::parse(via.trim())
         .map_err(|_| format!("{via} is not an address a deployment can be asked at"))?;
     if via.scheme() != "https" || via.host_str().is_none() {
         return Err(format!("{via} is not an https deployment"));
     }
-    let origin = via.origin().ascii_serialization();
-    let callback = Url::parse_with_params(
+    Ok(via.origin().ascii_serialization())
+}
+
+/// A page's callback: its own `/settings/link`, which reads the answer
+/// and asserts [`FinishSignInVia`].
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+fn page_callback(here: &Url, via: &str, request: &str) -> Result<String, String> {
+    Url::parse_with_params(
         here.join("settings/link")
             .map_err(|error| format!("this deployment's address is unusable: {error}"))?
             .as_str(),
-        &[("via", origin.as_str()), ("request", request)],
+        &[("via", via), ("request", request)],
     )
-    .map_err(|error| format!("the callback address did not build: {error}"))?;
-    let name = here.host_str().unwrap_or("a tonk deployment");
+    .map(String::from)
+    .map_err(|error| format!("the callback address did not build: {error}"))
+}
+
+/// The address asking the deployment at `origin` to approve `audience`,
+/// answering at `callback`. `name` is what the approving page calls the
+/// one asking.
+fn ask(origin: &str, callback: &str, name: &str, audience: &str) -> Result<String, String> {
     let approval = Url::parse_with_params(
         &format!("{origin}/settings/link"),
-        &[
-            ("audience", audience),
-            ("callback", callback.as_str()),
-            ("name", name),
-        ],
+        &[("audience", audience), ("callback", callback), ("name", name)],
     )
     .map_err(|error| format!("the approval address did not build: {error}"))?;
     Ok(approval.into())
+}
+
+/// Where the answer to `request` comes back, and what the approving page
+/// calls this profile.
+///
+/// A page in a browser answers on its own `/settings/link`. A native host
+/// has no https page to come back to, and the approving deployment only
+/// delivers to an https page or a bare loopback address, so it answers
+/// the way the `tonk` CLI does: on a one-shot loopback listener that
+/// finishes the sign-in itself (see [`loopback`]).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn callback(
+    _state: &super::AppState,
+    request: &str,
+    via: &str,
+) -> Result<(String, String), String> {
+    let here = super::customer::service_origin().map_err(|error| error.to_string())?;
+    let callback = page_callback(&here, via, request)?;
+    let name = here.host_str().unwrap_or("a tonk deployment").to_owned();
+    Ok((callback, name))
+}
+
+/// See the browser's [`callback`].
+#[cfg(not(target_arch = "wasm32"))]
+async fn callback(
+    state: &super::AppState,
+    request: &str,
+    via: &str,
+) -> Result<(String, String), String> {
+    let callback = loopback::listen(state.clone(), request.to_owned(), via.to_owned()).await?;
+    Ok((callback, "tonk desktop".to_owned()))
 }
 
 /// Read the answer off the callback address: the request id from its
@@ -213,13 +267,11 @@ async fn forget_pending(state: &TonkState) {
 
 /// Record a fresh request to `via` and answer the address to send the
 /// page to.
-async fn start(state: &TonkState, via: &str) -> Result<String, String> {
-    let here = super::customer::service_origin().map_err(|error| error.to_string())?;
+async fn start(app: &super::AppState, state: &TonkState, via: &str) -> Result<String, String> {
+    let origin = deployment(via)?;
     let request = hex::encode(rand::random::<[u8; 16]>());
-    let approval = approval_url(via, &here, state.profile.did().as_ref(), &request)?;
-    let origin = Url::parse(&approval)
-        .map(|approval| approval.origin().ascii_serialization())
-        .unwrap_or_default();
+    let (callback, name) = callback(app, &request, &origin).await?;
+    let approval = ask(&origin, &callback, &name, state.profile.did().as_ref())?;
     save_pending(
         state,
         &PendingRequest {
@@ -353,7 +405,7 @@ async fn finish(
 impl dialog_capability::Provider<SignInVia> for super::CommandEnv {
     async fn execute(&self, command: SignInVia) {
         let tonk = self.state().read().await;
-        match start(&tonk, &command.via.0).await {
+        match start(self.state(), &tonk, &command.via.0).await {
             Ok(approval) => super::navigate::notify_navigate(self.client(), &approval),
             Err(error) => {
                 super::ceremony::report(
@@ -373,33 +425,32 @@ impl dialog_capability::Provider<SignInVia> for super::CommandEnv {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<FinishSignInVia> for super::CommandEnv {
     async fn execute(&self, command: FinishSignInVia) {
-        let tonk = self.state().read().await;
+        complete(self.state(), self.client(), &command.url.0).await;
+    }
+}
+
+/// Install the answer on `url`, report how it went, and go home.
+async fn complete(state: &super::AppState, source: Option<&super::ClientId>, url: &str) {
+    {
+        let tonk = state.read().await;
         super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::WORKING, "").await;
-        drop(tonk);
-        let result = finish(self.state(), self.client(), &command.url.0).await;
-        let tonk = self.state().read().await;
-        match result {
-            Ok(()) => {
-                super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::DONE, "")
-                    .await;
-                // A load, not a route change: signing back in can switch
-                // the page onto the branch the account kept, and the page
-                // that asked is left out of the reload every other tab gets
-                // (see `profiles::promote`), so a route change would leave
-                // it bound to the branch it started on and refused. The
-                // callback, with the grant in its fragment, leaves the
-                // history too.
-                super::navigate::notify_replace(self.client(), "/");
-            }
-            Err(error) => {
-                super::ceremony::report(
-                    &tonk,
-                    ceremony::SIGN_IN_VIA,
-                    ceremony_state::FAILED,
-                    &error,
-                )
+    }
+    let result = finish(state, source, url).await;
+    let tonk = state.read().await;
+    match result {
+        Ok(()) => {
+            super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::DONE, "").await;
+            // A load, not a route change: signing back in can switch the
+            // page onto the branch the account kept, and the page that
+            // asked is left out of the reload every other tab gets (see
+            // `profiles::promote`), so a route change would leave it bound
+            // to the branch it started on and refused. The callback, with
+            // the grant in its fragment, leaves the history too.
+            super::navigate::notify_replace(source, "/");
+        }
+        Err(error) => {
+            super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::FAILED, &error)
                 .await
-            }
         }
     }
 }

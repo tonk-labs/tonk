@@ -125,6 +125,9 @@ web-sys = { workspace = true, features = [
 web-time = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# A native host's sign-in is answered on a loopback listener.
+axum = { workspace = true, features = ["form", "tokio", "http1"] }
+tokio = { workspace = true, features = ["net", "time"] }
 reqwest = { workspace = true }
 # The files library documents include, compiled in: a native worker seeds
 # the library from compiled-in copies, with no served `/library/` to

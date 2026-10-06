@@ -50,6 +50,37 @@ pub(crate) fn service_origin() -> Option<String> {
     SERVICE_ORIGIN.get().cloned()
 }
 
+/// Loads a location in the host's page: the href, and whether it replaces
+/// the current history entry.
+type Navigator = dyn Fn(&str, bool) + Send + Sync;
+
+/// The navigation a native host with a page was configured with.
+static NAVIGATOR: OnceLock<Box<Navigator>> = OnceLock::new();
+
+/// Record how the host loads a location in its page.
+///
+/// A service worker redirects the page that asked by posting it a
+/// `navigate` message. A native host has no such channel, so a command
+/// whose effect is a page load (opening a new space, sending the person
+/// to approve a sign-in) reaches the page through this instead. `href`
+/// is either a path on the page's own origin or an absolute address
+/// elsewhere, which a desktop host opens in the system browser. Without
+/// it the target is only logged. Only the first call takes effect.
+pub fn set_navigator(navigate: impl Fn(&str, bool) + Send + Sync + 'static) {
+    let _ = NAVIGATOR.set(Box::new(navigate));
+}
+
+/// Load `href` through the host's navigator. Answers whether one was set.
+pub(crate) fn navigate(href: &str, replace: bool) -> bool {
+    match NAVIGATOR.get() {
+        Some(navigate) => {
+            navigate(href, replace);
+            true
+        }
+        None => false,
+    }
+}
+
 /// A worker opened natively: the router a host serves, and the state
 /// behind it.
 pub struct NativeWorker {
