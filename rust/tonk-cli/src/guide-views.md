@@ -400,17 +400,17 @@ Rules of the road:
 - Elements **share the realm** with every view on the branch —
   that is the point (they compose with bindings and events). For a
   fully isolated third-party page, use a portal (below) instead.
-- **The older `component` shape still works, alongside this one.** A
-  `component` row is one anonymous JS module that calls
-  `customElements.define` itself. The two concepts share nothing — a
-  component's facts are `xyz.tonk.component/module`, an element's are
-  `xyz.tonk.element.method/<key>` — so a branch carries both, each with
-  its own loader, and nothing has to be migrated. `tonk element` lists
-  both, naming the concept each row came from. What `component` cannot
-  offer is identity: an assertion that omits `this:` is keyed by its own
-  body digest, so an edit writes a SECOND row, the directory mounts
-  both, and whichever module runs first wins. Prefer `element` for new
-  work for that reason, not because `component` stops working.
+- **A hand-written module becomes one `define`.** Code that used to
+  call `customElements.define('x-widget', XWidget)` itself moves into
+  the escape hatch whole: `define: () => { …the module's code…; return
+  XWidget; }`. Drop the `customElements.get(…) ||` guard — the runtime
+  registers the class, once. One element per tag: a module defining
+  several tags becomes several elements. Code that has to run before
+  any tag renders (a global, a listener, a patch onto another element's
+  prototype) needs a tag of its own that a view renders, because
+  nothing loads until its tag appears — and nothing loads in a
+  guaranteed order, so wait with `customElements.whenDefined` rather
+  than assuming a neighbour is already there.
 
 ## Escape hatch: the `portal` model
 

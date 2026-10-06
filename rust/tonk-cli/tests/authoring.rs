@@ -4,6 +4,35 @@ use anyhow::Result;
 
 use crate::common::TestSite;
 
+/// Every current claim under the module attribute the removed
+/// `component` concept wrote, subject left open.
+async fn module_claims(test: &TestSite) -> Result<Vec<dialog_query::Claim>> {
+    use anyhow::anyhow;
+    use dialog_artifacts::Attribute;
+    use dialog_query::{AttributeQuery, Output as _, Term, attribute};
+
+    let the = "xyz.tonk.component/module";
+    let attr: Attribute = the
+        .parse()
+        .map_err(|e| anyhow!("{the} should be a valid attribute URI: {e:?}"))?;
+    let the_term: attribute::The = attr.into();
+    let session = test.site.branch().await?;
+    session
+        .handle()
+        .query()
+        .select(AttributeQuery::new(
+            Term::from(the_term),
+            Term::<dialog_artifacts::Entity>::var("of"),
+            Term::<dialog_query::Any>::var("is"),
+            Term::<attribute::Cause>::blank(),
+            None,
+        ))
+        .perform(&test.site.operator)
+        .try_vec()
+        .await
+        .map_err(|e| anyhow!("{the} query failed: {e:?}"))
+}
+
 mod when_adding_a_concept {
     use super::*;
 
@@ -371,13 +400,10 @@ mod when_adding_a_view {
     }
 }
 
-/// The reason `element` exists beside the deprecated `component`: a
-/// tag you can repoint. A `component!:` with no `this:` is keyed by
-/// its body digest and nothing names it, so editing it writes a SECOND
-/// row and the realm loads both. An `element!: &<tag>` is keyed by its
-/// body too, but the anchor publishes `id:<tag>` over the result — so
-/// an edit mints a new value AND moves the tag onto it, and everything
-/// resolving by name follows.
+/// What makes an element: a tag you can repoint. An `element!: &<tag>`
+/// is keyed by its body, but the anchor publishes `id:<tag>` over the
+/// result — so an edit mints a new value AND moves the tag onto it, and
+/// everything resolving by name follows.
 mod when_defining_an_element {
     use super::*;
 
@@ -415,7 +441,6 @@ mod when_defining_an_element {
             .collect();
         assert_eq!(ours.len(), 1, "{listed:?}");
         assert_eq!(ours[0].methods, vec!["connected", "disconnected"]);
-        assert!(!ours[0].deprecated);
         Ok(())
     }
 
@@ -605,72 +630,29 @@ mod when_defining_an_element {
         Ok(())
     }
 
-    /// The two shapes share nothing — different attributes, different
-    /// loaders — so a branch can carry both without either shadowing
-    /// the other. Nothing has to be migrated to adopt `element`.
+    /// `component`, the anonymous-module shape `element` replaced, is
+    /// gone from the standard library. Asserting one is refused by the
+    /// analyzer as an unknown concept, and nothing reaches the branch:
+    /// no module claim, and no element row standing in for it.
     #[dialog_common::test]
-    async fn it_carries_component_and_element_rows_side_by_side() -> Result<()> {
+    async fn it_refuses_a_component_assertion() -> Result<()> {
         let test = TestSite::new().await?;
-        test.eval_inline(
-            "component!:\n  module: |\n    customElements.define('old-widget', class extends HTMLElement {});\n",
-        )
-        .await?;
-        tonk_cli::data_ops::element_add(
-            &test.site,
-            "new-widget",
-            "The new shape",
-            &tonk_cli::authoring::ElementParts {
-                methods: &methods(&[("connected", "(self) => { self.textContent = 'new'; }")]),
-                // A default, so this row answers the generic concept
-                // query below — see
-                // `it_answers_the_generic_concept_query_only_with_defaults`.
-                attributes: &[("tone".to_owned(), "new".to_owned())],
-                ..Default::default()
-            },
-            Default::default(),
-        )
-        .await?;
-
-        // The library seeds elements of its own; the rows this test
-        // authored are what it asserts on.
-        let listed = tonk_cli::elements::list(&test.site).await?;
-        let ours: Vec<_> = listed
-            .iter()
-            .filter(|row| row.deprecated || row.tag.as_deref() == Some("new-widget"))
-            .collect();
-        assert_eq!(ours.len(), 2, "{listed:?}");
-        let new = ours
-            .iter()
-            .find(|row| !row.deprecated)
-            .expect("element row present");
-        assert_eq!(new.tag.as_deref(), Some("new-widget"));
-        assert_eq!(new.methods, vec!["connected"]);
+        let before = tonk_cli::elements::list(&test.site).await?.len();
+        let err = test
+            .eval_inline(
+                "component!:\n  module: |\n    customElements.define('old-widget', class extends HTMLElement {});\n",
+            )
+            .await
+            .expect_err("a component assertion must be refused");
         assert!(
-            listed.iter().any(|row| row.deprecated),
-            "component row disappeared: {listed:?}",
-        );
-
-        // Each shape's facts stay its own: the component's module is
-        // not visible under the element's domains, and the element's
-        // methods are not visible as a component.
-        //
-        // Read through the per-domain queries rather than through
-        // `tonk query element`, which needs every dictionary set — see
-        // `it_answers_the_generic_concept_query_only_when_every_map_is_set`.
-        assert!(
-            !tonk_cli::elements::methods_of(&test.site, "new-widget")
-                .await?
-                .is_empty(),
+            matches!(&err, tonk_cli::eval::EvalError::Analyze(message) if message.contains("component")),
+            "{err:?}",
         );
         assert!(
-            tonk_cli::elements::methods_of(&test.site, "old-widget")
-                .await?
-                .is_empty(),
-            "the legacy module must not read back as element methods",
+            module_claims(&test).await?.is_empty(),
+            "a refused component must write no module",
         );
-        let components = tonk_cli::data_ops::query(&test.site, "component", false).await?;
-        assert!(components.contains("old-widget"), "{components}");
-        assert!(!components.contains("The new shape"), "{components}");
+        assert_eq!(tonk_cli::elements::list(&test.site).await?.len(), before);
         Ok(())
     }
 
@@ -1171,22 +1153,23 @@ mod when_defining_an_element {
         }
     }
 
-    /// Both concepts are anchored, not pinned — their entities are
-    /// content-addressed from their declarations. What coexistence
-    /// actually needs is only that the two are DISTINCT and that each
-    /// name resolves to its own, so neither can shadow the other.
+    /// `element` resolves by name; `component` no longer names
+    /// anything, so a branch seeded today has no concept to assert one
+    /// against.
     #[dialog_common::test]
-    async fn it_resolves_each_concept_name_to_its_own_entity() -> Result<()> {
+    async fn it_resolves_element_but_not_component() -> Result<()> {
         let test = TestSite::new().await?;
-        let element = tonk_cli::views::entity_for_name(&test.site, "element")
-            .await?
-            .expect("element should resolve");
-        let component = tonk_cli::views::entity_for_name(&test.site, "component")
-            .await?
-            .expect("component should resolve");
-        assert_ne!(
-            element, component,
-            "the two concepts collapsed onto one entity"
+        assert!(
+            tonk_cli::views::entity_for_name(&test.site, "element")
+                .await?
+                .is_some(),
+            "element should resolve",
+        );
+        assert!(
+            tonk_cli::views::entity_for_name(&test.site, "component")
+                .await?
+                .is_none(),
+            "component should no longer resolve",
         );
         Ok(())
     }

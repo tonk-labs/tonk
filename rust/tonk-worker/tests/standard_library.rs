@@ -1129,7 +1129,7 @@ fn it_keeps_ready_agent_invites_to_one_primary_action() {
     let ready = library
         .split("<div data-agent-mode=\"scoped\" hidden>")
         .nth(1)
-        .and_then(|tail| tail.split("</tonk-agent-prompt>").next())
+        .and_then(|tail| tail.split("</agent-invite-prompt>").next())
         .expect("the ready agent prompt");
     assert!(ready.contains("class=\"agent-prompt__copy\""));
     assert!(

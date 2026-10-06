@@ -451,62 +451,62 @@ concept!:
       as: text
       cardinality: one
 
+element!: &agent-invite-controls
+  description: "Shows the agent-invitation action that fits its `mode` and opens account registration for the account and activation modes."
+  method:
+    define: |
+      () => class extends HTMLElement {
+        static observedAttributes = ["mode"];
+        connectedCallback() {
+          this.observer = new MutationObserver(() => this.render());
+          this.observer.observe(this, { childList: true, subtree: true });
+          this.afterRegistration = () => {
+            if (["account", "activation"].includes(this.getAttribute("mode"))) {
+              this.dispatchEvent(new CustomEvent("mount", { bubbles: true }));
+            }
+          };
+          window.addEventListener("tonk:registration-closed", this.afterRegistration);
+          this.onclick = event => {
+            const button = event.target.closest("[data-invite-account]");
+            if (!button || button.hidden) return;
+            globalThis.tonk.register(JSON.stringify({
+              reason: this.getAttribute("mode") === "activation"
+                ? "agent-invite-activation" : "agent-invite-account"
+            }));
+          };
+          this.render();
+        }
+        disconnectedCallback() {
+          this.observer?.disconnect();
+          window.removeEventListener("tonk:registration-closed", this.afterRegistration);
+          this.onclick = null;
+        }
+        attributeChangedCallback() { if (this.isConnected) this.render(); }
+        render() {
+          const mode = this.getAttribute("mode");
+          for (const button of this.querySelectorAll("[data-invite-action]")) {
+            button.hidden = !button.dataset.inviteAction.split(" ").includes(mode);
+          }
+          const account = this.querySelector("[data-invite-account]");
+          if (account) {
+            const label = mode === "activation" ? "verify account" : "create an account or sign in";
+            if (account.textContent !== label) account.textContent = label;
+          }
+        }
+      }
+
 view!:
   this: tonk:connection-invite-controls
   show:
     ui: |
-      <tonk-component>
-        <script type="tonk/module">
-          customElements.get("tonk-agent-invite-controls") ||
-            customElements.define("tonk-agent-invite-controls", class extends HTMLElement {
-              static observedAttributes = ["mode"];
-              connectedCallback() {
-                this.observer = new MutationObserver(() => this.render());
-                this.observer.observe(this, { childList: true, subtree: true });
-                this.afterRegistration = () => {
-                  if (["account", "activation"].includes(this.getAttribute("mode"))) {
-                    this.dispatchEvent(new CustomEvent("mount", { bubbles: true }));
-                  }
-                };
-                window.addEventListener("tonk:registration-closed", this.afterRegistration);
-                this.onclick = event => {
-                  const button = event.target.closest("[data-invite-account]");
-                  if (!button || button.hidden) return;
-                  globalThis.tonk.register(JSON.stringify({
-                    reason: this.getAttribute("mode") === "activation"
-                      ? "agent-invite-activation" : "agent-invite-account"
-                  }));
-                };
-                this.render();
-              }
-              disconnectedCallback() {
-                this.observer?.disconnect();
-                window.removeEventListener("tonk:registration-closed", this.afterRegistration);
-                this.onclick = null;
-              }
-              attributeChangedCallback() { if (this.isConnected) this.render(); }
-              render() {
-                const mode = this.getAttribute("mode");
-                for (const button of this.querySelectorAll("[data-invite-action]")) {
-                  button.hidden = !button.dataset.inviteAction.split(" ").includes(mode);
-                }
-                const account = this.querySelector("[data-invite-account]");
-                if (account) {
-                  const label = mode === "activation" ? "verify account" : "create an account or sign in";
-                  if (account.textContent !== label) account.textContent = label;
-                }
-              }
-            });
-        </script>
-      </tonk-component>
-      <tonk-agent-invite-controls mode={mode} on:invite=tonk:agent-handoff>
+      <agent-invite-controls mode={mode} on:invite=tonk:agent-handoff>
         <button class="connection-invite-new" data-invite-account data-invite-action="account activation" hidden>create an account or sign in</button>
         <button class="connection-invite-new" data-invite-action="retry" hidden on:new-agent-invite=tonk:new-agent-invite>try again</button>
         <button class="connection-invite-new" data-invite-action="new" hidden on:new-agent-invite=tonk:new-agent-invite>new invite</button>
         <button class="connection-invite-new" data-invite-action="sync" hidden on:new-agent-invite=tonk:new-agent-invite>turn on sync</button>
-      </tonk-agent-invite-controls>
+      </agent-invite-controls>
       <style>
-        tonk-agent-invite-controls [hidden] { display: none !important; }
+        agent-invite-controls [hidden] { display: none !important; }
         .connection-invite-new {
           min-height: 36px; padding: 0 16px; border: 0; border-radius: 0;
           background: transparent; color: var(--wa-color-text-normal);
@@ -631,56 +631,56 @@ rule!:
         link: ?link
         account: ?account
 
+element!: &agent-invite-prompt
+  description: "Shows the agent-invitation block for its `link` and rewrites the copied prompt to target the deployment that issued the link."
+  method:
+    define: |
+      () => class extends HTMLElement {
+        static observedAttributes = ["link"];
+        connectedCallback() {
+          this.observer = new MutationObserver(() => this.render());
+          this.observer.observe(this, { childList: true, subtree: true });
+          this.render();
+        }
+        disconnectedCallback() { this.observer?.disconnect(); }
+        attributeChangedCallback() { if (this.isConnected) this.render(); }
+        render() {
+          let mode = "";
+          try {
+            const hash = new URL(this.getAttribute("link")).hash;
+            mode = /^#tonk-agent-v[12]=/.test(hash) ? "scoped" : "unsupported";
+          } catch (_) {}
+          for (const block of this.querySelectorAll("[data-agent-mode]")) {
+            block.hidden = block.dataset.agentMode !== mode;
+          }
+          let page;
+          try { page = new URL(this.getAttribute("link")); } catch (_) {}
+          const local = page && ["localhost", "127.0.0.1", "[::1]"].includes(page.hostname);
+          const copy = this.querySelector(".agent-prompt__copy");
+          const prompt = copy?.getAttribute("value") || "";
+          if (page && page.origin !== "https://tonk.network" && prompt.includes("npx --yes @tonk/cli")) {
+            const executable = local ? "tonk" : "npx --yes @tonk/cli";
+            const selectedPrompt = prompt
+              .replaceAll("npx --yes @tonk/cli", executable)
+              .replace(
+                `${executable} join '`,
+                `${executable} join --via ${JSON.stringify(page.origin)} '`,
+              );
+            copy.setAttribute("value", selectedPrompt);
+          }
+        }
+      }
+
 # Human-facing invitation; the machine instructions live only in the copy value.
 view!:
   this: tonk:agent-invite
   show:
     ui: |
-      <tonk-component>
-        <script type="tonk/module">
-          customElements.get("tonk-agent-prompt") ||
-            customElements.define("tonk-agent-prompt", class extends HTMLElement {
-              static observedAttributes = ["link"];
-              connectedCallback() {
-                this.observer = new MutationObserver(() => this.render());
-                this.observer.observe(this, { childList: true, subtree: true });
-                this.render();
-              }
-              disconnectedCallback() { this.observer?.disconnect(); }
-              attributeChangedCallback() { if (this.isConnected) this.render(); }
-              render() {
-                let mode = "";
-                try {
-                  const hash = new URL(this.getAttribute("link")).hash;
-                  mode = /^#tonk-agent-v[12]=/.test(hash) ? "scoped" : "unsupported";
-                } catch (_) {}
-                for (const block of this.querySelectorAll("[data-agent-mode]")) {
-                  block.hidden = block.dataset.agentMode !== mode;
-                }
-                let page;
-                try { page = new URL(this.getAttribute("link")); } catch (_) {}
-                const local = page && ["localhost", "127.0.0.1", "[::1]"].includes(page.hostname);
-                const copy = this.querySelector(".agent-prompt__copy");
-                const prompt = copy?.getAttribute("value") || "";
-                if (page && page.origin !== "https://tonk.network" && prompt.includes("npx --yes @tonk/cli")) {
-                  const executable = local ? "tonk" : "npx --yes @tonk/cli";
-                  const selectedPrompt = prompt
-                    .replaceAll("npx --yes @tonk/cli", executable)
-                    .replace(
-                      `${executable} join '`,
-                      `${executable} join --via ${JSON.stringify(page.origin)} '`,
-                    );
-                  copy.setAttribute("value", selectedPrompt);
-                }
-              }
-            });
-        </script>
-      </tonk-component>
-      <tonk-agent-prompt link={link}>
+      <agent-invite-prompt link={link}>
       <div class="agent-prompt">
         <style>
-          tonk-agent-prompt [hidden] { display: none !important; }
-          tonk-agent-prompt [data-agent-mode] { display: flex; flex-direction: column; gap: var(--wa-space-m); }
+          agent-invite-prompt [hidden] { display: none !important; }
+          agent-invite-prompt [data-agent-mode] { display: flex; flex-direction: column; gap: var(--wa-space-m); }
           .agent-prompt { padding: var(--wa-space-l); border-radius: var(--wa-border-radius-l); background: var(--wa-color-surface-lowered); display: flex; flex-direction: column; gap: var(--wa-space-m); }
           .agent-prompt p { margin: 0; line-height: var(--wa-line-height-normal); text-wrap: pretty; }
           .agent-prompt__action { display: flex; align-items: stretch; }
@@ -771,7 +771,7 @@ view!:
         </div>
         </div>
       </div>
-      </tonk-agent-prompt>
+      </agent-invite-prompt>
 
 # Connection receipt, written only after the CLI has pulled this space.
 # A durable acknowledgement, deliberately not an online/heartbeat signal.
@@ -1446,56 +1446,6 @@ concept!: &element
       the: xyz.tonk.element.attribute
       as: {[symbol]: text}
       cardinality: one
-
-# The older shape: one anonymous JS module that calls
-# `customElements.define` itself. Superseded by `element` for new work
-# but still fully supported — the two COEXIST on a branch and nothing
-# has to be migrated.
-#
-# They coexist because they share nothing — no pin or migration is
-# involved. A component's facts are `xyz.tonk.component/module`; an
-# element's are `xyz.tonk.element.method/<key>`. The two names are
-# distinct, so neither concept's query can match the other's rows, each
-# has its own loader, and a branch can mount both directories. `tonk
-# element` lists both, naming the concept each row came from.
-#
-# What `component` cannot offer is identity. An assertion that omits
-# `this:` is keyed by its own body digest, so editing the module writes
-# a SECOND row rather than replacing the first — the directory mounts
-# both, and the `customElements.get(name) ||` guard every such module
-# carries lets whichever executes first win. That is the reason to
-# prefer `element` for new work, not a reason `component` stops
-# working.
-concept!: &component
-  description: A JS module defining web components for the branch's views
-  with:
-    module:
-      description: |
-        JS module source. Runs once per realm; guard definitions with
-        `customElements.get(name) ||` since a name can't be redefined
-        (replacing a component takes effect on the next page load).
-      the: xyz.tonk.component/module
-      cardinality: one
-      as: text
-
-# The bridge from the `component` concept to the `<tonk-component>`
-# loader element. The single-entity view loads one module; the
-# directory view is what templates mount (a hidden
-# `<tonk-display model=component />` in their shell view) to load
-# every component asserted on the branch.
-view!:
-  this: component
-  show:
-    ui: |
-      <tonk-component module={module} />
-
-view!:
-  this: component
-  show:
-    directory: |
-      <div class="component-loader" hidden>
-        <tonk-component subject={this} module={module}></tonk-component>
-      </div>
 
 concept!: &db/session:
   this: concept:session
@@ -2199,117 +2149,116 @@ concept!: &blob
 # `this:` to replace it. Image content types render inline; every
 # other type renders as a file card with a lazy download action.
 #
-# The renderer is author JavaScript riding the view as an inert
-# `<script type="tonk/module">` holder, executed once per realm by
-# `<tonk-component>`. Bytes are fetched through the relayed
+# The renderer is the `blob-media` element below, resolved by tag the
+# first time the view renders it. Bytes are fetched through the relayed
 # `window.fetch` and handed to the media element as an object URL —
 # inside the sealed guest a native `src=/api/…` load bypasses the
 # relay and the service worker. The blob route is scoped by the
 # host's `with` attribute ("{branch}@{repo}"), forwarded through the
 # `{dom.host/with}` binding.
+element!: &blob-media
+  description: "Renders a `tonk:blob`: images inline, any other content type as a file card with a download action, fetched through the relayed `window.fetch`."
+  method:
+    define: |
+      () => class extends HTMLElement {
+        static observedAttributes = ["entity", "content-type", "name", "with"];
+        #objectUrl = null;
+        #generation = 0;
+        connectedCallback() { this.render(); }
+        attributeChangedCallback() { if (this.isConnected) this.render(); }
+        disconnectedCallback() { this.#generation++; delete this.dataset.rendered; this.revoke(); }
+        revoke() {
+          if (this.#objectUrl) {
+            URL.revokeObjectURL(this.#objectUrl);
+            this.#objectUrl = null;
+          }
+        }
+        url() {
+          const scope = this.getAttribute("with") || "";
+          const entity = this.getAttribute("entity") || "";
+          const at = scope.indexOf("@");
+          if (at < 1 || !entity || scope.includes("{")) return null;
+          return "/api/repository/" + scope.slice(at + 1) +
+            "/branch/" + scope.slice(0, at) + "/blob/" + entity;
+        }
+        async objectUrl() {
+          const url = this.url();
+          if (!url) return null;
+          const resp = await window.fetch(url);
+          if (!resp.ok) return null;
+          return URL.createObjectURL(await resp.blob());
+        }
+        render() {
+          const key = [
+            this.getAttribute("with"),
+            this.getAttribute("entity"),
+            this.getAttribute("content-type"),
+            this.getAttribute("name"),
+          ].join("|");
+          if (this.dataset.rendered === key) return;
+          this.dataset.rendered = key;
+          this.#generation++;
+          const root = this.shadowRoot || this.attachShadow({ mode: "open" });
+          const type = this.getAttribute("content-type") || "";
+          const name = this.getAttribute("name") || this.getAttribute("entity") || "";
+          this.revoke();
+          if (type.startsWith("image/")) {
+            root.innerHTML = "<style>img { max-width: 100%; }</style>" +
+              "<img part=\"media\">";
+            root.querySelector("img").alt = name;
+            const generation = this.#generation;
+            this.objectUrl().then((u) => {
+              if (!u) {
+                delete this.dataset.rendered;
+                return;
+              }
+              if (generation !== this.#generation) {
+                URL.revokeObjectURL(u);
+                return;
+              }
+              this.#objectUrl = u;
+              root.querySelector("img").src = u;
+            }).catch(() => { delete this.dataset.rendered; });
+            return;
+          }
+          root.innerHTML =
+            "<style>" +
+            "[part=card] { display: flex; align-items: center; gap: 0.75rem; " +
+            "padding: 0.75rem 1rem; border: 1px solid #d0d0d0; border-radius: 8px; " +
+            "max-width: 28rem; font-family: system-ui, sans-serif; }" +
+            "[part=name] { flex: 1; overflow-wrap: anywhere; }" +
+            "[part=badge] { font-size: 0.75rem; color: #666; border: 1px solid #ddd; " +
+            "border-radius: 4px; padding: 0.1rem 0.4rem; white-space: nowrap; }" +
+            "[part=action] { cursor: pointer; }" +
+            "</style>" +
+            "<div part=\"card\"><span part=\"name\"></span>" +
+            "<span part=\"badge\"></span>" +
+            "<button part=\"action\" type=\"button\">Download</button></div>";
+          root.querySelector("[part=name]").textContent = name;
+          root.querySelector("[part=badge]").textContent = type || "file";
+          root.querySelector("[part=action]").addEventListener("click", async () => {
+            let u;
+            try {
+              u = await this.objectUrl();
+            } catch {
+              return;
+            }
+            if (!u) return;
+            const a = document.createElement("a");
+            a.href = u;
+            a.download = name;
+            a.click();
+            URL.revokeObjectURL(u);
+          });
+        }
+      }
+
 view!:
   this: tonk:blob
   show:
     ui: |
       <div subject={this}>
-        <tonk-component>
-          <script type="tonk/module">
-            customElements.get("tonk-blob-media") ||
-              customElements.define("tonk-blob-media", class extends HTMLElement {
-                static observedAttributes = ["entity", "content-type", "name", "with"];
-                #objectUrl = null;
-                #generation = 0;
-                connectedCallback() { this.render(); }
-                attributeChangedCallback() { if (this.isConnected) this.render(); }
-                disconnectedCallback() { this.#generation++; delete this.dataset.rendered; this.revoke(); }
-                revoke() {
-                  if (this.#objectUrl) {
-                    URL.revokeObjectURL(this.#objectUrl);
-                    this.#objectUrl = null;
-                  }
-                }
-                url() {
-                  const scope = this.getAttribute("with") || "";
-                  const entity = this.getAttribute("entity") || "";
-                  const at = scope.indexOf("@");
-                  if (at < 1 || !entity || scope.includes("{")) return null;
-                  return "/api/repository/" + scope.slice(at + 1) +
-                    "/branch/" + scope.slice(0, at) + "/blob/" + entity;
-                }
-                async objectUrl() {
-                  const url = this.url();
-                  if (!url) return null;
-                  const resp = await window.fetch(url);
-                  if (!resp.ok) return null;
-                  return URL.createObjectURL(await resp.blob());
-                }
-                render() {
-                  const key = [
-                    this.getAttribute("with"),
-                    this.getAttribute("entity"),
-                    this.getAttribute("content-type"),
-                    this.getAttribute("name"),
-                  ].join("|");
-                  if (this.dataset.rendered === key) return;
-                  this.dataset.rendered = key;
-                  this.#generation++;
-                  const root = this.shadowRoot || this.attachShadow({ mode: "open" });
-                  const type = this.getAttribute("content-type") || "";
-                  const name = this.getAttribute("name") || this.getAttribute("entity") || "";
-                  this.revoke();
-                  if (type.startsWith("image/")) {
-                    root.innerHTML = "<style>img { max-width: 100%; }</style>" +
-                      "<img part=\"media\">";
-                    root.querySelector("img").alt = name;
-                    const generation = this.#generation;
-                    this.objectUrl().then((u) => {
-                      if (!u) {
-                        delete this.dataset.rendered;
-                        return;
-                      }
-                      if (generation !== this.#generation) {
-                        URL.revokeObjectURL(u);
-                        return;
-                      }
-                      this.#objectUrl = u;
-                      root.querySelector("img").src = u;
-                    }).catch(() => { delete this.dataset.rendered; });
-                    return;
-                  }
-                  root.innerHTML =
-                    "<style>" +
-                    "[part=card] { display: flex; align-items: center; gap: 0.75rem; " +
-                    "padding: 0.75rem 1rem; border: 1px solid #d0d0d0; border-radius: 8px; " +
-                    "max-width: 28rem; font-family: system-ui, sans-serif; }" +
-                    "[part=name] { flex: 1; overflow-wrap: anywhere; }" +
-                    "[part=badge] { font-size: 0.75rem; color: #666; border: 1px solid #ddd; " +
-                    "border-radius: 4px; padding: 0.1rem 0.4rem; white-space: nowrap; }" +
-                    "[part=action] { cursor: pointer; }" +
-                    "</style>" +
-                    "<div part=\"card\"><span part=\"name\"></span>" +
-                    "<span part=\"badge\"></span>" +
-                    "<button part=\"action\" type=\"button\">Download</button></div>";
-                  root.querySelector("[part=name]").textContent = name;
-                  root.querySelector("[part=badge]").textContent = type || "file";
-                  root.querySelector("[part=action]").addEventListener("click", async () => {
-                    let u;
-                    try {
-                      u = await this.objectUrl();
-                    } catch {
-                      return;
-                    }
-                    if (!u) return;
-                    const a = document.createElement("a");
-                    a.href = u;
-                    a.download = name;
-                    a.click();
-                    URL.revokeObjectURL(u);
-                  });
-                }
-              });
-          </script>
-        </tonk-component>
-        <tonk-blob-media entity={this} content-type={content-type} name={name} with={dom.host/with}></tonk-blob-media>
+        <blob-media entity={this} content-type={content-type} name={name} with={dom.host/with}></blob-media>
       </div>
 
 # ── Elements ────────────────────────────────────────────────────────

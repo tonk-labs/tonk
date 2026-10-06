@@ -17,22 +17,14 @@
 //! domain directly and recovers each key from the attribute's name
 //! half, which is the same place the runtime's method table reads it
 //! from.
-//!
-//! The deprecated `component` concept is listed alongside, tagless,
-//! because a branch seeded before `element` existed still loads those
-//! rows and an author needs to see them to migrate.
 
 use anyhow::{Context, Result, anyhow};
 use std::collections::BTreeMap;
 
-use dialog_artifacts::{Attribute, Entity};
-use dialog_query::{AttributeQuery, Output as _, Term, attribute};
+use dialog_artifacts::Entity;
 use tonk_render::QueryBackend as _;
 
 use crate::site::TonkSite;
-
-/// The attribute the deprecated `component!:` assertion writes.
-const COMPONENT_MODULE_ATTRIBUTE: &str = "xyz.tonk.component/module";
 
 /// One row of `tonk element`.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -40,23 +32,17 @@ const COMPONENT_MODULE_ATTRIBUTE: &str = "xyz.tonk.component/module";
 pub struct ElementSummary {
     /// The custom element name this row defines, from the tag's
     /// `db.name/referent` binding. `None` when nothing names this
-    /// entity — a superseded definition, or a legacy `component` row
-    /// that never carried an anchor.
+    /// entity — a superseded definition.
     pub tag: Option<String>,
-    /// Entity carrying the module claim.
+    /// Entity carrying the method claims.
     pub entity: Entity,
     /// The method keys this element defines, sorted — the lifecycle
-    /// hooks and any custom methods. Empty for a legacy `component`
-    /// row, which carries one anonymous module instead.
+    /// hooks and any custom methods.
     pub methods: Vec<String>,
-    /// Whether this row came from the deprecated `component` concept
-    /// rather than `element`.
-    pub deprecated: bool,
 }
 
-/// Enumerate every element defined on the branch, `element` rows
-/// first and legacy `component` rows after, each group ordered by tag
-/// then entity so the listing is reproducible.
+/// Enumerate every element defined on the branch, ordered by tag then
+/// entity so the listing is reproducible.
 pub async fn list(site: &TonkSite) -> Result<Vec<ElementSummary>> {
     let mut out: Vec<ElementSummary> = Vec::new();
     // Methods are one fact per key, so an element with three methods
@@ -67,47 +53,14 @@ pub async fn list(site: &TonkSite) -> Result<Vec<ElementSummary>> {
             tag: names.get(&entity).cloned(),
             entity,
             methods,
-            deprecated: false,
-        });
-    }
-    for claim in claims_for_attribute(site, COMPONENT_MODULE_ATTRIBUTE).await? {
-        out.push(ElementSummary {
-            tag: names.get(&claim.of).cloned(),
-            entity: claim.of,
-            methods: Vec::new(),
-            deprecated: true,
         });
     }
     out.sort_by(|a, b| {
-        a.deprecated
-            .cmp(&b.deprecated)
-            .then_with(|| a.tag.cmp(&b.tag))
+        a.tag
+            .cmp(&b.tag)
             .then_with(|| a.entity.to_string().cmp(&b.entity.to_string()))
     });
     Ok(out)
-}
-
-/// Every claim on the branch carrying `uri`, subject left open.
-async fn claims_for_attribute(site: &TonkSite, uri: &str) -> Result<Vec<dialog_query::Claim>> {
-    let the: Attribute = uri
-        .parse()
-        .map_err(|e| anyhow!("{uri} should be a valid attribute URI: {e:?}"))?;
-    let the_term: attribute::The = the.into();
-    let session = site.branch().await?;
-    session
-        .handle()
-        .query()
-        .select(AttributeQuery::new(
-            Term::from(the_term),
-            Term::<Entity>::var("of"),
-            Term::<dialog_query::Any>::var("is"),
-            Term::<attribute::Cause>::blank(),
-            None,
-        ))
-        .perform(&site.operator)
-        .try_vec()
-        .await
-        .map_err(|e| anyhow!("{uri} enumeration failed: {e:?}"))
 }
 
 /// The methods currently bound to `tag`, as `(key, source)` pairs in

@@ -403,14 +403,6 @@ tonk-notation {
     width: 100%;
 }
 
-/* `<tonk-component>` is a loader, not a visual: it executes its module
-   into the realm and renders nothing. Hide it (and its inert child
-   script holders) so mounting a component directory in a shell view
-   leaves no box behind. */
-tonk-component {
-    display: none;
-}
-
 /* `<tonk-site>` is the ROUTING element: it wires up a per-tab site +
    sealed iframe but imposes no visual box or constraints.
    `display: contents` makes it transparent so its iframe participates

@@ -12,7 +12,6 @@ const cases = [
   { name: 'hidden panels, code, large assets and duplicate CSS fit', capture: true,
     html: `<style>${theme}${theme}</style><h1>Starter-like home</h1>
       <div hidden>${'<span>Hidden note</span>'.repeat(700)}</div>
-      <tonk-component module="${'x'.repeat(500000)}"></tonk-component>
       <div data-large="${'x'.repeat(500000)}">Visible welcome content</div>
       <img src="data:image/png;base64,${'A'.repeat(400000)}">` },
   { name: 'visible node limit still enforced', capture: false,

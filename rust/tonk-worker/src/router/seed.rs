@@ -131,12 +131,7 @@ pub(super) async fn prepare_template(reference: &str, core: &Syntax) -> Result<S
         if hex::encode(Sha256::digest(&bytes)) != file.sha256.to_ascii_lowercase() {
             return Err("Template files changed since the catalog was published. Try again after its update completes.".into());
         }
-        let mut text = String::from_utf8(bytes).map_err(|_| "Template source is not UTF-8")?;
-        // These community exports repeat core's component anchor. Retain the
-        // entity and descriptor, letting core own the name during analysis.
-        if matches!(slug.as_str(), "kanoodel" | "welcome") {
-            text = text.replace("concept!: &component\n", "concept!:\n");
-        }
+        let text = String::from_utf8(bytes).map_err(|_| "Template source is not UTF-8")?;
         let syntax = parse_source(source_url, &text).await?;
         match &mut result {
             Some(combined) => combined.expressions.extend(syntax.expressions),

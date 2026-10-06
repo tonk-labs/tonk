@@ -448,9 +448,9 @@ Interactions a template can't express — caret management, drag
 and drop, rich text editing — belong in a **web component** that
 dispatches `CustomEvent`s consumed by commands via
 `dom.event.detail/*`, exactly like the built-in
-`<tonk-sheet-binder>`. Components are authored as branch data
-(the `component` concept) and stay inside the concept-and-rule
-pipeline; see `tonk help views`.
+`<tonk-sheet-binder>`. They are authored as branch data (the
+`element` concept, `tonk element add`) and stay inside the
+concept-and-rule pipeline; see `tonk help views`.
 
 Anything that instead needs a whole isolated page — third-party
 embeds, self-contained canvas apps — belongs in a sandboxed

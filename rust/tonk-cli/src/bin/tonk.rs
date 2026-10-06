@@ -3545,7 +3545,7 @@ async fn list_elements_op(site: &site::TonkSite, json: bool) -> ExitCode {
         return print_json(&Rows::new("tonk.element-ls.v1", listed));
     }
     let mut listing = Listing::new(
-        &["TAG", "ENTITY", "METHODS", "CONCEPT"],
+        &["TAG", "ENTITY", "METHODS"],
         "no custom elements on this branch; define one with `tonk element add <tag> --method-file connected=<path>`",
     );
     for row in &listed {
@@ -3557,12 +3557,6 @@ async fn list_elements_op(site: &site::TonkSite, json: bool) -> ExitCode {
             } else {
                 row.methods.join(" ")
             },
-            if row.deprecated {
-                "component"
-            } else {
-                "element"
-            }
-            .to_string(),
         ]);
     }
     println!("{}", listing.render());
