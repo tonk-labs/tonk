@@ -678,17 +678,29 @@ async fn evaluate_on_branch_with<'a>(
         // overlay is session-only). Match queries resolve stored `db.rule/*`
         // rules automatically via the branch query's layer stack.
         let mut txn = branch.transaction();
+        let desired = match &retract {
+            Retractions::Planned { desired, .. } => *desired,
+            Retractions::Fixed(_) => &[],
+        };
+        let identity = |claim: &crate::router::claim::RawClaim| {
+            (claim.the.clone(), claim.of.clone(), claim.is.clone())
+        };
+        let kept: std::collections::HashSet<_> = desired.iter().map(identity).collect();
+        // A claim the plan retracts and the desired manifest asserts again
+        // stays as it is: an unchanged definition is no part of the
+        // install's delta, so its record and standing are left alone
+        // rather than retracted and asserted afresh in one commit.
         for claim in retract.resolve().await? {
-            txn = txn.retract(claim);
-        }
-        if let Retractions::Planned { desired, .. } = &retract {
-            // The library was analyzed in isolation. Seed its complete desired
-            // schema into this same transaction before resolving the document
-            // against the branch: legacy schemas otherwise validate new views
-            // against old fields and prevent the migration from committing.
-            for claim in *desired {
-                txn = txn.assert(claim.clone());
+            if !kept.contains(&identity(&claim)) {
+                txn = txn.retract(claim);
             }
+        }
+        // The library was analyzed in isolation. Seed its complete desired
+        // schema into this same transaction before resolving the document
+        // against the branch: legacy schemas otherwise validate new views
+        // against old fields and prevent the migration from committing.
+        for claim in desired {
+            txn = txn.assert(claim.clone());
         }
         let t_eval = web_time::Instant::now();
         let evaluated = syntax
