@@ -72,6 +72,21 @@ async fn assert_library_lowers(label: &str, file: &str, document: &str) {
     );
 }
 
+/// The policy a field's declaration reads under: its `select`, or the
+/// one its `cardinality` implies in the older spelling (`many` is
+/// `all`, `one` and an unsaid cardinality are `last`). A built-in
+/// serializes only a `select` that says more than the default, so a
+/// query written in either spelling compares by policy.
+fn policy_of(spec: &serde_json::Value) -> &str {
+    if let Some(select) = spec.get("select").and_then(serde_json::Value::as_str) {
+        return select;
+    }
+    match spec.get("cardinality").and_then(serde_json::Value::as_str) {
+        Some("many") => "all",
+        _ => "last",
+    }
+}
+
 fn css_rule<'a>(document: &'a str, selector: &str) -> &'a str {
     document
         .split(selector)
@@ -1418,9 +1433,9 @@ fn the_event_query_predicate_matches_the_builtin() {
             "`{field}`: the query and the built-in disagree on `the`",
         );
         assert_eq!(
-            ours.get("cardinality"),
-            theirs.get("cardinality"),
-            "`{field}`: the query and the built-in disagree on cardinality",
+            policy_of(ours),
+            policy_of(theirs),
+            "`{field}`: the query and the built-in disagree on the select policy",
         );
     }
     assert!(
@@ -1569,9 +1584,9 @@ fn the_view_queries_match_the_builtin() {
             "`{field}`: the query and the built-in disagree on `the`",
         );
         assert_eq!(
-            ours.get("cardinality"),
-            theirs.get("cardinality"),
-            "`{field}`: the query and the built-in disagree on cardinality",
+            policy_of(ours),
+            policy_of(theirs),
+            "`{field}`: the query and the built-in disagree on the select policy",
         );
     }
     assert!(
