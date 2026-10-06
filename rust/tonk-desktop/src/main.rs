@@ -28,9 +28,10 @@ use crate::server::Server;
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
-    /// The built UI: `trunk build` output of `rust/tonk-ui`.
+    /// The built UI: `trunk build` output of `rust/tonk-ui`. Defaults to
+    /// `dist` beside the executable, where a packaged build keeps it.
     #[arg(long, env = "TONK_DESKTOP_DIST")]
-    dist: PathBuf,
+    dist: Option<PathBuf>,
 
     /// Where profiles and spaces are kept. Defaults to `tonk-desktop`
     /// under the platform data directory, apart from the `tonk` CLI's
@@ -58,16 +59,28 @@ struct Args {
     host_script: Option<PathBuf>,
 }
 
+/// The UI a packaged build ships: `dist` beside the executable.
+fn bundled_dist() -> Result<PathBuf> {
+    let executable = std::env::current_exe().context("cannot locate the executable")?;
+    let directory = executable
+        .parent()
+        .context("the executable has no directory")?;
+    Ok(directory.join("dist"))
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let args = Args::parse();
 
-    let dist = args
-        .dist
+    let dist = match args.dist {
+        Some(dist) => dist,
+        None => bundled_dist()?,
+    };
+    let dist = dist
         .canonicalize()
-        .with_context(|| format!("no built UI at {}", args.dist.display()))?;
+        .with_context(|| format!("no built UI at {}", dist.display()))?;
     anyhow::ensure!(
         dist.join("index.html").is_file(),
         "{} has no index.html; build rust/tonk-ui with trunk first",
