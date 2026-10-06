@@ -387,22 +387,20 @@ async fn fragments<Env: SelectProvider>(
             else {
                 continue;
             };
-            let cardinality = attribute
-                .fields
-                .get("cardinality")
-                .and_then(Json::as_str)
-                .unwrap_or("one");
             // A rule binds its conclusion's fields by name, so the field is
             // read under the attribute's own name: a fragment concept names
             // its one field after the attribute (`subject` for
-            // `…retitle/subject`).
+            // `…retitle/subject`). The field's candidates are a set, so
+            // the read selects `all`: under the attribute's own policy a
+            // read would elect one of them and the palette would offer
+            // one component to install, whichever the election picked.
             let name = selector.rsplit('/').next().unwrap_or(selector);
             let values = rows(
                 branch,
                 env,
                 json!({
                     "predicate": { "with": { name: {
-                        "the": selector, "as": "Entity", "cardinality": cardinality
+                        "the": selector, "as": "Entity", "select": "all"
                     } } },
                     "terms": { "this": intent, name: var(name) }
                 }),
