@@ -13,6 +13,11 @@ name: 'Desktop'
 # a pull request whose branch adds or changes this workflow, which the
 # Actions tab only offers once the workflow is on main.
 #
+# Where to download a build: a pull request gets a comment linking it (a
+# manual run comments on the open pull request for its branch, if any), a
+# merge to main replaces the `desktop-latest` pre-release, and every run
+# lists its links in the run summary.
+#
 # The UI bundle is built once with Nix. The app itself is built with Cargo
 # on each platform rather than with Nix: it links the system webview
 # (WebKitGTK on Linux), and a Nix build would link it from /nix/store, which
@@ -90,3 +95,107 @@ jobs:
         with:
           name: ${{ matrix.artifact-name }}
           path: ${{ matrix.artifact-name }}.tar.gz
+
+  announce:
+    name: 'Share download links'
+    needs: build-desktop
+    if: ${{ !cancelled() && needs.build-desktop.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Link the builds
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const run = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const { data } = await github.rest.actions.listWorkflowRunArtifacts({
+              owner, repo, run_id: context.runId,
+            });
+            const link = (name, label) => {
+              const artifact = data.artifacts.find((artifact) => artifact.name === name);
+              return artifact
+                ? `- [${label}](${run}/artifacts/${artifact.id})`
+                : `- ${label}: did not build, see the [run](${run})`;
+            };
+            const sha = context.payload.pull_request?.head.sha ?? context.sha;
+            const body = [
+              '<!-- tonk-desktop-builds -->',
+              `**Desktop builds of \`${sha.slice(0, 7)}\`** · [run](${run})`,
+              '',
+              link('tonk-desktop-macos-arm64', 'macOS (Apple Silicon)'),
+              link('tonk-desktop-linux-x86_64', 'Linux x86_64'),
+              '',
+              'Each download is a zip holding a tarball. Unzip it, then:',
+              '',
+              '```',
+              'tar -xzf tonk-desktop-*.tar.gz',
+              'xattr -dr com.apple.quarantine tonk-desktop   # macOS only: the build is unsigned',
+              './tonk-desktop/tonk-desktop',
+              '```',
+              '',
+              'Linux needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-0` on Debian and Ubuntu).',
+            ].join('\n');
+            await core.summary.addRaw(body).write();
+
+            let number = context.payload.pull_request?.number;
+            if (!number && context.eventName === 'workflow_dispatch') {
+              const branch = context.ref.replace('refs/heads/', '');
+              const { data: open } = await github.rest.pulls.list({
+                owner, repo, state: 'open', head: `${owner}:${branch}`,
+              });
+              number = open[0]?.number;
+            }
+            if (!number) return;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: number,
+            });
+            const previous = comments.find((comment) =>
+              comment.body?.startsWith('<!-- tonk-desktop-builds -->'));
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: previous.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: number, body,
+              });
+            }
+
+      # The rolling pre-release gives builds of main a link that does not
+      # move. It is never marked latest: the CLI updater resolves
+      # `releases/latest`.
+      - uses: actions/download-artifact@v4
+        if: github.event_name == 'push' && needs.build-desktop.result == 'success'
+        with:
+          name: tonk-desktop-macos-arm64
+      - uses: actions/download-artifact@v4
+        if: github.event_name == 'push' && needs.build-desktop.result == 'success'
+        with:
+          name: tonk-desktop-linux-x86_64
+      - name: Delete the rolling desktop release
+        if: github.event_name == 'push' && needs.build-desktop.result == 'success'
+        run: gh release delete desktop-latest --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+      - name: Publish the rolling desktop release
+        if: github.event_name == 'push' && needs.build-desktop.result == 'success'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-latest
+          target_commitish: ${{ github.sha }}
+          name: tonk desktop (latest main)
+          body: |
+            The desktop app built from `${{ github.sha }}` on main. Replaced on every merge.
+
+            Unsigned builds. After extracting on macOS, clear the quarantine flag:
+            `xattr -dr com.apple.quarantine tonk-desktop`. Linux needs WebKitGTK 4.1.
+          prerelease: true
+          make_latest: false
+          files: |
+            tonk-desktop-macos-arm64.tar.gz
+            tonk-desktop-linux-x86_64.tar.gz
