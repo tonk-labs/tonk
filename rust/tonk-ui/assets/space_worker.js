@@ -57,7 +57,15 @@ const WORKER_WASM_KEY = `${WORKER_WASM_URL}?${WORKER_WASM_HASH}`;
 // The app's static assets, served by the server on every host: the runtime a
 // guest loads from its own origin (`/guest/`), the app stylesheet, images and
 // fonts.
-const STATIC_PREFIXES = ["/guest/", "/styles-", "/images/", "/fonts/"];
+const STATIC_PREFIXES = [
+    "/guest/",
+    "/styles-",
+    "/images/",
+    "/fonts/",
+    "/tonk-code/",
+    "/tonk-prose/",
+    "/tonk-table/",
+];
 // A name that carries its content's hash never changes what it serves.
 const HASHED_NAME = /-[0-9a-f]{16}(?=\.)/;
 // An asset's entity, `asset:{hash}`, as a path: the hash is base58btc.

@@ -96,20 +96,22 @@
       base.textContent="html{color-scheme:light dark}html,body{height:100%;margin:0}body{display:flex;flex-direction:column;min-height:100%}";
       document.head.appendChild(base);
       if (d.fromOrigin) {
-        // On its own origin the guest loads the runtime itself, from the
-        // build the parent names: the stylesheets as links (fonts then
-        // resolve against them) and the modules as ordinary imports. Its
-        // worker and the HTTP cache keep them, and nothing crosses the frame.
+        // On its own origin the guest brings the runtime in itself: it reads
+        // which build's files to load from its own origin, links the
+        // stylesheets (fonts then resolve against them) and imports the
+        // modules. Its worker and the HTTP cache keep them, and nothing but
+        // the word to start crosses the frame.
+        var manifest=await (await fetch("/guest/manifest.json",{cache:"no-cache"})).json();
         var link=function(href){
           var l=document.createElement("link");
           l.rel="stylesheet"; l.href=href;
           document.head.appendChild(l);
         };
-        link("/guest/"+d.manifest.waCss);
-        if (d.cssHref) link(d.cssHref);
-        await import("/guest/"+d.manifest.waJs);
-        var mod=await import("/guest/"+d.manifest.js);
-        await mod.default({ module_or_path: "/guest/"+d.manifest.wasm });
+        link("/guest/"+manifest.waCss);
+        if (manifest.css) link("/"+manifest.css);
+        await import("/guest/"+manifest.waJs);
+        var mod=await import("/guest/"+manifest.js);
+        await mod.default({ module_or_path: "/guest/"+manifest.wasm });
         mod.start();
       } else {
         if (d.css) {
@@ -215,6 +217,19 @@
           if (requested) return;
           requested=true;
           if (observer) { observer.disconnect(); observer=null; }
+          // On its own origin the guest imports the editor from there, and
+          // the editor's own relative imports find its chunks beside it.
+          if (d.fromOrigin) {
+            import("/tonk-code/tonk-code.js").catch(function(importErr){
+              parent.postMessage({__tonkRuntime:"warn",error:"tonk-code import: "+String(importErr)},"*");
+              requested=false;
+              if (!observer) {
+                observer=new MutationObserver(onMutations);
+                observer.observe(document.documentElement,{childList:true,subtree:true});
+              }
+            });
+            return;
+          }
           // A failed relay must not poison the trigger: clear `requested` and
           // re-arm the observer so the next element to appear retries the
           // whole handshake. (tonk-prose/tonk-table clear their cached core
@@ -289,6 +304,16 @@
       // AFTER tonk-code so code blocks inside documents upgrade to embedded
       // <tonk-code> editors (the node view checks for the element at draw
       // time).
+      // On its own origin each registration shell is imported from there,
+      // and finds its core beside it when an element first connects.
+      if (d.fromOrigin) {
+        for (const shell of ["/tonk-prose/tonk-prose.js","/tonk-table/tonk-table.js"]) {
+          try { await import(shell); }
+          catch(shellErr) {
+            parent.postMessage({__tonkRuntime:"warn",error:shell+" import: "+String(shellErr)},"*");
+          }
+        }
+      }
       if (d.prose && d.prose.length) {
         try {
           var proseBlobs=mintGraph(d.prose);

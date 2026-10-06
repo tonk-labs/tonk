@@ -333,9 +333,8 @@ pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str, base: &str, head: &st
 /// when the guest signals `runtime-ready`. The guest fetches nothing; every
 /// byte crosses here.
 ///
-/// A frame `on_origin` fetches for itself instead: it is told which build to
-/// load and where the app stylesheet is, and loads them from its own origin,
-/// where its worker and the HTTP cache keep them.
+/// A frame `on_origin` brings all of it in for itself, from its own origin,
+/// where its worker and the HTTP cache keep it: it is only told to start.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn inject_runtime(iframe: &HtmlIFrameElement, on_origin: bool) {
     let Some(content_window) = iframe.content_window() else {
@@ -343,7 +342,7 @@ pub(crate) fn inject_runtime(iframe: &HtmlIFrameElement, on_origin: bool) {
     };
     spawn_local(async move {
         let built = if on_origin {
-            build_origin_payload().await
+            Ok(build_origin_payload())
         } else {
             build_inject_payload().await
         };
@@ -377,33 +376,15 @@ struct GuestManifest {
     wa_css: String,
 }
 
-/// Build the envelope for a guest on its own origin: which build's assets to
-/// load (the guest manifest), the app stylesheet's URL, and the root classes.
-/// The `<tonk-prose>` and `<tonk-table>` registration shells still ride along,
-/// as in [`build_inject_payload`]; the lazy editor cores stay on `need-*`.
+/// Build the envelope for a guest on its own origin. Such a guest brings
+/// its runtime, stylesheets and editors in from its own origin, so this is
+/// only the word to start and the root classes a guest inside another
+/// inherits (the light or dark mode chosen there).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn build_origin_payload() -> Result<(JsValue, JsValue), String> {
-    let manifest = fetch_text("/guest/manifest.json").await?;
-    let manifest = js_sys::JSON::parse(&manifest).map_err(|e| format!("guest manifest: {e:?}"))?;
+fn build_origin_payload() -> (JsValue, JsValue) {
     let payload = Object::new();
     let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
     let _ = Reflect::set(&payload, &"fromOrigin".into(), &JsValue::TRUE);
-    let _ = Reflect::set(&payload, &"manifest".into(), &manifest);
-    // The app's stylesheet, named by the build's manifest; a document that
-    // links one itself (a site's frame bringing up another) names that.
-    let stylesheet = Reflect::get(&manifest, &"css".into())
-        .ok()
-        .and_then(|name| name.as_string())
-        .filter(|name| !name.is_empty())
-        .map(|name| format!("/{name}"))
-        .or_else(app_stylesheet_href);
-    if let Some(href) = stylesheet {
-        let _ = Reflect::set(&payload, &"cssHref".into(), &JsValue::from_str(&href));
-    }
-    let prose = bundle_graph_entries(fetch_tonk_prose_shell().await);
-    let table = bundle_graph_entries(fetch_tonk_table_shell().await);
-    let _ = Reflect::set(&payload, &"prose".into(), &prose);
-    let _ = Reflect::set(&payload, &"table".into(), &table);
     let root_class = window()
         .and_then(|w| w.document())
         .and_then(|d| d.document_element())
@@ -414,7 +395,7 @@ async fn build_origin_payload() -> Result<(JsValue, JsValue), String> {
         &"rootClass".into(),
         &JsValue::from_str(&root_class),
     );
-    Ok((payload.into(), js_sys::Array::new().into()))
+    (payload.into(), js_sys::Array::new().into())
 }
 
 /// Build the runtime-inject envelope by fetching the served guest bundle +
@@ -917,22 +898,6 @@ fn bundle_graph_entries(files: Vec<(String, String)>) -> js_sys::Array {
         array.push(&entry);
     }
     array
-}
-
-/// The app stylesheet's URL, from this document's own
-/// `<link rel=stylesheet href=/styles-*.css>`: the top document's, or the one
-/// a guest on its own origin linked when it loaded.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn app_stylesheet_href() -> Option<String> {
-    let links = window()?
-        .document()?
-        .query_selector_all("link[rel=stylesheet]")
-        .ok()?;
-    (0..links.length()).find_map(|i| {
-        let el: Element = links.item(i)?.dyn_into().ok()?;
-        el.get_attribute("href")
-            .filter(|href| href.contains("/styles-") || href.ends_with("styles.css"))
-    })
 }
 
 /// The app stylesheet CSS to inject into a guest, read from the document that is

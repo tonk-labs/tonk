@@ -92,14 +92,14 @@
     return location.origin!=="null"&&url.indexOf("/api/")===0;
   }
   // On an origin of its own, the app's static files (the guest runtime, the
-  // stylesheet, images, fonts) are this origin's too: its worker serves them
+  // stylesheet, images, fonts, the editor bundles) are this origin's too: its worker serves them
   // and keeps them for offline, which a relayed fetch would go around. So
   // are the space's assets, `/asset:{hash}`, which that worker reads from
   // the space's own database.
   function ownsStatic(url){
     if(location.origin==="null") return false;
     var path=url.indexOf(location.origin+"/")===0?url.slice(location.origin.length):url;
-    return /^\/(guest\/|styles-|images\/|fonts\/|asset:)/.test(path);
+    return /^\/(guest\/|styles-|images\/|fonts\/|tonk-code\/|tonk-prose\/|tonk-table\/|asset:)/.test(path);
   }
   // `PUT /` on an origin of its own stores an asset in the space there.
   function storesAsset(url,input,init){
