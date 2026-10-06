@@ -77,16 +77,20 @@ JS=$(hash_rename "guest.js")
 WASM=$(hash_rename "guest_bg.wasm")
 WA_JS=$(hash_rename "wa.js")
 WA_CSS=$(hash_rename "wa.css")
+BOOTSTRAP=$(hash_rename "bootstrap.js")
+RUNTIME=$(hash_rename "runtime_bootstrap.js")
+PREVIEW=$(hash_rename "preview_capture.js")
 CSS=$(hash_stylesheet)
 
 # The wasm-bindgen `.d.ts` files are dev-only type stubs; drop them from the
 # served dist (the portal never fetches them).
 rm -f "$GUEST_DIR"/guest.d.ts "$GUEST_DIR"/guest_bg.wasm.d.ts
 
-# All five assets are required by the portal at runtime (bridge.rs names
+# All eight assets are required by the portal at runtime (bridge.rs names
 # each one from the manifest); a missing file here is a broken build, not
 # a variant to tolerate. Fail before writing a manifest with empty entries.
-for entry in "js=$JS" "wasm=$WASM" "waJs=$WA_JS" "waCss=$WA_CSS" "css=$CSS"; do
+for entry in "js=$JS" "wasm=$WASM" "waJs=$WA_JS" "waCss=$WA_CSS" "css=$CSS" \
+    "bootstrap=$BOOTSTRAP" "runtime=$RUNTIME" "preview=$PREVIEW"; do
     case "$entry" in
         *=) echo "hash-guest: missing guest asset (${entry%=})" >&2; exit 1 ;;
     esac
@@ -98,7 +102,10 @@ cat > "$GUEST_DIR/manifest.json" <<EOF
   "wasm": "$WASM",
   "waJs": "$WA_JS",
   "waCss": "$WA_CSS",
-  "css": "$CSS"
+  "css": "$CSS",
+  "bootstrap": "$BOOTSTRAP",
+  "runtime": "$RUNTIME",
+  "preview": "$PREVIEW"
 }
 EOF
 

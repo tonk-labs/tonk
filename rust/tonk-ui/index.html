@@ -10,14 +10,18 @@
              own code can read. A site's hostname starts with `profile` or
              with a space's label (its key in base32), a suffix after either;
              the app's never does. Before anything else on the page runs,
-             leave for the site's shell. -->
+             leave for the site's shell, saying which address was asked for. -->
         <script>
             (() => {
                 const label = location.hostname.split(".")[0];
                 if (/^(profile|b[a-z2-7]{40,})(-[a-z0-9]+)?$/.test(label)) {
                     globalThis.tonkSiteOrigin = true;
                     window.stop();
-                    location.replace(label.startsWith("profile") ? "/profile.html" : "/space.html");
+                    // The shell starts the site's worker, then returns to
+                    // this address, which the worker answers from then on.
+                    const shell = label.startsWith("profile") ? "/profile.html" : "/space.html";
+                    const address = location.pathname + location.search + location.hash;
+                    location.replace(`${shell}#boot=${encodeURIComponent(address)}`);
                 }
             })();
         </script>
@@ -120,13 +124,13 @@
                 background: light-dark(#e8e6e4, #161313);
                 color: var(--ink);
             }
-            /* CSS-only teardown: the wasm mounts <tonk-site> into <body>
-               and this rule fades the shell out — the app never has to
-               know the shell exists. The delay gives the mounted site a
+            /* CSS-only teardown: the site's frame says when it is showing
+               the site, <tonk-site> records that, and this rule fades the
+               shell out. The app never has to know the shell exists. The delay gives the mounted site a
                beat to paint its own surface underneath; `visibility`
                flips after the fade so the shell can't intercept clicks
                it no longer visually owns. */
-            body:has(tonk-site) #tonk-boot {
+            body:has(tonk-site[data-ready]) #tonk-boot {
                 opacity: 0;
                 visibility: hidden;
                 pointer-events: none;
@@ -269,6 +273,13 @@
         <link data-trunk rel="copy-file" href="./assets/space.html" />
         <link data-trunk rel="copy-file" href="./assets/profile.html" />
         <link data-trunk rel="copy-file" href="./assets/space_worker.js" />
+        <!-- What a site's shell runs before the element runtime: the bridge
+             to the page around it, the loader of that runtime, and the
+             preview capture. Named by their content in the guest manifest
+             (`scripts/hash-guest.sh`), as the runtime's own files are. -->
+        <link data-trunk rel="copy-file" href="../tonk-portal/src/bootstrap.js" data-target-path="guest" />
+        <link data-trunk rel="copy-file" href="../tonk-portal/src/runtime_bootstrap.js" data-target-path="guest" />
+        <link data-trunk rel="copy-file" href="../tonk-portal/src/preview_capture.js" data-target-path="guest" />
         <link
             data-trunk
             rel="copy-file"

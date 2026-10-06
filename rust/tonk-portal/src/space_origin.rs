@@ -50,7 +50,7 @@ use web_sys::{
 };
 
 use crate::bridge::PortalState;
-use crate::shared::reload_portal;
+use crate::site::reload_site;
 
 /// The static page a space's origin loads first.
 const SPACE_SHELL: &str = "/space.html";
@@ -93,7 +93,16 @@ pub(crate) fn expose_profile_worker(iframe: &HtmlIFrameElement, origin: &str) {
     relay.forget();
 }
 
-/// The shell `origin` loads first.
+/// The address of `path` in the site at `origin`: what its frame loads. The
+/// site's worker answers it with the site's shell, or with whatever content
+/// the site keeps at that path.
+pub(crate) fn site_url(origin: &str, path: &str) -> String {
+    let path = path.trim_start_matches('/');
+    format!("{origin}/{path}")
+}
+
+/// The page every address of `origin` is answered with where a route shows
+/// a model: what a frame that only reaches the origin's worker loads.
 pub(crate) fn shell_url(origin: &str) -> String {
     let profile = Url::new(origin)
         .ok()
@@ -267,7 +276,7 @@ fn show_unreachable(host: &Element, iframe: &HtmlIFrameElement, state: &Rc<RefCe
             // Only while the notice it was made for still stands.
             if host.get_attribute("data-state").as_deref() == Some("unreachable") {
                 clear_unreachable(&iframe);
-                reload_portal(&host, &state);
+                reload_site(&host, &state);
             }
         }
     };
@@ -307,19 +316,6 @@ pub(crate) fn clear_unreachable(iframe: &HtmlIFrameElement) {
     let _ = host.remove_attribute("data-state");
     let frame: &HtmlElement = iframe;
     frame.set_hidden(false);
-}
-
-/// Hand the frame its document once its shell reports that its worker is in
-/// control. Targeted at the frame's origin, so the markup never lands in a
-/// document that has navigated elsewhere.
-pub(crate) fn deliver_document(iframe: &HtmlIFrameElement, origin: &str, html: &str) {
-    let Some(target) = iframe.content_window() else {
-        return;
-    };
-    let message = Object::new();
-    let _ = Reflect::set(&message, &"__tonkOrigin".into(), &"document".into());
-    let _ = Reflect::set(&message, &"html".into(), &JsValue::from_str(html));
-    let _ = target.post_message(&message, origin);
 }
 
 /// Whether this document is on a profile's origin: its hostname's first label

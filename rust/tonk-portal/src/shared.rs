@@ -1,8 +1,9 @@
-//! Shared portal setup logic.
+//! Shared setup for the sealed portals.
 //!
 //! Both `<tonk-portal>` and `<tonk-fab-portal>` create a sandboxed iframe
-//! and wire it to the bridge; the only difference is how they style that
-//! iframe. This module provides the common setup path, parameterised by a
+//! at an opaque origin and wire it to the bridge; the only difference is
+//! how they style that iframe. (A `<tonk-site>` frames an origin of its
+//! own, and sets itself up in `site.rs`.) This module provides the common setup path, parameterised by a
 //! caller-supplied style function.
 
 use std::cell::RefCell;
@@ -14,9 +15,6 @@ use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
 use crate::bridge::{self, PortalState};
 use crate::site_content::head_markup as build_head_markup;
-use crate::space_origin::{
-    SANDBOX, expose_profile_worker, shell_url, site_origin, site_pattern, watch_shell,
-};
 
 /// The tags an embedder may place in a portal's light DOM to style its
 /// guest. Anything else a caller nests is ignored: the head is not a
@@ -93,20 +91,7 @@ pub(crate) fn connect_portal(
     // silently blocks the download. We deliberately withhold
     // `allow-top-navigation` and `allow-same-origin` — the guest still
     // can't reach the parent or a real origin.
-    //
-    // A `<tonk-site>` on a real origin keeps `allow-same-origin` instead (see
-    // `space_origin`).
-    let site_pattern = site_pattern(&host);
-    let origin = site_pattern
-        .as_deref()
-        .zip(with.as_ref())
-        .and_then(|(site_pattern, with)| site_origin(with, site_pattern));
-    let sandbox = if origin.is_some() {
-        SANDBOX
-    } else {
-        "allow-scripts allow-forms allow-downloads"
-    };
-    let _ = iframe.set_attribute("sandbox", sandbox);
+    let _ = iframe.set_attribute("sandbox", "allow-scripts allow-forms allow-downloads");
 
     // Delegate the `clipboard-write` Permissions Policy into the guest so
     // its copy buttons (e.g. the share dialog's invite-link copy) can call
@@ -123,7 +108,6 @@ pub(crate) fn connect_portal(
     // its attributes, `<tonk-fab-portal>` grants `*`, the generic
     // `<tonk-portal>` grants `self` — so a synced/untrusted content guest
     // can forward a route but the bridge denies anything un-listed.
-    let profile = with.as_ref().is_some_and(Location::profile);
     state.borrow_mut().set_route(with, allow);
     bridge::register_portal(&iframe, &host, &state);
 
@@ -140,34 +124,13 @@ pub(crate) fn connect_portal(
     // `<link>` children belong in the guest's head.
     let head = head_markup(&host);
     let _ = host.append_child(&iframe);
-    let base = match origin.as_deref() {
-        Some(origin) => format!("{origin}/"),
-        None => space_base(&state.borrow()),
-    };
+    let base = space_base(&state.borrow());
     let srcdoc = if runtime {
         bridge::bootstrap_srcdoc_with_runtime(&content, &base, &head)
     } else {
         bridge::bootstrap_srcdoc(&content, &base, &head)
     };
-    match origin {
-        // The frame loads its origin's shell, which asks for this document
-        // once the space worker is in control.
-        Some(origin) => {
-            let shell = shell_url(&origin);
-            if profile {
-                expose_profile_worker(&iframe, &origin);
-            }
-            state
-                .borrow_mut()
-                .set_origin_document(origin, srcdoc, site_pattern);
-            let load = state.borrow().shell.get().load;
-            watch_shell(&host, &iframe, &state, load);
-            let _ = iframe.set_attribute("src", &shell);
-        }
-        None => {
-            let _ = iframe.set_attribute("srcdoc", &srcdoc);
-        }
-    }
+    let _ = iframe.set_attribute("srcdoc", &srcdoc);
 
     state.borrow_mut().iframe = Some(iframe);
     *inner.borrow_mut() = Some(state);
@@ -186,11 +149,7 @@ pub(crate) fn reload_portal(host: &Element, state: &Rc<RefCell<PortalState>>) {
         return;
     };
     let content = host.get_attribute("content").unwrap_or_default();
-    let origin = s.origin().map(str::to_owned);
-    let base = match origin.as_deref() {
-        Some(origin) => format!("{origin}/"),
-        None => space_base(&s),
-    };
+    let base = space_base(&s);
     // Re-read the children rather than reusing the mount-time markup: a
     // reload rebuilds the whole document, and the embedder may have
     // changed its styles since.
@@ -200,19 +159,7 @@ pub(crate) fn reload_portal(host: &Element, state: &Rc<RefCell<PortalState>>) {
     } else {
         bridge::bootstrap_srcdoc(&content, &base, &head)
     };
-    match origin {
-        // Re-navigate to the shell; it asks for the fresh document.
-        Some(origin) => {
-            let shell = shell_url(&origin);
-            let site_pattern = s.site_pattern.clone();
-            s.set_origin_document(origin, srcdoc, site_pattern);
-            watch_shell(host, &iframe, state, s.shell.get().load);
-            let _ = iframe.set_attribute("src", &shell);
-        }
-        None => {
-            let _ = iframe.set_attribute("srcdoc", &srcdoc);
-        }
-    }
+    let _ = iframe.set_attribute("srcdoc", &srcdoc);
 }
 
 /// The per-space synthetic origin (`https://{label}.tonk.network/`) for this

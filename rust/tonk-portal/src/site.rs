@@ -32,9 +32,10 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
-use crate::bridge::PortalState;
-use crate::shared::connect_portal;
-use crate::space_origin::{site_origin, site_pattern};
+use crate::bridge::{self, PortalState};
+use crate::space_origin::{
+    SANDBOX, expose_profile_worker, site_origin, site_pattern, site_url, watch_shell,
+};
 
 /// Shared cell holding the portal state once the iframe is up. An `Rc` so the
 /// async site-registration task can hold it across the await and hand it to
@@ -251,7 +252,7 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
     // entity and path this element hands it in its context (see
     // `bootstrap.js`), and claims it again whenever that worker has lost the
     // stamp.
-    let site = site_entity(&host);
+    site_entity(&host);
     // Defer the iframe bring-up off this turn. `resolve_and_render` runs
     // synchronously inside `connected_callback` / `attribute_changed_callback`,
     // and `render_in_iframe` tears down + rebuilds the portal (touching the
@@ -277,7 +278,7 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell) {
     let host_for_task = host.clone();
     spawn_local(async move {
         if !reuse {
-            render_in_iframe(&host_for_task, &cell, &site, with, allow);
+            render_in_iframe(&host_for_task, &cell, with, allow);
         } else if let Some(state) = cell.borrow().as_ref() {
             crate::bridge::refresh_context(&host_for_task, state);
         }
@@ -342,39 +343,88 @@ fn style_site_iframe(iframe: &HtmlIFrameElement) {
     );
 }
 
-/// Build the guest content (the `tonk:site` display) and bring up the sealed
-/// iframe via [`connect_portal`]. The iframe always renders in `runtime` mode
-/// (the guest needs our element runtime). If an iframe already exists (a
-/// re-resolve), tear it down first so the new content replaces it.
+/// The address `host` shows in its site: its `path` attribute as an address,
+/// the site's root when it has none.
+fn site_path(host: &Element) -> String {
+    host.get_attribute("path").unwrap_or_default()
+}
+
+/// Frame the site `with` names, at the address `host`'s path names on the
+/// site's own origin, and register the frame with the bridge. A prior frame
+/// is torn down first, so a change of site replaces it.
 ///
-/// The guest content carries no routing context of its own: the guest relay
-/// forwards its `<tonk-display>`'s queries up to the parent, where the bridge
-/// pins them to this site's `with`. So the `tonk:site` display resolves
-/// against exactly the branch the site was stamped on.
-fn render_in_iframe(
-    host: &HtmlElement,
-    cell: &StateCell,
-    site: &str,
-    with: Location,
-    allow: Allow,
-) {
-    // The display carries slotted placeholders for the pre-stamp window so it
-    // shows a quiet spinner instead of flashing its loud `no-entity`
-    // concept-mismatch dump while the SW is still stamping `tonk:site`.
-    let content = crate::site_content::guest_content(site);
-
-    // Tear down any prior iframe so a re-resolve (navigation) replaces it.
+/// The frame brings itself up: the site's worker answers the address with
+/// the site's shell (or with whatever content the site keeps there), and
+/// the shell loads the runtime and claims the route. This element gives it
+/// nothing but a port, over which the two exchange the messages a frame
+/// cannot act on alone, and reads back how far along it is.
+fn render_in_iframe(host: &HtmlElement, cell: &StateCell, with: Location, allow: Allow) {
     teardown(cell);
+    let element: Element = host.clone().into();
+    let Some(pattern) = site_pattern(&element) else {
+        return;
+    };
+    let Some(origin) = site_origin(&with, &pattern) else {
+        return;
+    };
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Some(iframe) = document
+        .create_element("iframe")
+        .ok()
+        .and_then(|iframe| iframe.dyn_into::<HtmlIFrameElement>().ok())
+    else {
+        return;
+    };
+    let _ = iframe.set_attribute("sandbox", SANDBOX);
+    // Permissions Policy, not a sandbox grant: without it the clipboard is
+    // refused outright, whatever the sandbox allows.
+    let _ = iframe.set_attribute("allow", "clipboard-write");
+    style_site_iframe(&iframe);
 
-    // The iframe needs `content` + `runtime` to drive `connect_portal`.
-    let _ = host.set_attribute("content", &content);
-    let _ = host.set_attribute("runtime", "");
+    let state = Rc::new(RefCell::new(PortalState::new()));
+    let profile = with.profile();
+    state.borrow_mut().set_route(Some(with), allow);
+    bridge::register_portal(&iframe, &element, &state);
+    let _ = host.append_child(&iframe);
+    if profile {
+        expose_profile_worker(&iframe, &origin);
+    }
+    state.borrow_mut().iframe = Some(iframe.clone());
+    *cell.borrow_mut() = Some(state.clone());
+    load_site(&element, &iframe, &state, origin, Some(pattern));
+}
 
-    // The site's parsed `with`/`allow` become the bridge's routing context
-    // and reach: un-routed guest operations are pinned to `with`, and a
-    // forwarded route is honored only if `allow` permits it (typed denial
-    // otherwise).
-    connect_portal(host, cell.as_ref(), Some(with), allow, style_site_iframe);
+/// Load the site's address in `iframe`, and watch for its shell.
+fn load_site(
+    host: &Element,
+    iframe: &HtmlIFrameElement,
+    state: &Rc<RefCell<PortalState>>,
+    origin: String,
+    pattern: Option<String>,
+) {
+    let _ = host.remove_attribute("data-ready");
+    let address = site_url(&origin, &site_path(host));
+    state.borrow_mut().set_origin(origin, pattern);
+    let load = state.borrow().shell.get().load;
+    watch_shell(host, iframe, state, load);
+    let _ = iframe.set_attribute("src", &address);
+}
+
+/// Load the site's frame again, at its current address: what "try again"
+/// does for a site that could not load.
+pub(crate) fn reload_site(host: &Element, state: &Rc<RefCell<PortalState>>) {
+    bridge::disconnect_task(state);
+    let (iframe, origin, pattern) = {
+        let mut s = state.borrow_mut();
+        s.sever();
+        let (Some(iframe), Some(origin)) = (s.iframe.clone(), s.origin().map(str::to_owned)) else {
+            return;
+        };
+        (iframe, origin, s.site_pattern.clone())
+    };
+    load_site(host, &iframe, state, origin, pattern);
 }
 
 /// Register `<tonk-site>`. Idempotent. Installs the page-level `hello` /

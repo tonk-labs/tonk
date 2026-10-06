@@ -58,8 +58,7 @@ use web_sys::{
 };
 
 use crate::space_origin::{
-    broker_port, clear_unreachable, deliver_document, grant_relayed_port, relay_port,
-    requested_location,
+    broker_port, clear_unreachable, grant_relayed_port, relay_port, requested_location,
 };
 
 /// Per-portal bridge + iframe state. Held behind `Rc<RefCell<…>>` so
@@ -101,9 +100,6 @@ pub(crate) struct PortalState {
     /// The space's real origin when this portal renders it there (a
     /// `<tonk-site origin>`), rather than in an opaque `srcdoc` frame.
     origin: Option<String>,
-    /// The bootstrap document a real-origin frame asks for once its space
-    /// worker is in control: the markup a sealed frame gets as `srcdoc`.
-    document: Option<String>,
     /// The authority real-origin sites render under, handed down to the
     /// guest so the sites it nests render on origins of their own too.
     pub(crate) site_pattern: Option<String>,
@@ -136,22 +132,15 @@ impl PortalState {
             with: None,
             allow: Allow::none(),
             origin: None,
-            document: None,
             site_pattern: None,
             shell: Cell::default(),
         }
     }
 
-    /// Render this portal's space at `origin`, handing the frame `document`
-    /// once it asks. Called host-side by `connect_portal` and on reload.
-    pub(crate) fn set_origin_document(
-        &mut self,
-        origin: String,
-        document: String,
-        site_pattern: Option<String>,
-    ) {
+    /// Render this portal's site at `origin`, in a frame that brings itself
+    /// up there. Called host-side by `<tonk-site>` on each load of the frame.
+    pub(crate) fn set_origin(&mut self, origin: String, site_pattern: Option<String>) {
         self.origin = Some(origin);
-        self.document = Some(document);
         self.site_pattern = site_pattern;
         self.shell.set(Shell {
             load: self.shell.get().load + 1,
@@ -333,20 +322,13 @@ pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str, base: &str, head: &st
 /// when the guest signals `runtime-ready`. The guest fetches nothing; every
 /// byte crosses here.
 ///
-/// A frame `on_origin` brings all of it in for itself, from its own origin,
-/// where its worker and the HTTP cache keep it: it is only told to start.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) fn inject_runtime(iframe: &HtmlIFrameElement, on_origin: bool) {
+pub(crate) fn inject_runtime(iframe: &HtmlIFrameElement) {
     let Some(content_window) = iframe.content_window() else {
         return;
     };
     spawn_local(async move {
-        let built = if on_origin {
-            Ok(build_origin_payload())
-        } else {
-            build_inject_payload().await
-        };
-        let (payload, transfer) = match built {
+        let (payload, transfer) = match build_inject_payload().await {
             Ok(p) => p,
             Err(e) => {
                 tonk_common::log!("portal runtime: failed to assemble payload: {e}");
@@ -374,28 +356,6 @@ struct GuestManifest {
     wa_js: String,
     #[serde(rename = "waCss")]
     wa_css: String,
-}
-
-/// Build the envelope for a guest on its own origin. Such a guest brings
-/// its runtime, stylesheets and editors in from its own origin, so this is
-/// only the word to start and the root classes a guest inside another
-/// inherits (the light or dark mode chosen there).
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn build_origin_payload() -> (JsValue, JsValue) {
-    let payload = Object::new();
-    let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
-    let _ = Reflect::set(&payload, &"fromOrigin".into(), &JsValue::TRUE);
-    let root_class = window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.document_element())
-        .map(|e| e.class_name())
-        .unwrap_or_default();
-    let _ = Reflect::set(
-        &payload,
-        &"rootClass".into(),
-        &JsValue::from_str(&root_class),
-    );
-    (payload.into(), js_sys::Array::new().into())
 }
 
 /// Build the runtime-inject envelope by fetching the served guest bundle +
@@ -1000,6 +960,35 @@ thread_local! {
     static LISTENER_INSTALLED: RefCell<bool> = const { RefCell::new(false) };
 }
 
+/// The attribute a site's element carries while its frame is coming up: the
+/// stage its shell last reported.
+const STAGE_ATTRIBUTE: &str = "data-stage";
+
+/// The attribute a site's element carries once its frame is showing the site.
+const READY_ATTRIBUTE: &str = "data-ready";
+
+/// The event a site's element raises when its frame reports a stage, with
+/// the stage as its detail. It bubbles, so a page can show the stage of
+/// whichever site it frames.
+pub const STAGE_EVENT: &str = "tonk-site-stage";
+
+/// Record on `host` the stage its site's shell reported, and tell the page.
+fn show_stage(host: &Element, stage: &str) {
+    if stage == "ready" {
+        let _ = host.remove_attribute(STAGE_ATTRIBUTE);
+        let _ = host.set_attribute(READY_ATTRIBUTE, "");
+    } else {
+        let _ = host.remove_attribute(READY_ATTRIBUTE);
+        let _ = host.set_attribute(STAGE_ATTRIBUTE, stage);
+    }
+    let init = web_sys::CustomEventInit::new();
+    init.set_bubbles(true);
+    init.set_detail(&JsValue::from_str(stage));
+    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(STAGE_EVENT, &init) {
+        let _ = host.dispatch_event(&event);
+    }
+}
+
 /// Install the single page-level `message` listener that completes the
 /// handshake for every portal. Idempotent.
 pub(crate) fn install_message_listener() {
@@ -1019,9 +1008,9 @@ pub(crate) fn install_message_listener() {
         Closure::wrap(Box::new(move |event: MessageEvent| {
             let data = event.data();
 
-            // A real-origin site frame: its shell asks for the document once
-            // its worker is in control, and its broker asks for a port to the
-            // host worker whenever that worker has none. A request naming a
+            // A real-origin site frame: its shell says how far along it
+            // is, and its broker asks for a port to the host worker
+            // whenever that worker has none. A request naming a
             // location was relayed up from a frame nested in it, and is granted
             // only if this portal's `allow` reaches that location. All of it is
             // answered only for a registered frame, only at its own origin.
@@ -1050,9 +1039,14 @@ pub(crate) fn install_message_listener() {
                         });
                         clear_unreachable(&iframe);
                     }
-                    "shell-ready" => {
-                        if let Some(document) = state.document.as_deref() {
-                            deliver_document(&iframe, origin, document);
+                    // How far along the site's shell is in bringing itself
+                    // up. Kept on the element, for the page to show: a site
+                    // reads as loading until it says it is ready.
+                    "status" => {
+                        if let (Some(host), Some(stage)) =
+                            (iframe.parent_element(), get_str(&data, "stage"))
+                        {
+                            show_stage(&host, &stage);
                         }
                     }
                     // The profile's worker told the page that asked it
@@ -1092,12 +1086,11 @@ pub(crate) fn install_message_listener() {
                     "runtime-ready" => {
                         let matched = registry.borrow().iter().find_map(|entry| {
                             let cw: JsValue = entry.iframe.content_window()?.into();
-                            let on_origin = entry.state.borrow().origin().is_some();
-                            (cw == source).then(|| (entry.iframe.clone(), on_origin))
+                            (cw == source).then(|| entry.iframe.clone())
                         });
                         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-                        if let Some((iframe, on_origin)) = matched {
-                            inject_runtime(&iframe, on_origin);
+                        if let Some(iframe) = matched {
+                            inject_runtime(&iframe);
                         }
                     }
                     // Lazy `<tonk-prose>` editor core: the boot payload only

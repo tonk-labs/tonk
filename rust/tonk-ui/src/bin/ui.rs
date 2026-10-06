@@ -121,6 +121,7 @@ fn mount_root() {
     let _ = shell.set_attribute("id", "tonk-root");
     render_root(&shell);
     attach_navigation(&shell);
+    show_stages(&shell);
     let _ = body.append_child(&shell);
 }
 
@@ -191,6 +192,39 @@ async fn site_pattern() -> Option<String> {
         .await
         .ok()?;
     config.sites.map(|sites| sites.pattern())
+}
+
+/// Say, where the boot shell reports progress, how far along the profile's
+/// site is: its frame tells `<tonk-site>` each stage it reaches.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn show_stages(shell: &web_sys::Element) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+    let on_stage =
+        Closure::<dyn FnMut(web_sys::CustomEvent)>::new(|event: web_sys::CustomEvent| {
+            let Some(stage) = event.detail().as_string() else {
+                return;
+            };
+            let status = web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.query_selector("[data-boot-status]").ok().flatten());
+            if let Some(status) = status
+                && !status.has_attribute("data-failed")
+            {
+                // Nothing to say once the site is showing.
+                let said = if stage == "ready" {
+                    String::new()
+                } else {
+                    format!("{stage}…")
+                };
+                status.set_text_content(Some(&said));
+            }
+        });
+    let _ = shell.add_event_listener_with_callback(
+        tonk_portal::STAGE_EVENT,
+        on_stage.as_ref().unchecked_ref(),
+    );
+    on_stage.forget();
 }
 
 /// Keep the top-document root in sync with client-side navigation.

@@ -30,8 +30,8 @@ mod bridge;
 /// behaviour is supplied rather than named here.
 #[cfg(target_arch = "wasm32")]
 pub use bridge::{
-    ContainedTaskReturn, DelegationRequest, DelegationReturn, RegisterFocusReturn, on_delegate,
-    on_register, on_task,
+    ContainedTaskReturn, DelegationRequest, DelegationReturn, RegisterFocusReturn, STAGE_EVENT,
+    on_delegate, on_register, on_task,
 };
 #[cfg(target_arch = "wasm32")]
 mod element;

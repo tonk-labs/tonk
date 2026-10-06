@@ -136,14 +136,13 @@
   function claimLoad(){
     var c=(window.tonk&&window.tonk.context)||{}; var target=claimTarget();
     if(!target||!c.siteEntity) return;
-    // `<tonk-site>` carries its in-site path as the route template wrote it,
-    // without the leading slash the route table matches against.
-    var path=c.sitePath||"/"; if(path.charAt(0)!=="/"){ path="/"+path; }
+    // This frame's own address is the path in its site.
+    var path=location.pathname||"/";
     var body={claims:[{op:"assert",application:{
       predicate:{kind:"transient",concept:{with:{path:{the:"xyz.tonk.site/path",as:"Text",cardinality:"one"}}}},
       parameters:{"this":c.siteEntity,path:path}
     }}]};
-    nativeWithContext(target,{
+    return nativeWithContext(target,{
       method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)
     }).catch(function(error){ console.warn("tonk: claiming this site failed",error); });
   }
@@ -275,7 +274,10 @@
     switch(env.type){
       case "ready": {
         tonk.context=env.context;
-        var settle=function(){ onProfileBranch(tonk.context); resolveReady(); claimLoad(); };
+        // `tonk.claimed` settles once this site's worker has answered the
+        // first claim of its route: by then it holds the site's data, so a
+        // shell waiting to say the site is up waits on this.
+        var settle=function(){ onProfileBranch(tonk.context); tonk.claimed=Promise.resolve(claimLoad()); resolveReady(); };
         if(ownProfile()) readProfileBranch().then(settle); else settle();
         return;
       }
@@ -290,6 +292,7 @@
       }
       case "context": {
         tonk.context=onProfileBranch(env.context);
+        followHost();
         claimLoad();
         // The page moved without reloading; elements that read the
         // location re-derive from the new context.
@@ -415,6 +418,19 @@
     ready.then(function(){port.postMessage({v:1,type:"navigate",href:href,replace:!!replace});});
   }
   var stating=false;
+  // The page moved this site to another path without loading it again: take
+  // the address, in place, so this frame's location says where it is.
+  // `<tonk-site>` carries the path as the route template wrote it, without
+  // the leading slash an address has.
+  var settleAddress=history.replaceState.bind(history);
+  function followHost(){
+    if(location.origin==="null") return;
+    var path=(tonk.context&&tonk.context.sitePath)||"/";
+    if(path.charAt(0)!=="/"){ path="/"+path; }
+    if(path===location.pathname) return;
+    stating=true;
+    try{ settleAddress(history.state,"",path); } finally{ stating=false; }
+  }
   ["pushState","replaceState"].forEach(function(name){
     var native=history[name];
     history[name]=function(state,unused,url){

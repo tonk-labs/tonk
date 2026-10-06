@@ -1020,12 +1020,33 @@ function ensureGrant(worker, options) {
     return granted;
 }
 
-async function takeGrant(worker, { renew = false } = {}) {
+// Tell this origin's pages what the worker is busy with, for them to show
+// while they wait on it: a page that asked for the space's data hears
+// nothing else until the space is here. `ready` says the wait is over.
+async function tell(stage) {
+    const pages = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const page of pages) page.postMessage({ type: "status", stage });
+}
+
+async function takeGrant(worker, options) {
     const held = await heldGrant();
     const now = Date.now() / 1000;
+    const renew = options?.renew ?? false;
     if (!renew && held?.version === GRANT_VERSION && held.expires - now > RENEW_MARGIN_SECONDS) {
         return held;
     }
+    // A renewal is behind a space already on screen; only bringing the
+    // space here for the first time is something to wait on.
+    if (held?.seeded) return bringSpace(worker, held);
+    await tell("asking for the space");
+    try {
+        return await bringSpace(worker, held);
+    } finally {
+        await tell("ready");
+    }
+}
+
+async function bringSpace(worker, held) {
     const audience = await worker.profileDid();
     const grant = await askHost({ delegate: audience });
     // What the delegation was signed to say: where the space syncs, and
@@ -1038,6 +1059,7 @@ async function takeGrant(worker, { renew = false } = {}) {
     // kept. A space from before that is copied from the host's, once. Either
     // leaves a replica that already has content alone.
     if (!held?.seeded) {
+        await tell("replicating the space");
         const seed = await askHost({ seed: true });
         // Where this worker's content came from, for the profile to know
         // what it may let go of: a space is held once on a device.
@@ -1551,13 +1573,13 @@ function pageMayAsk(request, path) {
 self.addEventListener("fetch", event => {
     const url = new URL(event.request.url);
     if (url.origin !== self.location.origin) return;
-    // Every navigation gets the shell, whatever its path, except one to an
-    // asset, which gets the asset, and one to a path the space's routes
-    // answer with content. The shell's own path is never looked up, so a
-    // frame's first load waits on no database.
+    // A navigation is answered from the site's routes: with the content a
+    // route keeps at the address, and otherwise with the shell, which shows
+    // whatever model the address routes to. Only the shell's own path, the
+    // file itself, is not looked up.
     const asset = ASSET_PATH.exec(url.pathname);
     if (event.request.mode === "navigate" && !asset) {
-        const shell = url.pathname === SHELL_PATH || url.pathname === "/";
+        const shell = url.pathname === SHELL_PATH;
         event.respondWith(shell ? serveShell() : serveRoute(event.request, serveShell));
         return;
     }

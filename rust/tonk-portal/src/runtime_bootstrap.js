@@ -57,8 +57,9 @@
     }
   });
 
-  window.addEventListener("message", async function(e){
-    var d=e.data; if(!d||d.__tonkRuntime!=="inject") return;
+  // Bring the element runtime up. `d` says how: a guest on its own origin
+  // loads everything from there (`fromOrigin`), a sealed one is handed it.
+  var start=async function(d){
     try {
       // Apply the parent document's exact root classes (WA theme + palette +
       // dark/light), so the injected WA CSS resolves its custom properties
@@ -99,9 +100,9 @@
         // On its own origin the guest brings the runtime in itself: it reads
         // which build's files to load from its own origin, links the
         // stylesheets (fonts then resolve against them) and imports the
-        // modules. Its worker and the HTTP cache keep them, and nothing but
-        // the word to start crosses the frame.
-        var manifest=await (await fetch("/guest/manifest.json",{cache:"no-cache"})).json();
+        // modules. Its worker and the HTTP cache keep them, and nothing
+        // crosses the frame.
+        var manifest=window.tonkBuildFiles||await (await fetch("/guest/manifest.json",{cache:"no-cache"})).json();
         var link=function(href){
           var l=document.createElement("link");
           l.rel="stylesheet"; l.href=href;
@@ -406,6 +407,16 @@
     } catch(err) {
       parent.postMessage({__tonkRuntime:"error",error:String(err)+(err&&err.stack?"\n"+err.stack:"")},"*");
     }
-  });
-  parent.postMessage({__tonkRuntime:"runtime-ready"},"*");
+  };
+  if (location.origin!=="null") {
+    // On an origin of its own the guest starts at once: it has everything
+    // it needs there, and nothing to wait on the page around it for.
+    window.tonkRuntime=start({fromOrigin:true});
+  } else {
+    window.addEventListener("message", function(e){
+      var d=e.data; if(!d||d.__tonkRuntime!=="inject") return;
+      start(d);
+    });
+    parent.postMessage({__tonkRuntime:"runtime-ready"},"*");
+  }
 })();

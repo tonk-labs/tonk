@@ -2,11 +2,13 @@
 <html>
     <head>
         <meta charset="utf-8" />
-        <!-- The shell of a space origin (proof of concept). It registers the
-             space worker, waits for it to take control, then asks the host
-             for the space's document and writes it over itself. The host
-             sends the same bootstrap markup a sealed frame gets as `srcdoc`,
-             so everything after this runs exactly as it does there. -->
+        <!-- The shell of a site's origin: the one page its worker answers
+             every address of the site with. It registers the site's worker,
+             waits for it to take control, then brings the site up itself,
+             from its own origin: the bootstrap that speaks to the page
+             around it, the element runtime, and the display of whatever
+             route its address names. It tells the page around it how far
+             along it is, and takes nothing from it but the port's answers. -->
         <script>
             (function () {
                 // Say so at once: a parent that never hears this knows the
@@ -53,6 +55,7 @@
                     var profile = location.hostname.split(".")[0].indexOf("profile") === 0;
                     sw.addEventListener("message", function (e) {
                         if (e.data && e.data.type === "need-port") ask();
+                        else if (e.data && e.data.type === "status") workerSays(e.data.stage);
                         else if (profile) {
                             parent.postMessage({ __tonkOrigin: "worker-message", message: e.data }, "*");
                         }
@@ -60,9 +63,39 @@
                     sw.startMessages();
                     ask();
                 }
-                // Written ahead of the host's markup, so the document the
-                // site renders in brokers ports too.
-                var BROKER = "<script>(" + broker.toString() + ")();<\/script>";
+                // How far along the site is: what this shell is doing, or what
+                // its worker says it is busy with, which is the longer wait.
+                // Said to the page around this frame and shown in it, until
+                // both are ready. A page that waits says what it waits on.
+                var stages = { shell: "starting", worker: "ready" };
+                function show() {
+                    var busy = stages.worker !== "ready" ? stages.worker : stages.shell;
+                    parent.postMessage({ __tonkOrigin: "status", stage: busy }, "*");
+                    if (!document.body) return;
+                    var line = document.getElementById("tonk-stage");
+                    if (busy === "ready") {
+                        if (line) line.remove();
+                        return;
+                    }
+                    if (!line) {
+                        line = document.createElement("p");
+                        line.id = "tonk-stage";
+                        line.setAttribute("role", "status");
+                        line.style.cssText =
+                            "position:fixed;inset:auto 0 calc(50% - 3.5rem) 0;margin:0;text-align:center;" +
+                            "font:12px/1.4 ui-monospace,Menlo,monospace;opacity:.6;pointer-events:none";
+                        document.body.appendChild(line);
+                    }
+                    line.textContent = busy + "…";
+                }
+                function say(stage) {
+                    stages.shell = stage;
+                    show();
+                }
+                function workerSays(stage) {
+                    stages.worker = stage;
+                    show();
+                }
 
                 function report(error) {
                     parent.postMessage(
@@ -70,16 +103,6 @@
                         "*",
                     );
                 }
-
-                window.addEventListener("message", function onDocument(event) {
-                    if (event.source !== parent) return;
-                    var data = event.data;
-                    if (!data || data.__tonkOrigin !== "document") return;
-                    window.removeEventListener("message", onDocument);
-                    document.open();
-                    document.write(BROKER + data.html);
-                    document.close();
-                });
 
                 // The contract between this shell and the site's worker. The
                 // worker must answer with the same number; bump both together
@@ -134,12 +157,14 @@
                         if (await recover()) return new Promise(function () {});
                         throw new Error("the site's worker is out of date and could not be replaced");
                     }
+                    say("installing its worker");
                     await container.register("/space_worker.js", {
                         scope: "/",
                         type: "module",
                         updateViaCache: "none",
                     });
                     if (container.controller) return;
+                    say("waiting for its worker");
                     await new Promise(function (resolve) {
                         container.addEventListener("controllerchange", resolve, { once: true });
                     });
@@ -202,11 +227,51 @@
                     return;
                 }
 
-                // The site's code runs in the document this shell becomes, so
-                // the shell asks for it only once that document is one the
-                // worker served, with the site's policy on it. With no worker
-                // the site does not render.
-                control().then(function () {
+                // Run a script of this origin, in order.
+                function run(src) {
+                    return new Promise(function (resolve, reject) {
+                        var script = document.createElement("script");
+                        script.src = src;
+                        script.onload = resolve;
+                        script.onerror = function () {
+                            reject(new Error("could not load " + src));
+                        };
+                        document.head.appendChild(script);
+                    });
+                }
+
+                // What the site shows: the route its address names, which its
+                // worker stamps on `site` when the bootstrap claims the load.
+                // The placeholders keep the frame reading as loading until
+                // then, and where the space has not replicated yet.
+                function display(site) {
+                    var pending =
+                        "hidden class='site-pending'><span class='tonk-pulse' aria-hidden='true'></span></div>";
+                    return (
+                        "<tonk-display entity='" + site + "' model='tonk:site'>" +
+                        "<div slot='loading' " + pending +
+                        "<div slot='no-entity' " + pending +
+                        "<div slot='no-model' " + pending +
+                        "</tonk-display>"
+                    );
+                }
+
+                // The path this shell is kept at. It is not a place in the site.
+                var SHELL = "/space.html";
+
+                // The site runs in this document, so the shell brings it up
+                // only once the document is one the worker served, with the
+                // site's policy on it. With no worker the site does not render.
+                control().then(async function () {
+                    // The server answered an address of this site with the
+                    // app's page, there being no worker yet, and that page
+                    // sent the frame here to start one. Go back to the
+                    // address: the worker answers it now, with this shell or
+                    // with whatever content the site keeps there.
+                    if (location.hash.indexOf("#boot=") === 0) {
+                        location.replace(decodeURIComponent(location.hash.slice(6)) || "/");
+                        return;
+                    }
                     if (!servedByWorker()) {
                         if (reloadUnderWorker()) return;
                         throw new Error("the site's worker did not serve its shell");
@@ -214,7 +279,23 @@
                     try {
                         sessionStorage.removeItem("tonk-space-shell-reload");
                     } catch (error) {}
-                    parent.postMessage({ __tonkOrigin: "shell-ready" }, "*");
+                    if (location.pathname === SHELL) history.replaceState(null, "", "/");
+                    broker();
+                    say("loading");
+                    var base = document.createElement("base");
+                    base.href = "/";
+                    document.head.appendChild(base);
+                    var response = await fetch("/guest/manifest.json", { cache: "no-cache" });
+                    var manifest = await response.json();
+                    window.tonkBuildFiles = manifest;
+                    await run("/guest/" + manifest.bootstrap);
+                    await run("/guest/" + manifest.runtime);
+                    await run("/guest/" + manifest.preview);
+                    await window.tonk.ready;
+                    document.body.innerHTML = display(window.tonk.context.siteEntity);
+                    await window.tonkRuntime;
+                    await window.tonk.claimed;
+                    say("ready");
                 }).catch(report);
             })();
         </script>
