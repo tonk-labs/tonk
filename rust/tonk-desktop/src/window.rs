@@ -13,9 +13,19 @@ use wry::WebViewBuilder;
 /// natively hosted and carries live queries over WebSockets.
 const NATIVE_HOST_SCRIPT: &str = include_str!("native_host.js");
 
-/// The native-host script for a page served from `origin`.
-pub fn native_host_script(origin: &str) -> String {
-    NATIVE_HOST_SCRIPT.replace("__TONK_ORIGIN__", origin)
+/// The native-host script for a page served from `origin`, holding the
+/// launch `token` it presents on the stream route.
+pub fn native_host_script(origin: &str, token: &str) -> String {
+    NATIVE_HOST_SCRIPT
+        .replace("__TONK_ORIGIN__", origin)
+        .replace("__TONK_TOKEN__", token)
+}
+
+/// What the page's init script reports: a console error or warning.
+#[derive(serde::Deserialize)]
+struct PageReport {
+    level: String,
+    text: String,
 }
 
 /// A location for the worker's navigator to load: in the window, or in
@@ -52,7 +62,7 @@ enum Wake {
 /// Open the window on `launch_url` and run the event loop until it
 /// closes. `runtime` serves the page meanwhile, so it lives as long as
 /// the loop.
-pub fn run(runtime: Runtime, launch_url: String, origin: String) -> Result<()> {
+pub fn run(runtime: Runtime, launch_url: String, origin: String, token: String) -> Result<()> {
     let event_loop = EventLoopBuilder::<Wake>::with_user_event().build();
     // The worker navigates from its own threads; the webview can only be
     // touched from the loop, so a load is sent there as an event.
@@ -87,7 +97,14 @@ pub fn run(runtime: Runtime, launch_url: String, origin: String) -> Result<()> {
     let builder = WebViewBuilder::new()
         .with_url(&launch_url)
         .with_devtools(true)
-        .with_initialization_script(native_host_script(&origin))
+        .with_initialization_script(native_host_script(&origin, &token))
+        // Only the top document reports here; its script copies console
+        // errors and warnings so they reach the terminal.
+        .with_ipc_handler(|request| {
+            if let Ok(report) = serde_json::from_str::<PageReport>(request.body()) {
+                eprintln!("page {}: {}", report.level, report.text);
+            }
+        })
         .with_navigation_handler({
             let origin = origin.clone();
             move |url| {

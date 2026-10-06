@@ -90,6 +90,12 @@ impl Server {
         )
     }
 
+    /// The launch token, for the window's init script to present on the
+    /// stream route.
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
     /// The origin the page is served from.
     pub fn origin(&self) -> String {
         format!("http://{}", self.authority)
@@ -141,8 +147,12 @@ async fn guard(State(server): State<Server>, request: Request, next: Next) -> Re
 }
 
 /// Whether `path` reaches the worker, and so must carry the launch token.
+///
+/// The stream route checks the token itself, in the request's first
+/// message, because WKWebView does not send the `SameSite=Strict` cookie
+/// on a WebSocket handshake.
 fn needs_token(path: &str) -> bool {
-    path == "/api" || path.starts_with("/api/") || path == "/__tonk/stream"
+    path == "/api" || path.starts_with("/api/")
 }
 
 /// Whether the request's cookies include the launch token.
@@ -221,6 +231,11 @@ async fn to_worker(server: &Server, mut request: Request) -> Response {
 /// over a WebSocket (see `native_host.js`).
 #[derive(serde::Deserialize)]
 struct StreamRequest {
+    /// The launch token, which the init script holds in a closure no page
+    /// or frame can read. Stands in for the cookie WKWebView leaves off
+    /// the handshake.
+    #[serde(default)]
+    token: String,
     method: String,
     path: String,
     headers: Vec<(String, String)>,
@@ -250,18 +265,32 @@ async fn stream(
     if origin != Some(server.origin().as_str()) {
         return (StatusCode::FORBIDDEN, "not this window").into_response();
     }
-    upgrade.on_upgrade(move |socket| relay(server, socket))
+    let cookie = carries_token(&headers, &server.token);
+    upgrade.on_upgrade(move |socket| relay(server, socket, cookie))
+}
+
+/// Whether a stream request may reach the worker: its handshake carried
+/// the launch cookie, or its first message carries the launch token.
+fn stream_admitted(cookie: bool, sent: &str, token: &str) -> bool {
+    cookie || (!sent.is_empty() && constant_time_eq(sent.as_bytes(), token.as_bytes()))
 }
 
 /// Read the request off `socket`, answer it from the worker, and send the
 /// response back until its body ends or the page closes the socket.
-async fn relay(server: Server, mut socket: WebSocket) {
+async fn relay(server: Server, mut socket: WebSocket, cookie: bool) {
     let Some(Ok(Message::Text(text))) = socket.recv().await else {
         return;
     };
     let Ok(sent) = serde_json::from_str::<StreamRequest>(&text) else {
         return;
     };
+    if !stream_admitted(cookie, &sent.token, &server.token) {
+        eprintln!(
+            "request failed: stream {} -> refused, no launch token",
+            sent.path
+        );
+        return;
+    }
     // Only `/api` goes through here; the socket must not become a way
     // around the static-file rules.
     if !sent.path.starts_with("/api/") {
@@ -427,9 +456,17 @@ mod tests {
     fn it_requires_the_token_only_where_the_worker_answers() {
         assert!(needs_token("/api/identify"));
         assert!(needs_token("/api"));
-        assert!(needs_token("/__tonk/stream"));
+        assert!(!needs_token("/__tonk/stream"), "it checks the token itself");
         assert!(!needs_token("/images/tonk-wordmark.svg"));
         assert!(!needs_token("/apish"));
+    }
+
+    #[test]
+    fn it_admits_a_stream_with_the_cookie_or_the_token() {
+        assert!(stream_admitted(true, "", "secret"));
+        assert!(stream_admitted(false, "secret", "secret"));
+        assert!(!stream_admitted(false, "", "secret"));
+        assert!(!stream_admitted(false, "guess", "secret"));
     }
 
     #[test]

@@ -152,11 +152,19 @@ fn main() -> Result<()> {
             eprintln!("navigate: {href} replace={replace}");
         });
         if let Some(path) = args.host_script {
-            std::fs::write(&path, window::native_host_script(&server.origin()))?;
+            std::fs::write(
+                &path,
+                window::native_host_script(&server.origin(), server.token()),
+            )?;
         }
         runtime.block_on(tokio::signal::ctrl_c())?;
         return Ok(());
     }
 
-    window::run(runtime, server.launch_url(), server.origin())
+    window::run(
+        runtime,
+        server.launch_url(),
+        server.origin(),
+        server.token().to_owned(),
+    )
 }

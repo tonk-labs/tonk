@@ -15,6 +15,41 @@
     // opaque origins and relay their fetches through it.
     if (location.origin !== "__TONK_ORIGIN__") return;
 
+    // Proves a stream request comes from this window. WKWebView leaves the
+    // launch cookie off WebSocket handshakes, so the token rides the first
+    // message instead. It lives only in this closure.
+    const token = "__TONK_TOKEN__";
+
+    // Copy the page's errors and warnings to the app's terminal output, so
+    // one capture holds the page's view and the server's.
+    const report = (level, parts) => {
+        try {
+            const text = parts
+                .map((part) =>
+                    part instanceof Error
+                        ? `${part.name}: ${part.message}`
+                        : typeof part === "string"
+                          ? part
+                          : JSON.stringify(part),
+                )
+                .join(" ");
+            globalThis.ipc?.postMessage(JSON.stringify({ level, text }));
+        } catch {}
+    };
+    for (const level of ["error", "warn"]) {
+        const original = console[level].bind(console);
+        console[level] = (...parts) => {
+            report(level, parts);
+            original(...parts);
+        };
+    }
+    addEventListener("error", (event) =>
+        report("error", [event.message, `${event.filename}:${event.lineno}`]),
+    );
+    addEventListener("unhandledrejection", (event) =>
+        report("error", ["unhandled rejection", event.reason]),
+    );
+
     const nativeFetch = globalThis.fetch.bind(globalThis);
 
     const isLiveQuery = (request, url) =>
@@ -66,6 +101,7 @@
             socket.onopen = () => {
                 socket.send(
                     JSON.stringify({
+                        token,
                         method: request.method,
                         path: url.pathname + url.search,
                         headers: [...request.headers],
