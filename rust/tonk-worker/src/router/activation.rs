@@ -102,13 +102,15 @@ async fn activate(invocation: &str) -> Outcome {
     outcome(answer)
 }
 
-/// Record how the activation `receipt` names went, for the page that asked.
-async fn report(state: &AppState, receipt: &Entity, outcome: &Outcome) {
+/// Record how the activation `receipt` names went, on `branch`: the one the
+/// command was asserted on, which is the one the page that asked is
+/// watching.
+async fn report(state: &AppState, branch: &str, receipt: &Entity, outcome: &Outcome) {
     let tonk = state.read().await;
     if let Err(error) = tonk
         .reactor
         .profile_repository()
-        .branch(&tonk.active_branch)
+        .branch(branch)
         .overlay()
         .assert(
             the!("xyz.tonk.account-activation/status")
@@ -137,7 +139,7 @@ impl dialog_capability::Provider<tonk_schema::command::ActivateAccount>
 {
     async fn execute(&self, command: tonk_schema::command::ActivateAccount) {
         let outcome = activate(&command.invocation.0).await;
-        report(self.state(), &command.this, &outcome).await;
+        report(self.state(), &self.origin().branch, &command.this, &outcome).await;
     }
 }
 

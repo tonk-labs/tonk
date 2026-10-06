@@ -8,7 +8,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const UI = join(HERE, "..");
 const LIBRARY = join(UI, "..", "tonk-core", "assets", "library", "profile.yaml");
 
-const accountStyles = readFileSync(join(UI, "..", "tonk-core", "assets", "library", "profile", "activate.css"), "utf8");
+// The activation page's styles are its view's own, in the profile library.
+const accountStyles = readFileSync(LIBRARY, "utf8")
+  .split("    activate: |\n")[1]
+  ?.split("\n  show:")[0];
+assert.ok(accountStyles, "the activation view must carry its styles");
 const appStyles = readFileSync(join(UI, "styles.css"), "utf8");
 // The settings panel is markup on the profile branch: the
 // `<account-settings>` element's contents, plus the registration view's

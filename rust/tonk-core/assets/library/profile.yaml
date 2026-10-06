@@ -3094,7 +3094,217 @@ concept!: &account/activation
 view!:
   this: activate/route
   style:
-    activate: !include ./profile/activate.css
+    activate: |
+      /* The activation page's surface. No tokens of its own: it reads `--page`,
+         `--ink` and the rest straight from `:root` (the app's stylesheet), where
+         they alias the Web Awesome theme. */
+      account-activate {
+          display: grid;
+          min-height: 100dvh;
+          padding: 48px 16px 80px;
+          place-items: start center;
+          box-sizing: border-box;
+          background: var(--page);
+          color: var(--ink);
+          font-family: var(--cond);
+          -webkit-font-smoothing: antialiased;
+          -moz-osx-font-smoothing: grayscale;
+      }
+
+      account-activate *,
+      account-activate *::before,
+      account-activate *::after {
+          box-sizing: border-box;
+      }
+
+      account-activate ::selection {
+          background: var(--ink);
+          color: var(--on-ink);
+      }
+
+      account-activate :where(button) {
+          margin: 0;
+          border-radius: 0;
+          font: inherit;
+          min-width: 0;
+          padding: 0;
+          border: 0;
+          appearance: none;
+          background: none;
+          color: inherit;
+          letter-spacing: inherit;
+          text-align: inherit;
+          cursor: pointer;
+      }
+
+      account-activate :where(a) {
+          color: inherit;
+      }
+
+      account-activate :focus-visible {
+          outline: 0;
+          box-shadow: inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);
+      }
+
+      .account {
+          width: min(576px, calc(100vw - 32px));
+      }
+
+      .account__logo {
+          width: 132px;
+          aspect-ratio: 1024 / 343;
+          margin: 0 auto 56px;
+          background: currentcolor;
+          -webkit-mask: url("/images/tonk-wordmark.svg") center / contain no-repeat;
+          mask: url("/images/tonk-wordmark.svg") center / contain no-repeat;
+      }
+
+      .account [hidden] {
+          display: none;
+      }
+
+      .account__ceremony {
+          width: 100%;
+          margin-inline: auto;
+      }
+
+      .account__stack {
+          display: flex;
+          flex-direction: column;
+          gap: 7px;
+      }
+
+      .account__ceremony-head {
+          display: flex;
+          height: 36px;
+          margin: 0;
+          padding: 0 16px 9px;
+          align-items: flex-end;
+          background: var(--frost-solid);
+          box-shadow: 0 0 0 1px var(--ring);
+          color: var(--ink);
+          font-family: var(--cond);
+          font-size: 13px;
+          font-weight: 600;
+          line-height: 1;
+          letter-spacing: 0.02em;
+          text-transform: lowercase;
+          text-wrap: balance;
+      }
+
+      .account__run {
+          display: flex;
+          min-height: 36px;
+          padding: 0 10px 9px 24px;
+          align-items: flex-end;
+          justify-content: flex-end;
+          background: var(--ink);
+          box-shadow: 0 0 0 1px var(--ink);
+          color: var(--on-ink);
+          font-size: 13px;
+          font-weight: 600;
+          line-height: 1;
+          letter-spacing: 0.02em;
+          text-transform: lowercase;
+          text-decoration: none;
+          transition-property: scale, opacity, background-color;
+          transition-duration: 150ms;
+          transition-timing-function: ease-out;
+      }
+
+      .account__run:hover:not(:disabled) {
+          background: linear-gradient(var(--wash-p), var(--wash-p)), var(--ink);
+      }
+
+      .account__run:active:not(:disabled) {
+          scale: 0.96;
+      }
+
+      .account__run:disabled {
+          cursor: wait;
+          opacity: 0.58;
+      }
+
+      .account__narrator,
+      .account__error,
+      .account__working {
+          width: 100%;
+          margin: 7px auto 0;
+          padding: 10px 16px 11px;
+          background: var(--frost-solid);
+          box-shadow: 0 0 0 1px var(--ring);
+          color: var(--soft);
+          font-family: var(--sans);
+          font-size: 13px;
+          line-height: 1.55;
+          text-wrap: pretty;
+          overflow-wrap: anywhere;
+      }
+
+      .account__narrator p,
+      .account__error,
+      .account__working {
+          margin-block: 7px 0;
+      }
+
+      .account__narrator p {
+          margin: 0;
+      }
+
+      .account__narrator a {
+          color: var(--ink);
+          text-decoration: underline;
+          text-underline-offset: 3px;
+      }
+
+      .account__narrator a:focus-visible {
+          outline: 2px solid var(--ink);
+          outline-offset: 3px;
+      }
+
+      .account__error {
+          color: var(--ink);
+      }
+
+      .account__error:focus-visible {
+          box-shadow: 0 0 0 1px var(--ring);
+      }
+
+      .account__working:empty {
+          display: none;
+      }
+
+      @media (max-width: 751px) {
+          .account {
+              width: min(576px, calc(100vw - 32px));
+          }
+      }
+
+      @media (max-width: 463px) {
+          account-activate {
+              padding-top: max(24px, env(safe-area-inset-top));
+          }
+
+          .account__ceremony-head,
+          .account__run {
+              min-height: 44px;
+          }
+
+          .account__ceremony-head {
+              height: 44px;
+          }
+
+          .account__logo {
+              width: 98px;
+              margin-bottom: 40px;
+          }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+          .account__run {
+              transition: none;
+          }
+      }
   show:
     ui: |
       <link rel="stylesheet" with:src="activate">
@@ -3201,6 +3411,10 @@ element!: &account-activate
         self.status('Activating…');
         const abort = new AbortController();
         self.__abort = abort;
+        // An answer that has not come in this long is not coming: a worker
+        // from before this page existed takes the request and does nothing
+        // with it. Say so, never wait without end.
+        const patience = setTimeout(() => abort.abort('late'), 30000);
         const branch = (window.tonk.context || {}).branch || 'main';
         const at = (operation) => `/api/repository/profile:tonk/branch/${branch}/${operation}`;
         const post = (operation, body, accept) => fetch(at(operation), {
@@ -3250,10 +3464,14 @@ element!: &account-activate
             self.settle(outcome.detail || 'Activation failed. Try again.', outcome.status === 'refused');
           }
         } catch (failure) {
-          if (self.isConnected && !abort.signal.aborted) {
+          if (!self.isConnected) return;
+          if (abort.signal.reason === 'late') {
+            self.settle('Activation did not finish. Reload this page and try again.', false);
+          } else if (!abort.signal.aborted) {
             self.settle('The service could not be reached. Try again.', false);
           }
         } finally {
+          clearTimeout(patience);
           abort.abort();
           if (self.__abort === abort) self.__abort = null;
         }
