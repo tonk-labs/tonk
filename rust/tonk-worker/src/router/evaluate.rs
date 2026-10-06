@@ -695,6 +695,45 @@ async fn evaluate_on_branch_with<'a>(
                 txn = txn.retract(claim);
             }
         }
+        // A desired claim under a choosing policy owns its cell: every
+        // other value the branch holds there is a competitor an earlier
+        // install or a stale writer left. Each is retracted, so the cell
+        // comes to the desired value alone, whatever a read elects today:
+        // a write of a value the cell already holds writes nothing.
+        for claim in desired.iter().filter(|claim| claim.policy.elects()) {
+            use dialog_artifacts::ArtifactSelector;
+            use futures_util::StreamExt as _;
+
+            let competing = |error: &dyn std::fmt::Display| {
+                TonkWorkerError::Internal(format!("read competing claims: {error}"))
+            };
+            let stream = branch
+                .claims()
+                .select(
+                    ArtifactSelector::new()
+                        .the(claim.the.clone())
+                        .of(claim.of.clone()),
+                )
+                .perform(&tonk_state.operator)
+                .await
+                .map_err(|error| competing(&error))?;
+            tokio::pin!(stream);
+            while let Some(found) = stream.next().await {
+                let found = found
+                    .map_err(|error| competing(&error))?
+                    .to_owned()
+                    .map_err(|error| competing(&format!("{error:?}")))?;
+                let stale = crate::router::claim::RawClaim {
+                    the: found.the,
+                    of: found.of,
+                    is: found.is,
+                    policy: dialog_artifacts::Policy::All,
+                };
+                if !kept.contains(&identity(&stale)) {
+                    txn = txn.retract(stale);
+                }
+            }
+        }
         // The library was analyzed in isolation. Seed its complete desired
         // schema into this same transaction before resolving the document
         // against the branch: legacy schemas otherwise validate new views
