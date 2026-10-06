@@ -281,7 +281,8 @@ pub async fn put_repository(
     // configuration; left as a follow-up. Fails open — the space works
     // locally, it just will not follow the user to another device.
 
-    // Seed asynchronously, then flip the replica to `initialized`.
+    // In the browser, seed asynchronously, then flip the replica to
+    // `initialized`.
     // Seeding the standard library is the slow part (~seconds of
     // prolly-tree commits); doing it inline would block this response
     // and starve the page's asset/Web Awesome loads on the single SW
@@ -294,7 +295,15 @@ pub async fn put_repository(
     // when `tonk` drops at the end of this scope) and re-acquires it.
     drop(tonk);
     let branches: Vec<String> = configuration.branch.keys().cloned().collect();
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     spawn_seed(state, display_name, key, subject, branches);
+    // A native worker runs on a multi-threaded runtime, so seeding here
+    // starves nothing. It must not run beside the caller's next write
+    // either: the native file store refuses a concurrent writer instead
+    // of queueing it, so a background seed made whatever the caller wrote
+    // next (signing in, say) fail with "Concurrent write in progress".
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    seed(&state, &display_name, &key, &subject, &branches).await;
 
     Ok((StatusCode::CREATED, Json(info)))
 }
@@ -3733,6 +3742,7 @@ where
 /// Spawn the background seed + status flip for a freshly created
 /// repository. Returns immediately; the work runs after the PUT
 /// response is sent.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn spawn_seed(
     state: AppState,
     display_name: String,
@@ -3741,14 +3751,18 @@ fn spawn_seed(
     branches: Vec<String>,
 ) {
     crate::detach(async move {
-        if let Err(e) =
-            seed_and_initialize(&state, &display_name, None, &key, &subject, &branches).await
-        {
-            log!("Background seed for '{}' failed: {}", key, e);
-        }
-        let tonk = state.read().await;
-        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        seed(&state, &display_name, &key, &subject, &branches).await;
     });
+}
+
+/// Seed a freshly created repository and flip its replica to
+/// `initialized`. A failure is logged: the space exists either way.
+async fn seed(state: &AppState, display_name: &str, key: &str, subject: &Did, branches: &[String]) {
+    if let Err(e) = seed_and_initialize(state, display_name, None, key, subject, branches).await {
+        log!("Seed for '{}' failed: {}", key, e);
+    }
+    let tonk = state.read().await;
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
 /// Whether `subject` still has a recorded [`Replica`] on the profile's
