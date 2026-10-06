@@ -20,6 +20,12 @@
 //! view (resolved by model) that bridges it to the element live in the
 //! standard library (`tonk-core/assets/library/core.yaml`), seeded by
 //! the service worker at repository creation.
+//!
+//! Set `hide-fab` on a `<tonk-site>` or `<tonk-portal>` before mounting to
+//! hide `<tonk-fab>` in its guest and nested guests. Native embedders can
+//! instead set `window.__tonkHideFab = true` before Tonk boots. This is a
+//! presentation setting only; it leaves the elements and bridge active.
+//! It is inherited at mount/reload time, not a live toggle.
 
 #![warn(missing_docs)]
 
