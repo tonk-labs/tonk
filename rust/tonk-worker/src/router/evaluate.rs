@@ -1876,6 +1876,68 @@ concept!: &person
         );
     }
 
+    /// A committed command (`counter/+1!: subject: demo/c1`) hands its
+    /// entity back in the response, with `subject` resolved through the
+    /// name `demo/c1`, but never writes that entity to the branch.
+    ///
+    /// Anything that draws a result by re-reading the entity from the
+    /// store (the notebook's per-result `<tonk-display>`) therefore finds
+    /// a command's entity without its `subject` and reports "Concept
+    /// mismatch: required attribute missing". The response is the only
+    /// place the command's fields exist, so a renderer has to use it.
+    #[dialog_common::test]
+    async fn it_returns_a_commands_entity_in_the_response_but_not_the_store() {
+        let (state, repo) = state_with_repo("test-evaluate-command-entity").await;
+        let repo = repo.as_str();
+        let declarations = r#"concept!: &counter/model
+  description: Basic counter
+  with:
+    count:
+      description: Current count
+      the: io.gozala.counter/count
+      as: signed-integer
+
+command!: &counter/+1
+  description: Add one.
+  with:
+    subject:
+      description: Which counter.
+      the: xyz.tonk.counter.increment/subject
+      as: entity
+"#;
+        evaluate(&state, repo, declarations, true).await;
+        let made = evaluate(&state, repo, "counter/model!: &demo/c1\n  count: 0\n", true).await;
+        assert!(
+            !made.matches_after[0].results[0].transient,
+            "a durable entity is not flagged transient",
+        );
+        let counter = made.matches_after[0].results[0].this.clone();
+
+        let run = evaluate(&state, repo, "counter/+1!:\n  subject: demo/c1\n", true).await;
+        let results = &run.matches_after[0].results;
+        assert_eq!(
+            results.len(),
+            1,
+            "the response carries the command's entity"
+        );
+        assert!(
+            results[0].transient,
+            "the command's entity is flagged transient, so a renderer knows not to re-read it",
+        );
+        assert_eq!(
+            results[0].fields.get("subject"),
+            Some(&serde_json::Value::String(counter)),
+            "`demo/c1` resolves to the named counter entity",
+        );
+
+        let reread = evaluate(&state, repo, "counter/+1:\n", false).await;
+        assert!(
+            reread.matches_after[0].results.is_empty(),
+            "a command's entity is not persisted, got {:?}",
+            reread.matches_after[0].results,
+        );
+    }
+
     /// The evaluate pipeline must surface a committed document's
     /// transient facts for post-commit command dispatch — the seam
     /// the route and the bridge hand to `router::command::dispatch`,

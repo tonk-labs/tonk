@@ -61,4 +61,9 @@ pub struct QueryResult {
     pub this: String,
     /// Field name → bound value.
     pub fields: BTreeMap<String, serde_json::Value>,
+    /// Asserted through a transient concept (a command): present in the
+    /// response but never written to the branch, so it cannot be
+    /// re-read from the store and has to be drawn from `fields`.
+    #[serde(default)]
+    pub transient: bool,
 }
