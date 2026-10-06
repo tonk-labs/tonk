@@ -379,12 +379,66 @@ impl AttributeByEntity {
         let Some(facts) = facts.into_iter().next() else {
             return Ok(None);
         };
-        let descriptor = build_attribute_descriptor(&facts).map_err(ConceptLookupError::query)?;
+        let policy = attribute_policy_facts(&self.entity, source, env).await?;
+        let descriptor =
+            build_attribute_descriptor(&facts, &policy).map_err(ConceptLookupError::query)?;
         Ok(Some(Attribute {
             entity: self.entity,
             descriptor,
         }))
     }
+}
+
+/// The policy facts of an attribute entity: `db.attribute/select`
+/// and `db.attribute/among`, each absent on an attribute declared
+/// before they were recorded, whose descriptor then reads under its
+/// cardinality alone.
+#[derive(Debug, Default)]
+struct AttributePolicyFacts {
+    select: Option<String>,
+    among: Option<String>,
+}
+
+impl AttributePolicyFacts {
+    /// The policy facts among an attribute entity's text claims.
+    fn from_claims(claims: Vec<Claim>) -> Self {
+        let mut facts = Self::default();
+        for claim in claims {
+            let the: ArtifactsAttribute = claim.the.into();
+            let Value::String(value) = claim.is else {
+                continue;
+            };
+            match the.as_str() {
+                "db.attribute/select" => facts.select = Some(value),
+                "db.attribute/among" => facts.among = Some(value),
+                _ => {}
+            }
+        }
+        facts
+    }
+}
+
+/// Every text claim of `entity`: what the policy facts are read off.
+fn text_claims_of(entity: &Entity) -> dialog_query::AttributeQuery {
+    dialog_query::AttributeQuery::from(
+        Term::<dialog_query::attribute::The>::var("the")
+            .of(Term::from(entity.clone()))
+            .is(Term::<String>::var("value")),
+    )
+}
+
+async fn attribute_policy_facts<Env: QueryEnv>(
+    entity: &Entity,
+    source: &Source<'_>,
+    env: &Env,
+) -> Result<AttributePolicyFacts, ConceptLookupError> {
+    let claims: Vec<Claim> = source
+        .select(text_claims_of(entity))
+        .perform(env)
+        .try_vec()
+        .await
+        .map_err(|e| ConceptLookupError::query(format!("attribute policy query failed: {e:?}")))?;
+    Ok(AttributePolicyFacts::from_claims(claims))
 }
 
 /// Builder for looking up an attribute by its *selector id* — the
@@ -430,7 +484,9 @@ impl AttributeById {
         let Some(facts) = facts.into_iter().next() else {
             return Ok(None);
         };
-        let descriptor = build_attribute_descriptor(&facts).map_err(ConceptLookupError::query)?;
+        let policy = attribute_policy_facts(&facts.this, source, env).await?;
+        let descriptor =
+            build_attribute_descriptor(&facts, &policy).map_err(ConceptLookupError::query)?;
         Ok(Some(Attribute {
             entity: facts.this,
             descriptor,
@@ -474,7 +530,10 @@ impl AttributeByName {
 /// [`AnonymousAttribute`]. Round-trips through serde — the same
 /// trick dialog itself uses, so we don't have to mirror the
 /// internal `Type` ↔ string mapping.
-fn build_attribute_descriptor(facts: &AnonymousAttribute) -> Result<AttributeDescriptor, String> {
+fn build_attribute_descriptor(
+    facts: &AnonymousAttribute,
+    policy: &AttributePolicyFacts,
+) -> Result<AttributeDescriptor, String> {
     let mut shape = serde_json::Map::new();
     // The stored id spells the relation: `domain/name` for an
     // attribute, `domain/[position]` or `domain/[symbol]` for a
@@ -504,6 +563,21 @@ fn build_attribute_descriptor(facts: &AnonymousAttribute) -> Result<AttributeDes
         shape.insert(
             "description".to_owned(),
             serde_json::Value::String(facts.description.0.clone()),
+        );
+    }
+    // The listed values a `top` ranks among replace the type: dialog
+    // reads the type off the values. The policy is spelled beside
+    // them; an attribute recorded without one reads under its
+    // cardinality, as before the policy was recorded.
+    if let Some(among) = policy.among.as_deref() {
+        let listed: serde_json::Value = serde_json::from_str(among)
+            .map_err(|e| format!("could not parse the ranked values of {:?}: {e}", facts.id.0))?;
+        shape.insert("as".to_owned(), listed);
+    }
+    if let Some(select) = policy.select.as_deref() {
+        shape.insert(
+            "select".to_owned(),
+            serde_json::Value::String(select.to_owned()),
         );
     }
     serde_json::from_value(serde_json::Value::Object(shape))
@@ -1317,7 +1391,13 @@ where
         let Some(facts) = facts.into_iter().next() else {
             continue;
         };
-        let descriptor = build_attribute_descriptor(&facts).map_err(EvaluationError::Store)?;
+        let policy: Vec<Claim> = text_claims_of(&attribute_entity)
+            .perform(env)
+            .try_vec()
+            .await?;
+        let policy = AttributePolicyFacts::from_claims(policy);
+        let descriptor =
+            build_attribute_descriptor(&facts, &policy).map_err(EvaluationError::Store)?;
         let field = if optional_fields.contains(&field_name) {
             ConceptFieldDescriptor::optional(descriptor)
         } else {
@@ -2053,6 +2133,133 @@ mod tests {
             nickname.is_optional(),
             "optional field must rebuild as optional"
         );
+        Ok(())
+    }
+
+    /// An attribute's policy facts rebuild its descriptor as declared:
+    /// a ranked `as:` list reads as `top` among those values, and a
+    /// set reads as `all`. An attribute recorded without them (one
+    /// declared before the policy was recorded) still rebuilds, under
+    /// its cardinality alone.
+    #[dialog_common::test]
+    async fn it_rebuilds_an_attributes_policy_from_the_branch() -> anyhow::Result<()> {
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
+        use dialog_query::Select;
+
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let descriptor: ConceptDescriptor = serde_json::from_str(
+            r#"{
+                "with": {
+                    "status": { "the": "xyz.tonk.job/status", "as": ["case:suspended", "case:active"] },
+                    "tags": { "the": "xyz.tonk.job/tags", "as": "Text", "select": "all" },
+                    "name": { "the": "xyz.tonk.job/name", "as": "Text", "cardinality": "one" }
+                }
+            }"#,
+        )?;
+
+        let mut txn = branch.transaction();
+        for (field_name, field) in descriptor.with().iter() {
+            let attr_entity: Entity = field.to_uri().parse()?;
+            let type_name = match field.descriptor().content_type() {
+                Some(kind) => serde_json::to_value(kind)?
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                None => String::new(),
+            };
+            let cardinality = serde_json::to_value(field.descriptor().cardinality())?
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            txn = txn
+                .assert(
+                    the!("db.attribute/id")
+                        .of(attr_entity.clone())
+                        .is(field.the().to_string()),
+                )
+                .assert(
+                    the!("db.attribute/type")
+                        .of(attr_entity.clone())
+                        .is(type_name),
+                )
+                .assert(
+                    the!("db.attribute/cardinality")
+                        .of(attr_entity.clone())
+                        .is(cardinality),
+                )
+                .assert(
+                    the!("db.meta/description")
+                        .of(attr_entity.clone())
+                        .is(String::new()),
+                );
+            // `name` is recorded the way an older declaration was: its
+            // policy facts are absent.
+            if field_name != "name" {
+                txn = txn.assert(
+                    the!("db.attribute/select")
+                        .of(attr_entity.clone())
+                        .is(field.descriptor().select().to_string()),
+                );
+            }
+            if !field.descriptor().among().is_empty() {
+                txn = txn.assert(
+                    the!("db.attribute/among")
+                        .of(attr_entity)
+                        .is(serde_json::to_string(field.descriptor().among())?),
+                );
+            }
+        }
+        let concept = AnonymousConcept::new(descriptor.clone());
+        let concept_entity = concept.this.clone();
+        txn.assert(concept)
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await?;
+
+        let resolved = Concept::by_entity(concept_entity)
+            .resolve(&Source::from(&branch), &operator)
+            .await?
+            .expect("concept resolves from branch");
+        let field = |name: &str| {
+            resolved
+                .descriptor
+                .with()
+                .iter()
+                .find(|(n, _)| *n == name)
+                .unwrap_or_else(|| panic!("{name} rebuilds"))
+                .1
+                .descriptor()
+                .clone()
+        };
+        let status = field("status");
+        assert_eq!(status.select(), Select::Top);
+        assert_eq!(
+            status.among(),
+            &[
+                Value::Entity("case:suspended".parse()?),
+                Value::Entity("case:active".parse()?)
+            ],
+            "the ranked values rebuild as the entities they name, best first"
+        );
+        let declared = descriptor
+            .with()
+            .iter()
+            .find(|(n, _)| *n == "status")
+            .expect("declared")
+            .1;
+        assert_eq!(
+            status.to_uri(),
+            declared.to_uri(),
+            "the rebuilt descriptor keeps the declared identity"
+        );
+        assert_eq!(field("tags").select(), Select::All);
+        let name = field("name");
+        assert_eq!(name.select(), Select::Last);
+        assert!(name.among().is_empty());
         Ok(())
     }
 

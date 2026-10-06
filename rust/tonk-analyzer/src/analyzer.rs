@@ -1500,6 +1500,62 @@ attribute!: &person-name
         };
     }
 
+    /// A declaration records the policy its attribute is read under
+    /// beside the arity: `select` spells it, and a ranked `as:` list
+    /// is carried as `among`, a JSON list best first. A reader
+    /// rebuilding the descriptor from the branch needs both, since
+    /// `cardinality` keeps only the arity.
+    #[dialog_common::test]
+    async fn it_records_the_policy_and_the_ranked_values_of_an_attribute() {
+        let syntax = must_parse(
+            r#"
+attribute!: &status
+  the: x.y/status
+  description: "where it stands"
+  as:
+    - case:suspended
+    - case:active
+attribute!: &tags
+  the: x.y/tags
+  description: "labels"
+  as: text
+  select: all
+attribute!: &name
+  the: x.y/name
+  description: "a name"
+  as: text
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let terms_of = |index: usize| {
+            let Statement::Assert(Application::Concept { query, .. }) =
+                &analysis.mutate.statements[index]
+            else {
+                panic!("expected Assert(Concept)");
+            };
+            query.terms.clone()
+        };
+        let text = |terms: &dialog_query::Parameters, field: &str| match terms.get(field) {
+            Some(Term::Constant(Value::String(text))) => Some(text.clone()),
+            _ => None,
+        };
+        let status = terms_of(0);
+        assert_eq!(text(&status, "select").as_deref(), Some("top"));
+        assert_eq!(text(&status, "cardinality").as_deref(), Some("one"));
+        assert_eq!(
+            text(&status, "among").as_deref(),
+            Some(r#"["case:suspended","case:active"]"#),
+            "the ranked values ride as a JSON list, best first"
+        );
+        let tags = terms_of(1);
+        assert_eq!(text(&tags, "select").as_deref(), Some("all"));
+        assert_eq!(text(&tags, "cardinality").as_deref(), Some("many"));
+        assert!(text(&tags, "among").is_none(), "a set ranks nothing");
+        let name = terms_of(2);
+        assert_eq!(text(&name, "select").as_deref(), Some("last"));
+        assert!(text(&name, "among").is_none());
+    }
+
     /// A concept whose name contains a `/` (`demo/stuff`) is a
     /// concept head, not a URI head: the `/` is part of the name and
     /// the left side has no dotted domain. The assertion resolves

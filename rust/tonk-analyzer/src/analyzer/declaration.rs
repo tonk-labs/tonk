@@ -756,6 +756,19 @@ pub(crate) fn attribute_application(
         "description".into(),
         Term::Constant(Value::String(descriptor.description().to_owned())),
     );
+    // The policy the attribute is read under, spelled as `select:`
+    // spells it, and the listed values a `top` ranks among as a JSON
+    // list: a reader reconstructing the descriptor needs both, since
+    // `cardinality` keeps only the policy's arity.
+    terms.insert(
+        "select".into(),
+        Term::Constant(Value::String(descriptor.select().to_string())),
+    );
+    if !descriptor.among().is_empty()
+        && let Ok(among) = serde_json::to_string(descriptor.among())
+    {
+        terms.insert("among".into(), Term::Constant(Value::String(among)));
+    }
     Application::Concept {
         query: ConceptQuery {
             terms,
@@ -1025,6 +1038,14 @@ fn attribute_schema() -> ConceptDescriptor {
             "cardinality": { "the": "db.attribute/cardinality", "as": "Text", "cardinality": cardinality_one() },
             "description": { "the": "db.meta/description",      "as": "Text", "cardinality": cardinality_one() },
             "name":        { "the": "db.meta/name",             "as": "Text", "cardinality": cardinality_one() },
+            // How the attribute chooses among its candidates, and
+            // the values a `top` ranks among (a JSON list, best
+            // first). Written by every declaration; read back by
+            // `tonk_schema::concept::AttributeByEntity`, which
+            // tolerates their absence on attributes declared
+            // before they were recorded.
+            "select":      { "the": "db.attribute/select",      "as": "Text", "cardinality": cardinality_one() },
+            "among":       { "the": "db.attribute/among",       "as": "Text", "cardinality": cardinality_one() },
         }
     });
     serde_json::from_value(json).expect("attribute schema is well-formed")

@@ -183,6 +183,22 @@ pub mod attribute {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("db.attribute")]
     pub struct Cardinality(pub String);
+
+    /// The policy an attribute entity is read under —
+    /// `db.attribute/select`. Takes `"last"`, `"all"`, `"top"`,
+    /// `"max"` or `"min"`, as `select:` spells it. Absent on an
+    /// attribute declared before the policy was recorded, which
+    /// reads under its cardinality alone.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("db.attribute")]
+    pub struct Select(pub String);
+
+    /// The values a `top` attribute ranks among, best first —
+    /// `db.attribute/among`, a JSON list. Present only on a ranked
+    /// attribute.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("db.attribute")]
+    pub struct Among(pub String);
 }
 
 /// A typed view over an attribute entity carrying the
