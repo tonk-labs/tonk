@@ -19,7 +19,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use tonk_worker_api::{RootStatus, WEBAUTHN, WebAuthnKind, WebAuthnRequest};
+use tonk_worker_api::{WEBAUTHN, WebAuthnKind, WebAuthnRequest};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use web_sys::{Element, MessageEvent};
@@ -100,44 +100,6 @@ const CARD_HTML: &str = r#"
   </div>
 </div>
 "#;
-
-/// Derive the account's encryption key through a passkey assertion and
-/// save it with the root. `Ok(false)` when there was nothing to do: no
-/// root on this device, or the key is already recorded.
-pub(crate) async fn publish_encryption_key() -> Result<bool, String> {
-    let RootStatus::Ready {
-        credential_id,
-        delegation_hex,
-        encryption_key,
-        ..
-    } = crate::api::root_status()
-        .await
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(false);
-    };
-    if encryption_key.is_some() {
-        return Ok(false);
-    }
-    let endpoint = crate::ceremony::proposed_remote()?;
-    let published = crate::identity_bridge::publish_encryption_key(
-        crate::identity_bridge::PublishEncryptionKeyInput {
-            endpoint,
-            credential_id: Some(credential_id.clone()),
-        },
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    crate::api::save_root(
-        credential_id,
-        delegation_hex,
-        None,
-        Some(published.encryption_key),
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    Ok(true)
-}
 
 fn remove_card() {
     let anchored = card().is_some_and(|card| {
@@ -268,74 +230,6 @@ fn mount_card(anchored: bool) -> Option<Element> {
         });
     }
     Some(host)
-}
-
-/// Raise the consent card. The continue button runs the assertion inside
-/// the click and reports the outcome on the card; dismissing leaves the
-/// worker's wait to time out, failing the operation that asked.
-fn show_consent() {
-    let Some(host) = mount_card(false) else {
-        BUSY.with(|busy| busy.set(false));
-        return;
-    };
-
-    on_click(&host, "#tonk-custody-dismiss", || {
-        let mut attempt = crate::account_observability::WebAccountAttempt::start(
-            AccountAction::FinishAccountBackup,
-            tonk_analytics::account::Surface::CustodyConsent,
-            tonk_analytics::account::Trigger::User,
-            tonk_analytics::account::AccountState::Ready,
-        );
-        attempt.finish(
-            tonk_analytics::account::Stage::PasskeyAssert,
-            tonk_analytics::account::AccountOutcome::cancelled(),
-        );
-        remove_card();
-    });
-    on_click(&host, "#tonk-custody-continue", move || {
-        set_card_text("Waiting for passkey…");
-        let mut attempt = crate::account_observability::WebAccountAttempt::start(
-            AccountAction::FinishAccountBackup,
-            tonk_analytics::account::Surface::CustodyConsent,
-            tonk_analytics::account::Trigger::User,
-            tonk_analytics::account::AccountState::Ready,
-        );
-        wasm_bindgen_futures::spawn_local(async move {
-            match publish_encryption_key().await {
-                Ok(true) => {
-                    attempt.finish(
-                        tonk_analytics::account::Stage::Complete,
-                        tonk_analytics::account::AccountOutcome::success(),
-                    );
-                    tonk_common::log!("custody: encryption key published for the worker");
-                    set_card_text("Account key saved on this device.");
-                }
-                Ok(false) => {
-                    attempt.finish(
-                        tonk_analytics::account::Stage::Complete,
-                        tonk_analytics::account::AccountOutcome::success(),
-                    );
-                    set_card_text("Nothing was needed after all.")
-                }
-                Err(error) => {
-                    tonk_common::log!("custody: encryption key not published: {error}");
-                    set_card_text(&user_error::diagnostic(
-                        AccountAction::FinishAccountBackup,
-                        &error,
-                    ));
-                    let problem = user_error::problem_from_diagnostic(
-                        AccountAction::FinishAccountBackup,
-                        &error,
-                    );
-                    attempt.finish(
-                        tonk_analytics::account::Stage::PasskeyAssert,
-                        problem.outcome,
-                    );
-                }
-            }
-            remove_card_after(4000);
-        });
-    });
 }
 
 fn intent_label(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
@@ -584,12 +478,6 @@ pub fn install() {
         // worker asked the page to run a ceremony, nothing listened, and
         // the page still reported success.
         match message.request {
-            WebAuthnKind::EncryptionKey => {
-                if BUSY.with(|busy| busy.replace(true)) {
-                    return;
-                }
-                show_consent();
-            }
             WebAuthnKind::Custody => {
                 // One assertion, then the handles go to the worker,
                 // which does the work the intent names. The page builds
@@ -859,7 +747,9 @@ fn describe(error: &wasm_bindgen::JsValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+
+    wasm_bindgen_test_configure!(run_in_browser);
 
     #[wasm_bindgen_test]
     fn device_consent_tracks_its_guest_seat() {

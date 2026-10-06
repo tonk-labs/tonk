@@ -11,7 +11,7 @@ use crate::{
     LspHub,
     axum::{RequestConversion, ResponseConversion},
     bootstrap_profile,
-    router::{AppState, BridgeRegistry, ClientId, ViewBindings, api_router_with_state},
+    router::{AppState, ClientId, ViewBindings, api_router_with_state},
 };
 use axum::{
     Router,
@@ -38,7 +38,10 @@ use crate::router::repository::{
     SpaceSeed, create_content, create_copy, pending_seed, settle_seed,
 };
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use crate::router::{Saved, space_worker};
+use crate::router::{
+    Saved, client_context_is_current, clients::sweep_stale_clients, registration::ceremony_refused,
+    space_worker,
+};
 
 /// The fetch event whose lifetime owns background work started by one of its
 /// routed handlers.
@@ -114,12 +117,9 @@ enum Route {
 /// - View clients (registered via `view_bindings`) hitting `/api/`
 ///   paths receive [`Route::Reject`] — the SW returns a synthetic
 ///   404 without invoking axum. The data plane is not reachable
-///   directly from an iframe; only the bridge is.
+///   from a view client.
 /// - Paths under `/api/` from non-view clients are handled by the
 ///   axum router as-is.
-/// - A small allow-list of shared dist-root assets (the iframe
-///   bridge module) is passed straight through, even from guest
-///   iframes — see [`is_shared_asset`] for why.
 /// - Requests whose initiating client is a registered guest
 ///   iframe are *also* handled by the router, but with their
 ///   path rewritten to live under
@@ -151,9 +151,6 @@ async fn route_for(path: &str, client_id: &str, state: &AppState) -> Route {
             rewritten_path: None,
         };
     }
-    if is_shared_asset(path) {
-        return Route::Passthrough;
-    }
     let Some(binding) = view_binding else {
         return Route::Passthrough;
     };
@@ -170,15 +167,6 @@ async fn route_for(path: &str, client_id: &str, state: &AppState) -> Route {
     Route::Handle {
         rewritten_path: Some(rewritten),
     }
-}
-
-/// Paths that must reach the network even when the requesting
-/// client is a registered guest iframe. The iframe shell loads
-/// `/__tonk/bridge.js` to install `globalThis.tonk`; without this
-/// exemption the guest-binding rewrite would re-root that fetch
-/// under the iframe's branch and 404.
-fn is_shared_asset(path: &str) -> bool {
-    matches!(path, "/__tonk/bridge.js")
 }
 
 /// Route the request through the axum router, apply response
@@ -419,10 +407,6 @@ pub struct TonkState {
     /// lookup doesn't contend with profile/operator access on
     /// the outer state lock.
     pub view_bindings: ViewBindings,
-    /// Per-client bridge sessions keyed by service-worker Client
-    /// ID. Each session owns the transferred `MessagePort` and the
-    /// abort handles for any open subscriptions on that client.
-    pub bridges: BridgeRegistry,
     /// Registered command handlers — the typed-Rust effects fired by
     /// transient command concepts after a commit. Two vocabularies
     /// (profile / space), selected per dispatch by the triggering
@@ -563,16 +547,6 @@ mod route_for_tests {
                 }
             ),
             "view client static subresource should be rewritten, got {r:?}",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_passes_through_bridge_js_for_view_clients() {
-        let state = state_with_view_client("c1", "r", "main").await;
-        let r = route_for("/__tonk/bridge.js", "c1", &state).await;
-        assert!(
-            matches!(r, Route::Passthrough),
-            "bridge module must bypass the rewrite, got {r:?}",
         );
     }
 
@@ -1865,7 +1839,6 @@ pub(crate) async fn boot_state_with_profile_library(
         reject_admission_content_reads: Default::default(),
         retiring: Arc::new(AtomicBool::new(false)),
         view_bindings: Default::default(),
-        bridges: Default::default(),
         commands: crate::router::command_providers(),
         sync_queue: Default::default(),
         clients: Default::default(),
@@ -2190,10 +2163,10 @@ impl TonkServiceWorker {
         let response = future_to_promise(async move {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             let _loading_guard = loading_guard;
-            // Opportunistic cleanup of stale bridge sessions and view
-            // bindings. Cheap enough to run on every fetch.
+            // Opportunistic cleanup of what dead clients left behind.
+            // Cheap enough to run on every fetch.
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            crate::router::bridge::sweep_stale_clients(&state).await;
+            sweep_stale_clients(&state).await;
 
             match route_for(&path, &effective_client_id, &state).await {
                 Route::Handle { rewritten_path } => {
@@ -2595,9 +2568,12 @@ impl TonkServiceWorker {
         })
     }
 
-    /// Handles `message` events from view clients. Routes the
-    /// initial `hello` envelope (and future query/subscribe/evaluate
-    /// envelopes) to the bridge module.
+    /// Handles `message` events posted to the worker. Two envelopes
+    /// arrive this way: `custody`, carrying the PRF outputs of a passkey
+    /// ceremony, and `ceremony-refused`, the top-level page saying it
+    /// could not run a ceremony the account panel asked for. Queries,
+    /// subscriptions, transactions and evaluations never do: pages reach
+    /// those over the branch's HTTP routes.
     ///
     /// Wired into the SW global by the same JS bootstrap that sets
     /// `self.onfetch`.
@@ -2612,7 +2588,7 @@ impl TonkServiceWorker {
         future_to_promise(async move {
             // A custody envelope carries two transient PRF typed arrays,
             // which must not pass through JSON. Recognise it on the raw
-            // value before the ordinary typed protocol parses anything.
+            // value before anything parses the envelope.
             if crate::router::custody::is_custody_envelope(&data) {
                 crate::router::custody::receive(state, source_client_id.map(ClientId), data, ports)
                     .await;
@@ -2632,8 +2608,26 @@ impl TonkServiceWorker {
                 return Ok(JsValue::UNDEFINED);
             };
 
-            crate::router::bridge::handle_message(state, ClientId(client_id), envelope, ports)
-                .await;
+            let client = ClientId(client_id);
+            let tonk = state.read().await;
+            if !client_context_is_current(&tonk, &client).await {
+                log!("on_message: stale client rejected after profile change");
+                return Ok(JsValue::UNDEFINED);
+            }
+
+            let field = |name: &str| envelope.get(name).and_then(|v| v.as_str()).unwrap_or("");
+            match field("type") {
+                // The top-level page could not run a passkey ceremony the
+                // panel that adds an account asked for: the prompt was
+                // closed, or the browser would not show it. Nothing reached
+                // the worker to fail here, so the page says so.
+                "ceremony-refused" => {
+                    ceremony_refused(&tonk, field("kind"), field("name")).await;
+                }
+                other => {
+                    log!("on_message: unexpected envelope type '{other}' from {client:?}");
+                }
+            }
             Ok(JsValue::UNDEFINED)
         })
     }
@@ -3047,10 +3041,9 @@ pub(crate) fn offline() -> bool {
 
 /// Extracts the `source.id` string from an `ExtendableMessageEvent`.
 ///
-/// The source of a service-worker message event is a `Client`; we
-/// need its id so we can look up (or create) the `BridgeSession` in
-/// the registry. Returns `None` if the source is absent or cannot be
-/// cast to a `Client`.
+/// The source of a service-worker message event is a `Client`; its id
+/// says which page an envelope came from. Returns `None` if the source
+/// is absent or cannot be cast to a `Client`.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn event_source_client_id(event: &web_sys::ExtendableMessageEvent) -> Option<String> {
     use wasm_bindgen::JsCast;

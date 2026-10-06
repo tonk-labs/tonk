@@ -212,9 +212,6 @@ pub struct AccountCreation {
 /// returned early, and the page reported success with no ceremony run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WebAuthnKind {
-    /// See [`ENCRYPTION_KEY_REQUEST`].
-    #[serde(rename = "encryption-key")]
-    EncryptionKey,
     /// See [`CUSTODY_REQUEST`].
     #[serde(rename = "custody")]
     Custody,
@@ -224,7 +221,6 @@ impl WebAuthnKind {
     /// The wire string this kind serializes as.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::EncryptionKey => ENCRYPTION_KEY_REQUEST,
             Self::Custody => CUSTODY_REQUEST,
         }
     }
@@ -232,11 +228,6 @@ impl WebAuthnKind {
 
 /// The `type` every [`WebAuthnRequest`] message carries.
 pub const WEBAUTHN: &str = "webauthn";
-
-/// Derive the account's encryption key from a passkey assertion and
-/// save it with the root (`POST /api/identity/root` with `encryptionKey`).
-/// The worker waits for that save before continuing.
-pub const ENCRYPTION_KEY_REQUEST: &str = "encryption-key";
 
 /// Mediate a passkey so the worker can mint custody material.
 ///

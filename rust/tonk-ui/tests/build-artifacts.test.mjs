@@ -89,14 +89,6 @@ test("the publisher emits the complete immutable UI and guest resource graph", (
       ),
       "/ui-a1b2c3.js": sha256(join(dist, "ui-a1b2c3.js")),
     });
-    const worker = readFileSync(join(dist, "service_worker.js"), "utf8");
-    const stampedPaths = worker.match(/^const ASSET_PATHS = (.*);$/m);
-    assert.ok(stampedPaths, "the worker must carry its stamped immutable paths");
-    assert.deepEqual(
-      JSON.parse(stampedPaths[1]).sort(),
-      Object.keys(manifest.assets).sort(),
-      "the worker routing policy must carry the exact immutable graph it installed",
-    );
     assert.equal(
       manifest.assets["/service_worker.js"],
       undefined,
@@ -121,17 +113,11 @@ test("the page build tracks top-level document resources and ignores guest code"
       assert.equal(result.status, 0, result.stderr || result.stdout);
       const version = JSON.parse(readFileSync(join(dist, "version.json"), "utf8"));
       const document = readFileSync(join(dist, "index.html"), "utf8");
-      const worker = readFileSync(join(dist, "service_worker.js"), "utf8");
       assert.match(version.page, /^[0-9a-f]{16}$/);
       assert.match(
         document,
         new RegExp(`<meta name="tonk-page-build" content="${version.page}" />`),
         "the document names the page build it was emitted as",
-      );
-      assert.match(
-        worker,
-        new RegExp(`^const PAGE_BUILD = "${version.page}";$`, "m"),
-        "the worker reports the page build it serves",
       );
       return version;
     } finally {
@@ -260,10 +246,6 @@ test("the built document and worker carry the same immutable build id", () => {
         `<meta\\s+name="tonk-worker-build"\\s+content="${version.build}"\\s*/?>`,
       ),
       "index.html must embed the worker build it was emitted alongside; a live version probe is not document provenance",
-    );
-    assert.match(
-      worker,
-      new RegExp(`^const ASSET_MANIFEST_HASH = "${version.assetManifest}";$`, "m"),
     );
 
     const originalBuild = version.build;

@@ -16,33 +16,19 @@ const READINESS_FAILURE_MESSAGE: &str =
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen(main)]
 async fn main() {
-    // Diagnostics must remain available even when worker/Wasm startup fails.
-    if web_sys::window().is_some_and(|window| {
-        matches!(
-            window.location().pathname().as_deref(),
-            Ok("/doctor" | "/doctor/")
-        )
-    }) {
-        return;
-    }
-
     // Panic hook + (when a key is baked in and the user hasn't opted
     // out) posthog init, pageviews, and DOM-event listeners.
     tonk_ui::analytics::install();
 
-    // The outermost page is a thin SW relay: it installs the IO-owning host
-    // (document-level listeners — no element) and the `<tonk-site>` router,
-    // then mounts one `<tonk-site>`. Everything else — the hub, the space
-    // chrome, the FAB, the repo content — renders inside `<tonk-site>`'s
-    // sealed guests (the `tonk-guest` bundle), which `<tonk-site>` brings up
-    // per route. No framework, no per-route components: the profile's
-    // `route!` table decides what to render.
+    // This page mounts one `<tonk-site>` for the profile, on the profile's
+    // own origin, tells it where the address bar is, and runs the passkey
+    // ceremonies the profile's worker asks for. Everything else (the hub,
+    // a space's chrome, the bar, a space's content) renders in that site
+    // and the sites it nests, and this page asks no worker for anything.
     tonk_portal::register_site();
 
-    // Install the host IO surface before awaiting readiness; it registers
-    // document-level hooks but does not mount application elements. The
-    // top-document root waits below for the strict service-worker gate, while
-    // every later `/api/*` fetch retains the tolerant memoized host gate.
+    // What a frame asks of the page around it: navigate, set the title,
+    // pass an analytics event on.
     tonk_host::install();
 
     // Passkey ceremonies live on the window: `navigator.credentials`
@@ -80,17 +66,6 @@ async fn main() {
     #[cfg(debug_assertions)]
     inject_hot_swap();
 
-    if let Err(error) = tonk_host::ready::require().await {
-        tonk_ui::analytics::finish_startup(
-            tonk_analytics::product::Stage::Worker,
-            tonk_analytics::product::ProductResult::RetryableFailure,
-            Some(tonk_analytics::product::FailureKind::ServiceUnavailable),
-        );
-        web_sys::console::error_1(&error);
-        show_readiness_failure();
-        return;
-    }
-    tonk_ui::analytics::startup_checkpoint(tonk_analytics::product::Stage::Worker);
     mount_root();
     if web_sys::window().is_some_and(|window| {
         matches!(
@@ -136,8 +111,7 @@ fn show_readiness_failure() {
     status.set_text_content(Some(READINESS_FAILURE_MESSAGE));
 }
 
-/// Mount the top-document shell. Account routes bypass sealed guests because
-/// WebAuthn ceremonies must run in the RP ID's top-level origin.
+/// Mount the top-document shell.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn mount_root() {
     let Some(document) = web_sys::window().and_then(|w| w.document()) else {
@@ -190,10 +164,9 @@ fn render_root(shell: &web_sys::Element) {
         return;
     }
 
-    // The site mounts on the branch the profile is on, which only the
-    // worker knows: read it off `meta` first, unless the profile renders on
-    // an origin of its own, whose frame reads it there. A navigation while
-    // that read is in flight must not mount a second site.
+    // The profile renders on an origin of its own, which the deployment's
+    // configuration names. A navigation while that is being read must not
+    // mount a second site.
     if shell.has_attribute("data-mounting") {
         return;
     }
@@ -201,12 +174,11 @@ fn render_root(shell: &web_sys::Element) {
     let shell = shell.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let site_pattern = site_pattern().await;
-        let with = if site_pattern.is_some() {
-            tonk_host::bridge::profile_with()
-        } else {
-            tonk_host::bridge::resolve_profile_with().await
-        };
         let _ = shell.remove_attribute("data-mounting");
+        let Some(site_pattern) = site_pattern else {
+            show_readiness_failure();
+            return;
+        };
         shell.set_inner_html("");
         let Some(document) = shell.owner_document() else {
             return;
@@ -214,15 +186,10 @@ fn render_root(shell: &web_sys::Element) {
         let Ok(site) = document.create_element("tonk-site") else {
             return;
         };
-        let _ = site.set_attribute("with", &with);
+        let _ = site.set_attribute("with", &tonk_host::bridge::profile_with());
         let _ = site.set_attribute("allow", "*");
-        // Where the deployment names a site host, the profile renders on an
-        // origin of its own, so the space it nests can too: a frame nested in
-        // an opaque one is opaque as well.
-        if let Some(site_pattern) = site_pattern {
-            let _ = site.set_attribute("origin", &site_pattern);
-        }
-        // The path may have moved while the branch was being read.
+        let _ = site.set_attribute("origin", &site_pattern);
+        // The path may have moved while the configuration was being read.
         let path = web_sys::window()
             .and_then(|window| window.location().pathname().ok())
             .filter(|path| !path.is_empty())
@@ -234,8 +201,7 @@ fn render_root(shell: &web_sys::Element) {
 
 /// The hostname this deployment renders each site at, with `*` where the
 /// site's label goes (`*.tonk.spot`), from its `/.well-known/tonk`. `None`
-/// when it names none, or the configuration cannot be read: sites then stay
-/// in sealed frames.
+/// when it names none, or the configuration cannot be read.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn site_pattern() -> Option<String> {
     let origin = web_sys::window()?.location().origin().ok()?;

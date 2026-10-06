@@ -5,18 +5,12 @@
 
 /// Customer activation page reached from the activation email.
 pub mod activate;
-/// What the passkey ceremonies on this page propose to the worker.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub mod ceremony;
 
 mod account_observability;
 
 /// Running a WebAuthn ceremony on the service worker's behalf.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod custody_relay;
-
-/// API client for interacting with the Tonk service worker.
-pub mod api;
 
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 /// PostHog wiring for the shell page: panic hook, pageviews, and
@@ -27,9 +21,6 @@ pub mod analytics;
 
 /// Error types for the Tonk UI.
 pub mod error;
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod identity_bridge;
 
 mod user_error;
 

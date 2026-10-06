@@ -45,7 +45,7 @@ submodule per route family in [`router/`](src/router):
   its own repository outside the named-repo namespace.
 - **Inspect** (`inspect/`): read-only views of branch state, remote/remote-branch
   status, and archive index blocks for debugging.
-- **Host/guest bridge** (`host.rs`, `bridge.rs`): the iframe bridge (see below).
+- **Host/guest binding** (`host.rs`): the view iframe's route (see below).
 - **LSP** (`lsp.rs`, `lsp_env.rs`): a language-server surface merged into the
   router, carrying its own `LspHub` state and an SSE event stream.
 - **Migration** (`migration.rs`): `GET /api/migrate/repo-vs-profile`.
@@ -61,7 +61,7 @@ The router's shared state is `Arc<RwLock<TonkState>>`. `TonkState` owns:
   automatically,
 - a `CommandRegistry<CommandEnv>` (also from `dialog-reactor`) of typed-Rust
   command handlers fired by transient command concepts after a commit,
-- the iframe bridge bookkeeping (`view_bindings`, `bridges`).
+- the view iframe bookkeeping (`view_bindings`).
 
 `dialog-reactor` is the branch layer: it was extracted from this crate and is
 re-exported here as `tonk_worker::reactor` (and flattened), so `Reactor`,
@@ -110,11 +110,7 @@ A view is rendered in a sandboxed iframe. Routing policy lives entirely in
   are rewritten under `/api/repository/{repo}/branch/{branch}/...`, so a fetch
   for `/foo.js` lands inside its branch.
 - A view client hitting `/api/...` directly is rejected with a synthetic 404:
-  the data plane is reachable only through the bridge, not from the iframe.
-- The `/__tonk/bridge.js` module is exempt from rewriting so the iframe can
-  install `globalThis.tonk`. View clients then talk to the worker over a
-  transferred `MessagePort` (`onmessage` to `bridge::handle_message`), not over
-  the data-plane routes.
+  the data plane is not reachable from the iframe.
 
 Everything else passes through to the network (or the shell cache, via
 stale-while-revalidate in [`cache.rs`](src/cache.rs)).

@@ -199,7 +199,7 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
             set_status(&host, "Activating…");
             attempt.checkpoint(tonk_analytics::account::Stage::AccessService);
             let response = reqwest::Client::new()
-                .post(format!("{}/ucan/", crate::api::origin()))
+                .post(format!("{}/ucan/", page_origin()))
                 .header("content-type", "application/cbor")
                 .body(invocation)
                 .send()
@@ -247,11 +247,6 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                 set_busy(&host, false, true);
                 clear_error(&host);
                 set_status(&host, "");
-                // Tell this browser's worker now rather than at its next
-                // sweep: the probe records the activation and replays the
-                // custody publish and provisioning it deferred, so the
-                // hub this page hands back to is already served.
-                let _ = crate::api::customer_state().await;
                 show_panel(&host, "#activate-done");
             } else if body["error"]["code"].as_str() == Some("Unauthorized") {
                 attempt.finish(
@@ -304,4 +299,11 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
         button.set_onclick(Some(onclick.as_ref().unchecked_ref()));
     }
     onclick.forget();
+}
+
+/// This page's origin, where the access service answers `/ucan/`.
+fn page_origin() -> String {
+    web_sys::window()
+        .and_then(|window| window.location().origin().ok())
+        .unwrap_or_default()
 }

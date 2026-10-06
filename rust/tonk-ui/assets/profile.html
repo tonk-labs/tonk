@@ -75,6 +75,18 @@
                     });
                     sw.startMessages();
                     ask();
+                    // The app's page counts visits by the profile acting
+                    // here, which only this origin's worker knows.
+                    if (profile) {
+                        fetch("/api/identify")
+                            .then(function (response) { return response.ok ? response.json() : null; })
+                            .then(function (identity) {
+                                if (identity && identity.did) {
+                                    parent.postMessage({ __tonkOrigin: "identity", did: identity.did }, "*");
+                                }
+                            })
+                            .catch(function () {});
+                    }
                 }
                 // Written ahead of the host's markup, so the document the
                 // site renders in brokers ports too.

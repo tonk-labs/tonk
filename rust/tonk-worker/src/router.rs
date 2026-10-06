@@ -144,6 +144,8 @@ pub use query::QueryPath;
 pub use tonk_schema::{DEFAULT_BRANCH, SpaceRef, parse_space};
 
 mod session;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) use session::client_context_is_current;
 pub use session::{ClientRegistry, ClientState, Saved, SiteResponse, Stamp};
 
 mod transact;
@@ -152,8 +154,8 @@ pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
 mod transfer;
 pub use transfer::ImportResponse;
 
-pub mod bridge;
-pub use bridge::BridgeRegistry;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod clients;
 
 mod host;
 pub use host::{ClientId, ViewBinding, ViewBindings};
@@ -470,7 +472,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/branch/{branch}/query",
             post(query::query),
         )
-        // Host/guest iframe bridge. The shell embeds an iframe
+        // Host/guest iframe binding. The shell embeds an iframe
         // pointed at this URL; the handler records the iframe's
         // client id against `{repo, branch}` so its later
         // subresource fetches can be re-rooted, and serves the

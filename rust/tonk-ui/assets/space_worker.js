@@ -897,153 +897,10 @@ async function forgetSite() {
     await self.registration.unregister();
 }
 
-// ---- A profile's move in from the app's origin ---------------------------
-//
-// Before sites had origins of their own, the app's worker held the person's
-// profile, in the app's origin. A person who was here before has theirs
-// there still. So the first time a profile's worker starts, before it opens
-// anything, it asks the app's worker for what that origin stored and copies
-// it in: the databases as they are, record by record, and the files beside
-// them. It holds the spaces too, each of which then moves on to its own origin the first time it is
-// opened.
-//
-// Once, and only into an origin that holds no profile yet: one made here is
-// never replaced. A copy that was cut short is thrown away and made again.
-
-const MOVED_KEY = "/__profile/moved";
-// The databases a profile is kept in: the one its keys are kept in, its own
-// (a space under its DID) and one for each space it holds.
-const PROFILE_DATABASE = /^(dialog\.credential$|did:)/;
-// The database a profile's keys are kept in. An origin with one holds a
-// profile.
-const PROFILE_STORE = "dialog.credential";
-const MOVED_BATCH = 128;
-const MOVED_CHUNK = 8 * 1024 * 1024;
-
-function settled(request) {
-    return new Promise((resolve, reject) => {
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-    });
-}
-
-async function moveIn() {
-    const cache = await caches.open(SHELL_CACHE);
-    const marker = await (await cache.match(MOVED_KEY))?.json();
-    if (marker && marker.state !== "moving") return;
-    const mark = state =>
-        cache.put(MOVED_KEY, new Response(JSON.stringify({ state, at: new Date().toISOString() })));
-    const own = (await indexedDB.databases()).filter(({ name }) => PROFILE_DATABASE.test(name));
-    if (!marker && own.some(({ name }) => name === PROFILE_STORE)) {
-        await mark("kept");
-        return;
-    }
-    const { databases, files } = await askHost({ stored: "list" });
-    if (!databases.some(({ name }) => name === PROFILE_STORE)) {
-        await mark("none");
-        return;
-    }
-    await mark("moving");
-    const root = await navigator.storage.getDirectory();
-    for (const { name } of own) await settled(indexedDB.deleteDatabase(name));
-    for await (const name of root.keys()) await root.removeEntry(name, { recursive: true });
-    let records = 0;
-    for (const database of databases) records += await copyDatabase(database);
-    for (const file of files) await copyFile(root, file);
-    await mark("moved");
-    log(
-        `moved in from the app's origin: ${databases.length} database(s), ` +
-            `${records} record(s), ${files.filter(file => file.size !== undefined).length} file(s)`,
-    );
-}
-
-// Make the directory or file at `path` here as the app's origin has it. What
-// a record is too large for is kept in a file, in the origin's private file
-// system.
-async function copyFile(root, { path, size }) {
-    let directory = root;
-    const parents = size === undefined ? path : path.slice(0, -1);
-    for (const name of parents) directory = await directory.getDirectoryHandle(name, { create: true });
-    if (size === undefined) return;
-    const handle = await directory.getFileHandle(path[path.length - 1], { create: true });
-    const writable = await handle.createWritable();
-    try {
-        for (let offset = 0; offset < size; offset += MOVED_CHUNK) {
-            const { bytes } = await askHost({
-                stored: { file: path, offset, length: Math.min(MOVED_CHUNK, size - offset) },
-            });
-            await writable.write(bytes);
-        }
-    } finally {
-        await writable.close();
-    }
-}
-
-// A profile is held once on a device. Once this worker has opened the
-// profile it copied in, the app's origin is told to let go of its copy: not
-// before, so a copy that does not open leaves the original where it was.
-async function settleMove() {
-    const cache = await caches.open(SHELL_CACHE);
-    const marker = await (await cache.match(MOVED_KEY))?.json();
-    if (marker?.state !== "moved") return;
-    await askHost({ stored: "moved" });
-    await cache.put(
-        MOVED_KEY,
-        new Response(JSON.stringify({ state: "settled", at: new Date().toISOString() })),
-    );
-}
-
-// Make `database` here as the app's origin has it, and fill it.
-async function copyDatabase({ name, version, stores }) {
-    const opening = indexedDB.open(name, version);
-    opening.onupgradeneeded = () => {
-        for (const { name: storeName, keyPath, autoIncrement, indexes } of stores) {
-            const store = opening.result.createObjectStore(storeName, { keyPath, autoIncrement });
-            for (const index of indexes) {
-                store.createIndex(index.name, index.keyPath, {
-                    unique: index.unique,
-                    multiEntry: index.multiEntry,
-                });
-            }
-        }
-    };
-    const database = await settled(opening);
-    let copied = 0;
-    try {
-        for (const { name: storeName, keyPath } of stores) {
-            let after;
-            for (;;) {
-                const page = await askHost({
-                    stored: { database: name, store: storeName, after, limit: MOVED_BATCH },
-                });
-                if (page.records.length > 0) {
-                    const transaction = database.transaction(storeName, "readwrite");
-                    const store = transaction.objectStore(storeName);
-                    for (const [key, value] of page.records) {
-                        if (keyPath === null) store.put(value, key);
-                        else store.put(value);
-                    }
-                    await new Promise((resolve, reject) => {
-                        transaction.oncomplete = resolve;
-                        transaction.onerror = () => reject(transaction.error);
-                        transaction.onabort = () => reject(transaction.error);
-                    });
-                    copied += page.records.length;
-                    after = page.records[page.records.length - 1][0];
-                }
-                if (page.done) break;
-            }
-        }
-    } finally {
-        database.close();
-    }
-    return copied;
-}
-
 let rust;
 
 function siteWorker() {
-    rust ??= (PROFILE ? moveIn() : Promise.resolve())
+    rust ??= Promise.resolve()
         .then(async () => {
             // The Rust worker makes links for people to follow, which lead
             // to the app and not to this origin.
@@ -1057,9 +914,6 @@ function siteWorker() {
                 // holds their content: this one creates a space's identity
                 // and leaves the rest to that worker.
                 await worker.setSiteOrigins(true);
-                settleMove().catch(error =>
-                    log("the app's origin still holds what was moved:", error),
-                );
             } else {
                 const grant = await ensureGrant(worker);
                 // Who this worker acts for is kept, but where a view reads it
@@ -1070,11 +924,12 @@ function siteWorker() {
                 keepTerms(worker).catch(error => log("could not check the space's terms:", error));
             }
             await restoreSession(worker);
-            // The worker above passes requests down the port, and a port
-            // does not outlive the worker it was handed to. Open one now, so
-            // the worker above learns this is a new worker and asks again
-            // what it was still being answered.
-            if (!hostPort) portToHost().catch(() => {});
+            // A space's worker answers to its profile's, which passes
+            // requests down the port, and a port does not outlive the worker
+            // it was handed to. Open one now, so the profile's worker learns
+            // this is a new worker and asks again what it was still being
+            // answered. A profile's worker answers to none.
+            if (!PROFILE && !hostPort) portToHost().catch(() => {});
             return worker;
         })
         .catch(error => {
