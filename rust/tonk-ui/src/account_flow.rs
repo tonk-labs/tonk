@@ -7869,9 +7869,20 @@ pub(crate) mod tests {
         assert!(denied.stderr.contains("revoked"), "{}", denied.stderr);
         assert!(!denied.stdout.contains("Agent connection confirmed"));
         assert!(!denied.stderr.contains("account login"));
+        // Offline work continues on what this replica holds. A commit
+        // reads the leaf its write lands in, and a replica that pulled by
+        // reference holds only the leaves its own reads and writes
+        // touched; a write into any other leaf needs the remote, which
+        // has just refused this bearer. So the retained work rewrites the
+        // declaration this replica made while it was still connected: the
+        // leaf holding `&agent-built` is one this replica minted, and a
+        // `last` write there supersedes the earlier description without
+        // leaving the local archive. A declaration of a fresh attribute
+        // would land wherever its hash falls, and whether that leaf is
+        // held is a matter of the space's size, not of the bearer.
         let retained = run_cli(&env, &profile, &[
             "--space".into(), "ordinary-agent".into(), "eval".into(), "-c".into(),
-            "attribute!: &offline-after-revoke\n  description: Retained offline work\n  the: test.agent/retained\n  as: text\n  cardinality: one\n".into(),
+            "attribute!: &agent-built\n  description: Retained offline work\n  the: test.agent/built\n  as: text\n  cardinality: one\n".into(),
             "--no-sync".into(),
         ]).await?;
         assert!(retained.status.success(), "{}", retained.stderr);
