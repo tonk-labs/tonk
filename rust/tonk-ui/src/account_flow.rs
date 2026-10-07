@@ -1355,16 +1355,18 @@ pub(crate) mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             driver.enter_default_frame().await?;
-            if driver.current_url().await?.path() == "/"
-                && enter_guest(driver).await.is_ok()
-                && registration_stage(driver).await?.is_empty()
-            {
+            let url = driver.current_url().await?;
+            let stage = match enter_guest(driver).await {
+                Ok(()) => registration_stage(driver).await.ok(),
+                Err(_) => None,
+            };
+            if url.path() == "/" && stage.as_deref() == Some("") {
                 driver.enter_default_frame().await?;
                 return Ok(());
             }
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
-                "original tab did not finish signup"
+                "original tab did not finish signup: it is at {url}, its panel shows {stage:?}"
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -4807,8 +4809,21 @@ pub(crate) mod tests {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
+                let panel = driver
+                    .execute(
+                        r##"const panel = document.querySelector("#tonk-register");
+                           return {
+                               stage: panel?.dataset.registration ?? null,
+                               kind: panel?.dataset.kind ?? null,
+                               text: panel?.innerText.replace(/\s+/g, " ").trim().slice(0, 400) ?? null,
+                           };"##,
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|value| value.json().to_string())
+                    .unwrap_or_else(|error| format!("panel unreadable: {error}"));
                 return Err(anyhow!(
-                    "the {noun:?} row never reached {expected:?}; it reads {last:?}"
+                    "the {noun:?} row never reached {expected:?}; it reads {last:?}; panel={panel}"
                 ));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;

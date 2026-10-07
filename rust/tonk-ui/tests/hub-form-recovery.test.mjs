@@ -143,3 +143,23 @@ for (const kind of ['create', 'rename']) {
     });
   }
 }
+
+test('settings asks the worker on its own origin, not the app page\'s', async () => {
+  const asked = [];
+  const before = { window: globalThis.window };
+  globalThis.window = {
+    fetch: async (url, init) => {
+      asked.push([url, init?.method ?? 'GET']);
+      return { ok: true, text: async () => '{"subject":"did:key:zSpace"}' };
+    },
+  };
+  // What the page around says of itself: the app's origin, which holds no worker API.
+  const self = { context: () => ({ origin: 'https://tonk.test', path: '/settings/link' }) };
+  try {
+    const described = await method('account-settings', 'api')(self, '/api/local-space-link/describe', { request: 'r' });
+    assert.deepEqual(described, { subject: 'did:key:zSpace' });
+    assert.deepEqual(asked, [['/api/local-space-link/describe', 'POST']]);
+  } finally {
+    globalThis.window = before.window;
+  }
+});
