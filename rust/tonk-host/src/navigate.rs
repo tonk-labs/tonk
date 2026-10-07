@@ -46,7 +46,11 @@ pub(crate) fn install() -> Option<NavigateListener> {
     Some(NavigateListener { _closure: closure })
 }
 
-fn handle_worker_message(data: &JsValue) {
+/// Act on what a worker told its page: go to an address, load one afresh,
+/// push a commit, or reload for a changed profile. The page whose own worker
+/// says it hears it through [`install`]; the page framing a site hears that
+/// site's worker here, relayed by the frame.
+pub fn handle_worker_message(data: &JsValue) {
     if let Some(href) = navigate_href(data) {
         if replaces(data) {
             replace_page(&href);

@@ -1248,6 +1248,8 @@ fn hear_worker_message(data: &JsValue) {
     if let Ok(event) = MessageEvent::new_with_event_init_dict("message", &init) {
         let _ = window.navigator().service_worker().dispatch_event(&event);
     }
+    // Where to go next and a changed profile are the page's to act on.
+    tonk_host::handle_worker_message(&message);
 }
 
 /// Register `(iframe, host, state)` so the `hello` listener can resolve
@@ -4106,5 +4108,29 @@ mod tests {
             ["replicating the space", "ready", "loading"],
             "each stage reaches the page, bubbling from the site's element"
         );
+    }
+
+    /// What the profile's worker tells the page it works for reaches that
+    /// page through the profile's frame, and the page acts on it: told
+    /// where to go, it goes.
+    #[dialog_common::test]
+    fn it_goes_where_a_sites_worker_sends_the_page() {
+        let window = web_sys::window().expect("window");
+        let before = window.location().href().expect("href");
+
+        let message = Object::new();
+        Reflect::set(&message, &"type".into(), &"navigate".into()).unwrap();
+        Reflect::set(&message, &"href".into(), &"?sent-by-the-worker".into()).unwrap();
+        let relayed = Object::new();
+        Reflect::set(&relayed, &"message".into(), &message).unwrap();
+        hear_worker_message(&relayed);
+
+        let search = window.location().search().expect("search");
+        window
+            .history()
+            .expect("history")
+            .replace_state_with_url(&JsValue::NULL, "", Some(&before))
+            .expect("restore the address");
+        assert_eq!(search, "?sent-by-the-worker");
     }
 }

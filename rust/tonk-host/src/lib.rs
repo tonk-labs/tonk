@@ -91,7 +91,8 @@ mod navigate;
 mod page_effect;
 #[cfg(target_arch = "wasm32")]
 pub use navigate::{
-    navigate_to, reload_page, replace_to, request_contained_task, request_registration, traverse,
+    handle_worker_message, navigate_to, reload_page, replace_to, request_contained_task,
+    request_registration, traverse,
 };
 #[cfg(target_arch = "wasm32")]
 mod open;
