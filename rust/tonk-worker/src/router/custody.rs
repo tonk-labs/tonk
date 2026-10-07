@@ -551,7 +551,11 @@ fn finish_login_once_served(
                     )
                     .await
                     {
-                        Ok(_) => log!("custody: the parked login finished on activation"),
+                        Ok(_) => {
+                            log!("custody: the parked login finished on activation");
+                            // The panel that parked it waits on nothing now.
+                            super::registration::activated(&*state.read().await).await;
+                        }
                         Err(error) => log!("custody: the parked login could not finish: {error}"),
                     }
                     return;
