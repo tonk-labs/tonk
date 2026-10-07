@@ -9721,134 +9721,6 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Put the profile now active, which holds the account, aside for a
-    /// fresh one linked to the same account the way a page from before the
-    /// encryption key existed linked a device: the account signs the new
-    /// device in, and the root is stored WITHOUT the key.
-    ///
-    /// The grant is the account's to sign, behind its passkey, in the
-    /// worker that holds it: the profile already linked asks for one hop to
-    /// the fresh profile's device, as any page asks for a delegation. The
-    /// two saves then replay what a legacy page persisted, the root save
-    /// omitting the `encryptionKey` the modern path carries. The credential
-    /// id is read from the virtual authenticator over CDP: it is the value
-    /// a legacy page had stored.
-    async fn legacy_link(
-        driver: &WebDriver,
-        env: &TestEnvironment,
-        authenticator_id: &str,
-    ) -> Result<()> {
-        use base64::Engine as _;
-        let devtools = ChromeDevTools::new(driver.handle.clone());
-        let held = devtools
-            .execute_cdp_with_params(
-                "WebAuthn.getCredentials",
-                serde_json::json!({ "authenticatorId": authenticator_id }),
-            )
-            .await?;
-        let credential_id = held["credentials"]
-            .get(0)
-            .and_then(|credential| credential["credentialId"].as_str())
-            .context("the virtual authenticator holds no credential to link with")?;
-        let credential_id = hex::encode(
-            base64::engine::general_purpose::STANDARD
-                .decode(credential_id)
-                .context("CDP credential id is not base64")?,
-        );
-
-        let active = async |driver: &WebDriver| -> Result<String> {
-            let profiles = get_json(driver, "/api/profiles").await?;
-            Ok(active_profile_and_label(successful_body("list profiles", &profiles))?.0)
-        };
-        let linked = active(driver).await?;
-        let root = get_json(driver, "/api/identity/root").await?;
-        let root_did = successful_body("the linked profile's root", &root)["rootDid"]
-            .as_str()
-            .context("the linked profile names no account")?
-            .to_string();
-
-        // A fresh profile, with no root of its own, is what a new browser
-        // is. Its device is who the account's grant is addressed to.
-        let added = post_json(driver, "/api/profiles/add", serde_json::json!({})).await?;
-        successful_body("add profile", &added);
-        goto(driver, env.tonk_web.as_str()).await?;
-        let fresh = active(driver).await?;
-        let identify = get_json(driver, "/api/identify").await?;
-        let device_did = successful_body("identify", &identify)["did"]
-            .as_str()
-            .context("identify omitted the device DID")?
-            .to_string();
-
-        // Back on the linked profile, the account signs the hop.
-        let switched = post_json(
-            driver,
-            "/api/profiles/activate",
-            serde_json::json!({ "profile": linked }),
-        )
-        .await?;
-        successful_body("return to the linked profile", &switched);
-        goto(driver, env.tonk_web.as_str()).await?;
-        enter_profile(driver).await?;
-        let minted = driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                const [subject, audience] = arguments;
-                window.tonk.delegate({ subject, command: "/", audience })
-                    .then(delegation => done({ delegation }))
-                    .catch(error => done({ error: String(error?.message ?? error) }));
-                "#,
-                vec![serde_json::json!(root_did), serde_json::json!(device_did)],
-            )
-            .await?
-            .json()
-            .clone();
-        driver.enter_default_frame().await?;
-        let delegation = minted["delegation"]
-            .as_str()
-            .with_context(|| format!("the account signed no grant for the device: {minted}"))?;
-        let delegation = hex::encode(
-            bs58::decode(delegation)
-                .into_vec()
-                .context("the grant is not base58")?,
-        );
-
-        let switched = post_json(
-            driver,
-            "/api/profiles/activate",
-            serde_json::json!({ "profile": fresh }),
-        )
-        .await?;
-        successful_body("return to the fresh profile", &switched);
-        goto(driver, env.tonk_web.as_str()).await?;
-
-        let saved = post_json(
-            driver,
-            "/api/identity/root",
-            serde_json::json!({
-                "credentialId": credential_id,
-                "delegationHex": delegation,
-            }),
-        )
-        .await?;
-        successful_body("legacy root save", &saved);
-        let attached = post_json(
-            driver,
-            "/api/account/attach",
-            serde_json::json!({
-                "provider": env.tonk_web.join("ucan/")?,
-                "rootDid": root_did,
-                "credentialId": credential_id,
-                "delegationHex": delegation,
-                "remote": env.tonk_web.join("ucan/")?,
-                "initializeName": false,
-            }),
-        )
-        .await?;
-        successful_body("legacy attach", &attached);
-        Ok(())
-    }
-
     /// Poll a JSON GET until `accept` says the body is what we wait for.
     async fn poll_json(
         driver: &WebDriver,
@@ -9869,19 +9741,23 @@ pub(crate) mod tests {
         }
     }
 
-    /// A device linked before the account published an encryption key
+    /// A device linked to an account without the account's encryption key
     /// still takes a new space into the account's custody: the space's key
     /// is sealed to the account's own DID, so nothing asks the page for a
     /// passkey assertion to learn a key first.
-    #[dialog_common::test]
+    ///
+    /// Signing in through another deployment is such a link: the grant
+    /// arrives with no ceremony here that held the account's secret, so
+    /// the root is recorded without the key. A link made by a page from
+    /// before the key existed has the same shape.
+    #[dialog_common::test(sibling = true)]
     async fn it_takes_a_new_space_into_custody_on_a_device_linked_without_a_key(
         env: TestEnvironment,
     ) -> Result<()> {
-        let (creator, authenticator) = driver_with_prf_authenticator(&env).await?;
+        let creator = driver_with_prf(&env).await?;
         sign_up(&creator, &env, EMAIL).await?;
-        // A second device on the same account, in the same session so the
-        // virtual authenticator still holds the passkey.
-        legacy_link(&creator, &env, &authenticator).await?;
+        let home = env.tonk_web.origin().ascii_serialization();
+        sign_in_through(&creator, &env, &home).await?;
 
         let root = get_json(&creator, "/api/identity/root").await?;
         let root = successful_body("root status", &root);
