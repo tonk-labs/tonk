@@ -116,6 +116,58 @@ fn mime_for_extension(ext: &str) -> String {
     }
 }
 
+/// A blob an `!include/blob` named while a document expanded. Nothing
+/// is stored yet: [`describe`] asserts it on the document's transaction,
+/// and the commit stores its bytes in the same revision as the facts that
+/// point at it, so a dry run, or a rejected document, stores nothing.
+#[derive(Debug, Clone)]
+pub struct Included {
+    /// The content, named `asset:<hash>` by its hash.
+    pub asset: dialog_artifacts::Asset,
+    /// MIME type inferred from the included path's extension.
+    pub content_type: String,
+    /// File name of the included path.
+    pub name: String,
+}
+
+impl Included {
+    /// Name the bytes read from `path`. Idempotent like [`add`]: the
+    /// same bytes always name the same entity, so re-evaluating an
+    /// unchanged document changes nothing.
+    pub fn new(path: &Path, bytes: Vec<u8>) -> Result<Self, BlobError> {
+        let asset = dialog_artifacts::Asset::new(bytes);
+        let entity = asset
+            .entity()
+            .map_err(|e| BlobError::Site(format!("name blob: {e}")))?;
+        Ok(Self {
+            content_type: resolve_content_type(path, None),
+            name: file_name(path).unwrap_or_else(|| entity.to_string()),
+            asset,
+        })
+    }
+
+    /// The content-addressed entity fields refer to it by.
+    pub fn entity(&self) -> Entity {
+        self.asset
+            .entity()
+            .expect("an asset's entity was formed when it was included")
+    }
+}
+
+/// Assert an included blob on `transaction`, which stores its bytes when
+/// the transaction commits, along with the content type and name [`add`]
+/// asserts, so the seeded media view renders it.
+pub fn describe<B>(
+    transaction: dialog_repository::Transaction<B>,
+    blob: &Included,
+) -> dialog_repository::Transaction<B> {
+    let entity = blob.entity();
+    transaction
+        .assert(blob.asset.clone())
+        .assert(ContentType::of(entity.clone()).is(blob.content_type.clone()))
+        .assert(Name::of(entity).is(blob.name.clone()))
+}
+
 /// What an add would write, without writing any of it.
 ///
 /// The `--dry-run` counterpart to [`add`]. It deliberately carries no

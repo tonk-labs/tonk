@@ -301,6 +301,7 @@ note!:
   this: id:today
   body: !include/text ./today.md   # the file's text
   cover: !include ../media/a.webp  # the file's bytes
+  photo: !include/blob ./photo.png # a reference to the file, stored as a blob
 ```
 
 The reference is a URI reference resolved against the location of
@@ -314,6 +315,14 @@ including a field with no declared type, it stays bytes.
 `!include/text` asks for text outright, which is what an untyped
 field needs to hold text. Content that is not UTF-8 is refused
 wherever text is asked for, rather than decoded lossily.
+
+`!include/blob` stores the file in the space's blob store and
+writes its content-addressed reference, so the field is an entity
+(`as: entity`) rather than the bytes themselves. Its content type
+(from the file extension) and file name are asserted on the blob
+in the same commit, which is what the standard media view renders
+from. Including the same bytes again stores nothing new. Only the
+CLI can store blobs; elsewhere the include is rejected.
 
 Only a document that has a location can include. `tonk eval
 note.yaml` reads includes relative to `note.yaml`; a document with

@@ -179,10 +179,6 @@ pub async fn run_against_site(
         text.push_str(&build_home_recipe(std::slice::from_ref(model)));
     }
     let mut syntax = parse_or_diagnose(&label, location, &text)?;
-    let unexpanded = expand(&mut syntax, &Files).await;
-    if !unexpanded.is_empty() {
-        return Err(EvalError::Parse(format_diagnostics(&label, &unexpanded)));
-    }
 
     let session = site
         .branch()
@@ -190,12 +186,17 @@ pub async fn run_against_site(
         .map_err(|e| EvalError::Io(format!("acquire branch: {e}")))?;
     let branch = session.handle();
 
+    let blobs = expand_includes(&label, &mut syntax).await?;
+
     let revision_before = branch.revision();
-    let evaluated = syntax
+    let mut evaluated = syntax
         .evaluate(branch.transaction())
         .perform(&site.operator)
         .await
         .map_err(map_evaluate_error)?;
+    for blob in &blobs {
+        evaluated.txn = crate::blob::describe(evaluated.txn, blob);
+    }
 
     // Compute the post-evaluation match view by re-running the
     // analyzer's queries against the txn overlay. The overlay
@@ -264,6 +265,61 @@ pub async fn run_against_site(
     })
 }
 
+/// Replace every `!include` in `syntax` with what it names. Returns the
+/// `!include/blob` content, which the caller asserts on its transaction
+/// with [`crate::blob::describe`].
+async fn expand_includes(
+    label: &str,
+    syntax: &mut Syntax,
+) -> Result<Vec<crate::blob::Included>, EvalError> {
+    let files = Files {
+        blobs: std::sync::Mutex::default(),
+    };
+    let unexpanded = expand(syntax, &files).await;
+    if !unexpanded.is_empty() {
+        return Err(EvalError::Parse(format_diagnostics(label, &unexpanded)));
+    }
+    Ok(files.blobs.into_inner().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// One document evaluated into a shared transaction by [`evaluate_into`].
+pub struct Applied<'a> {
+    /// The transaction, now carrying this document's writes as well.
+    pub txn: dialog_repository::Transaction<&'a dialog_repository::Branch>,
+    /// Claims the document asserted.
+    pub claims: usize,
+    /// Whether the document wrote anything (rather than only querying).
+    pub writes: bool,
+}
+
+/// Evaluate `source` into `txn` without committing, so several
+/// documents can land in one commit. Names a document declares are
+/// visible to the documents evaluated after it, because resolution
+/// reads through the transaction's overlay.
+pub async fn evaluate_into<'a>(
+    site: &TonkSite,
+    txn: dialog_repository::Transaction<&'a dialog_repository::Branch>,
+    source: Source,
+) -> Result<Applied<'a>, EvalError> {
+    let label = source.label();
+    let text = source.read().await?;
+    let mut syntax = parse_or_diagnose(&label, source.location()?, &text)?;
+    let blobs = expand_includes(&label, &mut syntax).await?;
+    let mut evaluated = syntax
+        .evaluate(txn)
+        .perform(&site.operator)
+        .await
+        .map_err(map_evaluate_error)?;
+    for blob in &blobs {
+        evaluated.txn = crate::blob::describe(evaluated.txn, blob);
+    }
+    Ok(Applied {
+        writes: evaluated.analysis.analysis.has_statements(),
+        claims: evaluated.commits.claims,
+        txn: evaluated.txn,
+    })
+}
+
 /// Drive the parser and project diagnostics onto either a clean
 /// [`Syntax`] or a parse error formatted for stderr.
 fn parse_or_diagnose(source: &str, location: Url, text: &str) -> Result<Syntax, EvalError> {
@@ -295,7 +351,14 @@ fn format_diagnostics(source: &str, diagnostics: &[lsp_types::Diagnostic]) -> St
 /// filesystem, and the bundled standard library's includes from the
 /// binary. An include that names anything else is reported rather than
 /// fetched.
-struct Files;
+///
+/// `!include/blob` content is remembered in `blobs` rather than stored:
+/// the caller asserts each one on the document's transaction, so its
+/// bytes are stored by the commit that refers to them, and a dry run
+/// stores nothing.
+struct Files {
+    blobs: std::sync::Mutex<Vec<crate::blob::Included>>,
+}
 
 impl Load for Files {
     async fn load(&self, uri: &Url) -> Result<Vec<u8>, String> {
@@ -313,6 +376,17 @@ impl Load for Files {
                 "only `file:` resources can be included here, not `{scheme}:`"
             )),
         }
+    }
+
+    async fn store(&self, uri: &Url, bytes: Vec<u8>) -> Result<String, String> {
+        let path = std::path::PathBuf::from(uri.path());
+        let included = crate::blob::Included::new(&path, bytes).map_err(|e| e.to_string())?;
+        let reference = included.entity().to_string();
+        self.blobs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(included);
+        Ok(reference)
     }
 }
 

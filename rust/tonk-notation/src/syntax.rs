@@ -311,7 +311,7 @@ impl Include {
     }
 }
 
-/// How an included resource's bytes become a literal.
+/// How an included resource's bytes become a field value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IncludeForm {
     /// `!include` — the content as it is, a [`Scalar::Included`]. The
@@ -322,6 +322,11 @@ pub enum IncludeForm {
     /// [`Scalar::String`] wherever it is written. For an untyped field
     /// that should hold text.
     Text,
+    /// `!include/blob` — the content is stored as a content-addressed
+    /// blob and the field holds its reference, a
+    /// [`FieldValue::Uri`]. For media and files a view renders from the
+    /// blob store rather than from the fact itself.
+    Blob,
 }
 
 impl IncludeForm {
@@ -330,6 +335,7 @@ impl IncludeForm {
         match self {
             IncludeForm::Bytes => "include",
             IncludeForm::Text => "include/text",
+            IncludeForm::Blob => "include/blob",
         }
     }
 }

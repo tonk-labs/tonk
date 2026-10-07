@@ -59,6 +59,7 @@ write facts
    assert     Create an instance of a concept, or update fields on one
    retract    Retract a field, or a whole instance
    eval       Evaluate a notation document: anything the verbs can't say
+   publish    Assert a directory of notation documents and push them
 
 define
    concept    List concepts, or define one with typed fields
@@ -348,6 +349,11 @@ enum Command {
         /// Self-reported connection label shown in the issuing account's settings.
         #[arg(long, requires = "url")]
         agent_name: Option<String>,
+        /// Stable installation identity (32 lowercase hex characters)
+        /// instead of a random one, for a setup recreated on every run
+        /// such as CI, so repeated joins confirm one installation.
+        #[arg(long, value_name = "ID", requires = "url", hide = true)]
+        installation: Option<String>,
         /// Trust this Tonk deployment origin for the import.
         /// Overrides TONK_CONNECTION_ORIGIN and must match the signed /ucan/ route.
         #[arg(long, value_name = "ORIGIN", requires = "url")]
@@ -361,6 +367,36 @@ enum Command {
     /// Pull local main from its upstream
     #[command(after_help = "Examples:\n  tonk pull")]
     Pull,
+
+    /// Assert a directory of notation documents and push the result
+    ///
+    /// Evaluates every `*.yaml` / `*.yml` under DIR in path order
+    /// (hidden entries skipped) into one commit, so `00-schema.yaml`
+    /// runs before the documents that use it and a rejected document
+    /// commits nothing. `!include/blob ./asset.png` stores a
+    /// referenced file as a blob. Publishing asserts and never
+    /// retracts: removing a file leaves its facts in the space.
+    ///
+    /// Pulls first, then pushes once after the last document. When
+    /// another writer moved the upstream meanwhile, pulls (merging
+    /// both sides) and pushes again, up to --attempts times.
+    #[command(
+        after_help = "Safe to re-run: an unchanged directory commits and pushes nothing.\n\nExamples:\n  tonk publish ./site\n  tonk publish ./site --dry-run\n  tonk publish ./site --attempts 10 --json"
+    )]
+    Publish {
+        /// Directory of notation documents.
+        #[arg(value_name = "DIR")]
+        dir: PathBuf,
+        /// Push attempts before giving up on an upstream that keeps moving.
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..))]
+        attempts: u32,
+        /// Evaluate every document without committing or syncing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the outcome as camelCase JSON.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// List or manage remotes
     Remote {
@@ -1057,6 +1093,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Import { .. } => ("import", None),
         Command::Push => ("push", None),
         Command::Pull => ("pull", None),
+        Command::Publish { .. } => ("publish", None),
         Command::Status { .. } => ("status", None),
         Command::Invite { .. } => ("invite", None),
         Command::Join { .. } => ("join", None),
@@ -1117,6 +1154,7 @@ fn uses_active_space(command: &Command) -> bool {
             | Command::Import { .. }
             | Command::Push
             | Command::Pull
+            | Command::Publish { .. }
             | Command::Status { .. }
             | Command::Invite { .. }
             | Command::Remote { .. }
@@ -1238,6 +1276,12 @@ async fn main() {
         } => import_op(file, &branch, write, space.as_deref()).await,
         Command::Push => sync_op(SyncOp::Push, space.as_deref()).await,
         Command::Pull => sync_op(SyncOp::Pull, space.as_deref()).await,
+        Command::Publish {
+            dir,
+            attempts,
+            dry_run,
+            json,
+        } => publish_op(dir, attempts, dry_run, json, space.as_deref()).await,
         Command::Status { json } => status_op(json, space.as_deref()).await,
         Command::Invite {
             base_url,
@@ -1260,12 +1304,14 @@ async fn main() {
             url,
             name,
             agent_name,
+            installation,
             via,
         } => {
             join_command(
                 url,
                 name,
                 agent_name.as_deref(),
+                installation.as_deref(),
                 via.as_deref(),
                 space.as_deref(),
             )
@@ -1963,6 +2009,53 @@ async fn sync_op(op: SyncOp, space: Option<&str>) -> ExitCode {
     }
 }
 
+async fn publish_op(
+    dir: PathBuf,
+    attempts: u32,
+    dry_run: bool,
+    json: bool,
+    space: Option<&str>,
+) -> ExitCode {
+    let (resolved, site) = match open_selected(space).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+    let options = tonk_cli::publish::Options { attempts, dry_run };
+    match tonk_cli::publish::run(&site, &dir, options).await {
+        Ok(outcome) => {
+            if json {
+                match serde_json::to_string_pretty(&outcome) {
+                    Ok(text) => println!("{text}"),
+                    Err(error) => return print_failure(error),
+                }
+            } else {
+                for document in &outcome.documents {
+                    println!("{}\t{} claims", document.path.display(), document.claims);
+                }
+                let state = match (dry_run, outcome.changed, outcome.pushed) {
+                    (true, _, _) => "dry run: nothing committed",
+                    (false, false, false) => "up to date: nothing to publish",
+                    (false, true, false) => "committed locally; no upstream to push to",
+                    (false, _, true) => "published",
+                };
+                println!("{state}");
+            }
+            ExitCode::Success
+        }
+        Err(tonk_cli::publish::PublishError::Sync(err @ sync::SyncError::Rejected { .. })) => {
+            let sync::SyncError::Rejected { reason, .. } = &err else {
+                unreachable!("matched one line above")
+            };
+            eprintln!(
+                "error: {}",
+                sync::rejection_report(&site, &resolved.name, reason).await
+            );
+            err.exit_code()
+        }
+        Err(err) => print_coded(err),
+    }
+}
+
 async fn export_op(out: Option<PathBuf>, branch: &str, space: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
@@ -2562,11 +2655,17 @@ async fn join_command(
     url: Option<String>,
     name: Option<String>,
     agent_name: Option<&str>,
+    installation: Option<&str>,
     via: Option<&str>,
     selected: Option<&str>,
 ) -> ExitCode {
     if let Some(name) = agent_name
         && let Err(error) = tonk_cli::connections::validate_agent_name(name)
+    {
+        return print_failure(error);
+    }
+    if let Some(installation) = installation
+        && let Err(error) = tonk_cli::connections::validate_installation(installation)
     {
         return print_failure(error);
     }
@@ -2579,7 +2678,8 @@ async fn join_command(
             }
             match tonk_cli::join::prepare(&url).await {
                 Ok(prepared) => {
-                    connect_scoped_agent(prepared, name.as_deref(), agent_name, via).await
+                    connect_scoped_agent(prepared, name.as_deref(), agent_name, installation, via)
+                        .await
                 }
                 Err(error) => print_failure(error),
             }
@@ -2801,12 +2901,14 @@ async fn connect_scoped_agent(
     prepared: tonk_cli::join::PreparedAgent,
     requested_name: Option<&str>,
     agent_name: Option<&str>,
+    installation: Option<&str>,
     via: Option<&str>,
 ) -> ExitCode {
     async fn import(
         prepared: &tonk_cli::join::PreparedAgent,
         requested_name: Option<&str>,
         agent_name: Option<&str>,
+        installation: Option<&str>,
         via: Option<&str>,
     ) -> anyhow::Result<(
         tonk_cli::space::SpaceStore,
@@ -2867,7 +2969,12 @@ async fn connect_scoped_agent(
             );
         }
         let installed = tonk_cli::connections::import_at(&root, &validated, store.clone()).await?;
-        tonk_cli::connections::installation_receipt(&root, &binding.id, agent_name)?;
+        tonk_cli::connections::installation_receipt_as(
+            &root,
+            &binding.id,
+            agent_name,
+            installation,
+        )?;
         if let Some(name) = requested_name {
             tonk_cli::handoff::remember_connection_name(&root, name)?;
         }
@@ -2875,7 +2982,7 @@ async fn connect_scoped_agent(
         Ok((store, name, root, installed, cwd))
     }
     let (store, name, root, binding, cwd) =
-        match import(&prepared, requested_name, agent_name, via).await {
+        match import(&prepared, requested_name, agent_name, installation, via).await {
             Ok(imported) => imported,
             Err(error) => return print_failure(error),
         };
@@ -3866,7 +3973,7 @@ mod account_spaces_parser_tests {
         ])
         .expect("copied handoff parses");
         assert!(
-            matches!(cli.command, Some(Command::Join { url: Some(url), name, via, agent_name: None })
+            matches!(cli.command, Some(Command::Join { url: Some(url), name, via, agent_name: None, .. })
             if url == invite
                 && name.as_deref() == Some("my-agent")
                 && via.as_deref() == Some("https://staging.tonk.xyz"))

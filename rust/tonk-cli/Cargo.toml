@@ -99,6 +99,10 @@ name = "include"
 path = "tests/include.rs"
 
 [[test]]
+name = "publish"
+path = "tests/publish.rs"
+
+[[test]]
 name = "authoring"
 path = "tests/authoring.rs"
 
