@@ -6131,6 +6131,8 @@ element!: &account-task
       (self) => {
         self._onTask = (event) => self.task(event.detail);
         window.addEventListener('tonk:account-task', self._onTask);
+        // A task the bar raised before this element was here to hear it.
+        for (const open of window.tonkAccountTasksOpen?.() ?? []) self.task(open);
         self._observer = new MutationObserver(() => self.watch());
         self._observer.observe(self, { subtree: true, attributes: true, attributeFilter: ['data-state'] });
       }

@@ -269,3 +269,19 @@ test("the data API is not on the frame's bridge", async () => {
     assert.equal(typeof site.tonk[kept], "function", `${kept} is asked of the page around`);
   }
 });
+
+test("an account task asked before anything listens stays open for what listens later", async () => {
+  const profile = frame({ origin: "https://profile.tonk.test" });
+  await profile.ready({ repo: "" });
+  const ask = (request) => profile.tonk.task(JSON.stringify({ purpose: "account", ...request }), () => {});
+
+  ask({ action: "open", requestId: "task-1", presentation: { anchor: { left: 1 } } });
+  ask({ action: "reseat", requestId: "task-1", presentation: { anchor: { left: 2 } } });
+
+  assert.deepEqual(plain(profile.window.tonkAccountTasksOpen()), [
+    { action: "open", requestId: "task-1", account: null, presentation: { anchor: { left: 2 } } },
+  ], "the task is handed over as it now stands");
+
+  profile.window.tonkAccountTaskDone("task-1", "completed");
+  assert.deepEqual(plain(profile.window.tonkAccountTasksOpen()), [], "a task that ended is not handed over");
+});

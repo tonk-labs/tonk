@@ -116,16 +116,22 @@
   // Account tasks this document answers: the bar asks for the panel that
   // adds an account, the document hears `tonk:account-task` and says how it
   // ended through `tonkAccountTaskDone(id, result)`, and the bar hears the
-  // end as it would from the page around.
+  // end as it would from the page around. The bar may ask before anything
+  // in the document listens: what starts listening later takes the tasks
+  // still open from `tonkAccountTasksOpen()`.
   var accountTasks=new Map();
   function accountTask(request,relay){
     var id=request.requestId;
-    if(request.action==="open"){ accountTasks.set(id,{relay:typeof relay==="function"?relay:null}); }
-    else if(!accountTasks.has(id)){ return; }
     var detail={action:request.action,requestId:id,account:request.account||null,presentation:request.presentation||null};
+    if(request.action==="open"){ accountTasks.set(id,{relay:typeof relay==="function"?relay:null,open:detail}); }
+    else if(!accountTasks.has(id)){ return; }
+    else if(detail.presentation){ accountTasks.get(id).open.presentation=detail.presentation; }
     if(request.action==="dismiss"){ endAccountTask(id,"disconnected"); }
     window.dispatchEvent(new CustomEvent("tonk:account-task",{detail:detail}));
   }
+  window.tonkAccountTasksOpen=function(){
+    var open=[]; accountTasks.forEach(function(task){ open.push(task.open); }); return open;
+  };
   function endAccountTask(id,result){
     var task=accountTasks.get(id); if(!task) return;
     accountTasks.delete(id);
