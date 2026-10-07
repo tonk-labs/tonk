@@ -27,8 +27,8 @@ pub async fn identify(
 ) -> Result<Json<IdentifyResponse>, TonkWorkerError> {
     let tonk_state = state.read().await;
     // A page asks who it acts as once, as it loads: when that is a profile
-    // linked the way one was before the account's encryption key existed,
-    // the page is told, to count how many such links are still in use.
+    // linked without the account's encryption key, the page is told, to
+    // count how many such links are in use.
     if super::identity::linked_without_key(&tonk_state).await {
         super::navigate::notify_analytics(
             client.as_ref().map(|Extension(client)| client),

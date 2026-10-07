@@ -201,7 +201,8 @@ pub fn capture_account_created() {
 
 /// Capture that the profile this browser acts as is linked to its account
 /// without the account's encryption key. Counted by profile, to learn how
-/// many links from before that key existed are still in use.
+/// many such links are in use: ones made by signing in through another
+/// deployment, and ones from before that key existed.
 pub fn capture_account_without_key() {
     capture_unchecked(
         crate::event::ACCOUNT_WITHOUT_KEY,

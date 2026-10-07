@@ -200,8 +200,8 @@ pub async fn get(State(state): State<AppState>) -> Result<Json<RootStatus>, Tonk
 }
 
 /// Whether this profile is linked to an account without the account's
-/// encryption key: the shape of a link made before that key existed. A
-/// profile linked to no account is not.
+/// encryption key: it signed in through another deployment, or was linked
+/// before that key existed. A profile linked to no account is not.
 pub(crate) async fn linked_without_key(state: &TonkState) -> bool {
     matches!(load_record(state).await, Ok(Some(record)) if record.encryption_key.is_none())
 }
@@ -495,8 +495,8 @@ mod tests {
             .did()
     }
 
-    /// What is counted to learn how many links from before the encryption
-    /// key are still in use: a root saved without one, and nothing else.
+    /// What is counted as a link without the encryption key: a root saved
+    /// without one, and nothing else.
     #[dialog_common::test]
     async fn it_tells_a_link_without_the_encryption_key_from_the_others() {
         let state = Arc::new(RwLock::new(test_state_without_root().await));

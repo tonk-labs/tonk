@@ -31,7 +31,8 @@ pub enum AnalyticsEvent {
         space: String,
     },
     /// The profile is linked to its account without the account's
-    /// encryption key, as a link made before that key existed is.
+    /// encryption key: by signing in through another deployment, or by a
+    /// link made before that key existed.
     AccountWithoutKey,
     /// A step of an account attempt the worker ran: adding an account,
     /// logging in, confirming an address. The page validates the event
