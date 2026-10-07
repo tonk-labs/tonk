@@ -2625,9 +2625,12 @@ pub(crate) mod tests {
                 r#"const done = arguments[arguments.length - 1];
                    const original = window.fetch;
                    let requests = 0;
+                   // Activating opens a watch for the worker's answer
+                   // before it asks: one that never answers holds the
+                   // request pending.
                    window.fetch = (...args) => {
                      const url = String(args[0]?.url || args[0]);
-                     if (url.includes('/ucan/')) {
+                     if (url.endsWith('/query')) {
                        requests += 1;
                        return new Promise(() => {});
                      }
