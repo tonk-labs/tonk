@@ -4407,16 +4407,8 @@ pub(crate) mod tests {
                 Vec::new(),
             )
             .await?;
-        enter_guest(&driver).await?;
-        // A script click from the driver carries a user gesture, as a tap
-        // does.
-        driver
-            .execute(
-                r##"document.querySelector('#tonk-register input[name="email"]').value = arguments[0];
-                   document.querySelector('#tonk-register-action').click();"##,
-                vec![serde_json::json!(taken)],
-            )
-            .await?;
+        // A script the driver runs carries a user gesture, as a tap does.
+        type_into_register_dialog(&driver, taken).await?;
 
         driver.enter_default_frame().await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
@@ -8299,7 +8291,10 @@ pub(crate) mod tests {
                         const nativeFetch = target.fetch.bind(target);
                         target.fetch = (input, init) => {
                           const url = typeof input === 'string' ? input : input.url;
-                          const storage = target.top.localStorage;
+                          // The request is the profile frame's, on its own
+                          // origin: its storage outlives the reload, and
+                          // the page around is out of its reach.
+                          const storage = target.localStorage;
                           if (url.endsWith('/api/local-space-link/complete') &&
                               storage.getItem('tonk:test:fail-local-link-once') !== 'done') {
                             storage.setItem('tonk:test:fail-local-link-once', 'done');
@@ -9596,15 +9591,19 @@ pub(crate) mod tests {
             )
             .await?,
         );
-        successful_body(
-            "guest pulls before revocation",
-            &post_json(
-                &guest,
-                &format!("/api/repository/{key}/branch/main/sync/pull"),
-                serde_json::json!({}),
-            )
-            .await?,
-        );
+        // Joining pulls the space's content on its own, in the space's
+        // worker. A pull asked for while that one runs loses to it, and
+        // says to ask again.
+        let pull = format!("/api/repository/{key}/branch/main/sync/pull");
+        let mut pulled = post_json(&guest, &pull, serde_json::json!({})).await?;
+        for _ in 0..10 {
+            if pulled["body"]["error"]["code"] != "SYNC_CONFLICT" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            pulled = post_json(&guest, &pull, serde_json::json!({})).await?;
+        }
+        successful_body("guest pulls before revocation", &pulled);
 
         // The guest writes something the owner can look for, and syncs it
         // up. This half proves the write path WORKS before revocation, so
