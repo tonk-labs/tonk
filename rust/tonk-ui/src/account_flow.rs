@@ -2618,7 +2618,9 @@ pub(crate) mod tests {
         activation.set_query(Some("ucan=AA"));
         goto(&driver, activation.as_str()).await?;
         enter_guest(&driver).await?;
-        element(&driver, "#activate-accept").await?;
+        // The button is in the view before the element around it is
+        // installed, and until then a press reaches nothing.
+        element(&driver, "account-activate:defined #activate-accept").await?;
 
         let count = driver
             .execute_async(
