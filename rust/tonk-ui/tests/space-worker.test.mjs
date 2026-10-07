@@ -19,7 +19,9 @@ const SPACE = "did:key:zSpace";
 // Run a site's worker against stand-ins for a service worker's globals.
 // `routes` is what the space's routes answer a path with, as the Rust
 // worker's `/http/` route would.
-function site({ host = "bspace.tonk.test", routes = {}, failing = false } = {}) {
+// `holds` is whether the worker already keeps its space's delegation: one
+// that does not has to ask the worker above for it, and bring the space here.
+function site({ host = "bspace.tonk.test", routes = {}, failing = false, holds = true } = {}) {
   const origin = `https://${host}`;
   const stores = new Map();
   const key = (request) => (typeof request === "string" ? request : request.url);
@@ -50,16 +52,20 @@ function site({ host = "bspace.tonk.test", routes = {}, failing = false } = {}) 
           : new Response("", { status: 404 });
       },
       profileDid: async () => "did:key:zProfile",
+      adoptSpace: async () => ({ remote: null, account: "did:key:zAccount", name: null }),
     },
     // Anything else the worker calls answers nothing. Not `then`: a
     // stand-in that has one is taken for a promise and awaited for ever.
     { get: (worker, name) => worker[name] ?? (name === "then" ? undefined : async () => undefined) },
   );
+  // What the worker told its pages.
+  const told = [];
+  const pages = [{ id: "frame", url: `${origin}/`, postMessage: (message) => void told.push(message) }];
   const self = {
     location: new URL("/space_worker.js", origin),
     addEventListener: (type, listener) => void (listeners[type] = listener),
     skipWaiting: async () => {},
-    clients: { claim: async () => {}, matchAll: async () => [] },
+    clients: { claim: async () => {}, matchAll: async () => pages },
     registration: { waiting: null, addEventListener() {} },
   };
   const network = async (request) => {
@@ -90,7 +96,7 @@ function site({ host = "bspace.tonk.test", routes = {}, failing = false } = {}) 
 
   // The space this origin holds, as a worker that has taken its delegation
   // keeps it: the site is here already, with nothing to ask its host for.
-  const settled = open("tonk-space-shell").then((cache) =>
+  const settled = !holds ? Promise.resolve() : open("tonk-space-shell").then((cache) =>
     cache.put(
       "/__space/grant",
       new Response(
@@ -128,7 +134,34 @@ function site({ host = "bspace.tonk.test", routes = {}, failing = false } = {}) 
     });
     return said;
   };
-  return { answer, admit, asked };
+  // A page hands the worker a port to the worker above it, which answers
+  // what the worker asks: first that it heard, then with `answers(request)`.
+  // Resolves once the worker has done what the port let it start.
+  const connect = async (answers) => {
+    const asks = [];
+    const port = {
+      onmessage: null,
+      postMessage(request) {
+        if (typeof request.id !== "number") return;
+        asks.push(request);
+        queueMicrotask(() => {
+          port.onmessage({ data: { id: request.id, ack: true } });
+          port.onmessage({ data: { id: request.id, ...answers(request) } });
+        });
+      },
+    };
+    let started;
+    listeners.message({
+      data: { type: "port" },
+      ports: [port],
+      source: { id: "frame" },
+      waitUntil: (promise) => void (started = promise),
+    });
+    await started;
+    return asks;
+  };
+  const stages = () => told.filter((message) => message.type === "status").map((message) => message.stage);
+  return { answer, admit, asked, connect, stages };
 }
 
 const page = { mode: "navigate" };
@@ -252,4 +285,37 @@ test("the app's static files and the worker's own API are not routes", async () 
 
   assert.equal(await file.text(), "from the server", "a static file comes from the server");
   assert.deepEqual(asked, []);
+});
+
+// What the worker above answers a space's worker with.
+const host = (request) => {
+  if (request.delegate) return { space: SPACE, chain: [1, 2, 3], expires: Date.now() / 1000 + 86_400 };
+  if (request.seed) return { fresh: "the space's first content" };
+  return {};
+};
+
+test("a worker bringing its space here for the first time says what it is waiting on", async () => {
+  const { connect, stages } = site({ holds: false });
+
+  const asks = await connect(host);
+
+  assert.deepEqual(stages(), ["asking for the space", "replicating the space", "ready"]);
+  assert.ok(asks.some((request) => request.delegate), "it asked for its delegation");
+  assert.ok(asks.some((request) => request.seed), "and for what to make the space from");
+});
+
+test("a worker that could not bring its space still ends the wait", async () => {
+  const { connect, stages } = site({ holds: false });
+
+  await connect((request) => (request.delegate ? { error: "not a member" } : {}));
+
+  assert.deepEqual(stages(), ["asking for the space", "ready"], "a page is never left waiting on it");
+});
+
+test("a worker that holds its space already has nothing to report", async () => {
+  const { connect, stages } = site();
+
+  await connect(host);
+
+  assert.deepEqual(stages(), []);
 });

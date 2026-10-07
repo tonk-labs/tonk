@@ -194,3 +194,129 @@ mod tests {
         ));
     }
 }
+
+/// The command as a page asserts it, through the worker's own routes: the
+/// handler runs, and the page reads the outcome off the entity it named.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod command_tests {
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use ::axum::Router;
+    use ::axum::body::Body;
+    use ::axum::http::{Request, StatusCode};
+    use tower::ServiceExt as _;
+
+    async fn post(app: &Router, operation: &str, body: serde_json::Value) -> serde_json::Value {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/profile:tonk/branch/main/{operation}"
+                    ))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{operation}");
+        let bytes = ::axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    }
+
+    /// What the page reads back: the outcome recorded on `receipt`.
+    async fn outcome(app: &Router, receipt: &str) -> Option<(String, String)> {
+        let field = |name: &str| {
+            serde_json::json!({
+                "the": format!("xyz.tonk.account-activation/{name}"),
+                "as": "Text",
+                "cardinality": "one"
+            })
+        };
+        let rows = post(
+            app,
+            "query",
+            serde_json::json!({
+                "predicate": { "with": { "status": field("status"), "detail": field("detail") } },
+                "terms": {
+                    "this": receipt,
+                    "status": { "?": { "name": "status" } },
+                    "detail": { "?": { "name": "detail" } }
+                }
+            }),
+        )
+        .await;
+        let fields = rows.as_array()?.first()?.get("fields")?.clone();
+        Some((
+            fields["status"].as_str()?.to_owned(),
+            fields["detail"].as_str()?.to_owned(),
+        ))
+    }
+
+    async fn activate(app: &Router, receipt: &str, invocation: &str) {
+        post(
+            app,
+            "transact",
+            serde_json::json!({ "claims": [{ "op": "assert", "application": {
+                "predicate": { "kind": "transient", "concept": { "with": {
+                    "invocation": {
+                        "the": "xyz.tonk.command.activate-account/invocation",
+                        "as": "Text"
+                    }
+                } } },
+                "parameters": { "this": receipt, "invocation": invocation }
+            } }] }),
+        )
+        .await;
+    }
+
+    /// A link that cannot be an invocation is refused before anything is
+    /// sent, and the page that asked is told on the entity it named.
+    #[dialog_common::test]
+    async fn it_records_a_refusal_where_the_page_that_asked_reads_it() {
+        let (app, _state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let receipt = "urn:uuid:11111111-1111-4111-8111-111111111111";
+
+        activate(&app, receipt, "not base64url!").await;
+
+        // The handler runs after the transact answers.
+        let mut recorded = None;
+        for _ in 0..100 {
+            recorded = outcome(&app, receipt).await;
+            if recorded.is_some() {
+                break;
+            }
+            crate::router::tests::wasm_yield().await;
+        }
+        let (status, detail) = recorded.expect("the outcome is recorded");
+        assert_eq!(status, "refused");
+        assert!(detail.contains("damaged"), "got {detail:?}");
+    }
+
+    /// Each press names its own entity, so one press's outcome is never
+    /// read as another's.
+    #[dialog_common::test]
+    async fn it_keeps_each_requests_outcome_apart() {
+        let (app, _state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let first = "urn:uuid:22222222-2222-4222-8222-222222222222";
+        let second = "urn:uuid:33333333-3333-4333-8333-333333333333";
+
+        activate(&app, first, "%%%").await;
+        for _ in 0..100 {
+            if outcome(&app, first).await.is_some() {
+                break;
+            }
+            crate::router::tests::wasm_yield().await;
+        }
+
+        assert!(outcome(&app, first).await.is_some());
+        assert_eq!(outcome(&app, second).await, None);
+    }
+}

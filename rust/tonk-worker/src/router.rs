@@ -1945,7 +1945,7 @@ pub mod tests {
     /// detached `spawn_local` future advances between polls. `tokio`'s
     /// timer is unsupported on `wasm32`.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    async fn wasm_yield() {
+    pub(crate) async fn wasm_yield() {
         use wasm_bindgen::JsCast;
         let promise = js_sys::Promise::new(&mut |resolve: js_sys::Function, _| {
             let scope: web_sys::ServiceWorkerGlobalScope = js_sys::global().unchecked_into();
