@@ -9913,6 +9913,52 @@ mod invite_chain_tests {
             .expect("authorization query")
     }
 
+    /// A share is a promise the recipient can pull. Where a space's content
+    /// is held by a worker of its own, that worker pushes on its own time:
+    /// the mint hands it the invite to record, then has it sync, and only
+    /// then reports the link. A link reported sooner led to a space with
+    /// nothing on its remote yet, and joining it failed for good.
+    #[dialog_common::test]
+    async fn it_has_the_spaces_worker_sync_before_a_link_is_reported() {
+        use std::sync::atomic::Ordering;
+
+        let (tonk, _service, _root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let key = create_space_inner(&state, "Pushed Before Shared", None)
+            .await
+            .expect("the space creates");
+        enable_sync_inner(&state, &key, &remote)
+            .await
+            .expect("the remote attaches");
+
+        // From here the space's content is its own worker's.
+        state
+            .read()
+            .await
+            .site_origins
+            .store(true, Ordering::Relaxed);
+        space_reach::stand_in::answer_with(|_| Ok(serde_json::Value::Null));
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        let minted = run_invite(&env, &key, 1.0).await;
+        let asked = space_reach::stand_in::asked();
+        minted.expect("the mint settles");
+
+        let of_the_space = |operation: &str| {
+            (
+                key.clone(),
+                "POST".to_owned(),
+                format!("/api/repository/{key}/branch/{CONTENT_BRANCH}/{operation}"),
+            )
+        };
+        assert_eq!(
+            asked,
+            [of_the_space("transact"), of_the_space("sync")],
+            "the space's worker records the invite, then syncs"
+        );
+    }
+
     /// The chain a real mint produces, via the real path end to end: a
     /// linked, activated account against a live access service,
     /// `create_space_inner` (which delegates the fresh space to the

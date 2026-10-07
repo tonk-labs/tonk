@@ -63,6 +63,10 @@ pub(crate) async fn ask(
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
+        #[cfg(test)]
+        if let Some(answer) = stand_in::answer(space, method, path, body) {
+            return answer;
+        }
         let _ = (method, path, body);
         Err(TonkWorkerError::Internal(format!(
             "could not ask {space}: this host has no worker per space"
@@ -230,5 +234,50 @@ pub(crate) async fn ask_profile(request: &serde_json::Value) -> Result<(), TonkW
         Err(TonkWorkerError::Internal(
             "could not ask the profile: this host has one database".into(),
         ))
+    }
+}
+
+/// A stand-in for the workers on the spaces' own origins, for a test of
+/// what a profile's worker asks of them. A host with one database has none.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+pub(crate) mod stand_in {
+    use std::cell::RefCell;
+
+    use crate::TonkWorkerError;
+
+    /// What a space's worker was asked: the space, the method, the path.
+    pub(crate) type Asked = (String, String, String);
+    type Answer = Box<dyn Fn(&Asked) -> Result<serde_json::Value, TonkWorkerError>>;
+
+    thread_local! {
+        static WORKERS: RefCell<Option<(Answer, Vec<Asked>)>> = const { RefCell::new(None) };
+    }
+
+    /// Answer what this thread's worker asks of any space with `answer`,
+    /// until [`asked`] takes the stand-in away.
+    pub(crate) fn answer_with(
+        answer: impl Fn(&Asked) -> Result<serde_json::Value, TonkWorkerError> + 'static,
+    ) {
+        WORKERS.set(Some((Box::new(answer), Vec::new())));
+    }
+
+    /// Take the stand-in away, with everything it was asked, in order.
+    pub(crate) fn asked() -> Vec<Asked> {
+        WORKERS.take().map(|(_, asked)| asked).unwrap_or_default()
+    }
+
+    pub(super) fn answer(
+        space: &str,
+        method: &str,
+        path: &str,
+        _body: Option<&serde_json::Value>,
+    ) -> Option<Result<serde_json::Value, TonkWorkerError>> {
+        WORKERS.with_borrow_mut(|workers| {
+            let (answer, asked) = workers.as_mut()?;
+            let ask = (space.to_owned(), method.to_owned(), path.to_owned());
+            let answered = answer(&ask);
+            asked.push(ask);
+            Some(answered)
+        })
     }
 }
