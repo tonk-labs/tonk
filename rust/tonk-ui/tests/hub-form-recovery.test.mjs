@@ -168,6 +168,9 @@ test('settings asks the worker on its own origin, not the app page\'s', async ()
 // account is linked, and whether the worker holds a stage of the panel.
 function door({ path, linked = false, staged = false, linking = false }) {
   const calls = [];
+  const seat = attributes({
+    toggleAttribute(name, on) { if (on) this.setAttribute(name, ''); else this.removeAttribute(name); },
+  });
   const self = attributes({
     linked: () => linked,
     unlinked: () => !linked,
@@ -183,7 +186,7 @@ function door({ path, linked = false, staged = false, linking = false }) {
   });
   if (linking) self.setAttribute('data-linking', 'true');
   const before = { document: globalThis.document, window: globalThis.window };
-  globalThis.document = { querySelector: () => null };
+  globalThis.document = { querySelector: (selector) => selector === '.registration-seat' ? seat : null };
   globalThis.window = { tonk: { navigate: (to) => calls.push(`navigate ${to}`) } };
   try {
     method('account-settings', 'door')(self);
@@ -191,19 +194,15 @@ function door({ path, linked = false, staged = false, linking = false }) {
     globalThis.document = before.document;
     globalThis.window = before.window;
   }
-  return calls;
+  return { calls, shown: !seat.hasAttribute('hidden') };
 }
 
-test('a stage left from another visit is put away off the account page', () => {
-  assert.deepEqual(door({ path: '/', staged: true }), ['leave']);
-  assert.deepEqual(door({ path: '/', linked: true, staged: true }), ['leave']);
+test('a stage left from another visit is not shown off the account page, and nothing is asked of the worker', () => {
+  assert.deepEqual(door({ path: '/', staged: true }), { calls: [], shown: false });
+  assert.deepEqual(door({ path: '/', linked: true, staged: true }), { calls: [], shown: false });
 });
 
-test('the account page keeps the panel, and opens it when none is up', () => {
-  assert.deepEqual(door({ path: '/account', staged: true, linking: true }), []);
-  assert.deepEqual(door({ path: '/account' }), ['open']);
-});
-
-test('a page with no stage showing leaves the panel alone', () => {
-  assert.deepEqual(door({ path: '/' }), []);
+test('the account page shows the panel, and opens it when none is up', () => {
+  assert.deepEqual(door({ path: '/account', staged: true, linking: true }), { calls: [], shown: true });
+  assert.deepEqual(door({ path: '/account' }), { calls: ['open'], shown: true });
 });

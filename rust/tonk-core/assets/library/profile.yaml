@@ -6867,12 +6867,11 @@ element!: &account-settings
             else self.openRegistration();
           }
         }
-        // A stage the worker still holds from another visit shows wherever
-        // this page loads. Off the account page nothing here asked for it.
-        if (!account && !linking && self.staged()) {
-          self.leaveRegistration();
-          return;
-        }
+        // A stage the worker still holds from another visit would show
+        // wherever this page loads. Off the account page nothing here
+        // asked for it, so its seat is not shown there. Not a command: one
+        // could land after the person opens the panel, and close it.
+        document.querySelector('.registration-seat')?.toggleAttribute('hidden', !account && !linking);
         // Leaving the account page puts the panel away.
         const shown = account ? 'show' : 'suspend';
         if (linking && self._shown !== shown) {
