@@ -8116,6 +8116,9 @@ pub(super) const CONTENT_BRANCH: &str = "main";
 /// visible everywhere the content branch syncs. Falls back to the
 /// routing `key` when the content branch can't be opened or carries no
 /// name yet (a freshly created repo before its name is seeded).
+///
+/// Where each space's content is on an origin of its own, this worker holds
+/// none of it, and the label is the copy the account directory keeps.
 async fn repository_label<'a, R>(
     tonk: &'a TonkState,
     repository: &'a Repository<R>,
@@ -8124,9 +8127,12 @@ async fn repository_label<'a, R>(
 where
     R: Principal + Clone,
 {
-    repository_display_name(tonk, repository, key)
-        .await
-        .unwrap_or_else(|| key.to_string())
+    let name = if tonk.spaces_elsewhere() {
+        directory_space_name(tonk, &repository.did()).await
+    } else {
+        repository_display_name(tonk, repository, key).await
+    };
+    name.unwrap_or_else(|| key.to_string())
 }
 
 /// Read the repository-authored display name without inventing a routing-key
@@ -11368,6 +11374,37 @@ mod tests {
             Some("renamed-garden"),
             "the rename lands in the account directory so unreplicated \
              devices can label the space"
+        );
+    }
+
+    /// A profile that holds none of a space's content still calls the space
+    /// by its name: the one the account directory keeps.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_labels_a_space_held_elsewhere_from_the_account_directory() {
+        use super::{build_repository_info, record_space_name};
+        use dialog_repository::RepositoryExt as _;
+        use std::sync::atomic::Ordering;
+
+        let (_app, state, key) = fresh_repo("label-elsewhere").await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let tonk = state.read().await;
+        tonk.site_origins.store(true, Ordering::Relaxed);
+        let repository = tonk
+            .profile
+            .space(key.as_str())
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+
+        // The directory's copy and the content's differ here, to tell which
+        // of the two is read.
+        record_space_name(&tonk, &subject, "Shared Garden").await;
+
+        assert_eq!(
+            build_repository_info(&tonk, &key, &repository).await.label,
+            "Shared Garden"
         );
     }
 
