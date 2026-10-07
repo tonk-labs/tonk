@@ -2359,6 +2359,21 @@ async fn run_invite(
             &record_invite_claim(&proof, &union, &link, &seed),
         )
         .await?;
+        // A share is a promise the recipient can pull. The space's worker
+        // pushes on its own time, and a space attached to its remote a
+        // moment ago has pushed nothing yet: the link is handed over once
+        // what it leads to is there. A push that fails now is retried by
+        // that worker's sync, and the link is good once it lands.
+        if let Err(error) = space_reach::ask(
+            repo_name,
+            "POST",
+            &format!("/api/repository/{repo_name}/branch/{CONTENT_BRANCH}/sync"),
+            Some(&serde_json::json!({})),
+        )
+        .await
+        {
+            log!("Invite for repo '{repo_name}': the space was not pushed before sharing: {error}");
+        }
     } else {
         record_invite(
             &tonk,
