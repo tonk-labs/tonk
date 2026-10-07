@@ -6997,7 +6997,7 @@ pub(crate) async fn record_space_name(tonk: &TonkState, subject: &Did, display_n
 /// for a device that holds none of the space's content. Where each space's
 /// content is on an origin of its own, the person's profile is such a
 /// device.
-async fn directory_space_name(tonk: &TonkState, subject: &Did) -> Option<String> {
+pub(super) async fn directory_space_name(tonk: &TonkState, subject: &Did) -> Option<String> {
     let main = tonk
         .reactor
         .profile_repository()

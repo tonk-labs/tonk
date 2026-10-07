@@ -522,6 +522,9 @@ async fn confirmation(
     group: &PublicGroup,
 ) -> Result<ConnectionSetup, TonkWorkerError> {
     use fields::AgentConnectionConfirmation;
+    if tonk.spaces_elsewhere() {
+        return confirmation_elsewhere(tonk, group).await;
+    }
     let repository = match tonk
         .profile
         .space(&group.repo)
@@ -590,6 +593,72 @@ async fn confirmation(
         space_name: names
             .first()
             .map(|row| row.name.0.clone())
+            .filter(|name| !name.trim().is_empty()),
+        installations,
+    })
+}
+
+/// [`confirmation`] where the space's content is held by the worker on the
+/// space's own origin: that worker answers the same two questions, and the
+/// account directory has the space's name.
+async fn confirmation_elsewhere(
+    tonk: &TonkState,
+    group: &PublicGroup,
+) -> Result<ConnectionSetup, TonkWorkerError> {
+    use dialog_query::ConceptQuery;
+    use ipld_core::ipld::Ipld;
+    use tonk_schema::query::Query as WireQuery;
+    use tonk_worker_api::Conclusion;
+
+    const CONFIRMED: &str = "Agent connection confirmed";
+    let path = format!("/api/repository/{}/branch/main/query", group.repo);
+    let ask = async |query: ConceptQuery| -> Result<Vec<Conclusion>, TonkWorkerError> {
+        let body = serde_json::to_value(WireQuery::from(&query)).map_err(failure)?;
+        let rows = super::space_reach::ask(&group.repo, "POST", &path, Some(&body)).await?;
+        serde_json::from_value(rows).map_err(failure)
+    };
+    let entity: dialog_artifacts::Entity = format!("id:tonk:agent-connection:{}", group.id)
+        .parse()
+        .map_err(failure)?;
+    let rows = ask(ConceptQuery::from(Query::<
+        fields::AgentConnectionConfirmation,
+    > {
+        this: Term::from(entity),
+        status: Term::from(fields::Status(CONFIRMED.into())),
+    }))
+    .await?;
+    let reported = ask(ConceptQuery::from(Query::<
+        fields::AgentInstallationConfirmation,
+    > {
+        this: Term::var("this"),
+        grant: Term::from(fields::Grant(group.id.clone())),
+        installation: Term::var("installation"),
+        name: Term::var("name"),
+        status: Term::from(fields::InstallationStatus(CONFIRMED.into())),
+    }))
+    .await?;
+    let text = |row: &Conclusion, field: &str| match row.fields.get(field) {
+        Some(Ipld::String(text)) => Some(text.clone()),
+        _ => None,
+    };
+    let installations = reported
+        .iter()
+        .filter_map(|row| {
+            Some(fields::AgentInstallationConfirmation {
+                this: row.this.parse().ok()?,
+                grant: fields::Grant(group.id.clone()),
+                installation: fields::Installation(text(row, "installation")?),
+                name: fields::Name(text(row, "name")?),
+                status: fields::InstallationStatus(CONFIRMED.into()),
+            })
+        })
+        .collect();
+    let installations = reported_installations(&group.id, installations);
+    let subject: dialog_varsig::Did = group.subject.parse().map_err(failure)?;
+    Ok(ConnectionSetup {
+        confirmed: !rows.is_empty() || !installations.is_empty(),
+        space_name: super::repository::directory_space_name(tonk, &subject)
+            .await
             .filter(|name| !name.trim().is_empty()),
         installations,
     })
@@ -1367,5 +1436,118 @@ mod tests {
         drop(reopened);
         std::fs::remove_dir_all(directory)?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod elsewhere_tests {
+    use std::sync::atomic::Ordering;
+
+    use js_sys::{Array, Function, Reflect};
+    use wasm_bindgen::JsValue;
+
+    use super::*;
+
+    const SUBJECT: &str = "did:key:z6MkiEQKV5qNCggaAfPDQ6E85p5K4pHuVHt7Maj466QrCkMD";
+
+    /// Stand in for the space's worker: answers a query for installation
+    /// receipts with `receipts`, any other with nothing, and keeps what it
+    /// was asked in `tonkAsked`.
+    fn answer_for_the_space(receipts: &str) {
+        let hook = Function::new_with_args(
+            "space, method, path, body",
+            &format!(
+                r#"
+                (globalThis.tonkAsked ??= []).push([space, method, path].join(" "));
+                const rows = body.includes("agent-installation") ? {receipts:?} : "[]";
+                return Promise.resolve({{ status: 200, body: rows }});
+                "#
+            ),
+        );
+        Reflect::set(&js_sys::global(), &"tonkAskSpace".into(), &hook).unwrap();
+        Reflect::set(&js_sys::global(), &"tonkAsked".into(), &Array::new()).unwrap();
+    }
+
+    fn asked() -> Vec<String> {
+        let asked = Reflect::get(&js_sys::global(), &"tonkAsked".into()).unwrap();
+        Array::from(&asked)
+            .iter()
+            .filter_map(|entry| entry.as_string())
+            .collect()
+    }
+
+    fn group() -> PublicGroup {
+        PublicGroup {
+            terminal_request: None,
+            version: 1,
+            id: "a".repeat(64),
+            account: SUBJECT.into(),
+            repo: SUBJECT.trim_start_matches("did:key:").into(),
+            subject: SUBJECT.into(),
+            recipient: SUBJECT.into(),
+            label: "tool".into(),
+            remote: String::new(),
+            issued_at: 0,
+            chains: Vec::new(),
+        }
+    }
+
+    /// A profile that holds none of a space's content learns whether a tool
+    /// connected from the worker that does hold it.
+    #[dialog_common::test]
+    async fn it_asks_the_spaces_worker_whether_a_connection_was_confirmed() {
+        let tonk = crate::router::tests::test_state().await;
+        tonk.site_origins.store(true, Ordering::Relaxed);
+        let group = group();
+        let installation = "0123456789abcdef0123456789abcdef";
+        let receipt = serde_json::json!([{
+            "this": format!("id:tonk:agent-installation:{}:{installation}", group.id),
+            "fields": { "installation": installation, "name": "Codex" }
+        }])
+        .to_string();
+        answer_for_the_space(&receipt);
+
+        let setup = confirmation(&tonk, &group)
+            .await
+            .expect("the space answers");
+
+        Reflect::set(
+            &js_sys::global(),
+            &"tonkAskSpace".into(),
+            &JsValue::UNDEFINED,
+        )
+        .unwrap();
+        assert!(setup.confirmed);
+        assert_eq!(setup.installations.len(), 1);
+        assert_eq!(setup.installations[0].name, "Codex");
+        let path = format!("POST /api/repository/{}/branch/main/query", group.repo);
+        assert_eq!(
+            asked(),
+            [
+                format!("{} {path}", group.repo),
+                format!("{} {path}", group.repo)
+            ],
+            "both questions go to the space's own worker"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_no_confirmation_when_the_space_has_none() {
+        let tonk = crate::router::tests::test_state().await;
+        tonk.site_origins.store(true, Ordering::Relaxed);
+        answer_for_the_space("[]");
+
+        let setup = confirmation(&tonk, &group())
+            .await
+            .expect("the space answers");
+
+        Reflect::set(
+            &js_sys::global(),
+            &"tonkAskSpace".into(),
+            &JsValue::UNDEFINED,
+        )
+        .unwrap();
+        assert!(!setup.confirmed);
+        assert!(setup.installations.is_empty());
     }
 }
