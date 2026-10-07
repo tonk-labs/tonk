@@ -616,6 +616,45 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Enter the profile's frame once its worker answers there.
+    ///
+    /// The worker's API is the profile's origin's, so a test asks it from
+    /// the profile's frame. The frame loads more than once while it starts
+    /// its worker, and a script run in a document that is replaced is lost:
+    /// this enters again until the frame is one its worker controls, with
+    /// its bridge to the page up.
+    async fn enter_profile(driver: &WebDriver) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let entered: Result<bool> = async {
+                enter_guest(driver).await?;
+                let ready = driver
+                    .execute_async(
+                        r#"
+                        const done = arguments[arguments.length - 1];
+                        (async () => {
+                            if (!navigator.serviceWorker.controller || !window.tonk) return done(false);
+                            await window.tonk.ready;
+                            done(true);
+                        })().catch(() => done(false));
+                        "#,
+                        Vec::new(),
+                    )
+                    .await?;
+                Ok(ready.json().as_bool() == Some(true))
+            }
+            .await;
+            if matches!(entered, Ok(true)) {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the profile's frame never came up: {entered:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Enter the seeded view inside the space shell's own sealed frame.
     async fn enter_space_view(driver: &WebDriver) -> Result<()> {
         enter_guest(driver).await?;
@@ -2765,6 +2804,7 @@ pub(crate) mod tests {
         predicate: &str,
         timeout_ms: u64,
     ) -> Result<serde_json::Value> {
+        enter_profile(driver).await?;
         let result = driver
             .execute_async(
                 r#"
@@ -2838,6 +2878,7 @@ pub(crate) mod tests {
                 ],
             )
             .await?;
+        driver.enter_default_frame().await?;
         let value = result.json().clone();
         if let Some(error) = value.get("error").and_then(|e| e.as_str()) {
             return Err(anyhow!("{error} (subscribing to {path})"));
@@ -5728,8 +5769,9 @@ pub(crate) mod tests {
         path: &str,
         body: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        // The API is the top page's: the guest is sealed at an opaque origin.
-        driver.enter_default_frame().await?;
+        // The API is the profile's worker's, on the profile's own origin:
+        // ask from the profile's frame.
+        enter_profile(driver).await?;
         let result = driver
             .execute_async(
                 r#"
@@ -5753,6 +5795,7 @@ pub(crate) mod tests {
                 vec![serde_json::json!(path), body],
             )
             .await?;
+        driver.enter_default_frame().await?;
         Ok(result.json().clone())
     }
 
@@ -5762,8 +5805,9 @@ pub(crate) mod tests {
     /// replica with nothing to write never presigns — which is what made
     /// every status-code assertion in this file vacuous.
     async fn post_yaml(driver: &WebDriver, path: &str, body: &str) -> Result<serde_json::Value> {
-        // The API is the top page's: the guest is sealed at an opaque origin.
-        driver.enter_default_frame().await?;
+        // The API is the profile's worker's, on the profile's own origin:
+        // ask from the profile's frame.
+        enter_profile(driver).await?;
         let result = driver
             .execute_async(
                 r#"
@@ -5780,6 +5824,7 @@ pub(crate) mod tests {
                 vec![serde_json::json!(path), serde_json::json!(body)],
             )
             .await?;
+        driver.enter_default_frame().await?;
         Ok(result.json().clone())
     }
 
@@ -5885,8 +5930,9 @@ pub(crate) mod tests {
     }
 
     async fn get_json(driver: &WebDriver, path: &str) -> Result<serde_json::Value> {
-        // The API is the top page's: the guest is sealed at an opaque origin.
-        driver.enter_default_frame().await?;
+        // The API is the profile's worker's, on the profile's own origin:
+        // ask from the profile's frame.
+        enter_profile(driver).await?;
         let result = driver
             .execute_async(
                 r#"
@@ -5899,6 +5945,7 @@ pub(crate) mod tests {
                 vec![serde_json::json!(path)],
             )
             .await?;
+        driver.enter_default_frame().await?;
         Ok(result.json().clone())
     }
 
