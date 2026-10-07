@@ -6867,6 +6867,12 @@ element!: &account-settings
             else self.openRegistration();
           }
         }
+        // A stage the worker still holds from another visit shows wherever
+        // this page loads. Off the account page nothing here asked for it.
+        if (!account && !linking && self.staged()) {
+          self.leaveRegistration();
+          return;
+        }
         // Leaving the account page puts the panel away.
         const shown = account ? 'show' : 'suspend';
         if (linking && self._shown !== shown) {

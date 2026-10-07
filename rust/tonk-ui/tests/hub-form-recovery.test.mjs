@@ -163,3 +163,47 @@ test('settings asks the worker on its own origin, not the app page\'s', async ()
     globalThis.window = before.window;
   }
 });
+
+// The hub's door, with the page stood in for: where it is, whether an
+// account is linked, and whether the worker holds a stage of the panel.
+function door({ path, linked = false, staged = false, linking = false }) {
+  const calls = [];
+  const self = attributes({
+    linked: () => linked,
+    unlinked: () => !linked,
+    staged: () => staged,
+    viaRequest: () => null,
+    viaAsk: () => false,
+    context: () => ({ path }),
+    connectionsRefresh: () => calls.push('connections'),
+    openRegistration: () => calls.push('open'),
+    openSignInVia: () => calls.push('open-via'),
+    leaveRegistration: () => calls.push('leave'),
+    unlink: () => calls.push('unlink'),
+  });
+  if (linking) self.setAttribute('data-linking', 'true');
+  const before = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = { querySelector: () => null };
+  globalThis.window = { tonk: { navigate: (to) => calls.push(`navigate ${to}`) } };
+  try {
+    method('account-settings', 'door')(self);
+  } finally {
+    globalThis.document = before.document;
+    globalThis.window = before.window;
+  }
+  return calls;
+}
+
+test('a stage left from another visit is put away off the account page', () => {
+  assert.deepEqual(door({ path: '/', staged: true }), ['leave']);
+  assert.deepEqual(door({ path: '/', linked: true, staged: true }), ['leave']);
+});
+
+test('the account page keeps the panel, and opens it when none is up', () => {
+  assert.deepEqual(door({ path: '/account', staged: true, linking: true }), []);
+  assert.deepEqual(door({ path: '/account' }), ['open']);
+});
+
+test('a page with no stage showing leaves the panel alone', () => {
+  assert.deepEqual(door({ path: '/' }), []);
+});
