@@ -290,6 +290,18 @@ fn refusal_name(refusal: tonk_identity::passkey::CeremonyRefusal) -> &'static st
     }
 }
 
+/// The browser's name for a refusal the worker has not heard of, or `None`
+/// for one it has: what the worker itself answered a hand-off with carries
+/// the service's `code`, and the worker recorded where that left the panel.
+/// `None` for `error` is the person putting the card away.
+fn refusal_to_report(error: Option<&CeremonyError>) -> Option<&'static str> {
+    match error {
+        None => Some("NotAllowedError"),
+        Some(error) if error.denial.is_some() => None,
+        Some(error) => error.refusal.map(refusal_name),
+    }
+}
+
 /// Tell the worker that holds the account that the browser refused a
 /// ceremony the panel that adds an account asked for. A refusal from the
 /// service comes back through the custody hand-off, which the worker
@@ -299,12 +311,8 @@ fn report_refusal(intent: &tonk_worker_api::CustodyIntent, error: Option<&Ceremo
     let Some(kind) = registration_kind(intent) else {
         return;
     };
-    let name = match error {
-        None => "NotAllowedError",
-        Some(error) => match error.refusal {
-            Some(refusal) => refusal_name(refusal),
-            None => return,
-        },
+    let Some(name) = refusal_to_report(error) else {
+        return;
     };
     let message = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&message, &"type".into(), &"ceremony-refused".into());
@@ -785,6 +793,44 @@ mod tests {
     use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 
     wasm_bindgen_test_configure!(run_in_browser);
+
+    fn failed(
+        denial: Option<tonk_identity::custody::CustodyDenial>,
+        refusal: Option<tonk_identity::passkey::CeremonyRefusal>,
+    ) -> CeremonyError {
+        CeremonyError {
+            message: "failed".into(),
+            denial,
+            refusal,
+        }
+    }
+
+    /// The worker answers a hand-off for an account awaiting its emailed
+    /// link with a refusal of its own, and has recorded the wait: telling
+    /// it the passkey was refused would replace the wait with a failure.
+    #[wasm_bindgen_test]
+    fn it_reports_only_refusals_the_worker_has_not_heard_of() {
+        use tonk_identity::custody::CustodyDenial;
+        use tonk_identity::passkey::CeremonyRefusal;
+
+        let awaiting = failed(
+            Some(CustodyDenial::AwaitingActivation),
+            Some(CeremonyRefusal::Other),
+        );
+        assert_eq!(refusal_to_report(Some(&awaiting)), None);
+
+        let unsupported = failed(None, Some(CeremonyRefusal::NotSupported));
+        assert_eq!(
+            refusal_to_report(Some(&unsupported)),
+            Some("NotSupportedError")
+        );
+        assert_eq!(refusal_to_report(Some(&failed(None, None))), None);
+        assert_eq!(
+            refusal_to_report(None),
+            Some("NotAllowedError"),
+            "a card put away is a refusal"
+        );
+    }
 
     #[wasm_bindgen_test]
     fn device_consent_tracks_its_guest_seat() {
