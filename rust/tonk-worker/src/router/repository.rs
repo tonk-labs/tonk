@@ -44,6 +44,7 @@ use super::AppState;
 use super::space_reach::{self, Surface};
 
 mod duplication;
+use crate::reactor::BranchReference;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
 
 /// Name of the device-local meta branch every *space* repository has
@@ -1284,6 +1285,38 @@ impl dialog_capability::Command for AgentHandoffRequest {
     type Output = ();
 }
 
+/// The branch an agent invitation's state is published on, and read back
+/// from: the one its command was committed on. The bar commits on the
+/// profile's branch, wherever the space's content is held; a space's own
+/// view commits on the space's.
+#[derive(Clone, Copy)]
+enum HandoffSurface<'a> {
+    /// The profile's active branch.
+    Profile,
+    /// The content branch of the space with this key.
+    Space(&'a str),
+}
+
+impl<'a> HandoffSurface<'a> {
+    fn of(env: &crate::router::CommandEnv, repo: &'a str) -> Self {
+        if env.from_profile() {
+            Self::Profile
+        } else {
+            Self::Space(repo)
+        }
+    }
+
+    fn branch(self, tonk: &'a TonkState) -> BranchReference<'a> {
+        match self {
+            Self::Profile => tonk
+                .reactor
+                .profile_repository()
+                .branch(&tonk.active_branch),
+            Self::Space(repo) => tonk.reactor.repository(repo).branch(CONTENT_BRANCH),
+        }
+    }
+}
+
 /// Mint an account-scoped handoff for the originating space.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -1311,16 +1344,14 @@ impl dialog_capability::Provider<AgentHandoffRequest> for crate::router::Command
 #[cfg(not(feature = "connection-invites"))]
 async fn publish_agent_handoff(
     tonk: &TonkState,
-    repo: &str,
+    on: HandoffSurface<'_>,
     subject: &Did,
     account: &Did,
     status: String,
     link: String,
 ) -> Result<(), TonkWorkerError> {
     use tonk_schema::prelude::DidExt as _;
-    tonk.reactor
-        .repository(repo)
-        .branch(CONTENT_BRANCH)
+    on.branch(tonk)
         .overlay()
         .assert(tonk_schema::command::AgentHandoffState {
             this: subject.this(),
@@ -1340,16 +1371,14 @@ async fn publish_agent_handoff(
 #[cfg(feature = "connection-invites")]
 async fn publish_connection_invite(
     tonk: &TonkState,
-    repo: &str,
+    on: HandoffSurface<'_>,
     subject: &Did,
     account: &Did,
     mode: &str,
     status: String,
     link: String,
 ) -> Result<(), TonkWorkerError> {
-    tonk.reactor
-        .repository(repo)
-        .branch(CONTENT_BRANCH)
+    on.branch(tonk)
         .overlay()
         .assert(tonk_schema::command::AgentHandoffState {
             this: subject.this(),
@@ -1377,13 +1406,11 @@ async fn publish_connection_invite(
 #[cfg(feature = "connection-invites")]
 async fn publish_connection_receipt(
     tonk: &TonkState,
-    repo: &str,
+    on: HandoffSurface<'_>,
     subject: &Did,
     grant_id: &str,
 ) -> Result<(), TonkWorkerError> {
-    tonk.reactor
-        .repository(repo)
-        .branch(CONTENT_BRANCH)
+    on.branch(tonk)
         .overlay()
         .assert(
             dialog_query::the!("xyz.tonk.agent-handoff/receipt")
@@ -1499,6 +1526,7 @@ async fn run_connection_invite_for(
     fresh: bool,
     repo: &str,
 ) -> Result<(), TonkWorkerError> {
+    let on = HandoffSurface::of(env, repo);
     let mut issued = CONNECTION_ISSUANCE.lock().await;
     issued.retain(|entry| entry.state.strong_count() > 0);
     let (subject, expected, sync_remote) = {
@@ -1515,7 +1543,7 @@ async fn run_connection_invite_for(
             log!("agent invite target refused: {error}");
             return publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &tonk.profile.did(),
                 "unavailable",
@@ -1530,7 +1558,7 @@ async fn run_connection_invite_for(
                 log!("agent invite identity unavailable: {error}");
                 return publish_connection_invite(
                     &tonk,
-                    repo,
+                    on,
                     &subject,
                     &tonk.profile.did(),
                     connection_invite_recovery(&error).0,
@@ -1552,7 +1580,7 @@ async fn run_connection_invite_for(
             };
             return publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &expected.root_did,
                 mode,
@@ -1572,7 +1600,7 @@ async fn run_connection_invite_for(
                         None => {
                             return publish_connection_invite(
                                 &tonk,
-                                repo,
+                                on,
                                 &subject,
                                 &expected.root_did,
                                 "account",
@@ -1586,7 +1614,7 @@ async fn run_connection_invite_for(
                     let (mode, status) = connection_remote_recovery(reason);
                     return publish_connection_invite(
                         &tonk,
-                        repo,
+                        on,
                         &subject,
                         &expected.root_did,
                         mode,
@@ -1601,7 +1629,7 @@ async fn run_connection_invite_for(
                 let (mode, status) = connection_invite_recovery(&error);
                 return publish_connection_invite(
                     &tonk,
-                    repo,
+                    on,
                     &subject,
                     &expected.root_did,
                     mode,
@@ -1624,10 +1652,8 @@ async fn run_connection_invite_for(
             })
             .map(|entry| entry.link);
         if !fresh && let Some(saved) = saved {
-            let branch = tonk
-                .reactor
-                .repository(repo)
-                .branch(CONTENT_BRANCH)
+            let branch = on
+                .branch(&tonk)
                 .acquire(&tonk.operator)
                 .await
                 .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
@@ -1655,7 +1681,7 @@ async fn run_connection_invite_for(
             // another grant set as a side effect of rendering this panel.
             return publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &expected.root_did,
                 "new",
@@ -1669,7 +1695,7 @@ async fn run_connection_invite_for(
                 Ok(false) => {}
                 Ok(true) => return publish_connection_invite(
                     &tonk,
-                    repo,
+                    on,
                     &subject,
                     &expected.root_did,
                     "new",
@@ -1682,7 +1708,7 @@ async fn run_connection_invite_for(
                     log!("agent invite history unavailable: {error}");
                     return publish_connection_invite(
                         &tonk,
-                        repo,
+                        on,
                         &subject,
                         &expected.root_did,
                         "retry",
@@ -1702,7 +1728,7 @@ async fn run_connection_invite_for(
         });
         publish_connection_invite(
             &tonk,
-            repo,
+            on,
             &subject,
             &expected.root_did,
             "busy",
@@ -1721,7 +1747,7 @@ async fn run_connection_invite_for(
                 let (mode, status) = connection_invite_recovery(&error);
                 return publish_connection_invite(
                     &tonk,
-                    repo,
+                    on,
                     &subject,
                     &tonk.profile.did(),
                     mode,
@@ -1734,7 +1760,7 @@ async fn run_connection_invite_for(
         if current.bytes != expected.bytes {
             return publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &tonk.profile.did(),
                 "retry",
@@ -1747,7 +1773,7 @@ async fn run_connection_invite_for(
             log!("agent invite sync setup failed: {error}");
             return publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &expected.root_did,
                 "retry",
@@ -1779,7 +1805,7 @@ async fn run_connection_invite_for(
                     let (mode, status) = connection_invite_recovery(&error);
                     return publish_connection_invite(
                         &tonk,
-                        repo,
+                        on,
                         &subject,
                         &tonk.profile.did(),
                         mode,
@@ -1803,7 +1829,7 @@ async fn run_connection_invite_for(
             {
                 return publish_connection_invite(
                     &tonk,
-                    repo,
+                    on,
                     &subject,
                     &tonk.profile.did(),
                     "retry",
@@ -1813,10 +1839,10 @@ async fn run_connection_invite_for(
                 .await;
             }
             let digest = *blake3::hash(response.url.as_bytes()).as_bytes();
-            publish_connection_receipt(&tonk, repo, &subject, &response.connection.id).await?;
+            publish_connection_receipt(&tonk, on, &subject, &response.connection.id).await?;
             publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &expected.root_did,
                 "scoped",
@@ -1837,7 +1863,7 @@ async fn run_connection_invite_for(
             let (mode, status) = connection_invite_recovery(&error);
             publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &tonk.profile.did(),
                 mode,
@@ -1864,9 +1890,10 @@ async fn agent_invitations_unavailable(
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
     let subject = repository.did();
     require_real_space(&tonk, &subject).await?;
+    let on = HandoffSurface::of(env, repo);
     publish_agent_handoff(
         &tonk,
-        repo,
+        on,
         &subject,
         &tonk.profile.did(),
         "Tool connections are not enabled on this deployment yet.".into(),
@@ -14862,6 +14889,33 @@ mod connection_invite_overlay_tests {
             .len()
     }
 
+    /// The answers on the profile's branch about the space `subject`: where
+    /// what the bar asked is answered.
+    async fn profile_response_count(state: &AppState, subject: &Did) -> usize {
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::command::AgentHandoffState> {
+                this: Term::from(subject.this()),
+                status: Term::var("status"),
+                link: Term::var("link"),
+                account: Term::var("account"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap()
+            .len()
+    }
+
     async fn response(state: &AppState, repo: &str) -> tonk_schema::command::AgentHandoffState {
         let tonk = state.read().await;
         let branch = tonk
@@ -14949,15 +15003,15 @@ mod connection_invite_overlay_tests {
             .await
             .unwrap();
         let before = branch.handle().revision().unwrap().tree;
-        publish_connection_receipt(&tonk, &repo, &subject, "first")
+        publish_connection_receipt(&tonk, HandoffSurface::Space(&repo), &subject, "first")
             .await
             .unwrap();
-        publish_connection_receipt(&tonk, &repo, &subject, "second")
+        publish_connection_receipt(&tonk, HandoffSurface::Space(&repo), &subject, "second")
             .await
             .unwrap();
         publish_connection_invite(
             &tonk,
-            &repo,
+            HandoffSurface::Space(&repo),
             &subject,
             &tonk.profile.did(),
             "scoped",
@@ -15063,7 +15117,11 @@ mod connection_invite_overlay_tests {
             },
         )
         .await;
-        assert_eq!(response_count(&state, &selected).await, 1);
+        // The bar asked on the profile's branch, and is answered there,
+        // about the space it named and no other.
+        assert_eq!(profile_response_count(&state, &selected_did).await, 1);
+        assert_eq!(profile_response_count(&state, &other_did).await, 0);
+        assert_eq!(response_count(&state, &selected).await, 0);
         assert_eq!(response_count(&state, &other).await, 0);
 
         let selected_space = crate::router::CommandEnv::new(
@@ -15083,6 +15141,7 @@ mod connection_invite_overlay_tests {
         )
         .await;
         assert_eq!(response_count(&state, &other).await, 0);
+        assert_eq!(profile_response_count(&state, &other_did).await, 0);
     }
 
     #[dialog_common::test]
@@ -15282,7 +15341,7 @@ mod connection_invite_overlay_tests {
             let root = super::super::identity::local_root(&tonk).await.unwrap();
             publish_connection_invite(
                 &tonk,
-                &repo,
+                HandoffSurface::Space(&repo),
                 &subject,
                 &root.root_did,
                 "scoped",
@@ -15351,7 +15410,7 @@ mod connection_invite_overlay_tests {
             let tonk = state.read().await;
             publish_connection_invite(
                 &tonk,
-                &repo,
+                HandoffSurface::Space(&repo),
                 &subject,
                 &account,
                 "scoped",

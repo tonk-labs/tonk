@@ -302,7 +302,16 @@ struct AgentBehaviour {
     host: HtmlElement,
 }
 
+/// The routing context an invitation's state is published in: the branch
+/// the bar asked on, which is the profile's. The `space` attribute selects
+/// which space's row to read, not which branch to read it from.
+const PROFILE_WITH: &str = "main@profile:tonk";
+
 impl subscribing::Subscribing for AgentBehaviour {
+    fn resolve_with(&self, _this: &HtmlElement) -> Option<String> {
+        Some(PROFILE_WITH.to_owned())
+    }
+
     fn query_body(&self, this: &HtmlElement) -> Result<String, String> {
         agent_handoff_query_body(&this.get_attribute("space").unwrap_or_default())
     }
@@ -492,9 +501,8 @@ fn dispatch_handoff(host: &HtmlElement, state: &Rc<RefCell<AgentState>>, fresh: 
             render(&view, &state.borrow());
         }
     };
-    // App chrome sends the command from the profile branch. The worker uses
-    // the explicit space to target the handoff, while the response remains
-    // subscribed on that space's content branch.
+    // App chrome sends the command from the profile branch, naming the
+    // space, and the worker answers on the branch it was asked on.
     let Some(space) = host
         .get_attribute("space")
         .filter(|space| !space.is_empty())
