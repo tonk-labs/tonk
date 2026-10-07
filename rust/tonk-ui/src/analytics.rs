@@ -395,6 +395,9 @@ fn attach_worker_lifecycle_listener() {
                 tonk_worker_api::AnalyticsEvent::SpaceShared { space } => {
                     tonk_analytics::web::capture_space_shared(&space);
                 }
+                tonk_worker_api::AnalyticsEvent::AccountWithoutKey => {
+                    tonk_analytics::web::capture_account_without_key();
+                }
                 tonk_worker_api::AnalyticsEvent::Account { event } => {
                     let _ = tonk_analytics::web::capture_account(&event);
                 }

@@ -30,6 +30,9 @@ pub enum AnalyticsEvent {
         /// Local routing key, hashed by the page before remote capture.
         space: String,
     },
+    /// The profile is linked to its account without the account's
+    /// encryption key, as a link made before that key existed is.
+    AccountWithoutKey,
     /// A step of an account attempt the worker ran: adding an account,
     /// logging in, confirming an address. The page validates the event
     /// before capture, as it does one of its own.

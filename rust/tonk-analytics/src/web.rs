@@ -199,6 +199,16 @@ pub fn capture_account_created() {
     );
 }
 
+/// Capture that the profile this browser acts as is linked to its account
+/// without the account's encryption key. Counted by profile, to learn how
+/// many links from before that key existed are still in use.
+pub fn capture_account_without_key() {
+    capture_unchecked(
+        crate::event::ACCOUNT_WITHOUT_KEY,
+        &serde_json::json!({ "schema_version": 1 }),
+    );
+}
+
 /// Capture a worker-confirmed successful space create or join.
 pub fn capture_space_conversion(conversion: crate::launch::SpaceConversion, space_key: &str) {
     capture_unchecked(

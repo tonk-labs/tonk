@@ -199,6 +199,13 @@ pub async fn get(State(state): State<AppState>) -> Result<Json<RootStatus>, Tonk
     }
 }
 
+/// Whether this profile is linked to an account without the account's
+/// encryption key: the shape of a link made before that key existed. A
+/// profile linked to no account is not.
+pub(crate) async fn linked_without_key(state: &TonkState) -> bool {
+    matches!(load_record(state).await, Ok(Some(record)) if record.encryption_key.is_none())
+}
+
 /// Rewrite the local root record without its recipient: the shape of a
 /// device linked before the encryption key existed, for tests of what
 /// such a device does when it needs one.
@@ -486,6 +493,27 @@ mod tests {
         tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([byte; 32]))
             .secret()
             .did()
+    }
+
+    /// What is counted to learn how many links from before the encryption
+    /// key are still in use: a root saved without one, and nothing else.
+    #[dialog_common::test]
+    async fn it_tells_a_link_without_the_encryption_key_from_the_others() {
+        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        assert!(
+            !linked_without_key(&*state.read().await).await,
+            "a profile linked to no account is not counted"
+        );
+
+        let device = state.read().await.profile.did();
+        let (request, _) = request_for(1, &device).await;
+        let _ = save(State(state.clone()), Json(request)).await.unwrap();
+        assert!(linked_without_key(&*state.read().await).await);
+
+        let (mut request, _) = request_for(1, &device).await;
+        request.encryption_key = Some(recipient_did(1).to_string());
+        let _ = save(State(state.clone()), Json(request)).await.unwrap();
+        assert!(!linked_without_key(&*state.read().await).await);
     }
 
     #[dialog_common::test]

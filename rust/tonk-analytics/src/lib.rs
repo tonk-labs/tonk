@@ -45,6 +45,9 @@ pub mod event {
     pub const VISIT: &str = "visit";
     /// Account creation completed, including enrollment when configured.
     pub const ACCOUNT_CREATED: &str = "account_created";
+    /// A profile is linked to its account without the account's encryption
+    /// key: the shape of a link made before that key existed.
+    pub const ACCOUNT_WITHOUT_KEY: &str = "account_without_key";
     /// A space was successfully created or joined.
     pub const SPACE_CONVERSION: &str = "space_conversion";
     /// Navigation into a space, excluding internal route changes.
