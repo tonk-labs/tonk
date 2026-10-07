@@ -8280,45 +8280,41 @@ pub(crate) mod tests {
         // Fail the first browser completion request. The settings page must
         // retain the exact request and retry it on reload while the terminal
         // continues waiting on the same callback.
-        ChromeDevTools::new(driver.handle.clone())
-            .execute_cdp_with_params(
-                "Page.addScriptToEvaluateOnNewDocument",
-                serde_json::json!({"source": r#"
-                    (() => {
-                      const patchFetch = target => {
-                        if (!target || target.__tonkFailLocalLinkOnce) return;
-                        target.__tonkFailLocalLinkOnce = true;
-                        const nativeFetch = target.fetch.bind(target);
-                        target.fetch = (input, init) => {
-                          const url = typeof input === 'string' ? input : input.url;
-                          // The request is the profile frame's, on its own
-                          // origin: its storage outlives the reload, and
-                          // the page around is out of its reach.
-                          const storage = target.localStorage;
-                          if (url.endsWith('/api/local-space-link/complete') &&
-                              storage.getItem('tonk:test:fail-local-link-once') !== 'done') {
-                            storage.setItem('tonk:test:fail-local-link-once', 'done');
-                            return Promise.resolve(new target.Response('injected retry', {status: 503}));
-                          }
-                          return nativeFetch(input, init);
-                        };
-                      };
-                      const patchFrames = () => {
-                        patchFetch(window);
-                        document.querySelectorAll('iframe').forEach(frame => {
-                          try { patchFetch(frame.contentWindow); } catch (_) {}
-                        });
-                      };
-                      patchFrames();
-                      new MutationObserver(patchFrames).observe(document, {
-                        childList: true,
-                        subtree: true,
-                      });
-                      addEventListener('DOMContentLoaded', patchFrames);
-                    })();
-                "#}),
-            )
-            .await?;
+        //
+        // The request is made by the profile's frame, to its own worker. A
+        // script the debugger preloads into the page's documents does not
+        // reach that frame, which is another site's and another process's,
+        // so the frame's own `fetch` is wrapped from inside it: on each
+        // look, in whichever document the frame then holds, until the
+        // refusal shows. The mark that the one refusal was spent is the
+        // frame's origin's, so the reloaded document is not refused again.
+        // Answers with the status the page shows.
+        const FAIL_COMPLETION_ONCE: &str = r#"
+            if (!window.__tonkFailLocalLinkOnce) {
+              window.__tonkFailLocalLinkOnce = true;
+              const asked = window.fetch;
+              window.fetch = function (input, init) {
+                const url = typeof input === 'string' ? input : input.url;
+                if (url.endsWith('/api/local-space-link/complete') &&
+                    localStorage.getItem('tonk:test:fail-local-link-once') !== 'done') {
+                  localStorage.setItem('tonk:test:fail-local-link-once', 'done');
+                  return Promise.resolve(new Response('injected retry', { status: 503 }));
+                }
+                return asked.call(window, input, init);
+              };
+            }
+            return document.querySelector('[data-ceremony-status]')?.textContent ?? '';
+        "#;
+        async fn refuse_completion_once(driver: &WebDriver) -> String {
+            let status = async {
+                enter_guest(driver).await?;
+                let status = driver.execute(FAIL_COMPLETION_ONCE, Vec::new()).await?;
+                Ok::<_, anyhow::Error>(status.json().as_str().unwrap_or_default().to_owned())
+            }
+            .await;
+            // A frame between documents has nothing to wrap yet.
+            status.unwrap_or_default()
+        }
 
         let mut command = tonk_command_in(&env, &profile);
         command.args([
@@ -8426,33 +8422,24 @@ pub(crate) mod tests {
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        enter_guest(&driver).await?;
-        let continuation = tokio::time::timeout(
-            Duration::from_secs(5),
-            wait_for_text_containing(&driver, "[data-ceremony-status]", "Reload to retry"),
-        )
-        .await;
-        if !matches!(continuation, Ok(Ok(()))) {
-            let current = driver.current_url().await?;
-            let workspace = driver
-                .execute(
-                    r#"const status=document.querySelector('[data-ceremony-status]');
-                    return {
-                      statusText: status?.textContent,
-                      statusHidden: status?.hidden,
-                      fetchPatched: window.__tonkFailLocalLinkOnce === true,
-                      failedOnce: localStorage.getItem('tonk:test:fail-local-link-once'),
-                      readyState: document.readyState,
-                    };"#,
-                    vec![],
-                )
-                .await
-                .map(|value| value.json().clone());
-            let source = driver.source().await.unwrap_or_default();
-            return Err(anyhow!(
-                "local-space continuation stopped at {current}; result={continuation:?}; workspace={workspace:?}; page={}",
-                source.chars().take(1_000).collect::<String>()
-            ));
+        // The continuation's document asks to complete as soon as it has
+        // read the request: its `fetch` is wrapped before then.
+        let refused_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let status = refuse_completion_once(&driver).await;
+            if status.contains("Reload to retry") {
+                break;
+            }
+            if tokio::time::Instant::now() >= refused_deadline {
+                driver.enter_default_frame().await?;
+                let current = driver.current_url().await?;
+                let source = driver.source().await.unwrap_or_default();
+                return Err(anyhow!(
+                    "local-space continuation stopped at {current} without the refusal showing; status={status:?}; page={}",
+                    source.chars().take(1_000).collect::<String>()
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         driver.enter_default_frame().await?;
         driver.refresh().await?;
@@ -9591,18 +9578,12 @@ pub(crate) mod tests {
             )
             .await?,
         );
-        // Joining pulls the space's content on its own, in the space's
-        // worker. A pull asked for while that one runs loses to it, and
-        // says to ask again.
-        let pull = format!("/api/repository/{key}/branch/main/sync/pull");
-        let mut pulled = post_json(&guest, &pull, serde_json::json!({})).await?;
-        for _ in 0..10 {
-            if pulled["body"]["error"]["code"] != "SYNC_CONFLICT" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            pulled = post_json(&guest, &pull, serde_json::json!({})).await?;
-        }
+        let pulled = post_json(
+            &guest,
+            &format!("/api/repository/{key}/branch/main/sync/pull"),
+            serde_json::json!({}),
+        )
+        .await?;
         successful_body("guest pulls before revocation", &pulled);
 
         // The guest writes something the owner can look for, and syncs it
