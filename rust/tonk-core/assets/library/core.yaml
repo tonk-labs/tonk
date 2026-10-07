@@ -1809,7 +1809,8 @@ concept!: &route
 #     body: |
 #       export const hello = "world";
 #
-# A header's value is text, so it is quoted: a bare word is a name.
+# A header's value is text, so it is quoted: a bare word is a name. The
+# same goes for a body that is one bare word.
 concept!: &route/http
   this: tonk:route/http
   description: A route answered with content, a path pattern and the response to give.

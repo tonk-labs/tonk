@@ -14,10 +14,11 @@
 //
 // It answers these requests and refuses the rest:
 //
-// - Navigations get the static shell, carrying the site's CSP, except one
-//   to an asset or to a path the space's routes answer with content. The
-//   server hands out the same shell for any path, so a deep link with no
-//   worker yet still boots one.
+// - A frame or tab loading any address gets the static shell, carrying the
+//   site's CSP, except one to an asset. The server hands out the same shell
+//   for any path, so a deep link with no worker yet still boots one. The
+//   shell shows a route's content in a frame of its own, whose load it has
+//   this worker answer with that content.
 // - `/api/*` is answered by this origin's database. What a profile is asked
 //   about a space's content it passes on to that space's worker.
 // - `/asset:{hash}`, an asset's own URI as a path, is read from a space's
@@ -214,6 +215,31 @@ let portWaiters = [];
 let nextId = 1;
 const pending = new Map();
 
+// Addresses whose next load is answered with their content, and until when.
+//
+// A page load and a request for the same address are told apart by what
+// asks: a frame or a tab gets the shell, which sets the site up and shows
+// what the address routes to, and a `fetch` or an `import` gets the content
+// itself. But content is shown in a frame too, inside the shell, and that
+// load looks like any other. So the shell that lands in such a frame asks
+// for the content here, and loads its address once more.
+const admitted = new Map();
+const ADMIT_MS = 5_000;
+
+function admit(url) {
+    const now = Date.now();
+    for (const [held, until] of admitted) if (until <= now) admitted.delete(held);
+    admitted.set(url, now + ADMIT_MS);
+}
+
+// Whether the load of `url` is one a shell asked to be answered with
+// content. Asking uses it up.
+function takeAdmission(url) {
+    const until = admitted.get(url);
+    admitted.delete(url);
+    return until !== undefined && until > Date.now();
+}
+
 self.addEventListener("message", event => {
     const type = event.data?.type;
     if (type === "protocol") {
@@ -222,6 +248,14 @@ self.addEventListener("message", event => {
     }
     if (type === "flush") {
         event.waitUntil(flushSession());
+        return;
+    }
+    // A shell that loaded inside a page of this origin asks to be replaced
+    // by the content at its address: the next load of that address is
+    // answered with the content, once.
+    if (type === "content") {
+        admit(event.data.url);
+        event.ports[0]?.postMessage({ admitted: true });
         return;
     }
     // A page says it is still open. Hearing it is all there is to do: an
@@ -1402,7 +1436,12 @@ async function serveShell() {
     }
     if (!response) return new Response("offline", { status: 503 });
     const headers = new Headers(response.headers);
-    headers.set("content-security-policy", spacePolicy(await siteOrigins()));
+    // The shell loads in the site's own frame, and again in the frame a
+    // shell shows content in, where this origin is one of its ancestors.
+    headers.set(
+        "content-security-policy",
+        spacePolicy(await siteOrigins(), { framedBySelf: true }),
+    );
     headers.set("permissions-policy", NO_PASSKEYS);
     headers.set("x-content-type-options", "nosniff");
     return new Response(response.body, { status: response.status, headers });
@@ -1570,17 +1609,20 @@ function pageMayAsk(request, path) {
     return rest.startsWith("/branch/");
 }
 
+const missing = () => new Response("not found", { status: 404 });
+
 self.addEventListener("fetch", event => {
     const url = new URL(event.request.url);
     if (url.origin !== self.location.origin) return;
-    // A navigation is answered from the site's routes: with the content a
-    // route keeps at the address, and otherwise with the shell, which shows
-    // whatever model the address routes to. Only the shell's own path, the
-    // file itself, is not looked up.
+    // A frame or a tab loading an address of this site gets the shell,
+    // which brings the site up and shows what the address routes to. Only a
+    // load a shell asked for (see `admit`) is answered with the content a
+    // route keeps there, and with nothing else: never the shell again.
     const asset = ASSET_PATH.exec(url.pathname);
     if (event.request.mode === "navigate" && !asset) {
-        const shell = url.pathname === SHELL_PATH;
-        event.respondWith(shell ? serveShell() : serveRoute(event.request, serveShell));
+        event.respondWith(
+            takeAdmission(url.href) ? serveRoute(event.request, missing) : serveShell(),
+        );
         return;
     }
     if (asset && (event.request.method === "GET" || event.request.method === "HEAD")) {
@@ -1633,7 +1675,9 @@ self.addEventListener("fetch", event => {
         event.respondWith(serveStatic(event.request));
         return;
     }
-    const missing = () => new Response("not found", { status: 404 });
+    // Anything else that asks (a `fetch`, an `import`, an image) gets the
+    // content a route keeps at the address, or is told there is none. It is
+    // never given the shell.
     if (event.request.method === "GET" || event.request.method === "HEAD") {
         event.respondWith(serveRoute(event.request, missing));
         return;

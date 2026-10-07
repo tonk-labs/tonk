@@ -595,3 +595,21 @@ fn post_port(
     );
     let _ = target.post_message_with_transfer(&message, origin, &Array::of1(&port));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_addresses_a_path_in_a_site_at_the_sites_origin() {
+        let origin = "https://label.tonk.test";
+        assert_eq!(site_url(origin, "/"), "https://label.tonk.test/");
+        assert_eq!(site_url(origin, ""), "https://label.tonk.test/");
+        assert_eq!(site_url(origin, "/notes"), "https://label.tonk.test/notes");
+        // A route template writes the rest of a path without its slash.
+        assert_eq!(
+            site_url(origin, "inspector/x"),
+            "https://label.tonk.test/inspector/x"
+        );
+    }
+}

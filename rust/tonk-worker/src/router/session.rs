@@ -954,6 +954,41 @@ mod match_route_tests {
         );
     }
 
+    /// A path a route answers with content is matched with the paths pages
+    /// show, most specific first: a literal content path wins over the
+    /// catch-all that would otherwise read it as a model's name.
+    #[dialog_common::test]
+    async fn it_prefers_a_content_route_over_a_broader_view_route() {
+        let routes = "route/http!:\n  path: /lib/tonk.js\n  body: export {};\n\nroute!:\n  path: \"/{*anything}\"\n  concept: probe:catch-all\n";
+
+        assert_eq!(
+            resolve("", Some(routes), "/lib/tonk.js").await.as_deref(),
+            Some("export {};"),
+            "the content route is the more specific match"
+        );
+        assert_eq!(
+            resolve("", Some(routes), "/lib/other.js").await.as_deref(),
+            Some("probe:catch-all"),
+            "any other path is still the view route's"
+        );
+    }
+
+    /// The same holds the other way round: a literal view path wins over a
+    /// content route's pattern.
+    #[dialog_common::test]
+    async fn it_prefers_a_view_route_over_a_broader_content_route() {
+        let routes = "route/http!:\n  path: \"/docs/{*page}\"\n  body: \"fallback\"\n\nroute!:\n  path: /docs/index\n  concept: probe:index\n";
+
+        assert_eq!(
+            resolve("", Some(routes), "/docs/index").await.as_deref(),
+            Some("probe:index")
+        );
+        assert_eq!(
+            resolve("", Some(routes), "/docs/guide").await.as_deref(),
+            Some("fallback")
+        );
+    }
+
     /// A route a library pinned before it shipped routes as commands loses
     /// to the space's own route for the same path, though its entity sorts
     /// first: resolved through the real router, not just the sort.

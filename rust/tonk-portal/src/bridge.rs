@@ -3952,4 +3952,159 @@ mod tests {
             "a non-object payload should yield None"
         );
     }
+
+    // --- What a site on its own origin is and is not given -----------
+
+    fn envelope(kind: &str, fields: &[(&str, &str)]) -> JsValue {
+        let object = js_sys::Object::new();
+        let _ = Reflect::set(&object, &"v".into(), &JsValue::from_f64(1.0));
+        let _ = Reflect::set(&object, &"type".into(), &JsValue::from_str(kind));
+        for (name, value) in fields {
+            let _ = Reflect::set(&object, &(*name).into(), &JsValue::from_str(value));
+        }
+        object.into()
+    }
+
+    /// A site on an origin of its own has a worker of its own. The page
+    /// around it fetches nothing on its behalf, whatever the path.
+    #[dialog_common::test]
+    async fn it_refuses_to_fetch_for_a_site_on_its_own_origin() {
+        let host = FakeHost::install();
+        let consumer = relay_consumer(&host, None, None);
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        state
+            .borrow_mut()
+            .set_origin("https://space.tonk.test".to_owned(), None);
+        let (listener, port) = bind(&consumer, &state);
+        listener.wait_for("ready").await;
+
+        port.post_message(&envelope(
+            "fetch",
+            &[("id", "f1"), ("path", "/api/identify"), ("method", "GET")],
+        ))
+        .expect("post");
+
+        let refused = listener.wait_for("fetch-error").await;
+        assert_eq!(get_str(&refused, "id").as_deref(), Some("f1"));
+        assert!(
+            get_str(&refused, "error")
+                .unwrap_or_default()
+                .contains("its own worker"),
+            "the refusal says where a site fetches from, got {refused:?}"
+        );
+    }
+
+    /// A delegation from the account is the page's handler's to obtain:
+    /// the bridge passes the request on whole and returns the answer.
+    #[dialog_common::test]
+    async fn it_passes_a_delegation_request_to_the_pages_handler() {
+        let asked: Rc<RefCell<Option<DelegationRequest>>> = Rc::new(RefCell::new(None));
+        let heard = asked.clone();
+        on_delegate(move |request, reply| {
+            *heard.borrow_mut() = Some(request);
+            reply.finish(Ok("chain".to_owned()));
+        });
+        let host = FakeHost::install();
+        let consumer = relay_consumer(&host, None, None);
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let (listener, port) = bind(&consumer, &state);
+        listener.wait_for("ready").await;
+
+        port.post_message(&envelope(
+            "delegate",
+            &[
+                ("id", "d1"),
+                ("subject", "did:key:zSpace"),
+                ("command", "/"),
+                ("audience", "did:key:zMember"),
+            ],
+        ))
+        .expect("post");
+
+        let minted = listener.wait_for("delegate-result").await;
+        DELEGATE_HANDLER.with(|slot| slot.borrow_mut().take());
+        assert_eq!(get_str(&minted, "id").as_deref(), Some("d1"));
+        assert_eq!(get_str(&minted, "delegation").as_deref(), Some("chain"));
+        assert_eq!(
+            asked.borrow().clone(),
+            Some(DelegationRequest {
+                subject: "did:key:zSpace".to_owned(),
+                command: "/".to_owned(),
+                audience: "did:key:zMember".to_owned(),
+            })
+        );
+    }
+
+    /// Only a page that can ask for a passkey installs a handler. Any other
+    /// answers a request with a refusal and never with a delegation.
+    #[dialog_common::test]
+    async fn it_refuses_a_delegation_where_no_handler_is_installed() {
+        DELEGATE_HANDLER.with(|slot| slot.borrow_mut().take());
+        let host = FakeHost::install();
+        let consumer = relay_consumer(&host, None, None);
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let (listener, port) = bind(&consumer, &state);
+        listener.wait_for("ready").await;
+
+        port.post_message(&envelope(
+            "delegate",
+            &[
+                ("id", "d2"),
+                ("subject", "did:key:zSpace"),
+                ("command", "/"),
+            ],
+        ))
+        .expect("post");
+
+        let refused = listener.wait_for("delegate-error").await;
+        assert_eq!(get_str(&refused, "id").as_deref(), Some("d2"));
+        assert!(
+            get_str(&refused, "error")
+                .unwrap_or_default()
+                .contains("cannot ask for a passkey")
+        );
+    }
+
+    /// A site's element says how far along its frame is until the frame is
+    /// showing the site, and tells the page each time.
+    #[dialog_common::test]
+    fn it_records_a_sites_stage_until_it_is_ready() {
+        let site = document().create_element("div").expect("div");
+        document().body().unwrap().append_child(&site).unwrap();
+        let heard: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = heard.clone();
+        let listener =
+            Closure::<dyn FnMut(web_sys::CustomEvent)>::new(move |event: web_sys::CustomEvent| {
+                sink.borrow_mut()
+                    .push(event.detail().as_string().unwrap_or_default());
+            });
+        document()
+            .add_event_listener_with_callback(STAGE_EVENT, listener.as_ref().unchecked_ref())
+            .unwrap();
+
+        show_stage(&site, "replicating the space");
+        assert_eq!(
+            site.get_attribute(STAGE_ATTRIBUTE).as_deref(),
+            Some("replicating the space")
+        );
+        assert!(!site.has_attribute(READY_ATTRIBUTE));
+
+        show_stage(&site, "ready");
+        assert!(!site.has_attribute(STAGE_ATTRIBUTE));
+        assert!(site.has_attribute(READY_ATTRIBUTE));
+
+        // A site that was ready and is waiting again says so.
+        show_stage(&site, "loading");
+        assert!(!site.has_attribute(READY_ATTRIBUTE));
+
+        document()
+            .remove_event_listener_with_callback(STAGE_EVENT, listener.as_ref().unchecked_ref())
+            .unwrap();
+        site.remove();
+        assert_eq!(
+            *heard.borrow(),
+            ["replicating the space", "ready", "loading"],
+            "each stage reaches the page, bubbling from the site's element"
+        );
+    }
 }

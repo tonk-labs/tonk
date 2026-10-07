@@ -204,6 +204,15 @@
                     return;
                 }
 
+                var inside = false;
+                try {
+                    inside = parent.location.origin === location.origin;
+                } catch (error) {}
+                if (inside) {
+                    control().then(becomeContent).catch(report);
+                    return;
+                }
+
                 // The app's page frames a profile's origin this way with no
                 // site to render: only to reach the profile's worker, which
                 // holds the person's profile, before any site is on screen.
@@ -256,6 +265,63 @@
                     );
                 }
 
+                // Show what this frame's address is: the content a route keeps
+                // there, in a frame of its own, or else the model the address
+                // routes to. Asking for the address as a request, which a
+                // page load is not, is how the worker says which: it answers
+                // a request with the content, or that there is none.
+                var shown = null;
+                async function render() {
+                    var address = location.pathname + location.search;
+                    var content = false;
+                    if (location.pathname !== "/") {
+                        try {
+                            content = (await fetch(address, { method: "HEAD" })).ok;
+                        } catch (error) {}
+                    }
+                    if (!content) {
+                        if (shown === "view") return;
+                        shown = "view";
+                        document.body.innerHTML = display(window.tonk.context.siteEntity);
+                        return;
+                    }
+                    if (shown === address) return;
+                    shown = address;
+                    var frame = document.createElement("iframe");
+                    frame.src = address;
+                    frame.title = address;
+                    frame.style.cssText =
+                        "position:fixed;inset:0;width:100%;height:100%;border:0;background:Canvas";
+                    document.body.replaceChildren(frame);
+                }
+
+                // This shell loaded inside a page of its own origin: in the
+                // frame a shell shows content in, or where content followed a
+                // link. It is not the site's frame, so it has the worker
+                // answer its address with the content, and loads it again.
+                // An address asked for twice in a moment is not being
+                // answered that way, and is left alone.
+                async function becomeContent() {
+                    var key = "tonk-content:" + location.href;
+                    var last = 0;
+                    try {
+                        last = Number(sessionStorage.getItem(key) || 0);
+                        sessionStorage.setItem(key, String(Date.now()));
+                    } catch (error) {}
+                    if (Date.now() - last < 2000) {
+                        throw new Error("the content at " + location.pathname + " did not load");
+                    }
+                    await new Promise(function (resolve) {
+                        var channel = new MessageChannel();
+                        channel.port1.onmessage = resolve;
+                        navigator.serviceWorker.controller.postMessage(
+                            { type: "content", url: location.href },
+                            [channel.port2],
+                        );
+                    });
+                    location.replace(location.href);
+                }
+
                 // The path this shell is kept at. It is not a place in the site.
                 var SHELL = "/space.html";
 
@@ -292,7 +358,11 @@
                     await run("/guest/" + manifest.runtime);
                     await run("/guest/" + manifest.preview);
                     await window.tonk.ready;
-                    document.body.innerHTML = display(window.tonk.context.siteEntity);
+                    await render();
+                    // The page moved this site to another address, in place.
+                    window.addEventListener("tonk:context", function () {
+                        render().catch(report);
+                    });
                     await window.tonkRuntime;
                     await window.tonk.claimed;
                     say("ready");

@@ -252,3 +252,34 @@ pub const WEBAUTHN: &str = "webauthn";
 /// no key material and builds nothing: it only supplies the gesture
 /// WebAuthn requires.
 pub const CUSTODY_REQUEST: &str = "custody";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The page and the worker are built apart and meet on this shape.
+    #[dialog_common::test]
+    fn it_names_a_delegation_request_on_the_wire() {
+        let intent = CustodyIntent::Delegate(RootDelegation {
+            subject: "did:key:zSpace".into(),
+            command: "/".into(),
+            audience: "did:key:zMember".into(),
+        });
+
+        let wire = serde_json::to_value(&intent).unwrap();
+
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "kind": "delegate",
+                "subject": "did:key:zSpace",
+                "command": "/",
+                "audience": "did:key:zMember",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<CustodyIntent>(wire).unwrap(),
+            intent
+        );
+    }
+}
