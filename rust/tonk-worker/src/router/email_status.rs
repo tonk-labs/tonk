@@ -29,7 +29,10 @@
 /// The vocabulary itself lives with the concept in `tonk-schema`, so
 /// the worker that writes these strings and the registration form that
 /// routes on them cannot drift apart.
+use tonk_analytics::account::{AccountAction, AccountOutcome, Stage, Trigger};
 pub(crate) use tonk_schema::email_state as state;
+
+use super::account_journey::Attempt;
 
 /// Split an address into the `(domain, local)` pair the lookup path
 /// names, or `None` when it is not one.
@@ -87,8 +90,11 @@ impl dialog_capability::Provider<tonk_schema::command::CheckEmail> for crate::ro
         if email.trim().is_empty() {
             return;
         }
+        // A lookup the person's typing asked for, told once it is made.
+        let attempt = Attempt::begin(self.client(), AccountAction::CheckEmail, Trigger::User);
         let tonk = self.state().read().await;
         check(&tonk, &email).await;
+        attempt.end(Stage::EmailLookup, AccountOutcome::success());
     }
 }
 
@@ -102,6 +108,7 @@ pub(crate) async fn check(tonk: &crate::worker::TonkState, email: &str) -> &'sta
     record(tonk, email, state::CHECKING).await;
     let (state, service) = lookup(email).await;
     record(tonk, email, state).await;
+    super::registration::answered();
     // The document says where the account syncs as well as who it is, so
     // one lookup answers both. Held for the login that follows: a device
     // with only an address has nowhere else to learn the service, and the

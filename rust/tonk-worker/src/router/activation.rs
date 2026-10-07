@@ -13,11 +13,13 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dialog_artifacts::Entity;
 use dialog_query::{Cardinality, the};
-use tonk_analytics::account::{AccountAction, AccountOutcome, FailureKind, Stage};
+use tonk_analytics::account::{
+    AccountAction, AccountOutcome, FailureKind, HttpStatusClass, ServiceCode, Stage, Trigger,
+};
 use tonk_common::log;
 use url::Url;
 
-use super::account_journey::{self, Attempt};
+use super::account_journey::Attempt;
 use super::http::{HttpError, post_cbor};
 use crate::router::AppState;
 
@@ -87,36 +89,65 @@ pub(crate) fn outcome(answer: Result<(), HttpError>) -> Outcome {
     }
 }
 
-/// How the attempt ended, for the account journey: activated, turned away
-/// for good, or failed in a way worth another try.
-pub(crate) fn journey_end(outcome: &Outcome) -> (Stage, AccountOutcome) {
-    match outcome {
-        Outcome::Activated => (Stage::Complete, AccountOutcome::success()),
-        Outcome::Refused(_) => (
-            Stage::AccessService,
-            AccountOutcome::terminal_failure(FailureKind::AccessDenied),
-        ),
-        Outcome::Failed(_) => (
-            Stage::AccessService,
-            AccountOutcome::retryable(FailureKind::ServiceUnavailable),
-        ),
-    }
+/// How an attempt that never reached the service ended, for the account
+/// journey: the link carried nothing to present.
+fn unpresented() -> (Stage, AccountOutcome) {
+    (
+        Stage::Input,
+        AccountOutcome::terminal_failure(FailureKind::InvalidInput),
+    )
 }
 
-async fn activate(invocation: &str) -> Outcome {
+/// How the attempt ended, for the account journey, from the service's
+/// answer: activated, turned away for good, or failed in a way worth
+/// another try, with the class of status and the code it answered.
+pub(crate) fn journey_end(answer: &Result<(), HttpError>) -> (Stage, AccountOutcome) {
+    let outcome = match answer {
+        Ok(()) => return (Stage::Complete, AccountOutcome::success()),
+        Err(HttpError::Upstream(failure)) if failure.code.as_deref() == Some("Unauthorized") => {
+            AccountOutcome::terminal_failure(FailureKind::AccessDenied)
+                .with_http_status_class(HttpStatusClass::ClientError)
+                .with_service_code(ServiceCode::Unauthorized)
+        }
+        Err(HttpError::Upstream(failure)) if failure.status >= 500 => {
+            AccountOutcome::retryable(FailureKind::ServiceUnavailable)
+                .with_http_status_class(HttpStatusClass::ServerError)
+        }
+        Err(HttpError::Upstream(_)) => AccountOutcome::terminal_failure(FailureKind::AccessDenied)
+            .with_http_status_class(HttpStatusClass::ClientError),
+        Err(HttpError::Timeout | HttpError::Transport(_)) => {
+            AccountOutcome::retryable(FailureKind::Network)
+        }
+    };
+    (Stage::AccessService, outcome)
+}
+
+/// Present the link's invocation, for the attempt `attempt` tells of.
+async fn activate(invocation: &str, mut attempt: Attempt) -> Outcome {
     let bytes = match decode(invocation) {
         Ok(bytes) => bytes,
-        Err(refused) => return refused,
+        Err(refused) => {
+            let (stage, ended) = unpresented();
+            attempt.end(stage, ended);
+            return refused;
+        }
     };
+    attempt.reached(Stage::AccessService);
     let endpoint = super::repository::app_origin()
         .and_then(|origin| Url::parse(&format!("{}/ucan/", origin.trim_end_matches('/'))).ok());
     let Some(endpoint) = endpoint else {
+        attempt.end(
+            Stage::AccessService,
+            AccountOutcome::retryable(FailureKind::Network),
+        );
         return Outcome::Failed("The service could not be reached. Try again.".into());
     };
     let answer = post_cbor(&endpoint, &bytes).await.map(|_| ());
     if let Err(error) = &answer {
         log!("account activation: {error}");
     }
+    let (stage, ended) = journey_end(&answer);
+    attempt.end(stage, ended);
     outcome(answer)
 }
 
@@ -156,12 +187,8 @@ impl dialog_capability::Provider<tonk_schema::command::ActivateAccount>
     for crate::router::CommandEnv
 {
     async fn execute(&self, command: tonk_schema::command::ActivateAccount) {
-        let (attempt, began) = Attempt::begin(AccountAction::ActivateAccount);
-        account_journey::tell(self.client(), began);
-        account_journey::tell(self.client(), attempt.reached(Stage::AccessService));
-        let outcome = activate(&command.invocation.0).await;
-        let (stage, ended) = journey_end(&outcome);
-        account_journey::tell(self.client(), attempt.ended(stage, ended));
+        let attempt = Attempt::begin(self.client(), AccountAction::ActivateAccount, Trigger::User);
+        let outcome = activate(&command.invocation.0, attempt).await;
         report(self.state(), &self.origin().branch, &command.this, &outcome).await;
     }
 }
@@ -177,6 +204,55 @@ mod tests {
             code: code.map(str::to_owned),
             message: message.to_owned(),
         }))
+    }
+
+    /// The outcomes the activation page told the account journey, kept
+    /// now that the worker presents the link.
+    #[dialog_common::test]
+    fn it_tells_the_journey_how_presenting_the_link_ended() {
+        assert_eq!(
+            journey_end(&Ok(())),
+            (Stage::Complete, AccountOutcome::success())
+        );
+        assert_eq!(
+            journey_end(&upstream(401, Some("Unauthorized"), "expired")),
+            (
+                Stage::AccessService,
+                AccountOutcome::terminal_failure(FailureKind::AccessDenied)
+                    .with_http_status_class(HttpStatusClass::ClientError)
+                    .with_service_code(ServiceCode::Unauthorized)
+            )
+        );
+        assert_eq!(
+            journey_end(&upstream(503, None, "down")),
+            (
+                Stage::AccessService,
+                AccountOutcome::retryable(FailureKind::ServiceUnavailable)
+                    .with_http_status_class(HttpStatusClass::ServerError)
+            )
+        );
+        assert_eq!(
+            journey_end(&upstream(400, Some("Invalid"), "no")),
+            (
+                Stage::AccessService,
+                AccountOutcome::terminal_failure(FailureKind::AccessDenied)
+                    .with_http_status_class(HttpStatusClass::ClientError)
+            )
+        );
+        assert_eq!(
+            journey_end(&Err(HttpError::Timeout)),
+            (
+                Stage::AccessService,
+                AccountOutcome::retryable(FailureKind::Network)
+            )
+        );
+        assert_eq!(
+            unpresented(),
+            (
+                Stage::Input,
+                AccountOutcome::terminal_failure(FailureKind::InvalidInput)
+            )
+        );
     }
 
     #[dialog_common::test]

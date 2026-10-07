@@ -30,6 +30,9 @@ pub enum AnalyticsEvent {
         /// Local routing key, hashed by the page before remote capture.
         space: String,
     },
+    /// An account was created: the passkey ceremony that makes one went
+    /// through.
+    AccountCreated,
     /// The profile is linked to its account without the account's
     /// encryption key: by signing in through another deployment, or by a
     /// link made before that key existed.

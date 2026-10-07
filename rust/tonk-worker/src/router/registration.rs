@@ -66,17 +66,46 @@ thread_local! {
 }
 
 thread_local! {
-    /// The attempt the passkey ceremony now out is part of, and the page
-    /// that is told how it goes.
-    static ATTEMPT: RefCell<Option<(Attempt, Option<crate::router::ClientId>)>> =
-        const { RefCell::new(None) };
+    /// The attempt the passkey ceremony now out is part of.
+    static CEREMONY: RefCell<Option<Attempt>> = const { RefCell::new(None) };
+    /// The panel's wait for its first answer about an address, begun when
+    /// it opens.
+    static LOADING: RefCell<Option<Attempt>> = const { RefCell::new(None) };
+    /// The panel's wait for the emailed link, begun when a ceremony leaves
+    /// an account that is not yet served.
+    static WATCHING: RefCell<Option<Attempt>> = const { RefCell::new(None) };
 }
 
-/// End the attempt the ceremony out was part of, when there is one.
-fn end_attempt(ending: impl FnOnce() -> (account::Stage, AccountOutcome)) {
-    if let Some((attempt, client)) = ATTEMPT.take() {
-        let (stage, outcome) = ending();
-        account_journey::tell(client.as_ref(), attempt.ended(stage, outcome));
+/// The panel opened for the page behind `client`: told as an action done at
+/// once, and the wait for its first answer begins.
+pub(crate) fn opened(client: Option<&crate::router::ClientId>) {
+    account_journey::done_at_once(
+        client,
+        account::AccountAction::OpenRegistration,
+        account::Stage::Input,
+    );
+    LOADING.set(Some(Attempt::begin(
+        client,
+        account::AccountAction::LoadRegistration,
+        account::Trigger::Automatic,
+    )));
+}
+
+/// The panel begins its wait for the emailed link, for the page behind
+/// `client`.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn watch(client: Option<&crate::router::ClientId>) {
+    WATCHING.set(Some(Attempt::begin(
+        client,
+        account::AccountAction::WatchActivation,
+        account::Trigger::Automatic,
+    )));
+}
+
+/// The panel has its first answer about an address.
+pub(crate) fn answered() {
+    if let Some(loading) = LOADING.take() {
+        loading.end(account::Stage::AccountLoad, AccountOutcome::success());
     }
 }
 
@@ -211,6 +240,9 @@ pub(crate) async fn confirming(tonk: &TonkState) -> bool {
 /// The account's address is confirmed: a panel waiting for that is done.
 pub(crate) async fn activated(tonk: &TonkState) {
     if confirming(tonk).await {
+        if let Some(watching) = WATCHING.take() {
+            watching.end(account::Stage::Complete, AccountOutcome::success());
+        }
         record(tonk, None).await;
     }
 }
@@ -318,9 +350,26 @@ pub(crate) async fn settle(
     let tonk = state.read().await;
     let active = outcome.is_ok() && served(&tonk).await;
     let code = outcome.as_ref().err().and_then(|(code, _)| *code);
+    let handed = outcome.is_ok();
+    let created = handed && kind == kind::CREATE;
     let stage = settled(kind, outcome, active);
     log!("registration: the {kind} hand-off leaves the panel at {stage:?}");
-    end_attempt(|| account_journey::handed_off(kind, stage.as_ref(), code));
+    if let Some(attempt) = CEREMONY.take() {
+        let client = attempt.client().cloned();
+        let (ended, outcome) = account_journey::handed_off(stage.as_ref(), code);
+        attempt.end(ended, outcome);
+        if created {
+            crate::router::navigate::notify_analytics(
+                client.as_ref(),
+                tonk_worker_api::AnalyticsEvent::AccountCreated,
+            );
+        }
+        // A ceremony that went through to an account not yet served is
+        // followed by the wait for its emailed link.
+        if handed && matches!(stage, Some(Stage::Confirming { .. })) {
+            watch(client.as_ref());
+        }
+    }
     let waiting = matches!(stage, Some(Stage::Confirming { .. }));
     record(&tonk, stage).await;
     drop(tonk);
@@ -363,7 +412,10 @@ pub(crate) async fn ceremony_refused(tonk: &TonkState, kind: &str, name: &str) {
         _ => kind::LOG_IN,
     };
     log!("registration: the page refused the {kind} passkey ({name})");
-    end_attempt(|| account_journey::refused(kind, name));
+    if let Some(attempt) = CEREMONY.take() {
+        let (ended, outcome) = account_journey::refused(name);
+        attempt.end(ended, outcome);
+    }
     let message = refused(name);
     record(tonk, Some(Stage::Failed { kind, message })).await;
 }
@@ -387,26 +439,29 @@ async fn ask(
     }
     let tonk = env.state().read().await;
     record(&tonk, Some(Stage::Ceremony { kind })).await;
-    let (attempt, began) = Attempt::begin(account_journey::action_of(kind));
-    account_journey::tell(env.client(), began);
-    account_journey::tell(env.client(), attempt.reached(account::Stage::EmailLookup));
-    account_journey::tell(
+    let mut attempt = Attempt::begin(
         env.client(),
-        attempt.reached(account_journey::passkey_stage(kind)),
+        account_journey::action_of(kind),
+        account::Trigger::User,
     );
-    ATTEMPT.set(Some((attempt, env.client().cloned())));
+    attempt.reached(account::Stage::EmailLookup);
+    attempt.reached(account_journey::passkey_stage(kind));
+    CEREMONY.set(Some(attempt));
+    // The page was never asked: nothing the page did before could say so.
     let unasked = || {
-        (
-            account::Stage::WorkerHandoff,
-            AccountOutcome::retryable(account::FailureKind::LocalState),
-        )
+        if let Some(attempt) = CEREMONY.take() {
+            attempt.end(
+                account::Stage::WorkerHandoff,
+                AccountOutcome::retryable(account::FailureKind::LocalState),
+            );
+        }
     };
     let failed = |message: &str| Stage::Failed {
         kind,
         message: message.to_owned(),
     };
     let Some(client) = env.client() else {
-        end_attempt(unasked);
+        unasked();
         record(&tonk, Some(failed("No page is open to ask for a passkey."))).await;
         return;
     };
@@ -419,7 +474,7 @@ async fn ask(
     .await
     {
         log!("registration: the page could not be asked for a passkey: {error}");
-        end_attempt(unasked);
+        unasked();
         record(
             &tonk,
             Some(failed("This page could not be asked for a passkey.")),
@@ -463,7 +518,7 @@ impl dialog_capability::Provider<tonk_schema::command::OpenRegistration>
     for crate::router::CommandEnv
 {
     async fn execute(&self, _command: tonk_schema::command::OpenRegistration) {
-        account_journey::done_at_once(self.client(), account::AccountAction::OpenRegistration);
+        opened(self.client());
         let tonk = self.state().read().await;
         record(
             &tonk,
@@ -522,6 +577,13 @@ impl dialog_capability::Provider<tonk_schema::command::CreateAccount>
         if email.is_empty() || name.is_empty() {
             return;
         }
+        // The account's first name is given here, with the request to
+        // create it, where it used to be saved by a step of its own.
+        account_journey::done_at_once(
+            self.client(),
+            account::AccountAction::SaveInitialDisplayName,
+            account::Stage::LocalCommit,
+        );
         let Some(endpoint) = endpoint() else {
             let tonk = self.state().read().await;
             let message = "This deployment's address is not known.".to_owned();
@@ -588,17 +650,9 @@ impl dialog_capability::Provider<tonk_schema::command::DismissRegistration>
     for crate::router::CommandEnv
 {
     async fn execute(&self, _command: tonk_schema::command::DismissRegistration) {
-        // Putting the panel away while it waits on a passkey gives the
-        // attempt up.
-        if let Some((attempt, client)) = ATTEMPT.take() {
-            let stage = account_journey::passkey_stage(match attempt.action() {
-                account::AccountAction::CreateAccount => kind::CREATE,
-                _ => kind::LOG_IN,
-            });
-            account_journey::tell(
-                client.as_ref(),
-                attempt.ended(stage, AccountOutcome::cancelled()),
-            );
+        // Putting the panel away gives up whatever it was waiting on.
+        for waiting in [LOADING.take(), WATCHING.take()].into_iter().flatten() {
+            waiting.end(account::Stage::Complete, AccountOutcome::cancelled());
         }
         let tonk = self.state().read().await;
         record(&tonk, None).await;
@@ -753,6 +807,140 @@ mod waiting_tests {
         assert!(
             heard.contains("asserted") && heard.contains(kind::CREATE),
             "the panel hears of the failure: {heard:?}"
+        );
+    }
+}
+
+/// What the panel tells the account journey as it is used, with the state
+/// of a signed-in device behind it.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod journey_tests {
+    use dialog_capability::Provider;
+    use tonk_schema::command::{DismissRegistration, OpenRegistration};
+    use tonk_schema::domain::command::current::{dismiss_registration, open_registration};
+    use tonk_schema::registration::kind;
+
+    use super::{Stage, account_journey, activated, answered, record, watch};
+    use crate::router::{CommandEnv, CommandOrigin};
+
+    /// The parts of each event told a funnel is built on.
+    fn told() -> Vec<String> {
+        account_journey::heard()
+            .iter()
+            .map(|event| {
+                let part = |key: &str| event.get(key).and_then(|v| v.as_str()).unwrap_or("-");
+                format!(
+                    "{} {} {} {} {}",
+                    part("action"),
+                    part("phase"),
+                    part("stage"),
+                    part("trigger"),
+                    part("result")
+                )
+            })
+            .collect()
+    }
+
+    async fn env() -> CommandEnv {
+        let state = crate::router::command::tests::native::test_state().await;
+        CommandEnv::new(state, CommandOrigin::default())
+    }
+
+    async fn open(env: &CommandEnv) {
+        Provider::<OpenRegistration>::execute(
+            env,
+            OpenRegistration {
+                this: "cmd:open".parse().expect("entity"),
+                time: open_registration::Time(1.0),
+            },
+        )
+        .await;
+    }
+
+    async fn dismiss(env: &CommandEnv) {
+        Provider::<DismissRegistration>::execute(
+            env,
+            DismissRegistration {
+                this: "cmd:dismiss".parse().expect("entity"),
+                time: dismiss_registration::Time(2.0),
+            },
+        )
+        .await;
+    }
+
+    #[dialog_common::test]
+    async fn it_tells_the_panel_opening_and_its_first_answer() {
+        let env = env().await;
+        account_journey::listen();
+        open(&env).await;
+        answered();
+        // Only the first answer ends the wait.
+        answered();
+
+        assert_eq!(
+            told(),
+            [
+                "open_registration started input user -",
+                "open_registration finished input user success",
+                "load_registration started account_load automatic -",
+                "load_registration finished account_load automatic success",
+            ]
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_tells_a_panel_put_away_before_it_had_an_answer() {
+        let env = env().await;
+        account_journey::listen();
+        open(&env).await;
+        dismiss(&env).await;
+
+        assert_eq!(
+            told()[2..],
+            [
+                "load_registration started account_load automatic -",
+                "load_registration finished complete automatic cancelled",
+            ]
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_tells_the_wait_for_the_emailed_link_when_it_ends() {
+        let env = env().await;
+        let tonk = env.state().read().await;
+        record(&tonk, Some(Stage::Confirming { kind: kind::CREATE })).await;
+        account_journey::listen();
+        watch(None);
+
+        activated(&tonk).await;
+
+        assert_eq!(
+            told(),
+            [
+                "watch_activation started activation_wait automatic -",
+                "watch_activation finished complete automatic success",
+            ]
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_tells_a_wait_for_the_link_that_was_put_away() {
+        let env = env().await;
+        {
+            let tonk = env.state().read().await;
+            record(&tonk, Some(Stage::Confirming { kind: kind::CREATE })).await;
+        }
+        account_journey::listen();
+        watch(None);
+
+        dismiss(&env).await;
+
+        assert_eq!(
+            told(),
+            [
+                "watch_activation started activation_wait automatic -",
+                "watch_activation finished complete automatic cancelled",
+            ]
         );
     }
 }

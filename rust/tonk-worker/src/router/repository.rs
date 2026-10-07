@@ -2150,6 +2150,7 @@ async fn run_invite(
             // the panel that adds an account, and the share resumes
             // when the account facts land.
             if reason.code() == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT {
+                super::registration::opened(env.client());
                 let tonk = env.state().read().await;
                 super::registration::record(
                     &tonk,
