@@ -767,13 +767,37 @@ pub async fn pull(
     // account claims its capability chains by proving them instead,
     // started detached below.
     let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
-    let pulled = tonk_state
+    // With the same bounded refresh-and-retry [`sync`] gives a head that
+    // moved under the pull: a commit, or another pull of this branch,
+    // landed while this one merged.
+    let mut pulled = tonk_state
         .reactor
         .repository(&params.repo)
         .branch(&params.branch)
         .pull()
         .perform(&tonk_state.operator)
         .await;
+    for attempt in 1..SYNC_RETRY_LIMIT {
+        if !pulled.as_ref().is_err_and(is_head_moved) {
+            break;
+        }
+        log!(
+            "Pull raced another update on {}@{} (attempt {attempt}); refreshing",
+            params.branch,
+            params.repo
+        );
+        if let Err(error) = session.handle().refresh(&tonk_state.operator).await {
+            log!("Pull refresh failed: {error}");
+            break;
+        }
+        pulled = tonk_state
+            .reactor
+            .repository(&params.repo)
+            .branch(&params.branch)
+            .pull()
+            .perform(&tonk_state.operator)
+            .await;
+    }
     match pulled {
         Ok(after) => {
             log!("Pull succeeded: {}@{}", params.branch, params.repo);
