@@ -451,6 +451,29 @@ async fn add_profile(
     Ok(response)
 }
 
+/// Bring down everything the account's branch refers to, while this device
+/// may still read it.
+///
+/// A pull takes the branch's head and leaves what it refers to where it
+/// is, to be read when wanted. Signing out gives up the right to read it,
+/// and the branch is kept and written to after: a write that reaches a
+/// part never brought down then has nowhere to read it from, and fails.
+/// So what the branch holds is made this device's own first. A device
+/// that cannot reach the account now signs out with what it has.
+async fn keep_what_the_account_branch_holds(tonk: &TonkState) {
+    let kept = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .pull()
+        .download()
+        .perform(&tonk.operator)
+        .await;
+    if let Err(error) = kept {
+        log!("sign-out: the account branch was not brought down whole: {error}");
+    }
+}
+
 /// Sign out: withdraw this device's grant, forget the provider, and move
 /// to a branch that follows nothing.
 ///
@@ -469,6 +492,7 @@ pub(crate) async fn sign_out(
 
     let (status, storage, name, profile, registry, profile_library) = {
         let tonk = state.read().await;
+        keep_what_the_account_branch_holds(&tonk).await;
         super::account_devices::withdraw_own_authority(&tonk).await;
         let status = super::account::disconnect(&tonk).await?;
         super::profile::leave_account(&tonk).await;

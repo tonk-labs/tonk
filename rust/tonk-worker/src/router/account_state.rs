@@ -2387,6 +2387,100 @@ pub(crate) mod tests {
         );
     }
 
+    /// A device's sync takes the account branch's head and brings down
+    /// only what it needs to act, leaving the rest to be read when wanted.
+    /// Signing out gives up the right to read it, and the branch is kept:
+    /// signing back in writes to it, and a write that reached a part never
+    /// brought down failed with "No delegation chain proves … may access
+    /// …", depending on which part it happened to reach. Signing out
+    /// brings the branch down whole first.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_signs_back_in_to_a_branch_it_had_not_brought_down_whole() {
+        use dialog_artifacts::{Artifact, Instruction, Value};
+        use dialog_varsig::Principal as _;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let (home, _service, root, remote) = ready_account_state(None).await;
+        assert_eq!(ensure_account_state(&home).await, AccountStateStatus::Ready);
+        let device = device_on(&root, &remote, None).await;
+        let (status, swept) = ensure_account_state_swept(&device).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.unwrap();
+
+        let (_, swept) = ensure_account_state_swept(&home).await;
+        swept.unwrap();
+        for round in 0..3u64 {
+            let facts: Vec<_> = (0..2048u64)
+                .map(|n| {
+                    Instruction::Assert(Artifact {
+                        the: "test/fact".parse().expect("a valid attribute"),
+                        of: format!("test:{round}:{n}").parse().expect("a valid entity"),
+                        is: Value::UnsignedInt(n.into()),
+                        cause: None,
+                    })
+                })
+                .collect();
+            home.reactor
+                .profile_repository()
+                .branch(&home.active_branch)
+                .acquire(&home.operator)
+                .await
+                .unwrap()
+                .handle()
+                .commit(futures_util::stream::iter(facts))
+                .perform(&home.operator)
+                .await
+                .unwrap();
+            push_account_main(&home).await.unwrap();
+        }
+
+        // The device takes the head the way its sync does, which brings
+        // down what it needs to act and leaves the rest where it is.
+        let (_, swept) = ensure_account_state_swept(&device).await;
+        swept.unwrap();
+
+        let device = Arc::new(RwLock::new(device));
+        super::super::profiles::sign_out(&device, None)
+            .await
+            .unwrap();
+        let back = super::super::profiles::for_account(device, &root.did(), None)
+            .await
+            .expect("the device returns to the account's branch");
+
+        // A write that reaches every part of what the branch holds.
+        let touched: Vec<_> = (0..3u64)
+            .flat_map(|round| (0..2048u64).map(move |n| (round, n)))
+            .map(|(round, n)| {
+                Instruction::Assert(Artifact {
+                    the: "test/touched".parse().expect("a valid attribute"),
+                    of: format!("test:{round}:{n}").parse().expect("a valid entity"),
+                    is: Value::UnsignedInt(n.into()),
+                    cause: None,
+                })
+            })
+            .collect();
+        let branch = back
+            .reactor
+            .profile_repository()
+            .branch(&back.active_branch)
+            .acquire(&back.operator)
+            .await
+            .unwrap();
+        branch.handle().refresh(&back.operator).await.unwrap();
+        let written = branch
+            .handle()
+            .commit(futures_util::stream::iter(touched))
+            .perform(&back.operator)
+            .await;
+        assert!(
+            written.is_ok(),
+            "writing after signing out: {:?}",
+            written.err()
+        );
+    }
+
     /// The worker keeps one handle per branch, and something else can move
     /// the branch under it: the pull a space's worker makes as it takes the
     /// space up, while a page asks for a pull of its own. The handle then
