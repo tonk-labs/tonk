@@ -4665,14 +4665,15 @@ pub(crate) mod tests {
         wait_for_service_worker(&driver).await?;
         raise_cluster_from_hub(&driver, &env).await?;
 
-        // The ceremony runs in the top page, so its hand-off is posted there.
+        // The ceremony runs in the top page, which hands what it derived
+        // to the profile's worker through the profile's frame.
         driver.enter_default_frame().await?;
         driver
             .execute(
                 r#"
                 window.__tonkCustodyHandoff = null;
-                const original = ServiceWorker.prototype.postMessage;
-                ServiceWorker.prototype.postMessage = function(message, transfer) {
+                const original = window.tonkProfileWorker;
+                window.tonkProfileWorker = function(message, transfer) {
                     if (message && message.type === "custody") {
                         const port = transfer && transfer[0];
                         window.__tonkCustodyHandoff = {
