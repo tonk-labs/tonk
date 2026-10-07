@@ -431,6 +431,10 @@ pub struct TonkState {
     /// Spaces whose seed this worker instance already checked against the
     /// shipped bundle. See [`crate::router::adopt::SeedUpgrades`].
     pub(crate) seed_upgrades: crate::router::adopt::SeedUpgrades,
+    /// Template copies this worker is running, so a repeat of the same
+    /// request (a reload of a copy link) joins the running one. Memory only.
+    /// See [`crate::router::repository::CopiesInFlight`].
+    pub(crate) copies_in_flight: crate::router::repository::CopiesInFlight,
     /// Routing keys the hidden account repository answers to, resolved lazily.
     /// Consulted by the middleware that keeps that repository off the generic
     /// HTTP surface, so it sits on the hot path for every repository request.
@@ -1847,6 +1851,7 @@ pub(crate) async fn boot_state_with_profile_library(
         sync_queue: Default::default(),
         clients: Default::default(),
         seed_upgrades: Default::default(),
+        copies_in_flight: Default::default(),
         account_keys: Default::default(),
         profile_library,
         registry,

@@ -43,7 +43,9 @@ use zeroize::Zeroizing;
 use super::AppState;
 
 mod duplication;
+mod in_flight;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
+pub(crate) use in_flight::CopiesInFlight;
 
 /// Name of the device-local meta branch every *space* repository has
 /// alongside its content branch. It stores local bookkeeping — the
@@ -387,34 +389,54 @@ fn seed_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
 
 /// The `space/create` transient's optional `open` flag.
 ///
-/// Absent (or false) means create only — the space appears in the Hub and
-/// the person stays where they are. Present and true means create and
-/// navigate, which is what the Hub's own create form asks for.
-///
 /// Read from the raw facts rather than declared on [`CreateSpace`] for
 /// the same reason the remote is: the command is matched name-only, so a
 /// declared field would make every create that omits it fail to decode.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const OPEN_ATTR: &str = "xyz.tonk.command.create-space/open";
 
-/// Whether the create should navigate the caller into the new space.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn open_from_facts(facts: &crate::reactor::EntityFacts) -> bool {
+/// How a finished create moves the page that asked for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OpenMode {
+    /// Load the new space — what every create has always done.
+    Navigate,
+    /// Load the new space in place of the current history entry, so Back
+    /// skips the page that asked. The `/copy/<slug>` link asks for this:
+    /// landing on that address again would start another copy.
+    Replace,
+    /// Leave the page where it is: a create in the background.
+    Stay,
+}
+
+/// How the create should move the caller: absent or true navigates (the
+/// behaviour every caller relies on, the FAB's "new space" among them),
+/// `replace` replaces the history entry, and an explicit falsehood stays.
+fn open_from_facts(facts: &crate::reactor::EntityFacts) -> OpenMode {
     use dialog_artifacts::Value;
 
     facts
         .iter()
         .find(|artifact| artifact.the.to_string() == OPEN_ATTR)
         .map(|artifact| match &artifact.is {
-            Value::Boolean(open) => *open,
-            // A form field arrives as text; treat anything but an
-            // explicit falsehood as asking to open, since carrying the
-            // field at all is the request.
-            Value::String(text) => !matches!(text.trim(), "" | "false" | "0"),
-            Value::Entity(uri) => uri.to_string() != "case:false",
-            _ => false,
+            Value::Boolean(false) => OpenMode::Stay,
+            // A form field arrives as text.
+            Value::String(text) => match text.trim() {
+                "" | "false" | "0" => OpenMode::Stay,
+                "replace" => OpenMode::Replace,
+                _ => OpenMode::Navigate,
+            },
+            Value::Entity(uri) if uri.to_string() == "case:false" => OpenMode::Stay,
+            _ => OpenMode::Navigate,
         })
-        .unwrap_or(false)
+        .unwrap_or(OpenMode::Navigate)
+}
+
+/// Move `client` to `href` as `open` asks.
+fn open_space(client: Option<&crate::router::ClientId>, href: &str, open: OpenMode) {
+    match open {
+        OpenMode::Navigate => crate::router::navigate::notify_navigate(client, href),
+        OpenMode::Replace => crate::router::navigate::notify_replace(client, href),
+        OpenMode::Stay => {}
+    }
 }
 
 /// The `tonk:enable-sync` transient's target space, read from the raw facts.
@@ -465,16 +487,37 @@ fn next_untitled_label<I>(existing: I) -> String
 where
     I: IntoIterator<Item = String>,
 {
+    next_label(UNTITLED, " ", existing)
+}
+
+/// Pick the first free label for a space copied from a template named
+/// `name`: `Recipe Box`, then `Recipe Box copy 2`, `Recipe Box copy 3`, …,
+/// so two copies in the Hub can be told apart.
+fn next_copy_label<I>(name: &str, existing: I) -> String
+where
+    I: IntoIterator<Item = String>,
+{
+    next_label(name, " copy ", existing)
+}
+
+/// The first free label of the form `base`, then `base{separator}2`,
+/// `base{separator}3`, … — the smallest ordinal no existing label already
+/// uses. Only labels of exactly that form count as taken.
+fn next_label<I>(base: &str, separator: &str, existing: I) -> String
+where
+    I: IntoIterator<Item = String>,
+{
+    let base = base.trim();
     let taken: std::collections::HashSet<u64> = existing
         .into_iter()
         .filter_map(|label| {
             let label = label.trim();
-            if label == UNTITLED {
+            if label == base {
                 return Some(1);
             }
             label
-                .strip_prefix(UNTITLED)
-                .and_then(|rest| rest.strip_prefix(' '))
+                .strip_prefix(base)
+                .and_then(|rest| rest.strip_prefix(separator))
                 .and_then(|ordinal| ordinal.parse::<u64>().ok())
                 .filter(|ordinal| *ordinal >= 2)
         })
@@ -484,9 +527,9 @@ where
         ordinal += 1;
     }
     if ordinal == 1 {
-        UNTITLED.to_string()
+        base.to_string()
     } else {
-        format!("{UNTITLED} {ordinal}")
+        format!("{base}{separator}{ordinal}")
     }
 }
 
@@ -580,6 +623,8 @@ pub(crate) struct CreateSpaceRequest {
     template: Option<String>,
     /// Source space whose main-branch content should be copied.
     copy_from: Option<String>,
+    /// How to move the page once the space exists, read from the raw facts.
+    open: OpenMode,
 }
 
 impl crate::reactor::Decode for CreateSpaceRequest {
@@ -622,6 +667,7 @@ impl crate::reactor::Decode for CreateSpaceRequest {
                     dialog_artifacts::Value::Entity(value) => value.to_string(),
                     _ => String::new(),
                 }),
+            open: open_from_facts(facts),
         })
     }
 }
@@ -640,9 +686,11 @@ impl dialog_capability::Command for CreateSpaceRequest {
 /// create wizard doesn't ask for one — its hidden input carries the
 /// [`UNTITLED`] sentinel, which is uniquified against the existing space
 /// labels ([`next_untitled_label`]) so consecutive creates read
-/// "Untitled", "Untitled 2", …. Once the space is created and seeded, a
-/// `navigate` message goes back to the originating client so the creator
-/// lands inside the new space. A remote/auth failure leaves a working
+/// "Untitled", "Untitled 2", …; an unnamed template copy is named after
+/// the template ([`next_copy_label`]). Once the space is created and
+/// seeded, each page that asked is moved into it as its `open` says
+/// ([`OpenMode`]). A template copy asked for again while it runs joins
+/// the running one ([`in_flight`]). A remote/auth failure leaves a working
 /// local space, retryable from the topbar.
 ///
 /// Only the profile branch may mint: creating a space is a profile-space
@@ -658,10 +706,6 @@ impl dialog_capability::Provider<CreateSpaceRequest> for crate::router::CommandE
 }
 
 async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpaceRequest) {
-    let receipt = request.command.this.clone();
-    let name = request.command.name.0;
-    let remote = request.remote;
-    let description = request.description;
     if !env.from_profile() {
         log!(
             "CreateSpace ignored: origin '{}' is not the profile branch — \
@@ -671,81 +715,22 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
         return;
     }
 
-    // The create wizard no longer asks for a name: its hidden
-    // `name` input carries the `Untitled` sentinel (a blank name
-    // from an older form gets the same treatment). Uniquify it
-    // against the existing space labels so consecutive creates
-    // read "Untitled", "Untitled 2", … — the user renames later.
-    let name = if name.trim().is_empty() || name.trim() == UNTITLED {
-        next_untitled_label(existing_space_labels(env.state()).await)
-    } else {
-        name
+    let me = in_flight::Waiter {
+        receipt: request.command.this.clone(),
+        client: env.client().cloned(),
+        open: request.open,
     };
-    log!(
-        "command CreateSpace name={} remote={:?} seed={:?}",
-        name,
-        remote,
-        request.seed
-    );
-
-    // A seed is fetched and checked before anything is created, so one that
-    // cannot be used fails the create instead of leaving a space without the
-    // definitions it was made for.
-    if request.template.is_some() && (request.seed.is_some() || request.copy_from.is_some()) {
-        report_space_creation(
-            env.state(),
-            &receipt,
-            "failed",
-            "Choose either a template, seed, or duplicate source.",
-        )
-        .await;
-        return;
-    }
-    let seed = match request.template.as_ref().or(request.seed.as_ref()) {
-        None => None,
-        Some(reference) => match prepare_seed(reference, request.template.is_some()).await {
-            Ok(syntax) => Some(syntax),
-            Err(error) => {
-                log!(
-                    "CreateSpace '{}': seed {} refused: {}",
-                    name,
-                    reference,
-                    error
-                );
-                report_space_creation(
-                    env.state(),
-                    &receipt,
-                    "failed",
-                    &format!("Couldn't use those definitions: {error}"),
-                )
-                .await;
-                return;
-            }
-        },
-    };
-
-    // Read and validate the source before allocating a new identity. Never
-    // combine a copy with a seed that could overwrite its application.
-    let copy = match &request.copy_from {
-        Some(source) => {
-            let result = if request.seed.is_some() {
-                Err(RepositoryError::Internal(
-                    "A duplicate cannot also have a seed URL".into(),
-                ))
-            } else {
-                let tonk = env.state().read().await;
-                duplication::prepare(&tonk, source).await
-            };
-            match result {
-                Ok(copy) => Some(copy),
-                Err(error) => {
-                    report_space_creation(
-                        env.state(),
-                        &receipt,
-                        "failed",
-                        &format!("Couldn't copy this space: {error}"),
-                    )
-                    .await;
+    // A template copy can be asked for again while it runs — a reload of
+    // `/copy/<slug>`, a second tab, a re-rendered dialog. The repeat joins
+    // the copy already running instead of making a second space.
+    let claim = match &request.template {
+        Some(template) => {
+            let copies = env.state().read().await.copies_in_flight.clone();
+            let key = in_flight::key(template, &request.command.name.0);
+            match copies.claim(&key, me.clone()) {
+                Some(claim) => Some(claim),
+                None => {
+                    log!("CreateSpace: joined the copy of {template} already running");
                     return;
                 }
             }
@@ -753,71 +738,45 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
         None => None,
     };
 
-    // 1. Always create local-only first, so the space appears
-    //    whether or not a remote was given (and never vanishes on
-    //    a remote failure). The create mints a fresh identity and
-    //    returns its routing key.
-    let created = match copy {
-        Some(copy) => duplication::create(env.state(), &name, copy).await,
-        None => create_space_inner(env.state(), &name, description.as_deref()).await,
-    };
-    let key = match created {
-        Ok(key) => key,
-        Err(error) => {
-            log!("CreateSpace '{}' failed: {}", name, error);
-            report_space_creation(
-                env.state(),
-                &receipt,
-                "failed",
-                "Couldn't finish creating the space. Check your spaces before trying again.",
-            )
-            .await;
-            return;
-        }
-    };
+    let remote = request.remote.clone();
+    let template = request.template.clone();
+    let outcome = create_and_seed(&env, request).await;
 
-    // The standard library is in; the seed goes on top of it, before the
-    // creator is taken into the space.
-    if let Some(seed) = seed {
-        let applied = {
-            let tonk = env.state().read().await;
-            super::evaluate::seed_syntax_on_branch(
-                &tonk,
-                tonk.reactor.repository(&key).branch("main"),
-                seed,
-            )
-            .await
-        };
-        if let Err(error) = applied {
-            log!("CreateSpace '{}': seed failed: {}", key, error);
-            report_space_creation(
-                env.state(),
-                &receipt,
-                "failed",
-                &format!("The space was created, but its definitions couldn't be added: {error}"),
-            )
-            .await;
+    // Answer every waiter the moment the copy reports, not after the slow
+    // remote attach below: from here on a new request starts a new copy.
+    let waiters = match claim {
+        Some(claim) => claim.release(),
+        None => vec![me],
+    };
+    let key = match outcome {
+        Ok(key) => key,
+        Err(detail) => {
+            for waiter in &waiters {
+                report_space_creation(env.state(), &waiter.receipt, "failed", &detail).await;
+            }
             return;
         }
-    }
+    };
 
     crate::router::navigate::notify_analytics(
         env.client(),
         tonk_worker_api::AnalyticsEvent::SpaceCreated {
             space: key.clone(),
-            template: request.template,
+            template,
         },
     );
 
-    // 2. The space is created and seeded — drop the creator into
-    //    it. Same page-capability channel as the join redirect: a
-    //    `{ type: "navigate", href }` posted to the originating
-    //    client. Fired before the remote attach so the navigation
-    //    doesn't wait on the network; the attach continues in the
-    //    worker regardless.
+    // 2. The space is created and seeded — move each page that asked into
+    //    it, as its `open` says. Same page-capability channel as the join
+    //    redirect, posted to that page's client, and before the receipt so
+    //    the page leaves before it would fall back to moving itself.
+    //    Fired before the remote attach so the navigation doesn't wait on
+    //    the network; the attach continues in the worker regardless.
     let href = format!("/space/{key}");
-    crate::router::navigate::notify_navigate(env.client(), &href);
-    report_space_creation(env.state(), &receipt, "created", &href).await;
+    for waiter in &waiters {
+        open_space(waiter.client.as_ref(), &href, waiter.open);
+        report_space_creation(env.state(), &waiter.receipt, "created", &href).await;
+    }
     // Navigation must not wait for every Hub subscription to re-query.
     // The seed and initialized status are already committed at this point.
     {
@@ -865,9 +824,128 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     }
 }
 
+/// Check the sources, create the space and apply its definitions. The
+/// routing key on success; on failure, the message every waiter is shown.
+async fn create_and_seed(
+    env: &crate::router::CommandEnv,
+    request: CreateSpaceRequest,
+) -> Result<String, String> {
+    let requested = request.command.name.0;
+    let description = request.description;
+    // The create wizard no longer asks for a name: its hidden `name` input
+    // carries the `Untitled` sentinel (a blank name from an older form gets
+    // the same treatment). The real label is picked below, once it is known
+    // whether a template names the space.
+    let unnamed = requested.trim().is_empty() || requested.trim() == UNTITLED;
+    log!(
+        "command CreateSpace name={} remote={:?} seed={:?} template={:?}",
+        requested,
+        request.remote,
+        request.seed,
+        request.template
+    );
+
+    // A seed is fetched and checked before anything is created, so one that
+    // cannot be used fails the create instead of leaving a space without the
+    // definitions it was made for.
+    if request.template.is_some() && (request.seed.is_some() || request.copy_from.is_some()) {
+        return Err("Choose either a template, seed, or duplicate source.".into());
+    }
+    let (seed, template_name) = match request.template.as_ref().or(request.seed.as_ref()) {
+        None => (None, None),
+        Some(reference) => match prepare_seed(reference, request.template.is_some()).await {
+            Ok((syntax, name)) => (Some(syntax), name),
+            Err(error) => {
+                log!(
+                    "CreateSpace '{}': seed {} refused: {}",
+                    requested,
+                    reference,
+                    error
+                );
+                return Err(format!("Couldn't use those definitions: {error}"));
+            }
+        },
+    };
+
+    // An unnamed copy of a template is named after it, numbered when that
+    // name is taken ("Recipe Box", "Recipe Box copy 2"); any other unnamed
+    // create reads "Untitled", "Untitled 2", … — the user renames later.
+    // A name the person typed is kept as typed.
+    let name = match template_name.filter(|name| !name.trim().is_empty()) {
+        Some(template) if unnamed => {
+            next_copy_label(&template, existing_space_labels(env.state()).await)
+        }
+        _ if unnamed => next_untitled_label(existing_space_labels(env.state()).await),
+        _ => requested,
+    };
+
+    // Read and validate the source before allocating a new identity. Never
+    // combine a copy with a seed that could overwrite its application.
+    let copy = match &request.copy_from {
+        Some(source) => {
+            let result = if request.seed.is_some() {
+                Err(RepositoryError::Internal(
+                    "A duplicate cannot also have a seed URL".into(),
+                ))
+            } else {
+                let tonk = env.state().read().await;
+                duplication::prepare(&tonk, source).await
+            };
+            match result {
+                Ok(copy) => Some(copy),
+                Err(error) => return Err(format!("Couldn't copy this space: {error}")),
+            }
+        }
+        None => None,
+    };
+
+    // 1. Always create local-only first, so the space appears
+    //    whether or not a remote was given (and never vanishes on
+    //    a remote failure). The create mints a fresh identity and
+    //    returns its routing key.
+    let created = match copy {
+        Some(copy) => duplication::create(env.state(), &name, copy).await,
+        None => create_space_inner(env.state(), &name, description.as_deref()).await,
+    };
+    let key = match created {
+        Ok(key) => key,
+        Err(error) => {
+            log!("CreateSpace '{}' failed: {}", name, error);
+            return Err(
+                "Couldn't finish creating the space. Check your spaces before trying again.".into(),
+            );
+        }
+    };
+
+    // The standard library is in; the seed goes on top of it, before the
+    // creator is taken into the space.
+    if let Some(seed) = seed {
+        let applied = {
+            let tonk = env.state().read().await;
+            super::evaluate::seed_syntax_on_branch(
+                &tonk,
+                tonk.reactor.repository(&key).branch("main"),
+                seed,
+            )
+            .await
+        };
+        if let Err(error) = applied {
+            log!("CreateSpace '{}': seed failed: {}", key, error);
+            return Err(format!(
+                "The space was created, but its definitions couldn't be added: {error}"
+            ));
+        }
+    }
+    Ok(key)
+}
+
 /// Fetch and check the seed at `reference` against the standard library a
-/// new space is seeded with first. See [`super::seed::prepare`].
-async fn prepare_seed(reference: &str, template: bool) -> Result<tonk_notation::Syntax, String> {
+/// new space is seeded with first. See [`super::seed::prepare`]. For a
+/// template, also the name its catalog entry gives it.
+async fn prepare_seed(
+    reference: &str,
+    template: bool,
+) -> Result<(tonk_notation::Syntax, Option<String>), String> {
     let library = fetch_standard_library(STANDARD_LIBRARY_URL)
         .await
         .map_err(|error| format!("the standard library is unavailable: {error}"))?;
@@ -875,9 +953,10 @@ async fn prepare_seed(reference: &str, template: bool) -> Result<tonk_notation::
         .await
         .map_err(|error| format!("the standard library does not parse: {error}"))?;
     if template {
-        super::seed::prepare_template(reference, &core).await
+        let (syntax, name) = super::seed::prepare_template(reference, &core).await?;
+        Ok((syntax, Some(name)))
     } else {
-        super::seed::prepare(reference, &core).await
+        Ok((super::seed::prepare(reference, &core).await?, None))
     }
 }
 
@@ -8187,6 +8266,168 @@ mod space_creation_feedback_tests {
         serde_json::from_slice(&body).unwrap()
     }
 
+    const CATALOG: &str = include_str!("../../tests/fixtures/discover/catalog.json");
+    const MODEL: &str = include_str!("../../tests/fixtures/discover/model.yaml");
+    const VIEW: &str = include_str!("../../tests/fixtures/discover/view.yaml");
+    static TEMPLATE_FILES: &[(&str, &str)] = &[
+        ("/catalog.json", CATALOG),
+        ("/model.yaml", MODEL),
+        ("/view.yaml", VIEW),
+    ];
+
+    /// The transient the `/copy/<slug>` dialog commits: no typed name, the
+    /// template reference, and `open=replace`.
+    fn copy_link_claim(receipt: &str, template: &str) -> serde_json::Value {
+        let mut claim = tonk_worker_api::create_space_claim_json("Untitled");
+        let application = &mut claim["claims"][0]["application"];
+        let with = &mut application["predicate"]["concept"]["with"];
+        with["template"] =
+            serde_json::json!({ "the": "xyz.tonk.command.create-space/template", "as": "Text" });
+        with["open"] =
+            serde_json::json!({ "the": "xyz.tonk.command.create-space/open", "as": "Text" });
+        let parameters = &mut application["parameters"];
+        parameters["this"] = receipt.into();
+        parameters["template"] = template.into();
+        parameters["open"] = "replace".into();
+        claim
+    }
+
+    /// A receipt's `(status, detail)`, read through the real query endpoint.
+    async fn receipt(app: &axum::Router, branch: &str, receipt: &str) -> (String, String) {
+        let rows = post(
+            app,
+            &format!("/api/repository/profile:tonk/branch/{branch}/query"),
+            serde_json::json!({
+                "predicate": { "with": {
+                    "status": { "the": "xyz.tonk.space-creation/status", "as": "Text", "cardinality": "one" },
+                    "detail": { "the": "xyz.tonk.space-creation/detail", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": { "this": receipt, "status": { "?": { "name": "status" } }, "detail": { "?": { "name": "detail" } } }
+            }),
+        )
+        .await;
+        let fields = &rows[0]["fields"];
+        (
+            fields["status"].as_str().unwrap_or_default().to_owned(),
+            fields["detail"].as_str().unwrap_or_default().to_owned(),
+        )
+    }
+
+    /// An unnamed copy is named after its template, and a second copy of
+    /// the same template is numbered so the two can be told apart.
+    #[dialog_common::test]
+    async fn a_copy_link_names_the_space_after_its_template() {
+        let base = crate::router::command::tests::native::serve(TEMPLATE_FILES);
+        let template = format!("{base}/catalog.json#remote-demo");
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(super::profile_library_tests::test_state().await);
+        let branch = state.read().await.active_branch.clone();
+        let transact = format!("/api/repository/profile:tonk/branch/{branch}/transact");
+
+        post(
+            &app,
+            &transact,
+            copy_link_claim("urn:uuid:copy-first", &template),
+        )
+        .await;
+        assert_eq!(
+            receipt(&app, &branch, "urn:uuid:copy-first").await.0,
+            "created"
+        );
+        post(
+            &app,
+            &transact,
+            copy_link_claim("urn:uuid:copy-second", &template),
+        )
+        .await;
+        assert_eq!(
+            receipt(&app, &branch, "urn:uuid:copy-second").await.0,
+            "created"
+        );
+
+        let mut labels = super::existing_space_labels(&state).await;
+        labels.sort();
+        assert_eq!(labels, ["Remote demo", "Remote demo copy 2"]);
+    }
+
+    /// A reload of the copy link while the copy runs sends the same request
+    /// again. It joins the running copy: one space, and both receipts point
+    /// at it.
+    #[dialog_common::test]
+    async fn a_repeated_copy_link_joins_the_running_copy() {
+        let base = crate::router::command::tests::native::serve(TEMPLATE_FILES);
+        let template = format!("{base}/catalog.json#remote-demo");
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(super::profile_library_tests::test_state().await);
+        let branch = state.read().await.active_branch.clone();
+        let transact = format!("/api/repository/profile:tonk/branch/{branch}/transact");
+
+        tokio::join!(
+            post(
+                &app,
+                &transact,
+                copy_link_claim("urn:uuid:copy-landing", &template)
+            ),
+            post(
+                &app,
+                &transact,
+                copy_link_claim("urn:uuid:copy-reload", &template)
+            ),
+        );
+
+        assert_eq!(
+            super::existing_space_labels(&state).await,
+            ["Remote demo"],
+            "the repeat must not make a second space"
+        );
+        let landing = receipt(&app, &branch, "urn:uuid:copy-landing").await;
+        let reload = receipt(&app, &branch, "urn:uuid:copy-reload").await;
+        assert_eq!(landing.0, "created");
+        assert_eq!(reload, landing, "both pages are sent to the one copy");
+        assert!(
+            state
+                .read()
+                .await
+                .copies_in_flight
+                .claim(
+                    &super::in_flight::key(&template, "Untitled"),
+                    super::in_flight::Waiter {
+                        receipt: "urn:uuid:probe".parse().unwrap(),
+                        client: None,
+                        open: super::OpenMode::Stay,
+                    },
+                )
+                .is_some(),
+            "the copy is released once it reports"
+        );
+    }
+
+    /// A slug the catalog does not have fails the copy with the worker's own
+    /// message and creates nothing.
+    #[dialog_common::test]
+    async fn a_copy_link_to_an_unknown_template_creates_nothing() {
+        let base = crate::router::command::tests::native::serve(TEMPLATE_FILES);
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(super::profile_library_tests::test_state().await);
+        let branch = state.read().await.active_branch.clone();
+        post(
+            &app,
+            &format!("/api/repository/profile:tonk/branch/{branch}/transact"),
+            copy_link_claim(
+                "urn:uuid:copy-unknown",
+                &format!("{base}/catalog.json#no-such-thing"),
+            ),
+        )
+        .await;
+        let (status, detail) = receipt(&app, &branch, "urn:uuid:copy-unknown").await;
+        assert_eq!(status, "failed");
+        assert!(
+            detail.contains("This template is no longer in the catalog"),
+            "{detail}"
+        );
+        assert!(super::existing_space_labels(&state).await.is_empty());
+    }
+
     #[dialog_common::test]
     async fn profile_rename_reports_completion_for_each_request_including_unchanged_names() {
         let (app, state, _lsp) =
@@ -8360,58 +8601,60 @@ mod remote_from_facts_tests {
             .assert(changes);
     }
 
-    /// A create that says nothing about opening does NOT navigate.
-    ///
-    /// The default matters more than the flag: every caller that is not
-    /// the Hub's own form — a script, an agent, a future affordance —
-    /// gets a space in the Hub without the page being yanked out from
-    /// under whoever is using it.
-    #[test]
-    fn it_does_not_open_a_space_by_default() {
+    /// The `open` a create carries, as the handler reads it: `None` sends
+    /// no field, `Some(Ok(text))` the form's text, `Some(Err(flag))` a boolean.
+    fn open_of(value: Option<Result<&str, bool>>) -> super::OpenMode {
         let of: Entity = "did:key:zCreate".parse().expect("entity");
         let mut changes = Changes::new();
         name_fact(&mut changes, &of);
-        assert!(
-            !super::open_from_facts(&artifacts(changes)),
-            "a create carrying no `open` field creates only"
-        );
+        let open = the!("xyz.tonk.command.create-space/open").of(of);
+        match value {
+            None => {}
+            Some(Ok(text)) => open.is(text.to_string()).assert(&mut changes),
+            Some(Err(flag)) => open.is(flag).assert(&mut changes),
+        }
+        super::open_from_facts(&artifacts(changes))
     }
 
-    /// The Hub's form passes `open` as a hidden input, so it arrives as
-    /// text rather than a boolean.
+    /// A create that says nothing about opening navigates, as every create
+    /// always has: the FAB's "new space" sends no `open` and relies on it.
+    #[test]
+    fn it_opens_a_space_by_default() {
+        assert_eq!(open_of(None), super::OpenMode::Navigate);
+    }
+
+    /// The Hub's forms pass `open` as a hidden input, so it arrives as text.
     #[test]
     fn it_opens_a_space_when_the_form_asks() {
-        let of: Entity = "did:key:zCreate".parse().expect("entity");
-        let mut changes = Changes::new();
-        name_fact(&mut changes, &of);
-        the!("xyz.tonk.command.create-space/open")
-            .of(of)
-            .is("true".to_string())
-            .assert(&mut changes);
-        assert!(
-            super::open_from_facts(&artifacts(changes)),
-            "the Hub's hidden `open=true` input navigates"
-        );
+        assert_eq!(open_of(Some(Ok("true"))), super::OpenMode::Navigate);
+        assert_eq!(open_of(Some(Err(true))), super::OpenMode::Navigate);
     }
 
-    /// An explicit falsehood is honoured rather than read as "present,
-    /// therefore yes" — a form that binds the field but leaves it off
-    /// must not navigate.
+    /// The copy link asks to replace its own history entry, so Back skips
+    /// the address that would start another copy.
+    #[test]
+    fn it_replaces_the_page_when_asked() {
+        for text in ["replace", " replace "] {
+            assert_eq!(
+                open_of(Some(Ok(text))),
+                super::OpenMode::Replace,
+                "`open={text:?}`"
+            );
+        }
+    }
+
+    /// An explicit falsehood is honoured: a create in the background must
+    /// not move the page.
     #[test]
     fn it_honours_an_explicit_refusal_to_open() {
         for text in ["false", "0", "", "  "] {
-            let of: Entity = "did:key:zCreate".parse().expect("entity");
-            let mut changes = Changes::new();
-            name_fact(&mut changes, &of);
-            the!("xyz.tonk.command.create-space/open")
-                .of(of)
-                .is(text.to_string())
-                .assert(&mut changes);
-            assert!(
-                !super::open_from_facts(&artifacts(changes)),
+            assert_eq!(
+                open_of(Some(Ok(text))),
+                super::OpenMode::Stay,
                 "`open={text:?}` must not navigate"
             );
         }
+        assert_eq!(open_of(Some(Err(false))), super::OpenMode::Stay);
     }
 
     #[test]
@@ -8633,7 +8876,7 @@ mod invite_space_from_facts_tests {
 /// The pure untitled-label picker the create handler uses. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod next_untitled_label_tests {
-    use super::next_untitled_label;
+    use super::{next_copy_label, next_untitled_label};
 
     fn labels(labels: &[&str]) -> Vec<String> {
         labels.iter().map(|label| label.to_string()).collect()
@@ -8698,6 +8941,42 @@ mod next_untitled_label_tests {
     #[test]
     fn it_trims_surrounding_whitespace() {
         assert_eq!(next_untitled_label(labels(&["  Untitled  "])), "Untitled 2");
+    }
+
+    #[test]
+    fn a_first_copy_keeps_the_template_name() {
+        assert_eq!(
+            next_copy_label("Recipe Box", labels(&["notes"])),
+            "Recipe Box"
+        );
+    }
+
+    #[test]
+    fn a_repeat_copy_is_numbered() {
+        assert_eq!(
+            next_copy_label("Recipe Box", labels(&["Recipe Box"])),
+            "Recipe Box copy 2"
+        );
+        assert_eq!(
+            next_copy_label(
+                "Recipe Box",
+                labels(&["Recipe Box", "Recipe Box copy 2", "Recipe Box copy 4"])
+            ),
+            "Recipe Box copy 3",
+            "the smallest free ordinal"
+        );
+    }
+
+    #[test]
+    fn copy_numbering_counts_only_its_own_form() {
+        assert_eq!(
+            next_copy_label(
+                "Recipe Box",
+                labels(&["Recipe Box 2", "Recipe Boxes", "Untitled"])
+            ),
+            "Recipe Box",
+            "Untitled's numbering and similar names are not copies"
+        );
     }
 }
 
@@ -9531,6 +9810,7 @@ route!: &foreign-profile-route
             .expect("test session opens");
         TonkState {
             seed_upgrades: Default::default(),
+            copies_in_flight: Default::default(),
             profile: profile.clone(),
             operator: session.operator,
             storage,

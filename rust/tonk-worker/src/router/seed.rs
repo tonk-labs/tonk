@@ -64,9 +64,14 @@ async fn parse_source(url: Url, text: &str) -> Result<Syntax, String> {
 }
 
 /// Fetch a published catalog and install its selected template. The fragment
-/// identifies a slug; the catalog owns file ordering, hashes and entrypoint.
-/// Nothing is allocated until every required file has been checked.
-pub(super) async fn prepare_template(reference: &str, core: &Syntax) -> Result<Syntax, String> {
+/// identifies a slug, matched exactly; the catalog owns file ordering, hashes,
+/// entrypoint and the template's name, which is returned beside the syntax so
+/// an unnamed copy can be named after it. Nothing is allocated until every
+/// required file has been checked.
+pub(super) async fn prepare_template(
+    reference: &str,
+    core: &Syntax,
+) -> Result<(Syntax, String), String> {
     use sha2_0_10::{Digest, Sha256};
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -77,6 +82,8 @@ pub(super) async fn prepare_template(reference: &str, core: &Syntax) -> Result<S
     #[derive(serde::Deserialize)]
     struct Template {
         slug: String,
+        #[serde(default)]
+        name: String,
         entrypoint: String,
         files: Vec<File>,
     }
@@ -175,7 +182,7 @@ name!:
             .extend(parse_source(url.clone(), &home).await?.expressions);
     }
     check(core, &syntax).map_err(|e| format!("Template does not fit a new space: {e}"))?;
-    Ok(syntax)
+    Ok((syntax, template.name))
 }
 
 /// Whether a seed may be fetched from `url` at all.

@@ -141,13 +141,15 @@ command!: &space/create
       as: text
     open:
       description: >
-        Whether to navigate into the space once it exists. Absent means
-        create only — the space appears in the Hub and the person stays
-        where they are; the Hub's create control passes `true` because that IS
-        what clicking "create new space" asks for. Creating and opening
-        are separate wants: an agent or script creating a space in the
-        background must not yank the page out from under whoever is
-        using it.
+        How to move the page that asked once the space exists; the
+        worker does the moving, so the page never navigates on its own.
+        Absent or `true` loads the new space (the Hub's dialogs and the
+        FAB's "new space" rely on it). `replace` loads it in place of the
+        current history entry, so Back skips the page that asked — the
+        `/copy/<slug>` link uses it, since landing there again would start
+        another copy. `false` leaves the page where it is: an agent or
+        script creating a space in the background must not yank the page
+        out from under whoever is using it.
       the: xyz.tonk.command.create-space/open
       as: text
   maybe:
@@ -779,6 +781,24 @@ view!:
         font:400 13px/1.45 var(--sans); }
       .space-create-error { color:var(--ink); min-height:1.45em; }
       .space-create-error:empty { min-height:0; }
+      /* While a create runs, every create dialog shows one indeterminate
+         sweep above its form: a large template takes a while, and the
+         worker reports no steps a bar could fill by. */
+      .space-create-form { position:relative; }
+      space-create[busy] .space-create-form::before { content:''; position:absolute;
+        inset-block-start:-11px; inset-inline:0; block-size:2px;
+        background:linear-gradient(var(--ink), var(--ink)) no-repeat;
+        background-size:35% 100%; animation:space-create-progress 1.6s ease-in-out infinite; }
+      @keyframes space-create-progress { from { background-position:-60% 0; }
+        to { background-position:160% 0; } }
+      @media (prefers-reduced-motion: reduce) {
+        space-create[busy] .space-create-form::before { animation:none;
+          background-size:100% 100%; opacity:.35; } }
+      /* The copy link's dialog offers "try again" only once a copy failed. */
+      .hub-page .copy-link:not([failed]) [data-copy-retry] { display:none; }
+      .template-share [data-shared-label],
+      .template-share[data-copied] [data-share-label] { display:none; }
+      .template-share[data-copied] [data-shared-label] { display:inline; }
       .hub-page tonk-dialog[appearance="hub"] {
         --fabb-panel:var(--card); --fabb-ink:var(--ink);
         --fabb-ink-soft:var(--soft); --fabb-on-ink:var(--on-ink);
@@ -1636,6 +1656,15 @@ route!: &route/account
   path: "/account"
   concept: tonk:hub
 
+# A copy link: `/copy/<slug>` opens the Hub, whose copy dialog starts a copy
+# of that Discover template at once (`space-create` with `autostart`). No page
+# of its own — the slug is read off the address, and the worker, which owns
+# the catalog, finds the template, names the space and sends the page into it.
+route!: &route/copy
+  this: id:tonk:route/copy
+  path: "/copy/{slug}"
+  concept: tonk:hub
+
 # ============================================================
 # PROFILE SWITCHER — the accounts this browser holds
 # ============================================================
@@ -2423,6 +2452,7 @@ element!: &hub-discover
 
             </div>
             <button class="m-cancel" slot="actions" type="button" data-dialog="close">back to discover</button>
+            <button class="m-cancel template-share" slot="actions" type="button" data-template-share><span data-share-label>share a copy</span><span data-shared-label role="status">link copied — paste it anywhere</span></button>
             <button class="m-go" slot="actions" type="button" data-space-create-open>make a copy +</button>
           </tonk-dialog>
           <dialog class="template-photo-dialog" data-template-image aria-label="${escape(name)} preview">
@@ -2565,6 +2595,22 @@ element!: &space-create
           parameters.copyFrom = copyFrom;
           fields.copyFrom = { the: 'xyz.tonk.command.create-space/copy-from', as: 'Entity' };
         }
+        const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+        const status = {
+          predicate: { with: {
+            status: { the: 'xyz.tonk.space-creation/status', as: 'Text', cardinality: 'one' },
+            detail: { the: 'xyz.tonk.space-creation/detail', as: 'Text', cardinality: 'one' },
+          } },
+          terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+        };
+        const fail = (message) => {
+          if (error) error.textContent = message;
+          self.setAttribute('failed', '');
+        };
+        // The worker moves the page into the new space (`open`), so a page
+        // that sees `created` only waits to be moved; it stays busy meanwhile.
+        let landing = false;
+        self.removeAttribute('failed');
         try {
           await window.tonk.ready;
           if (!self.isConnected) return;
@@ -2573,14 +2619,7 @@ element!: &space-create
           if (seed?.startsWith('/')) {
             parameters.seed = new URL(seed, window.tonk.context.origin).href;
           }
-          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
-          reader = window.tonk.subscribe({
-            predicate: { with: {
-              status: { the: 'xyz.tonk.space-creation/status', as: 'Text', cardinality: 'one' },
-              detail: { the: 'xyz.tonk.space-creation/detail', as: 'Text', cardinality: 'one' },
-            } },
-            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
-          }).getReader();
+          reader = window.tonk.subscribe(status).getReader();
           self.__reader = reader;
           await window.tonk.transact({ claims: [{ op: 'assert', application: {
             predicate: { kind: 'transient', concept: { with: fields } },
@@ -2591,23 +2630,100 @@ element!: &space-create
             if (done) throw new Error('Creation status stream ended');
             const result = value.find(row => row.this === id)?.fields;
             if (result?.status === 'failed') {
-              if (error) error.textContent = result.detail;
+              fail(result.detail);
               return;
             }
             if (result?.status === 'created') {
-              self.querySelector('[data-space-create-dialog]')?.close?.();
-              window.tonk.navigate(result.detail);
+              landing = true;
+              if (!self.hasAttribute('autostart')) self.querySelector('[data-space-create-dialog]')?.close?.();
+              self.landing(result.detail);
               return;
             }
           }
         } catch (failure) {
-          if (error) error.textContent = "Couldn't confirm creation. Check your spaces before trying again.";
+          // A page the worker already moved has nothing left to report.
+          if (!self.isConnected) return;
+          // The status stream broke; the create may still have finished.
+          // Ask once before saying so.
+          const found = await window.tonk.query(status).catch(() => null);
+          const rows = Array.isArray(found) ? found : (found && found.rows) || [];
+          const result = rows.find(row => row.this === id)?.fields;
+          if (result?.status === 'created') {
+            landing = true;
+            self.landing(result.detail);
+          } else if (result?.status === 'failed') {
+            fail(result.detail);
+          } else {
+            fail("Couldn't confirm creation. Check your spaces before trying again.");
+          }
         } finally {
           if (reader) await reader.cancel().catch(() => {});
           if (self.__reader === reader) self.__reader = null;
-          self.removeAttribute('busy');
-          for (const control of self.querySelectorAll('[data-space-create-submit]')) control.disabled = false;
+          if (!landing) {
+            self.removeAttribute('busy');
+            for (const control of self.querySelectorAll('[data-space-create-submit]')) control.disabled = false;
+          }
         }
+      }
+    # The worker moves the page into the new space as the command's `open`
+    # asks. If this page is still here a moment after `created`, that message
+    # was lost (its client could not be found), so move it from here. A page
+    # already unloading must not: its timer would push a stray history entry
+    # while the worker's full-page `replace` is under way.
+    landing: |
+      (self, href) => {
+        clearTimeout(self.__landing);
+        const cancel = () => clearTimeout(self.__landing);
+        window.addEventListener('pagehide', cancel, { once: true });
+        self.__landing = setTimeout(() => {
+          window.removeEventListener('pagehide', cancel);
+          if (self.isConnected) window.tonk.navigate(href);
+        }, 2000);
+      }
+    # The `/copy/<slug>` link, on the Hub: copy that Discover template at once,
+    # with no click. Only the slug comes off the address. The worker owns the
+    # catalog — it matches the slug exactly, names the space after the
+    # template and, with `open=replace`, takes `/copy/<slug>` out of the
+    # history so Back cannot start another copy. On any other path this does
+    # nothing. It also follows the host's context, since the Hub does not
+    # re-render when the page moves within it: following a copy link from the
+    # Hub starts that copy too, once per address. "try again" (`again`) runs
+    # it once more, rebuilding the reference.
+    autostart: |
+      async (self, again) => {
+        await window.tonk.ready;
+        const path = window.tonk?.context?.path ?? '';
+        const match = /^\/copy\/([^/]+)\/?$/.exec(path);
+        const form = self.querySelector('form[data-space-create-form]');
+        const catalog = self.getAttribute('catalog-url');
+        if (!match || !form || !catalog || !self.isConnected) return;
+        if (!again && self.__started === path) return;
+        self.__started = path;
+        let slug = match[1];
+        try { slug = decodeURIComponent(slug); } catch {}
+        const reference = new URL(catalog);
+        reference.hash = slug;
+        form.elements.template.value = reference.href;
+        self.querySelector('[data-space-create-dialog]')?.show?.();
+        form.requestSubmit();
+      }
+    # "share a copy" on a Discover card: put the card's copy link on the
+    # clipboard. Built from the host's origin, never the guest's about:srcdoc.
+    share: |
+      async (self, button) => {
+        const slug = self.dataset.template;
+        const origin = window.tonk?.context?.origin;
+        if (!slug || !origin) return;
+        const link = new URL('/copy/' + encodeURIComponent(slug), origin).href;
+        try {
+          await navigator.clipboard.writeText(link);
+        } catch {
+          button.title = link;
+          return;
+        }
+        button.setAttribute('data-copied', '');
+        clearTimeout(button.__copied);
+        button.__copied = setTimeout(() => button.removeAttribute('data-copied'), 2000);
       }
     disconnected: |
       (self) => {
@@ -2632,11 +2748,21 @@ element!: &space-create
           } else if (event.target?.closest?.('[data-space-create-open]')) {
             self.querySelector('[data-template-details]')?.close?.();
             self.open();
+          } else if (event.target?.closest?.('[data-template-share]')) {
+            self.share(event.target.closest('[data-template-share]'));
+          } else if (event.target?.closest?.('[data-copy-retry]')) {
+            self.autostart(true);
           }
         });
         // A page whose whole purpose is this dialog (/seed) opens it on
         // arrival rather than waiting for a click.
         if (self.hasAttribute('autoopen')) requestAnimationFrame(() => self.open());
+        // The copy link's dialog starts the copy on arrival, and on a move
+        // to a copy link while the Hub is already showing.
+        if (self.hasAttribute('autostart')) {
+          self.autostart();
+          window.addEventListener('tonk:context', () => self.autostart());
+        }
       }
     released: |
       (self) => self.disconnected()
@@ -2794,6 +2920,8 @@ view!:
         </header>
         <main class="hubcol">
         <h1 class="visually-hidden">Spaces</h1>
+        <!-- The Discover catalog. The copy-link dialog below names the
+             same catalog in its own `catalog-url`: change both together. -->
         <hub-discover data-spaces-view collection="spaces" catalog-url="https://goblinoats.github.io/honky-tonks/catalog.json">
           <nav class="collection-tabs chrome" aria-label="space collections">
             <button type="button" data-collection="spaces" aria-pressed="true"><span class="collection-square" aria-hidden="true"></span>your spaces</button>
@@ -2812,6 +2940,26 @@ view!:
             <hub-collection class="template-grid"></hub-collection>
           </section>
         </hub-discover>
+        <!-- The copy link (`/copy/<slug>`): on that path this dialog starts a
+             copy of the template at once; on every other path it does
+             nothing. The page sends only the reference — the worker owns
+             the catalog, names the space and moves the page into it
+             (`open=replace`). `catalog-url` is the Discover catalog above:
+             change both together. -->
+        <space-create class="copy-link" autostart catalog-url="https://goblinoats.github.io/honky-tonks/catalog.json">
+          <tonk-dialog appearance="hub" data-space-create-dialog heading="Setting up your Tonk">
+            <form id="create-space-copy-link" class="space-create-form" data-space-create-form>
+              <p class="space-create-help">Copying a template into a new space of your own. This takes a moment.</p>
+              <input type="hidden" name="name" value="Untitled">
+              <input type="hidden" name="description" value="">
+              <input type="hidden" name="open" value="replace">
+              <input type="hidden" name="template" value="">
+              <p class="space-create-error" data-space-create-error role="alert"></p>
+            </form>
+            <a class="m-cancel copy-link-leave" slot="actions" href="/">go to your spaces</a>
+            <button class="m-go" slot="actions" type="button" data-copy-retry>try again</button>
+          </tonk-dialog>
+        </space-create>
         <section class="settings chrome" data-settings-view>
             <a class="settings-back" href="/" data-return-spaces>‹ back to spaces</a>
             <h1 class="settings-title">account settings</h1>
