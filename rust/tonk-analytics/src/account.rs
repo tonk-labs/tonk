@@ -4,7 +4,7 @@
 //! arbitrary properties, which keeps account content and diagnostics out of
 //! analytics by construction.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
@@ -16,7 +16,7 @@ pub const MAX_DURATION_MS: u64 = 600_000;
 macro_rules! closed_enum {
     ($(#[$meta:meta])* $name:ident { $($(#[$variant_meta:meta])* $variant:ident),+ $(,)? }) => {
         $(#[$meta])*
-        #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize)]
+        #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
         #[allow(missing_docs)]
         #[serde(rename_all = "snake_case")]
         pub enum $name {
@@ -127,28 +127,16 @@ impl ServiceCode {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum Phase {
     Started,
     Checkpoint,
     Finished,
 }
 
-impl Serialize for Phase {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(match self {
-            Self::Started => "started",
-            Self::Checkpoint => "checkpoint",
-            Self::Finished => "finished",
-        })
-    }
-}
-
 /// Closed terminal outcome supplied to [`AccountEvent::finished`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountOutcome {
     result: AccountResult,
     failure_kind: Option<FailureKind>,
@@ -236,7 +224,12 @@ impl AccountOutcome {
 }
 
 /// A canonical account event. Its property map is private and validated.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// It serializes for one hop: from the worker that observed an attempt to
+/// the page that captures it. What is captured is
+/// [`validated_properties`](Self::validated_properties), never this form, so
+/// an event that arrives malformed is refused there like any other.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountEvent {
     journey: Journey,
     action: AccountAction,
@@ -461,6 +454,41 @@ mod tests {
             AccountState::None,
             "attempt-1",
         )
+    }
+
+    #[test]
+    fn it_crosses_a_hop_unchanged_and_is_still_validated_after() {
+        let finished = AccountEvent::finished(
+            Journey::Onboarding,
+            AccountAction::CreateAccount,
+            Stage::ActivationWait,
+            Surface::RegistrationDialog,
+            Trigger::User,
+            AccountState::None,
+            "attempt-1",
+            1_200,
+            AccountOutcome::blocked(FailureKind::AwaitingActivation),
+        );
+        let wire = serde_json::to_value(&finished).unwrap();
+        let arrived: AccountEvent = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(arrived, finished);
+        assert_eq!(
+            arrived.validated_properties().unwrap(),
+            finished.validated_properties().unwrap()
+        );
+
+        // One made up on the way is refused where it is captured.
+        let mut forged = wire;
+        forged["phase"] = "started".into();
+        let forged: AccountEvent = serde_json::from_value(forged).unwrap();
+        assert_eq!(
+            forged.validated_properties(),
+            Err(ValidationError::InvalidPhase)
+        );
+        assert!(
+            serde_json::from_value::<AccountEvent>(serde_json::json!({ "action": "anything" }))
+                .is_err()
+        );
     }
 
     #[test]

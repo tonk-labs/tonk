@@ -5447,6 +5447,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tonk-account",
+ "tonk-analytics",
  "url",
  "wasm-bindgen-test",
 ]

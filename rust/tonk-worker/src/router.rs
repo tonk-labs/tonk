@@ -51,6 +51,7 @@ pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResp
 
 pub(crate) mod account;
 mod account_deletion;
+mod account_journey;
 mod ceremony;
 pub(crate) mod customer;
 mod email_status;

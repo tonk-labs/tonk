@@ -6,15 +6,17 @@
 //! ceremony itself runs in the top-level page, the one place WebAuthn
 //! can, which the worker asks for it; everything else is decided here.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use dialog_artifacts::Entity;
+use tonk_analytics::account::{self, AccountOutcome};
 use tonk_common::log;
 use tonk_schema::registration::{
     ENTITY, RegistrationAddress, RegistrationCeremony, RegistrationConfirming, RegistrationFailed,
     RegistrationNaming, RegistrationVia, kind,
 };
 
+use super::account_journey::{self, Attempt};
 use crate::worker::TonkState;
 use tonk_schema::email_state;
 
@@ -61,6 +63,21 @@ thread_local! {
     /// first await, so two commands in one turn cannot both ask for one;
     /// recording any other stage gives it up.
     static ASKING: Cell<bool> = const { Cell::new(false) };
+}
+
+thread_local! {
+    /// The attempt the passkey ceremony now out is part of, and the page
+    /// that is told how it goes.
+    static ATTEMPT: RefCell<Option<(Attempt, Option<crate::router::ClientId>)>> =
+        const { RefCell::new(None) };
+}
+
+/// End the attempt the ceremony out was part of, when there is one.
+fn end_attempt(ending: impl FnOnce() -> (account::Stage, AccountOutcome)) {
+    if let Some((attempt, client)) = ATTEMPT.take() {
+        let (stage, outcome) = ending();
+        account_journey::tell(client.as_ref(), attempt.ended(stage, outcome));
+    }
 }
 
 /// Claim the one passkey ceremony the panel may have out, or `false` when
@@ -300,8 +317,10 @@ pub(crate) async fn settle(
 ) {
     let tonk = state.read().await;
     let active = outcome.is_ok() && served(&tonk).await;
+    let code = outcome.as_ref().err().and_then(|(code, _)| *code);
     let stage = settled(kind, outcome, active);
     log!("registration: the {kind} hand-off leaves the panel at {stage:?}");
+    end_attempt(|| account_journey::handed_off(kind, stage.as_ref(), code));
     let waiting = matches!(stage, Some(Stage::Confirming { .. }));
     record(&tonk, stage).await;
     drop(tonk);
@@ -344,6 +363,7 @@ pub(crate) async fn ceremony_refused(tonk: &TonkState, kind: &str, name: &str) {
         _ => kind::LOG_IN,
     };
     log!("registration: the page refused the {kind} passkey ({name})");
+    end_attempt(|| account_journey::refused(kind, name));
     let message = refused(name);
     record(tonk, Some(Stage::Failed { kind, message })).await;
 }
@@ -367,11 +387,26 @@ async fn ask(
     }
     let tonk = env.state().read().await;
     record(&tonk, Some(Stage::Ceremony { kind })).await;
+    let (attempt, began) = Attempt::begin(account_journey::action_of(kind));
+    account_journey::tell(env.client(), began);
+    account_journey::tell(env.client(), attempt.reached(account::Stage::EmailLookup));
+    account_journey::tell(
+        env.client(),
+        attempt.reached(account_journey::passkey_stage(kind)),
+    );
+    ATTEMPT.set(Some((attempt, env.client().cloned())));
+    let unasked = || {
+        (
+            account::Stage::WorkerHandoff,
+            AccountOutcome::retryable(account::FailureKind::LocalState),
+        )
+    };
     let failed = |message: &str| Stage::Failed {
         kind,
         message: message.to_owned(),
     };
     let Some(client) = env.client() else {
+        end_attempt(unasked);
         record(&tonk, Some(failed("No page is open to ask for a passkey."))).await;
         return;
     };
@@ -384,6 +419,7 @@ async fn ask(
     .await
     {
         log!("registration: the page could not be asked for a passkey: {error}");
+        end_attempt(unasked);
         record(
             &tonk,
             Some(failed("This page could not be asked for a passkey.")),
@@ -427,6 +463,7 @@ impl dialog_capability::Provider<tonk_schema::command::OpenRegistration>
     for crate::router::CommandEnv
 {
     async fn execute(&self, _command: tonk_schema::command::OpenRegistration) {
+        account_journey::done_at_once(self.client(), account::AccountAction::OpenRegistration);
         let tonk = self.state().read().await;
         record(
             &tonk,
@@ -551,6 +588,18 @@ impl dialog_capability::Provider<tonk_schema::command::DismissRegistration>
     for crate::router::CommandEnv
 {
     async fn execute(&self, _command: tonk_schema::command::DismissRegistration) {
+        // Putting the panel away while it waits on a passkey gives the
+        // attempt up.
+        if let Some((attempt, client)) = ATTEMPT.take() {
+            let stage = account_journey::passkey_stage(match attempt.action() {
+                account::AccountAction::CreateAccount => kind::CREATE,
+                _ => kind::LOG_IN,
+            });
+            account_journey::tell(
+                client.as_ref(),
+                attempt.ended(stage, AccountOutcome::cancelled()),
+            );
+        }
         let tonk = self.state().read().await;
         record(&tonk, None).await;
     }

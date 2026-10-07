@@ -13,9 +13,11 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dialog_artifacts::Entity;
 use dialog_query::{Cardinality, the};
+use tonk_analytics::account::{AccountAction, AccountOutcome, FailureKind, Stage};
 use tonk_common::log;
 use url::Url;
 
+use super::account_journey::{self, Attempt};
 use super::http::{HttpError, post_cbor};
 use crate::router::AppState;
 
@@ -85,6 +87,22 @@ pub(crate) fn outcome(answer: Result<(), HttpError>) -> Outcome {
     }
 }
 
+/// How the attempt ended, for the account journey: activated, turned away
+/// for good, or failed in a way worth another try.
+pub(crate) fn journey_end(outcome: &Outcome) -> (Stage, AccountOutcome) {
+    match outcome {
+        Outcome::Activated => (Stage::Complete, AccountOutcome::success()),
+        Outcome::Refused(_) => (
+            Stage::AccessService,
+            AccountOutcome::terminal_failure(FailureKind::AccessDenied),
+        ),
+        Outcome::Failed(_) => (
+            Stage::AccessService,
+            AccountOutcome::retryable(FailureKind::ServiceUnavailable),
+        ),
+    }
+}
+
 async fn activate(invocation: &str) -> Outcome {
     let bytes = match decode(invocation) {
         Ok(bytes) => bytes,
@@ -138,7 +156,12 @@ impl dialog_capability::Provider<tonk_schema::command::ActivateAccount>
     for crate::router::CommandEnv
 {
     async fn execute(&self, command: tonk_schema::command::ActivateAccount) {
+        let (attempt, began) = Attempt::begin(AccountAction::ActivateAccount);
+        account_journey::tell(self.client(), began);
+        account_journey::tell(self.client(), attempt.reached(Stage::AccessService));
         let outcome = activate(&command.invocation.0).await;
+        let (stage, ended) = journey_end(&outcome);
+        account_journey::tell(self.client(), attempt.ended(stage, ended));
         report(self.state(), &self.origin().branch, &command.this, &outcome).await;
     }
 }
