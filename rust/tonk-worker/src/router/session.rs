@@ -375,7 +375,7 @@ async fn stamp_site_on(
     // The fixed `Site` stamp carries path/anchor/space/branch/replica/route/
     // concept; the route's captured params (`{model}`, `{entity}`, `{view}`, …)
     // are stamped alongside as `xyz.tonk.site/{name}` facts so each route model
-    // picks the ones it declares — the same per-field pickup `tonk:space/route`
+    // picks the ones it declares — the same per-field pickup `tonk:workspace/shell`
     // uses for `replica`. Params are variable per route, so they ride raw claims
     // rather than the fixed `Site` struct.
     let stamp = Site::new(

@@ -429,15 +429,19 @@ cases 2 and 3 are exactly that false positive.
 ### Opening the view in tonk-ui
 
 Events fire in the live shell, not in a standalone page, so open the
-view in the space: `/space/<space>/<model>` for the model's directory,
-`/space/<space>/<entity>@<model>!<view>` for one entity through a
+view in the space: `/space/<space>/` for the home, the path of any
+`route!` you wrote, `/space/<space>/<model>` for the model's directory,
+or `/space/<space>/<entity>@<model>!<view>` for one entity through a
 named view concept. `tonk render` is no substitute here — it prints the
 HTML with nothing behind it, so a click reaches no command. Use it to
 check the markup, the shell to check the wiring.
 
 For a raw first build, `tonk eval interactive.notation --home todo`
-installs the rules and views and replaces the home with `todo` in one
-transaction. Use `tonk space home todo` when repointing the home later.
+installs the rules and views and routes the home (`/`) to `todo` in one
+transaction. Use `tonk space home todo` when repointing the home later. An
+interactive page of its own — `/todo/{*entity}` with its controls — is a
+`route!` whose concept's view nests the display the rules listen to; see
+"Routes" in `tonk help views`.
 
 To put a collaborator in front of the same view, hand them the repo
 with `tonk invite`.

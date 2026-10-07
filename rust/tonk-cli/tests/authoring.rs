@@ -129,7 +129,7 @@ mod when_setting_the_home {
     use super::*;
 
     #[dialog_common::test]
-    async fn it_repoints_the_space_alias_and_renders_the_data() -> Result<()> {
+    async fn it_routes_the_root_to_the_home_and_renders_the_data() -> Result<()> {
         let test = TestSite::new().await?;
         seed_habit(&test).await?;
         // The verified recipe (repoint-findings recipe 3) always pairs
@@ -151,15 +151,9 @@ mod when_setting_the_home {
             "home should print the live path:\n{out}"
         );
         // End to end through the same resolution pipeline the browser
-        // runs: the replica entity rendered at model tonk/space must
-        // now show the habit data (repoint-findings recipe 3).
-        let replica = tonk_cli::data_ops::query(&test.site, "tonk/replica", false).await?;
-        let entity = replica
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("this: ").map(str::to_owned))
-            .expect("a fresh site has a replica entity");
-        let route = tonk_cli::render::RenderRoute::parse(&format!("{entity}@tonk/space"))?;
-        let html = tonk_cli::render::render(&test.site, &route).await?;
+        // runs: a tab at `/` takes the space's own route, whose
+        // concept must now nest the habit data.
+        let html = test.render_root().await?;
         assert!(
             html.contains("Run"),
             "the space home must render the habit directory:\n{html}"
@@ -181,18 +175,166 @@ mod when_setting_the_home {
     }
 }
 
+/// A space's home is its own `/` route: `tonk space home` writes the
+/// route pinned at `id:space/home-route`, whose concept's view nests
+/// the home's model. The `id:tonk/space` alias it replaced is gone.
+mod when_routing_the_home {
+    use super::*;
+    use crate::common::{HOME_ROUTE, HOME_ROUTE_CONCEPT};
+
+    /// A `model` concept with one `title` instance and a directory
+    /// view listing titles.
+    async fn seed_titled(test: &TestSite, model: &str, title: &str) -> Result<()> {
+        tonk_cli::data_ops::concept_add(
+            &test.site,
+            model,
+            &["title:text:one".into()],
+            Some("a titled thing"),
+            Default::default(),
+        )
+        .await?;
+        tonk_cli::data_ops::assert_op(&test.site, model, None, &["--title".into(), title.into()])
+            .await?;
+        test.eval_inline(&format!(
+            "view!:\n  this: {model}\n  show:\n    directory: |\n      <li>{{title}}</li>\n"
+        ))
+        .await?;
+        Ok(())
+    }
+
+    async fn home_template(test: &TestSite) -> Result<String> {
+        Ok(tonk_cli::views::describe(&test.site, HOME_ROUTE_CONCEPT)
+            .await?
+            .expect("the home route concept carries a ui view")
+            .template)
+    }
+
+    #[dialog_common::test]
+    async fn a_fresh_space_has_no_home_route() -> Result<()> {
+        let test = TestSite::new().await?;
+        assert_eq!(test.space_root_routes().await?, vec![]);
+        assert!(
+            !test.root_routes().await?.is_empty(),
+            "the library routes `/` to its shell"
+        );
+        assert_eq!(test.space_alias().await?, None);
+        let html = test.render_root().await?;
+        assert!(html.contains("class=\"blank-canvas\""), "{html}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn home_routes_the_root_to_a_view_nesting_the_model() -> Result<()> {
+        let test = TestSite::new().await?;
+        seed_titled(&test, "todo", "Write").await?;
+
+        tonk_cli::data_ops::home(&test.site, &["todo".into()], Default::default()).await?;
+
+        assert_eq!(
+            test.space_root_routes().await?,
+            vec![(HOME_ROUTE.to_owned(), HOME_ROUTE_CONCEPT.to_owned())]
+        );
+        let template = home_template(&test).await?;
+        assert!(
+            template.contains("<tonk-display with=\"{branch}@{repo}\" model=todo />"),
+            "{template}"
+        );
+        let html = test.render_root().await?;
+        assert!(html.contains("Write"), "{html}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn repointing_the_home_supersedes_the_one_root_route() -> Result<()> {
+        let test = TestSite::new().await?;
+        seed_titled(&test, "todo", "Write").await?;
+        seed_titled(&test, "note", "Jot").await?;
+        tonk_cli::data_ops::home(&test.site, &["todo".into()], Default::default()).await?;
+
+        tonk_cli::data_ops::home(&test.site, &["note".into()], Default::default()).await?;
+
+        assert_eq!(
+            test.space_root_routes().await?,
+            vec![(HOME_ROUTE.to_owned(), HOME_ROUTE_CONCEPT.to_owned())],
+            "re-routing `/` must supersede the pinned route, not add a second"
+        );
+        let template = home_template(&test).await?;
+        assert!(template.contains("model=note"), "{template}");
+        assert!(!template.contains("model=todo"), "{template}");
+        let html = test.render_root().await?;
+        assert!(html.contains("Jot"), "{html}");
+        assert!(
+            !html.contains("Write"),
+            "the old home still renders:\n{html}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn no_home_writer_publishes_the_space_alias() -> Result<()> {
+        let test = TestSite::new().await?;
+        seed_titled(&test, "todo", "Write").await?;
+
+        tonk_cli::data_ops::home(&test.site, &["todo".into()], Default::default()).await?;
+        tonk_cli::data_ops::view_add(
+            &test.site,
+            "todo",
+            tonk_cli::authoring::ViewKind::Detail,
+            "<b>{title}</b>",
+            true,
+            Default::default(),
+        )
+        .await?;
+        test.eval_inline_with(
+            "todo:\n",
+            tonk_cli::eval::Options {
+                home: Some("todo".to_owned()),
+                ..tonk_cli::eval::Options::default()
+            },
+        )
+        .await?;
+
+        assert_eq!(test.space_alias().await?, None);
+        assert_eq!(test.space_root_routes().await?.len(), 1);
+        Ok(())
+    }
+
+    /// A `/` route the space wrote itself — a template's own landing
+    /// page, unpinned — is a home too, so `view add` leaves it alone and
+    /// writes no second `/` route.
+    #[dialog_common::test]
+    async fn view_add_does_not_route_over_a_root_route_of_the_spaces_own() -> Result<()> {
+        let test = TestSite::new().await?;
+        seed_titled(&test, "todo", "Write").await?;
+        test.eval_inline(
+            "concept!: &landing\n  this: space:landing\n  description: A landing page.\n  with:\n    repo: { description: The repo., the: xyz.tonk.site/repo, as: text, cardinality: one }\n\nview!:\n  this: space:landing\n  show:\n    ui: <p>Landing</p>\n\nroute!:\n  path: \"/\"\n  concept: space:landing\n",
+        )
+        .await?;
+        let routes = test.space_root_routes().await?;
+        assert_eq!(routes.len(), 1, "{routes:?}");
+
+        let out = tonk_cli::data_ops::view_add(
+            &test.site,
+            "todo",
+            tonk_cli::authoring::ViewKind::Detail,
+            "<b>{title}</b>",
+            false,
+            Default::default(),
+        )
+        .await?;
+
+        assert!(out.contains("home unchanged"), "{out}");
+        assert_eq!(test.space_root_routes().await?, routes);
+        Ok(())
+    }
+}
+
 mod when_adding_a_view {
     use super::*;
     use tonk_cli::authoring::ViewKind;
 
     async fn render_home(test: &TestSite) -> Result<String> {
-        let replica = tonk_cli::data_ops::query(&test.site, "tonk/replica", false).await?;
-        let entity = replica
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("this: ").map(str::to_owned))
-            .expect("a fresh site has a replica entity");
-        let route = tonk_cli::render::RenderRoute::parse(&format!("{entity}@tonk/space"))?;
-        Ok(tonk_cli::render::render(&test.site, &route).await?)
+        test.render_root().await
     }
 
     #[dialog_common::test]
@@ -278,8 +420,13 @@ mod when_adding_a_view {
         )
         .await?;
         assert!(
-            !out.contains("home set:"),
+            out.contains("home unchanged"),
             "an explicitly set home must not be re-pointed by view add:\n{out}"
+        );
+        assert_eq!(
+            test.space_root_routes().await?.len(),
+            1,
+            "view add wrote a second `/` route"
         );
         Ok(())
     }

@@ -81,7 +81,7 @@ pub struct FieldSummary {
 
 /// Enumerate the concepts this space's author defined, returning a
 /// slim per-concept summary. Runtime concepts — analyzer built-ins,
-/// the seeded standard library, the CLI's own space-home recipe — are
+/// the seeded standard library, the CLI's own home-route recipe — are
 /// filtered out; see [`is_system_concept`].
 ///
 /// The filter is presentational, not a scoping rule: a system concept
@@ -513,15 +513,15 @@ fn is_builtin_concept(name: &str) -> bool {
     )
 }
 
-/// Name of the concept `tonk space home` authors to key the space home.
-/// Machinery for the home recipe, not vocabulary the author asserts
-/// against, so it is filtered out of agent-facing listings alongside
+/// Name (anchor) of the route concept `tonk space home` authors for the
+/// space's `/` route (`space:home-route`). Machinery for the home
+/// recipe, not vocabulary the author asserts against, so it is filtered out of agent-facing listings alongside
 /// the standard library.
 pub const SPACE_HOME_CONCEPT: &str = "space-home";
 
 /// Whether `name` belongs to the runtime rather than to this space's
 /// author: an analyzer built-in, a standard-library concept or
-/// command, or the CLI's own space-home recipe.
+/// command, or the CLI's own home-route recipe.
 ///
 /// A fresh space carries forty-one of these. Listing them alongside
 /// the one concept an agent just defined — and pasting the same list

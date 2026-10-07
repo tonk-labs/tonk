@@ -44,21 +44,51 @@ Notes:
 - Asserting on a many-cardinality field appends a value.
 - Exit codes: 0 success, 1 parse, 2 analyze, 3 commit, 4 I/O.
 
-## Authoring (schema, views, the space home)
+## Authoring (schema, views, the space home, routes)
 
 ```bash
 tonk concept add <name> --attr <field>:<type>:<card> [--attr …] [--description <text>]
                                     # types: text, entity, unsigned-integer, …; card: one|many
 tonk view add <concept> --template '<html>' | --template-file <path> [--kind detail|directory|label|title]
-tonk home <concept> [<concept> …]   # put concept directories on the space home
+tonk space home <concept> [<concept> …]   # route the space's home (`/`) to concept directories
 ```
 
 Notes:
 - `concept add` anchors everything, so `tonk assert <name> --help` works
   immediately after.
-- `view add` auto-surfaces your build onto the space home when no home is
-  set yet; `tonk home` re-points it explicitly (safe to re-run — each run
-  replaces the home).
+- The space's home page is its own `/` route. `view add` auto-surfaces your
+  build there when the space has no home yet; `tonk space home` (or `--home`
+  on `view add` / `eval`) re-points it explicitly. The route is pinned to
+  `id:space/home-route`, so re-running supersedes it rather than adding a
+  second `/`. `--notation` prints what it writes. The old `tonk/space` alias
+  no longer exists; don't assert it.
+- Use routes for pages. A `route!` maps a `path` to a concept; the concept
+  picks `xyz.tonk.site/<param>` (plus `replica`, `repo`, `branch`) off the
+  tab's site entity and its `ui` view renders the page, passing
+  `with="{branch}@{repo}"` to nested `<tonk-display>`s. `{param}` captures one
+  segment, `{*span}` the rest (slashes included). Literal paths beat the
+  library's catch-alls `/{*model}`, `/{*entity}@{*model}` and
+  `/{*entity}@{*model}!{*view}`. Example, via `tonk eval`:
+
+  ```yaml
+  concept!: &todo-page
+    this: space:todo-page
+    description: One todo's page.
+    with:
+      entity: { description: The todo., the: xyz.tonk.site/entity, as: entity, cardinality: one }
+      repo: { description: The repo., the: xyz.tonk.site/repo, as: text, cardinality: one }
+      branch: { description: The branch., the: xyz.tonk.site/branch, as: text, cardinality: one }
+  view!:
+    this: space:todo-page
+    show:
+      ui: |
+        <tonk-display with="{branch}@{repo}" entity={entity} model=todo />
+  route!:
+    path: "/todo/{*entity}"
+    concept: space:todo-page
+  ```
+
+  `tonk help views` ("Routes") has the full walk-through.
 - Writes sync to the upstream automatically (like `tonk eval`); set
   `TONK_NO_SYNC=1` to opt out.
 
@@ -74,7 +104,7 @@ tonk eval - < doc.notation    # from stdin
 tonk eval -c '…' --dry-run    # preview without committing
 ```
 
-`tonk guide notation` documents the grammar; `tonk guide views` covers
+`tonk help notation` documents the grammar; `tonk help views` covers
 `view!:` authoring. A bare positional is a FILE PATH, never inline text.
 
 ## Sync and sharing

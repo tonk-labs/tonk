@@ -44,9 +44,10 @@ tonk view add todo --kind directory --template-file todo.html --home
 ```
 
 A first detail or directory view automatically surfaces its model while the
-home is blank. Label and title views do not. `--home` explicitly replaces an
-existing home with this one concept's directory and commits the view plus home
-change atomically. Without it, an existing home is always preserved.
+space has no home of its own (its `/` route, below). Label and title views do
+not. `--home` explicitly routes the home to this one concept's directory and
+commits the view plus route atomically. Without it, an existing home is always
+preserved.
 
 ## `<tonk-display>` — one entity through a view
 
@@ -68,13 +69,104 @@ renders a single entity. The resolution that trips people up:
   no `entity` renders every instance of the model through the
   `directory` facet, or a default carousel).
 
-Three routes reach a view in the shell, and `tonk render` (next
-section) takes the same three:
+## Routes: the home page and every other page
 
-- `/space/<space>/<model>` — the model's directory.
-- `/space/<space>/<entity>@<model>` — one entity, the `ui` facet.
-- `/space/<space>/<entity>@<model>!<facet>` — one entity through an
-  explicit facet.
+A tab at `/space/<space>/<path>` renders whichever `route` matches `<path>`.
+A route maps a `path` pattern to a **concept**. The shell stamps the tab's
+site entity with `xyz.tonk.site/replica`, `xyz.tonk.site/repo`,
+`xyz.tonk.site/branch` and one `xyz.tonk.site/<param>` per path capture,
+resolves the route's concept on it, and renders that concept's `ui` view. A
+page is therefore a concept that picks what it needs off the site, plus a
+view, plus a `route!`. Its view hands `with="{branch}@{repo}"` to every
+nested `<tonk-display>` so they read the space's branch.
+
+Patterns: `{param}` captures one segment, `{*span}` captures the rest,
+slashes included. The library already routes:
+
+- `/` — the workspace shell (a blank canvas until the space sets a home).
+- `/{*model}` — the model's directory.
+- `/{*entity}@{*model}` — one entity, the `ui` facet.
+- `/{*entity}@{*model}!{*view}` — one entity through an explicit facet.
+
+A literal path (`/todo`, `/todo/{*entity}`) is more specific than those
+catch-alls, so it wins, and a route the space writes for `/` outranks the
+library's. Prefer a route over teaching people `@`-shorthand URLs.
+
+### The home page is the space's `/` route
+
+`tonk space home todo` (and `--home todo` on `tonk view add` or `tonk
+eval`) writes this — add `--notation` to print it:
+
+```yaml tonk=eval
+concept!: &space-home
+  this: space:home-route
+  description: "The space's home page: what `/` renders."
+  with:
+    replica: { description: The tab's replica., the: xyz.tonk.site/replica, as: entity, cardinality: one }
+    repo: { description: The space repository., the: xyz.tonk.site/repo, as: text, cardinality: one }
+    branch: { description: The space branch., the: xyz.tonk.site/branch, as: text, cardinality: one }
+
+view!:
+  this: space:home-route
+  show:
+    ui: |
+      <tonk-display with="{branch}@{repo}" model=todo />
+
+route!:
+  this: id:space/home-route
+  path: "/"
+  concept: space:home-route
+```
+
+The route is pinned to `id:space/home-route`, so a new home supersedes the
+old one instead of adding a second `/` route. Write the `ui` view yourself
+for a richer landing page. There is no `tonk/space` alias any more; the `/`
+route is the home.
+
+### A page of its own
+
+Each todo at `/todo/<entity>`, with a back link: the route captures
+`{*entity}`, so its concept picks `xyz.tonk.site/entity`. Pin the route
+concept (`this:`) so it never shares a view with another page of the same
+fields.
+
+```yaml tonk=eval
+concept!: &todo
+  description: A thing to do.
+  with:
+    title: { description: What to do., the: io.example.todo/title, as: text, cardinality: one }
+
+view!:
+  this: todo
+  show:
+    ui: |
+      <h1>{title}</h1>
+
+concept!: &todo-page
+  this: space:todo-page
+  description: One todo's page (`/todo/{entity}`).
+  with:
+    entity: { description: The todo from the path., the: xyz.tonk.site/entity, as: entity, cardinality: one }
+    repo: { description: The space repository., the: xyz.tonk.site/repo, as: text, cardinality: one }
+    branch: { description: The space branch., the: xyz.tonk.site/branch, as: text, cardinality: one }
+
+view!:
+  this: space:todo-page
+  show:
+    ui: |
+      <a href="../todo">All todos</a>
+      <tonk-display with="{branch}@{repo}" entity={entity} model=todo />
+
+route!:
+  path: "/todo/{*entity}"
+  concept: space:todo-page
+```
+
+A page without a capture (`/todo`) is its own route and its own concept
+without the `entity` field; a concept that requires a field the path did
+not capture does not resolve. `tonk render` cannot follow a route (it has no
+tab); render the nested model instead (`tonk render <entity>@todo`) and open
+the path in the space to check the page.
 
 Handing the repo to someone else is a separate act: `tonk invite`.
 
@@ -82,7 +174,7 @@ Handing the repo to someone else is a separate act: `tonk invite`.
 
 `tonk render <route>` runs the same model → view → entity resolution
 the browser `<tonk-display>` runs, and prints the resulting HTML — no
-browser, no service worker. The route is the shorthand:
+browser, no service worker. The route is the library routes' shorthand:
 
 - `tonk render person` — directory: every instance of `person`.
 - `tonk render alice@person` — one entity (`{entity}@{model}`).

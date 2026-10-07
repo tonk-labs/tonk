@@ -98,13 +98,11 @@ const DEFAULT_BRANCH: &str = "main";
 /// Default remote name used for the access service URL.
 const DEFAULT_REMOTE: &str = "origin";
 
-/// The bookmark the space route mounts (`<tonk-display model=tonk/space>`).
-/// A replica whose content cannot resolve it renders "Model not found"
-/// instead of the space, so a join that would land there is not a join.
-const SPACE_MODEL_NAME: &str = "tonk/space";
-
-/// Attribute binding a bookmark name to the entity it refers to.
-const NAME_REFERENT: &str = "db.name/referent";
+/// The path a joined space opens on: its home. A replica whose content
+/// routes nothing there, or routes it at a concept the branch does not
+/// declare, renders "Model not found" instead of the space, so a join that
+/// would land there is not a join.
+const HOME_PATH: &str = "/";
 
 /// Marker claim every concept declared on a branch carries. Its presence is
 /// what separates "the name resolves" from "the model behind it exists".
@@ -991,8 +989,9 @@ fn classify_authorization(authorization: &AuthorizeError) -> JoinFailure {
 }
 
 /// Check that a branch carries what navigating into the space needs: the
-/// repository's own identity and name, and the `tonk/space` model the
-/// space route mounts.
+/// repository's own identity and name, and a route for its home (`/`)
+/// whose concept the branch declares. The library seeds one on every
+/// space, and a space that routes its own home outranks it.
 ///
 /// Without this a join can finish against a branch that has no view and
 /// drop the recipient on "Model not found" — a durable, unusable
@@ -1020,26 +1019,38 @@ async fn validate_content<Env: BranchEnv>(
         ));
     }
 
-    let bookmark: Entity = format!("id:{SPACE_MODEL_NAME}")
-        .parse()
-        .map_err(|error| JoinFailure::claim_failed(format!("bad model bookmark: {error}")))?;
-    let referent = first_value(branch, env, bookmark, NAME_REFERENT)
-        .await?
-        .ok_or_else(|| JoinFailure::unavailable("the space model name does not resolve"))?;
-    let Value::Entity(model) = referent else {
-        return Err(JoinFailure::unavailable(
-            "the space model name resolves to a non-entity",
-        ));
-    };
-    if first_value(branch, env, model, CONCEPT_MARKER)
-        .await?
-        .is_none()
-    {
-        return Err(JoinFailure::unavailable(
-            "the space model is not a concept on this branch",
-        ));
+    let routes: Vec<tonk_schema::Route> = branch
+        .query()
+        .select(Query::<tonk_schema::Route> {
+            this: Term::var("this"),
+            path: Term::var("path"),
+            concept: Term::var("concept"),
+        })
+        .perform(env)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            JoinFailure::unavailable(format!("the route table did not resolve: {error:?}"))
+        })?;
+    let homes: Vec<Entity> = routes
+        .into_iter()
+        .filter(|route| route.path.0 == HOME_PATH)
+        .map(|route| route.concept.0)
+        .collect();
+    if homes.is_empty() {
+        return Err(JoinFailure::unavailable("the space routes no home (`/`)"));
     }
-    Ok(())
+    for concept in homes {
+        if first_value(branch, env, concept, CONCEPT_MARKER)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+    }
+    Err(JoinFailure::unavailable(
+        "the space's home route mounts no concept declared on this branch",
+    ))
 }
 
 /// Read one raw claim off a branch, or `None` when the entity carries no
@@ -1602,8 +1613,8 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
     match join_invite(&tonk, &url).await {
         Ok(outcome) => {
             // Success means the replica is installed, verified, and
-            // indexed — its `tonk/space` model is already present, so the
-            // redirect cannot land on "Model not found".
+            // indexed — its home route's concept is already present, so
+            // the redirect cannot land on "Model not found".
             //
             // Clear the in-flight status so the "Joining…" overlay empties,
             // then tell the originating page to redirect into `/space/<subject>`.
@@ -2040,6 +2051,126 @@ mod invite_name_tests {
             Vec::<String>::new(),
             "a link minted before the name rode the URL seeds nothing"
         );
+    }
+}
+
+/// The content gate a join runs before it installs a revision: a space
+/// opens on its home, the `/` route, so a branch is joinable only when that
+/// route mounts a concept the branch declares.
+#[cfg(test)]
+mod home_validation_tests {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use super::{Branch, JoinFailureKind, validate_content};
+    use crate::router::repository::{
+        BranchConfiguration, RepositoryConfiguration, create_repository,
+    };
+    use crate::worker::TonkState;
+    use dialog_varsig::Did;
+    use tonk_schema::prelude::DidExt as _;
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    async fn test_state() -> TonkState {
+        crate::router::repository::profile_library_tests::test_state().await
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    async fn test_state() -> TonkState {
+        crate::router::tests::test_state_without_root().await
+    }
+
+    /// The concept a space's home mounts, declared through evaluation.
+    const HOME: &str = r#"concept!: &home-probe
+  this: probe:home
+  description: A space's home page.
+  with:
+    replica:
+      the: xyz.tonk.site/replica
+      as: entity
+      cardinality: one
+      description: The tab's active replica
+"#;
+
+    /// A named space with no library installed, its content branch, and its
+    /// subject; `/` routed at `home` when given, and [`HOME`] declared.
+    async fn space(tonk: &TonkState, home: Option<&str>) -> (Branch, Did) {
+        let repository = create_repository(
+            tonk,
+            "Garden",
+            &RepositoryConfiguration::default().branch("main", BranchConfiguration::default()),
+        )
+        .await
+        .expect("the space creates");
+        let subject = repository.did();
+        crate::router::evaluate::evaluate_body(
+            tonk,
+            subject.repo_key(),
+            "main",
+            HOME.to_owned(),
+            true,
+        )
+        .await
+        .expect("the home concept commits");
+        let content: Branch = repository
+            .branch("main")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("the content branch opens");
+        let mut transaction = content.transaction().assert(tonk_schema::RepositoryName {
+            this: subject.this(),
+            name: tonk_schema::domain::repo::Name("Garden".to_owned()),
+        });
+        if let Some(home) = home {
+            transaction = transaction.assert(tonk_schema::Route {
+                this: "id:space/home-route".parse().expect("route entity"),
+                path: tonk_schema::domain::route::Path("/".to_owned()),
+                concept: tonk_schema::domain::route::Concept(home.parse().expect("concept")),
+            });
+        }
+        transaction
+            .commit()
+            .publish()
+            .perform(&tonk.operator)
+            .await
+            .expect("the space's own facts commit");
+        let content: Branch = repository
+            .branch("main")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("the content branch opens");
+        (content, subject)
+    }
+
+    #[dialog_common::test]
+    async fn it_accepts_a_branch_whose_home_route_mounts_a_declared_concept() {
+        let tonk = test_state().await;
+        let (content, subject) = space(&tonk, Some("probe:home")).await;
+        validate_content(&content, &tonk.operator, &subject)
+            .await
+            .expect("a routed home is joinable");
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_branch_that_routes_no_home() {
+        let tonk = test_state().await;
+        let (content, subject) = space(&tonk, None).await;
+        let failure = validate_content(&content, &tonk.operator, &subject)
+            .await
+            .expect_err("a branch with no `/` route would land on Model not found");
+        assert!(matches!(failure.kind(), JoinFailureKind::Unavailable));
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_home_route_whose_concept_is_not_declared() {
+        let tonk = test_state().await;
+        let (content, subject) = space(&tonk, Some("probe:missing")).await;
+        let failure = validate_content(&content, &tonk.operator, &subject)
+            .await
+            .expect_err("a `/` route at an undeclared concept would land on Model not found");
+        assert!(matches!(failure.kind(), JoinFailureKind::Unavailable));
     }
 }
 
@@ -3193,13 +3324,13 @@ pub(crate) mod tests {
     /// which carries no access service, so `needs_remote_authorization` is
     /// false and this gate never runs — which is how it shipped broken.
     ///
-    /// The fixture declares the space model through the real evaluate path
+    /// The fixture declares the home's concept through the real evaluate path
     /// rather than hand-asserting the claims a concept is made of. That
     /// matters more than brevity here: hand-asserting would encode this
     /// test's belief about how a concept is stored, and a wrong belief about
     /// exactly that is the bug being fixed.
     #[dialog_common::test]
-    async fn it_accepts_content_whose_space_model_is_a_declared_concept() {
+    async fn it_accepts_content_whose_home_route_mounts_a_declared_concept() {
         use dialog_repository::{Branch, Repository, RepositoryExt as _};
 
         let (app, state, _lsp) = api_router_with_state(test_state().await);
@@ -3253,22 +3384,18 @@ pub(crate) mod tests {
                 .expect("the repository name commits");
         }
 
-        // The shape `core.yaml` seeds for a lean space: a pinned concept for
-        // the canvas, and the cardinality-one `tonk/space` alias pointing at
-        // it. The space route mounts whatever that alias resolves to.
-        const SPACE_MODEL: &str = r#"concept!: &blank
-  this: tonk:blank
-  description: A lean repo's starting canvas.
+        // The shape every space carries: a pinned concept and a route for
+        // `/` mounting it, the way a space routes its own home. The library
+        // seeds the same with `tonk:workspace/shell`.
+        const SPACE_MODEL: &str = r#"concept!: &home-probe
+  this: probe:home
+  description: A space's home page.
   with:
-    subject:
-      the: xyz.tonk.replica/subject
+    replica:
+      the: xyz.tonk.site/replica
       as: entity
       cardinality: one
-      description: The space this canvas belongs to
-
-name!:
-  this: id:tonk/space
-  entity: tonk:blank
+      description: The tab's active replica
 "#;
         {
             let guard = state.read().await;
@@ -3281,6 +3408,31 @@ name!:
             )
             .await
             .expect("the space model commits");
+            let repository: Repository = guard
+                .profile
+                .space(&repo)
+                .load()
+                .perform(&guard.operator)
+                .await
+                .expect("repo loads");
+            let content: Branch = repository
+                .branch("main")
+                .open()
+                .perform(&guard.operator)
+                .await
+                .expect("content branch opens");
+            content
+                .transaction()
+                .assert(tonk_schema::Route {
+                    this: "id:space/home-route".parse().unwrap(),
+                    path: tonk_schema::domain::route::Path("/".to_owned()),
+                    concept: tonk_schema::domain::route::Concept("probe:home".parse().unwrap()),
+                })
+                .commit()
+                .publish()
+                .perform(&guard.operator)
+                .await
+                .expect("the home route commits");
         }
 
         let tonk = state.read().await;
@@ -3300,6 +3452,6 @@ name!:
 
         super::validate_content(&content, &tonk.operator, &repository.did())
             .await
-            .expect("content carrying a declared space model is joinable");
+            .expect("content whose home route mounts a declared concept is joinable");
     }
 }

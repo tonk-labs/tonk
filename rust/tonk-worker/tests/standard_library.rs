@@ -458,11 +458,28 @@ fn it_leaves_network_bearing_space_bindings_unquoted() {
     );
 }
 
+/// A space's home is its own `/` route. Core names no `tonk/space` alias
+/// for the shell to mount through: its default `/` (the workspace shell)
+/// mounts the blank canvas directly, and a space that routes `/` itself
+/// outranks it.
 #[dialog_common::test]
-fn it_defaults_the_space_alias_to_blank_in_core() {
+fn it_mounts_the_blank_canvas_at_the_default_home_in_core() {
     assert!(
-        STANDARD_LIBRARY.contains("entity: tonk:blank"),
-        "core.yaml must seed the default tonk/space -> tonk:blank alias",
+        !STANDARD_LIBRARY.contains("tonk/space"),
+        "core.yaml must not name the removed tonk/space alias",
+    );
+    let shell = STANDARD_LIBRARY
+        .split("view!:\n  this: tonk:workspace/shell\n")
+        .nth(1)
+        .and_then(|tail| tail.split("# The directory page").next())
+        .expect("the workspace shell view");
+    assert!(
+        shell.contains("entity={replica} model=tonk:blank"),
+        "the library's `/` mounts the blank canvas",
+    );
+    assert!(
+        STANDARD_LIBRARY.contains("this: id:space/home-route"),
+        "core documents the home route recipe, pinned to id:space/home-route",
     );
 }
 

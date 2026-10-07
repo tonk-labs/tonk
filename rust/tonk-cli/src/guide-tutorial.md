@@ -45,15 +45,21 @@ other dynamic assert flags.
    <field>:<type>:<cardinality>`. The concept is immediately usable.
 3. Create or update facts with `tonk assert`; read them with `tonk query`; use
    `tonk retract` to invalidate a field or instance.
-4. Add a view with `tonk view add`. A first detail or directory view
-   automatically becomes the home when none is set. Use `--home` to install a
-   view and replace the home atomically, or `tonk space home` to repoint it
-   later. Check the result headlessly with `tonk render`.
-5. Use `tonk eval` for rules, effects, joins, or multi-statement documents the
+4. Add a view with `tonk view add`. The home page is the space's `/` route;
+   a first detail or directory view automatically routes it there when the
+   space has no home yet. Use `--home` to install a view and route the home
+   atomically, or `tonk space home` to repoint it later. Check the result
+   headlessly with `tonk render`.
+5. Give every other page its own `route!` (`/todo`, `/todo/{*entity}`,
+   written with `tonk eval`) rather than sending people to `@`-shorthand
+   URLs: a route maps a path to a concept that picks the page's inputs off
+   the tab, and that concept's view renders it. See "Routes" in
+   `tonk help views`.
+6. Use `tonk eval` for rules, effects, joins, or multi-statement documents the
    convenient verbs cannot express. On a raw first build,
    `tonk eval interactive.notation --home todo` installs the document and
    replaces the home in one transaction.
-6. Copy a space invitation from Tonk and run `tonk join <invite-link>`.
+7. Copy a space invitation from Tonk and run `tonk join <invite-link>`.
    The same command works for people and agents, without browser approval.
 
 Every notation-building write accepts `--notation` to print the document it
@@ -69,4 +75,5 @@ tonk view add todo --kind directory --template-file todo.html --home
 tonk render todo
 ```
 
-`--home` replaces the prior home with `todo`; it does not append to it.
+`--home` routes `/` to `todo` in place of the prior home; it does not append
+to it.

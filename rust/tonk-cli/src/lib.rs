@@ -15,7 +15,7 @@
 //! - [`identity`] — local profile management.
 //! - [`agents`] — claim-backed space context and `AGENTS.md` projection data.
 //! - [`authoring`] — pure notation builders (concept, view, and the
-//!   space-home recipe) consumed by the noun-first authoring verbs.
+//!   space's home-route recipe) consumed by the noun-first authoring verbs.
 //! - [`data`] — pure notation builders (value rendering + doc
 //!   assembly) consumed by the argument-based data verbs.
 //! - [`data_ops`] — the testable handlers behind the argument-based

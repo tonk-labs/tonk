@@ -143,8 +143,8 @@ event!: &on/toggle
 # WORKSPACE
 # ============================================================
 
-# The blank canvas: what a lean (no-template) repo renders. It is the
-# default target of the `tonk/space` alias (below). Agent invitations are
+# The blank canvas: what a lean (no-template) repo renders. It is what the
+# library's `/` route shows until the space routes `/` itself. Agent invitations are
 # opened explicitly from the host-owned FABB, so rendering an empty space does
 # not rotate a bearer credential or duplicate the invitation UI in content.
 concept!: &blank
@@ -1523,18 +1523,14 @@ concept!: &space
       cardinality: one
       as: entity
 
-# The space's default content: the blank canvas. The space route mounts
-# `<tonk-display entity={replica} model=tonk/space>`, and `tonk/space`
-# points at the blank canvas until the space points it at its own root
-# model, which takes over the space home.
-#
-# A `seed/name` command rather than a `name!`. Every upgrade reverts what
-# the last install wrote and installs the library again, and a `name!` would
-# point the alias back at the canvas each time, over the home the space
-# chose. The rule writes the name only while nothing names the alias, so the
+# A name the library ships, as a default the space can override. A
+# `seed/name` command rather than a `name!`: every upgrade reverts what the
+# last install wrote and installs the library again, and a `name!` would
+# point the name back at the library's choice each time, over the one the
+# space made. The rule writes the name only while nothing names it, so the
 # write is part of the install, and the next upgrade reverts it with the
-# rest when the space never chose a home of its own. The command is
-# transient: nothing of it stays but the name the rule wrote.
+# rest when the space never chose for itself. The command is transient:
+# nothing of it stays but the name the rule wrote.
 command!: &seed/name
   description: Where a name points until the space points it itself.
   with:
@@ -1555,10 +1551,6 @@ rule!:
     - assert: name
       where:
         this: ?this
-
-seed/name!:
-  this: id:tonk/space
-  entity: tonk:blank
 
 concept!: &tonk/replica
   this: tonk:replica
@@ -1692,7 +1684,7 @@ command!: &site/select
 # A site renders the route model it matched. The shell mounts a fixed
 # `<tonk-display entity=site:… model=tonk:site>`; this view nests into the
 # matched `{concept}` on the SAME site entity, so the route model
-# (e.g. `tonk:space/route`) resolves on the site (picking its `site/*` fields)
+# (e.g. `tonk:workspace/shell`) resolves on the site (picking its `site/*` fields)
 # and its own view renders. One indirection: site → its matched route model.
 view!:
   this: tonk:site
@@ -1712,7 +1704,7 @@ view!:
 # view renders. Patterns use axum/matchit 0.8 brace syntax (`{section}`), fed to
 # `matchit::insert`.
 #
-# Route models are distinct PINNED concepts (`tonk:space/route`, …). Two routes
+# Route models are distinct PINNED concepts (`tonk:workspace/shell`, …). Two routes
 # with the same field shape stay distinct by their pinned `this`, so their views
 # never collide — `model` discriminates.
 
@@ -1865,37 +1857,6 @@ concept!: &seed/installed
 
 # ---- Route models and their views ----
 
-# The space's default page — a bare `/space/{name}/`. Picks the tab's `replica`
-# off the site entity and renders a view of it (the binder, by default).
-concept!: &space/route
-  this: tonk:space/route
-  description: The space's default page.
-  with:
-    replica:
-      description: The tab's active replica, picked off the site entity.
-      the: xyz.tonk.site/replica
-      cardinality: one
-      as: entity
-    repo:
-      description: The space repository, picked off the site entity.
-      the: xyz.tonk.site/repo
-      cardinality: one
-      as: text
-    branch:
-      description: The space branch, picked off the site entity.
-      the: xyz.tonk.site/branch
-      cardinality: one
-      as: text
-
-# `with=` here, like every other route view: the space view's own content
-# can nest routing consumers (the notebook space mounts an editor), and
-# context reaches them only by cascading down stamped `with` attributes.
-view!:
-  this: tonk:space/route
-  show:
-    ui: |
-      <tonk-display with="{branch}@{repo}" entity={replica} model=tonk/space />
-
 # The workspace shell — the declarative two-portal composition the space route
 # resolves to. It renders OUTER-side (the top document mounts
 # `<tonk-display model=tonk:site>`, whose site view nests `{concept}` =
@@ -1931,8 +1892,9 @@ concept!: &workspace/shell
       cardinality: one
       as: text
 
-# The shell mounts the space's content via the `tonk/space` alias on the active
-# replica, which resolves to `tonk:blank` until something re-points it. The
+# The shell is the library's default `/`: it mounts the blank canvas on the
+# active replica. A space that wants its own home routes `/` itself (see the
+# home route below), and its route outranks this one. The
 # `.display-view-slot` wrapper is the bare-route fill-height layout.
 #
 # The content display is scoped with `with="{branch}@{repo}"`, exactly as
@@ -1947,7 +1909,7 @@ view!:
     ui: |
       <div class="workspace-shell" style="display:flex; flex-direction:column; min-height:100dvh;">
         <div class='display-view-slot'>
-          <tonk-display entity={replica} model=tonk/space with="{branch}@{repo}" />
+          <tonk-display entity={replica} model=tonk:blank with="{branch}@{repo}" />
         </div>
       </div>
 
@@ -2063,8 +2025,8 @@ view!:
 #
 # The routes every space starts with, shipped as `seed/route` commands: the
 # rule above writes each one where no route claims its path. Patterns
-# use the route grammar: `{name}` is one segment, `{name:path}` is slash-tolerant
-# (so a namespaced `{model:path}` captures `tonk/person` whole), `@` and `!` are
+# use the route grammar: `{name}` is one segment, `{*name}` is slash-tolerant
+# (so a namespaced `{*model}` captures `tonk/person` whole), `@` and `!` are
 # literal delimiters between params. The SW matches most-specific-first, so the
 # bare `/`, the `@`/`!` artifact patterns, and the plain `{model}` directory never
 # shadow one another.
@@ -2072,6 +2034,37 @@ view!:
 # The bare `/` route resolves the declarative workspace shell (the site's
 # `{concept}` indirection mounts it on the site entity); the sub-routes resolve
 # the directory/artifact/ad-hoc page concepts.
+#
+# A space's HOME is its own `/` route. A route the space writes outranks the
+# library's, so routing `/` is all it takes. The route concept is the
+# space's: it picks what it needs off the tab's site entity (`replica`,
+# `repo`, `branch`, captured params) and its view renders whatever the home
+# should be:
+#
+#     concept!: &space-home
+#       this: space:home-route
+#       description: The space's home page.
+#       with:
+#         replica: { the: xyz.tonk.site/replica, as: entity, cardinality: one }
+#         repo: { the: xyz.tonk.site/repo, as: text, cardinality: one }
+#         branch: { the: xyz.tonk.site/branch, as: text, cardinality: one }
+#
+#     view!:
+#       this: space:home-route
+#       show:
+#         ui: |
+#           <tonk-display with="{branch}@{repo}" model=todo />
+#
+#     route!:
+#       this: id:space/home-route
+#       path: "/"
+#       concept: space:home-route
+#
+# Pin the route to `id:space/home-route`. A route's entity is otherwise
+# derived from its body, so re-routing `/` at another concept would add a
+# SECOND `/` route rather than replace the first, and the two would tie;
+# pinned, re-asserting it supersedes. `tonk space home` and `--home` write
+# exactly this.
 seed/route!:
   path: "/"
   concept: tonk:workspace/shell

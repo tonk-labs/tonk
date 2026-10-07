@@ -3,7 +3,9 @@
 Everything on a branch is a **fact**: an entity, an attribute, and a value.
 A **concept** is a named schema over attributes. An entity matching a concept
 is an **instance**, and the concept presents its attributes as typed **fields**.
-A **view** is an HTML template rendered over a concept's instances.
+A **view** is an HTML template rendered over a concept's instances. A
+**route** maps a URL path to a concept that picks the page's inputs off the
+tab and whose view renders the page; the space's **home** is its `/` route.
 
 An **assertion** adds a claim. Creating a new content-addressed instance is
 also called **minting**. On a cardinality-one field, a later assertion

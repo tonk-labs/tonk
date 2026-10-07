@@ -600,7 +600,7 @@ enum SpaceCommand {
         via: Option<String>,
     },
 
-    /// Pin one or more concepts' directories on the space home
+    /// Route the space's home page (`/`) to one or more concepts' directories
     Home {
         /// Concept name(s) to surface, in order.
         #[arg(value_name = "CONCEPT", required = true)]
@@ -787,8 +787,8 @@ enum ConceptCommand {
 enum ViewCommand {
     /// Assert a declarative view for a concept
     ///
-    /// A first detail or directory view is auto-surfaced when the home is
-    /// blank. --home explicitly replaces an existing home.
+    /// A first detail or directory view is auto-surfaced when the space has
+    /// not routed its home (`/`) yet. --home explicitly re-routes it.
     #[command(
         after_help = "Examples:\n  tonk view add habit --template '<b>{name}</b>'\n  tonk view add habit --kind directory --template-file habit.html --home"
     )]
@@ -810,7 +810,7 @@ enum ViewCommand {
         /// Which `show` facet to author (ui, directory, label, title).
         #[arg(long, value_enum, default_value_t = ViewKindArg::Detail)]
         kind: ViewKindArg,
-        /// Atomically replace the current home with this concept's directory.
+        /// Atomically re-route the space's home (`/`) to this concept's directory.
         #[arg(long)]
         home: bool,
         /// Print the notation document without evaluating it.
@@ -990,7 +990,7 @@ struct EvalArgs {
     #[arg(value_name = "PATH")]
     path: Option<String>,
 
-    /// Atomically replace the current home with this concept's directory.
+    /// Atomically re-route the space's home (`/`) to this concept's directory.
     #[arg(long, value_name = "CONCEPT")]
     home: Option<String>,
 
