@@ -212,11 +212,30 @@ Within a mapping body, two reserved meta-keys do meta work:
 - **`..: _`** — rest-of-attributes retraction. On `head!:`,
   retracts every attribute in the concept's `with:` map that
   isn't explicitly set elsewhere in the body. The `..` key is
-  reserved; it cannot appear with any other value.
+  reserved; it cannot appear with any other value, and a query
+  (`head:`) or claim-domain head carrying it is an error.
 
 If `this:` is omitted from an assertion, the entity is derived
 from the content. If omitted from a query, `this` is a free
 variable matching any entity.
+
+A retraction (`field: _` or `..: _`) needs `this:` to select an
+existing entity: a name, a URI, or a `?var` a query binds. With
+`this:` omitted, or a `?var` nothing binds, the entity would be
+fresh, with nothing to retract, so the analyzer refuses it. The
+named fields of an assertion always set values; they never
+select. To delete every instance matching some fields, select
+them with a query:
+
+```yaml tonk=parse
+ticket:
+  this: ?t
+  queue: "writer"
+
+ticket!:
+  this: ?t
+  ..: _
+```
 
 ## The `this:` meta-key
 
