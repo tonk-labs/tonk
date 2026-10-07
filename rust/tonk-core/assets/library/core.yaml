@@ -2062,9 +2062,11 @@ view!:
 #
 # Pin the route to `id:space/home-route`. A route's entity is otherwise
 # derived from its body, so re-routing `/` at another concept would add a
-# SECOND `/` route rather than replace the first, and the two would tie;
-# pinned, re-asserting it supersedes. `tonk space home` and `--home` write
-# exactly this.
+# SECOND `/` route rather than replace the first; pinned, re-asserting it
+# supersedes. Beside the library's own `/` default it does not tie: the
+# router ranks a route equal to one the library ships below every other
+# route for the same path. `tonk space home` and `--home` write exactly
+# this.
 seed/route!:
   path: "/"
   concept: tonk:workspace/shell

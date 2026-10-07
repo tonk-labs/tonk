@@ -14951,6 +14951,37 @@ name!:
         assert!(referents(&tonk, &key, "tonk/space").await.is_empty());
     }
 
+    /// A home routed AFTER the library wrote its own `/` default wins at
+    /// once. That is how every home arrives on a space created today: the
+    /// library is seeded first, then a template's route or `tonk space
+    /// home` adds the space's. The two routes tie on specificity, and the
+    /// library's default must lose that tie however the entity URIs sort
+    /// (the library's derived `did:key:` sorts before `id:space/home-route`).
+    #[dialog_common::test]
+    async fn a_home_routed_after_the_library_default_wins_the_root() {
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, "Garden").await;
+        assert_eq!(routes_at(&tonk, &key, "/").await, ["tonk:workspace/shell"]);
+
+        author(
+            &tonk,
+            &key,
+            &super::super::seed::home_route_recipe(
+                "<tonk-display with=\"{branch}@{repo}\" model=tonk:blank />",
+            ),
+        )
+        .await;
+
+        let mut both = routes_at(&tonk, &key, "/").await;
+        both.sort();
+        assert_eq!(both, ["space:home-route", "tonk:workspace/shell"]);
+        assert_eq!(
+            resolved(&tonk, &key, "/").await.as_deref(),
+            Some("space:home-route"),
+            "the space's home must win over the library's default"
+        );
+    }
+
     /// A space that never chose a home opens on the library's `/`, the
     /// workspace shell over the blank canvas, before an upgrade and after.
     /// A space whose alias was still at the blank canvas gets no home route

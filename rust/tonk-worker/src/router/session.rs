@@ -639,22 +639,44 @@ struct MatchedRoute {
     params: tonk_router::Params,
 }
 
+/// The routes core ships as `seed/route` defaults, as `(path, concept)`.
+///
+/// The library's rule writes each one where no route claims its path yet,
+/// so on every space the library's routes are there BEFORE anything the
+/// space routes itself: a template's home, `tonk space home`. A route equal
+/// to one of these is the library's default and gives way to any other
+/// route for its path. Pinned to core.yaml's `seed/route` rows by
+/// `route_order_tests::it_lists_every_default_core_ships`.
+pub(crate) const LIBRARY_DEFAULT_ROUTES: [(&str, &str); 4] = [
+    ("/", "tonk:workspace/shell"),
+    ("/{*entity}@{*model}!{*view}", "tonk:adhoc/route"),
+    ("/{*entity}@{*model}", "tonk:artifact/route"),
+    ("/{*model}", "tonk:directory/route"),
+];
+
 /// Order routes for insertion into the router: the space's own routes first,
-/// then the ones a library pinned, each group by entity URI.
+/// then the library's, each group by entity URI.
 ///
 /// The router preserves insertion order among routes of equal specificity, so
-/// this ordering is what settles those ties. Libraries pinned their routes to
-/// fixed entities before they shipped them as commands, and a space keeps
-/// them until its upgrade withdraws them; a route the space wrote for the
-/// same path wins meanwhile. A library's commands write routes only where no
-/// route claims the path, so the routes they write tie with nothing until
-/// the space writes its own, and then only until the next upgrade. The URI
-/// tiebreak keeps the result deterministic within a group.
+/// this ordering is what settles those ties. A route is the library's when a
+/// library pinned it to a fixed entity before libraries shipped routes as
+/// commands (`pinned`, which a space keeps until its upgrade withdraws
+/// them), or when it is one of the defaults core ships today
+/// ([`LIBRARY_DEFAULT_ROUTES`]). Those defaults are written at install,
+/// before the space can route the same path itself, and stay until the next
+/// upgrade sees the space's route and skips them; until then the space's
+/// route must win however the two entity URIs sort. The URI tiebreak keeps
+/// the result deterministic within a group.
 ///
 /// Split out of [`match_route`] so it is testable off-target — `match_route`
 /// itself needs a branch session and so is wasm-only.
 fn route_order(routes: &mut [tonk_schema::Route], pinned: &std::collections::HashSet<String>) {
-    let library = |route: &tonk_schema::Route| pinned.contains(&route.this.to_string());
+    let library = |route: &tonk_schema::Route| {
+        pinned.contains(&route.this.to_string())
+            || LIBRARY_DEFAULT_ROUTES.iter().any(|(path, concept)| {
+                route.path.0 == *path && route.concept.0.to_string() == *concept
+            })
+    };
     routes.sort_by(|a, b| {
         library(a)
             .cmp(&library(b))
@@ -856,6 +878,65 @@ mod route_order_tests {
             vec!["id:zzz/space", "id:aaa/pinned"],
             "the space's own route must precede the pinned one"
         );
+    }
+
+    /// The tie every home routed today meets: the library's `/` default,
+    /// written at install under a derived `did:key:` entity that sorts
+    /// before `id:space/home-route`, and the home the space routed after.
+    /// The space's wins although its URI sorts last.
+    #[test]
+    fn it_orders_a_space_route_before_the_librarys_default() {
+        let library: dialog_artifacts::Entity = "tonk:workspace/shell".parse().expect("concept");
+        let mut routes = vec![
+            route("id:space/home-route", "/"),
+            Route {
+                this: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                    .parse()
+                    .expect("entity"),
+                path: RouteTablePath("/".to_string()),
+                concept: RoutePathConcept(library),
+            },
+        ];
+
+        super::route_order(&mut routes, &HashSet::new());
+
+        assert_eq!(
+            ordered(&routes),
+            vec![
+                "id:space/home-route",
+                "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+            ],
+            "the space's home must precede the library's default"
+        );
+    }
+
+    /// The defaults the order demotes are exactly the `seed/route` rows
+    /// core ships, so a route core adds or moves cannot silently start
+    /// winning ties against a space's own route.
+    #[test]
+    fn it_lists_every_default_core_ships() {
+        const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+        let mut shipped: Vec<(String, String)> = CORE
+            .split("\nseed/route!:\n")
+            .skip(1)
+            .map(|block| {
+                let field = |name: &str| {
+                    block
+                        .lines()
+                        .find_map(|line| line.trim().strip_prefix(name))
+                        .map(|value| value.trim().trim_matches('"').to_owned())
+                        .unwrap_or_default()
+                };
+                (field("path:"), field("concept:"))
+            })
+            .collect();
+        shipped.sort();
+        let mut listed: Vec<(String, String)> = super::LIBRARY_DEFAULT_ROUTES
+            .iter()
+            .map(|(path, concept)| ((*path).to_owned(), (*concept).to_owned()))
+            .collect();
+        listed.sort();
+        assert_eq!(listed, shipped);
     }
 
     /// Within one group the order is by entity URI, so the table a router is
