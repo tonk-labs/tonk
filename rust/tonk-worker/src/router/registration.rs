@@ -123,6 +123,7 @@ pub(crate) async fn record(tonk: &TonkState, stage: Option<Stage>) {
         None => {
             tonk.reactor
                 .schedule_poll(std::sync::Arc::clone(&branch.state));
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
             return;
         }
         Some(Stage::Address { email }) => overlay.assert(RegistrationAddress {
@@ -155,6 +156,10 @@ pub(crate) async fn record(tonk: &TonkState, stage: Option<Stage>) {
     if let Err(error) = overlay.write().perform(&tonk.operator).await {
         log!("registration: the stage was not recorded: {error}");
     }
+    // A stage is recorded from more than a command: a passkey's result and
+    // a refusal arrive as messages, and activation from a sync. Nothing
+    // after those tells the panel, so this does.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
 /// Whether the panel waits for an account's emailed link.
@@ -624,5 +629,81 @@ mod tests {
     #[dialog_common::test]
     fn it_words_a_closed_passkey_prompt_as_one_to_try_again() {
         assert!(refused("NotAllowedError").contains("Try again"));
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod waiting_tests {
+    use super::{Stage, confirming, record};
+    use crate::router::customer::{record_activation, record_customer_status};
+    use tonk_account::customer::CustomerStatus;
+    use tonk_schema::registration::kind;
+
+    /// The sweep that learns from a sync that the account is served is one
+    /// of the ways the emailed link is heard of: the panel waiting for the
+    /// link is put away by it.
+    #[dialog_common::test]
+    async fn it_puts_the_waiting_panel_away_when_activation_is_recorded() {
+        let tonk = crate::router::tests::test_state().await;
+        record_customer_status(
+            &tonk,
+            CustomerStatus::Registered,
+            "waiting@example.com",
+            None,
+        )
+        .await
+        .expect("the registration is recorded");
+        record(&tonk, Some(Stage::Confirming { kind: kind::CREATE })).await;
+        assert!(confirming(&tonk).await);
+
+        record_activation(&tonk).await;
+
+        assert!(!confirming(&tonk).await);
+    }
+
+    /// A refusal reaches the worker as a message from the page, with no
+    /// command after it: the panel showing the wait for a passkey still
+    /// hears that it failed.
+    #[dialog_common::test]
+    async fn it_tells_the_panel_of_a_ceremony_the_page_refused() {
+        use dialog_query::{ConceptQuery, Query, Term};
+
+        let tonk = crate::router::tests::test_state().await;
+        record(&tonk, Some(Stage::Ceremony { kind: kind::CREATE })).await;
+        let this: dialog_artifacts::Entity = super::ENTITY.parse().unwrap();
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .expect("the profile branch opens");
+        let mut failed = session
+            .subscribe(
+                ConceptQuery::from(Query::<super::RegistrationFailed> {
+                    this: Term::from(this),
+                    kind: Term::var("kind"),
+                    message: Term::var("message"),
+                }),
+                None,
+                0,
+            )
+            .expect("the panel subscribes");
+        tonk.reactor
+            .schedule_poll(std::sync::Arc::clone(&session.state));
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        while failed.receiver.try_recv().is_ok() {}
+
+        super::ceremony_refused(&tonk, kind::CREATE, "NotAllowedError").await;
+
+        let mut heard = Vec::new();
+        while let Ok(bytes) = failed.receiver.try_recv() {
+            heard.extend_from_slice(&bytes);
+        }
+        let heard = String::from_utf8_lossy(&heard);
+        assert!(
+            heard.contains("asserted") && heard.contains(kind::CREATE),
+            "the panel hears of the failure: {heard:?}"
+        );
     }
 }
