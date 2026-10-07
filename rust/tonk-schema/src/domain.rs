@@ -1324,6 +1324,30 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `discover/add-catalog` — list another template catalog in
+        /// the Hub's Discover tab.
+        pub mod add_catalog {
+            use dialog_query::Attribute;
+
+            /// The catalog's URL, as typed. The handler admits only
+            /// `https:` or loopback `http:`.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.add-catalog")]
+            pub struct Url(pub String);
+        }
+
+        /// `discover/remove-catalog` — stop listing a catalog the
+        /// account owner added.
+        pub mod remove_catalog {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The `discover/catalog` row to retract.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.remove-catalog")]
+            pub struct Catalog(pub Entity);
+        }
+
         /// `tonk/add-profile` — rotate onto a fresh profile and open the
         /// account ceremony on it.
         pub mod add_profile {
@@ -1682,6 +1706,39 @@ pub mod profile {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.profile")]
     pub struct DisplayName(pub String);
+}
+
+/// Attributes of [`crate::DiscoverCatalog`]: a template catalog the
+/// account owner added to the Hub's Discover tab, on the profile branch.
+pub mod discover {
+    use super::Attribute;
+
+    /// The catalog's canonical URL (`https:`, or `http:` on a loopback
+    /// host). Derived attribute: `xyz.tonk.discover-catalog/url`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.discover-catalog")]
+    #[cardinality(one)]
+    pub struct Url(pub String);
+}
+
+/// Attributes of [`crate::CatalogReceipt`]: how one
+/// `discover/add-catalog` or `discover/remove-catalog` came out, keyed
+/// by the command's entity. Overlay-only.
+pub mod discover_receipt {
+    use super::Attribute;
+
+    /// `added`, `removed`, or `refused`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.discover-catalog-receipt")]
+    #[cardinality(one)]
+    pub struct Status(pub String);
+
+    /// What to tell the person: the canonical URL that was listed, or
+    /// why it was refused.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.discover-catalog-receipt")]
+    #[cardinality(one)]
+    pub struct Detail(pub String);
 }
 
 /// Attributes on the device-local roster of profiles this browser knows,

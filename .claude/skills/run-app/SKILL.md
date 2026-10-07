@@ -24,6 +24,25 @@ Stop: `lsof -ti:8080 -sTCP:LISTEN | xargs -r kill` and kill
 `tonk-access-local` by its PID (`pgrep -f tonk-access-local`) — avoid broad
 `pkill -f` patterns.
 
+## Test a local template catalog
+
+Discover lists the deployment's default catalog, which the access service
+serves at `/.well-known/tonk/discover` from `TEMPLATE_CATALOG_URL` (a
+wrangler var per environment; the local service defaults to the production
+URL). Point it at a catalog you serve yourself:
+
+```bash
+# A catalog is fetched cross-origin from the sealed Hub, so serve it with
+# `Access-Control-Allow-Origin: *` (python's http.server does not).
+TEMPLATE_CATALOG_URL=http://localhost:8777/catalog.json .claude/skills/run-app/dev-web.sh
+curl -s localhost:8080/.well-known/tonk/discover   # {"catalog": "http://localhost:8777/catalog.json"}
+```
+
+Only `https:` or `http:` on `localhost` / `127.0.0.1` / `[::1]` is served;
+anything else answers `"catalog": null` and the Hub falls back to the
+`catalog-url` its library names. Catalogs added in Discover's "catalogs"
+control are held to the same rule.
+
 ## Drive it
 
 Playwright is installed globally; link it next to your script, and Chromium

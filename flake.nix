@@ -715,6 +715,9 @@
                   handle /.well-known/tonk {
                       reverse_proxy localhost:$SIBLING_ACCESS_SERVICE_PORT
                   }
+                  handle /.well-known/tonk/* {
+                      reverse_proxy localhost:$SIBLING_ACCESS_SERVICE_PORT
+                  }
                   handle /ucan/* {
                       reverse_proxy localhost:$SIBLING_ACCESS_SERVICE_PORT
                   }
@@ -745,6 +748,9 @@
               https://tonk.network:$PORT, https://localhost:$PORT {
                   tls internal
                   handle /.well-known/tonk {
+                      reverse_proxy localhost:$ACCESS_SERVICE_PORT
+                  }
+                  handle /.well-known/tonk/* {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }
                   handle /ucan/* {

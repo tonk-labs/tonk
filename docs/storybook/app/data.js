@@ -506,12 +506,12 @@ window.STORYBOOK_DATA = {
       "variants": "Available main content and blobs; missing or unreadable source; local-only or active account."
     },
     {
-      "evidence": "Node coverage for remote metadata escaping and catalog retry; native command coverage for ordered required files and checksum refusal before creation; cross-origin browser regression for catalog retry, two-step modal, refusal/retry, single creation and copied home.",
-      "gaps": "Upstream availability, interrupted writes, response loss after creation, account changes, hosted sync, and full interactions within every template.",
+      "evidence": "Node coverage for remote metadata escaping and catalog retry; native command coverage for ordered required files and checksum refusal before creation; cross-origin browser regression for catalog retry, two-step modal, refusal/retry, single creation and copied home. Node coverage for default/fallback selection, de-duplication, per-catalog failure and per-catalog ids; access-service coverage for the endpoint with the var set, unset and invalid; native command coverage for add, remove, insecure refusal writing nothing, and refusal from a space branch; a headless-Chromium run against two locally served catalogs (add, copy from the second, remove).",
+      "gaps": "Upstream availability, interrupted writes, response loss after creation, account changes, hosted sync, and full interactions within every template, and a checked-in real-browser regression for the catalogs control (add, copy from an added catalog, remove), which so far was verified by hand.",
       "group": "Spaces: local lifecycle and selection",
       "id": "SPACE-15",
-      "title": "Browse a live community catalog in Discover, inspect details and an expanded photo, then copy with a separate name/description modal.",
-      "variants": "Catalog loading/failure/retry; empty or populated collection; details and photo; back from copy options; unavailable or changed source; retry; remote template home."
+      "title": "Browse community catalogs in Discover — the deployment's default plus any the account owner added — inspect details and an expanded photo, then copy with a separate name/description modal; add or remove the owner's own catalogs from the Discover tab's catalogs control.",
+      "variants": "Catalog loading/failure/retry; empty or populated collection; details and photo; back from copy options; unavailable or changed source; retry; remote template home. Deployment default from /.well-known/tonk/discover or the library's fallback; owner-added catalogs added and removed; a non-https, non-loopback catalog refused; one catalog failing among several; the same slug in two catalogs; source labels."
     },
     {
       "evidence": "Focused cache/authorization/fallback tests and a pre-rebase Chrome smoke check of automatic capture, decoded blurred cards, and zero mounted space frames in the Hub.",
@@ -866,7 +866,7 @@ window.STORYBOOK_DATA = {
         "rust/tonk-worker/src/router/repository/duplication.rs"
       ],
       "status": "captured",
-      "summary": "The Hub lists local, owned, and joined spaces and offers create, duplicate, and Discover template-copy actions. Visited homes can show cached blurred thumbnails without opening spaces from the Hub. The screenshot predates duplication, Discover, and real previews.",
+      "summary": "The Hub lists local, owned, and joined spaces and offers create, duplicate, and Discover template-copy actions; Discover lists the deployment's default catalog plus any the account owner adds. Visited homes can show cached blurred thumbnails without opening spaces from the Hub. The screenshot predates duplication, Discover, and real previews.",
       "surface": "browser"
     },
     {

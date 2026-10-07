@@ -153,6 +153,32 @@ impl AccessServer {
         public_origin: Option<String>,
         state_dir: Option<&std::path::Path>,
     ) -> anyhow::Result<Self> {
+        Self::launch(
+            s3_server,
+            bucket,
+            access_key,
+            secret_key,
+            deployment,
+            public_origin,
+            state_dir,
+            tonk_worker_api::DiscoverConfig::default(),
+        )
+        .await
+    }
+
+    /// [`AccessServer::start`], also answering
+    /// `GET /.well-known/tonk/discover` with `discover`.
+    #[allow(clippy::too_many_arguments)]
+    async fn launch(
+        s3_server: LocalS3,
+        bucket: &str,
+        access_key: &str,
+        secret_key: &str,
+        deployment: Option<tonk_worker_api::DeploymentConfig>,
+        public_origin: Option<String>,
+        state_dir: Option<&std::path::Path>,
+        discover: tonk_worker_api::DiscoverConfig,
+    ) -> anyhow::Result<Self> {
         // Create S3 credentials for the authorizer
         let address = Address::builder(&s3_server.endpoint)
             .region("us-east-1")
@@ -237,6 +263,7 @@ impl AccessServer {
 
         let shortcuts: Shortcuts = Arc::new(RwLock::new(HashMap::new()));
         let deployment = Arc::new(deployment);
+        let discover = Arc::new(discover);
         let authorizer_clone = authorizer.clone();
         let registration_clone = registration.clone();
         let server_handle = tokio::spawn(async move {
@@ -248,15 +275,17 @@ impl AccessServer {
                             let authorizer = authorizer_clone.clone();
                             let shortcuts = shortcuts.clone();
                             let deployment = deployment.clone();
+                            let discover = discover.clone();
                             let registration = registration_clone.clone();
                             tokio::spawn(async move {
                                 let service = hyper::service::service_fn(move |req| {
                                     let authorizer = authorizer.clone();
                                     let shortcuts = shortcuts.clone();
                                     let deployment = deployment.clone();
+                                    let discover = discover.clone();
                                     let registration = registration.clone();
                                     async move {
-                                        handle_request(req, authorizer, shortcuts, deployment, registration).await
+                                        handle_request(req, authorizer, shortcuts, deployment, discover, registration).await
                                     }
                                 });
                                 let _ = http1::Builder::new()
@@ -338,6 +367,7 @@ fn too_large_response(limit: u64) -> Response<http_body_util::Full<bytes::Bytes>
 /// - PUT /@ → Store a shortcut target, respond with its hash
 /// - GET /@/{hash} → Permanent relative redirect to the stored target
 /// - GET /.well-known/tonk → Deployment configuration, when configured
+/// - GET /.well-known/tonk/discover → The Discover tab's default catalog
 /// - GET /.well-known/did.json → The service's own DID document
 /// - GET /customer/{domain}/{local}/did.json → The DID document for an
 ///   email address
@@ -347,6 +377,7 @@ async fn handle_request(
     authorizer: Arc<RwLock<ServerAuthorizer>>,
     shortcuts: Shortcuts,
     deployment: Arc<Option<tonk_worker_api::DeploymentConfig>>,
+    discover: Arc<tonk_worker_api::DiscoverConfig>,
     registration: Arc<RegistrationState>,
 ) -> Result<Response<http_body_util::Full<bytes::Bytes>>, std::convert::Infallible> {
     use bytes::Bytes;
@@ -391,6 +422,18 @@ async fn handle_request(
                 .unwrap(),
         };
         return Ok(cors_response(response));
+    }
+    if req.method() == Method::GET && req.uri().path() == "/.well-known/tonk/discover" {
+        return Ok(cors_response(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec_pretty(discover.as_ref())
+                        .expect("discover config serializes"),
+                )))
+                .unwrap(),
+        ));
     }
     if req.method() == Method::GET && req.uri().path() == "/.well-known/did.json" {
         // The configured origin's host, for the same reason the customer
@@ -1550,6 +1593,12 @@ pub struct AccessServiceSettings {
     pub secret_access_key: String,
     /// Served from `GET /.well-known/tonk` when set; 404 otherwise.
     pub deployment: Option<tonk_worker_api::DeploymentConfig>,
+    /// The Discover tab's default catalog, served from
+    /// `GET /.well-known/tonk/discover` the way the deployed worker
+    /// serves its `TEMPLATE_CATALOG_URL`. Unset, blank or inadmissible
+    /// answers `catalog: null`, and the page falls back to the catalog
+    /// its library names.
+    pub template_catalog: Option<String>,
     /// Origin activation links open on, when it differs from the
     /// server's own address (a dev proxy in front of it).
     pub public_origin: Option<String>,
@@ -1569,6 +1618,7 @@ impl Default for AccessServiceSettings {
             access_key_id: "test-access-key".to_string(),
             secret_access_key: "test-secret-key".to_string(),
             deployment: None,
+            template_catalog: None,
             public_origin: None,
             state_dir: None,
         }
@@ -1815,7 +1865,7 @@ pub async fn access_service(
     }
 
     // Start the UCAN access service
-    let access_server = AccessServer::start(
+    let access_server = AccessServer::launch(
         s3_server,
         bucket,
         &settings.access_key_id,
@@ -1823,6 +1873,7 @@ pub async fn access_service(
         settings.deployment,
         settings.public_origin,
         settings.state_dir.as_deref(),
+        crate::handlers::config::discover_config(settings.template_catalog.as_deref()),
     )
     .await?;
 
