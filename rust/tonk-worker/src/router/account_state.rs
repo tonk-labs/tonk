@@ -2387,6 +2387,80 @@ pub(crate) mod tests {
         );
     }
 
+    /// The worker keeps one handle per branch, and something else can move
+    /// the branch under it: the pull a space's worker makes as it takes the
+    /// space up, while a page asks for a pull of its own. The handle then
+    /// publishes against a head that is no longer there. The pull that was
+    /// asked for takes the head as it now is and pulls again, as a sync
+    /// does, where it used to answer a conflict.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_pulls_through_a_head_another_pull_moved() {
+        use ::axum::extract::{Path, State};
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let (home, _service, root, remote) = ready_account_state(None).await;
+        assert_eq!(ensure_account_state(&home).await, AccountStateStatus::Ready);
+        let device = device_on(&root, &remote, None).await;
+        let (status, swept) = ensure_account_state_swept(&device).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.unwrap();
+
+        // The account changes elsewhere, and this device takes the change
+        // through a handle of its own, behind the worker's.
+        rename_display_name(&home, "First").await.unwrap();
+        push_account_main(&home).await.unwrap();
+        let aside = device
+            .reactor
+            .profile_repository()
+            .acquire(&device.operator)
+            .await
+            .unwrap()
+            .repository()
+            .branch(&device.active_branch)
+            .open()
+            .perform(&device.operator)
+            .await
+            .unwrap();
+        aside
+            .pull()
+            .download()
+            .operational()
+            .perform(&device.operator)
+            .await
+            .unwrap();
+
+        // It changes again, so the pull asked for has something to take.
+        rename_display_name(&home, "Second").await.unwrap();
+        push_account_main(&home).await.unwrap();
+
+        let repo = device.reactor.profile_key().to_owned();
+        let branch = device.active_branch.clone();
+        let device = Arc::new(RwLock::new(device));
+        let pulled = super::super::sync::pull(
+            State(device.clone()),
+            Path(super::super::sync::SyncPath { repo, branch }),
+        )
+        .await;
+
+        let pulled = pulled.expect("the pull takes the moved head and goes on").0;
+        let published = home
+            .reactor
+            .profile_repository()
+            .branch(&home.active_branch)
+            .acquire(&home.operator)
+            .await
+            .unwrap()
+            .handle()
+            .revision();
+        assert!(published.is_some());
+        assert_eq!(
+            pulled.after, published,
+            "and ends at what the other device last pushed"
+        );
+    }
+
     /// A device that signs out and back in keeps pulling its account.
     ///
     /// A device joining an account in use retains its grant on a branch
