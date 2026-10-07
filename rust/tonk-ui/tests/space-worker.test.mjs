@@ -186,6 +186,19 @@ test("the shell may be framed by the app, the profile, and its own origin", asyn
   assert.match(policy, /frame-ancestors 'self' https:\/\/tonk\.test https:\/\/profile\.tonk\.test/);
 });
 
+test("a profile reads what is published over https or from this machine, and a space reads nothing", async () => {
+  const directive = (policy, name) => policy.split("; ").find((part) => part.startsWith(`${name} `));
+  const reach = " https: http://localhost:* http://127.0.0.1:*";
+
+  const profile = (await site({ host: "profile.tonk.test" }).answer("/", page)).headers.get("content-security-policy");
+  assert.equal(directive(profile, "connect-src"), `connect-src 'self' blob: data:${reach}`);
+  assert.equal(directive(profile, "img-src"), `img-src 'self' blob: data:${reach}`);
+
+  const space = (await site().answer("/", page)).headers.get("content-security-policy");
+  assert.equal(directive(space, "connect-src"), "connect-src 'self' blob: data:");
+  assert.equal(directive(space, "img-src"), "img-src 'self' blob: data:");
+});
+
 test("a request for an address gets the content a route keeps there", async () => {
   const { answer, asked } = site({ routes: HELLO });
 

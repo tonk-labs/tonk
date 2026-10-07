@@ -1405,8 +1405,9 @@ function spacePolicy(sites, { framedBySelf = false } = {}) {
     const framed = sites ? ` ${scheme}//*.${sites.host}` : "";
     // A profile renders the app's own hub, not author code, and the hub
     // reads the template catalog and its pictures from where they are
-    // published. A space gets no network at all.
-    const published = PROFILE ? " https:" : "";
+    // published: anywhere over https, and this machine, where a catalog
+    // being written is served from. A space gets no network at all.
+    const published = PROFILE ? " https: http://localhost:* http://127.0.0.1:*" : "";
     return [
         "default-src 'none'",
         "script-src 'self' blob: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'",
