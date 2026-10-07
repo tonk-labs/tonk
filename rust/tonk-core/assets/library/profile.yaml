@@ -6156,12 +6156,12 @@ element!: &account-settings
         const at = window.location;
         return { origin: at.origin, path: at.pathname, search: at.search, hash: at.hash };
       }
-    # The worker's HTTP API, reached the way any guest reaches it: the
-    # host relays a same-origin fetch. A refusal rejects with its status.
+    # The worker's HTTP API, on this page's own origin, where the worker
+    # holding the profile is. A refusal rejects with its status.
     api: |
       (self, path, body) => {
         const init = body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
-        return window.fetch(`${self.context().origin}${path}`, init).then(async (response) => {
+        return window.fetch(path, init).then(async (response) => {
           const text = await response.text();
           if (!response.ok) { const error = new Error(text || String(response.status)); error.status = response.status; throw error; }
           return text ? JSON.parse(text) : null;
