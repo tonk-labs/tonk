@@ -2308,6 +2308,26 @@ pub(crate) mod tests {
 
         for width in [1200, 500] {
             driver.set_window_rect(0, 0, width, 844).await?;
+            // The hub is in a frame of its own process, which takes the
+            // window's new size a beat after the window has it: measured
+            // before then, it is still laid out for the size before.
+            let resized = tokio::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                let framed = driver.execute("return innerWidth", Vec::new()).await?;
+                if framed
+                    .json()
+                    .as_u64()
+                    .is_some_and(|framed| framed <= width as u64)
+                {
+                    break;
+                }
+                anyhow::ensure!(
+                    tokio::time::Instant::now() < resized,
+                    "the hub's frame never took the window's width of {width}: it is {}",
+                    framed.json()
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
             let layout = driver.execute(
                 r#"const card = document.querySelector(arguments[0]);
                    const link = card.querySelector('.srow').getBoundingClientRect();
