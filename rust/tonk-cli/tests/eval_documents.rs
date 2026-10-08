@@ -1,6 +1,6 @@
 //! `tonk eval` with several files: they are evaluated in the order given
 //! as one commit, a set of unchanged files commits nothing,
-//! `!include/blob` stores referenced files as blobs in that commit, and
+//! `!include/asset` stores referenced files as assets in that commit, and
 //! the push after the write pulls and pushes again when another writer
 //! moved the upstream.
 
@@ -46,7 +46,7 @@ const PAGE: &str = r#"
 page!:
   this: id:page-home
   title: Home
-  hero: !include/blob ../assets/hero.png
+  hero: !include/asset ../assets/hero.png
 "#;
 
 /// Lay out `site/00-schema.yaml`, `site/pages/home.yaml` and the asset
@@ -266,7 +266,7 @@ mod when_a_document_is_rejected {
         let root = site(&test)?;
         std::fs::write(
             root.join("pages/broken.yaml"),
-            "page!:\n  this: id:broken\n  title: Broken\n  hero: !include/blob ../assets/missing.png\n",
+            "page!:\n  this: id:broken\n  title: Broken\n  hero: !include/asset ../assets/missing.png\n",
         )?;
         let before = local_revision(&test).await?;
 

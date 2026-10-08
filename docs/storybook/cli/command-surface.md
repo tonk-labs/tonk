@@ -88,7 +88,7 @@ and this contract are delivered together on base `90ba1f90d`.
 | `assert [CONCEPT] [ENTITY] ...` | `DATA-03`, `DATA-04` | Dynamic help, create/update/no-op, schema flags, JSON commit/verification/push receipt, notation/dry-run/no-sync/quiet. |
 | `query CONCEPT [--where FIELD=VALUE]` | `DATA-05` | Empty/many/ambiguous, typed equality and repeated AND filters, human/JSON, invalid/missing concept or field, broken pipe. |
 | `retract CONCEPT ENTITY [--field]` | `DATA-06` | Whole/field/many field, notation/dry-run/no-sync/quiet, already retracted. |
-| `eval` | `DATA-07` | `-c`, one file or several (evaluated in the order given as one commit; a later file sees an earlier one's declarations; a rejected file named, nothing committed; `-` refused among paths), explicit `-`, implicit piped stdin, query/write/mixed, JSON/quiet/home/dry-run/no-sync; a file resolves `!include` / `!include/text` / `!include/blob` next to itself, other sources refuse them. |
+| `eval` | `DATA-07` | `-c`, one file or several (evaluated in the order given as one commit; a later file sees an earlier one's declarations; a rejected file named, nothing committed; `-` refused among paths), explicit `-`, implicit piped stdin, query/write/mixed, JSON/quiet/home/dry-run/no-sync; a file resolves `!include` / `!include/text` / `!include/asset` next to itself, other sources refuse them. |
 | `render ROUTE [--out PATH]` | `DATA-09` | Directory/detail/explicit view, every matching view once in entity order, frame-wide portal mode, default fallback only for an empty renderable match, stdout/file, missing route/view, output failure. |
 
 ### Collaboration and sync

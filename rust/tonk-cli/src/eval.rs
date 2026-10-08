@@ -303,7 +303,7 @@ pub async fn run_documents(
 }
 
 /// Replace every `!include` in `syntax` with what it names. Returns the
-/// `!include/blob` content, which the caller asserts on its transaction
+/// `!include/asset` content, which the caller asserts on its transaction
 /// with [`crate::blob::describe`].
 async fn expand_includes(
     label: &str,
@@ -351,7 +351,7 @@ fn format_diagnostics(source: &str, diagnostics: &[lsp_types::Diagnostic]) -> St
 /// binary. An include that names anything else is reported rather than
 /// fetched.
 ///
-/// `!include/blob` content is remembered in `blobs` rather than stored:
+/// `!include/asset` content is remembered in `blobs` rather than stored:
 /// the caller asserts each one on the document's transaction, so its
 /// bytes are stored by the commit that refers to them, and a dry run
 /// stores nothing.

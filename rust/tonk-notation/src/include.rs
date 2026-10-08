@@ -7,8 +7,8 @@
 //! that runs between parsing and analysis. It resolves each
 //! reference against the document's [`Syntax::base`], asks a
 //! [`Load`] implementation for the bytes, and replaces the node with
-//! the literal they spell, or, for `!include/blob`, with the
-//! `blob:` reference [`Load::store`] filed them under.
+//! the literal they spell, or, for `!include/asset`, with the
+//! `asset:` reference [`Load::store`] filed them under.
 //!
 //! Included content is inlined as a value, never parsed as notation,
 //! so an included file cannot include anything in turn.
@@ -36,12 +36,12 @@ pub trait Load {
     /// Load the resource at `uri`.
     fn load(&self, uri: &Url) -> impl Future<Output = Result<Vec<u8>, String>> + ConditionalSend;
 
-    /// File the `bytes` loaded from `uri` as a content-addressed blob
+    /// File the `bytes` loaded from `uri` as a content-addressed asset
     /// and return the reference a field holds for it, for
-    /// `!include/blob`. The host may store them right away or with the
+    /// `!include/asset`. The host may store them right away or with the
     /// commit that refers to them.
     ///
-    /// A host with no blob store keeps the default, which refuses, so
+    /// A host that cannot store assets keeps the default, which refuses, so
     /// the include is reported rather than silently inlined.
     fn store(
         &self,
@@ -49,7 +49,7 @@ pub trait Load {
         bytes: Vec<u8>,
     ) -> impl Future<Output = Result<String, String>> + ConditionalSend {
         let _ = (uri, bytes);
-        std::future::ready(Err("blobs cannot be stored here".to_owned()))
+        std::future::ready(Err("assets cannot be stored here".to_owned()))
     }
 }
 
@@ -138,7 +138,7 @@ async fn inline<L: Load>(include: &Include, base: &Url, loader: &L) -> Result<Fi
                     IncludeForm::Bytes.tag()
                 )
             }),
-        IncludeForm::Blob => loader
+        IncludeForm::Asset => loader
             .store(&uri, bytes)
             .await
             .map(FieldValue::Uri)
@@ -179,7 +179,7 @@ mod tests {
         }
     }
 
-    /// A loader that also stores blobs, naming each by its length so a
+    /// A loader that also stores assets, naming each by its length so a
     /// test can see which bytes went in.
     struct Stored(Fixtures);
 
@@ -189,7 +189,7 @@ mod tests {
         }
 
         async fn store(&self, _uri: &Url, bytes: Vec<u8>) -> Result<String, String> {
-            Ok(format!("blob:len{}", bytes.len()))
+            Ok(format!("asset:len{}", bytes.len()))
         }
     }
 
@@ -292,10 +292,10 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_replaces_a_blob_include_with_the_stored_reference() {
+    async fn it_replaces_an_asset_include_with_the_stored_reference() {
         let mut syntax = at(
             "file:///site/page.yaml",
-            "note!:\n  this: id:page\n  image: !include/blob ./assets/hero.webp\n",
+            "note!:\n  this: id:page\n  image: !include/asset ./assets/hero.webp\n",
         );
         let loader = Stored(Fixtures::new(&[(
             "file:///site/assets/hero.webp",
@@ -305,17 +305,17 @@ mod tests {
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
         assert_eq!(
             field(&syntax, "image"),
-            &FieldValue::Uri("blob:len3".into())
+            &FieldValue::Uri("asset:len3".into())
         );
     }
 
-    /// A host without a blob store reports the include instead of
+    /// A host that cannot store assets reports the include instead of
     /// quietly inlining the bytes, and leaves it for analysis to reject.
     #[dialog_common::test]
-    async fn it_refuses_a_blob_include_where_blobs_cannot_be_stored() {
+    async fn it_refuses_an_asset_include_where_assets_cannot_be_stored() {
         let mut syntax = at(
             "file:///site/page.yaml",
-            "note!:\n  this: id:page\n  image: !include/blob ./hero.webp\n",
+            "note!:\n  this: id:page\n  image: !include/asset ./hero.webp\n",
         );
         let loader = Fixtures::new(&[("file:///site/hero.webp", &[0x01])]);
         let diagnostics = expand(&mut syntax, &loader).await;

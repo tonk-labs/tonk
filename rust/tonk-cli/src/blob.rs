@@ -116,7 +116,7 @@ fn mime_for_extension(ext: &str) -> String {
     }
 }
 
-/// A blob an `!include/blob` named while a document expanded. Nothing
+/// An asset an `!include/asset` named while a document expanded. Nothing
 /// is stored yet: [`describe`] asserts it on the document's transaction,
 /// and the commit stores its bytes in the same revision as the facts that
 /// point at it, so a dry run, or a rejected document, stores nothing.
