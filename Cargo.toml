@@ -194,24 +194,24 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/tonk-dialog-yaml-issues-d9wqjn" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/pr-580-review-assessment-jkgwxr" }
 
 [profile.dev]
 opt-level = 1
