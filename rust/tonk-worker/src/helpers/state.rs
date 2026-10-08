@@ -47,6 +47,16 @@ fn session_nonce() -> u32 {
 /// form. `wasm-bindgen-test-runner`'s throwaway Chrome profile hides
 /// that today; the [`session_nonce`] makes it unconditional.
 pub async fn test_state_without_root() -> TonkState {
+    test_state_standing(crate::device::Standing::Person).await
+}
+
+/// Create an isolated test state as a space's own worker starts with: a
+/// profile of its own that has no account.
+pub async fn test_state_for_site() -> TonkState {
+    test_state_standing(crate::device::Standing::Site).await
+}
+
+async fn test_state_standing(standing: crate::device::Standing) -> TonkState {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let profile_name = format!(
@@ -56,16 +66,6 @@ pub async fn test_state_without_root() -> TonkState {
     );
 
     crate::patch_idb_versionchange();
-    let (storage, profile) =
-        crate::device::open_profile_at(&profile_name, dialog_effects::storage::Directory::Profile)
-            .await
-            .expect("Failed to create test profile");
-
-    let session = crate::session::open(&profile)
-        .await
-        .expect("Failed to open a test signing session");
-
-    let reactor = crate::Reactor::new(profile.credential().clone());
     // The registry mirrors production shape — the state's own profile
     // is the registry profile, exactly as `Registry::device()` signs
     // as `tonk` until the first rotation. Uniquely named per state,
@@ -75,7 +75,22 @@ pub async fn test_state_without_root() -> TonkState {
     let registry = crate::device::Registry {
         profile: profile_name.clone(),
         directory: dialog_effects::storage::Directory::Profile,
+        standing,
     };
+    let storage = registry
+        .storage()
+        .await
+        .expect("Failed to open test storage");
+    let profile = registry
+        .open_profile(&storage, &profile_name)
+        .await
+        .expect("Failed to create test profile");
+
+    let session = crate::session::open(&profile)
+        .await
+        .expect("Failed to open a test signing session");
+
+    let reactor = crate::Reactor::new(profile.credential().clone());
     TonkState {
         seed_upgrades: Default::default(),
         site_origins: Default::default(),

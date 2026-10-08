@@ -2186,6 +2186,7 @@ pub(crate) mod tests {
             registry: crate::device::Registry {
                 profile: name.clone(),
                 directory: dialog_effects::storage::Directory::Profile,
+                standing: Default::default(),
             },
             profile_transition: Default::default(),
             context_generation: Default::default(),

@@ -201,6 +201,7 @@ pub(crate) async fn current_account(
     match super::identity::local_root(state).await {
         Ok(root) => Ok((root.root_did, root.delegation)),
         Err(TonkWorkerError::RootRequired) => {
+            state.registry.account()?;
             let grant = crate::onboarding::grant_device(state).await?;
             Ok((grant.issuer().clone(), grant))
         }

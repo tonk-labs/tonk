@@ -450,5 +450,13 @@ test("the Rust worker is named by the build it runs, to tell its own snapshot fr
 
   await answer("/api/identify");
 
-  assert.deepEqual(JSON.parse(JSON.stringify(activated)), [["dev", []]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(activated)), [["dev", [], false]]);
+});
+
+test("a space's Rust worker is told it is one, so its profile is given no account", async () => {
+  const { connect, activated } = site();
+
+  await connect(host);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(activated)), [["dev", [], true]]);
 });

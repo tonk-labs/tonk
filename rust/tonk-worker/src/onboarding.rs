@@ -79,7 +79,10 @@ pub(crate) const ONBOARDING_KEK_SITE: &str = "tonk-onboarding-kek-v1";
 pub(crate) async fn account(state: &TonkState) -> Result<AccountSecret, TonkWorkerError> {
     match read(state, &Place::active(state)).await? {
         Some(secret) => Ok(secret),
-        None => create(state).await,
+        None => {
+            state.registry.account()?;
+            create(state).await
+        }
     }
 }
 

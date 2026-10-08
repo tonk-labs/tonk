@@ -10511,6 +10511,7 @@ route!: &foreign-profile-route
             registry: crate::device::Registry {
                 profile: name,
                 directory: dialog_effects::storage::Directory::Profile,
+                standing: Default::default(),
             },
             profile_transition: Default::default(),
             context_generation: Default::default(),

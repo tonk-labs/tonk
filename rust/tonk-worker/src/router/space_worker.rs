@@ -423,18 +423,18 @@ mod tests {
         DelegationChain, adopt, delegate, member_did, name_member, resume, seed, snapshot, terms,
     };
     use crate::TonkWorkerError;
-    use crate::helpers::state::{test_state, test_state_without_root};
+    use crate::helpers::state::{test_state, test_state_for_site};
     use crate::router::join::{find_replica_for_subject, mount_replica};
     use crate::router::{RepositoryInfo, api_router_with_state};
     use crate::worker::TonkState;
 
-    /// A worker standing in for a space origin's: a profile of its own. Unlike
-    /// a real one it shares the host's storage, since a test runs in a single
-    /// origin and every profile there mounts a space in the same place. So a
-    /// space the host holds is never empty here; seeding is tested on a
-    /// replica the host never mounted.
+    /// A worker standing in for a space origin's: a profile of its own, with
+    /// no account. Unlike a real one it shares the host's storage, since a
+    /// test runs in a single origin and every profile there mounts a space
+    /// in the same place. So a space the host holds is never empty here;
+    /// seeding is tested on a replica the host never mounted.
     async fn space_origin() -> TonkState {
-        test_state_without_root().await
+        test_state_for_site().await
     }
 
     /// A space nothing has mounted: a key of its own. A profile's DID will
@@ -498,6 +498,30 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         (state, info.name.parse().unwrap())
+    }
+
+    /// A space's worker runs under a key made on its origin and the
+    /// delegation it is handed, and nothing of an account: no vault for one,
+    /// no key guarding it, and none made by asking who it acts for.
+    #[dialog_common::test]
+    async fn it_gives_a_space_worker_no_account() {
+        let worker = space_origin().await;
+
+        assert!(
+            worker.profile.authority().await.is_err(),
+            "the worker's profile records no account"
+        );
+        assert!(
+            matches!(
+                member_did(&worker).await,
+                Err(TonkWorkerError::Forbidden(_))
+            ),
+            "asking who it acts for before it is told makes no account"
+        );
+        assert!(
+            crate::onboarding::did(&worker).await.unwrap().is_none(),
+            "no onboarding account was made"
+        );
     }
 
     #[dialog_common::test]

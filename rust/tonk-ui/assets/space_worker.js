@@ -1068,8 +1068,9 @@ function siteWorker() {
         })
         .then(() => init({ module_or_path: workerWasm() }))
         // Named by the wasm it runs: the Rust worker tells a snapshot it
-        // wrote itself from one a worker of another build left it.
-        .then(() => activate(WORKER_WASM_HASH, []))
+        // wrote itself from one a worker of another build left it. A
+        // space's worker is told it is one: its profile has no account.
+        .then(() => activate(WORKER_WASM_HASH, [], !PROFILE))
         .then(async worker => {
             if (PROFILE) {
                 // A profile's spaces each have a worker of their own, which

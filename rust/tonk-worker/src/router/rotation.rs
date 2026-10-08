@@ -1709,6 +1709,7 @@ mod native_tests {
         let registry = crate::device::Registry {
             profile: name.clone(),
             directory: dialog_effects::storage::Directory::Profile,
+            standing: Default::default(),
         };
         let state = crate::worker::boot_state(storage, name, profile, registry)
             .await

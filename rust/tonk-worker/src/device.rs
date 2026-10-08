@@ -127,6 +127,7 @@ pub(crate) async fn open_profile_at(
     let registry = Registry {
         profile: name.to_owned(),
         directory,
+        standing: Standing::default(),
     };
     let storage = registry.storage().await?;
     let profile = registry.open_profile(&storage, name).await?;
@@ -146,6 +147,28 @@ pub(crate) async fn open_profile_at(
 pub(crate) struct Registry {
     pub(crate) profile: String,
     pub(crate) directory: Directory,
+    pub(crate) standing: Standing,
+}
+
+/// Whose worker this is, which decides whether its profile has an account.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Standing {
+    /// A person's: its profile has an account, the onboarding one until
+    /// the person signs in.
+    #[default]
+    Person,
+    /// A space's own, on the space's origin: its profile has no account. It
+    /// acts on the delegation the person's profile hands it, for the
+    /// account that delegation names.
+    Site,
+}
+
+static STANDING: std::sync::OnceLock<Standing> = std::sync::OnceLock::new();
+
+/// Say whose worker this is. Called once, before the worker is made: the
+/// script that starts it knows which origin it runs on.
+pub fn set_standing(standing: Standing) {
+    let _ = STANDING.set(standing);
 }
 
 impl Registry {
@@ -154,6 +177,18 @@ impl Registry {
         Self {
             profile: REGISTRY_PROFILE.to_string(),
             directory: Directory::Profile,
+            standing: STANDING.get().copied().unwrap_or_default(),
+        }
+    }
+
+    /// Refuses where the profile has no account to make one for: on a
+    /// space's own worker.
+    pub(crate) fn account(&self) -> Result<(), TonkWorkerError> {
+        match self.standing {
+            Standing::Person => Ok(()),
+            Standing::Site => Err(TonkWorkerError::Forbidden(
+                "a space's own worker has no account".to_string(),
+            )),
         }
     }
 
@@ -181,15 +216,31 @@ impl Registry {
         // Space names resolve against the directory the worker has always
         // kept its spaces in.
         let location = Location::new(self.directory.clone(), name);
-        let profile = tonk_account::peer::open_peer(
-            location.clone(),
-            space_location("").directory,
-            storage.clone(),
-            &credentials,
-            &system,
-            create,
-        )
-        .await?;
+        let base = space_location("").directory;
+        let profile = match self.standing {
+            Standing::Person => {
+                tonk_account::peer::open_peer(
+                    location.clone(),
+                    base,
+                    storage.clone(),
+                    &credentials,
+                    &system,
+                    create,
+                )
+                .await?
+            }
+            Standing::Site => {
+                tonk_account::peer::open_delegate(
+                    location.clone(),
+                    base,
+                    storage.clone(),
+                    &credentials,
+                    &system,
+                    create,
+                )
+                .await?
+            }
+        };
         tonk_account::peer::migrate_site_secrets(
             &profile,
             &location,
@@ -606,6 +657,7 @@ mod tests {
         Registry {
             profile: name,
             directory,
+            standing: Standing::default(),
         }
     }
 

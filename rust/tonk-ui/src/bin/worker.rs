@@ -6,7 +6,7 @@
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod main {
-    use tonk_worker::TonkServiceWorker;
+    use tonk_worker::{Standing, TonkServiceWorker};
     use wasm_bindgen::prelude::*;
 
     /// Activates and initializes the Tonk service worker.
@@ -17,11 +17,20 @@ mod main {
     /// literal — a name kept in step by hand across two languages is
     /// drift waiting to happen, and the drift is silent (one side
     /// purges caches the other is still writing).
+    ///
+    /// `site` says the worker is a space's own, on the space's origin: its
+    /// profile is given no account.
     #[wasm_bindgen]
     pub async fn activate(
         build_id: String,
         asset_paths: JsValue,
+        site: bool,
     ) -> Result<TonkServiceWorker, JsError> {
+        tonk_worker::set_standing(if site {
+            Standing::Site
+        } else {
+            Standing::Person
+        });
         let asset_paths: Vec<String> = serde_wasm_bindgen::from_value(asset_paths)
             .map_err(|error| JsError::new(&format!("invalid stamped asset paths: {error}")))?;
         tonk_worker::set_build_id(build_id);

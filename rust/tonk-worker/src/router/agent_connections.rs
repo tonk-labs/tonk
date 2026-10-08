@@ -888,6 +888,7 @@ mod tests {
         let registry = crate::device::Registry {
             profile: "receipt-projection".into(),
             directory: location,
+            standing: Default::default(),
         };
         let tonk =
             crate::worker::boot_state(storage, "receipt-projection".into(), profile, registry)
@@ -1155,6 +1156,7 @@ mod tests {
         let registry = crate::device::Registry {
             profile: "ledger-branch".into(),
             directory: location.clone(),
+            standing: Default::default(),
         };
         let first =
             crate::worker::boot_state(storage, "ledger-branch".into(), profile, registry).await?;
@@ -1250,6 +1252,7 @@ mod tests {
         let registry = crate::device::Registry {
             profile: "ledger".into(),
             directory: location.clone(),
+            standing: Default::default(),
         };
         let tonk = crate::worker::boot_state(storage, "ledger".into(), profile, registry).await?;
         let root = Ed25519Signer::import(&[52; 32]).await?;
@@ -1313,6 +1316,7 @@ mod tests {
         let other_registry = crate::device::Registry {
             profile: "other-account".into(),
             directory: location.clone(),
+            standing: Default::default(),
         };
         let other_profile = other_registry
             .open_profile(&tonk.storage, "other-account")
@@ -1399,6 +1403,7 @@ mod tests {
         let registry = crate::device::Registry {
             profile: "ledger".into(),
             directory: location,
+            standing: Default::default(),
         };
         let reopened =
             crate::worker::boot_state(storage, "ledger".into(), profile, registry).await?;
