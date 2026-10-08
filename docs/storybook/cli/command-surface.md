@@ -137,8 +137,8 @@ and this contract are delivered together on base `90ba1f90d`.
 
 | Entry | Journey IDs | Variants that require coverage |
 | --- | --- | --- |
-| `blob`, `blob --json` | `DATA-10` | Empty/many, human/JSON, corrupt/missing metadata. |
-| `blob add FILE [--type]` | `DATA-10`, `SYNC-04` | Inferred/explicit type, dry-run/no-sync/quiet, changed/large/unreadable file, disk full. |
+| `blob`, `blob --json` | `DATA-10` | Empty/many, human/JSON, corrupt/missing metadata; assets described with `tonk.dialog.asset/*` and legacy blobs with `xyz.tonk.blob/*` both list. |
+| `blob add FILE [--type]` | `DATA-10`, `SYNC-04` | Inferred/explicit type recorded as `tonk.dialog.asset/media-type` (with `/name`), dry-run/no-sync/quiet, changed/large/unreadable file, disk full. |
 | `blob cat BLOB_URI` | `DATA-10` | Valid/missing/malformed/corrupt blob, binary stdout/broken pipe. |
 | `export [--out] [--branch]` | `DATA-11` | Empty/many, stdout/file, escaping, branch missing, atomic output. |
 | `import PATH [--branch]` | `DATA-11`, `SYNC-04` | Empty/malformed/partial CSV, duplicates, write modifiers, retry after row failure. |

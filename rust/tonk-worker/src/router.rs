@@ -481,8 +481,9 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // Content-addressed blob bytes: GET serves an entity's bytes; POST
         // ingests a new blob into the branch store and returns its ref.
         // `<tonk-display>` points `<img src>` at the GET form for
-        // `tonk:blob` models; `Content-Type` there comes from the blob's
-        // `xyz.tonk.blob/content-type` fact, which POST asserts.
+        // `tonk:blob` models; `Content-Type` there comes from the asset's
+        // `tonk.dialog.asset/media-type` fact, which POST asserts, or the
+        // legacy `xyz.tonk.blob/content-type` one older blobs carry.
         // The upload body is buffered whole in the service worker (no
         // streaming yet), so the limit is a deliberate ceiling rather than
         // axum's 2 MiB default — which real image files routinely exceed.

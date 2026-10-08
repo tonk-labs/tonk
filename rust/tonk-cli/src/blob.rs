@@ -3,11 +3,12 @@
 //! `add` streams a local file into the branch's blob store
 //! (`Blob::import(..).write(branch.blobs())`), which returns the
 //! content-addressed `blob:<hash>` [`Entity`] directly, and asserts
-//! extrinsic metadata (content type, file name) as ordinary facts on
-//! that entity using the `tonk:blob` concept's attributes
-//! (`xyz.tonk.blob/content-type`, `xyz.tonk.blob/name`) from the
-//! standard library. `cat` reads a blob's bytes back out by
-//! reference. `ls` enumerates those same metadata facts (see [`ls`]).
+//! extrinsic metadata (media type, file name) as ordinary facts on
+//! that entity using the standard library's `tonk:asset` attributes
+//! (`tonk.dialog.asset/media-type`, `tonk.dialog.asset/name`). `cat`
+//! reads a blob's bytes back out by reference. `ls` enumerates those
+//! metadata facts, and the legacy `xyz.tonk.blob/*` ones blobs were
+//! described with before (see [`ls`]).
 
 use std::path::Path;
 
@@ -154,8 +155,8 @@ impl Included {
     }
 }
 
-/// Assert an included blob on `transaction`, which stores its bytes when
-/// the transaction commits, along with the content type and name [`add`]
+/// Assert an included asset on `transaction`, which stores its bytes when
+/// the transaction commits, along with the media type and name [`add`]
 /// asserts, so the seeded media view renders it.
 pub fn describe<B>(
     transaction: dialog_repository::Transaction<B>,
@@ -164,7 +165,7 @@ pub fn describe<B>(
     let entity = blob.entity();
     transaction
         .assert(blob.asset.clone())
-        .assert(ContentType::of(entity.clone()).is(blob.content_type.clone()))
+        .assert(MediaType::of(entity.clone()).is(blob.content_type.clone()))
         .assert(Name::of(entity).is(blob.name.clone()))
 }
 
@@ -222,8 +223,8 @@ fn file_name(path: &Path) -> Option<String> {
 /// twice yields the same `blob:<hash>` entity both times.
 ///
 /// `content_type` overrides the extension-inferred MIME type.
-/// Asserts `xyz.tonk.blob/content-type` (always) and
-/// `xyz.tonk.blob/name` (always; defaults to the entity string when
+/// Asserts `tonk.dialog.asset/media-type` (always) and
+/// `tonk.dialog.asset/name` (always; defaults to the entity string when
 /// `path` has no file name) on the blob entity in one transaction.
 ///
 /// Commits but does not sync. Callers that want the pull-before /
@@ -275,7 +276,7 @@ pub async fn add(
     let tx = session
         .handle()
         .transaction()
-        .assert(ContentType::of(entity.clone()).is(content_type.clone()))
+        .assert(MediaType::of(entity.clone()).is(content_type.clone()))
         .assert(Name::of(entity.clone()).is(name.unwrap_or_else(|| entity.to_string())));
     tx.commit()
         .publish()
@@ -365,10 +366,12 @@ pub struct LsRow {
 /// Fact-driven, not index-driven. The dialog-db pin's blob API is
 /// entity-keyed (read and write by `blob:<hash>`) and exposes no way
 /// to walk the blobs a branch holds, so this reads the other half of
-/// what [`add`] wrote: the `xyz.tonk.blob/content-type` and
-/// `xyz.tonk.blob/name` claims on the blob entity. Every ingest path
-/// that means a blob to be found again asserts them — [`add`] here,
-/// and the worker's upload route in the browser.
+/// what [`add`] wrote: the `tonk.dialog.asset/media-type` and
+/// `tonk.dialog.asset/name` claims on the blob entity, or the legacy
+/// `xyz.tonk.blob/content-type` and `xyz.tonk.blob/name` ones. Every
+/// ingest path that means a blob to be found again asserts them —
+/// [`add`] here, `!include/asset`, and the worker's upload route in
+/// the browser.
 ///
 /// Two consequences worth knowing. Bytes attached without metadata
 /// (see [`attach`], which deployment uses) are invisible to this
@@ -384,12 +387,25 @@ pub async fn ls(site: &TonkSite) -> Result<Vec<LsRow>, BlobError> {
         .branch()
         .await
         .map_err(|e| BlobError::Site(format!("acquire branch: {e}")))?;
-    let content_types = claims_by_entity(site, &session, ContentType::the())
+    // Assets written by this release carry `tonk.dialog.asset/*`; older
+    // ones, and those a template writes itself, carry `xyz.tonk.blob/*`.
+    // Read both, the current attribute winning where an asset has both.
+    let mut content_types = claims_by_entity(site, &session, legacy::ContentType::the())
         .await
         .map_err(|e| BlobError::Site(format!("content-type enumeration: {e}")))?;
-    let names = claims_by_entity(site, &session, Name::the())
+    content_types.extend(
+        claims_by_entity(site, &session, MediaType::the())
+            .await
+            .map_err(|e| BlobError::Site(format!("media-type enumeration: {e}")))?,
+    );
+    let mut names = claims_by_entity(site, &session, legacy::Name::the())
         .await
         .map_err(|e| BlobError::Site(format!("name enumeration: {e}")))?;
+    names.extend(
+        claims_by_entity(site, &session, Name::the())
+            .await
+            .map_err(|e| BlobError::Site(format!("name enumeration: {e}")))?,
+    );
 
     // A blob is listed if it carries either fact: `add` writes both,
     // but a hand-authored claim need not, and a half-described blob is
@@ -447,17 +463,35 @@ async fn claims_by_entity(
         .collect())
 }
 
-/// MIME type of a blob's content. Matches the standard library's
-/// `tonk:blob` concept (`xyz.tonk.blob/content-type`).
+/// Media type of an asset's content. Matches the standard library's
+/// `tonk:asset` concept (`tonk.dialog.asset/media-type`).
 #[derive(Attribute, Clone)]
-#[domain("xyz.tonk.blob")]
-struct ContentType(String);
+#[domain("tonk.dialog.asset")]
+struct MediaType(String);
 
-/// Human-readable file name of a blob (optional). Matches the
-/// standard library's `tonk:blob` concept (`xyz.tonk.blob/name`).
+/// Human-readable file name of an asset. Matches the standard
+/// library's `tonk:asset` concept (`tonk.dialog.asset/name`).
 #[derive(Attribute, Clone)]
-#[domain("xyz.tonk.blob")]
+#[domain("tonk.dialog.asset")]
 struct Name(String);
+
+/// The attributes blobs were described with before `tonk:asset`: the
+/// standard library's `tonk:blob` concept. Nothing here writes them any
+/// more, but blobs recorded with them, and templates that still write
+/// them, are read alongside the current ones.
+mod legacy {
+    use dialog_query::Attribute;
+
+    /// MIME type of a blob's content (`xyz.tonk.blob/content-type`).
+    #[derive(Attribute, Clone)]
+    #[domain("xyz.tonk.blob")]
+    pub(super) struct ContentType(String);
+
+    /// File name of a blob (`xyz.tonk.blob/name`).
+    #[derive(Attribute, Clone)]
+    #[domain("xyz.tonk.blob")]
+    pub(super) struct Name(String);
+}
 
 #[cfg(test)]
 mod tests {
@@ -470,7 +504,12 @@ mod tests {
     /// needs to change — not this test.
     #[test]
     fn derived_attribute_uris_match_the_standard_library() {
-        assert_eq!(ContentType::the().to_string(), "xyz.tonk.blob/content-type");
-        assert_eq!(Name::the().to_string(), "xyz.tonk.blob/name");
+        assert_eq!(MediaType::the().to_string(), "tonk.dialog.asset/media-type");
+        assert_eq!(Name::the().to_string(), "tonk.dialog.asset/name");
+        assert_eq!(
+            legacy::ContentType::the().to_string(),
+            "xyz.tonk.blob/content-type"
+        );
+        assert_eq!(legacy::Name::the().to_string(), "xyz.tonk.blob/name");
     }
 }

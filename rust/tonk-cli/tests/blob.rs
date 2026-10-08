@@ -187,3 +187,136 @@ async fn it_lists_nothing_on_a_branch_with_no_blobs() -> Result<()> {
     assert!(blob::ls(&test.site).await?.is_empty());
     Ok(())
 }
+
+/// Blobs described with the legacy `xyz.tonk.blob/*` attributes and
+/// assets described with `tonk.dialog.asset/*` are one population: each
+/// is listed, and each answers to both the `blob` and `asset` concepts,
+/// so views written against either render both.
+mod when_assets_and_legacy_blobs_meet {
+    use super::*;
+    use dialog_query::the;
+
+    /// Attach bytes and describe them the way blobs were before
+    /// `tonk:asset`, as templates that write `tonk:blob` still do.
+    async fn legacy_blob(test: &TestSite) -> Result<String> {
+        let file = test.parent.join("legacy.png");
+        tokio::fs::write(&file, b"legacy blob bytes").await?;
+        let attached = blob::attach(&test.site, "main", &file).await?;
+        test.site
+            .branch()
+            .await?
+            .handle()
+            .transaction()
+            .assert(
+                the!("xyz.tonk.blob/content-type")
+                    .of(attached.entity.clone())
+                    .is("image/png".to_owned()),
+            )
+            .assert(
+                the!("xyz.tonk.blob/name")
+                    .of(attached.entity.clone())
+                    .is("legacy.png".to_owned()),
+            )
+            .commit()
+            .publish()
+            .perform(&test.site.operator)
+            .await?;
+        Ok(attached.entity.to_string())
+    }
+
+    /// The current values of `attribute` on `entity`, read straight off
+    /// the branch rather than through a concept, which the rules would
+    /// complete.
+    async fn claims(
+        test: &TestSite,
+        attribute: &str,
+        entity: &dialog_artifacts::Entity,
+    ) -> Result<Vec<String>> {
+        use futures_util::StreamExt as _;
+        let session = test.site.branch().await?;
+        let stream = session
+            .handle()
+            .claims()
+            .select(
+                dialog_artifacts::ArtifactSelector::new()
+                    .the(attribute.parse()?)
+                    .of(entity.clone()),
+            )
+            .perform(&test.site.operator)
+            .await?;
+        tokio::pin!(stream);
+        let mut values = Vec::new();
+        while let Some(artifact) = stream.next().await {
+            if let Ok(dialog_artifacts::Value::String(value)) = artifact?.value() {
+                values.push(value);
+            }
+        }
+        Ok(values)
+    }
+
+    async fn matches(test: &TestSite, query: &str, entity: &str) -> Result<bool> {
+        let out = test.eval_inline(query).await?;
+        Ok(out.stdout.contains(entity))
+    }
+
+    const AS_ASSET: &str = "asset:\n  this: ?a\n  media-type: ?type\n  name: ?name\n";
+    const AS_BLOB: &str = "blob:\n  this: ?b\n  content-type: ?type\n  name: ?name\n";
+
+    #[dialog_common::test]
+    async fn a_legacy_blob_is_an_asset_and_still_a_blob() -> Result<()> {
+        let test = TestSite::new().await?;
+        let entity = legacy_blob(&test).await?;
+
+        assert!(
+            matches(&test, AS_BLOB, &entity).await?,
+            "unchanged as a blob"
+        );
+        assert!(
+            matches(&test, AS_ASSET, &entity).await?,
+            "and readable as an asset"
+        );
+
+        let rows = blob::ls(&test.site).await?;
+        let row = rows
+            .iter()
+            .find(|row| row.entity.as_str() == entity)
+            .expect("a legacy blob is listed");
+        assert_eq!(row.content_type.as_deref(), Some("image/png"));
+        assert_eq!(row.name.as_deref(), Some("legacy.png"));
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn an_added_asset_is_recorded_once_and_is_a_blob_too() -> Result<()> {
+        let test = TestSite::new().await?;
+        let file = test.parent.join("new.png");
+        tokio::fs::write(&file, b"new asset bytes").await?;
+        let added = blob::add(&test.site, &file, None).await?;
+        let entity = added.entity.to_string();
+
+        assert!(
+            matches(&test, AS_ASSET, &entity).await?,
+            "described as an asset"
+        );
+        assert!(
+            matches(&test, AS_BLOB, &entity).await?,
+            "views written against `blob` see it"
+        );
+        assert!(
+            claims(&test, "xyz.tonk.blob/content-type", &added.entity)
+                .await?
+                .is_empty(),
+            "nothing writes the legacy media type any more"
+        );
+        assert!(
+            claims(&test, "xyz.tonk.blob/name", &added.entity)
+                .await?
+                .is_empty()
+        );
+        assert_eq!(
+            claims(&test, "tonk.dialog.asset/media-type", &added.entity).await?,
+            vec!["image/png".to_owned()]
+        );
+        Ok(())
+    }
+}
