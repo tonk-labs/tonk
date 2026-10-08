@@ -1,8 +1,8 @@
-//! `tonk eval <DIR>`: every notation document under a directory is
-//! evaluated in path order as one commit, an unchanged directory commits
-//! nothing, `!include/blob` stores referenced files as blobs in that
-//! commit, and the push after the write pulls and pushes again when
-//! another writer moved the upstream.
+//! `tonk eval` with several files: they are evaluated in the order given
+//! as one commit, a set of unchanged files commits nothing,
+//! `!include/blob` stores referenced files as blobs in that commit, and
+//! the push after the write pulls and pushes again when another writer
+//! moved the upstream.
 
 mod common;
 
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use dialog_query::the;
 use dialog_repository::Revision;
-use tonk_cli::auto_sync::{self, WriteSession};
+use tonk_cli::auto_sync::WriteSession;
 use tonk_cli::eval::{self, EvalError, Options, Outcome, Source};
 use tonk_cli::{blob, sync};
 
@@ -61,15 +61,26 @@ fn site(test: &TestSite) -> Result<PathBuf> {
     Ok(root)
 }
 
-/// Evaluate `root` the way `tonk eval <DIR>` does, syncing around it.
-async fn publish(test: &TestSite, root: &Path) -> Result<Outcome, EvalError> {
-    auto_sync::run_eval(
-        &test.site,
-        Source::File(root.to_path_buf()),
-        Options::default(),
-        true,
-    )
-    .await
+/// The site's documents, schema first, then every page by name: the
+/// order a caller such as `tonk eval 00-schema.yaml pages/*.yaml` gives.
+fn documents(root: &Path) -> Result<Vec<Source>> {
+    let mut pages: Vec<_> = std::fs::read_dir(root.join("pages"))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<_, _>>()?;
+    pages.sort();
+    Ok(std::iter::once(root.join("00-schema.yaml"))
+        .chain(pages)
+        .map(Source::File)
+        .collect())
+}
+
+/// Evaluate the site's documents the way `tonk eval` does with several
+/// paths, syncing around the commit.
+async fn publish(test: &TestSite, root: &Path) -> Result<Outcome> {
+    let session = WriteSession::begin(&test.site, true).await;
+    let outcome = eval::run_documents(&test.site, documents(root)?, Options::default()).await?;
+    session.finish(outcome.committed).await;
+    Ok(outcome)
 }
 
 /// Wire `main`'s upstream to a sibling branch in the same repo, the
@@ -104,30 +115,8 @@ async fn local_revision(test: &TestSite) -> Result<Option<Revision>> {
     Ok(test.site.branch().await?.handle().revision())
 }
 
-mod when_evaluating_a_directory {
+mod when_evaluating_several_documents {
     use super::*;
-
-    #[dialog_common::test]
-    async fn it_finds_documents_in_path_order_skipping_hidden_entries() -> Result<()> {
-        let test = TestSite::new().await?;
-        let root = site(&test)?;
-        std::fs::create_dir_all(root.join(".github"))?;
-        std::fs::write(root.join(".github/ci.yml"), "not: notation\n")?;
-        std::fs::write(root.join("README.md"), "not notation either")?;
-
-        let relative: Vec<_> = eval::directory_documents(&root)?
-            .into_iter()
-            .map(|path| path.strip_prefix(&root).unwrap().to_path_buf())
-            .collect();
-        assert_eq!(
-            relative,
-            vec![
-                PathBuf::from("00-schema.yaml"),
-                PathBuf::from("pages/home.yaml")
-            ]
-        );
-        Ok(())
-    }
 
     /// The page uses a concept the schema document declares, which only
     /// resolves because both are evaluated in one transaction.
@@ -164,6 +153,23 @@ mod when_evaluating_a_directory {
         Ok(())
     }
 
+    /// Order is the caller's: a page given before the schema that
+    /// declares its concept cannot resolve it.
+    #[dialog_common::test]
+    async fn it_evaluates_documents_in_the_order_given() -> Result<()> {
+        let test = TestSite::new().await?;
+        let root = site(&test)?;
+        let mut reversed = documents(&root)?;
+        reversed.reverse();
+
+        let error = eval::run_documents(&test.site, reversed, Options::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EvalError::Analyze(_)), "{error}");
+        assert!(error.to_string().contains("home.yaml"), "{error}");
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_stores_included_blobs_with_their_metadata() -> Result<()> {
         let test = TestSite::new().await?;
@@ -184,7 +190,7 @@ mod when_evaluating_a_directory {
     }
 
     #[dialog_common::test]
-    async fn it_commits_nothing_when_the_directory_is_unchanged() -> Result<()> {
+    async fn it_commits_nothing_when_the_documents_are_unchanged() -> Result<()> {
         let test = TestSite::new().await?;
         wire_sibling_upstream(&test).await?;
         let root = site(&test)?;
@@ -234,9 +240,9 @@ mod when_evaluating_a_directory {
         let root = site(&test)?;
         let before = local_revision(&test).await?;
 
-        let outcome = eval::run_against_site(
+        let outcome = eval::run_documents(
             &test.site,
-            Source::File(root),
+            documents(&root)?,
             Options {
                 dry_run: true,
                 ..Options::default()
@@ -264,7 +270,10 @@ mod when_a_document_is_rejected {
         )?;
         let before = local_revision(&test).await?;
 
-        let error = publish(&test, &root).await.unwrap_err();
+        let error = publish(&test, &root)
+            .await
+            .unwrap_err()
+            .downcast::<EvalError>()?;
         assert!(matches!(error, EvalError::Parse(_)), "{error}");
         assert!(error.to_string().contains("broken.yaml"), "{error}");
         assert_eq!(
@@ -285,21 +294,12 @@ mod when_a_document_is_rejected {
             "nonesuch!:\n  this: id:x\n  title: X\n",
         )?;
 
-        let error = publish(&test, &root).await.unwrap_err();
+        let error = publish(&test, &root)
+            .await
+            .unwrap_err()
+            .downcast::<EvalError>()?;
         assert!(matches!(error, EvalError::Analyze(_)), "{error}");
         assert!(error.to_string().contains("unknown.yaml"), "{error}");
-        Ok(())
-    }
-
-    #[dialog_common::test]
-    async fn it_refuses_a_directory_without_documents() -> Result<()> {
-        let test = TestSite::new().await?;
-        let root = test.parent.join("empty");
-        std::fs::create_dir_all(&root)?;
-        std::fs::write(root.join("notes.md"), "no notation here")?;
-
-        let error = publish(&test, &root).await.unwrap_err();
-        assert!(matches!(error, EvalError::Empty(_)), "{error}");
         Ok(())
     }
 }
@@ -336,7 +336,7 @@ mod when_the_upstream_moves_during_a_write {
             PAGE.replace("Home", "Welcome"),
         )?;
         let outcome =
-            eval::run_against_site(&test.site, Source::File(root), Options::default()).await?;
+            eval::run_documents(&test.site, documents(&root)?, Options::default()).await?;
         assert!(
             matches!(
                 sync::push(&test.site).await,

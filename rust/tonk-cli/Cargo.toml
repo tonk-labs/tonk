@@ -99,8 +99,8 @@ name = "include"
 path = "tests/include.rs"
 
 [[test]]
-name = "eval_directory"
-path = "tests/eval_directory.rs"
+name = "eval_documents"
+path = "tests/eval_documents.rs"
 
 [[test]]
 name = "authoring"

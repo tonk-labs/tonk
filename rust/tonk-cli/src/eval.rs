@@ -1,4 +1,4 @@
-//! `tonk eval` — read a notation document, or a directory of them,
+//! `tonk eval` — read a notation document, or several as one commit,
 //! evaluate it against the local site, and render the response.
 
 use std::path::PathBuf;
@@ -20,7 +20,7 @@ pub enum Source {
     /// Inline string from `-c "<doc>"`.
     Inline(String),
     /// File on disk — the path becomes the diagnostic source
-    /// label. A directory stands for every document under it.
+    /// label.
     File(PathBuf),
     /// Piped stdin or `-`. Diagnostics are labelled `<stdin>`.
     Stdin,
@@ -58,18 +58,6 @@ impl Source {
                 Ok(Url::parse(INLINE_LOCATION).expect("INLINE_LOCATION is a valid URI"))
             }
             Source::Library(_) => Ok(tonk_library::location("core.yaml")),
-        }
-    }
-
-    /// The documents this source stands for: a directory's documents
-    /// (see [`directory_documents`]), or the source itself.
-    fn documents(self) -> Result<Vec<Source>, EvalError> {
-        match self {
-            Source::File(path) if path.is_dir() => Ok(directory_documents(&path)?
-                .into_iter()
-                .map(Source::File)
-                .collect()),
-            source => Ok(vec![source]),
         }
     }
 
@@ -172,20 +160,26 @@ impl crate::Coded for EvalError {
 /// Evaluate `source` against an already-opened [`TonkSite`].
 /// Lets integration tests reuse a single site across many
 /// `eval` calls without paying the open cost each time.
-///
-/// A [`Source::File`] naming a directory evaluates every notation
-/// document under it (see [`directory_documents`]) into one transaction
-/// and one commit: a later document sees what an earlier one declared,
-/// and a rejected document leaves nothing committed. The response
-/// covers all of them.
 pub async fn run_against_site(
     site: &TonkSite,
     source: Source,
     options: Options,
 ) -> Result<Outcome, EvalError> {
-    let several = matches!(&source, Source::File(path) if path.is_dir());
+    run_documents(site, vec![source], options).await
+}
+
+/// Evaluate `sources` in the order given into one transaction and one
+/// commit: a later document sees what an earlier one declared, and a
+/// rejected document leaves nothing committed. The response covers all
+/// of them; `--home` applies after the last.
+pub async fn run_documents(
+    site: &TonkSite,
+    sources: Vec<Source>,
+    options: Options,
+) -> Result<Outcome, EvalError> {
+    let several = sources.len() > 1;
     let mut documents = Vec::new();
-    for source in source.documents()? {
+    for source in sources {
         documents.push((source.label(), source.location()?, source.read().await?));
     }
     if let Some(model) = &options.home
@@ -306,45 +300,6 @@ pub async fn run_against_site(
         response,
         committed,
     })
-}
-
-/// The notation documents under `root`, in the order a directory is
-/// evaluated: sorted by relative path, so `00-schema.yaml` precedes the
-/// documents that use its concepts. Every `*.yaml` / `*.yml` file counts;
-/// hidden files and directories (`.git`, `.github`) are skipped, and so
-/// is anything else, which documents can still `!include`.
-pub fn directory_documents(root: &std::path::Path) -> Result<Vec<PathBuf>, EvalError> {
-    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) -> Result<(), EvalError> {
-        let io =
-            |e: std::io::Error| EvalError::Io(format!("failed to read {}: {e}", dir.display()));
-        for entry in std::fs::read_dir(dir).map_err(io)? {
-            let entry = entry.map_err(io)?;
-            if entry.file_name().to_string_lossy().starts_with('.') {
-                continue;
-            }
-            let path = entry.path();
-            if entry.file_type().map_err(io)?.is_dir() {
-                walk(&path, out)?;
-            } else if path
-                .extension()
-                .is_some_and(|extension| extension == "yaml" || extension == "yml")
-            {
-                out.push(path);
-            }
-        }
-        Ok(())
-    }
-
-    let mut found = Vec::new();
-    walk(root, &mut found)?;
-    if found.is_empty() {
-        return Err(EvalError::Empty(format!(
-            "{}: no *.yaml or *.yml documents",
-            root.display()
-        )));
-    }
-    found.sort();
-    Ok(found)
 }
 
 /// Replace every `!include` in `syntax` with what it names. Returns the
