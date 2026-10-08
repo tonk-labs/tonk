@@ -1,5 +1,20 @@
 # The browser/CLI account handoff
 
+## Connection approval screen (WEB-10)
+
+The shared `/settings/link` approval screen supports Tonk desktop, CLI, and MCP
+connections. It shows the connection name and the granting account's registered
+email, with an explicit full-account access warning and decline / approve with
+passkey actions. Device DIDs and callback destinations are not displayed; their
+validation and delivery behavior is unchanged. Details stack on narrow screens.
+
+The refreshed WEB-10 capture is a production-source fixture with sample account
+data, taken from the changes based on `85c2a1599` on 2026-10-08. Desktop light and
+mobile dark previews were inspected. The updated handoff tests compiled; live
+email resolution and passkey delivery were not exercised because the fresh Nix
+test-server build was stopped before browser execution. These appearance checks
+do not mark the handoff journey verified.
+
 ## Current CLI access workflows
 
 The browser exposes two separate actions. **Invite someone** mints an ordinary
