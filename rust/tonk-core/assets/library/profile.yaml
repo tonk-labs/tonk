@@ -1220,6 +1220,49 @@ command!: &tonk/pause-sync
     time: pause-sync/time
     space: pause-sync/space
 
+# Publishing a space, from the bar or the palette: the worker's
+# `space/publish` delegates reads of the space to the public principal and
+# leaves the ticket a visitor to its bare address claims; `space/unpublish`
+# takes the ticket back and revokes the delegation. Only someone who runs
+# the space may do either; the worker refuses anyone else.
+attribute!: &publish/space
+  description: The space to make readable by anyone.
+  the: xyz.tonk.publish/space
+  as: entity
+  role: object
+
+attribute!: &publish/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.publish/time
+  as: float
+  role: now
+
+command!: &space/publish
+  description: Make a space readable by anyone who opens its address.
+  action: ["make space public", "publish space"]
+  with:
+    space: publish/space
+    time: publish/time
+
+attribute!: &unpublish/space
+  description: The space to make private again.
+  the: xyz.tonk.unpublish/space
+  as: entity
+  role: object
+
+attribute!: &unpublish/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.unpublish/time
+  as: float
+  role: now
+
+command!: &space/unpublish
+  description: Make a published space private again, and stop its readers reading.
+  action: ["make space private", "unpublish space"]
+  with:
+    space: unpublish/space
+    time: unpublish/time
+
 attribute!: &home/time
   description: The moment it was asked; makes each dispatch a distinct transient.
   the: xyz.tonk.command.home/time
@@ -5971,6 +6014,24 @@ rule!:
   when:
     - assert: intent
       where: { this: ?this, command: tonk/pause-sync }
+    - assert: space
+      where: { this: ?space }
+
+rule!:
+  description: A space on this account is one "make space public" from the palette can name.
+  assert: publish/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: space/publish }
+    - assert: space
+      where: { this: ?space }
+
+rule!:
+  description: A space on this account is one "make space private" from the palette can name.
+  assert: unpublish/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: space/unpublish }
     - assert: space
       where: { this: ?space }
 
