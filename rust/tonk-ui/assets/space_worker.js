@@ -950,6 +950,21 @@ if (PROFILE) {
         return { status: response.status, body: await response.text() };
     };
 
+    // The Rust worker opens a subscription with a space's own worker
+    // through this: the answer's body stays open, and cancelling it ends
+    // the subscription there.
+    self.tonkSubscribeSpace = async (space, path, body) => {
+        const response = await askSpace(
+            new Request(new URL(path, self.location.origin), {
+                method: "POST",
+                headers: { "content-type": "application/json", accept: "text/event-stream" },
+                body,
+            }),
+            spaceKey(space),
+        );
+        return { status: response.status, body: response.body };
+    };
+
     // The Rust worker says through this that what a space's worker was told has
     // changed (where the space syncs, which account this profile acts for):
     // of one space, or of all of them.

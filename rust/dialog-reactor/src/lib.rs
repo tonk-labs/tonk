@@ -33,6 +33,7 @@ mod import;
 mod intent;
 pub use intent::{Interpretation, interpret};
 mod overlay;
+mod peer;
 mod pull;
 mod push;
 mod query;
@@ -57,6 +58,10 @@ pub use export::{Export, ExportError};
 pub use formula::{FormulaError, resolve_formula};
 pub use import::{Import, ImportError};
 pub use overlay::{OverlayBuilder, OverlaySnapshot, OverlayWrite};
+pub use peer::{
+    PeerBranchReference, PeerCommit, PeerError, PeerFrames, PeerProvider, PeerQuery,
+    PeerRepositoryReference, PeerSubscribe, PeerTransaction,
+};
 pub use pull::Pull;
 pub use push::Push;
 pub use query::QueryEffect;

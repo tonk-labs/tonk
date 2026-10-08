@@ -692,13 +692,9 @@ async fn migrate_membership_rows(
                 "previous": onboarding.to_string(),
                 "account": root.to_string()
             }),
-        );
-        return super::space_reach::run(
-            space.repo_key(),
-            super::space_reach::Surface::Space,
-            &claim,
-        )
-        .await;
+        )?;
+        let peer = super::space_reach::peer(space.repo_key());
+        return super::space_reach::run(peer, peer.content(), claim).await;
     }
     move_membership_rows(tonk, space, onboarding, root).await
 }

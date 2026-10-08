@@ -25,6 +25,7 @@ const SPACE = "did:key:zSpace";
 // `incumbent` is whether another worker is the active one as this one starts.
 function site({
   host = "bspace.tonk.test", routes = {}, failing = false, holds = true, offline = false, incumbent = false,
+  lingers = false,
 } = {}) {
   // How often the worker asked the browser to look for a newer one.
   const looked = { count: 0 };
@@ -104,9 +105,12 @@ function site({
       },
     },
     URL, Request, Response, Headers, TextEncoder, TextDecoder, MessageChannel, Promise,
-    Uint8Array, crypto,
+    Uint8Array, ReadableStream, crypto,
     console: { log() {}, warn() {}, error() {} },
-    setTimeout, clearTimeout,
+    // With `lingers`, a timer the worker leaves running (how long it keeps
+    // an idle space) does not keep the test waiting for it.
+    setTimeout: lingers ? (...timed) => setTimeout(...timed).unref() : setTimeout,
+    clearTimeout,
     fetch: network,
     caches: {
       open,
@@ -192,7 +196,11 @@ function site({
     listeners[type]({ waitUntil: (promise) => void pending.push(promise) });
     await Promise.all(pending);
   };
-  return { answer, admit, asked, connect, stages, looked, activated, lifecycle, stores };
+  // A page tells the worker something, handing over `ports`.
+  const message = (data, ports = []) => listeners.message({ data, ports, waitUntil() {} });
+  return {
+    answer, admit, asked, connect, stages, looked, activated, lifecycle, stores, message, worker: self,
+  };
 }
 
 const page = { mode: "navigate" };
@@ -459,4 +467,40 @@ test("a space's Rust worker is told it is one, so its profile is given no accoun
   await connect(host);
 
   assert.deepEqual(JSON.parse(JSON.stringify(activated)), [["dev", [], true]]);
+});
+
+test("the Rust worker opens a subscription with a space's worker, and ends it by letting go", async () => {
+  const { worker, message } = site({ host: "profile.tonk.test", lingers: true });
+  const sent = [];
+  let heard;
+  const port = {
+    onmessage: null,
+    postMessage(said) {
+      sent.push(said);
+      if (typeof said.ping === "number") queueMicrotask(() => port.onmessage({ data: { pong: said.ping } }));
+      if (said.request) heard?.(said);
+    },
+  };
+  message({ type: "space-port", repo: SPACE, branch: "main" }, [port]);
+  const path = `/api/repository/${SPACE}/branch/main/query`;
+
+  const passed = new Promise((resolve) => (heard = resolve));
+  const opening = worker.tonkSubscribeSpace(SPACE, path, "{}");
+  const { call, request } = await passed;
+  port.onmessage({ data: { call, head: { status: 200, headers: [["content-type", "text/event-stream"]] } } });
+  const { status, body } = await opening;
+  port.onmessage({ data: { call, chunk: new TextEncoder().encode("data: 1\n\n").buffer } });
+  const reader = body.getReader();
+  const first = await reader.read();
+  await reader.cancel();
+
+  assert.equal(request.method, "POST");
+  assert.equal(request.path, path);
+  assert.ok(
+    request.headers.some(([name, value]) => name === "accept" && value === "text/event-stream"),
+    "it asks for the answer to stay open",
+  );
+  assert.equal(status, 200);
+  assert.equal(new TextDecoder().decode(first.value), "data: 1\n\n");
+  assert.ok(sent.some((said) => said.cancel === call), "the space's worker is told the subscription ended");
 });

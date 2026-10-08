@@ -611,11 +611,13 @@ async fn confirmation_elsewhere(
     use tonk_worker_api::Conclusion;
 
     const CONFIRMED: &str = "Agent connection confirmed";
-    let path = format!("/api/repository/{}/branch/main/query", group.repo);
+    let peer = super::space_reach::peer(&group.repo);
     let ask = async |query: ConceptQuery| -> Result<Vec<Conclusion>, TonkWorkerError> {
-        let body = serde_json::to_value(WireQuery::from(&query)).map_err(failure)?;
-        let rows = super::space_reach::ask(&group.repo, "POST", &path, Some(&body)).await?;
-        serde_json::from_value(rows).map_err(failure)
+        peer.content()
+            .query(WireQuery::from(&query))
+            .perform(&peer)
+            .await
+            .map_err(failure)
     };
     let entity: dialog_artifacts::Entity = format!("id:tonk:agent-connection:{}", group.id)
         .parse()

@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
+use tonk_schema::claim::SourceClaim;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
     Branch as MetaBranch, Invitation, InvitedVia, MemberName, MemberRole, Membership, Remote,
@@ -41,7 +42,7 @@ use url::Url;
 use zeroize::Zeroizing;
 
 use super::AppState;
-use super::space_reach::{self, Surface};
+use super::space_reach;
 
 mod duplication;
 use crate::reactor::BranchReference;
@@ -2354,10 +2355,11 @@ async fn run_invite(
             None => String::new(),
         };
         drop(tonk);
+        let peer = space_reach::peer(repo_name);
         space_reach::run(
-            repo_name,
-            Surface::Space,
-            &record_invite_claim(&proof, &union, &link, &seed),
+            peer,
+            peer.content(),
+            record_invite_claim(&proof, &union, &link, &seed)?,
         )
         .await?;
         // A share is a promise the recipient can pull. The space's worker
@@ -2664,7 +2666,12 @@ async fn record_invite(
 /// worker to run on the space's branch.
 ///
 /// [`RecordInvite`]: tonk_schema::command::RecordInvite
-fn record_invite_claim(proof: &str, union: &str, link: &str, seed: &str) -> serde_json::Value {
+fn record_invite_claim(
+    proof: &str,
+    union: &str,
+    link: &str,
+    seed: &str,
+) -> Result<SourceClaim, TonkWorkerError> {
     space_reach::command(
         &[
             ("proof", "xyz.tonk.command.record-invite/proof", "Text"),
@@ -2928,7 +2935,9 @@ impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::rou
                 ],
                 serde_json::json!({ "time": command.time.0, "space": repo }),
             );
-            if let Err(error) = space_reach::run(&repo, Surface::Profile, &claim).await {
+            let peer = space_reach::peer(&repo);
+            let paused = async { space_reach::run(peer, peer.profile(), claim?).await };
+            if let Err(error) = paused.await {
                 log!("PauseSync for repo '{}' failed: {}", repo, error);
             }
             return;
@@ -3114,7 +3123,10 @@ async fn run_rename_repository(
     // on the space's branch. Only the directory below is this worker's.
     let elsewhere = env.from_profile() && env.state().read().await.spaces_elsewhere();
     if elsewhere {
-        space_reach::run(repo, Surface::Space, &rename_claim(repo, name))
+        let peer = space_reach::peer(repo);
+        let renamed =
+            async { space_reach::run(peer, peer.content(), rename_claim(repo, name)?).await };
+        renamed
             .await
             .map_err(|e| RepositoryError::Internal(e.to_string()))?;
     }
@@ -3177,7 +3189,7 @@ async fn run_rename_repository(
 /// own worker to run on the space's branch.
 ///
 /// [`RenameRepository`]: tonk_schema::command::RenameRepository
-fn rename_claim(space: &str, name: &str) -> serde_json::Value {
+fn rename_claim(space: &str, name: &str) -> Result<SourceClaim, TonkWorkerError> {
     space_reach::command(
         &[
             ("name", "xyz.tonk.command.rename-repository/name", "Text"),
@@ -11563,7 +11575,10 @@ mod tests {
                     .method("POST")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        super::rename_claim(&key, "forwarded-garden").to_string(),
+                        serde_json::json!({
+                            "claims": [super::rename_claim(&key, "forwarded-garden").unwrap()]
+                        })
+                        .to_string(),
                     ))
                     .unwrap(),
             )
@@ -11636,7 +11651,9 @@ mod tests {
                 .unwrap();
             bs58::encode(delegation.into_chain().to_bytes().unwrap()).into_string()
         };
-        let claim = super::record_invite_claim(&proof, "", "https://tonk.test/join#seed", "seed");
+        let claim =
+            super::record_invite_claim(&proof, "", "https://tonk.test/join#seed", "seed").unwrap();
+        let claim = serde_json::json!({ "claims": [claim] });
         let response = app
             .oneshot(
                 Request::builder()
@@ -11725,7 +11742,9 @@ mod tests {
                 "previous": founder.to_string(),
                 "account": signed_in.to_string()
             }),
-        );
+        )
+        .unwrap();
+        let claim = serde_json::json!({ "claims": [claim] });
         let response = app
             .oneshot(
                 Request::builder()
