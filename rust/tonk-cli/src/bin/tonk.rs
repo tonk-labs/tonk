@@ -265,6 +265,10 @@ enum Command {
     /// The escape hatch for anything the verbs don't cover: rules,
     /// multi-statement documents, joins, retractions inside
     /// assertions. `tonk help notation` documents the grammar.
+    ///
+    /// Given several files, evaluates them in order as one commit, so a
+    /// set of documents kept in git can be re-run on every change: facts
+    /// that already hold commit nothing.
     Eval(EvalArgs),
 
     /// Render a view to HTML, headlessly
@@ -348,6 +352,11 @@ enum Command {
         /// Self-reported connection label shown in the issuing account's settings.
         #[arg(long, requires = "url")]
         agent_name: Option<String>,
+        /// Stable installation identity (32 lowercase hex characters)
+        /// instead of a random one, for a setup recreated on every run
+        /// such as CI, so repeated joins confirm one installation.
+        #[arg(long, value_name = "ID", requires = "url", hide = true)]
+        installation: Option<String>,
         /// Trust this Tonk deployment origin for the import.
         /// Overrides TONK_CONNECTION_ORIGIN and must match the signed /ucan/ route.
         #[arg(long, value_name = "ORIGIN", requires = "url")]
@@ -968,7 +977,7 @@ impl WriteArgs {
 
 #[derive(Args, Debug)]
 #[command(
-    after_help = "Examples:\n  tonk eval -c 'person:'\n  tonk eval ./doc.notation\n  cat doc.notation | tonk eval -\n  tonk eval -c 'person:' --json\n  tonk eval ./doc.notation --home todo\n  tonk eval ./doc.notation --no-sync\n  tonk eval ./doc.notation --dry-run"
+    after_help = "Examples:\n  tonk eval -c 'person:'\n  tonk eval ./doc.notation\n  tonk eval schema.yaml posts/*.yaml\n  cat doc.notation | tonk eval -\n  tonk eval -c 'person:' --json\n  tonk eval ./doc.notation --home todo\n  tonk eval ./doc.notation --no-sync\n  tonk eval ./doc.notation --dry-run"
 )]
 struct EvalArgs {
     /// Inline document. Mutually exclusive with the positional
@@ -986,9 +995,11 @@ struct EvalArgs {
     quiet: bool,
 
     /// Path to a notation document, or `-` to read from stdin.
-    /// Omit to read from a piped stdin.
+    /// Omit to read from a piped stdin. Several paths are evaluated
+    /// in the order given as one commit: a later document sees what
+    /// an earlier one declared, and a rejected one commits nothing.
     #[arg(value_name = "PATH")]
-    path: Option<String>,
+    path: Vec<String>,
 
     /// Atomically replace the current home with this concept's directory.
     #[arg(long, value_name = "CONCEPT")]
@@ -1184,11 +1195,12 @@ async fn main() {
     if let (Some(recorder), Command::Eval(args)) = (recorder.as_mut(), &command) {
         recorder.property(
             "source",
-            match (&args.command, &args.path) {
+            match (&args.command, args.path.as_slice()) {
                 (Some(_), _) => "inline",
-                (None, Some(path)) if path == "-" => "stdin",
-                (None, Some(_)) => "file",
-                (None, None) => "stdin",
+                (None, []) => "stdin",
+                (None, [path]) if path == "-" => "stdin",
+                (None, [_]) => "file",
+                (None, _) => "files",
             },
         );
         recorder.property("format", if args.json { "json" } else { "notation" });
@@ -1260,12 +1272,14 @@ async fn main() {
             url,
             name,
             agent_name,
+            installation,
             via,
         } => {
             join_command(
                 url,
                 name,
                 agent_name.as_deref(),
+                installation.as_deref(),
                 via.as_deref(),
                 space.as_deref(),
             )
@@ -1790,7 +1804,7 @@ fn confirm_by_name(name: &str) -> bool {
 }
 
 async fn eval(args: EvalArgs, space: Option<&str>) -> ExitCode {
-    let source = match resolve_source(&args) {
+    let sources = match resolve_source(&args) {
         Ok(s) => s,
         Err(message) => return print_error(message),
     };
@@ -1815,7 +1829,7 @@ async fn eval(args: EvalArgs, space: Option<&str>) -> ExitCode {
     // auto-sync off so a preview can't pull the remote in either.
     let sync = !args.dry_run && auto_sync::enabled(args.no_sync);
     let session = auto_sync::WriteSession::begin(&site, sync).await;
-    match tonk_cli::eval::run_against_site(&site, source, options).await {
+    match tonk_cli::eval::run_documents(&site, sources, options).await {
         Ok(outcome) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(outcome.stdout.as_bytes()) {
@@ -1842,26 +1856,35 @@ async fn eval(args: EvalArgs, space: Option<&str>) -> ExitCode {
 /// because `-c` is a flag and the path is a value, so we check
 /// here). A bare `-` positional means stdin; an absent positional
 /// means read stdin only when it's piped.
-fn resolve_source(args: &EvalArgs) -> Result<Source, String> {
+fn resolve_source(args: &EvalArgs) -> Result<Vec<Source>, String> {
     if let Some(text) = &args.command {
-        if args.path.is_some() {
+        if !args.path.is_empty() {
             return Err("`-c` cannot be combined with a path argument".to_owned());
         }
-        return Ok(Source::Inline(text.clone()));
+        return Ok(vec![Source::Inline(text.clone())]);
     }
 
-    match &args.path {
-        Some(path) if path == "-" => Ok(Source::Stdin),
-        Some(path) => Ok(Source::File(PathBuf::from(path))),
-        None => {
+    match args.path.as_slice() {
+        [only] if only == "-" => Ok(vec![Source::Stdin]),
+        [] => {
             // Reading from a tty would block forever — surface a
             // helpful error instead.
             if std::io::stdin().is_terminal() {
                 Err("no document supplied: pass `-c <doc>`, a file path, or pipe stdin".to_owned())
             } else {
-                Ok(Source::Stdin)
+                Ok(vec![Source::Stdin])
             }
         }
+        paths => paths
+            .iter()
+            .map(|path| {
+                if path == "-" {
+                    Err("`-` (stdin) cannot be combined with file paths".to_owned())
+                } else {
+                    Ok(Source::File(PathBuf::from(path)))
+                }
+            })
+            .collect(),
     }
 }
 
@@ -2562,11 +2585,17 @@ async fn join_command(
     url: Option<String>,
     name: Option<String>,
     agent_name: Option<&str>,
+    installation: Option<&str>,
     via: Option<&str>,
     selected: Option<&str>,
 ) -> ExitCode {
     if let Some(name) = agent_name
         && let Err(error) = tonk_cli::connections::validate_agent_name(name)
+    {
+        return print_failure(error);
+    }
+    if let Some(installation) = installation
+        && let Err(error) = tonk_cli::connections::validate_installation(installation)
     {
         return print_failure(error);
     }
@@ -2579,7 +2608,8 @@ async fn join_command(
             }
             match tonk_cli::join::prepare(&url).await {
                 Ok(prepared) => {
-                    connect_scoped_agent(prepared, name.as_deref(), agent_name, via).await
+                    connect_scoped_agent(prepared, name.as_deref(), agent_name, installation, via)
+                        .await
                 }
                 Err(error) => print_failure(error),
             }
@@ -2801,12 +2831,14 @@ async fn connect_scoped_agent(
     prepared: tonk_cli::join::PreparedAgent,
     requested_name: Option<&str>,
     agent_name: Option<&str>,
+    installation: Option<&str>,
     via: Option<&str>,
 ) -> ExitCode {
     async fn import(
         prepared: &tonk_cli::join::PreparedAgent,
         requested_name: Option<&str>,
         agent_name: Option<&str>,
+        installation: Option<&str>,
         via: Option<&str>,
     ) -> anyhow::Result<(
         tonk_cli::space::SpaceStore,
@@ -2867,7 +2899,12 @@ async fn connect_scoped_agent(
             );
         }
         let installed = tonk_cli::connections::import_at(&root, &validated, store.clone()).await?;
-        tonk_cli::connections::installation_receipt(&root, &binding.id, agent_name)?;
+        tonk_cli::connections::installation_receipt_as(
+            &root,
+            &binding.id,
+            agent_name,
+            installation,
+        )?;
         if let Some(name) = requested_name {
             tonk_cli::handoff::remember_connection_name(&root, name)?;
         }
@@ -2875,7 +2912,7 @@ async fn connect_scoped_agent(
         Ok((store, name, root, installed, cwd))
     }
     let (store, name, root, binding, cwd) =
-        match import(&prepared, requested_name, agent_name, via).await {
+        match import(&prepared, requested_name, agent_name, installation, via).await {
             Ok(imported) => imported,
             Err(error) => return print_failure(error),
         };
@@ -3866,7 +3903,7 @@ mod account_spaces_parser_tests {
         ])
         .expect("copied handoff parses");
         assert!(
-            matches!(cli.command, Some(Command::Join { url: Some(url), name, via, agent_name: None })
+            matches!(cli.command, Some(Command::Join { url: Some(url), name, via, agent_name: None, .. })
             if url == invite
                 && name.as_deref() == Some("my-agent")
                 && via.as_deref() == Some("https://staging.tonk.xyz"))

@@ -2371,6 +2371,90 @@ concept!: &note
         Ok(())
     }
 
+    /// `..: _` with `this:` omitted is refused, and nothing is written.
+    ///
+    /// Regression: the omitted `this:` used to derive a fresh entity
+    /// from the body, so `ticket!: {queue: "writer", ..: _}` asserted
+    /// `queue: "writer"` onto a new, otherwise empty ticket and
+    /// retracted nothing.
+    #[dialog_common::test]
+    async fn it_refuses_a_rest_retraction_without_this_and_writes_nothing() -> anyhow::Result<()> {
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let setup = [
+            r#"concept!: &ticket
+  description: "A ticket filed in a queue"
+  with:
+    title:
+      description: "The ticket's title"
+      the: xyz.test.ticket/title
+      as: text
+    queue:
+      description: "The queue the ticket sits in"
+      the: xyz.test.ticket/queue
+      as: text
+"#,
+            r#"ticket!:
+  this: id:t1
+  title: "First"
+  queue: "writer"
+"#,
+        ];
+        for doc in setup {
+            parse(doc)
+                .syntax
+                .expect("syntax")
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
+                .commit()
+                .publish()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
+        }
+
+        let refused = parse("ticket!:\n  queue: \"writer\"\n  ..: _\n")
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await;
+        assert!(
+            matches!(
+                &refused,
+                Err(EvaluateError::Analyze(err))
+                    if matches!(err.kind, analyzer::AnalyzeErrorKind::RetractionWithoutEntity { .. })
+            ),
+            "expected RetractionWithoutEntity, got {:?}",
+            refused.err()
+        );
+
+        let the: dialog_artifacts::Attribute = "xyz.test.ticket/queue".parse()?;
+        let queues: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::new(
+                Term::Constant(Value::Symbol(the)),
+                Term::<dialog_artifacts::Entity>::var("of"),
+                Term::<dialog_query::Any>::var("is"),
+                Term::blank(),
+                None,
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        let holders: Vec<String> = queues.iter().map(|c| c.of.to_string()).collect();
+        assert_eq!(
+            holders,
+            vec!["id:t1".to_string()],
+            "no fresh ticket was minted and the existing one is untouched"
+        );
+        Ok(())
+    }
+
     /// End-to-end: install concepts + attributes on the branch,
     /// then submit a notation document that declares a `rule!:`
     /// plus a transient `ping!:` assertion. The analyzer lifts

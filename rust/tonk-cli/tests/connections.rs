@@ -625,3 +625,42 @@ fn named_installation_metadata_is_bounded_stable_and_local() -> Result<()> {
     assert!(!saved.contains("credentials") && !saved.contains(first.path().to_str().unwrap()));
     Ok(())
 }
+
+/// A setup recreated from scratch on every run (CI) names its own
+/// installation, so separate imports confirm the same one; once saved, a
+/// different identity is refused like a changed agent name.
+#[test]
+fn a_chosen_installation_is_shared_across_imports_and_kept_on_retry() -> Result<()> {
+    use tonk_cli::connections::installation_receipt_as;
+    let first = tempfile::tempdir()?;
+    let second = tempfile::tempdir()?;
+    let grant = "a".repeat(64);
+    let chosen = "0123456789abcdef0123456789abcdef";
+
+    for invalid in [
+        "",
+        "0123",
+        &"G".repeat(32),
+        &"A".repeat(32),
+        &"a".repeat(33),
+    ] {
+        assert!(installation_receipt_as(first.path(), &grant, None, Some(invalid)).is_err());
+    }
+    assert_eq!(std::fs::read_dir(first.path())?.count(), 0);
+
+    let one = installation_receipt_as(first.path(), &grant, Some("CI"), Some(chosen))?;
+    let other = installation_receipt_as(second.path(), &grant, Some("CI"), Some(chosen))?;
+    assert_eq!(
+        one, other,
+        "two from-scratch imports confirm one installation"
+    );
+    assert_eq!(one.installation, chosen);
+    assert_eq!(
+        installation_receipt_as(first.path(), &grant, None, None)?,
+        one,
+        "a retry without the option keeps the saved identity"
+    );
+    let changed = "fedcba9876543210fedcba9876543210";
+    assert!(installation_receipt_as(first.path(), &grant, None, Some(changed)).is_err());
+    Ok(())
+}
