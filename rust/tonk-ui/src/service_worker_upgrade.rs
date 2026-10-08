@@ -713,7 +713,8 @@ pub(crate) mod tests {
     }
 
     /// The mounted top-level guest's rendered text, once it is non-empty and
-    /// unchanged across two reads.
+    /// unchanged across two reads. The inspector's overlay is left out: it
+    /// mounts on its own time, after the site has settled.
     async fn settled_guest_text(driver: &WebDriver) -> Result<String> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let mut last = String::new();
@@ -723,7 +724,7 @@ pub(crate) mod tests {
                 && let Ok(text) = driver
                     .execute(
                         r#"
-                        const skipped = new Set(["STYLE", "SCRIPT", "TEMPLATE"]);
+                        const skipped = new Set(["STYLE", "SCRIPT", "TEMPLATE", "TONK-INTROSPECT"]);
                         const text = node => [...node.childNodes].map(child =>
                             child.nodeType === Node.TEXT_NODE
                                 ? child.textContent
