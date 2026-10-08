@@ -118,6 +118,38 @@ fn request_client(request: &Request) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
+/// Until when a space's first read re-installs the rules an earlier
+/// dialog release stored (2026-11-15, unix seconds). After it the upgrade
+/// is not attempted; remove [`upgrade_rules_while_migrating`] then.
+const RULE_UPGRADE_UNTIL: u64 = 1_794_700_800;
+
+/// Re-install the rules `branch` stores under an identity an earlier
+/// dialog release gave them, the first time this worker reads the branch
+/// and until [`RULE_UPGRADE_UNTIL`]. Such rules are otherwise inert: no
+/// read finds them and no commit fires them. A failure is logged and
+/// leaves the read to proceed; the next read tries again.
+async fn upgrade_rules_while_migrating(
+    tonk: &crate::worker::TonkState,
+    branch: crate::reactor::BranchReference<'_>,
+) {
+    if crate::session::now() >= RULE_UPGRADE_UNTIL {
+        return;
+    }
+    match branch.upgrade_rules_once(&tonk.operator).await {
+        Ok(Some(upgraded)) if !upgraded.reinstalled.is_empty() => tonk_common::log!(
+            "re-installed {} rule(s) on '{}' under their current identity",
+            upgraded.reinstalled.len(),
+            branch.repository.name()
+        ),
+        Ok(_) => {}
+        Err(error) if is_absence(&error) => {}
+        Err(error) => tonk_common::log!(
+            "rule upgrade on '{}' failed: {error}",
+            branch.repository.name()
+        ),
+    }
+}
+
 /// Shared body for [`query`] and [`query_profile`]. Takes a
 /// [`crate::reactor::BranchReference`] so the URL extraction is the
 /// only difference between the two routes.
@@ -128,6 +160,7 @@ async fn query_on_branch<'a>(
     request: Request,
     client: Option<String>,
 ) -> Result<Response, TonkWorkerError> {
+    upgrade_rules_while_migrating(tonk, branch).await;
     let UrlQuery(params) = UrlQuery::<QueryParams>::try_from_uri(request.uri())
         .map_err(|e| TonkWorkerError::Router(format!("invalid query parameters: {e}")))?;
     let bytes = request
@@ -380,5 +413,91 @@ mod tests {
             reason: "not replicated here".into(),
         };
         assert_eq!(is_absence(&missing_repo), absent(&missing_repo));
+    }
+
+    /// A rule an earlier dialog release stored under an entity that is not
+    /// its identity is inert: no read finds it and no commit fires it. The
+    /// first read of a branch moves it under its identity; a second read
+    /// finds the branch upgraded and reads no rule bodies.
+    ///
+    /// Native only: it needs a whole worker state, which the native test
+    /// fixture builds. The upgrade itself is target-agnostic dialog code,
+    /// covered on wasm by dialog-repository's `transaction::migration` tests.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn the_first_read_of_a_branch_re_installs_rules_stored_the_earlier_way() {
+        use dialog_artifacts::{ArtifactSelector, Entity, Policy, Value};
+        use dialog_query::rule::DeductiveRuleDescriptor;
+        use dialog_query::rule::statement::source_attr;
+        use dialog_query::{AttributeStatement, Cardinality};
+        use futures_util::TryStreamExt as _;
+
+        let state = crate::router::command::tests::native::test_state().await;
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch);
+        let descriptor: DeductiveRuleDescriptor = serde_json::from_value(serde_json::json!({
+            "deduce": { "with": { "label": { "the": "test.upgrade/label", "as": "Text" } } },
+            "when": [{
+                "assert": { "with": { "name": { "the": "test.upgrade/name", "as": "Text" } } },
+                "where": { "this": { "?": { "name": "this" } }, "name": { "?": { "name": "label" } } }
+            }]
+        }))
+        .expect("a rule descriptor");
+        let rule = descriptor.compile().expect("the rule compiles");
+        let legacy: Entity = "rule:stored-the-earlier-way".parse().expect("an entity");
+        branch
+            .transaction()
+            .assert(AttributeStatement {
+                the: source_attr().into(),
+                of: legacy.clone(),
+                is: Value::Bytes(rule.encode()),
+                cause: None,
+                cardinality: Some(Cardinality::Many),
+                policy: Some(Policy::All),
+            })
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .expect("the earlier release's rule is stored");
+
+        upgrade_rules_while_migrating(&tonk, branch).await;
+
+        let session = branch
+            .acquire(&tonk.operator)
+            .await
+            .expect("the branch opens");
+        let stored_under = |entity: Entity| {
+            let handle = session.handle().clone();
+            let operator = &tonk.operator;
+            async move {
+                handle
+                    .claims()
+                    .select(ArtifactSelector::new().the(source_attr()).of(entity))
+                    .perform(operator)
+                    .await
+                    .expect("the source selects")
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .expect("the source reads")
+                    .len()
+            }
+        };
+        assert_eq!(
+            stored_under(rule.this()).await,
+            1,
+            "the rule is under its identity"
+        );
+        assert_eq!(
+            stored_under(legacy).await,
+            0,
+            "and no longer under the earlier entity"
+        );
+        assert!(
+            matches!(branch.upgrade_rules_once(&tonk.operator).await, Ok(None)),
+            "a second read does not upgrade again"
+        );
     }
 }

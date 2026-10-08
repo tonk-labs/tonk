@@ -13,7 +13,7 @@ use dialog_artifacts::Exporter;
 use dialog_common::ConditionalSend;
 use dialog_repository::Importer;
 
-use crate::env::{BranchOpenProvider, LoadProvider};
+use crate::env::{BranchOpenProvider, CommitProvider, LoadProvider};
 use crate::error::ReactorError;
 use crate::export::Export;
 use crate::import::Import;
@@ -103,6 +103,44 @@ impl<'a> BranchReference<'a> {
 
         adopt_waiting(self, &state, name);
         Ok(BranchSession { state })
+    }
+
+    /// Re-install the rules this branch stores under an identity an
+    /// earlier dialog release gave them ([`Branch::upgrade_rules`]), once
+    /// per branch while the reactor holds it open. A later call returns
+    /// `None` without reading anything, since the upgrade decodes every
+    /// rule body the branch holds; a failed one leaves the next call to
+    /// try again. Runs under the branch's transactor lock, as a commit
+    /// does, and schedules a poll when it commits.
+    ///
+    /// [`Branch::upgrade_rules`]: dialog_repository::Branch::upgrade_rules
+    pub async fn upgrade_rules_once<Env>(
+        &self,
+        env: &Env,
+    ) -> Result<Option<dialog_repository::RulesUpgraded>, ReactorError>
+    where
+        Env: LoadProvider + BranchOpenProvider + CommitProvider,
+    {
+        let session = self.acquire(env).await?;
+        if !session.state.claim_rules_upgrade() {
+            return Ok(None);
+        }
+        let upgraded = {
+            let _transacting = session.state.transactor().lock().await;
+            session.state.branch.upgrade_rules().perform(env).await
+        };
+        match upgraded {
+            Ok(upgraded) => {
+                if upgraded.revision.is_some() {
+                    self.reactor().schedule_poll(Arc::clone(&session.state));
+                }
+                Ok(Some(upgraded))
+            }
+            Err(error) => {
+                session.state.release_rules_upgrade();
+                Err(error.into())
+            }
+        }
     }
 
     /// The reactor that owns this branch's cache — so leaf effects can

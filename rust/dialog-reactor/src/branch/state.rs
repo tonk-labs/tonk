@@ -46,6 +46,11 @@ pub struct BranchState {
     /// block — a transaction. Per branch, so commits to different branches
     /// proceed in parallel.
     transactor: tokio::sync::Mutex<()>,
+    /// Whether [`BranchReference::upgrade_rules_once`] has run on this
+    /// branch since it was opened.
+    ///
+    /// [`BranchReference::upgrade_rules_once`]: crate::BranchReference::upgrade_rules_once
+    rules_upgraded: std::sync::atomic::AtomicBool,
 }
 
 impl BranchState {
@@ -55,7 +60,23 @@ impl BranchState {
             branch,
             subscriptions: Mutex::new(IndexMap::new()),
             transactor: tokio::sync::Mutex::new(()),
+            rules_upgraded: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Claim the one rule upgrade this branch runs while open: `true`
+    /// the first time, `false` after, until [`Self::release_rules_upgrade`].
+    pub(crate) fn claim_rules_upgrade(&self) -> bool {
+        !self
+            .rules_upgraded
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+    }
+
+    /// Give the rule upgrade back, so the next caller runs it again: it
+    /// failed before it could finish.
+    pub(crate) fn release_rules_upgrade(&self) {
+        self.rules_upgraded
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 
     /// The per-branch transaction lock. A transaction takes it
