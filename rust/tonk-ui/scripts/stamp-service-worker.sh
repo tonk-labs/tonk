@@ -252,10 +252,13 @@ ASSET_GRAPH_HASH=$(hash_file "$ASSET_GRAPH")
 # The page identity covers everything the top-level document runs or reads by
 # a name it holds, which is every published resource except the sealed-guest
 # runtime and editor bundles (the portal fetches those afresh for each guest it
-# mounts) and library data (seeded by the worker). Two builds with the same
-# page identity differ only in worker and guest code, so an open document can
-# keep running and just remount its guests under the new worker.
+# mounts), library data (seeded by the worker), and what a site's own origin
+# runs: its shell and its worker, which is stamped with the hash of the wasm
+# it boots. Two builds with the same page identity differ only in worker and
+# guest code, so an open document can keep running while its sites load again
+# under the new worker.
 grep -v -e '^/guest/' -e '^/tonk-code/' -e '^/tonk-prose/' -e '^/tonk-table/' -e '^/library/' \
+    -e '^/space_worker\.js|' -e '^/space\.html|' -e '^/profile\.html|' \
     "$ASSET_GRAPH" > "$PAGE_GRAPH" || true
 PAGE_BUILD=$(hash_file "$PAGE_GRAPH")
 # Include the outer service-worker policy without hashing generated identities

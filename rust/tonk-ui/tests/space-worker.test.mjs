@@ -21,7 +21,10 @@ const SPACE = "did:key:zSpace";
 // worker's `/http/` route would.
 // `holds` is whether the worker already keeps its space's delegation: one
 // that does not has to ask the worker above for it, and bring the space here.
-function site({ host = "bspace.tonk.test", routes = {}, failing = false, holds = true } = {}) {
+// `offline` is whether the server can be reached for a newer worker.
+function site({ host = "bspace.tonk.test", routes = {}, failing = false, holds = true, offline = false } = {}) {
+  // How often the worker asked the browser to look for a newer one.
+  const looked = { count: 0 };
   const origin = `https://${host}`;
   const stores = new Map();
   const key = (request) => (typeof request === "string" ? request : request.url);
@@ -66,7 +69,14 @@ function site({ host = "bspace.tonk.test", routes = {}, failing = false, holds =
     addEventListener: (type, listener) => void (listeners[type] = listener),
     skipWaiting: async () => {},
     clients: { claim: async () => {}, matchAll: async () => pages },
-    registration: { waiting: null, addEventListener() {} },
+    registration: {
+      waiting: null,
+      addEventListener() {},
+      update: async () => {
+        looked.count += 1;
+        if (offline) throw new TypeError("Failed to fetch");
+      },
+    },
   };
   const network = async (request) => {
     const path = new URL(key(request), origin).pathname;
@@ -116,11 +126,13 @@ function site({ host = "bspace.tonk.test", routes = {}, failing = false, holds =
   const answer = async (path, options) => {
     await settled;
     let answered;
+    const pending = [];
     listeners.fetch({
       request: request(path, options),
       respondWith: (response) => void (answered = response),
-      waitUntil() {},
+      waitUntil: (promise) => void pending.push(promise),
     });
+    await Promise.all(pending);
     return answered;
   };
   // A shell asking for the content at `path`, as it does from inside a
@@ -161,7 +173,7 @@ function site({ host = "bspace.tonk.test", routes = {}, failing = false, holds =
     return asks;
   };
   const stages = () => told.filter((message) => message.type === "status").map((message) => message.stage);
-  return { answer, admit, asked, connect, stages };
+  return { answer, admit, asked, connect, stages, looked };
 }
 
 const page = { mode: "navigate" };
@@ -358,4 +370,30 @@ test("a space's worker says how it is to its own pages", async () => {
   const health = await (await answer("/api/health")).json();
 
   assert.equal(health.site, "space");
+});
+
+test("a page load has the worker look for a newer one, which the page may not ask for", async () => {
+  const { answer, looked } = site({ host: "profile.tonk.test" });
+
+  await answer("/", page);
+  assert.equal(looked.count, 1);
+
+  // Only a page load asks, and each one does: it is when a deploy is found.
+  await answer("/api/health");
+  assert.equal(looked.count, 1);
+  await answer("/settings", page);
+  assert.equal(looked.count, 2);
+
+  // Two pages loading at once share one look.
+  await Promise.all([answer("/", page), answer("/account", page)]);
+  assert.equal(looked.count, 3);
+});
+
+test("a look for a newer worker that fails leaves the page served", async () => {
+  const { answer, looked } = site({ offline: true });
+
+  const response = await answer("/notes", page);
+
+  assert.equal(await response.text(), "SHELL");
+  assert.equal(looked.count, 1);
 });

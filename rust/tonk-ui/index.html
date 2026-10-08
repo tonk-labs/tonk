@@ -249,24 +249,28 @@
                     // sites run. Once per page build, so a page that cannot
                     // be had (offline, an older copy kept) does not load in
                     // a loop.
-                    if (container.controller) {
-                        container.addEventListener("controllerchange", async () => {
-                            const own = document.querySelector('meta[name="tonk-page-build"]')?.content;
-                            let served = null;
-                            try {
-                                const response = await fetch("/version.json", { cache: "no-store" });
-                                served = response.ok ? (await response.json()).page : null;
-                            } catch {}
-                            if (!/^[0-9a-f]{16}$/.test(served ?? "") || served === own) return;
-                            try {
-                                if (sessionStorage.getItem("tonk:sw-upgrade-reload") === served) return;
-                                sessionStorage.setItem("tonk:sw-upgrade-reload", served);
-                            } catch {
-                                return;
-                            }
-                            location.reload();
-                        });
-                    }
+                    let controlled = !!container.controller;
+                    container.addEventListener("controllerchange", async () => {
+                        // The first worker this page gets replaces none.
+                        if (!controlled) {
+                            controlled = true;
+                            return;
+                        }
+                        const own = document.querySelector('meta[name="tonk-page-build"]')?.content;
+                        let served = null;
+                        try {
+                            const response = await fetch("/version.json", { cache: "no-store" });
+                            served = response.ok ? (await response.json()).page : null;
+                        } catch {}
+                        if (!/^[0-9a-f]{16}$/.test(served ?? "") || served === own) return;
+                        try {
+                            if (sessionStorage.getItem("tonk:sw-upgrade-reload") === served) return;
+                            sessionStorage.setItem("tonk:sw-upgrade-reload", served);
+                        } catch {
+                            return;
+                        }
+                        location.reload();
+                    });
                     // What this page loaded before a worker was there to
                     // keep it, said to the worker once there is one, so a
                     // first visit opens again with no network. Said again

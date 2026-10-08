@@ -1475,7 +1475,6 @@ pub(crate) mod tests {
                     incoming.addEventListener("statechange", observe);
                     observe();
                 }, { once: true });
-                await registration.update();
                 done({ ok: true });
             })().catch(error => done({ error: String(error) }));
             "#,
@@ -1484,8 +1483,9 @@ pub(crate) mod tests {
         .await?;
         ensure!(
             started["ok"] == true,
-            "failed to start the update: {started}"
+            "failed to start the busy site: {started}"
         );
+        update_site_worker(&driver).await?;
 
         let read_states = r#"
             const done = arguments[arguments.length - 1];

@@ -108,6 +108,11 @@ test("the page build tracks top-level document resources and ignores guest code"
   const stamp = (mutate) => {
     const dist = fixtureDist();
     try {
+      // What a site's own origin runs: its worker, stamped with the hash
+      // of the wasm it boots, and its shells.
+      for (const name of ["space_worker.js", "space.html", "profile.html"]) {
+        copyFileSync(join(UI, "assets", name), join(dist, name));
+      }
       mutate(dist);
       const result = spawnSync("sh", [STAMP, dist], { encoding: "utf8" });
       assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -140,6 +145,11 @@ test("the page build tracks top-level document resources and ignores guest code"
   assert.equal(guest.page, base.page, "guest and editor code do not change the page");
   assert.notEqual(worker.build, base.build);
   assert.equal(worker.page, base.page, "worker code does not change the page");
+  const shell = stamp((dist) => {
+    writeFileSync(join(dist, "profile.html"), "<!doctype html><title>another shell</title>\n");
+  });
+  assert.notEqual(shell.build, base.build);
+  assert.equal(shell.page, base.page, "what a site's origin runs does not change the page");
   assert.notEqual(page.page, base.page, "top-level code changes the page");
 });
 

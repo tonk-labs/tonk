@@ -1424,6 +1424,29 @@ function watchSuccessor(candidate) {
     observe();
 }
 
+// The browser looks for a newer worker when a page loads, but puts the look
+// off for as long as this worker is busy, and one open subscription keeps
+// it busy for good: a site left open in one tab would hold every other on
+// the build before. A site's page may not ask (its policy lets none of its
+// documents start a worker), so this worker asks as it serves a page load,
+// which is when the browser would have. One look at a time.
+let lookingForSuccessor = null;
+
+function lookForSuccessor() {
+    if (retired) return Promise.resolve();
+    lookingForSuccessor ??= self.registration
+        .update()
+        .catch(error => {
+            // No network, or the server has no newer script to give: this
+            // worker goes on.
+            log("could not look for a newer worker:", error);
+        })
+        .finally(() => {
+            lookingForSuccessor = null;
+        });
+    return lookingForSuccessor;
+}
+
 // `updatefound` fires into a sleeping worker and is lost, so a restarted
 // worker asks the registration whether a successor is already waiting.
 if (self.registration.waiting) {
@@ -1700,6 +1723,7 @@ self.addEventListener("fetch", event => {
         event.respondWith(
             takeAdmission(url.href) ? serveRoute(event.request, missing) : serveShell(),
         );
+        event.waitUntil(lookForSuccessor());
         return;
     }
     if (asset && (event.request.method === "GET" || event.request.method === "HEAD")) {
