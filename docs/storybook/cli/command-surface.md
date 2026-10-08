@@ -88,7 +88,7 @@ and this contract are delivered together on base `90ba1f90d`.
 | `assert [CONCEPT] [ENTITY] ...` | `DATA-03`, `DATA-04` | Dynamic help, create/update/no-op, schema flags, JSON commit/verification/push receipt, notation/dry-run/no-sync/quiet. |
 | `query CONCEPT [--where FIELD=VALUE]` | `DATA-05` | Empty/many/ambiguous, typed equality and repeated AND filters, human/JSON, invalid/missing concept or field, broken pipe. |
 | `retract CONCEPT ENTITY [--field]` | `DATA-06` | Whole/field/many field, notation/dry-run/no-sync/quiet, already retracted. |
-| `eval` | `DATA-07` | `-c`, file, explicit `-`, implicit piped stdin, query/write/mixed, JSON/quiet/home/dry-run/no-sync; a file resolves `!include` / `!include/text` next to itself, other sources refuse them. |
+| `eval` | `DATA-07` | `-c`, one file or several (evaluated in the order given as one commit; a later file sees an earlier one's declarations; a rejected file named, nothing committed; `-` refused among paths), explicit `-`, implicit piped stdin, query/write/mixed, JSON/quiet/home/dry-run/no-sync; a file resolves `!include` / `!include/text` / `!include/asset` next to itself, other sources refuse them. |
 | `render ROUTE [--out PATH]` | `DATA-09` | Directory/detail/explicit view, every matching view once in entity order, frame-wide portal mode, default fallback only for an empty renderable match, stdout/file, missing route/view, output failure. |
 
 ### Collaboration and sync
@@ -96,8 +96,8 @@ and this contract are delivered together on base `90ba1f90d`.
 | Entry | Journey IDs | Variants that require coverage |
 | --- | --- | --- |
 | `invite` | `COLLAB-01`, `COLLAB-02` | Default/base URL, remote/no-remote, recipient root, shorten/no-shorten/env, zero/one/many remotes. |
-| `join TOOL_URL [--name NAME] [--agent-name LABEL] [--via ORIGIN]`, `--space NAME join` | `COLLAB-03`, `COLLAB-05`, `ACCT-C14` | Scoped v1/v2 full/short, default/explicit/environment deployment selection, route mismatch, malformed/mixed/expired/revoked/already imported, ordinary-link rejection, scoped resume, persisted legacy-person resume, name/site collision; bounded self-reported agent labels remain separate from local aliases and persist across setup retries. |
-| `push` | `SYNC-02` | `R0`–`R6`, timeout/lost response/concurrent push, account/invite authority. |
+| `join TOOL_URL [--name NAME] [--agent-name LABEL] [--installation ID] [--via ORIGIN]`, `--space NAME join` | `COLLAB-03`, `COLLAB-05`, `ACCT-C14` | Scoped v1/v2 full/short, default/explicit/environment deployment selection, route mismatch, malformed/mixed/expired/revoked/already imported, ordinary-link rejection, scoped resume, persisted legacy-person resume, name/site collision; bounded self-reported agent labels remain separate from local aliases and persist across setup retries; a caller-chosen installation identity (hidden, for CI) persists the same way and makes repeated from-scratch joins confirm one installation. |
+| `push` | `SYNC-02` | `R0`–`R6`, timeout/lost response/concurrent push, account/invite authority; the push after a committing write pulls and retries when the upstream moved. |
 | `pull` | `SYNC-03` | `R0`–`R6`, divergence, concurrent local/remote change, restart before ref update. |
 | `remote`, `remote --json` | `CLI-03` | Empty/many, stable JSON, malformed registry. |
 | `remote add NAME URL [--revocation-url] [--subject]` | `CLI-03` | Invalid/conflicting values, existing upstream preserved, partial meta write. |
@@ -137,8 +137,8 @@ and this contract are delivered together on base `90ba1f90d`.
 
 | Entry | Journey IDs | Variants that require coverage |
 | --- | --- | --- |
-| `blob`, `blob --json` | `DATA-10` | Empty/many, human/JSON, corrupt/missing metadata. |
-| `blob add FILE [--type]` | `DATA-10`, `SYNC-04` | Inferred/explicit type, dry-run/no-sync/quiet, changed/large/unreadable file, disk full. |
+| `blob`, `blob --json` | `DATA-10` | Empty/many, human/JSON, corrupt/missing metadata; assets described with `tonk.dialog.asset/*` and legacy blobs with `xyz.tonk.blob/*` both list. |
+| `blob add FILE [--type]` | `DATA-10`, `SYNC-04` | Inferred/explicit type recorded as `tonk.dialog.asset/media-type` (with `/name`), dry-run/no-sync/quiet, changed/large/unreadable file, disk full. |
 | `blob cat BLOB_URI` | `DATA-10` | Valid/missing/malformed/corrupt blob, binary stdout/broken pipe. |
 | `export [--out] [--branch]` | `DATA-11` | Empty/many, stdout/file, escaping, branch missing, atomic output. |
 | `import PATH [--branch]` | `DATA-11`, `SYNC-04` | Empty/malformed/partial CSV, duplicates, write modifiers, retry after row failure. |
