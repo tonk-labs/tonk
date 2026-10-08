@@ -47,7 +47,7 @@ pub fn collect(
     Some(InvocationRecord {
         ts: now,
         cid: invocation.to_cid().to_string(),
-        consumer: crate::provisioning::served_subject(&invocation)?,
+        consumer: invocation.subject().to_string(),
         issuer: invocation.issuer().to_string(),
         cmd: format!("/{}", invocation.command().0.join("/")),
         outcome,

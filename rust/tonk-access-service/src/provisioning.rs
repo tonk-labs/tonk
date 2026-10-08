@@ -24,8 +24,6 @@
 pub mod cache;
 
 use dialog_capability::access::{AuthorizeError, Recourse};
-use dialog_effects::ticket;
-use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::{Container, Invocation};
 use dialog_varsig::AnySignature;
 use tonk_account::customer::CustomerStatus;
@@ -58,32 +56,12 @@ fn denial(recourse: Recourse, cause: &str) -> AuthorizeError {
 }
 
 /// The subject of the presented container — the same field metering
-/// attributes the invocation to (see [`served_subject`]).
+/// attributes the invocation to.
 pub fn container_subject(container_bytes: &[u8]) -> Option<String> {
     let tokens = Container::from_bytes(container_bytes).ok()?.into_tokens();
     let body = tokens.into_iter().next()?;
     let invocation: Invocation<AnySignature> = serde_ipld_dagcbor::from_slice(&body).ok()?;
-    served_subject(&invocation)
-}
-
-/// The subject whose data an invocation reaches: who is served, screened
-/// and billed for it.
-///
-/// That is the invocation's own subject, except for a `/ucan/claim`. A
-/// claim's subject is the holder asking for its ticket, a key that is
-/// never provisioned (a ticket link's key is minted for the link), and
-/// what it reads is the ticket the space named in its `sub` argument
-/// keeps. So the space is what is served. A claim that names no subject
-/// answers `None` and cannot clear the gate.
-pub fn served_subject(invocation: &Invocation<AnySignature>) -> Option<String> {
-    let command: Vec<&str> = invocation.command().0.iter().map(String::as_str).collect();
-    if command.as_slice() != ticket::CLAIM {
-        return Some(invocation.subject().to_string());
-    }
-    match invocation.arguments().get(ticket::SUBJECT) {
-        Some(Promised::String(space)) => Some(space.clone()),
-        _ => None,
-    }
+    Some(invocation.subject().to_string())
 }
 
 /// Screen `subject` against the control store.
@@ -202,52 +180,6 @@ fn servable(status: CustomerStatus, who: &str) -> Result<(), AuthorizeError> {
             &format!("{who} awaits email activation"),
         )),
         CustomerStatus::Suspended => Err(denial(Recourse::None, &format!("{who} is suspended"))),
-    }
-}
-
-#[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
-mod claim_tests {
-    use super::*;
-    use dialog_credentials::Ed25519Signer;
-    use dialog_ucan_core::{InvocationBuilder, InvocationChain};
-    use dialog_varsig::Principal;
-    use std::collections::{BTreeMap, HashMap};
-
-    async fn claim(arguments: BTreeMap<String, Promised>) -> Vec<u8> {
-        let holder = Ed25519Signer::generate().await.unwrap();
-        let invocation = InvocationBuilder::new()
-            .issuer(dialog_credentials::Signer::from(holder.clone()))
-            .audience(&holder.did())
-            .subject(&holder.did())
-            .command(ticket::CLAIM.iter().map(|s| s.to_string()).collect())
-            .arguments(arguments)
-            .proofs(vec![])
-            .try_build()
-            .await
-            .unwrap();
-        InvocationChain::new(invocation, HashMap::new())
-            .to_bytes()
-            .unwrap()
-    }
-
-    /// A claim is screened as the space it reads from, never as the
-    /// ticket key that signs it: that key is minted for a link and is
-    /// never provisioned, so screening it would refuse every claim.
-    #[dialog_common::test]
-    async fn it_serves_a_claim_as_the_space_it_names() {
-        let space = Ed25519Signer::generate().await.unwrap().did();
-        let container = claim(BTreeMap::from([(
-            ticket::SUBJECT.to_string(),
-            Promised::String(space.to_string()),
-        )]))
-        .await;
-        assert_eq!(container_subject(&container), Some(space.to_string()));
-    }
-
-    #[dialog_common::test]
-    async fn it_serves_no_one_for_a_claim_that_names_no_space() {
-        let container = claim(BTreeMap::new()).await;
-        assert_eq!(container_subject(&container), None);
     }
 }
 

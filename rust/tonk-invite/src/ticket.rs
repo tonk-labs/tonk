@@ -7,10 +7,10 @@
 //!
 //! The inviter delegates to a fresh key, as an audience-open invite
 //! does, and leaves the delegation chain in the space's memory as the
-//! key's ticket (`ticket/{key did}`, see `dialog_effects::ticket`). The
+//! key's ticket (`ticket/{key did}`, see `tonk_account::ticket`). The
 //! link carries only the space and the key's seed. The redeemer derives
-//! the key from the seed, signs a `/ucan/claim` as it against the access
-//! service at the link's origin, and gets the chain back, which then
+//! the key from the seed, signs a `/use/get/ticket/claim` as it against
+//! the access service at the link's origin, and gets the chain back, which then
 //! redeems exactly as an audience-open invite does.
 //!
 //! The link is short and stable: it is the space's own address with the

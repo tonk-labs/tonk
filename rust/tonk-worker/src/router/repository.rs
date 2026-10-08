@@ -9237,9 +9237,12 @@ mod invite_chain_tests {
                 membership,
                 "the link's seed derives the membership key"
             );
-            let claimed = dialog_remote_ucan::claim(
-                &dialog_remote_ucan::UcanAddress::new(ticket.remote().as_str()),
+            let holder_did = holder.did();
+            let claimed = tonk_account::ticket::claim(
+                ticket.remote(),
                 holder,
+                &holder_did,
+                None,
                 ticket.subject(),
             )
             .await

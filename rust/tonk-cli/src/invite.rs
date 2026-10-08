@@ -1019,13 +1019,18 @@ async fn claim_ticket(ticket: Ticket) -> Result<Invite, InviteError> {
         .holder()
         .await
         .map_err(|error| InviteError::InvalidInvite(error.to_string()))?;
-    let address = dialog_remote_ucan::UcanAddress::new(ticket.remote().as_str());
-    let fetched = dialog_remote_ucan::claim(&address, holder, ticket.subject())
-        .await
-        .map_err(|error| InviteError::Io(format!("failed to claim the space's ticket: {error}")))?
-        .ok_or_else(|| {
-            InviteError::InvalidInvite("the space no longer holds this link's ticket".to_owned())
-        })?;
+    let holder_did = dialog_varsig::Principal::did(&holder);
+    let fetched =
+        tonk_account::ticket::claim(ticket.remote(), holder, &holder_did, None, ticket.subject())
+            .await
+            .map_err(|error| {
+                InviteError::Io(format!("failed to claim the space's ticket: {error}"))
+            })?
+            .ok_or_else(|| {
+                InviteError::InvalidInvite(
+                    "the space no longer holds this link's ticket".to_owned(),
+                )
+            })?;
     ticket
         .redeem(&fetched)
         .await

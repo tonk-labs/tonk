@@ -328,13 +328,11 @@ mod tests {
         let ticket = tonk_invite::Ticket::public_for_url(address)
             .expect("the address parses")
             .expect("a space's bare address is its public ticket");
-        dialog_remote_ucan::claim(
-            &dialog_remote_ucan::UcanAddress::new(ticket.remote().as_str()),
-            ticket.holder().await.expect("the public key derives"),
-            space,
-        )
-        .await
-        .expect("the serving host answers the claim")
+        let holder = ticket.holder().await.expect("the public key derives");
+        let holder_did = holder.did();
+        tonk_account::ticket::claim(ticket.remote(), holder, &holder_did, None, space)
+            .await
+            .expect("the serving host answers the claim")
     }
 
     /// Publishing against a live access service leaves a `/use/get` ticket

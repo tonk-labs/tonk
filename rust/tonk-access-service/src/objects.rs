@@ -70,7 +70,7 @@ fn version_of(etag: &str) -> Version {
     Version::from(etag.trim_matches('"'))
 }
 
-async fn read(bucket: &Bucket, key: &str) -> Result<Option<(Vec<u8>, String)>, String> {
+pub(crate) async fn read(bucket: &Bucket, key: &str) -> Result<Option<(Vec<u8>, String)>, String> {
     let object = bucket
         .get(key)
         .execute()

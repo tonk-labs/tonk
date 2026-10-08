@@ -666,14 +666,17 @@ async fn claim_public_ticket(ticket: &Ticket) -> Result<DelegationChain, JoinFai
         .holder()
         .await
         .map_err(|error| JoinFailure::claim_failed(format!("public key: {error}")))?;
-    let address = UcanAddress::new(ticket.remote().as_str());
-    let fetched = dialog_remote_ucan::claim(&address, holder, ticket.subject())
-        .await
-        .map_err(|error| match error {
-            dialog_remote_s3::S3Error::Authorization(reason) => classify_authorization(&reason),
-            _ => JoinFailure::unavailable("the space's public ticket could not be fetched"),
-        })?
-        .ok_or_else(|| JoinFailure::private("the space keeps no public ticket"))?;
+    let holder_did = dialog_varsig::Principal::did(&holder);
+    let fetched =
+        tonk_account::ticket::claim(ticket.remote(), holder, &holder_did, None, ticket.subject())
+            .await
+            .map_err(|error| match error {
+                tonk_account::ticket::ClaimError::Refused(reason) => {
+                    classify_authorization(&reason)
+                }
+                _ => JoinFailure::unavailable("the space's public ticket could not be fetched"),
+            })?
+            .ok_or_else(|| JoinFailure::private("the space keeps no public ticket"))?;
     ticket
         .accept(&fetched)
         .await
@@ -739,13 +742,16 @@ async fn claim_ticket(ticket: Ticket) -> Result<Invite, JoinFailure> {
         .holder()
         .await
         .map_err(|error| JoinFailure::malformed(format!("ticket key: {error}")))?;
-    let address = UcanAddress::new(ticket.remote().as_str());
-    let fetched = dialog_remote_ucan::claim(&address, holder, ticket.subject())
-        .await
-        .map_err(|error| match error {
-            dialog_remote_s3::S3Error::Authorization(reason) => classify_authorization(&reason),
-            _ => JoinFailure::unavailable("the space's ticket could not be fetched"),
-        })?;
+    let holder_did = dialog_varsig::Principal::did(&holder);
+    let fetched =
+        tonk_account::ticket::claim(ticket.remote(), holder, &holder_did, None, ticket.subject())
+            .await
+            .map_err(|error| match error {
+                tonk_account::ticket::ClaimError::Refused(reason) => {
+                    classify_authorization(&reason)
+                }
+                _ => JoinFailure::unavailable("the space's ticket could not be fetched"),
+            })?;
     // The space no longer keeps a ticket for this link's key: it was
     // taken back, which withdraws the link as far as a newcomer goes.
     let Some(fetched) = fetched else {
