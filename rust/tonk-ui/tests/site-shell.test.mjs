@@ -161,6 +161,26 @@ for (const name of ["space", "profile"]) {
     assert.deepEqual(site.went, [], "a shell its worker served stays where it is");
   });
 
+  test(`${name}: a site whose worker is replaced loads again under the new one`, async () => {
+    const site = boot(name);
+    await settle();
+    assert.deepEqual(site.went, []);
+
+    // The browser says the controller changed with the same worker in
+    // control: nothing replaced it.
+    site.workerListeners.controllerchange();
+    assert.deepEqual(site.went, [], "the worker it loaded under is still the one in control");
+
+    site.container.controller = { postMessage() {} };
+    site.workerListeners.controllerchange();
+    assert.deepEqual(site.went, [["reload"]]);
+    assert.equal(site.said.at(-1), "taking up a new version", "and it says why it is loading");
+
+    // The same replacement heard twice replaces the document once.
+    site.workerListeners.controllerchange();
+    assert.deepEqual(site.went, [["reload"]]);
+  });
+
   test(`${name}: it asks, as a request, whether its address is content`, async () => {
     const site = boot(name, { address: "/hello.html?x=1", content: ["/hello.html?x=1"] });
     await settle();

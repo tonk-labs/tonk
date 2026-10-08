@@ -239,9 +239,36 @@
          own worker and never this one. -->
         <script>
             if ("serviceWorker" in navigator && !globalThis.tonkSiteOrigin) {
-                navigator.serviceWorker
-                    .register("/service_worker.js", { updateViaCache: "none" })
-                    .catch(() => {});
+                (() => {
+                    const container = navigator.serviceWorker;
+                    // A worker that takes over a page already open under
+                    // another is a newer build's, and this page is the build
+                    // before: load the page that goes with it. A page loaded
+                    // straight onto the new build is that build already and
+                    // stays. Once per build, so a page that cannot be had
+                    // (offline, an older copy kept) does not load in a loop.
+                    if (container.controller) {
+                        container.addEventListener("controllerchange", async () => {
+                            const own = document.querySelector('meta[name="tonk-worker-build"]')?.content;
+                            let served = null;
+                            try {
+                                const response = await fetch("/version.json", { cache: "no-store" });
+                                served = response.ok ? (await response.json()).build : null;
+                            } catch {}
+                            if (!/^[0-9a-f]{16}$/.test(served ?? "") || served === own) return;
+                            try {
+                                if (sessionStorage.getItem("tonk:sw-upgrade-reload") === served) return;
+                                sessionStorage.setItem("tonk:sw-upgrade-reload", served);
+                            } catch {
+                                return;
+                            }
+                            location.reload();
+                        });
+                    }
+                    container
+                        .register("/service_worker.js", { updateViaCache: "none" })
+                        .catch(() => {});
+                })();
             }
         </script>
         <!-- The following are load-bearing configuration for the Trunk build tool

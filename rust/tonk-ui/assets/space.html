@@ -170,6 +170,22 @@
                     });
                 }
 
+                // What this document runs was served by the worker it loaded
+                // under, and is built to speak to that one. A worker that
+                // takes over is another build's: load again, so the site is
+                // brought up by the worker that now answers it. Each
+                // replacement replaces the document once.
+                function follow() {
+                    var container = navigator.serviceWorker;
+                    var served = container.controller;
+                    container.addEventListener("controllerchange", function () {
+                        if (!container.controller || container.controller === served) return;
+                        served = container.controller;
+                        say("taking up a new version");
+                        location.reload();
+                    });
+                }
+
                 // Whether the site's worker served this document. Only then
                 // does it carry the site's policy: the server hands the shell
                 // out bare, to any path, so that an origin with no worker
@@ -346,6 +362,7 @@
                         sessionStorage.removeItem("tonk-space-shell-reload");
                     } catch (error) {}
                     if (location.pathname === SHELL) history.replaceState(null, "", "/");
+                    follow();
                     broker();
                     say("loading");
                     var base = document.createElement("base");
