@@ -75,7 +75,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
-use tonk_invite::{Invite, InviteAudience};
+use tonk_invite::{Invite, InviteAudience, Ticket};
 use tonk_schema::{
     Invitation, InvitationExecution, InvitedVia, MemberName, MemberRole, Membership, Replica,
     RepositoryName, SeedKind, prelude::DidExt as _,
@@ -600,9 +600,42 @@ async fn prepare_join(tonk: &TonkState, url: &str) -> Result<PreparedJoin, JoinF
 }
 
 async fn parse_invite(url: &str) -> Result<Invite, JoinFailure> {
+    if let Some(ticket) = Ticket::parse_url(url)
+        .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))?
+    {
+        return claim_ticket(ticket).await;
+    }
     Invite::parse_url(url)
         .await
         .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))
+}
+
+/// Fetch the ticket a ticket link's space keeps for the link's key, and
+/// read it as the open invite it is. From here a ticket link joins the
+/// way an `access=` link does.
+async fn claim_ticket(ticket: Ticket) -> Result<Invite, JoinFailure> {
+    let holder = ticket
+        .holder()
+        .await
+        .map_err(|error| JoinFailure::malformed(format!("ticket key: {error}")))?;
+    let address = UcanAddress::new(ticket.remote().as_str());
+    let fetched = dialog_remote_ucan::claim(&address, holder, ticket.subject())
+        .await
+        .map_err(|error| match error {
+            dialog_remote_s3::S3Error::Authorization(reason) => classify_authorization(&reason),
+            _ => JoinFailure::unavailable("the space's ticket could not be fetched"),
+        })?;
+    // The space no longer keeps a ticket for this link's key: it was
+    // taken back, which withdraws the link as far as a newcomer goes.
+    let Some(fetched) = fetched else {
+        return Err(JoinFailure::revoked(
+            "the space no longer holds this link's ticket",
+        ));
+    };
+    ticket
+        .redeem(&fetched)
+        .await
+        .map_err(|error| JoinFailure::malformed(format!("ticket did not redeem: {error}")))
 }
 
 async fn prepare_parsed_join(
@@ -1428,8 +1461,13 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
         }
         // There is no paste-link page: invite links open directly in the
         // browser. Return bare /join visits home before requesting custody.
+        // A space's own page mounts the join too, so a ticket link opens
+        // where it points; there, no ticket is the ordinary visit, and the
+        // page is left as it is.
         if !carries_invite(&command.url.0) {
-            crate::router::navigate::notify_navigate(self.client(), "/");
+            if !is_space_address(&command.url.0) {
+                crate::router::navigate::notify_navigate(self.client(), "/");
+            }
             return;
         }
         run_join(self, command).await;
@@ -1500,19 +1538,29 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
     tonk_invite::shortcut::resolve_location(short_url, location).map_err(|error| error.to_string())
 }
 
-/// Whether a `/join` URL carries an invite at all.
+/// Whether a URL carries an invite at all.
 ///
-/// The delegation chain rides in `access`, so its presence is what
-/// separates "redeem this" from a bare /join visit that returns home.
-/// Deliberately a query test and not a parse: a malformed or truncated
-/// invite IS an attempt and must still fail loudly with its reason,
-/// rather than being silently treated as an empty visit.
+/// On `/join` the delegation chain rides in `access`, so its presence is
+/// what separates "redeem this" from a bare /join visit that returns
+/// home. Deliberately a query test and not a parse: a malformed or
+/// truncated invite IS an attempt and must still fail loudly with its
+/// reason, rather than being silently treated as an empty visit.
+///
+/// A ticket link is a space's address with a seed for a fragment (see
+/// [`Ticket`]); the same address without one is just the space.
 fn carries_invite(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|parsed| {
         parsed
             .query_pairs()
             .any(|(key, value)| key == "access" && !value.is_empty())
-    })
+    }) || matches!(Ticket::parse_url(url), Ok(Some(_)))
+}
+
+/// Whether a URL is a space's own page, `/space/...`: where a join is
+/// mounted to pick up a ticket link, and where finding none is no
+/// reason to leave.
+fn is_space_address(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| parsed.path().starts_with("/space/"))
 }
 
 /// Drop this join's own overlay facts, and only those (scoped clear).
@@ -1749,6 +1797,27 @@ mod invite_presence_tests {
             "https://tonk.space/join?remote=https%3A%2F%2Fs"
         ));
         assert!(!carries_invite("not a url"));
+    }
+
+    /// A ticket link is the space's address with a key seed for its
+    /// fragment; the same address without one is the space, which a
+    /// visitor stays on rather than being sent home.
+    #[test]
+    fn it_reads_a_ticket_link_as_an_invite_and_the_bare_space_as_a_visit() {
+        use super::is_space_address;
+        let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let seed = bs58::encode([6u8; 32]).into_string();
+
+        assert!(carries_invite(&format!(
+            "https://tonk.space/space/{space}#{seed}"
+        )));
+        assert!(!carries_invite(&format!(
+            "https://tonk.space/space/{space}"
+        )));
+        assert!(is_space_address(&format!(
+            "https://tonk.space/space/{space}"
+        )));
+        assert!(!is_space_address("https://tonk.space/join"));
     }
 }
 

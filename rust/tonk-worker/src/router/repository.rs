@@ -2183,14 +2183,32 @@ async fn run_invite(
     // of an invite URL, and so it can be shortened — an async round-trip a
     // template can't make. The display name needs no URL carrier: it
     // rides in the chain's signed `space.name` meta, inside `access=`.
-    let link = invite_url(
-        &proof,
-        &remote,
-        &seed,
-        repo_name,
+    //
+    // The grant waits in the space as the membership key's ticket, and the
+    // link names only the space and the key's seed; the recipient claims
+    // the ticket with that key. When the space's service does not keep the
+    // ticket, the link carries the chain in `access=` instead, which
+    // redeems the same way (see `issue_ticket`).
+    let link = match super::create_invite::issue_ticket(
+        &tonk,
         &remote_execution.access_url,
+        &chain,
+        seed_bytes,
     )
-    .await?;
+    .await
+    {
+        Some(link) => with_referral(link, repo_name),
+        None => {
+            invite_url(
+                &proof,
+                &remote,
+                &seed,
+                repo_name,
+                &remote_execution.access_url,
+            )
+            .await?
+        }
+    };
 
     // Attempt the shortcut HERE, before the credential overlay and the
     // share control's row are written. Both are read for the first url
@@ -2536,14 +2554,19 @@ pub(super) fn worker_origin() -> Option<String> {
 /// The space's display name needs no slot here: it rides in the chain's
 /// signed `space.name` meta, inside the `access=` parameter itself.
 fn long_invite_url(base: &str, proof: &str, remote: &str, seed: &str, space_key: &str) -> String {
-    let base = format!("{base}?access={proof}{remote}#{seed}");
-    match tonk_analytics::launch::space_referral_url(&base, space_key) {
+    with_referral(format!("{base}?access={proof}{remote}#{seed}"), space_key)
+}
+
+/// Add the referral attribution a shared link carries: the organic
+/// channel and the hashed space token.
+fn with_referral(link: String, space_key: &str) -> String {
+    match tonk_analytics::launch::space_referral_url(&link, space_key) {
         Ok(url) => url,
         Err(error) => {
             // Referral metadata must never turn a valid authority grant into
-            // a failed share. The base above is still a complete invite.
+            // a failed share. The link is still a complete invite.
             log!("invite: could not add referral attribution: {error}");
-            base
+            link
         }
     }
 }
@@ -9126,10 +9149,9 @@ mod invite_chain_tests {
             }
         }
 
-        // The minted link carries the space's display name as the
-        // advisory `name` parameter, read back through the overlay
-        // `Credential` the share view renders — so the recipient's Hub
-        // row is labeled before the space's content syncs.
+        // The minted link, read back through the overlay `Credential` the
+        // share view renders, opens the space and redeems the chain above
+        // through the ticket the space keeps for the membership key.
         {
             use tonk_schema::command::Credential;
             let tonk = state.read().await;
@@ -9198,17 +9220,44 @@ mod invite_chain_tests {
             } else {
                 link
             };
-            let minted = tonk_invite::Invite::parse_url(&resolved)
+            // The link is the space's address with the membership key's
+            // seed; the grant itself waits in the space as that key's
+            // ticket, which the key claims from the serving host.
+            let ticket = tonk_invite::Ticket::parse_url(&resolved)
+                .unwrap_or_else(|e| panic!("link {resolved} did not parse: {e}"))
+                .unwrap_or_else(|| panic!("link {resolved} is not a ticket link"));
+            assert_eq!(
+                ticket.subject().to_string(),
+                key,
+                "the link opens the space it invites into"
+            );
+            let holder = ticket.holder().await.expect("the seed survives shortening");
+            assert_eq!(
+                holder.did().to_string(),
+                membership,
+                "the link's seed derives the membership key"
+            );
+            let claimed = dialog_remote_ucan::claim(
+                &dialog_remote_ucan::UcanAddress::new(ticket.remote().as_str()),
+                holder,
+                ticket.subject(),
+            )
+            .await
+            .expect("the serving host answers the claim")
+            .expect("the space keeps the membership key's ticket");
+            assert_eq!(claimed, bytes, "the ticket is the chain the mint recorded");
+            let minted = ticket
+                .redeem(&claimed)
                 .await
-                .unwrap_or_else(|e| panic!("link {resolved} did not parse: {e}"));
+                .expect("the ticket redeems as an invite");
             assert_eq!(
                 minted.space_name.as_deref(),
                 Some("Invite Chain"),
-                "the minted link names the space it invites into"
+                "the ticket names the space it invites into"
             );
             assert!(
                 matches!(minted.audience, tonk_invite::InviteAudience::Open { .. }),
-                "the seed fragment survives shortening and resolution"
+                "a ticket redeems as an audience-open invite"
             );
         }
 
@@ -13010,6 +13059,65 @@ block/insert!:
             !url.contains("name="),
             "the name rides in the chain meta, never as a loose parameter: {url}"
         );
+    }
+
+    /// The ticket link is the space's address on the host serving it,
+    /// with the membership key's seed in the fragment.
+    ///
+    /// The fragment split is the load-bearing part. The seed must never
+    /// reach a server, and shortening PUTs only the path + query — so a
+    /// seed that slipped into the query would be uploaded to the shortcut
+    /// service in plaintext.
+    #[dialog_common::test]
+    async fn it_builds_the_ticket_link_on_the_serving_host() {
+        let subject: dialog_varsig::Did =
+            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                .parse()
+                .unwrap();
+        let seed = [6u8; 32];
+        let encoded = bs58::encode(seed).into_string();
+        let link = tonk_invite::Ticket::new(
+            subject.clone(),
+            seed,
+            &url::Url::parse("https://tonk.example/ucan/").unwrap(),
+        )
+        .and_then(|ticket| ticket.to_url())
+        .expect("the link assembles");
+        let url = super::with_referral(link, subject.as_str());
+
+        let parsed = url::Url::parse(&url).expect("ticket link parses");
+        assert_eq!(
+            parsed.origin().ascii_serialization(),
+            "https://tonk.example"
+        );
+        assert_eq!(parsed.path(), format!("/space/{subject}"));
+        assert_eq!(parsed.fragment(), Some(encoded.as_str()));
+        assert!(parsed.query_pairs().any(|(key, value)| {
+            key == tonk_analytics::launch::CHANNEL_PARAMETER && value == "reshare"
+        }));
+        assert!(parsed.query_pairs().any(|(key, value)| {
+            key == tonk_analytics::launch::SPACE_PARAMETER
+                && value == tonk_analytics::anonymize(subject.as_str())
+        }));
+        assert!(
+            !parsed.query_pairs().any(|(key, _)| key == "access"),
+            "the grant waits in the space, never in the link: {url}"
+        );
+
+        // The secret is the fragment, never the query — everything before
+        // `#` is what a shortcut PUT would upload.
+        let (sent, fragment) = url.split_once('#').expect("the seed must be a fragment");
+        assert_eq!(fragment, encoded);
+        assert!(
+            !sent.contains(&encoded),
+            "the seed must not appear in the path or query: {sent}",
+        );
+
+        let ticket = tonk_invite::Ticket::parse_url(&url)
+            .unwrap()
+            .expect("the link reads back as a ticket");
+        assert_eq!(ticket.subject(), &subject);
+        assert_eq!(ticket.remote().as_str(), "https://tonk.example/ucan/");
     }
 }
 
