@@ -28,8 +28,8 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{CustomEvent, HtmlElement, Response, window};
 
 use crate::logic::{
-    member_invitations_query_body, member_roster_query_body, repository_endpoint,
-    role_manages_members, self_member_did_from_repository,
+    member_invitations_query_body, member_roster_query_body, observes_from_repository,
+    repository_endpoint, role_manages_members, self_member_did_from_repository,
 };
 use crate::member_graph::{self, Member};
 use crate::shadow::{self, Bound};
@@ -71,6 +71,7 @@ impl CustomElement for UiMemberRosterElement {
             members: self.members.clone(),
             viewer: self.viewer.clone(),
             invitations: self.invitations.clone(),
+            viewer_request: self.viewer_request.clone(),
         });
         render_rows(
             this,
@@ -221,6 +222,7 @@ impl CustomElement for UiMemberRosterElement {
             members: self.members.clone(),
             viewer: self.viewer.clone(),
             invitations: self.invitations.clone(),
+            viewer_request: self.viewer_request.clone(),
         });
         self.scaffold.connect_all(
             this,
@@ -264,6 +266,26 @@ struct MemberRosterBehaviour {
     invitations: Rc<RefCell<BTreeMap<String, String>>>,
     members: Rc<RefCell<Vec<Member>>>,
     viewer: Rc<RefCell<Option<String>>>,
+    viewer_request: Rc<Cell<u64>>,
+}
+
+impl MemberRosterBehaviour {
+    /// Look the viewer up again when members arrive and none of them is
+    /// known to be the viewer yet. The lookup at connect can run before
+    /// the space has replicated (a visitor's bar mounts while the space is
+    /// still opening), when it finds no members and so no one to be; the
+    /// roster arriving is the moment the answer changes.
+    fn resolve_viewer_if_unknown(&self, host: &HtmlElement) {
+        if self.viewer.borrow().is_none() && !self.members.borrow().is_empty() {
+            resolve_viewer(
+                host,
+                self.members.clone(),
+                self.viewer.clone(),
+                self.viewer_request.clone(),
+                self.invitations.clone(),
+            );
+        }
+    }
 }
 
 impl subscribing::Subscribing for MemberRosterBehaviour {
@@ -289,6 +311,8 @@ impl subscribing::Subscribing for MemberRosterBehaviour {
             self.viewer.borrow().as_deref(),
             &self.invitations.borrow(),
         );
+        drop(members);
+        self.resolve_viewer_if_unknown(host);
     }
 
     fn render_update(&self, host: &HtmlElement, payload: &JsValue) {
@@ -322,6 +346,8 @@ impl subscribing::Subscribing for MemberRosterBehaviour {
             self.viewer.borrow().as_deref(),
             &self.invitations.borrow(),
         );
+        drop(members);
+        self.resolve_viewer_if_unknown(host);
     }
 
     fn tag(&self) -> &'static str {
@@ -955,6 +981,15 @@ fn stamp_manages(host: &HtmlElement, members: &[Member], viewer: Option<&str>) {
     }
 }
 
+/// Stamp the bar with whether the viewer only observes the space
+/// (`data-observer`): the bar says so beside the space's name, and leaves
+/// out what a reader cannot do.
+fn stamp_observer(host: &HtmlElement, observes: bool) {
+    if let Some(bar) = host.closest("tonk-fab").ok().flatten() {
+        let _ = bar.toggle_attribute_with_force("data-observer", observes);
+    }
+}
+
 fn resolve_viewer(
     host: &HtmlElement,
     members: Rc<RefCell<Vec<Member>>>,
@@ -972,6 +1007,7 @@ fn resolve_viewer(
     let current = request.get().wrapping_add(1);
     request.set(current);
     viewer.borrow_mut().take();
+    stamp_observer(host, false);
     render_rows(host, &members.borrow(), None, &invitations.borrow());
 
     let host = host.clone();
@@ -1008,6 +1044,7 @@ fn resolve_viewer(
             return;
         }
         *viewer.borrow_mut() = self_member_did_from_repository(&info);
+        stamp_observer(&host, observes_from_repository(&info));
         render_rows(
             &host,
             &members.borrow(),
@@ -1057,6 +1094,7 @@ mod tests {
             invitations: Rc::default(),
             members: Rc::default(),
             viewer: Rc::new(RefCell::new(Some("did:key:owner".into()))),
+            viewer_request: Rc::default(),
         };
         let owner = serde_json::json!({ "this": "owner-membership", "fields": {
             "name": "<Owner>", "member": "did:key:owner", "role": "tonk:founder"

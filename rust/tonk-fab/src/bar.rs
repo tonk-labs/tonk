@@ -1012,7 +1012,8 @@ pub(crate) fn edit_space(this: &HtmlElement, state: &Shared) {
 /// Put the space cell back the way `update` expects to find it.
 ///
 /// `mount_edit` empties the cell to install the editable span, which destroys
-/// the `.n` span the name is painted into. Without rebuilding it the commit
+/// the `.n` span the name is painted into (and the `.observing` tag beside
+/// it). Without rebuilding it the commit
 /// has nowhere to write, the editable span and its block cursor are never
 /// removed, and the cursor goes on blinking after Enter.
 fn restore_space_cell(this: &HtmlElement) {
@@ -1020,7 +1021,7 @@ fn restore_space_cell(this: &HtmlElement) {
         return;
     };
     let _ = cell.class_list().remove_1("editing");
-    cell.set_inner_html(r#"<span class="n"></span>"#);
+    cell.set_inner_html(r#"<span class="n"></span><span class="observing">observing</span>"#);
 }
 
 /// Settle a live rename before the bar does anything else.

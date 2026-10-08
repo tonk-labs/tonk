@@ -1705,6 +1705,19 @@ pub fn self_member_did_from_repository(info: &Value) -> Option<String> {
     })
 }
 
+/// Whether the viewer only observes the space: it has members, and none of
+/// them is this account. That is a reader of a published space, who
+/// opened it from its address with the public ticket rather than an
+/// invite. A space with no members yet (its roster still arriving) is not
+/// read as observed, so a member never sees "observing" while loading.
+pub fn observes_from_repository(info: &Value) -> bool {
+    let members = info
+        .get("members")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    !members.is_empty() && self_member_did_from_repository(info).is_none()
+}
+
 /// Whether a member holding `role` runs the space: founders and admins
 /// may promote (and expel) other members; the worker refuses everyone
 /// else, so the roster offers those controls only to them.
@@ -1730,6 +1743,19 @@ mod self_member_did {
             self_member_did_from_repository(&json!({ "members": [] })),
             None
         );
+    }
+
+    #[test]
+    fn it_observes_a_space_whose_members_do_not_include_the_viewer() {
+        assert!(observes_from_repository(&json!({ "members": [
+            { "did": "did:key:zFounder", "is_self": false }
+        ] })));
+        assert!(!observes_from_repository(&json!({ "members": [
+            { "did": "did:key:zFounder", "is_self": false },
+            { "did": "did:key:zAccount", "is_self": true }
+        ] })));
+        assert!(!observes_from_repository(&json!({ "members": [] })));
+        assert!(!observes_from_repository(&json!({})));
     }
 
     #[test]

@@ -10090,6 +10090,196 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// What a page shows of a space, read where a person reads it: the
+    /// bar's name and "observing" tag in the guest frame, its publication
+    /// actions, and the absent-space wall. Each element is measured, so
+    /// "shown" means laid out and not hidden, not merely present.
+    async fn space_page_state(driver: &WebDriver) -> Result<serde_json::Value> {
+        enter_guest(driver).await?;
+        let state = driver
+            .execute(
+                r#"
+                const shown = (element) => {
+                    if (!element) return false;
+                    const box = element.getBoundingClientRect();
+                    const style = getComputedStyle(element);
+                    return box.width > 0 && box.height > 0
+                        && style.display !== 'none' && style.visibility !== 'hidden';
+                };
+                const bar = document.querySelector('tonk-fab');
+                const root = bar?.shadowRoot;
+                const wall = [...document.querySelectorAll('.space-unknown-statement')]
+                    .find((heading) => heading.textContent.includes('private'));
+                return {
+                    name: (root?.querySelector('.space .n')?.textContent || '').trim(),
+                    observer: !!bar?.hasAttribute('data-observer'),
+                    observing: shown(root?.querySelector('.space .observing')),
+                    published: !!bar?.hasAttribute('data-published'),
+                    publish: shown(root?.querySelector('.publish')),
+                    unpublish: shown(root?.querySelector('.unpublish')),
+                    share: shown(root?.querySelector('.share')),
+                    home: shown(root?.querySelector('.home')),
+                    private: shown(wall),
+                };
+                "#,
+                Vec::new(),
+            )
+            .await
+            .map(|value| value.json().clone());
+        driver.enter_default_frame().await?;
+        Ok(state?)
+    }
+
+    /// Poll [`space_page_state`] until `done` holds, or fail naming the
+    /// last state seen.
+    async fn await_space_page(
+        driver: &WebDriver,
+        what: &str,
+        done: impl Fn(&serde_json::Value) -> bool,
+    ) -> Result<serde_json::Value> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let state = space_page_state(driver)
+                .await
+                .unwrap_or(serde_json::Value::Null);
+            if done(&state) {
+                return Ok(state);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("{what}: never happened; last state {state}"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Press one of the bar's publication actions (`publish` or
+    /// `unpublish`) once the bar shows it.
+    async fn click_publication_action(driver: &WebDriver, action: &str) -> Result<()> {
+        await_space_page(driver, &format!("the bar offers `{action}`"), |state| {
+            state[action] == true
+        })
+        .await?;
+        enter_guest(driver).await?;
+        driver
+            .execute(
+                "document.querySelector('tonk-fab').shadowRoot.querySelector('.' + arguments[0]).click();",
+                vec![serde_json::json!(action)],
+            )
+            .await?;
+        driver.enter_default_frame().await?;
+        Ok(())
+    }
+
+    /// A published space opens for anyone from its address, as an
+    /// observer, and an unpublished one does not.
+    ///
+    /// The whole path a person takes, asserted on what each one sees:
+    /// the owner makes the space public from the bar; a visitor with no
+    /// invite and no passkey opens `/space/{did}` and the page claims the
+    /// space's public ticket, replicates the space, and shows it by name
+    /// with "observing" beside it and no share link (a reader cannot
+    /// mint one). The owner, a member, never sees "observing". Once the
+    /// owner makes the space private again, the next visitor gets the
+    /// private wall.
+    #[dialog_common::test]
+    async fn it_opens_a_published_space_to_a_visitor_as_an_observer(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let owner = driver_with_prf(&env).await?;
+        sign_up(&owner, &env, "publisher@example.com").await?;
+        let key = create_space_awaiting_remote(&owner, "Open Garden", true).await?;
+        // Open it directly rather than waiting on the creation's own
+        // navigation: what is under test starts on the space's page.
+        goto(&owner, env.tonk_web.join(&format!("space/{key}"))?.as_str()).await?;
+        await_url_containing(&owner, &format!("/space/{key}")).await?;
+        successful_body(
+            "push space",
+            &post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+        let info = get_json(&owner, &format!("/api/repository/{key}")).await?;
+        let subject = successful_body("read the space", &info)["subject"]
+            .as_str()
+            .context("the space has no subject")?
+            .to_owned();
+
+        open_space_actions(&owner).await?;
+        click_publication_action(&owner, "publish").await?;
+        // Pressing an action closes the menu; the stamp is what the click
+        // changed, and the menu, reopened, offers the way back.
+        let published = await_space_page(&owner, "the owner's bar knows it public", |state| {
+            state["published"] == true
+        })
+        .await?;
+        open_space_actions(&owner).await?;
+        await_space_page(&owner, "the owner is offered to make it private", |state| {
+            state["unpublish"] == true && state["publish"] == false
+        })
+        .await?;
+        assert_eq!(
+            published["observing"], false,
+            "the owner is a member, not an observer: {published}"
+        );
+
+        // A visitor: a fresh browser, no account, no invite. Only the
+        // space's address, which is the first page it loads, as following
+        // a link would be.
+        let address = env.tonk_web.join(&format!("space/{subject}"))?;
+        let visitor = env.blank_driver().await?;
+        goto(&visitor, address.as_str()).await?;
+        let observed = await_space_page(&visitor, "the visitor sees the space", |state| {
+            state["name"] == "Open Garden" && state["observing"] == true
+        })
+        .await?;
+        assert_eq!(
+            observed["private"], false,
+            "a published space never shows its visitor the private wall: {observed}"
+        );
+        open_space_actions(&visitor).await?;
+        // The menu is open (its home action shows), so what is missing from
+        // it is left out, not merely folded away.
+        let offered = await_space_page(&visitor, "the visitor's menu opens", |state| {
+            state["home"] == true
+        })
+        .await?;
+        assert_eq!(
+            offered["share"], false,
+            "an observer is not offered a share link it cannot mint: {offered}"
+        );
+        assert_eq!(
+            offered["unpublish"], false,
+            "an observer is not offered to make the space private: {offered}"
+        );
+
+        // The owner takes it back.
+        click_publication_action(&owner, "unpublish").await?;
+        await_space_page(&owner, "the owner's bar knows it private", |state| {
+            state["published"] == false
+        })
+        .await?;
+
+        let latecomer = env.blank_driver().await?;
+        goto(&latecomer, address.as_str()).await?;
+        let refused =
+            await_space_page(&latecomer, "the latecomer sees the private wall", |state| {
+                state["private"] == true
+            })
+            .await?;
+        assert_eq!(
+            refused["observing"], false,
+            "nothing opens for the latecomer: {refused}"
+        );
+
+        latecomer.quit().await?;
+        visitor.quit().await?;
+        owner.quit().await?;
+        Ok(())
+    }
+
     /// Link a second browser to an existing account the way a page from
     /// before the encryption key existed did: the account passkey signs
     /// this device in, and the root is stored WITHOUT the key. The

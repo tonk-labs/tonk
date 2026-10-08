@@ -164,6 +164,13 @@ button,a{ min-height:48px; font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Na
 /* publishing: one of the two shows, from what the space records (see
    `<ui-space-publication>`); neither without a space or an account, nor to
    anyone who does not run the space (`data-manages`, from the roster) */
+/* observing: a reader of a published space, not a member (`data-observer`,
+   from the roster). The bar says so beside the name, and leaves out the
+   links a reader cannot mint. */
+.space .observing{ flex:none; margin-left:10px; padding:1px 7px; border:1px solid currentColor;
+  border-radius:999px; font-size:.75em; font-weight:500; opacity:.75; }
+:host(:not([data-observer])) .space .observing,
+:host([data-observer]) .share,:host([data-observer]) .agent{ display:none; }
 :host([data-published]) .publish,:host(:not([data-published])) .unpublish,
 :host([data-unknown-space]) .publish,:host([data-unknown-space]) .unpublish,
 :host([data-account-required]) .publish,:host([data-account-required]) .unpublish,
@@ -234,7 +241,7 @@ pub const BAR_HTML: &str = r#"<div class="w">
   <div class="bar" part="bar">
     <div class="header">
       <button class="fab" data-cell="sync" part="fab" aria-label="collapse bar"><span class="disc st"></span></button>
-      <button class="space" data-cell="space" aria-expanded="false" aria-controls="fabb-actions"><span class="n"></span></button>
+      <button class="space" data-cell="space" aria-expanded="false" aria-controls="fabb-actions"><span class="n"></span><span class="observing">observing</span></button>
       <slot name="command"></slot>
     </div>
     <div class="agent-feedback"><div class="agent-feedback-clip"><p class="agent-feedback-message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m20 6-11 11-5-5"/></svg><span class="agent-notice" role="status" aria-live="polite"></span></p></div></div>
@@ -731,6 +738,17 @@ mod tests {
         assert!(REFUSAL_DIALOGS_HTML.contains("<tonk-dialog id=\"fabb-tool-connection-cluster\""));
         assert!(REFUSAL_DIALOGS_HTML.contains("heading=\"connect a tool\""));
         assert!(REFUSAL_DIALOGS_HTML.contains("slot=\"actions\" solid data-tool-copy-prompt"));
+    }
+
+    /// A reader of a published space sees "observing" beside its name, and
+    /// no share or agent link, which a reader cannot mint.
+    #[test]
+    fn it_says_beside_the_name_when_the_viewer_observes() {
+        assert!(BAR_HTML.contains(r#"<span class="observing">observing</span>"#));
+        assert!(BAR_CSS.contains(":host(:not([data-observer])) .space .observing"));
+        assert!(BAR_CSS.contains(
+            ":host([data-observer]) .share,:host([data-observer]) .agent{ display:none; }"
+        ));
     }
 
     /// The bar offers exactly one of "make space public" and "make space
