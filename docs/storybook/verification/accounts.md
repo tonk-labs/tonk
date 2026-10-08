@@ -16,6 +16,16 @@ joined, and local-only spaces to prove the boundary.
 
 ## Account lifecycle
 
+`LIFE-30` covers repeated same-account sign-in after a grant was superseded.
+Its focused regressions pass on this change: native account retention (40
+account tests total), worker identity (13 browser tests), and onboarding
+(10 browser tests). A desktop using the patched worker and foundation approval
+also reported matching local/remote space revisions. This is not full browser,
+Safari, interruption, or production-deployment coverage. Mixing an older
+production reader with a newer storage-format writer blocked the initial live
+attempt; use compatible runtimes and disposable remote data for reproduction.
+
+
 | ID | P | Condition | Claim | Setup | Steps | Expected | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `LIFE-01` | P2 | fresh-browser | Legacy account routes canonicalize without losing intent ([Resolve](../accounts/lifecycle.md#resolve)). | Fresh browser; prepare `revoke`, `add`, `delete-space`, callback, and safe `next` queries. | 1. Open `/account` and `/account/link` variants.<br>2. Use back/forward.<br>3. Reload. | URL is `/settings*`; query is retained exactly once; one account element mounts; no action auto-submits. | — |
@@ -47,6 +57,8 @@ joined, and local-only spaces to prove the boundary.
 | `LIFE-21` | P1 | two-actor + fault | Enter/blur/concurrent account renames have one defined result ([Edge cases](../accounts/lifecycle.md#edge-cases)). | Ready account on two devices; scripted local API transport/body failures. | 1. Rename with Enter so blur also fires.<br>2. Confirm the field loses focus and has no resting edit cursor.<br>3. Concurrently rename from device B.<br>4. Trigger a failed response.<br>5. Sync/reload. | Enter ends the edit and shares the blur-save path; the settled field does not blink; one request per local edit; defined shared winner/current name; loser UI refreshes; a failed edit restores the confirmed value and gives rename-specific connection/retry guidance without API route, status, or error-kind text. | — |
 | `LIFE-22` | P1 | cli + corrupt | CLI status reports every local state without remote dependency ([Resolve](../accounts/lifecycle.md#resolve)). | Isolated fixtures `I0`–`I4`, `S0`/`S3`, malformed/unsupported state; provider blocked. | 1. Run human and JSON status in new processes.<br>2. Capture streams/code.<br>3. Confirm no network. | Stable distinct states and schema; malformed/version error actionable; zero remote calls. | — |
 | `LIFE-23` | P2 | browser + keyboard + responsive | Settings geometry preserves one coherent Account/Devices surface ([Settings presentation decision](../accounts/lifecycle.md#settings-presentation-decision)). | Ready account with several devices and visible status/error notices; desktop and 390 px viewports. | 1. Open `/settings` directly.<br>2. Switch Account/Devices with pointer and keyboard.<br>3. Focus notices and resize to compact.<br>4. Inspect deletion descriptions. | Desktop rail/body are 144/576 px in a 720 px frame; panels keep equal height; selected tab and notices have no double focus/border seam; compact content remains usable; permanent deletion has both consequence and boundary descriptions. | — |
+
+| `LIFE-30` | P1 | returning-browser + restart | Re-sign-in selects the current device grant ([The simple case](../accounts/lifecycle.md#the-simple-case)). | Same account/device with old and current grants; unrelated scoped/account/device grants; stale cached branch. | 1. Sign out and sign back in.<br>2. Restart with obsolete retained grants.<br>3. Repeat with the same identity record.<br>4. Inspect retained authority and sync. | Current grant remains; superseded same-account/device powerlines are removed; unrelated authority survives; stale-handle sign-out cannot silently miss its grant. | Focused regressions: `it_replaces_obsolete_device_grants_and_repairs_a_repeat`, `it_repairs_obsolete_grants_when_following_an_existing_root`, `it_retracts_a_device_grant_added_after_the_branch_was_cached`. Full journey remains unverified. |
 
 ## Browser/CLI handoff
 

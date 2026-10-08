@@ -75,28 +75,13 @@ pub async fn serve(
             TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
         })?;
 
-    // Content type from the blob's metadata fact, if asserted.
-    let ct_attr: Attribute = "xyz.tonk.blob/content-type"
-        .parse()
-        .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {}", e)))?;
-    let ct_stream = branch
-        .claims()
-        .select(ArtifactSelector::new().the(ct_attr).of(entity.clone()))
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("content-type query: {}", e)))?;
-    tokio::pin!(ct_stream);
-    let content_type = match ct_stream.next().await {
-        Some(Ok(artifact)) => artifact
-            .value()
-            .ok()
-            .and_then(|value| String::try_from(value).ok())
+    // Media type from the asset's metadata, if asserted: the current
+    // attribute, or the legacy one blobs were described with before.
+    let content_type = match first_text(&branch, &tonk.operator, MEDIA_TYPE, &entity).await? {
+        Some(media_type) => media_type,
+        None => first_text(&branch, &tonk.operator, LEGACY_CONTENT_TYPE, &entity)
+            .await?
             .unwrap_or_else(|| "application/octet-stream".to_string()),
-        Some(Err(e)) => {
-            log!("blob: content-type query error: {:?}", e);
-            "application/octet-stream".to_string()
-        }
-        None => "application/octet-stream".to_string(),
     };
 
     // Blob bytes from the branch's content-addressed store.
@@ -144,11 +129,53 @@ pub struct BlobUploadResponse {
     pub size: usize,
 }
 
+/// The asset media type attribute every writer records (`tonk:asset`).
+const MEDIA_TYPE: &str = "tonk.dialog.asset/media-type";
+/// The asset name attribute every writer records (`tonk:asset`).
+const NAME: &str = "tonk.dialog.asset/name";
+/// The media type blobs were described with before `tonk:asset`, which
+/// older blobs and templates writing `tonk:blob` themselves still carry.
+const LEGACY_CONTENT_TYPE: &str = "xyz.tonk.blob/content-type";
+/// The legacy name attribute, read beside [`NAME`] for the same reason.
+const LEGACY_NAME: &str = "xyz.tonk.blob/name";
+
+/// The current text value of `attribute` on `entity`, if any. A failed
+/// read is logged and treated as absent: these facts describe content
+/// the route can still serve without them.
+async fn first_text(
+    branch: &dialog_repository::Branch,
+    operator: &crate::worker::DefaultOperator,
+    attribute: &str,
+    entity: &Entity,
+) -> Result<Option<String>, TonkWorkerError> {
+    let attribute: Attribute = attribute
+        .parse()
+        .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
+    let stream = branch
+        .claims()
+        .select(ArtifactSelector::new().the(attribute).of(entity.clone()))
+        .perform(operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("metadata query: {e}")))?;
+    tokio::pin!(stream);
+    Ok(match stream.next().await {
+        Some(Ok(artifact)) => artifact
+            .value()
+            .ok()
+            .and_then(|value| String::try_from(value).ok()),
+        Some(Err(e)) => {
+            log!("blob: metadata query error: {:?}", e);
+            None
+        }
+        None => None,
+    })
+}
+
 /// Handler for `POST /api/repository/{repo}/branch/{branch}/blob`.
 ///
 /// Buffers the request body, writes it into the branch's content-addressed
-/// blob store, and asserts the blob's `xyz.tonk.blob/content-type` and
-/// `xyz.tonk.blob/name` facts — the name fact is always asserted, defaulting
+/// blob store, and asserts the asset's `tonk.dialog.asset/media-type` and
+/// `tonk.dialog.asset/name` facts — the name fact is always asserted, defaulting
 /// to an existing fact (on a headerless re-upload) or the entity string when
 /// the `X-Tonk-Blob-Name` header is absent — so the read route (`serve`, above) and
 /// `<tonk-display model=tonk:blob>` work immediately. Idempotent by content
@@ -221,46 +248,27 @@ pub async fn upload(
     // mirroring `tonk blob add`. Committed through the reactor (like
     // `claim::assert_claim`), then drain the scheduled poll so subscribers
     // on this branch see the new facts.
-    let ct_attr: Attribute = "xyz.tonk.blob/content-type"
+    let media_type_attr: Attribute = MEDIA_TYPE
+        .parse()
+        .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
+    let name_attr: Attribute = NAME
         .parse()
         .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
 
     // Effective name: an explicit header wins; otherwise an already-
-    // asserted name fact is preserved (a raw re-upload must not clobber
-    // a good name with the hash default); otherwise the entity string.
-    // The name fact must always land — the `tonk:blob` concept query
-    // matches only rows with every field present, so a nameless blob
-    // would never reach the seeded media view.
-    let name_attr: Attribute = "xyz.tonk.blob/name"
-        .parse()
-        .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
+    // asserted name fact is preserved, current or legacy (a raw re-upload
+    // must not clobber a good name with the hash default); otherwise the
+    // entity string. The name fact must always land — the `tonk:asset`
+    // concept query matches only rows with every field present, so a
+    // nameless asset would never reach the seeded media view.
     let name = match name {
         Some(n) => n,
-        None => {
-            let existing = branch_handle
-                .claims()
-                .select(
-                    ArtifactSelector::new()
-                        .the(name_attr.clone())
-                        .of(entity.clone()),
-                )
-                .perform(&tonk.operator)
-                .await
-                .map_err(|e| TonkWorkerError::Internal(format!("name query: {e}")))?;
-            tokio::pin!(existing);
-            match existing.next().await {
-                Some(Ok(artifact)) => artifact
-                    .value()
-                    .ok()
-                    .and_then(|value| String::try_from(value).ok())
-                    .unwrap_or_else(|| entity.to_string()),
-                Some(Err(e)) => {
-                    log!("blob: name query error: {:?}", e);
-                    entity.to_string()
-                }
-                None => entity.to_string(),
-            }
-        }
+        None => match first_text(&branch_handle, &tonk.operator, NAME, &entity).await? {
+            Some(existing) => existing,
+            None => first_text(&branch_handle, &tonk.operator, LEGACY_NAME, &entity)
+                .await?
+                .unwrap_or_else(|| entity.to_string()),
+        },
     };
 
     let tx = tonk
@@ -269,7 +277,7 @@ pub async fn upload(
         .branch(&path.branch)
         .transaction()
         .assert(RawClaim {
-            the: ct_attr,
+            the: media_type_attr,
             of: entity.clone(),
             is: Value::String(content_type.clone()),
             policy: dialog_artifacts::Policy::Last,
@@ -319,6 +327,156 @@ mod tests {
 
     use crate::api_router_from_state;
     use crate::router::tests::{put_repo, test_state};
+
+    /// Read back what the branch holds under `attribute` for `entity`.
+    async fn fact(
+        app_state: &Arc<RwLock<crate::TonkState>>,
+        repo: &str,
+        attribute: &str,
+        entity: &str,
+    ) -> Option<String> {
+        let guard = app_state.read().await;
+        let repository = guard
+            .profile
+            .space(repo)
+            .load()
+            .perform(&guard.operator)
+            .await
+            .unwrap();
+        let branch = repository
+            .branch("main")
+            .open()
+            .perform(&guard.operator)
+            .await
+            .unwrap();
+        super::first_text(
+            &branch,
+            &guard.operator,
+            attribute,
+            &entity.parse().unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn post(
+        app: &axum::Router,
+        uri: String,
+        body: Body,
+        name: Option<&str>,
+    ) -> serde_json::Value {
+        let mut request = Request::builder()
+            .uri(uri)
+            .method("POST")
+            .header("content-type", "image/png");
+        if let Some(name) = name {
+            request = request.header("x-tonk-blob-name", name);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(body).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// An upload describes the asset with the `tonk:asset` attributes
+    /// alone; the legacy ones are left to blobs that already carry them.
+    #[dialog_common::test]
+    async fn it_records_an_upload_with_the_asset_attributes() {
+        let tonk = test_state().await;
+        let app_state = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = api_router_from_state(app_state.clone());
+        let repo = put_repo(&app, "blob-asset-attributes").await;
+
+        let json = post(
+            &app,
+            format!("/api/repository/{repo}/branch/main/blob"),
+            Body::from(b"\x89PNG\r\n\x1a\nnew".to_vec()),
+            Some("new.png"),
+        )
+        .await;
+        let entity = json["entity"].as_str().unwrap();
+
+        assert_eq!(
+            fact(&app_state, &repo, super::MEDIA_TYPE, entity)
+                .await
+                .as_deref(),
+            Some("image/png")
+        );
+        assert_eq!(
+            fact(&app_state, &repo, super::NAME, entity)
+                .await
+                .as_deref(),
+            Some("new.png")
+        );
+        assert_eq!(
+            fact(&app_state, &repo, super::LEGACY_CONTENT_TYPE, entity).await,
+            None
+        );
+        assert_eq!(
+            fact(&app_state, &repo, super::LEGACY_NAME, entity).await,
+            None
+        );
+    }
+
+    /// A blob named the legacy way keeps its name when the same bytes are
+    /// uploaded again without one, rather than falling back to its hash.
+    #[dialog_common::test]
+    async fn it_keeps_a_legacy_name_on_a_nameless_re_upload() {
+        let tonk = test_state().await;
+        let app_state = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = api_router_from_state(app_state.clone());
+        let repo = put_repo(&app, "blob-legacy-name").await;
+        let payload = b"\x89PNG\r\n\x1a\nlegacy".to_vec();
+
+        let entity = post(
+            &app,
+            format!("/api/repository/{repo}/branch/main/blob"),
+            Body::from(payload.clone()),
+            Some("ignored.png"),
+        )
+        .await["entity"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // Make it look like a blob from before `tonk:asset`: only the
+        // legacy name, through the ordinary claim routes.
+        for (method, attribute, value) in [
+            ("retract", super::NAME, "ignored.png"),
+            ("assert", super::LEGACY_NAME, "legacy.png"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "/api/repository/{repo}/branch/main/claim/{method}/{entity}/{attribute}"
+                        ))
+                        .method("POST")
+                        .header("content-type", "text/plain")
+                        .body(Body::from(value))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{method} {attribute}");
+        }
+        assert_eq!(fact(&app_state, &repo, super::NAME, &entity).await, None);
+
+        let json = post(
+            &app,
+            format!("/api/repository/{repo}/branch/main/blob"),
+            Body::from(payload),
+            None,
+        )
+        .await;
+        assert_eq!(json["name"], "legacy.png");
+    }
 
     #[dialog_common::test]
     async fn it_serves_blob_bytes_with_the_asserted_content_type() {
@@ -385,7 +543,7 @@ mod tests {
         assert_eq!(
             resp.headers().get("content-type").unwrap(),
             "image/png",
-            "Content-Type comes from the xyz.tonk.blob/content-type fact",
+            "a blob described the legacy way is served with its content type",
         );
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await

@@ -862,9 +862,9 @@ mod when_defining_an_element {
 
     /// Collections are exempt from the completeness check because
     /// omitting one means zero entries. BLANKING one is different: `_`
-    /// retracts, and retracting every field of an entity that does not
-    /// exist yet sets nothing at all — on a derived entity every such
-    /// body digests alike and collapses onto one subject.
+    /// retracts, and an entity derived from the body does not exist
+    /// yet, so there is nothing to retract from — the analyzer refuses
+    /// any retraction whose `this:` reaches no existing entity.
     ///
     /// Uses a concept whose `with:` is nothing but a collection, since
     /// `element`'s required `description` would trip the check first.
@@ -886,7 +886,7 @@ mod when_defining_an_element {
             .expect_err("a body that sets nothing should be refused");
         let text = err.to_string();
         assert!(
-            text.contains("sets only some of the concept's fields"),
+            text.contains("retracts `bit: _` but `this:` is omitted"),
             "{text}",
         );
         Ok(())

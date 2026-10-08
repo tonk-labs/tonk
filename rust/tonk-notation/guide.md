@@ -212,11 +212,30 @@ Within a mapping body, two reserved meta-keys do meta work:
 - **`..: _`** — rest-of-attributes retraction. On `head!:`,
   retracts every attribute in the concept's `with:` map that
   isn't explicitly set elsewhere in the body. The `..` key is
-  reserved; it cannot appear with any other value.
+  reserved; it cannot appear with any other value, and a query
+  (`head:`) or claim-domain head carrying it is an error.
 
 If `this:` is omitted from an assertion, the entity is derived
 from the content. If omitted from a query, `this` is a free
 variable matching any entity.
+
+A retraction (`field: _` or `..: _`) needs `this:` to select an
+existing entity: a name, a URI, or a `?var` a query binds. With
+`this:` omitted, or a `?var` nothing binds, the entity would be
+fresh, with nothing to retract, so the analyzer refuses it. The
+named fields of an assertion always set values; they never
+select. To delete every instance matching some fields, select
+them with a query:
+
+```yaml tonk=parse
+ticket:
+  this: ?t
+  queue: "writer"
+
+ticket!:
+  this: ?t
+  ..: _
+```
 
 ## The `this:` meta-key
 
@@ -282,6 +301,7 @@ note!:
   this: id:today
   body: !include/text ./today.md   # the file's text
   cover: !include ../media/a.webp  # the file's bytes
+  photo: !include/asset ./photo.png # a reference to the file, stored as an asset
 ```
 
 The reference is a URI reference resolved against the location of
@@ -295,6 +315,15 @@ including a field with no declared type, it stays bytes.
 `!include/text` asks for text outright, which is what an untyped
 field needs to hold text. Content that is not UTF-8 is refused
 wherever text is asked for, rather than decoded lossily.
+
+`!include/asset` stores the file as an asset and writes its
+`asset:<hash>` reference, so the field is an entity (`as: entity`)
+rather than the bytes themselves. The bytes land in the space's blob
+store in the same commit, and the asset's content type (from the file
+extension) and file name are asserted with them, which is what the
+standard media view renders from. A query returns the reference, not
+the bytes. Including the same bytes again stores nothing new. Only the
+CLI can store assets; elsewhere the include is rejected.
 
 Only a document that has a location can include. `tonk eval
 note.yaml` reads includes relative to `note.yaml`; a document with
