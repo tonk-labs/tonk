@@ -359,11 +359,13 @@ async fn mint_for(
     // An open invite with a remote leaves its grant in the space as the
     // ephemeral key's ticket, and the link names only the space and the
     // key's seed, on the host serving the space, where the recipient
-    // claims it. Everything else — a scoped invite, a local-only space, or
-    // an open one whose ticket the space did not keep — carries the chain
-    // in `access=`, which redeems the same way.
+    // claims it. Everything else — a scoped invite, a local-only space, an
+    // open one whose ticket the space did not keep, or one asked for on a
+    // base off the remote's origin (a ticket is claimed from the origin
+    // its link is on, which has to be the host keeping it) — carries the
+    // chain in `access=`, which redeems the same way.
     let ticket_link = match (&invite.audience, &invite.remote_url) {
-        (InviteAudience::Open { seed }, Some(remote)) => {
+        (InviteAudience::Open { seed }, Some(remote)) if on_origin_of(base_url, remote) => {
             issue_ticket(site, remote, &invite.chain, *seed).await
         }
         _ => None,
@@ -388,6 +390,12 @@ async fn mint_for(
         subject: site.repository.did(),
         audience,
     })
+}
+
+/// Whether a link built on `base` lands on `remote`'s origin: no base,
+/// or one on the same origin.
+fn on_origin_of(base: Option<&str>, remote: &Url) -> bool {
+    base.is_none_or(|base| Url::parse(base).is_ok_and(|base| base.origin() == remote.origin()))
 }
 
 /// Leave an open invite's `chain` in its space, at the service at

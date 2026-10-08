@@ -4165,10 +4165,15 @@ pub(crate) mod tests {
         // wrote it: the copy is a user gesture, which is what grants the
         // permission, and the row behind it is overlay-only so no query
         // from out here can reach it.
+        // An open invite is a ticket link: the space's own address, with
+        // the seed of the key its ticket is kept for as the fragment.
         let invite = copied_text(&driver).await?;
+        let (address, seed) = invite
+            .split_once('#')
+            .ok_or_else(|| anyhow!("an invite carries its seed in a fragment, got {invite:?}"))?;
         assert!(
-            invite.contains("/join") || invite.contains("/@/"),
-            "the copied link must be an invite, got {invite:?}",
+            address.contains(&format!("/space/{key}")) && !seed.is_empty(),
+            "the copied link must be a ticket link into the space, got {invite:?}",
         );
         let guest = driver_with_prf(&env).await?;
         guest.goto(&invite).await?;
@@ -6486,9 +6491,11 @@ pub(crate) mod tests {
         let (address, seed) = invite
             .split_once('#')
             .ok_or_else(|| anyhow!("an invite carries its seed in a fragment, got {invite:?}"))?;
+        // A ticket link: the space's own address. The delegation stays in
+        // the space as the key's ticket, so none rides in the URL.
         assert!(
-            address.contains("/join?") && address.contains("access="),
-            "the copied link must be a join address carrying a delegation, got {address:?}",
+            address.contains(&format!("/space/{key}")) && !address.contains("access="),
+            "the copied link must be a ticket link into the space, got {address:?}",
         );
         assert!(
             !seed.is_empty(),
