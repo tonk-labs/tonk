@@ -1642,6 +1642,14 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
+      "claim": "Re-sign-in selects the current device grant (The simple case).",
+      "device": "returning-browser + restart",
+      "file": "verification/accounts.md",
+      "id": "LIFE-30",
+      "priority": "P1",
+      "result": "Focused regressions: it_replaces_obsolete_device_grants_and_repairs_a_repeat, it_repairs_obsolete_grants_when_following_an_existing_root, it_retracts_a_device_grant_added_after_the_branch_was_cached. Full journey remains unverified."
+    },
+    {
       "claim": "Linked browser approves a waiting CLI end to end (Simple case).",
       "device": "hybrid",
       "file": "verification/accounts.md",
@@ -2389,7 +2397,7 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 13,
+    "other": 14,
     "pass": 2,
     "unrun": 107
   },
