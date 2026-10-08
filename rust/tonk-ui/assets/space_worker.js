@@ -90,6 +90,72 @@ const SHELL_PATH = PROFILE ? "/profile.html" : "/space.html";
 
 const log = (...args) => console.log(PROFILE ? "[Profile Worker]" : "[Space Worker]", ...args);
 
+// ---- Introspection -------------------------------------------------------
+//
+// Everything this worker logs is kept in a bounded ring, and `GET
+// /api/health` answers from this script without the Rust worker: a worker
+// that fails to come up can still say why, to one fetch from any page of
+// its origin.
+const LOG_RING_CAPACITY = 5000;
+const logRing = [];
+const remember = (level, message) => {
+    logRing.push({ t: Date.now(), level, message: message.slice(0, 2000) });
+    if (logRing.length > LOG_RING_CAPACITY) logRing.shift();
+};
+for (const level of ["log", "warn", "error"]) {
+    const original = console[level].bind(console);
+    console[level] = (...args) => {
+        remember(
+            level,
+            args
+                .map(arg => {
+                    if (typeof arg === "string") return arg;
+                    try {
+                        return arg instanceof Error ? arg.stack || String(arg) : JSON.stringify(arg);
+                    } catch {
+                        return String(arg);
+                    }
+                })
+                .join(" "),
+        );
+        original(...args);
+    };
+}
+self.addEventListener("unhandledrejection", event => {
+    remember("error", `unhandledrejection: ${event.reason?.stack || event.reason}`);
+});
+
+// How bringing the Rust worker up has gone: whether it is up, the last
+// failure, and how many times it was tried.
+const workerHealth = {
+    state: "idle", // idle | initializing | ok | failed
+    // The hash this script checked the wasm it booted against: evidence
+    // that the worker runs the wasm built with it.
+    workerWasm: null,
+    error: null,
+    attempts: 0,
+    lastAttemptAt: null,
+    startedAt: Date.now(),
+};
+
+function healthResponse() {
+    return new Response(
+        JSON.stringify({
+            site: PROFILE ? "profile" : "space",
+            worker: workerHealth.state,
+            workerWasm: workerHealth.workerWasm,
+            error: workerHealth.error,
+            attempts: workerHealth.attempts,
+            lastAttemptAt: workerHealth.lastAttemptAt,
+            startedAt: workerHealth.startedAt,
+            // The whole ring: a diagnostic that keeps only the tail has
+            // already lost the phase it was asked about.
+            log: logRing.slice(),
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+    );
+}
+
 self.addEventListener("install", event => {
     self.skipWaiting();
     event.waitUntil(
@@ -946,7 +1012,11 @@ async function forgetSite() {
 let rust;
 
 function siteWorker() {
-    rust ??= Promise.resolve()
+    if (rust) return rust;
+    workerHealth.state = "initializing";
+    workerHealth.attempts += 1;
+    workerHealth.lastAttemptAt = Date.now();
+    rust = Promise.resolve()
         .then(async () => {
             // The Rust worker makes links for people to follow, which lead
             // to the app and not to this origin.
@@ -976,10 +1046,16 @@ function siteWorker() {
             // this is a new worker and asks again what it was still being
             // answered. A profile's worker answers to none.
             if (!PROFILE && !hostPort) portToHost().catch(() => {});
+            workerHealth.state = "ok";
+            workerHealth.workerWasm = WORKER_WASM_HASH;
+            workerHealth.error = null;
             return worker;
         })
         .catch(error => {
             rust = null;
+            workerHealth.state = "failed";
+            workerHealth.workerWasm = null;
+            workerHealth.error = String(error?.message || error).slice(0, 2000);
             throw error;
         });
     return rust;
@@ -1633,6 +1709,15 @@ self.addEventListener("fetch", event => {
                 return new Response(String(error.message), { status: 502 });
             }),
         );
+        return;
+    }
+    // Answered from this script, never the Rust worker: health has to be
+    // readable just when the worker cannot answer for itself.
+    if (
+        url.pathname === "/api/health" &&
+        (event.request.method === "GET" || event.request.method === "HEAD")
+    ) {
+        event.respondWith(healthResponse());
         return;
     }
     if (url.pathname.startsWith("/api/")) {

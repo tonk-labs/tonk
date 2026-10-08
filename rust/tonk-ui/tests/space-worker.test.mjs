@@ -332,3 +332,30 @@ test("a worker that holds its space already has nothing to report", async () => 
 
   assert.deepEqual(stages(), []);
 });
+
+test("a site's worker says how it is, without its database having to be up", async () => {
+  const { answer, asked } = site({ host: "profile.tonk.test" });
+
+  const before = await (await answer("/api/health")).json();
+  assert.equal(before.site, "profile");
+  assert.equal(before.worker, "idle", "asking how it is does not bring the database up");
+  assert.equal(before.workerWasm, null);
+  assert.equal(typeof before.startedAt, "number");
+  assert.ok(Array.isArray(before.log));
+
+  await answer("/api/identify");
+  const after = await (await answer("/api/health")).json();
+  assert.equal(after.worker, "ok");
+  assert.equal(after.workerWasm, "dev", "it names the wasm it checked itself against");
+  assert.equal(after.attempts, 1);
+  assert.equal(after.startedAt, before.startedAt, "the same worker answered both");
+  assert.deepEqual(asked, [], "health is never asked of the routes");
+});
+
+test("a space's worker says how it is to its own pages", async () => {
+  const { answer } = site();
+
+  const health = await (await answer("/api/health")).json();
+
+  assert.equal(health.site, "space");
+});
