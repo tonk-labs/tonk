@@ -14,6 +14,9 @@ const BUILD_ID = "dev";
 const CACHE = `TONK_APP_${BUILD_ID}`;
 const KEEPS = BUILD_ID !== "dev";
 const PAGE = new URL("/", self.location.origin).href;
+// Where the deployment says its sites are. The page cannot frame the
+// profile's site without it, so it is kept like the page is.
+const CONFIG = new URL("/.well-known/tonk", self.location.origin).href;
 
 // What the server answers itself: the access service's routes, a short
 // link, the agent's static pages, and what names the latest build.
@@ -49,6 +52,7 @@ self.oninstall = event => {
         if (KEEPS) {
             const cache = await caches.open(CACHE);
             await cache.add(new Request(PAGE, { cache: "reload" }));
+            await cache.add(new Request(CONFIG, { cache: "reload" })).catch(() => {});
         }
         await self.skipWaiting();
     })());
@@ -64,19 +68,19 @@ self.onactivate = event => {
     })());
 };
 
-// The page, from the server when it answers and from what is kept when it
-// does not.
-async function page() {
+// The page or the configuration at `url`, from the server when it answers
+// and from what is kept when it does not.
+async function latest(url) {
     try {
-        const fresh = await fetch(PAGE, { cache: "no-store" });
+        const fresh = await fetch(url, { cache: "no-store" });
         if (fresh.ok) {
-            if (KEEPS) (await caches.open(CACHE)).put(PAGE, fresh.clone());
+            if (KEEPS) (await caches.open(CACHE)).put(url, fresh.clone());
             return fresh;
         }
     } catch {
         // Offline: what is kept answers below.
     }
-    return (await caches.match(PAGE, { cacheName: CACHE })) ?? Response.error();
+    return (await caches.match(url, { cacheName: CACHE })) ?? Response.error();
 }
 
 // A file the page loads: kept once fetched, and answered from what is kept.
@@ -118,7 +122,11 @@ self.onfetch = event => {
     const url = new URL(request.url);
     if (request.method !== "GET" || url.origin !== self.location.origin) return;
     if (request.mode === "navigate") {
-        if (isPage(url)) event.respondWith(page());
+        if (isPage(url)) event.respondWith(latest(PAGE));
+        return;
+    }
+    if (KEEPS && url.href === CONFIG) {
+        event.respondWith(latest(CONFIG));
         return;
     }
     if (KEEPS && !served(url.pathname)) event.respondWith(file(request));

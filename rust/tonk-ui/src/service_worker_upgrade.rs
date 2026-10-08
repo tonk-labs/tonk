@@ -1063,7 +1063,9 @@ pub(crate) mod tests {
 
         driver.enter_default_frame().await?;
         driver.goto(env.tonk_web.as_str()).await?;
-        let historical = wait_for_hub_snapshot(&driver).await?;
+        let historical = wait_for_hub_snapshot(&driver)
+            .await
+            .context("the hub of generation A")?;
         ensure!(
             historical["text"]
                 .as_str()
@@ -1083,7 +1085,9 @@ pub(crate) mod tests {
             .context("the current worker reported no start time")?;
 
         driver.goto(env.tonk_web.as_str()).await?;
-        let repaired = wait_for_hub_snapshot(&driver).await?;
+        let repaired = wait_for_hub_snapshot(&driver)
+            .await
+            .context("the hub after the upgrade")?;
         ensure!(
             repaired["text"]
                 .as_str()
@@ -1127,7 +1131,9 @@ pub(crate) mod tests {
         let offline_result: Result<()> = async {
             driver.refresh().await?;
             driver.goto(env.tonk_web.as_str()).await?;
-            let offline = wait_for_hub_snapshot(&driver).await?;
+            let offline = wait_for_hub_snapshot(&driver)
+                .await
+                .context("the hub with no network")?;
             ensure!(offline["spaces"] == spaces, "{offline}");
             ensure!(
                 offline["text"]
@@ -1145,7 +1151,9 @@ pub(crate) mod tests {
         driver.refresh().await?;
         wait_for_site_generation(&driver, &generation_b).await?;
         driver.goto(env.tonk_web.as_str()).await?;
-        let reconnected = wait_for_hub_snapshot(&driver).await?;
+        let reconnected = wait_for_hub_snapshot(&driver)
+            .await
+            .context("the hub once the network is back")?;
         ensure!(reconnected["spaces"] == spaces, "{reconnected}");
         ensure!(
             reconnected["text"]
@@ -1543,7 +1551,24 @@ pub(crate) mod tests {
             "the page was not asked to load again: {state}"
         );
         // The site, loaded again, renders the same live data from the new worker.
-        assert_eq!(settled_guest_text(&driver).await?, rendered);
+        let again = settled_guest_text(&driver).await?;
+        let differs = rendered
+            .chars()
+            .zip(again.chars())
+            .position(|(before, after)| before != after)
+            .unwrap_or_else(|| rendered.chars().count().min(again.chars().count()));
+        let around = |text: &str| {
+            text.chars()
+                .skip(differs.saturating_sub(80))
+                .take(240)
+                .collect::<String>()
+        };
+        assert!(
+            again == rendered,
+            "the site renders something else under the new worker, from character {differs}:\n before: {}\n after:  {}",
+            around(&rendered),
+            around(&again)
+        );
 
         driver.quit().await?;
         Ok(())

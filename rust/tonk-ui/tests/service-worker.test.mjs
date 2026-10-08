@@ -109,6 +109,24 @@ test("it keeps a file the page loads and answers with it afterwards", async () =
   assert.equal(fetches, 1);
 });
 
+test("it answers where the sites are with no network, from what it kept", async () => {
+  let online = true;
+  const { self, settle, asked } = worker({
+    fetched: async (request) => {
+      if (!online) throw new TypeError("Failed to fetch");
+      const url = typeof request === "string" ? request : request.url;
+      return new Response(new URL(url).pathname === "/.well-known/tonk" ? '{"sites":{}}' : "page", { status: 200 });
+    },
+  });
+  await settle(self.oninstall);
+
+  online = false;
+  const config = await asked("/.well-known/tonk", "cors");
+
+  assert.equal(await config.text(), '{"sites":{}}');
+  assert.equal(asked("/customer/state", "cors"), undefined, "the rest of what the server answers is still the server's");
+});
+
 test("it keeps what the page loaded before it was there, when the page says", async () => {
   const fetched = [];
   const { self, stores, settle } = worker({

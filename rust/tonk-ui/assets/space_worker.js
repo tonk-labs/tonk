@@ -162,15 +162,59 @@ self.addEventListener("install", event => {
         Promise.all([
             caches.open(SHELL_CACHE).then(cache => Promise.all([cache.add(SHELL_PATH), siteOrigins()])),
             pinWorkerWasm(),
+            // A worker installing over another takes over what that one
+            // held in memory, once it has written it down.
+            self.registration.active ? expectOverlayHandoff() : null,
         ]),
     );
 });
 
 // Claim right away: the shell waits for control before it asks the host for
-// its document, so the first load is served assets too.
+// its document, so the first load is served assets too. Not before the
+// worker this one replaces has written down what it held: the Rust worker
+// restores that as it boots, which the first request after the claim starts.
 self.addEventListener("activate", event => {
-    event.waitUntil(Promise.all([self.clients.claim(), dropOtherWorkerWasm()]));
+    event.waitUntil(
+        awaitOverlayHandoff()
+            .catch(error => log("could not wait for what the last worker held:", error))
+            .then(() => Promise.all([self.clients.claim(), dropOtherWorkerWasm()])),
+    );
 });
+
+// ---- What the last worker held ---------------------------------------------
+//
+// The Rust worker's session overlay lives in memory: what a command reported
+// to the page that asked, which nothing derives again. A worker that hands
+// over writes a snapshot of it (see `handoff.rs`, which owns the same cache
+// and key), and its successor holds activation until the snapshot is there,
+// then restores it while booting, before it serves anything.
+const OVERLAY_HANDOFF_CACHE = "TONK_OVERLAY_HANDOFF";
+const OVERLAY_HANDOFF_URL = "/__tonk/overlay-handoff";
+const OVERLAY_HANDOFF_PENDING_URL = "/__tonk/overlay-handoff-pending";
+// A worker handing over writes its snapshot within milliseconds. The bound
+// only matters when it was not running to hand anything over, and must not
+// stall activation.
+const OVERLAY_HANDOFF_WAIT_MS = 1_000;
+
+// Say that a snapshot is to come, dropping one an earlier hand-over that
+// never finished left behind.
+async function expectOverlayHandoff() {
+    const cache = await caches.open(OVERLAY_HANDOFF_CACHE);
+    await cache.delete(OVERLAY_HANDOFF_URL);
+    await cache.put(OVERLAY_HANDOFF_PENDING_URL, new Response(String(Date.now())));
+}
+
+// Wait, bounded, for the snapshot that was said to come. Returns at once
+// when none was: a first worker has no one to take over from.
+async function awaitOverlayHandoff() {
+    const stored = url => caches.match(url, { cacheName: OVERLAY_HANDOFF_CACHE });
+    if (!(await stored(OVERLAY_HANDOFF_PENDING_URL))) return;
+    const deadline = Date.now() + OVERLAY_HANDOFF_WAIT_MS;
+    while (!(await stored(OVERLAY_HANDOFF_URL)) && Date.now() < deadline) {
+        await delay(25);
+    }
+    await (await caches.open(OVERLAY_HANDOFF_CACHE)).delete(OVERLAY_HANDOFF_PENDING_URL);
+}
 
 // ---- This origin's runtime, offline -------------------------------------
 //
@@ -1023,7 +1067,9 @@ function siteWorker() {
             self.tonkAppOrigin = (await siteOrigins())?.app;
         })
         .then(() => init({ module_or_path: workerWasm() }))
-        .then(() => activate(PROFILE ? "profile" : "space", []))
+        // Named by the wasm it runs: the Rust worker tells a snapshot it
+        // wrote itself from one a worker of another build left it.
+        .then(() => activate(WORKER_WASM_HASH, []))
         .then(async worker => {
             if (PROFILE) {
                 // A profile's spaces each have a worker of their own, which

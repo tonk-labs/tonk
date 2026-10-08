@@ -22,9 +22,14 @@ const SPACE = "did:key:zSpace";
 // `holds` is whether the worker already keeps its space's delegation: one
 // that does not has to ask the worker above for it, and bring the space here.
 // `offline` is whether the server can be reached for a newer worker.
-function site({ host = "bspace.tonk.test", routes = {}, failing = false, holds = true, offline = false } = {}) {
+// `incumbent` is whether another worker is the active one as this one starts.
+function site({
+  host = "bspace.tonk.test", routes = {}, failing = false, holds = true, offline = false, incumbent = false,
+} = {}) {
   // How often the worker asked the browser to look for a newer one.
   const looked = { count: 0 };
+  // What the Rust worker was brought up with.
+  const activated = [];
   const origin = `https://${host}`;
   const stores = new Map();
   const key = (request) => (typeof request === "string" ? request : request.url);
@@ -34,6 +39,7 @@ function site({ host = "bspace.tonk.test", routes = {}, failing = false, holds =
     return {
       match: async (request) => store.get(key(request))?.clone(),
       put: async (request, response) => void store.set(key(request), response),
+      add: async (request) => void store.set(key(request), await network(request)),
       keys: async () => [...store.keys()].map((url) => ({ url })),
       delete: async (request) => store.delete(key(request)),
     };
@@ -70,6 +76,7 @@ function site({ host = "bspace.tonk.test", routes = {}, failing = false, holds =
     skipWaiting: async () => {},
     clients: { claim: async () => {}, matchAll: async () => pages },
     registration: {
+      active: incumbent ? {} : null,
       waiting: null,
       addEventListener() {},
       update: async () => {
@@ -89,7 +96,13 @@ function site({ host = "bspace.tonk.test", routes = {}, failing = false, holds =
   };
   const context = vm.createContext({
     self,
-    __rust: { init: async () => {}, activate: async () => rust },
+    __rust: {
+      init: async () => {},
+      activate: async (...named) => {
+        activated.push(named);
+        return rust;
+      },
+    },
     URL, Request, Response, Headers, TextEncoder, TextDecoder, MessageChannel, Promise,
     Uint8Array, crypto,
     console: { log() {}, warn() {}, error() {} },
@@ -173,7 +186,13 @@ function site({ host = "bspace.tonk.test", routes = {}, failing = false, holds =
     return asks;
   };
   const stages = () => told.filter((message) => message.type === "status").map((message) => message.stage);
-  return { answer, admit, asked, connect, stages, looked };
+  // Run one of the worker's lifecycle events to the end of what it waits on.
+  const lifecycle = async (type) => {
+    const pending = [];
+    listeners[type]({ waitUntil: (promise) => void pending.push(promise) });
+    await Promise.all(pending);
+  };
+  return { answer, admit, asked, connect, stages, looked, activated, lifecycle, stores };
 }
 
 const page = { mode: "navigate" };
@@ -396,4 +415,40 @@ test("a look for a newer worker that fails leaves the page served", async () => 
 
   assert.equal(await response.text(), "SHELL");
   assert.equal(looked.count, 1);
+});
+
+test("a worker taking over waits for what the last one held before it serves", async () => {
+  const { lifecycle, stores } = site({ host: "profile.tonk.test", incumbent: true });
+  await lifecycle("install");
+  const handoff = stores.get("TONK_OVERLAY_HANDOFF");
+  assert.ok(handoff.has("/__tonk/overlay-handoff-pending"), "it says a snapshot is to come");
+
+  // The worker it replaces writes the snapshot a moment into the wait.
+  let activated = false;
+  const activating = lifecycle("activate").then(() => { activated = true; });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(activated, false, "it holds activation while the snapshot is still to come");
+  handoff.set("/__tonk/overlay-handoff", new Response("snapshot"));
+  await activating;
+
+  assert.ok(!handoff.has("/__tonk/overlay-handoff-pending"), "the wait is over");
+  assert.ok(handoff.has("/__tonk/overlay-handoff"), "and the snapshot is left for the Rust worker to take");
+});
+
+test("a first worker waits for no one", async () => {
+  const { lifecycle, stores } = site();
+  await lifecycle("install");
+  const started = Date.now();
+  await lifecycle("activate");
+
+  assert.ok(Date.now() - started < 500);
+  assert.equal(stores.get("TONK_OVERLAY_HANDOFF")?.size ?? 0, 0, "and says nothing is to come");
+});
+
+test("the Rust worker is named by the build it runs, to tell its own snapshot from another's", async () => {
+  const { answer, activated } = site({ host: "profile.tonk.test" });
+
+  await answer("/api/identify");
+
+  assert.deepEqual(JSON.parse(JSON.stringify(activated)), [["dev", []]]);
 });
