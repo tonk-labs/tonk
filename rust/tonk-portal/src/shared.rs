@@ -1,18 +1,16 @@
-//! Shared portal setup logic.
+//! Shared setup for the sealed portals.
 //!
 //! Both `<tonk-portal>` and `<tonk-fab-portal>` create a sandboxed iframe
-//! and wire it to the bridge; the only difference is how they style that
-//! iframe. This module provides the common setup path, parameterised by a
+//! at an opaque origin and wire it to the bridge; the only difference is
+//! how they style that iframe. (A `<tonk-site>` frames an origin of its
+//! own, and sets itself up in `site.rs`.) This module provides the common setup path, parameterised by a
 //! caller-supplied style function.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use js_sys::{Function, Reflect};
 use tonk_host::location::{Allow, Location};
 use wasm_bindgen::JsCast;
-use wasm_bindgen::JsValue;
-use wasm_bindgen::closure::Closure;
 use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
 use crate::bridge::{self, PortalState};
@@ -129,7 +127,6 @@ pub(crate) fn connect_portal(
     // can forward a route but the bridge denies anything un-listed.
     state.borrow_mut().set_route(with, allow);
     bridge::register_portal(&iframe, &host, &state);
-    install_method_delegates(&host, &state);
 
     // Append before assigning `srcdoc` so `contentWindow` exists;
     // the `hello` listener matches the live `contentWindow`, so the
@@ -157,28 +154,29 @@ pub(crate) fn connect_portal(
 }
 
 /// Reload the portal's iframe from the current `content` attribute,
-/// cancelling live subscriptions first.
+/// cancelling relayed fetches first.
 ///
 /// Shared by both portal elements; `content`/`entity`/`model` attribute
 /// changes call this.
 pub(crate) fn reload_portal(host: &Element, state: &Rc<RefCell<PortalState>>) {
     bridge::disconnect_task(state);
     let mut s = state.borrow_mut();
-    s.clear_subs();
-    if let Some(iframe) = s.iframe.as_ref() {
-        let content = host.get_attribute("content").unwrap_or_default();
-        let base = space_base(&s);
-        // Re-read the children rather than reusing the mount-time markup: a
-        // reload rebuilds the whole document, and the embedder may have
-        // changed its styles since.
-        let head = head_markup(host);
-        let srcdoc = if host.has_attribute("runtime") {
-            bridge::bootstrap_srcdoc_with_runtime(&content, &base, &head)
-        } else {
-            bridge::bootstrap_srcdoc(&content, &base, &head)
-        };
-        let _ = iframe.set_attribute("srcdoc", &srcdoc);
-    }
+    s.sever();
+    let Some(iframe) = s.iframe.clone() else {
+        return;
+    };
+    let content = host.get_attribute("content").unwrap_or_default();
+    let base = space_base(&s);
+    // Re-read the children rather than reusing the mount-time markup: a
+    // reload rebuilds the whole document, and the embedder may have
+    // changed its styles since.
+    let head = head_markup(host);
+    let srcdoc = if host.has_attribute("runtime") {
+        bridge::bootstrap_srcdoc_with_runtime(&content, &base, &head)
+    } else {
+        bridge::bootstrap_srcdoc(&content, &base, &head)
+    };
+    let _ = iframe.set_attribute("srcdoc", &srcdoc);
 }
 
 /// The per-space synthetic origin (`https://{label}.tonk.network/`) for this
@@ -189,67 +187,4 @@ fn space_base(state: &bridge::PortalState) -> String {
         .route_space()
         .and_then(|space| tonk_host::space_origin::space_origin_for(&space))
         .unwrap_or_default()
-}
-
-/// Install `reset` / `update` / `error` on the named element's prototype,
-/// each forwarding to the per-instance `__tonk*` closure.
-///
-/// Called once during `register()` / `register_fab_portal()` after
-/// `CustomElement::define` so the constructor is already registered.
-/// The `element_name` must match the name passed to `define`.
-pub(crate) fn install_method_shims(element_name: &str) {
-    let Some(win) = window() else {
-        return;
-    };
-    let constructor = win.custom_elements().get(element_name);
-    if constructor.is_undefined() {
-        return;
-    }
-    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
-        return;
-    };
-    let reset_fn = Function::new_with_args(
-        "payload, opts",
-        "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
-    );
-    let update_fn = Function::new_with_args(
-        "payload, opts",
-        "if (typeof this.__tonkUpdate === 'function') this.__tonkUpdate(payload, opts);",
-    );
-    let error_fn = Function::new_with_args(
-        "payload, opts",
-        "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
-    );
-    let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
-    let _ = Reflect::set(&proto, &"update".into(), &update_fn);
-    let _ = Reflect::set(&proto, &"error".into(), &error_fn);
-}
-
-/// Write the per-instance `__tonkReset` / `__tonkError` closures the
-/// prototype shims forward subscription frames to. Mirrors
-/// `<tonk-display>`'s method-delegate pattern.
-pub(crate) fn install_method_delegates(host: &Element, state: &Rc<RefCell<PortalState>>) {
-    let reset_state = state.clone();
-    let reset: Closure<dyn FnMut(JsValue, JsValue)> =
-        Closure::wrap(Box::new(move |payload, opts| {
-            bridge::route_reset(&reset_state, payload, opts);
-        }));
-    let _ = Reflect::set(host, &"__tonkReset".into(), reset.as_ref());
-    reset.forget();
-
-    let update_state = state.clone();
-    let update: Closure<dyn FnMut(JsValue, JsValue)> =
-        Closure::wrap(Box::new(move |payload, opts| {
-            bridge::route_update(&update_state, payload, opts);
-        }));
-    let _ = Reflect::set(host, &"__tonkUpdate".into(), update.as_ref());
-    update.forget();
-
-    let error_state = state.clone();
-    let error: Closure<dyn FnMut(JsValue, JsValue)> =
-        Closure::wrap(Box::new(move |payload, opts| {
-            bridge::route_error(&error_state, payload, opts);
-        }));
-    let _ = Reflect::set(host, &"__tonkError".into(), error.as_ref());
-    error.forget();
 }

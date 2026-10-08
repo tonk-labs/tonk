@@ -1,7 +1,7 @@
 //! `intent/suggest` end to end: a space seeded with the core library,
 //! asked over the `/query` route exactly as the `<command-palette>` element
-//! asks (through the portal, which relays `window.tonk.query` there), and
-//! the reading it returns transacted.
+//! asks (the page asks over the branch's `/query`), and the reading it
+//! returns transacted.
 //!
 //! Native, on the same fixture as the other native router tests.
 

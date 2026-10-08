@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use js_sys::{Function, JSON, Object, Promise, Reflect};
+use js_sys::Reflect;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -302,7 +302,16 @@ struct AgentBehaviour {
     host: HtmlElement,
 }
 
+/// The routing context an invitation's state is published in: the branch
+/// the bar asked on, which is the profile's. The `space` attribute selects
+/// which space's row to read, not which branch to read it from.
+const PROFILE_WITH: &str = "main@profile:tonk";
+
 impl subscribing::Subscribing for AgentBehaviour {
+    fn resolve_with(&self, _this: &HtmlElement) -> Option<String> {
+        Some(PROFILE_WITH.to_owned())
+    }
+
     fn query_body(&self, this: &HtmlElement) -> Result<String, String> {
         agent_handoff_query_body(&this.get_attribute("space").unwrap_or_default())
     }
@@ -492,27 +501,8 @@ fn dispatch_handoff(host: &HtmlElement, state: &Rc<RefCell<AgentState>>, fresh: 
             render(&view, &state.borrow());
         }
     };
-    let Some(win) = window() else {
-        fail("Agent invitation is unavailable. Try again.");
-        return;
-    };
-    let Some(tonk) = Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|value| value.dyn_into::<Object>().ok())
-    else {
-        fail("Agent invitation is unavailable. Try again.");
-        return;
-    };
-    let Some(transact) = Reflect::get(&tonk, &"transact".into())
-        .ok()
-        .and_then(|value| value.dyn_into::<Function>().ok())
-    else {
-        fail("Agent invitation is unavailable. Try again.");
-        return;
-    };
-    // App chrome sends the command from the profile branch. The worker uses
-    // the explicit space to target the handoff, while the response remains
-    // subscribed on that space's content branch.
+    // App chrome sends the command from the profile branch, naming the
+    // space, and the worker answers on the branch it was asked on.
     let Some(space) = host
         .get_attribute("space")
         .filter(|space| !space.is_empty())
@@ -521,29 +511,20 @@ fn dispatch_handoff(host: &HtmlElement, state: &Rc<RefCell<AgentState>>, fresh: 
         return;
     };
     let claim = agent_handoff_claim_json(&space, js_sys::Date::now(), fresh);
-    if let Ok(value) = JSON::parse(&claim.to_string()) {
-        match transact.call1(&tonk, &value) {
-            Ok(result) => {
-                if let Ok(promise) = result.dyn_into::<Promise>() {
-                    let host = host.clone();
-                    let state = state.clone();
-                    spawn_local(async move {
-                        if JsFuture::from(promise).await.is_err() {
-                            fail_handoff(
-                                &host,
-                                &state,
-                                attempt,
-                                "Agent invitation failed. Try again.",
-                                false,
-                            );
-                        }
-                    });
-                }
+    {
+        let host = host.clone();
+        let state = state.clone();
+        spawn_local(async move {
+            if crate::profile::claim(&claim).await.is_err() {
+                fail_handoff(
+                    &host,
+                    &state,
+                    attempt,
+                    "Agent invitation failed. Try again.",
+                    false,
+                );
             }
-            Err(_) => fail("Agent invitation failed. Try again."),
-        }
-    } else {
-        fail("Agent invitation is unavailable. Try again.");
+        });
     }
     if !state.borrow().pending {
         return;
@@ -561,6 +542,7 @@ fn dispatch_handoff(host: &HtmlElement, state: &Rc<RefCell<AgentState>>, fresh: 
             true,
         );
     });
+    let Some(win) = window() else { return };
     let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
         timeout.as_ref().unchecked_ref(),
         30_000,
@@ -689,7 +671,7 @@ mod tests {
         assert_eq!(button.text_content().as_deref(), Some("copied"));
         show_copy_feedback(&button, 200);
         let wait = |ms| {
-            Promise::new(&mut |resolve, _| {
+            js_sys::Promise::new(&mut |resolve, _| {
                 window()
                     .unwrap()
                     .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)

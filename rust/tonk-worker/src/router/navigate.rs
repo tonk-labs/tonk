@@ -147,11 +147,18 @@ pub(crate) fn notify_profile_changed(except: Option<&crate::router::ClientId>) {
             &JsValue::from_str("type"),
             &JsValue::from_str("profile-changed"),
         );
-        for value in js_sys::Array::from(&windows).iter() {
-            let Ok(client) = value.dyn_into::<web_sys::Client>() else {
-                continue;
-            };
-            if client.frame_type() != web_sys::FrameType::TopLevel
+        let windows: Vec<web_sys::Client> = js_sys::Array::from(&windows)
+            .iter()
+            .filter_map(|value| value.dyn_into().ok())
+            .collect();
+        // On a site's origin no document is top-level: each page is on
+        // another origin, around a frame of this one, and the frame passes
+        // what it hears up to it.
+        let framed = !windows
+            .iter()
+            .any(|client| client.frame_type() == web_sys::FrameType::TopLevel);
+        for client in windows {
+            if (!framed && client.frame_type() != web_sys::FrameType::TopLevel)
                 || except.as_deref() == Some(client.id().as_str())
             {
                 continue;
@@ -287,60 +294,8 @@ pub(crate) fn notify_analytics(
 }
 
 /// Ask the originating document to run a WebAuthn ceremony the worker
-/// cannot: it has no `window`. The page answers through the ordinary API
-/// (`POST /api/identity/root`), which is what the worker then waits on.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-/// Ask the page to add an account, on behalf of `space`.
-///
-/// Sent when a share cannot proceed because nothing is registered. The
-/// worker owns that judgement — the page is told what to do, not why —
-/// and does not wait: the registration UI may take a ceremony, an email
-/// round trip, or never finish, and a handler held open across that is
-/// held open forever. The share resumes when the account facts land.
-pub(crate) async fn request_account_link(
-    client: &crate::router::ClientId,
-    space: &str,
-) -> Result<(), crate::TonkWorkerError> {
-    use crate::TonkWorkerError;
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen_futures::JsFuture;
-
-    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
-        .dyn_into()
-        .map_err(|_| TonkWorkerError::Internal("not in a service worker scope".to_string()))?;
-    let value = JsFuture::from(global.clients().get(&client.0))
-        .await
-        .map_err(|error| TonkWorkerError::Internal(format!("clients.get failed: {error:?}")))?;
-    if value.is_undefined() || value.is_null() {
-        return Err(TonkWorkerError::Conflict(format!(
-            "the originating client {} is gone",
-            client.0
-        )));
-    }
-    let client: web_sys::Client = value
-        .dyn_into()
-        .map_err(|_| TonkWorkerError::Internal("clients.get did not yield a Client".to_string()))?;
-    let message = tonk_worker_api::LinkAccountRequest {
-        message_type: tonk_worker_api::LINK_ACCOUNT.to_string(),
-        space: space.to_owned(),
-    };
-    let message = serde_wasm_bindgen::to_value(&message)
-        .map_err(|error| TonkWorkerError::Internal(format!("serialize request: {error}")))?;
-    client
-        .post_message(&message)
-        .map_err(|error| TonkWorkerError::Internal(format!("post_message failed: {error:?}")))
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn request_webauthn(
-    client: &crate::router::ClientId,
-    request: tonk_worker_api::WebAuthnKind,
-) -> Result<(), crate::TonkWorkerError> {
-    request_webauthn_with(client, request, None, None).await
-}
-
-/// [`request_webauthn`], carrying what the worker will do once the page
-/// has answered.
+/// cannot, as it has no `window`: `request` names the ceremony, and
+/// `intent` what the worker does with the handles the page hands back.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn request_webauthn_with(
     client: &crate::router::ClientId,
@@ -405,43 +360,19 @@ pub(crate) async fn request_webauthn_with(
         }
     }
     if asked == 0 {
-        return Err(TonkWorkerError::Conflict(
-            "no top-level page is open to run the passkey ceremony".into(),
-        ));
+        // On a site's origin no document is top-level: the page is on
+        // another origin, around the frame that asked, and the frame passes
+        // the request up to it.
+        return client
+            .post_message(&message)
+            .map_err(|error| TonkWorkerError::Internal(format!("post_message failed: {error:?}")));
     }
     Ok(())
 }
 
-/// No page exists on this host to show a registration UI, so the ask is
-/// refused up front — the same outcome as the browser's "originating
-/// client is gone", and the caller's refusal reporting carries it to
-/// whoever asked.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub(crate) async fn request_account_link<'a>(
-    client: &'a crate::router::ClientId,
-    space: &'a str,
-) -> Result<(), crate::TonkWorkerError> {
-    let _ = (client, space);
-    Err(crate::TonkWorkerError::Conflict(
-        "no page is available on this host to add an account".to_string(),
-    ))
-}
-
 /// A WebAuthn ceremony needs a top-level document, and this host has
-/// none — refused rather than stubbed, so callers report the refusal
-/// (via `ceremony::report` and friends) instead of silently succeeding.
-/// A host that grows its own credential ceremony replaces this seam.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub(crate) async fn request_webauthn(
-    client: &crate::router::ClientId,
-    request: tonk_worker_api::WebAuthnKind,
-) -> Result<(), crate::TonkWorkerError> {
-    request_webauthn_with(client, request, None, None).await
-}
-
-/// [`request_webauthn`], carrying what the worker would do once a page
-/// answered — see the native `request_webauthn` above for why this is a
-/// refusal.
+/// none: refused rather than stubbed, so callers report the refusal
+/// instead of silently succeeding.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) async fn request_webauthn_with(
     client: &crate::router::ClientId,

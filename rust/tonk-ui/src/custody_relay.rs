@@ -19,9 +19,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use tonk_worker_api::{
-    LINK_ACCOUNT, LinkAccountRequest, RootStatus, WEBAUTHN, WebAuthnKind, WebAuthnRequest,
-};
+use tonk_worker_api::{WEBAUTHN, WebAuthnKind, WebAuthnRequest};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use web_sys::{Element, MessageEvent};
@@ -30,7 +28,7 @@ use crate::user_error::{self, AccountAction};
 
 thread_local! {
     static RETURN_FOCUS: RefCell<Option<tonk_portal::RegisterFocusReturn>> = const { RefCell::new(None) };
-    static ANCHOR: RefCell<Option<crate::register_dialog::Anchor>> = const { RefCell::new(None) };
+    static ANCHOR: RefCell<Option<Anchor>> = const { RefCell::new(None) };
     static INSTALLED: Cell<bool> = const { Cell::new(false) };
     /// One card at a time: a second request arriving while the card is
     /// up is already answered by the save the first one performs.
@@ -38,6 +36,37 @@ thread_local! {
 }
 
 const CARD_ID: &str = "tonk-custody-consent";
+
+/// Where the profile's settings seat the passkey rows: the bar's viewport
+/// box, which the frame sends with a `custody-anchor` request.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+pub struct Anchor {
+    /// The bar's left edge.
+    pub left: f64,
+    /// The bar's bottom edge; the rows hang one gap below it.
+    pub bottom: f64,
+    /// The bar's width, which the rows fill.
+    pub width: f64,
+}
+
+/// What a frame asked of this page through `tonk.register`.
+#[derive(Debug, Default, PartialEq, serde::Deserialize)]
+pub struct SeatRequest {
+    /// What is asked for; `custody-anchor` is the one this page answers.
+    #[serde(default)]
+    pub reason: String,
+    /// Where to seat the passkey rows.
+    #[serde(default)]
+    pub anchor: Option<Anchor>,
+}
+
+/// Parse what a frame forwarded, tolerating a bare reason string.
+pub fn parse_seat_request(payload: &str) -> SeatRequest {
+    serde_json::from_str(payload).unwrap_or_else(|_| SeatRequest {
+        reason: payload.to_owned(),
+        anchor: None,
+    })
+}
 
 const CARD_HTML: &str = r#"
 <div style="position:fixed;right:16px;bottom:16px;z-index:2147483647;width:min(432px, calc(100vw - 32px));
@@ -71,44 +100,6 @@ const CARD_HTML: &str = r#"
   </div>
 </div>
 "#;
-
-/// Derive the account's encryption key through a passkey assertion and
-/// save it with the root. `Ok(false)` when there was nothing to do: no
-/// root on this device, or the key is already recorded.
-pub(crate) async fn publish_encryption_key() -> Result<bool, String> {
-    let RootStatus::Ready {
-        credential_id,
-        delegation_hex,
-        encryption_key,
-        ..
-    } = crate::api::root_status()
-        .await
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(false);
-    };
-    if encryption_key.is_some() {
-        return Ok(false);
-    }
-    let endpoint = crate::ceremony::proposed_remote()?;
-    let published = crate::identity_bridge::publish_encryption_key(
-        crate::identity_bridge::PublishEncryptionKeyInput {
-            endpoint,
-            credential_id: Some(credential_id.clone()),
-        },
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    crate::api::save_root(
-        credential_id,
-        delegation_hex,
-        None,
-        Some(published.encryption_key),
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    Ok(true)
-}
 
 fn remove_card() {
     let anchored = card().is_some_and(|card| {
@@ -179,7 +170,7 @@ pub fn return_to_approval(focus: Option<tonk_portal::RegisterFocusReturn>) {
 }
 
 /// Keep the top-document passkey rows seated in the guest's dialog column.
-pub fn reanchor(anchor: crate::register_dialog::Anchor) {
+pub fn reanchor(anchor: Anchor) {
     if !anchor.left.is_finite()
         || !anchor.bottom.is_finite()
         || !anchor.width.is_finite()
@@ -241,74 +232,6 @@ fn mount_card(anchored: bool) -> Option<Element> {
     Some(host)
 }
 
-/// Raise the consent card. The continue button runs the assertion inside
-/// the click and reports the outcome on the card; dismissing leaves the
-/// worker's wait to time out, failing the operation that asked.
-fn show_consent() {
-    let Some(host) = mount_card(false) else {
-        BUSY.with(|busy| busy.set(false));
-        return;
-    };
-
-    on_click(&host, "#tonk-custody-dismiss", || {
-        let mut attempt = crate::account_observability::WebAccountAttempt::start(
-            AccountAction::FinishAccountBackup,
-            tonk_analytics::account::Surface::CustodyConsent,
-            tonk_analytics::account::Trigger::User,
-            tonk_analytics::account::AccountState::Ready,
-        );
-        attempt.finish(
-            tonk_analytics::account::Stage::PasskeyAssert,
-            tonk_analytics::account::AccountOutcome::cancelled(),
-        );
-        remove_card();
-    });
-    on_click(&host, "#tonk-custody-continue", move || {
-        set_card_text("Waiting for passkey…");
-        let mut attempt = crate::account_observability::WebAccountAttempt::start(
-            AccountAction::FinishAccountBackup,
-            tonk_analytics::account::Surface::CustodyConsent,
-            tonk_analytics::account::Trigger::User,
-            tonk_analytics::account::AccountState::Ready,
-        );
-        wasm_bindgen_futures::spawn_local(async move {
-            match publish_encryption_key().await {
-                Ok(true) => {
-                    attempt.finish(
-                        tonk_analytics::account::Stage::Complete,
-                        tonk_analytics::account::AccountOutcome::success(),
-                    );
-                    tonk_common::log!("custody: encryption key published for the worker");
-                    set_card_text("Account key saved on this device.");
-                }
-                Ok(false) => {
-                    attempt.finish(
-                        tonk_analytics::account::Stage::Complete,
-                        tonk_analytics::account::AccountOutcome::success(),
-                    );
-                    set_card_text("Nothing was needed after all.")
-                }
-                Err(error) => {
-                    tonk_common::log!("custody: encryption key not published: {error}");
-                    set_card_text(&user_error::diagnostic(
-                        AccountAction::FinishAccountBackup,
-                        &error,
-                    ));
-                    let problem = user_error::problem_from_diagnostic(
-                        AccountAction::FinishAccountBackup,
-                        &error,
-                    );
-                    attempt.finish(
-                        tonk_analytics::account::Stage::PasskeyAssert,
-                        problem.outcome,
-                    );
-                }
-            }
-            remove_card_after(4000);
-        });
-    });
-}
-
 fn intent_label(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
     match intent {
         tonk_worker_api::CustodyIntent::PurgeAccount(_) => "purge-account",
@@ -317,6 +240,7 @@ fn intent_label(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
         tonk_worker_api::CustodyIntent::Enroll(_) => "enroll",
         tonk_worker_api::CustodyIntent::CreateAccount(_) => "create-account",
         tonk_worker_api::CustodyIntent::Login(_) => "login",
+        tonk_worker_api::CustodyIntent::Delegate(_) => "delegate",
     }
 }
 
@@ -327,16 +251,85 @@ fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
         tonk_worker_api::CustodyIntent::AddPasskey(_) => AccountAction::AddPasskey,
         tonk_worker_api::CustodyIntent::Enroll(_)
         | tonk_worker_api::CustodyIntent::CreateAccount(_)
-        | tonk_worker_api::CustodyIntent::Login(_) => AccountAction::FinishPreviousAction,
+        | tonk_worker_api::CustodyIntent::Login(_)
+        | tonk_worker_api::CustodyIntent::Delegate(_) => AccountAction::FinishPreviousAction,
     }
 }
 
-/// Which ceremony a guest-asserted command runs: adding a passkey creates
-/// one, everything else asserts the account's.
+/// Which ceremony a guest-asserted command runs: creating an account or
+/// adding a passkey makes one, everything else asserts the account's.
 fn command_method(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
     match intent {
+        tonk_worker_api::CustodyIntent::CreateAccount(_) => "createPasskey",
         tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
         _ => "usePasskey",
+    }
+}
+
+/// Which of the panel's ceremonies `intent` is, when the panel that adds an
+/// account asked for it: that panel waits on the worker to say how it went.
+fn registration_kind(intent: &tonk_worker_api::CustodyIntent) -> Option<&'static str> {
+    match intent {
+        tonk_worker_api::CustodyIntent::CreateAccount(_) => {
+            Some(tonk_schema::registration::kind::CREATE)
+        }
+        tonk_worker_api::CustodyIntent::Login(_) => Some(tonk_schema::registration::kind::LOG_IN),
+        _ => None,
+    }
+}
+
+/// The browser's name for a refused ceremony.
+fn refusal_name(refusal: tonk_identity::passkey::CeremonyRefusal) -> &'static str {
+    use tonk_identity::passkey::CeremonyRefusal;
+    match refusal {
+        CeremonyRefusal::NotAllowed => "NotAllowedError",
+        CeremonyRefusal::InvalidState => "InvalidStateError",
+        CeremonyRefusal::NotSupported | CeremonyRefusal::NoPrf => "NotSupportedError",
+        CeremonyRefusal::Security => "SecurityError",
+        CeremonyRefusal::Other => "Error",
+    }
+}
+
+/// The browser's name for a refusal the worker has not heard of, or `None`
+/// for one it has: what the worker itself answered a hand-off with carries
+/// the service's `code`, and the worker recorded where that left the panel.
+/// `None` for `error` is the person putting the card away.
+fn refusal_to_report(error: Option<&CeremonyError>) -> Option<&'static str> {
+    match error {
+        None => Some("NotAllowedError"),
+        Some(error) if error.denial.is_some() => None,
+        Some(error) => error.refusal.map(refusal_name),
+    }
+}
+
+/// Tell the worker that holds the account that the browser refused a
+/// ceremony the panel that adds an account asked for. A refusal from the
+/// service comes back through the custody hand-off, which the worker
+/// already sees; this is for one that never got that far: `error` is the
+/// browser's, or `None` when the person put the card away.
+fn report_refusal(intent: &tonk_worker_api::CustodyIntent, error: Option<&CeremonyError>) {
+    let Some(kind) = registration_kind(intent) else {
+        return;
+    };
+    let Some(name) = refusal_to_report(error) else {
+        return;
+    };
+    let message = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&message, &"type".into(), &"ceremony-refused".into());
+    let _ = js_sys::Reflect::set(&message, &"kind".into(), &kind.into());
+    let _ = js_sys::Reflect::set(&message, &"name".into(), &name.into());
+    tonk_common::log!("custody: telling the worker the {kind} passkey was refused ({name})");
+    let global = js_sys::global();
+    if let Ok(relay) = js_sys::Reflect::get(&global, &"tonkProfileWorker".into())
+        .and_then(|relay| relay.dyn_into::<js_sys::Function>())
+    {
+        let _ = relay.call2(&global, &message, &js_sys::Array::new());
+        return;
+    }
+    if let Some(worker) =
+        web_sys::window().and_then(|window| window.navigator().service_worker().controller())
+    {
+        let _ = worker.post_message(&message);
     }
 }
 
@@ -395,7 +388,10 @@ fn assert_on_the_click(intent: tonk_worker_api::CustodyIntent, credential_id: Op
         ) {
             run_command_ceremony(intent, credential_id);
             set_card_message(&said);
-        } else if !BUSY.with(|busy| busy.replace(true)) {
+            return;
+        }
+        report_refusal(&intent, Some(&error));
+        if !BUSY.with(|busy| busy.replace(true)) {
             let anchored = matches!(&intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_));
             if mount_card(anchored).is_some() {
                 set_card_text(&said);
@@ -433,7 +429,13 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
     };
     set_card_message("Confirm this account action with your passkey.");
     tonk_common::log!("custody: consent card raised for {}", intent_label(&intent));
-    on_click(&host, "#tonk-custody-dismiss", remove_card);
+    {
+        let intent = intent.clone();
+        on_click(&host, "#tonk-custody-dismiss", move || {
+            report_refusal(&intent, None);
+            remove_card();
+        });
+    }
 
     let method = command_method(&intent);
     let action = command_action(&intent);
@@ -441,17 +443,22 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
         set_card_text("Waiting for passkey…");
         tonk_common::log!("custody: continue clicked for {}", intent_label(&intent));
         match begin_with(method, intent.clone(), credential_id.clone()) {
-            Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
-                if let Err(error) = mediation.finish().await {
-                    report(&error.message);
-                    set_card_text(&user_error::ceremony(action, &error));
-                    remove_card_after(4000);
-                } else {
-                    remove_card();
-                }
-            }),
+            Ok(mediation) => {
+                let intent = intent.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Err(error) = mediation.finish().await {
+                        report(&error.message);
+                        report_refusal(&intent, Some(&error));
+                        set_card_text(&user_error::ceremony(action, &error));
+                        remove_card_after(4000);
+                    } else {
+                        remove_card();
+                    }
+                })
+            }
             Err(error) => {
                 report(&error.message);
+                report_refusal(&intent, Some(&error));
                 set_card_text(&user_error::ceremony(action, &error));
                 remove_card_after(4000);
             }
@@ -469,22 +476,6 @@ pub fn install() {
     };
     let service_worker = window.navigator().service_worker();
     let listener = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
-        // The worker decided a share needs an account and is asking for
-        // one. It carries the space so the share can be finished once
-        // the account exists.
-        if let Ok(link) = serde_wasm_bindgen::from_value::<LinkAccountRequest>(event.data())
-            && link.message_type == LINK_ACCOUNT
-        {
-            crate::register_dialog::open();
-            crate::register_dialog::describe(
-                &serde_json::json!({
-                    "reason": tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
-                    "space": link.space,
-                })
-                .to_string(),
-            );
-            return;
-        }
         let Ok(message) = serde_wasm_bindgen::from_value::<WebAuthnRequest>(event.data()) else {
             return;
         };
@@ -492,26 +483,11 @@ pub fn install() {
             return;
         }
         // Exhaustive on purpose. A new ceremony kind must fail to
-        // compile here rather than be dropped: `create-account` was
-        // once filtered out by an `if request != ENCRYPTION_KEY_REQUEST
-        // { return }`, so the worker asked the page to run a signup
-        // ceremony, nothing listened, and the registration dialog still
-        // reported success.
+        // compile here rather than be dropped: one was once filtered out
+        // by an `if request != ENCRYPTION_KEY_REQUEST { return }`, so the
+        // worker asked the page to run a ceremony, nothing listened, and
+        // the page still reported success.
         match message.request {
-            WebAuthnKind::EncryptionKey => {
-                if BUSY.with(|busy| busy.replace(true)) {
-                    return;
-                }
-                show_consent();
-            }
-            WebAuthnKind::CreateAccount => {
-                // Handled by the registration dialog, which is the only
-                // thing that knows which address the ceremony is for and
-                // is already on screen when this arrives. BUSY is not
-                // taken: that flag guards the consent card this module
-                // owns, and the dialog runs its own ceremony.
-                crate::register_dialog::run_signup_ceremony();
-            }
             WebAuthnKind::Custody => {
                 // One assertion, then the handles go to the worker,
                 // which does the work the intent names. The page builds
@@ -551,7 +527,8 @@ pub(crate) fn mediate_custody(intent: tonk_worker_api::CustodyIntent) {
         tonk_worker_api::CustodyIntent::Enroll(_)
         | tonk_worker_api::CustodyIntent::Login(_)
         | tonk_worker_api::CustodyIntent::PurgeAccount(_)
-        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => "usePasskey",
+        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
+        | tonk_worker_api::CustodyIntent::Delegate(_) => "usePasskey",
     };
     mediate_with(method, intent);
 }
@@ -588,15 +565,6 @@ impl std::fmt::Display for CeremonyError {
     }
 }
 
-/// [`mediate_custody`], awaited: for a caller that has to know whether
-/// the work landed before it moves on.
-pub(crate) async fn mediate_now(
-    method: &'static str,
-    intent: tonk_worker_api::CustodyIntent,
-) -> Result<(), CeremonyError> {
-    run(method, intent).await
-}
-
 /// A page ceremony that has already been invoked and now only needs its
 /// asynchronous worker handoff to finish.
 pub(crate) struct Mediation {
@@ -625,10 +593,48 @@ impl Mediation {
             .unwrap_or(false)
             && let Some(window) = web_sys::window()
         {
-            let _ = window.location().reload();
+            // The account page is where the panel that adds an account was
+            // up, and an account it added is done with it: back to the
+            // spaces. A space keeps its place.
+            if window.location().pathname().as_deref() == Ok("/account") {
+                let _ = window.location().assign("/");
+            } else {
+                let _ = window.location().reload();
+            }
         }
         Ok(())
     }
+}
+
+/// Ask the worker that holds the account for a delegation, behind the
+/// passkey: `account -> audience` over `subject` at `command`.
+///
+/// The prompt opens before this returns, inside the click that asked, and
+/// the worker mints with the root the passkey recovers. `answer` hears the
+/// chain (base58), or why there is none.
+pub fn delegate(
+    request: tonk_worker_api::RootDelegation,
+    answer: impl FnOnce(Result<String, String>) + 'static,
+) {
+    let mediation = match begin(
+        "usePasskey",
+        tonk_worker_api::CustodyIntent::Delegate(request),
+    ) {
+        Ok(mediation) => mediation,
+        Err(error) => return answer(Err(error.message)),
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        let reply = wasm_bindgen_futures::JsFuture::from(mediation.promise)
+            .await
+            .map_err(|error| CeremonyError::thrown(&error).message);
+        answer(reply.and_then(|reply| {
+            let minted = js_sys::Reflect::get(&reply, &"ok".into()).unwrap_or(reply);
+            js_sys::Reflect::get(&minted, &"delegation".into())
+                .ok()
+                .and_then(|delegation| delegation.as_string())
+                .ok_or_else(|| "the worker answered with no delegation".to_owned())
+        }));
+    });
 }
 
 /// Log a mediation failure, keeping a dismissed prompt quiet: declining
@@ -695,7 +701,8 @@ pub(crate) fn begin_with(
         tonk_worker_api::CustodyIntent::AddPasskey(_)
         | tonk_worker_api::CustodyIntent::Login(_)
         | tonk_worker_api::CustodyIntent::PurgeAccount(_)
-        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => None,
+        | tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
+        | tonk_worker_api::CustodyIntent::Delegate(_) => None,
     };
 
     let request = serde_wasm_bindgen::to_value(&intent)
@@ -783,7 +790,47 @@ fn describe(error: &wasm_bindgen::JsValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    fn failed(
+        denial: Option<tonk_identity::custody::CustodyDenial>,
+        refusal: Option<tonk_identity::passkey::CeremonyRefusal>,
+    ) -> CeremonyError {
+        CeremonyError {
+            message: "failed".into(),
+            denial,
+            refusal,
+        }
+    }
+
+    /// The worker answers a hand-off for an account awaiting its emailed
+    /// link with a refusal of its own, and has recorded the wait: telling
+    /// it the passkey was refused would replace the wait with a failure.
+    #[wasm_bindgen_test]
+    fn it_reports_only_refusals_the_worker_has_not_heard_of() {
+        use tonk_identity::custody::CustodyDenial;
+        use tonk_identity::passkey::CeremonyRefusal;
+
+        let awaiting = failed(
+            Some(CustodyDenial::AwaitingActivation),
+            Some(CeremonyRefusal::Other),
+        );
+        assert_eq!(refusal_to_report(Some(&awaiting)), None);
+
+        let unsupported = failed(None, Some(CeremonyRefusal::NotSupported));
+        assert_eq!(
+            refusal_to_report(Some(&unsupported)),
+            Some("NotSupportedError")
+        );
+        assert_eq!(refusal_to_report(Some(&failed(None, None))), None);
+        assert_eq!(
+            refusal_to_report(None),
+            Some("NotAllowedError"),
+            "a card put away is a refusal"
+        );
+    }
 
     #[wasm_bindgen_test]
     fn device_consent_tracks_its_guest_seat() {
@@ -795,7 +842,7 @@ mod tests {
             rows.style().get_property_value("visibility").unwrap(),
             "hidden"
         );
-        reanchor(crate::register_dialog::Anchor {
+        reanchor(Anchor {
             left: 24.0,
             bottom: 320.0,
             width: 288.0,
@@ -805,7 +852,7 @@ mod tests {
         assert_eq!(rect.left(), 24.0);
         assert_eq!(rect.top(), 327.0);
         assert_eq!(rect.width(), 288.0);
-        reanchor(crate::register_dialog::Anchor {
+        reanchor(Anchor {
             left: 32.0,
             bottom: 160.0,
             width: 576.0,

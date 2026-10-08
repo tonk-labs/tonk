@@ -223,6 +223,14 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<super::ceremony::AuthorizeDeviceRequest>()
         // Signing in through another deployment is new, so neither half
         // has a legacy shape to migrate.
+        // Adding an account to this profile, stage by stage.
+        .command::<tonk_schema::command::OpenRegistration>()
+        .command::<tonk_schema::command::StartRegistration>()
+        .command::<tonk_schema::command::CreateAccount>()
+        .command::<tonk_schema::command::LogIn>()
+        .command::<tonk_schema::command::OpenSignInVia>()
+        .command::<tonk_schema::command::ActivateAccount>()
+        .command::<tonk_schema::command::DismissRegistration>()
         .command::<tonk_schema::command::SignInVia>()
         .command::<tonk_schema::command::FinishSignInVia>()
         .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>()
@@ -230,7 +238,6 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .migrated::<tonk_schema::command::RemoveSpace, tonk_schema::command::legacy::RemoveSpace>()
         .migrated::<tonk_schema::command::Join, tonk_schema::command::legacy::Join>()
         .migrated::<tonk_schema::command::CheckEmail, tonk_schema::command::legacy::CheckEmail>()
-        .migrated::<tonk_schema::command::RegisterAccount, tonk_schema::command::legacy::RegisterAccount>()
         .migrated::<tonk_schema::command::PauseSync, tonk_schema::command::legacy::PauseSync>()
         .migrated::<tonk_schema::command::ProfileRename, tonk_schema::command::legacy::ProfileRename>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
@@ -285,6 +292,13 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // request would have to arrive on the branch it is asking for.
         .command::<tonk_schema::command::CheckUpdate>()
         .command::<super::repository::AgentHandoffRequest>()
+        // What the person's profile hands a space's own worker to write
+        // after minting an invite to the space. It records for the origin
+        // and names no other space.
+        .command::<tonk_schema::command::RecordInvite>()
+        // What the person's profile hands a space's own worker when a
+        // signed-in account takes over the one its roster entry is under.
+        .command::<tonk_schema::command::MoveMembership>()
         // A space installs a library component into itself; the profile
         // has no components to install.
         .command::<tonk_schema::command::InstallComponent>()
@@ -735,16 +749,17 @@ pub(crate) mod tests {
                 reject_admission_content_reads: Default::default(),
                 retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 view_bindings: Default::default(),
-                bridges: Default::default(),
                 sync_queue: Default::default(),
                 commands: crate::router::command_providers(),
                 clients: Default::default(),
                 seed_upgrades: Default::default(),
+                site_origins: Default::default(),
                 account_keys: Default::default(),
                 profile_library: Default::default(),
                 registry: crate::device::Registry {
                     profile: name.clone(),
                     directory: dialog_effects::storage::Directory::Profile,
+                    standing: Default::default(),
                 },
                 profile_transition: Default::default(),
                 context_generation: Default::default(),

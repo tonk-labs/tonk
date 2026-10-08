@@ -954,10 +954,10 @@ async fn evaluate_on_branch_with<'a>(
     ))
 }
 
-/// Bridge-callable wrapper around the evaluate pipeline. Runs
+/// The evaluate pipeline for callers inside the worker. Runs
 /// the same logic as [`evaluate_on_branch`] but accepts plain
-/// `String` arguments instead of HTTP-level types so the bridge
-/// handler can call it without constructing an axum request.
+/// `String` arguments instead of HTTP-level types, so a caller
+/// need not construct an axum request.
 /// Gated to match its callers: seed installs stage their own commits
 /// (see the repository module's `stage_reinstall`), leaving this reachable
 /// only from tests and the service worker.
@@ -981,12 +981,10 @@ pub async fn evaluate_body(
 }
 
 /// [`evaluate_body`], additionally returning the transient facts
-/// (commands) the committed document dispatched. The bridge's evaluate
-/// handler uses this so a sealed guest's document triggers command
-/// dispatch the same way the HTTP `/evaluate` route does; callers that
-/// evaluate authored documents with no commands (seeding, joins) keep
-/// using [`evaluate_body`].
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+/// (commands) the committed document dispatched: what the `/evaluate`
+/// route hands to command dispatch. Tests read it here without going
+/// through the route.
+#[cfg(test)]
 pub async fn evaluate_body_with_transients(
     tonk_state: &crate::worker::TonkState,
     repo: &str,
@@ -1940,7 +1938,7 @@ command!: &counter/+1
 
     /// The evaluate pipeline must surface a committed document's
     /// transient facts for post-commit command dispatch — the seam
-    /// the route and the bridge hand to `router::command::dispatch`,
+    /// the route hands to `router::command::dispatch`,
     /// mirroring `/transact`. A durable document and a dry run
     /// surface none.
     #[dialog_common::test]

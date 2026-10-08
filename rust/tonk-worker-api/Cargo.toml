@@ -16,6 +16,7 @@ dialog-capability = { workspace = true }
 dialog-artifacts = { workspace = true }
 url = { workspace = true, features = ["serde"] }
 tonk-account = { workspace = true }
+tonk-analytics = { workspace = true }
 
 [dev-dependencies]
 dialog-common = { workspace = true, features = ["helpers"] }

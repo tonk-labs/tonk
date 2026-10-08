@@ -101,14 +101,23 @@ pub(crate) async fn receive(
         }
         None => true,
     };
+    // The panel that adds an account follows the ceremonies it asked for.
+    let registration = super::registration::kind_in(&data);
     let answer = if !context_current {
         Err("profile changed; reload required".to_string())
     } else {
         match custodian_from(&data).await {
-            Ok(custodian) => perform(state, source.as_ref(), &data, custodian).await,
+            Ok(custodian) => perform(state.clone(), source.as_ref(), &data, custodian).await,
             Err(error) => Err(error),
         }
     };
+    if let Some(kind) = registration {
+        let outcome = match &answer {
+            Ok(_) => Ok(()),
+            Err(error) => Err(split_refusal(error)),
+        };
+        super::registration::settle(&state, kind, outcome).await;
+    }
 
     let reply = js_sys::Object::new();
     match answer {
@@ -202,6 +211,153 @@ async fn perform(
                 super::ceremony::authorize_device(&state, &custodian, authorization).await?;
             navigate_reply(&target)
         }
+        tonk_worker_api::CustodyIntent::Delegate(request) => {
+            let delegation = delegate(&state, &custodian, &request).await?;
+            let reply = js_sys::Object::new();
+            js_sys::Reflect::set(
+                &reply,
+                &JsValue::from_str("delegation"),
+                &JsValue::from_str(&delegation),
+            )
+            .map_err(|_| "the reply could not be built".to_string())?;
+            Ok(reply.into())
+        }
+    }
+}
+
+/// Mint the delegation `request` asks for with the root the passkey
+/// recovered, as a base58 chain.
+///
+/// The root signs here and nowhere else: the page that asked ran the
+/// passkey prompt and nothing more. Refused when the passkey holds a
+/// different account from the one this profile is signed in to, so a
+/// delegation is always the signed-in account's.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn delegate(
+    state: &AppState,
+    custodian: &tonk_identity::custodian::Custodian,
+    request: &tonk_worker_api::RootDelegation,
+) -> Result<String, String> {
+    use dialog_varsig::Principal as _;
+
+    let account = held_account(custodian).await?;
+    let root = account
+        .signer()
+        .await
+        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
+    let linked = {
+        let tonk = state.read().await;
+        super::identity::local_root(&tonk)
+            .await
+            .map_err(|error| format!("no account is signed in on this profile: {error}"))?
+            .root_did
+    };
+    if root.did() != linked {
+        return Err("this passkey belongs to a different account".into());
+    }
+    mint_delegation(root, request).await
+}
+
+/// Sign `root -> audience` over `subject` at `command`: one hop, addressed
+/// to exactly the audience asked for and granting exactly the command asked
+/// for, as a base58 chain. Nothing of the request is taken on trust beyond
+/// its being well formed; what the hop is worth is for whoever redeems it
+/// to check against what it is composed with.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+async fn mint_delegation(
+    root: impl Into<dialog_credentials::Signer>,
+    request: &tonk_worker_api::RootDelegation,
+) -> Result<String, String> {
+    use dialog_ucan_core::command::Command;
+    use dialog_ucan_core::subject::Subject;
+    use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+    use dialog_varsig::Did;
+
+    let subject: Did = request
+        .subject
+        .parse()
+        .map_err(|error| format!("the subject is not a DID: {error:?}"))?;
+    let audience: Did = request
+        .audience
+        .parse()
+        .map_err(|error| format!("the audience is not a DID: {error:?}"))?;
+    let command = Command::parse(&request.command)
+        .map_err(|error| format!("the command does not parse: {error}"))?;
+    let delegation = DelegationBuilder::new()
+        .issuer(root.into())
+        .audience(&audience)
+        .subject(Subject::Specific(subject))
+        .command(command.segments().clone())
+        .try_build()
+        .await
+        .map_err(|error| format!("failed to mint the delegation: {error}"))?;
+    let bytes = DelegationChain::new(delegation)
+        .to_bytes()
+        .map_err(|error| format!("the delegation did not encode: {error}"))?;
+    Ok(bs58::encode(bytes).into_string())
+}
+
+#[cfg(test)]
+mod delegation_tests {
+    use dialog_credentials::Ed25519Signer;
+    use dialog_ucan_core::DelegationChain;
+    use dialog_varsig::Principal as _;
+    use tonk_worker_api::RootDelegation;
+
+    use super::mint_delegation;
+
+    async fn request(command: &str) -> (Ed25519Signer, RootDelegation) {
+        let root = Ed25519Signer::generate().await.unwrap();
+        let subject = Ed25519Signer::generate().await.unwrap();
+        let audience = Ed25519Signer::generate().await.unwrap();
+        let request = RootDelegation {
+            subject: subject.did().to_string(),
+            command: command.to_owned(),
+            audience: audience.did().to_string(),
+        };
+        (root, request)
+    }
+
+    #[dialog_common::test]
+    async fn it_mints_one_hop_from_the_root_to_the_audience_asked_for() {
+        let (root, request) = request("/").await;
+
+        let minted = mint_delegation(root.clone(), &request).await.unwrap();
+
+        let bytes = bs58::decode(minted).into_vec().expect("base58");
+        let chain = DelegationChain::try_from(bytes.as_slice()).expect("a delegation chain");
+        assert_eq!(chain.issuer().to_string(), root.did().to_string());
+        assert_eq!(chain.audience().to_string(), request.audience);
+        assert_eq!(
+            chain.subject().map(|subject| subject.to_string()),
+            Some(request.subject)
+        );
+        assert_eq!(chain.proof_cids().len(), 1, "a single hop");
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_a_request_that_is_not_well_formed() {
+        let (root, well_formed) = request("/").await;
+
+        let no_subject = RootDelegation {
+            subject: "not a did".into(),
+            ..well_formed.clone()
+        };
+        let no_audience = RootDelegation {
+            audience: String::new(),
+            ..well_formed.clone()
+        };
+
+        assert!(
+            mint_delegation(root.clone(), &no_subject)
+                .await
+                .is_err_and(|said| said.contains("subject"))
+        );
+        assert!(
+            mint_delegation(root, &no_audience)
+                .await
+                .is_err_and(|said| said.contains("audience"))
+        );
     }
 }
 
@@ -395,7 +551,11 @@ fn finish_login_once_served(
                     )
                     .await
                     {
-                        Ok(_) => log!("custody: the parked login finished on activation"),
+                        Ok(_) => {
+                            log!("custody: the parked login finished on activation");
+                            // The panel that parked it waits on nothing now.
+                            super::registration::activated(&*state.read().await).await;
+                        }
                         Err(error) => log!("custody: the parked login could not finish: {error}"),
                     }
                     return;

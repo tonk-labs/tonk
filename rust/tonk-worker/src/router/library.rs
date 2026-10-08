@@ -135,7 +135,7 @@ fn parsed(parsed: tonk_notation::Parsed) -> Result<Syntax, TonkWorkerError> {
 /// seeded with, `core.yaml` (every space) and `profile.yaml` (the profile
 /// branch). Only these: a component names a library file by its name, so
 /// the list is what keeps an install to the library.
-pub(super) const COMPONENTS: [&str; 5] = ["issue", "meta", "notebook", "prose", "table"];
+pub(super) const COMPONENTS: [&str; 6] = ["issue", "meta", "notebook", "prose", "table", "tonk"];
 
 /// Whether `source` is a component's library file (`/library/<name>.yaml`).
 pub(super) fn is_component_url(source: &str) -> bool {

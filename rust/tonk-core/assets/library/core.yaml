@@ -1517,6 +1517,18 @@ concept!: &db/session:
       the: dialog.session/branch
       as: entity
       cardinality: many
+  maybe:
+    account:
+      description: |
+          The account (as did:key) this session acts for: who is looking at
+          the space. A membership names an account, so this is what tells a
+          person's own row from the others. A space on its own origin runs
+          under a profile made for that origin, which belongs to no account;
+          the person's profile says which account it acts for when it hands
+          the space over. Absent where nothing has said.
+      the: xyz.tonk.session/account
+      as: entity
+      cardinality: one
 
 concept!: &db/branch:
   this: concept:branch
@@ -1782,6 +1794,42 @@ concept!: &route
       the: xyz.tonk.route/concept
       cardinality: one
       as: entity
+
+# A route that answers a request itself. Where a `route` names the model a
+# page shows, this names what the worker responds with: a request for a
+# matching path (a module import, a fetch, a frame or tab loading it) gets
+# `body` with these headers. Patterns are written as a `route`'s are, and
+# both kinds are matched together, so the more specific path wins whichever
+# kind it is.
+#
+#   route/http!:
+#     path: /hello.js
+#     header:
+#       content-type: "text/javascript"
+#     body: |
+#       export const hello = "world";
+#
+# A header's value is text, so it is quoted: a bare word is a name. The
+# same goes for a body that is one bare word.
+concept!: &route/http
+  this: tonk:route/http
+  description: A route answered with content, a path pattern and the response to give.
+  with:
+    path:
+      description: The path pattern, in the syntax a `route` uses.
+      the: xyz.tonk.route.http/path
+      cardinality: one
+      as: text
+    body:
+      description: The response's body, as text.
+      the: xyz.tonk.route.http/body
+      cardinality: one
+      as: text
+    header:
+      description: The response's headers, by name. `content-type` says how the body is read.
+      the: xyz.tonk.route.http.header
+      cardinality: many
+      as: {[symbol]: text}
 
 # The routes this library ships are `seed/route` commands, not routes. The
 # rule writes a route for each one whose path no route claims yet, and
@@ -2138,6 +2186,35 @@ seed/route!:
   path: "/{*model}"
   concept: tonk:directory/route
 
+# An asset by its own URI — `/space/{name}/asset:{hash}`. The literal prefix
+# claims the path ahead of the `{*model}` directory, which would read
+# `asset:{hash}` as a model name and find none.
+seed/route!:
+  path: "/asset:{hash}"
+  concept: asset/route
+
+concept!: &asset/route
+  description: A single asset page (`/space/{name}/asset:{hash}`).
+  with:
+    hash:
+      description: The asset's hash from the path, picked off the site entity.
+      the: xyz.tonk.site/hash
+      cardinality: one
+      as: text
+
+# The asset itself, in a frame: the space's own worker answers
+# `/asset:{hash}` with the content and the media type recorded for it, and
+# the browser renders whatever that is.
+view!:
+  this: asset/route
+  show:
+    ui: |
+      <iframe
+        src="/asset:{hash}"
+        title="asset:{hash}"
+        style="display: block; width: 100%; height: 100vh; border: 0;"
+      ></iframe>
+
 # ============================================================
 # Tree inspector — `<tonk-tree>` over the branch's search-tree
 # index. Visit `/space/{repo}/dialog:diagnose` to explore the
@@ -2169,12 +2246,51 @@ view!:
       <tonk-tree></tonk-tree>
 
 # ============================================================
+# ASSET
+# ============================================================
+
+# Content a branch stores, as distinct from the facts about it. The
+# entity IS the content's reference, `asset:<base58-hash>`, so any fact
+# may point at it.
+#
+# The size fact is dialog's own (`dialog.` is closed to application
+# writes): the commit that stores the bytes records it, derived from the
+# bytes rather than claimed. It is what says this branch holds the
+# content. A push ships the bytes of every asset whose fact a revision
+# adds, a read hydrates only content such a fact vouches for, and
+# retracting it drops the branch's reference to the bytes.
+#
+# What the content is called and how to read it are ordinary facts on
+# the same entity, asserted by whoever stored it; content stored without
+# them is still an asset.
+concept!: &asset
+  description: Content this branch stores, named by its hash (an image, a file, media)
+  with:
+    size:
+      description: The content's size in bytes, recorded by the commit that stored it
+      the: dialog.asset/size
+      cardinality: one
+      as: unsigned-integer
+  maybe:
+    content-type:
+      description: MIME type of the content
+      the: xyz.tonk.blob/content-type
+      cardinality: one
+      as: text
+    name:
+      description: Human-readable file name
+      the: xyz.tonk.blob/name
+      cardinality: one
+      as: text
+
+# ============================================================
 # BLOB
 # ============================================================
 
-# Extrinsic metadata for content-addressed blobs. The entity IS the
-# blob reference (`blob:<base58-hash>`); intrinsic metadata (size)
-# lives in the repository's blob index, not in facts.
+# An asset with the metadata an upload gives it: its media type and file
+# name, both required here, which is what the media view below renders
+# from. The entity is the asset's (`asset:<base58-hash>`); its size is
+# the `asset` concept's fact above.
 concept!: &blob
   this: tonk:blob
   description: A content-addressed binary blob (image, file, media)
@@ -2224,9 +2340,16 @@ view!:
                 disconnectedCallback() { this.#generation++; delete this.dataset.rendered; this.revoke(); }
                 revoke() {
                   if (this.#objectUrl) {
-                    URL.revokeObjectURL(this.#objectUrl);
+                    if (this.#objectUrl.startsWith("blob:")) URL.revokeObjectURL(this.#objectUrl);
                     this.#objectUrl = null;
                   }
+                }
+                // A space on its own origin has a worker of its own that
+                // answers the blob route natively, so the route itself loads.
+                native(url) {
+                  const context = (window.tonk && window.tonk.context) || {};
+                  return location.origin !== "null" && !!context.siteHost &&
+                    url.startsWith("/api/repository/" + context.repo + "/");
                 }
                 url() {
                   const scope = this.getAttribute("with") || "";
@@ -2239,6 +2362,7 @@ view!:
                 async objectUrl() {
                   const url = this.url();
                   if (!url) return null;
+                  if (this.native(url)) return url;
                   const resp = await window.fetch(url);
                   if (!resp.ok) return null;
                   return URL.createObjectURL(await resp.blob());
@@ -2268,7 +2392,7 @@ view!:
                         return;
                       }
                       if (generation !== this.#generation) {
-                        URL.revokeObjectURL(u);
+                        if (u.startsWith("blob:")) URL.revokeObjectURL(u);
                         return;
                       }
                       this.#objectUrl = u;
@@ -2303,7 +2427,7 @@ view!:
                     a.href = u;
                     a.download = name;
                     a.click();
-                    URL.revokeObjectURL(u);
+                    if (u.startsWith("blob:")) URL.revokeObjectURL(u);
                   });
                 }
               });
@@ -2737,7 +2861,7 @@ view!:
       {name}
 
 # The library's components a space can install, each beside the others
-# and beside the space's seed: issue, meta, notebook, prose, table (every
+# and beside the space's seed: issue, meta, notebook, prose, table, tonk (every
 # library file but `core.yaml`, which every space runs, and `profile.yaml`,
 # the profile's). An install is recorded like the seed's and brought up to
 # date the same way when the space mounts; installing one already there
@@ -2776,6 +2900,10 @@ library/component!:
 library/component!:
   this: tonk:library/table
   name: "table"
+
+library/component!:
+  this: tonk:library/tonk
+  name: "tonk"
 
 attribute!: &install-component/component
   description: Which component to install, `tonk:library/<name>`.

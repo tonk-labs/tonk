@@ -353,7 +353,7 @@ impl Dock {
 }
 
 /// Resolve the persisted dock from a `/query` result (a `Conclusion[]` JSON
-/// value, the shape `window.tonk.query` yields).
+/// value, the shape a branch's `/query` answers with).
 ///
 /// A conclusion row is `{ this, fields: { dock, … } }`, so the projected
 /// `dock` symbol lives under `fields` — reading it off the row directly
@@ -484,7 +484,7 @@ pub fn clamp_position(
     (left.min(vw - width).max(0.0), top.min(vh - height).max(0.0))
 }
 
-/// Build a `TransactRequest` JSON body for `window.tonk.transact(...)`.
+/// Build a `TransactRequest` JSON body for a branch's `/transact`.
 ///
 /// Asserts the `tonk:fab/dock` concept on `state:fab` with the given dock as an
 /// entity symbol. The JSON shape matches the `TransactRequest` serde derive in
@@ -594,9 +594,8 @@ pub fn promote_claim_json(space: &str, member: &str, chain: &str) -> Value {
 /// It used to carry a third field, the command URI, whose only job was to
 /// keep this shape distinct from `tonk:invite`'s identical `{this, time}`.
 /// The two commands now have their own attribute namespaces, so the marker
-/// is gone. Dispatched
-/// routeless via `window.tonk.transact`, so it lands on the FAB portal's own
-/// `main@profile:tonk` context where the command lives; the worker's handler
+/// is gone. Claimed on
+/// the profile branch, where the command lives; the worker's handler
 /// reads `space` to flip that replica — nothing space-side is required.
 pub fn pause_claim_json(space: &str, time: f64) -> Value {
     json!({
@@ -1228,7 +1227,7 @@ mod persist {
 
     #[test]
     fn reads_the_dock_from_a_conclusion_row() {
-        // The exact `Conclusion[]` shape `window.tonk.query` returns: the
+        // The exact `Conclusion[]` shape `/query` answers with: the
         // projected `dock` lives under `fields`, not on the row. Reading it
         // off the row directly is the regression that stranded restore at
         // its default even though the fact was persisted.
@@ -1626,16 +1625,21 @@ mod agent_handoff {
     }
 }
 
-/// The member DID marked `is_self` by the repository read model. Memberships
-/// are keyed to the account root, which can differ from this device's profile.
-pub fn self_member_did_from_repository(info: &Value) -> Option<String> {
-    info.get("members")?.as_array()?.iter().find_map(|member| {
-        if member.get("is_self").and_then(Value::as_bool) == Some(true) {
-            member.get("did").and_then(Value::as_str).map(str::to_owned)
-        } else {
-            None
+/// Which account the session looking at a space acts for: the fact the
+/// worker keeps on the branch's session entity. Memberships are keyed to the
+/// account, which can differ from this device's profile, so the member whose
+/// DID this is, is the one looking.
+pub fn session_account_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "account": { "the": "xyz.tonk.session/account", "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": { "?": { "name": "this" } },
+            "account": { "?": { "name": "account" } }
         }
     })
+    .to_string()
 }
 
 /// Whether a member holding `role` runs the space: founders and admins
@@ -1646,22 +1650,15 @@ pub fn role_manages_members(role: &str) -> bool {
 }
 
 #[cfg(test)]
-mod self_member_did {
+mod member_roles {
     use super::*;
 
     #[test]
-    fn it_uses_the_repository_member_identity_instead_of_the_device_profile() {
-        let rows = json!({ "profile": "did:key:zDevice", "members": [
-            { "did": "did:key:zOther", "is_self": false },
-            { "did": "did:key:zAccount", "is_self": true }
-        ] });
+    fn it_asks_the_session_which_account_it_acts_for() {
+        let query: Value = serde_json::from_str(&session_account_query_body()).unwrap();
         assert_eq!(
-            self_member_did_from_repository(&rows).as_deref(),
-            Some("did:key:zAccount")
-        );
-        assert_eq!(
-            self_member_did_from_repository(&json!({ "members": [] })),
-            None
+            query["predicate"]["with"]["account"]["the"],
+            "xyz.tonk.session/account"
         );
     }
 
@@ -1835,9 +1832,8 @@ mod profile_name {
 
 /// Build a `TransactRequest` body for `tonk/rename-repository`.
 ///
-/// A transient carrying the target `space` and the new `name`. Dispatched
-/// routeless via `window.tonk.transact`, so it lands on the FAB's own
-/// `main@profile:tonk`; the worker's handler reads `space` to rename that
+/// A transient carrying the target `space` and the new `name`. Claimed
+/// on the profile branch; the worker's handler reads `space` to rename that
 /// repository — nothing space-side is required. `this` is omitted so the
 /// worker mints it from `(descriptor, parameters)`.
 ///

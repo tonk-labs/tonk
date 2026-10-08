@@ -120,8 +120,16 @@ namespace_id = "1001"
 ACCOUNT_SERVICE_URL = "https://accounts.tonk.xyz"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
+# Staging also owns `tonk.spot`, where each site renders on an origin of its
+# own (`{label}.tonk.spot`). Listing the zone routes here keeps them: a deploy
+# replaces a worker's whole set of zone routes with the ones it names, so a
+# route added here later would otherwise drop them.
 [env.staging]
-routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
+routes = [
+  { pattern = "staging.tonk.xyz", custom_domain = true },
+  { pattern = "tonk.spot/*", zone_name = "tonk.spot" },
+  { pattern = "*.tonk.spot/*", zone_name = "tonk.spot" },
+]
 
 # Keep Wrangler's rebuild on the invitation-enabled staging artifact.
 [env.staging.build]
@@ -174,10 +182,22 @@ namespace_id = "1001"
 [env.staging.vars]
 ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.xyz"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
+# Sites render at `{label}.tonk.spot`, framed by the app at staging.tonk.xyz.
+# Dev does the same under tonk.foundation. Production and previews leave
+# these unset and keep sites in sealed frames.
+SITE_HOST = "tonk.spot"
+APP_ORIGIN = "https://staging.tonk.xyz"
 
 # Dev. Every push to `main` deploys here, so tonk.foundation always runs the
 # development branch. Its state is disjoint from staging and production, and
 # being off the tonk.network apex it mints its own passkey credentials.
+#
+# Its sites render on origins of their own, `{label}.tonk.foundation`. Those
+# subdomains reach this worker through the site router
+# (`workers/site-router`), which owns the zone's wildcard route and also
+# gives each pull request's preview its names there. The route needs a
+# proxied wildcard DNS record (`*`) in the zone; without one those origins do
+# not resolve and every site reports that it could not load.
 [env.dev]
 routes = [{ pattern = "tonk.foundation", custom_domain = true }]
 
@@ -228,6 +248,9 @@ namespace_id = "1001"
 
 [env.dev.vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
+# Sites render at `{label}.tonk.foundation`, framed by the app at the apex.
+SITE_HOST = "tonk.foundation"
+APP_ORIGIN = "https://tonk.foundation"
 
 # Preview. Every pull request uploads a version of this environment under a
 # `--preview-alias` and is reached at its own workers.dev URL, so the
@@ -303,3 +326,11 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # unresolvable: a preview that failed to wire itself has to break visibly rather
 # than quietly serve a real registry to browsers that trust `/.well-known/tonk`.
 ACCOUNT_SERVICE_URL = "https://accounts-preview.invalid"
+# A preview's app is `pr-{n}.tonk.foundation` and its sites
+# `{label}-pr{n}.tonk.foundation`, names the site router gives it in the dev
+# zone. The pull request's number is written in per upload. At its
+# `workers.dev` alias the preview names no site origins and keeps its sites in
+# sealed frames, so the checked-in values only have to be recognisably unset.
+SITE_HOST = "tonk.foundation"
+SITE_SUFFIX = "-prREPLACED-PER-PULL-REQUEST"
+APP_ORIGIN = "https://pr-REPLACED-PER-PULL-REQUEST.tonk.foundation"

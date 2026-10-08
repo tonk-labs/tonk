@@ -39,6 +39,7 @@ const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/note
 const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
+const TONK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/tonk.yaml");
 
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims. Like
@@ -224,8 +225,12 @@ fn it_raises_the_signup_from_an_unlinked_account_cell() {
         "the panel must be able to tell whether an account is linked",
     );
     assert!(
-        panel.contains("self.link('needs-account');"),
-        "and raise the ceremony in place when none is",
+        panel.contains("else self.openRegistration();"),
+        "and open the panel that adds an account when none is",
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("on:open-registration=tonk:open-registration"),
+        "by the command the worker records the panel's first stage for",
     );
     assert!(
         PROFILE_LIBRARY.contains(
@@ -585,7 +590,9 @@ fn it_recovers_from_every_absent_space_directory_state() {
         "both absence states must explain how to obtain an invite link"
     );
     assert_eq!(
-        directory_probe.matches("<space-login>").count(),
+        directory_probe
+            .matches("on:retry-registration=tonk:open-registration")
+            .count(),
         2,
         "both absence states must offer sign-in recovery"
     );
@@ -641,23 +648,34 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         "class=\"space-unknown-wall\"",
         "open this space",
         "class=\"space-unknown-back\" href=\"/\">go to home",
-        "<space-login><button type=\"button\"",
+        "<button type=\"button\" class=\"space-unknown-home\" on:retry-registration=tonk:open-registration>",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
             "the absent-space markup must preserve `{contract}`"
         );
     }
-    // Downloading has one narrator. Both missing-directory states offer
-    // sign-in and invite guidance. A space that is merely still arriving
-    // must never be sent through either recovery path.
+    // Both missing-directory states offer sign-in and invite guidance. A
+    // space that is merely still arriving must never be sent through either
+    // recovery path: its two narrators say it is arriving, or that nothing
+    // is.
     assert_eq!(
         PROFILE_LIBRARY
             .matches("class=\"space-unknown-narrator\"")
             .count(),
-        5,
-        "the absent-space panel must explain downloading, login, and invite recovery"
+        6,
+        "the absent-space panel must explain arrival, a stall, login and invite recovery"
     );
+    for contract in [
+        "<space-arrival class=\"space-unknown-wall\" space={this}>",
+        "data-arriving>This space is on its way to this device.",
+        "data-stalled hidden>This space has no content on this device",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the waiting room must say when nothing is arriving: `{contract}`"
+        );
+    }
     assert!(
         PROFILE_LIBRARY.contains("model=space view=downloading"),
         "the absent-space panel must consult the directory row before accusing the link"
@@ -1317,6 +1335,11 @@ async fn it_lowers_the_prose_library() {
 async fn it_lowers_the_issue_library() {
     assert_component_library_lowers("issue library (issue.yaml)", "issue.yaml", ISSUE_LIBRARY)
         .await;
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_tonk_library() {
+    assert_component_library_lowers("tonk library (tonk.yaml)", "tonk.yaml", TONK_LIBRARY).await;
 }
 
 // The `on:` binding gates that used to live here — a dangling

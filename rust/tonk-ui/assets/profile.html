@@ -1,0 +1,419 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <!-- The shell of a site's origin: the one page its worker answers
+             every address of the site with. It registers the site's worker,
+             waits for it to take control, then brings the site up itself,
+             from its own origin: the bootstrap that speaks to the page
+             around it, the element runtime, and the display of whatever
+             route its address names. It tells the page around it how far
+             along it is, and takes nothing from it but the port's answers. -->
+        <script>
+            (function () {
+                // Say so at once: a parent that never hears this knows the
+                // frame could not load at all (offline, with no worker here
+                // yet), and tells the person why.
+                parent.postMessage({ __tonkOrigin: "shell" }, "*");
+
+                // Carries ports between this origin's worker and the frame
+                // above. A site's worker reaches the worker it answers to
+                // over a port that the frame above hands down; it loses the
+                // port on every restart and asks its pages for another. It
+                // also tells the worker when the page is hidden or leaving,
+                // the moment the worker is about to go idle and be stopped,
+                // so it saves its session first: a worker hears nothing
+                // before the browser stops it.
+                function broker() {
+                    var sw = navigator.serviceWorker;
+                    function flush() {
+                        if (sw.controller) sw.controller.postMessage({ type: "flush" });
+                    }
+                    window.addEventListener("pagehide", flush);
+                    document.addEventListener("visibilitychange", function () {
+                        if (document.visibilityState === "hidden") flush();
+                    });
+                    function ask() {
+                        parent.postMessage({ __tonkOrigin: "need-port" }, "*");
+                    }
+                    // Heard before anything else in this document, and by
+                    // nothing after: the site's own code runs here too, and
+                    // the port is not for it.
+                    window.addEventListener(
+                        "message",
+                        function (e) {
+                            if (e.source !== parent || !e.data || e.data.__tonkOrigin !== "port") return;
+                            e.stopImmediatePropagation();
+                            var port = e.ports && e.ports[0];
+                            if (port && sw.controller) sw.controller.postMessage({ type: "port" }, [port]);
+                        },
+                        true,
+                    );
+                    // The app's page runs the passkey ceremonies, and tells
+                    // the worker that holds the account, this origin's, what
+                    // came of one by way of this frame: what a custody
+                    // ceremony derived, or that a ceremony was refused.
+                    var TO_WORKER = ["custody", "ceremony-refused"];
+                    window.addEventListener(
+                        "message",
+                        function (e) {
+                            if (e.source !== parent || !e.data || e.data.__tonkOrigin !== "to-worker") return;
+                            e.stopImmediatePropagation();
+                            var message = e.data.message;
+                            if (!message || TO_WORKER.indexOf(message.type) < 0 || !sw.controller) return;
+                            sw.controller.postMessage(message, Array.prototype.slice.call(e.ports));
+                        },
+                        true,
+                    );
+                    // A profile's worker tells the page that asked it where
+                    // to go next, or to run a passkey ceremony. That page is
+                    // the app's, around this frame, and hears it from here.
+                    var profile = location.hostname.split(".")[0].indexOf("profile") === 0;
+                    sw.addEventListener("message", function (e) {
+                        if (e.data && e.data.type === "need-port") ask();
+                        else if (e.data && e.data.type === "status") workerSays(e.data.stage);
+                        else if (profile) {
+                            parent.postMessage({ __tonkOrigin: "worker-message", message: e.data }, "*");
+                        }
+                    });
+                    sw.startMessages();
+                    ask();
+                    // The app's page counts visits by the profile acting
+                    // here, which only this origin's worker knows.
+                    if (profile) {
+                        fetch("/api/identify")
+                            .then(function (response) { return response.ok ? response.json() : null; })
+                            .then(function (identity) {
+                                if (identity && identity.did) {
+                                    parent.postMessage({ __tonkOrigin: "identity", did: identity.did }, "*");
+                                }
+                            })
+                            .catch(function () {});
+                    }
+                }
+                // How far along the site is: what this shell is doing, or what
+                // its worker says it is busy with, which is the longer wait.
+                // Said to the page around this frame and shown in it, until
+                // both are ready. A page that waits says what it waits on.
+                var stages = { shell: "starting", worker: "ready" };
+                function show() {
+                    var busy = stages.worker !== "ready" ? stages.worker : stages.shell;
+                    parent.postMessage({ __tonkOrigin: "status", stage: busy }, "*");
+                    if (!document.body) return;
+                    var line = document.getElementById("tonk-stage");
+                    if (busy === "ready") {
+                        if (line) line.remove();
+                        return;
+                    }
+                    if (!line) {
+                        line = document.createElement("p");
+                        line.id = "tonk-stage";
+                        line.setAttribute("role", "status");
+                        line.style.cssText =
+                            "position:fixed;inset:auto 0 calc(50% - 3.5rem) 0;margin:0;text-align:center;" +
+                            "font:12px/1.4 ui-monospace,Menlo,monospace;opacity:.6;pointer-events:none";
+                        document.body.appendChild(line);
+                    }
+                    line.textContent = busy + "…";
+                }
+                function say(stage) {
+                    stages.shell = stage;
+                    show();
+                }
+                function workerSays(stage) {
+                    stages.worker = stage;
+                    show();
+                }
+
+                function report(error) {
+                    parent.postMessage(
+                        { __tonkRuntime: "error", error: "space origin: " + (error && error.stack || error) },
+                        "*",
+                    );
+                }
+
+                // The contract between this shell and the site's worker. The
+                // worker must answer with the same number; bump both together
+                // when the contract changes.
+                var PROTOCOL = 2;
+                var RECOVERY_KEY = "tonk-space-worker-recovery";
+
+                // Whether `worker` answers the protocol check in time. A worker
+                // from an older build does not answer at all.
+                function speaks(worker) {
+                    return new Promise(function (resolve) {
+                        var channel = new MessageChannel();
+                        var timer = setTimeout(function () {
+                            resolve(false);
+                        }, 3000);
+                        channel.port1.onmessage = function (event) {
+                            clearTimeout(timer);
+                            resolve(event.data && event.data.protocol === PROTOCOL);
+                        };
+                        worker.postMessage({ type: "protocol" }, [channel.port2]);
+                    });
+                }
+
+                // A worker the browser cannot update keeps control of this
+                // origin for good. That happens when its registration can no
+                // longer load the current script: one registered as a classic
+                // script cannot become a module. Unregister it and load again,
+                // so the next load registers a worker that works. At most once
+                // a minute, so a worker that still fails cannot loop the frame.
+                async function recover() {
+                    try {
+                        var last = Number(sessionStorage.getItem(RECOVERY_KEY) || 0);
+                        if (Date.now() - last < 60000) return false;
+                        sessionStorage.setItem(RECOVERY_KEY, String(Date.now()));
+                    } catch (error) {
+                        return false;
+                    }
+                    var registration = await navigator.serviceWorker.getRegistration();
+                    if (!registration) return false;
+                    await registration.unregister();
+                    location.reload();
+                    return true;
+                }
+
+                // Registers only when nothing controls the frame yet: once the
+                // worker serves this shell, its `worker-src` refuses a second
+                // `register()`, and the browser checks for updates on its own.
+                async function control() {
+                    var container = navigator.serviceWorker;
+                    if (container.controller) {
+                        if (await speaks(container.controller)) return;
+                        if (await recover()) return new Promise(function () {});
+                        throw new Error("the site's worker is out of date and could not be replaced");
+                    }
+                    say("installing its worker");
+                    await container.register("/space_worker.js", {
+                        scope: "/",
+                        type: "module",
+                        updateViaCache: "none",
+                    });
+                    if (container.controller) return;
+                    say("waiting for its worker");
+                    await new Promise(function (resolve) {
+                        container.addEventListener("controllerchange", resolve, { once: true });
+                    });
+                }
+
+                // What this document runs was served by the worker it loaded
+                // under, and is built to speak to that one. A worker that
+                // takes over is another build's: load again, so the site is
+                // brought up by the worker that now answers it. Each
+                // replacement replaces the document once.
+                function follow() {
+                    var container = navigator.serviceWorker;
+                    var served = container.controller;
+                    container.addEventListener("controllerchange", function () {
+                        if (!container.controller || container.controller === served) return;
+                        served = container.controller;
+                        say("taking up a new version");
+                        location.reload();
+                    });
+                }
+
+                // Whether the site's worker served this document. Only then
+                // does it carry the site's policy: the server hands the shell
+                // out bare, to any path, so that an origin with no worker
+                // yet can start one.
+                function servedByWorker() {
+                    var navigation = performance.getEntriesByType("navigation")[0];
+                    return !!navigation && navigation.workerStart > 0;
+                }
+
+                // Load again, now that the worker is in control, so that it
+                // serves the document the site renders in. Once per frame: a
+                // worker that still does not serve it leaves the site unrendered.
+                function reloadUnderWorker() {
+                    var key = "tonk-space-shell-reload";
+                    try {
+                        if (sessionStorage.getItem(key) === location.href) return false;
+                        sessionStorage.setItem(key, location.href);
+                    } catch (error) {
+                        return false;
+                    }
+                    location.reload();
+                    return true;
+                }
+
+                // Opened on its own, not framed by the app: there is no one to
+                // ask for a document. Say what this address is.
+                if (parent === window) {
+                    document.addEventListener("DOMContentLoaded", function () {
+                        document.body.textContent =
+                            "This address serves a Tonk site. Open it from Tonk.";
+                    });
+                    return;
+                }
+
+                var inside = false;
+                try {
+                    inside = parent.location.origin === location.origin;
+                } catch (error) {}
+                if (inside) {
+                    control().then(becomeContent).catch(report);
+                    return;
+                }
+
+                // The app's page frames a profile's origin this way with no
+                // site to render: only to reach the profile's worker, which
+                // holds the person's profile, before any site is on screen.
+                // The app's worker passes its requests to the profile's over
+                // a port, which is not an event to the browser: it would stop
+                // the profile's worker as idle in the middle of answering. So
+                // while the app is on screen this frame keeps telling the
+                // worker it is open.
+                if (location.hash === "#connector") {
+                    control()
+                        .then(function () {
+                            broker();
+                            setInterval(function () {
+                                var worker = navigator.serviceWorker.controller;
+                                if (worker && document.visibilityState === "visible") {
+                                    worker.postMessage({ type: "keepalive" });
+                                }
+                            }, 10000);
+                        })
+                        .catch(report);
+                    return;
+                }
+
+                // Run a script of this origin, in order.
+                function run(src) {
+                    return new Promise(function (resolve, reject) {
+                        var script = document.createElement("script");
+                        script.src = src;
+                        script.onload = resolve;
+                        script.onerror = function () {
+                            reject(new Error("could not load " + src));
+                        };
+                        document.head.appendChild(script);
+                    });
+                }
+
+                // What the site shows: the route its address names, which its
+                // worker stamps on `site` when the bootstrap claims the load.
+                // The placeholders keep the frame reading as loading until
+                // then, and where the space has not replicated yet.
+                function display(site) {
+                    var pending =
+                        "hidden class='site-pending'><span class='tonk-pulse' aria-hidden='true'></span></div>";
+                    return (
+                        "<tonk-display entity='" + site + "' model='tonk:site'>" +
+                        "<div slot='loading' " + pending +
+                        "<div slot='no-entity' " + pending +
+                        "<div slot='no-model' " + pending +
+                        "</tonk-display>"
+                    );
+                }
+
+                // Show what this frame's address is: the content a route keeps
+                // there, in a frame of its own, or else the model the address
+                // routes to. Asking for the address as a request, which a
+                // page load is not, is how the worker says which: it answers
+                // a request with the content, or that there is none.
+                var shown = null;
+                async function render() {
+                    var address = location.pathname + location.search;
+                    var content = false;
+                    if (location.pathname !== "/") {
+                        try {
+                            content = (await fetch(address, { method: "HEAD" })).ok;
+                        } catch (error) {}
+                    }
+                    if (!content) {
+                        if (shown === "view") return;
+                        shown = "view";
+                        document.body.innerHTML = display(window.tonk.context.siteEntity);
+                        return;
+                    }
+                    if (shown === address) return;
+                    shown = address;
+                    var frame = document.createElement("iframe");
+                    frame.src = address;
+                    frame.title = address;
+                    frame.style.cssText =
+                        "position:fixed;inset:0;width:100%;height:100%;border:0;background:Canvas";
+                    document.body.replaceChildren(frame);
+                }
+
+                // This shell loaded inside a page of its own origin: in the
+                // frame a shell shows content in, or where content followed a
+                // link. It is not the site's frame, so it has the worker
+                // answer its address with the content, and loads it again.
+                // An address asked for twice in a moment is not being
+                // answered that way, and is left alone.
+                async function becomeContent() {
+                    var key = "tonk-content:" + location.href;
+                    var last = 0;
+                    try {
+                        last = Number(sessionStorage.getItem(key) || 0);
+                        sessionStorage.setItem(key, String(Date.now()));
+                    } catch (error) {}
+                    if (Date.now() - last < 2000) {
+                        throw new Error("the content at " + location.pathname + " did not load");
+                    }
+                    await new Promise(function (resolve) {
+                        var channel = new MessageChannel();
+                        channel.port1.onmessage = resolve;
+                        navigator.serviceWorker.controller.postMessage(
+                            { type: "content", url: location.href },
+                            [channel.port2],
+                        );
+                    });
+                    location.replace(location.href);
+                }
+
+                // The path this shell is kept at. It is not a place in the site.
+                var SHELL = "/profile.html";
+
+                // The site runs in this document, so the shell brings it up
+                // only once the document is one the worker served, with the
+                // site's policy on it. With no worker the site does not render.
+                control().then(async function () {
+                    // The server answered an address of this site with the
+                    // app's page, there being no worker yet, and that page
+                    // sent the frame here to start one. Go back to the
+                    // address: the worker answers it now, with this shell or
+                    // with whatever content the site keeps there.
+                    if (location.hash.indexOf("#boot=") === 0) {
+                        location.replace(decodeURIComponent(location.hash.slice(6)) || "/");
+                        return;
+                    }
+                    if (!servedByWorker()) {
+                        if (reloadUnderWorker()) return;
+                        throw new Error("the site's worker did not serve its shell");
+                    }
+                    try {
+                        sessionStorage.removeItem("tonk-space-shell-reload");
+                    } catch (error) {}
+                    if (location.pathname === SHELL) history.replaceState(null, "", "/");
+                    follow();
+                    broker();
+                    say("loading");
+                    var base = document.createElement("base");
+                    base.href = "/";
+                    document.head.appendChild(base);
+                    var response = await fetch("/guest/manifest.json", { cache: "no-cache" });
+                    var manifest = await response.json();
+                    window.tonkBuildFiles = manifest;
+                    await run("/guest/" + manifest.bootstrap);
+                    await run("/guest/" + manifest.runtime);
+                    await run("/guest/" + manifest.preview);
+                    await window.tonk.ready;
+                    await render();
+                    // The page moved this site to another address, in place.
+                    window.addEventListener("tonk:context", function () {
+                        render().catch(report);
+                    });
+                    await window.tonkRuntime;
+                    await window.tonk.claimed;
+                    say("ready");
+                }).catch(report);
+            })();
+        </script>
+    </head>
+    <body></body>
+</html>

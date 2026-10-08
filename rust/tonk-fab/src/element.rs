@@ -898,8 +898,7 @@ fn finish_drag(this: &HtmlElement, pointer_id: i32) {
 
 /// Toggle sync pause for the active space.
 ///
-/// Dispatched routelessly through `window.tonk.transact`, so it lands on the
-/// profile context where `tonk:pause-sync` is defined and its handler reads
+/// Claimed on the profile branch, where `tonk:pause-sync` is defined and its handler reads
 /// the target space out of the command. Nothing space-side is required, which
 /// is what keeps the affordance working on spaces seeded before it existed.
 fn dispatch_pause(this: &HtmlElement) {
@@ -916,28 +915,9 @@ fn dispatch_pause(this: &HtmlElement) {
     transact(&pause_claim_json(&space, time));
 }
 
-/// Call `window.tonk.transact(request)` with a claim.
+/// Claim on the profile branch.
 fn transact(claim: &serde_json::Value) {
-    let Ok(json) = serde_json::to_string(claim) else {
-        return;
-    };
-    let Some(win) = window() else { return };
-    let Some(tonk) = Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Object>().ok())
-    else {
-        return;
-    };
-    let Some(transact) = Reflect::get(&tonk, &"transact".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Function>().ok())
-    else {
-        return;
-    };
-    let Ok(body) = js_sys::JSON::parse(&json) else {
-        return;
-    };
-    let _ = transact.call1(&tonk, &body);
+    crate::profile::transact(claim);
 }
 
 /// Expose the bar's imperative surface as own properties on the instance.
@@ -1378,38 +1358,14 @@ fn persist_collapsed(collapsed: bool) {
     transact(&collapsed_claim_json(collapsed));
 }
 
-/// Run a `window.tonk.query` and hand the settled result to `then` on a
-/// later task. `then` never runs when the bridge is missing — callers
-/// leave their defaults standing — and runs with `None` when the query
-/// itself fails.
-fn profile_query(query_body: serde_json::Value, then: impl FnOnce(Option<JsValue>) + 'static) {
-    let Ok(json) = serde_json::to_string(&query_body) else {
-        return;
-    };
-    let Some(win) = window() else { return };
-    let Some(tonk) = Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Object>().ok())
-    else {
-        return;
-    };
-    let Some(query) = Reflect::get(&tonk, &"query".into())
-        .ok()
-        .and_then(|v| v.dyn_into::<Function>().ok())
-    else {
-        return;
-    };
-    let Ok(body) = js_sys::JSON::parse(&json) else {
-        return;
-    };
-    let Ok(result) = query.call1(&tonk, &body) else {
-        return;
-    };
-    let Ok(promise) = result.dyn_into::<Promise>() else {
-        return;
-    };
+/// Read the profile branch and hand the settled rows to `then` on a later
+/// task: `None` when the read fails.
+fn profile_query(
+    query_body: serde_json::Value,
+    then: impl FnOnce(Option<serde_json::Value>) + 'static,
+) {
     spawn_local(async move {
-        then(JsFuture::from(promise).await.ok());
+        then(crate::profile::query(&query_body).await);
     });
 }
 
@@ -1449,7 +1405,7 @@ fn restore_position(this: &HtmlElement) {
         // corner instead of wherever a half-applied earlier state left it.
         let dock = rows
             .as_ref()
-            .and_then(read_dock_from_rows)
+            .and_then(dock_from_conclusions)
             .unwrap_or(DEFAULT_DOCK);
         apply_dock(&host, dock);
     });
@@ -1478,26 +1434,12 @@ fn restore_collapse(this: &HtmlElement, state: &bar::Shared) {
     profile_query(query_body, move |rows| {
         if rows
             .as_ref()
-            .and_then(read_collapsed_from_rows)
+            .and_then(collapsed_from_conclusions)
             .unwrap_or(false)
         {
             bar::seat_collapsed(&host, &state);
         }
     });
-}
-
-/// Extract the persisted dock from a `Conclusion[]` value.
-fn read_dock_from_rows(rows: &JsValue) -> Option<Dock> {
-    let json = js_sys::JSON::stringify(rows).ok()?.as_string()?;
-    let value: serde_json::Value = serde_json::from_str(&json).ok()?;
-    dock_from_conclusions(&value)
-}
-
-/// Extract the persisted collapse from a `Conclusion[]` value.
-fn read_collapsed_from_rows(rows: &JsValue) -> Option<bool> {
-    let json = js_sys::JSON::stringify(rows).ok()?.as_string()?;
-    let value: serde_json::Value = serde_json::from_str(&json).ok()?;
-    collapsed_from_conclusions(&value)
 }
 
 /// Mark the space present and clear any earlier absence stamps.

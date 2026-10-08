@@ -39,14 +39,13 @@ pub use account::{
 pub use analytics::{ANALYTICS_MESSAGE, AnalyticsEvent, AnalyticsMessage};
 pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};
-pub use deployment::DeploymentConfig;
+pub use deployment::{DeploymentConfig, SiteOrigins};
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
 pub use identity::{
-    AccountCreation, AccountPurge, CREATE_ACCOUNT_REQUEST, CUSTODY_REQUEST, CustodyIntent,
-    DeviceAuthorization, DeviceLink, ENCRYPTION_KEY_REQUEST, Enrollment, LINK_ACCOUNT,
-    LinkAccountRequest, PasskeyAddition, PasskeyMetadata, RootStatus, SaveRootRequest, WEBAUTHN,
-    WebAuthnKind, WebAuthnRequest,
+    AccountCreation, AccountPurge, CUSTODY_REQUEST, CustodyIntent, DeviceAuthorization, DeviceLink,
+    Enrollment, PasskeyAddition, PasskeyMetadata, RootDelegation, RootStatus, SaveRootRequest,
+    WEBAUTHN, WebAuthnKind, WebAuthnRequest,
 };
 pub use invite::{
     CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,

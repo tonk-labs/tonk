@@ -451,6 +451,29 @@ async fn add_profile(
     Ok(response)
 }
 
+/// Bring down everything the account's branch refers to, while this device
+/// may still read it.
+///
+/// A pull takes the branch's head and leaves what it refers to where it
+/// is, to be read when wanted. Signing out gives up the right to read it,
+/// and the branch is kept and written to after: a write that reaches a
+/// part never brought down then has nowhere to read it from, and fails.
+/// So what the branch holds is made this device's own first. A device
+/// that cannot reach the account now signs out with what it has.
+async fn keep_what_the_account_branch_holds(tonk: &TonkState) {
+    let kept = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .pull()
+        .download()
+        .perform(&tonk.operator)
+        .await;
+    if let Err(error) = kept {
+        log!("sign-out: the account branch was not brought down whole: {error}");
+    }
+}
+
 /// Sign out: withdraw this device's grant, forget the provider, and move
 /// to a branch that follows nothing.
 ///
@@ -469,6 +492,7 @@ pub(crate) async fn sign_out(
 
     let (status, storage, name, profile, registry, profile_library) = {
         let tonk = state.read().await;
+        keep_what_the_account_branch_holds(&tonk).await;
         super::account_devices::withdraw_own_authority(&tonk).await;
         let status = super::account::disconnect(&tonk).await?;
         super::profile::leave_account(&tonk).await;
@@ -584,19 +608,25 @@ async fn promote(
     // that identity across the replacement instead of installing a fresh
     // false latch. A swap that finishes after retirement began also closes
     // its never-exposed reactor before publishing it.
-    let (retiring, profile_transition, context_generation, clients) = {
+    //
+    // Whether sites have origins of their own is the deployment's, told to
+    // the worker once when it starts. A profile that takes over without it
+    // would go back to holding its spaces' content itself.
+    let (retiring, profile_transition, context_generation, clients, site_origins) = {
         let current = state.read().await;
         (
             Arc::clone(&current.retiring),
             Arc::clone(&current.profile_transition),
             Arc::clone(&current.context_generation),
             Arc::clone(&current.clients),
+            Arc::clone(&current.site_origins),
         )
     };
     new_state.retiring = retiring;
     new_state.profile_transition = profile_transition;
     new_state.context_generation = context_generation;
     new_state.clients = clients;
+    new_state.site_origins = site_origins;
     if new_state.is_retiring() {
         new_state.reactor.shutdown();
     }
@@ -622,6 +652,9 @@ async fn promote(
         active.context_generation.fetch_add(1, Ordering::AcqRel);
     }
     super::navigate::notify_profile_changed(source);
+    // A space's own worker acts for the account its profile does, and was
+    // told so by the profile this one replaces.
+    super::space_reach::changed(None);
 
     // Catch up on whatever account the swapped-in profile is attached
     // to, exactly as a boot would. Fire-and-forget: account-service
@@ -759,6 +792,36 @@ mod tests {
             active_account(&tonk).await.is_none(),
             "the branch an account is added on follows nothing yet",
         );
+    }
+
+    /// Whether sites have origins of their own is told to the worker once,
+    /// when it starts. A profile that takes over has to go on knowing it, or
+    /// it would hold its spaces' content itself again.
+    #[dialog_common::test]
+    async fn it_keeps_knowing_sites_have_origins_across_a_profile_swap() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        state
+            .read()
+            .await
+            .site_origins
+            .store(true, Ordering::Relaxed);
+        let before = active(&state).await;
+
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        <crate::router::CommandEnv as dialog_capability::Provider<
+            tonk_schema::command::AddProfile,
+        >>::execute(
+            &env,
+            tonk_schema::command::AddProfile {
+                this: "cmd:add-in-site-mode".parse().expect("entity"),
+                time: tonk_schema::domain::command::current::add_profile::Time(2.0),
+            },
+        )
+        .await;
+
+        assert_ne!(before, active(&state).await, "the profile was swapped");
+        assert!(state.read().await.spaces_elsewhere());
     }
 
     /// The sign-out command leaves the account branch behind.

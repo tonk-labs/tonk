@@ -51,9 +51,12 @@ pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResp
 
 pub(crate) mod account;
 mod account_deletion;
+mod account_journey;
 mod ceremony;
 pub(crate) mod customer;
 mod email_status;
+/// The panel that adds an account to this profile, stage by stage.
+pub(crate) mod registration;
 mod sign_in_via;
 
 pub(crate) mod account_state;
@@ -69,6 +72,11 @@ pub(crate) mod custody;
 pub(crate) mod rotation;
 
 mod join;
+/// Reaching a space's own worker from the person's profile.
+pub(crate) mod space_reach;
+/// A space's own worker: the delegation it holds, and the space it mounts.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) mod space_worker;
 pub use join::{JoinRequest, JoinResponse};
 mod local_space_link;
 
@@ -122,6 +130,7 @@ pub use profile::{ProfileInfo, SpaceEntry};
 
 pub(crate) mod profiles;
 
+mod activation;
 mod profile_name;
 
 mod evaluate;
@@ -136,8 +145,11 @@ pub use query::QueryPath;
 // the SW's routing/containment code reads it locally.
 pub use tonk_schema::{DEFAULT_BRANCH, SpaceRef, parse_space};
 
+mod http_route;
 mod session;
-pub use session::{ClientRegistry, ClientState, SiteResponse};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) use session::client_context_is_current;
+pub use session::{ClientRegistry, ClientState, Saved, SiteResponse, Stamp};
 
 mod transact;
 pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
@@ -145,8 +157,8 @@ pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
 mod transfer;
 pub use transfer::ImportResponse;
 
-pub mod bridge;
-pub use bridge::BridgeRegistry;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod clients;
 
 mod host;
 pub use host::{ClientId, ViewBinding, ViewBindings};
@@ -467,7 +479,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/branch/{branch}/query",
             post(query::query),
         )
-        // Host/guest iframe bridge. The shell embeds an iframe
+        // Host/guest iframe binding. The shell embeds an iframe
         // pointed at this URL; the handler records the iframe's
         // client id against `{repo, branch}` so its later
         // subresource fetches can be re-rooted, and serves the
@@ -493,6 +505,11 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/blob/{entity}",
             get(blob::serve),
+        )
+        // What the branch's `route/http!` routes answer a path with.
+        .route(
+            "/api/repository/{repo}/branch/{branch}/http/{*path}",
+            get(http_route::respond),
         )
         // Inspect operations
         .route(
@@ -1933,7 +1950,7 @@ pub mod tests {
     /// detached `spawn_local` future advances between polls. `tokio`'s
     /// timer is unsupported on `wasm32`.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    async fn wasm_yield() {
+    pub(crate) async fn wasm_yield() {
         use wasm_bindgen::JsCast;
         let promise = js_sys::Promise::new(&mut |resolve: js_sys::Function, _| {
             let scope: web_sys::ServiceWorkerGlobalScope = js_sys::global().unchecked_into();

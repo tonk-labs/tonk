@@ -132,6 +132,7 @@ cleanup() {
     rm -f "$ASSET_LIST_UNSORTED" "$ASSET_LIST" "$ASSET_GRAPH" "$PAGE_GRAPH"
     rm -f "$ASSET_FILES_UNSORTED" "$ASSET_FILES"
     rm -f "$NORMALIZED_INDEX" "$CANONICAL_INDEX" "$NORMALIZED_SW" "$BUILD_INPUT"
+    rm -f "$LOCK/space-worker"
     if [ "$RESTORE_FAILED" -eq 0 ]; then
         rm -f "$SW_BACKUP" "$INDEX_BACKUP" "$VERSION_BACKUP" "$MANIFEST_BACKUP"
         rmdir "$LOCK" 2>/dev/null
@@ -150,22 +151,6 @@ grep -q '^const BUILD_ID = ' "$SW" || {
     echo "stamp-service-worker: $SW has no BUILD_ID declaration" >&2
     exit 1
 }
-grep -q '^const WORKER_WASM_HASH = ' "$SW" || {
-    echo "stamp-service-worker: $SW has no WORKER_WASM_HASH declaration" >&2
-    exit 1
-}
-grep -q '^const ASSET_MANIFEST_HASH = ' "$SW" || {
-    echo "stamp-service-worker: $SW has no ASSET_MANIFEST_HASH declaration" >&2
-    exit 1
-}
-grep -q '^const ASSET_PATHS = ' "$SW" || {
-    echo "stamp-service-worker: $SW has no ASSET_PATHS declaration" >&2
-    exit 1
-}
-grep -q '^const PAGE_BUILD = ' "$SW" || {
-    echo "stamp-service-worker: $SW has no PAGE_BUILD declaration" >&2
-    exit 1
-}
 if [ "$(grep -c '<meta name="tonk-worker-build" content="' "$INDEX")" -ne 1 ]; then
     echo "stamp-service-worker: $INDEX must have one tonk-worker-build meta tag" >&2
     exit 1
@@ -173,6 +158,26 @@ fi
 if [ "$(grep -c '<meta name="tonk-page-build" content="' "$INDEX")" -ne 1 ]; then
     echo "stamp-service-worker: $INDEX must have one tonk-page-build meta tag" >&2
     exit 1
+fi
+
+# A site origin's worker runs the same worker Wasm and pins it by this hash.
+# Stamped before the resource graph is hashed, so the build identity covers
+# the stamped file; restamping writes the same line.
+SPACE_SW="$DIST/space_worker.js"
+if [ -f "$SPACE_SW" ]; then
+    grep -q '^const WORKER_WASM_HASH = ' "$SPACE_SW" || {
+        echo "stamp-service-worker: $SPACE_SW has no WORKER_WASM_HASH declaration" >&2
+        exit 1
+    }
+    SPACE_WASM_HASH=$(hash_file "$WORKER_WASM")
+    SPACE_SW_TMP="$LOCK/space-worker"
+    sed -e "s|^const WORKER_WASM_HASH = .*|const WORKER_WASM_HASH = \"$SPACE_WASM_HASH\";|" \
+        "$SPACE_SW" > "$SPACE_SW_TMP"
+    grep -q "^const WORKER_WASM_HASH = \"$SPACE_WASM_HASH\";$" "$SPACE_SW_TMP" || {
+        echo "stamp-service-worker: space worker WORKER_WASM_HASH verification failed" >&2
+        exit 1
+    }
+    mv -f "$SPACE_SW_TMP" "$SPACE_SW"
 fi
 
 # The publisher owns the resource-graph interface. Enumerate every browser
@@ -247,33 +252,19 @@ ASSET_GRAPH_HASH=$(hash_file "$ASSET_GRAPH")
 # The page identity covers everything the top-level document runs or reads by
 # a name it holds, which is every published resource except the sealed-guest
 # runtime and editor bundles (the portal fetches those afresh for each guest it
-# mounts) and library data (seeded by the worker). Two builds with the same
-# page identity differ only in worker and guest code, so an open document can
-# keep running and just remount its guests under the new worker.
+# mounts), library data (seeded by the worker), and what a site's own origin
+# runs: its shell and its worker, which is stamped with the hash of the wasm
+# it boots. Two builds with the same page identity differ only in worker and
+# guest code, so an open document can keep running while its sites load again
+# under the new worker.
 grep -v -e '^/guest/' -e '^/tonk-code/' -e '^/tonk-prose/' -e '^/tonk-table/' -e '^/library/' \
+    -e '^/space_worker\.js|' -e '^/space\.html|' -e '^/profile\.html|' \
     "$ASSET_GRAPH" > "$PAGE_GRAPH" || true
 PAGE_BUILD=$(hash_file "$PAGE_GRAPH")
-ASSET_PATHS_DECL='const ASSET_PATHS = ['
-FIRST=1
-while IFS='|' read -r ROUTE REL; do
-    if [ "$FIRST" -eq 1 ]; then
-        FIRST=0
-    else
-        ASSET_PATHS_DECL="$ASSET_PATHS_DECL,"
-    fi
-    ASSET_PATHS_DECL="$ASSET_PATHS_DECL\"$ROUTE\""
-done < "$ASSET_LIST"
-ASSET_PATHS_DECL="$ASSET_PATHS_DECL];"
-ASSET_PATHS_SED=$(printf '%s' "$ASSET_PATHS_DECL" | sed 's/[&]/\\&/g')
 # Include the outer service-worker policy without hashing generated identities
 # back into itself. Any policy, worker, or published resource change therefore
 # produces a new immutable generation while restamping stays deterministic.
-sed -e 's|^const BUILD_ID = .*|const BUILD_ID = "dev";|' \
-    -e 's|^const WORKER_WASM_HASH = .*|const WORKER_WASM_HASH = "dev";|' \
-    -e 's|^const ASSET_MANIFEST_HASH = .*|const ASSET_MANIFEST_HASH = "dev";|' \
-    -e 's|^const ASSET_PATHS = .*|const ASSET_PATHS = ["dev"];|' \
-    -e 's|^const PAGE_BUILD = .*|const PAGE_BUILD = "dev";|' \
-    "$SW" > "$NORMALIZED_SW"
+sed -e 's|^const BUILD_ID = .*|const BUILD_ID = "dev";|' "$SW" > "$NORMALIZED_SW"
 SW_HASH=$(hash_file "$NORMALIZED_SW")
 printf '%s\n' "$SW_HASH" "$WASM_HASH" "$GLUE_HASH" "$ASSET_GRAPH_HASH" > "$BUILD_INPUT"
 BUILD_ID=$(hash_file "$BUILD_INPUT")
@@ -320,33 +311,9 @@ grep -q "name=\"tonk-page-build\" content=\"$PAGE_BUILD\"" "$INDEX_TMP" || {
 } > "$MANIFEST_TMP"
 MANIFEST_HASH=$(hash_file_full "$MANIFEST_TMP")
 
-sed -e "s|^const BUILD_ID = .*|const BUILD_ID = \"$BUILD_ID\";|" \
-    -e "s|^const WORKER_WASM_HASH = .*|const WORKER_WASM_HASH = \"$WASM_HASH\";|" \
-    -e "s|^const ASSET_MANIFEST_HASH = .*|const ASSET_MANIFEST_HASH = \"$MANIFEST_HASH\";|" \
-    -e "s|^const ASSET_PATHS = .*|$ASSET_PATHS_SED|" \
-    -e "s|^const PAGE_BUILD = .*|const PAGE_BUILD = \"$PAGE_BUILD\";|" \
-    "$SW" > "$SW_TMP"
+sed -e "s|^const BUILD_ID = .*|const BUILD_ID = \"$BUILD_ID\";|" "$SW" > "$SW_TMP"
 grep -q "^const BUILD_ID = \"$BUILD_ID\";$" "$SW_TMP" || {
     echo "stamp-service-worker: BUILD_ID verification failed" >&2
-    exit 1
-}
-grep -q "^const WORKER_WASM_HASH = \"$WASM_HASH\";$" "$SW_TMP" || {
-    echo "stamp-service-worker: WORKER_WASM_HASH verification failed" >&2
-    exit 1
-}
-grep -q "^const ASSET_MANIFEST_HASH = \"$MANIFEST_HASH\";$" "$SW_TMP" || {
-    echo "stamp-service-worker: ASSET_MANIFEST_HASH verification failed" >&2
-    exit 1
-}
-grep -q "^const PAGE_BUILD = \"$PAGE_BUILD\";$" "$SW_TMP" || {
-    echo "stamp-service-worker: PAGE_BUILD verification failed" >&2
-    exit 1
-}
-# BSD grep runs out of memory taking the multi-thousand-route ASSET_PATHS
-# line as a fixed pattern; extract the stamped line and compare in the
-# shell instead.
-[ "$(sed -n '/^const ASSET_PATHS = /p' "$SW_TMP")" = "$ASSET_PATHS_DECL" ] || {
-    echo "stamp-service-worker: ASSET_PATHS verification failed" >&2
     exit 1
 }
 

@@ -577,6 +577,13 @@ view!:
       .settings-back:active { background:var(--wash-2); }
       .hub-page:has(hub-bar[path="/account"]) :is(.settings-title,.settings-back) { display:none; }
       .hub-page account-settings { display:block; }
+      /* A modal over the spaces: the page behind is dimmed and takes no
+         clicks. Its surface is the app's raised one, not the hub's card. */
+      .registration-seat #tonk-register { position:fixed; inset:0; z-index:20; background:var(--dim);
+        --card:#fcfbfb; --anchor-top:79px; --anchor-left:0px; --anchor-width:calc(100vw - 42px); }
+      @media (prefers-color-scheme: dark){ .registration-seat #tonk-register { --card:#261f20; } }
+      #tonk-register[data-kind="sign-in-via"] [data-retry="registration"],
+      #tonk-register:not([data-kind="sign-in-via"]) [data-retry="sign-in-via"] { display:none; }
       .hub-page account-settings .s-body { min-width:0; min-height:0; max-height:none;
         overflow:visible; padding:0; background:transparent; border:0; color:var(--ink); }
       .hub-page account-settings .pane[hidden] { display:none; }
@@ -991,14 +998,21 @@ view!:
     # The name is the directory mirror (`xyz.tonk.space/name`), written
     # at create and kept current by rename, which exists so a device
     # that has not replicated a space can still label it.
+    # It says "downloading" only while something is: `<space-arrival>` asks
+    # the space's own worker, and when that worker has nothing left to pull
+    # and the space still has not opened, the wall says so and offers the
+    # way home instead of waiting on nothing.
     downloading: |
       <div class="space-unknown">
         <tab-title text="{name} — Tonk"></tab-title>
         <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
-        <div class="space-unknown-wall">
-          <h1 class="space-unknown-statement">downloading {name}</h1>
-          <p class="space-unknown-narrator">This space is on its way to this device. It opens as soon as enough of it has arrived.</p>
-        </div>
+        <space-arrival class="space-unknown-wall" space={this}>
+          <h1 class="space-unknown-statement" data-arriving>downloading {name}</h1>
+          <p class="space-unknown-narrator" data-arriving>This space is on its way to this device. It opens as soon as enough of it has arrived.</p>
+          <h1 class="space-unknown-statement" data-stalled hidden>nothing to download</h1>
+          <p class="space-unknown-narrator" data-stalled hidden>This space has no content on this device, and nothing more is arriving from where it syncs. It may not have finished being created.</p>
+          <a class="space-unknown-back" data-stalled hidden href="/">go to home</a>
+        </space-arrival>
       </div>
 
 
@@ -1443,6 +1457,44 @@ view!:
           <a class="ebtn solid" href="/">go to home</a>
         </div>
       </section>
+
+# ============================================================
+# ASSET
+# ============================================================
+
+# Content a branch stores, as distinct from the facts about it. The
+# entity IS the content's reference, `asset:<base58-hash>`, so any fact
+# may point at it.
+#
+# The size fact is dialog's own (`dialog.` is closed to application
+# writes): the commit that stores the bytes records it, derived from the
+# bytes rather than claimed. It is what says this branch holds the
+# content. A push ships the bytes of every asset whose fact a revision
+# adds, a read hydrates only content such a fact vouches for, and
+# retracting it drops the branch's reference to the bytes.
+#
+# What the content is called and how to read it are ordinary facts on
+# the same entity, asserted by whoever stored it; content stored without
+# them is still an asset.
+concept!: &asset
+  description: Content this branch stores, named by its hash (an image, a file, media)
+  with:
+    size:
+      description: The content's size in bytes, recorded by the commit that stored it
+      the: dialog.asset/size
+      cardinality: one
+      as: unsigned-integer
+  maybe:
+    content-type:
+      description: MIME type of the content
+      the: xyz.tonk.blob/content-type
+      cardinality: one
+      as: text
+    name:
+      description: Human-readable file name
+      the: xyz.tonk.blob/name
+      cardinality: one
+      as: text
 
 # ============================================================
 # ROUTING (profile branch) — mirrors core.yaml, scoped to the profile
@@ -2537,6 +2589,50 @@ element!: &space-create
         }
         self.create(form);
       }
+    watch: |
+      (self, query) => {
+        // A subscription is the profile branch's `/query` answered as an
+        // event stream: what holds now, then what each change asserts.
+        const abort = new AbortController();
+        const branch = (window.tonk.context || {}).branch || 'main';
+        // Asked now, not at the first read: the caller claims next, and
+        // the answer to that claim must find the stream already open.
+        const opened = fetch(`/api/repository/profile:tonk/branch/${branch}/query`, {
+          method: 'POST',
+          signal: abort.signal,
+          headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+          body: JSON.stringify(query),
+        });
+        opened.catch(() => {});
+        const frames = (async function* () {
+          const response = await opened;
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+          let text = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) return;
+            text += value;
+            for (let end; (end = text.indexOf('\n\n')) >= 0; text = text.slice(end + 2)) {
+              const frame = text.slice(0, end);
+              if (!frame.startsWith('data:')) continue;
+              const said = JSON.parse(frame.slice(5));
+              yield Array.isArray(said) ? said : said.conclusions || said.asserted || [];
+            }
+          }
+        })();
+        return { read: () => frames.next(), cancel: async () => abort.abort() };
+      }
+    claim: |
+      async (self, request) => {
+        const branch = (window.tonk.context || {}).branch || 'main';
+        const response = await fetch(`/api/repository/profile:tonk/branch/${branch}/transact`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      }
     create: |
       async (self, form) => {
         let reader;
@@ -2574,15 +2670,15 @@ element!: &space-create
             parameters.seed = new URL(seed, window.tonk.context.origin).href;
           }
           const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
-          reader = window.tonk.subscribe({
+          reader = self.watch({
             predicate: { with: {
               status: { the: 'xyz.tonk.space-creation/status', as: 'Text', cardinality: 'one' },
               detail: { the: 'xyz.tonk.space-creation/detail', as: 'Text', cardinality: 'one' },
             } },
             terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
-          }).getReader();
+          });
           self.__reader = reader;
-          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+          await self.claim({ claims: [{ op: 'assert', application: {
             predicate: { kind: 'transient', concept: { with: fields } },
             parameters: { this: id, ...parameters },
           } }] });
@@ -2792,6 +2888,16 @@ view!:
           </nav>
         </hub-bar>
         </header>
+        <!-- The panel that adds an account: whichever stage it is at, under
+             the bar. Each display draws nothing until its stage is there. -->
+        <div class="registration-seat">
+          <tonk-display model="tonk:registration/address" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/via" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/naming" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/ceremony" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/confirming" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/failed" view="panel"></tonk-display>
+        </div>
         <main class="hubcol">
         <h1 class="visually-hidden">Spaces</h1>
         <hub-discover data-spaces-view collection="spaces" catalog-url="https://goblinoats.github.io/honky-tonks/catalog.json">
@@ -2884,6 +2990,9 @@ view!:
                   </div>
                   <span hidden data-via-return on:finish-sign-in-via=tonk:finish-sign-in-via></span>
                 </div>
+                <span hidden data-open-registration on:open-registration=tonk:open-registration></span>
+                <span hidden data-open-sign-in-via on:open-sign-in-via=tonk:open-sign-in-via></span>
+                <span hidden data-leave-registration on:leave-registration=tonk:dismiss-registration></span>
                 <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
                 <tonk-display model="state:ceremony" view="settings"></tonk-display>
                 <div data-custody-seat aria-hidden="true"></div>
@@ -2931,6 +3040,442 @@ route!: &route/settings/link
   this: id:tonk:route/settings/link
   path: "/settings/link"
   concept: tonk:hub
+
+# The /activate page: where an activation email's link lands. The link
+# carries `?ucan=`, a complete invocation the access service signed, so
+# presenting it is activating: the page needs no key and works on any
+# device, signed in or not. Pressing the button asserts `account/activate`
+# with the invocation; the profile's worker posts it to the service and
+# records how it went on the command's own entity, which the page watches.
+route!: &route/activate
+  this: id:tonk:route/activate
+  path: "/activate"
+  concept: tonk:activate/route
+
+concept!: &activate/route
+  this: tonk:activate/route
+  description: The /activate page, where an activation email's link lands.
+  with:
+    # A route model declares at least one field; the page reads the link's
+    # `ucan` parameter off the location itself.
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+command!: &account/activate
+  this: tonk:activate-account
+  description: Activate the account an activation email was sent for.
+  with:
+    invocation:
+      description: The link's `ucan` parameter, the invocation in base64url.
+      the: xyz.tonk.command.activate-account/invocation
+      as: text
+
+# How an `account/activate` went, on the command's own entity, in the
+# profile's session overlay: nothing of it is stored or synced.
+concept!: &account/activation
+  description: How an activation went, for the page that asked.
+  with:
+    status:
+      description: >
+        `activated`, `refused` (the link can activate nothing, now or
+        later) or `failed` (another press may succeed).
+      the: xyz.tonk.account-activation/status
+      cardinality: one
+      as: text
+    detail:
+      description: What to tell the person when it was not activated.
+      the: xyz.tonk.account-activation/detail
+      cardinality: one
+      as: text
+
+view!:
+  this: activate/route
+  style:
+    activate: |
+      /* The activation page's surface. No tokens of its own: it reads `--page`,
+         `--ink` and the rest straight from `:root` (the app's stylesheet), where
+         they alias the Web Awesome theme. */
+      account-activate {
+          display: grid;
+          min-height: 100dvh;
+          padding: 48px 16px 80px;
+          place-items: start center;
+          box-sizing: border-box;
+          background: var(--page);
+          color: var(--ink);
+          font-family: var(--cond);
+          -webkit-font-smoothing: antialiased;
+          -moz-osx-font-smoothing: grayscale;
+      }
+
+      account-activate *,
+      account-activate *::before,
+      account-activate *::after {
+          box-sizing: border-box;
+      }
+
+      account-activate ::selection {
+          background: var(--ink);
+          color: var(--on-ink);
+      }
+
+      account-activate :where(button) {
+          margin: 0;
+          border-radius: 0;
+          font: inherit;
+          min-width: 0;
+          padding: 0;
+          border: 0;
+          appearance: none;
+          background: none;
+          color: inherit;
+          letter-spacing: inherit;
+          text-align: inherit;
+          cursor: pointer;
+      }
+
+      account-activate :where(a) {
+          color: inherit;
+      }
+
+      account-activate :focus-visible {
+          outline: 0;
+          box-shadow: inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);
+      }
+
+      .account {
+          width: min(576px, calc(100vw - 32px));
+      }
+
+      .account__logo {
+          width: 132px;
+          aspect-ratio: 1024 / 343;
+          margin: 0 auto 56px;
+          background: currentcolor;
+          -webkit-mask: url("/images/tonk-wordmark.svg") center / contain no-repeat;
+          mask: url("/images/tonk-wordmark.svg") center / contain no-repeat;
+      }
+
+      .account [hidden] {
+          display: none;
+      }
+
+      .account__ceremony {
+          width: 100%;
+          margin-inline: auto;
+      }
+
+      .account__stack {
+          display: flex;
+          flex-direction: column;
+          gap: 7px;
+      }
+
+      .account__ceremony-head {
+          display: flex;
+          height: 36px;
+          margin: 0;
+          padding: 0 16px 9px;
+          align-items: flex-end;
+          background: var(--frost-solid);
+          box-shadow: 0 0 0 1px var(--ring);
+          color: var(--ink);
+          font-family: var(--cond);
+          font-size: 13px;
+          font-weight: 600;
+          line-height: 1;
+          letter-spacing: 0.02em;
+          text-transform: lowercase;
+          text-wrap: balance;
+      }
+
+      .account__run {
+          display: flex;
+          min-height: 36px;
+          padding: 0 10px 9px 24px;
+          align-items: flex-end;
+          justify-content: flex-end;
+          background: var(--ink);
+          box-shadow: 0 0 0 1px var(--ink);
+          color: var(--on-ink);
+          font-size: 13px;
+          font-weight: 600;
+          line-height: 1;
+          letter-spacing: 0.02em;
+          text-transform: lowercase;
+          text-decoration: none;
+          transition-property: scale, opacity, background-color;
+          transition-duration: 150ms;
+          transition-timing-function: ease-out;
+      }
+
+      .account__run:hover:not(:disabled) {
+          background: linear-gradient(var(--wash-p), var(--wash-p)), var(--ink);
+      }
+
+      .account__run:active:not(:disabled) {
+          scale: 0.96;
+      }
+
+      .account__run:disabled {
+          cursor: wait;
+          opacity: 0.58;
+      }
+
+      .account__narrator,
+      .account__error,
+      .account__working {
+          width: 100%;
+          margin: 7px auto 0;
+          padding: 10px 16px 11px;
+          background: var(--frost-solid);
+          box-shadow: 0 0 0 1px var(--ring);
+          color: var(--soft);
+          font-family: var(--sans);
+          font-size: 13px;
+          line-height: 1.55;
+          text-wrap: pretty;
+          overflow-wrap: anywhere;
+      }
+
+      .account__narrator p,
+      .account__error,
+      .account__working {
+          margin-block: 7px 0;
+      }
+
+      .account__narrator p {
+          margin: 0;
+      }
+
+      .account__narrator a {
+          color: var(--ink);
+          text-decoration: underline;
+          text-underline-offset: 3px;
+      }
+
+      .account__narrator a:focus-visible {
+          outline: 2px solid var(--ink);
+          outline-offset: 3px;
+      }
+
+      .account__error {
+          color: var(--ink);
+      }
+
+      .account__error:focus-visible {
+          box-shadow: 0 0 0 1px var(--ring);
+      }
+
+      .account__working:empty {
+          display: none;
+      }
+
+      @media (max-width: 751px) {
+          .account {
+              width: min(576px, calc(100vw - 32px));
+          }
+      }
+
+      @media (max-width: 463px) {
+          account-activate {
+              padding-top: max(24px, env(safe-area-inset-top));
+          }
+
+          .account__ceremony-head,
+          .account__run {
+              min-height: 44px;
+          }
+
+          .account__ceremony-head {
+              height: 44px;
+          }
+
+          .account__logo {
+              width: 98px;
+              margin-bottom: 40px;
+          }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+          .account__run {
+              transition: none;
+          }
+      }
+  show:
+    ui: |
+      <link rel="stylesheet" with:src="activate">
+      <tab-title text="Tonk"></tab-title>
+      <account-activate>
+        <main class="account">
+          <div class="account__logo" role="img" aria-label="tonk"></div>
+
+          <div class="account__ceremony">
+            <section id="activate-confirm" class="account__activation-state" aria-labelledby="activate-confirm-title" hidden>
+              <div class="account__stack">
+                <h1 id="activate-confirm-title" class="account__ceremony-head">activate your account</h1>
+                <button id="activate-accept" class="account__run" type="button" aria-describedby="activate-terms activate-working activate-error">accept and activate</button>
+              </div>
+              <div class="account__narrator">
+                <p id="activate-terms">Confirm your email address to activate your account. This allows Tonk to sync your data across browsers and devices, meaning other people and tools can connect to it. By selecting accept and activate, you agree to the <a href="https://tonk.xyz/legal/terms" target="_blank" rel="noopener noreferrer">terms of service</a>.</p>
+              </div>
+            </section>
+
+            <section id="activate-done" class="account__activation-state" aria-labelledby="activate-done-title" hidden>
+              <div class="account__stack">
+                <h1 id="activate-done-title" class="account__ceremony-head">account verified</h1>
+              </div>
+              <div class="account__narrator">
+                <p>You may close this tab. Return to the original tab where you started account setup.</p>
+              </div>
+            </section>
+
+            <p id="activate-working" class="account__working" role="status" aria-live="polite"></p>
+            <p id="activate-error" class="account__error" role="alert" hidden></p>
+          </div>
+        </main>
+      </account-activate>
+
+element!: &account-activate
+  description: Presents an activation link's invocation and says how it went.
+  method:
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.querySelector('#activate-accept')?.addEventListener('click', () => self.activate());
+        window.tonk.ready.then(() => {
+          if (!self.isConnected) return;
+          // The page's address is the host's to know; this frame's own
+          // is its shell's.
+          const search = (window.tonk.context || {}).search || '';
+          const invocation = new URLSearchParams(search).get('ucan') || '';
+          self.__invocation = invocation;
+          // A damaged link shows before the button is pressed: the page's
+          // one job is presenting the invocation it carries.
+          if (!invocation) {
+            self.settle('This activation link is incomplete. Open the exact link from your email.', true);
+          } else if (!/^[A-Za-z0-9_-]+$/.test(invocation)) {
+            self.settle('This activation link is damaged. Open the exact link from your email.', true);
+          } else {
+            self.show('#activate-confirm');
+          }
+        });
+      }
+    disconnected: |
+      (self) => {
+        self.__abort?.abort();
+        self.__abort = null;
+      }
+    show: |
+      (self, selector) => {
+        for (const panel of ['#activate-confirm', '#activate-done']) {
+          self.querySelector(panel)?.toggleAttribute('hidden', panel !== selector);
+        }
+      }
+    status: |
+      (self, text) => {
+        const status = self.querySelector('#activate-working');
+        if (status) status.textContent = text;
+      }
+    busy: |
+      (self, busy, spent) => {
+        const section = self.querySelector('#activate-confirm');
+        if (busy) section?.setAttribute('aria-busy', 'true');
+        else section?.removeAttribute('aria-busy');
+        const button = self.querySelector('#activate-accept');
+        if (button) button.disabled = busy || spent;
+      }
+    settle: |
+      (self, message, spent) => {
+        // `spent`: the link can do nothing more, so the button stays off.
+        self.__spent = self.__spent || spent;
+        self.__pending = false;
+        self.busy(false, self.__spent);
+        self.status('');
+        const error = self.querySelector('#activate-error');
+        if (!error) return;
+        error.textContent = message;
+        error.toggleAttribute('hidden', !message);
+      }
+    activate: |
+      async (self) => {
+        if (self.__spent || self.__pending) return;
+        self.__pending = true;
+        const error = self.querySelector('#activate-error');
+        if (error) { error.textContent = ''; error.setAttribute('hidden', ''); }
+        self.busy(true, false);
+        self.status('Activating…');
+        const abort = new AbortController();
+        self.__abort = abort;
+        // An answer that has not come in this long is not coming: a worker
+        // from before this page existed takes the request and does nothing
+        // with it. Say so, never wait without end.
+        const patience = setTimeout(() => abort.abort('late'), 30000);
+        const branch = (window.tonk.context || {}).branch || 'main';
+        const at = (operation) => `/api/repository/profile:tonk/branch/${branch}/${operation}`;
+        const post = (operation, body, accept) => fetch(at(operation), {
+          method: 'POST',
+          signal: abort.signal,
+          headers: { 'content-type': 'application/json', ...(accept ? { accept } : {}) },
+          body: JSON.stringify(body),
+        });
+        const id = 'urn:uuid:' + crypto.randomUUID();
+        const field = (name) => ({ the: `xyz.tonk.account-activation/${name}`, as: 'Text', cardinality: 'one' });
+        try {
+          // Watching before asking: the answer must find the stream open.
+          const watching = post('query', {
+            predicate: { with: { status: field('status'), detail: field('detail') } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }, 'text/event-stream');
+          const asked = await post('transact', { claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              invocation: { the: 'xyz.tonk.command.activate-account/invocation', as: 'Text' },
+            } } },
+            parameters: { this: id, invocation: self.__invocation },
+          } }] });
+          if (!asked.ok) throw new Error(`HTTP ${asked.status}`);
+          const stream = await watching;
+          if (!stream.ok) throw new Error(`HTTP ${stream.status}`);
+          const reader = stream.body.pipeThrough(new TextDecoderStream()).getReader();
+          let text = '';
+          let outcome = null;
+          while (!outcome) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('the outcome never arrived');
+            text += value;
+            for (let end; (end = text.indexOf('\n\n')) >= 0; text = text.slice(end + 2)) {
+              const frame = text.slice(0, end);
+              if (!frame.startsWith('data:')) continue;
+              const said = JSON.parse(frame.slice(5));
+              const rows = Array.isArray(said) ? said : said.conclusions || said.asserted || [];
+              outcome = rows.find((row) => row.this === id)?.fields || outcome;
+            }
+          }
+          if (!self.isConnected) return;
+          if (outcome.status === 'activated') {
+            // The service has consumed the one-use link.
+            self.settle('', true);
+            self.show('#activate-done');
+          } else {
+            self.settle(outcome.detail || 'Activation failed. Try again.', outcome.status === 'refused');
+          }
+        } catch (failure) {
+          if (!self.isConnected) return;
+          if (abort.signal.reason === 'late') {
+            self.settle('Activation did not finish. Reload this page and try again.', false);
+          } else if (!abort.signal.aborted) {
+            self.settle('The service could not be reached. Try again.', false);
+          }
+        } finally {
+          clearTimeout(patience);
+          abort.abort();
+          if (self.__abort === abort) self.__abort = null;
+        }
+      }
 
 # The /join route: redeem an invite. The shell's top-level `<tonk-site>`
 # routes every path against this table, so without an entry `/join` matched
@@ -3368,7 +3913,6 @@ view!:
           font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
           font-weight:400; line-height:1.55; text-wrap:pretty; }
         .space-unknown-run { display:flex; }
-        .space-unknown-run space-login { display:block; width:100%; }
         .space-unknown-back { align-self:flex-start; min-height:44px;
           display:flex; align-items:center; color:var(--edge-ink);
           text-underline-offset:3px; }
@@ -3402,11 +3946,33 @@ view!:
            display without adding an element. */
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-site,
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-fab { display: none; }
+        /* The panel that adds an account, where the bar was: the account
+           task seats it at the bar's anchor. */
+        .registration-over-space { --anchor-top:16px; --anchor-left:0px; --anchor-width:calc(100vw - 16px); }
+        .registration-over-space #tonk-register { position:fixed; inset:0; z-index:30; background:var(--dim);
+          backdrop-filter:blur(3px); --card:#fcfbfb; }
+        @media (prefers-color-scheme: dark){ .registration-over-space #tonk-register { --card:#261f20; } }
+        .registration-over-space[data-up] #tonk-register .ocol { top:auto; bottom:var(--anchor-bottom, 16px); }
+        .registration-over-space #tonk-register[data-kind="sign-in-via"] [data-retry="registration"],
+        .registration-over-space #tonk-register:not([data-kind="sign-in-via"]) [data-retry="sign-in-via"] { display:none; }
       </style>
       <tonk-site data-space-preview with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
       <tonk-fab with="{profile-branch}@profile:tonk" space={id}>
         <command-palette slot="command" space={id} profile="{profile-branch}@profile:tonk"></command-palette>
       </tonk-fab>
+      <account-task>
+        <div class="registration-seat registration-over-space">
+          <tonk-display model="tonk:registration/address" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/via" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/naming" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/ceremony" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/confirming" view="panel"></tonk-display>
+          <tonk-display model="tonk:registration/failed" view="panel"></tonk-display>
+        </div>
+        <span hidden data-open-registration on:open-registration=tonk:open-registration></span>
+        <span hidden data-leave-registration on:leave-registration=tonk:dismiss-registration></span>
+        <tonk-display hidden model="state:account-link" view="label" data-account-link></tonk-display>
+      </account-task>
       <tonk-display with={id} entity={id} model=tonk:repository view=title>
         <!-- `no-model` is now the absent-space panel below, which sets its
              own title; a second `no-model` child would render alongside it
@@ -3452,9 +4018,9 @@ view!:
               <div class="space-unknown-wall">
                 <h1 class="space-unknown-statement">open this space</h1>
                 <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
-                <!-- The recovery control opens the top-page account ceremony. -->
+                <!-- Signing in opens the panel that adds an account. -->
                 <div class="space-unknown-run">
-                  <space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></space-login>
+                  <button type="button" class="space-unknown-home" on:retry-registration=tonk:open-registration>sign in<span aria-hidden="true">&#9656;</span></button>
                 </div>
                 <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
                 <a class="space-unknown-back" href="/">go to home</a>
@@ -3466,9 +4032,9 @@ view!:
               <div class="space-unknown-wall">
                 <h1 class="space-unknown-statement">open this space</h1>
                 <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
-                <!-- The recovery control opens the top-page account ceremony. -->
+                <!-- Signing in opens the panel that adds an account. -->
                 <div class="space-unknown-run">
-                  <space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></space-login>
+                  <button type="button" class="space-unknown-home" on:retry-registration=tonk:open-registration>sign in<span aria-hidden="true">&#9656;</span></button>
                 </div>
                 <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
                 <a class="space-unknown-back" href="/">go to home</a>
@@ -3688,6 +4254,367 @@ view!:
   show:
     label: |
       <span data-account-link-row data-of={this}><span data-account-linked hidden></span><tonk-display model="tonk:account/name" entity={account} view="directory"><span slot="no-entity"></span></tonk-display></span>
+
+# Adding an account to this profile, one stage at a time. Each stage is a
+# concept of its own on the profile's overlay, all on `state:registration`,
+# and the worker records at most one at a time: a view draws the stage it
+# matches. No stage is the panel put away; a finished account is what the
+# account's own facts say. Overlay only: the panel is this device's.
+concept!: &registration/address
+  this: tonk:registration/address
+  description: The panel that adds an account asks for an address.
+  # ENTITY: state:registration.
+  with:
+    email:
+      description: The address typed so far, empty at first.
+      the: xyz.tonk.registration-address/email
+      cardinality: one
+      as: text
+
+concept!: &registration/via
+  this: tonk:registration/via
+  description: The panel asks which Tonk holds the account, to sign this browser in through it.
+  # ENTITY: state:registration.
+  with:
+    origin:
+      description: The address typed so far, empty at first.
+      the: xyz.tonk.registration-via/origin
+      cardinality: one
+      as: text
+
+concept!: &registration/naming
+  this: tonk:registration/naming
+  description: The address is free, and the panel asks what to call the account.
+  # ENTITY: state:registration.
+  with:
+    email:
+      description: The address the account will have.
+      the: xyz.tonk.registration-naming/email
+      cardinality: one
+      as: text
+
+concept!: &registration/ceremony
+  this: tonk:registration/ceremony
+  description: The page has been asked for the passkey.
+  # ENTITY: state:registration.
+  with:
+    kind:
+      description: "`create` for a new passkey, `log-in` for one the account has."
+      the: xyz.tonk.registration-ceremony/kind
+      cardinality: one
+      as: text
+
+concept!: &registration/confirming
+  this: tonk:registration/confirming
+  description: The account waits for its emailed link to be opened.
+  # ENTITY: state:registration.
+  with:
+    kind:
+      description: "Which ceremony brought the account here: `create` or `log-in`."
+      the: xyz.tonk.registration-confirming/kind
+      cardinality: one
+      as: text
+
+concept!: &registration/failed
+  this: tonk:registration/failed
+  description: The last step of adding an account did not finish.
+  # ENTITY: state:registration.
+  with:
+    kind:
+      description: "Which step failed: `create`, `log-in` or `sign-in-via`."
+      the: xyz.tonk.registration-failed/kind
+      cardinality: one
+      as: text
+    message:
+      description: What went wrong, in words a person can act on.
+      the: xyz.tonk.registration-failed/message
+      cardinality: one
+      as: text
+
+command!: &account/open-registration
+  this: tonk:open-registration
+  description: Raise the panel that adds an account to this profile.
+  with:
+    time:
+      description: The activation's timestamp, so each click is its own command.
+      the: xyz.tonk.command.open-registration/time
+      as: float
+
+command!: &account/check-email
+  this: tonk:check-email
+  description: Ask the access service whether an address already has an account.
+  with:
+    email:
+      description: The address to look up.
+      the: xyz.tonk.command.check-email/email
+      as: text
+
+command!: &account/start-registration
+  this: tonk:start-registration
+  description: >
+    Go on with the address typed into the panel: name a new account for a
+    free address, or log in to the one an address already has.
+  with:
+    email:
+      description: The address given.
+      the: xyz.tonk.command.start-registration/email
+      as: text
+
+command!: &account/create
+  this: tonk:create-account
+  description: Create the account for a free address, with a new passkey.
+  with:
+    email:
+      description: The account's address.
+      the: xyz.tonk.command.create-account/email
+      as: text
+    name:
+      description: What to call the account.
+      the: xyz.tonk.command.create-account/name
+      as: text
+
+command!: &account/log-in
+  this: tonk:log-in
+  description: >
+    Log in with a passkey the person picks: the browser lists this site's
+    passkeys, and the one picked names the account.
+  with:
+    time:
+      description: The activation's timestamp, so each click is its own command.
+      the: xyz.tonk.command.log-in/time
+      as: float
+
+command!: &account/open-sign-in-via
+  this: tonk:open-sign-in-via
+  description: Raise the panel that signs this browser in through another Tonk.
+  with:
+    time:
+      description: The activation's timestamp, so each click is its own command.
+      the: xyz.tonk.command.open-sign-in-via/time
+      as: float
+
+command!: &account/dismiss-registration
+  this: tonk:dismiss-registration
+  description: Put the panel that adds an account away, wherever it got to.
+  with:
+    time:
+      description: The activation's timestamp, so each click is its own command.
+      the: xyz.tonk.command.dismiss-registration/time
+      as: float
+
+# The address check's answer, which the panel shows under the address.
+# Written by `account/check-email` and `account/start-registration`.
+concept!: &account/email-status
+  this: tonk:email-status
+  description: What the access service said about an address typed into the panel.
+  # ENTITY: state:email-status.
+  with:
+    address:
+      description: The address the answer is about.
+      the: xyz.tonk.email-status/address
+      cardinality: one
+      as: text
+    state:
+      description: >
+        `checking`, `unregistered`, `active`, `pending`, `suspended`,
+        `invalid` or `unavailable`.
+      the: xyz.tonk.email-status/state
+      cardinality: one
+      as: text
+
+# The page opens the panel when it lands on the account page with no
+# account, by dispatching this on its hidden trigger.
+event!: &on/open-registration
+  type: "tonk-open-registration"
+  where:
+    time: ".timeStamp"
+
+event!: &on/open-sign-in-via
+  type: "tonk-open-sign-in-via"
+  where:
+    time: ".timeStamp"
+
+event!: &on/retry-sign-in-via
+  type: "click"
+  prevent-default: true
+  where:
+    time: ".timeStamp"
+
+# The Tonk typed into the panel, as the worker reads it: a bare host or an
+# address.
+event!: &on/sign-in-via-typed
+  type: "submit"
+  prevent-default: true
+  where:
+    via: ".currentTarget.elements.via.value"
+
+event!: &on/retry-registration
+  type: "click"
+  prevent-default: true
+  where:
+    time: ".timeStamp"
+
+# The address as typed, once typing pauses: `<registration-address>` raises
+# this on the field.
+event!: &on/check-email
+  type: "tonk-check-email"
+  where:
+    email: ".currentTarget.value"
+
+event!: &on/start-registration
+  type: "submit"
+  prevent-default: true
+  where:
+    email: ".currentTarget.elements.email.value"
+
+event!: &on/create-account
+  type: "submit"
+  prevent-default: true
+  where:
+    email: ".currentTarget.dataset.email"
+    name: ".currentTarget.elements.name.value"
+
+event!: &on/log-in
+  type: "click"
+  prevent-default: true
+  where:
+    time: ".timeStamp"
+
+event!: &on/dismiss-registration
+  type: "click"
+  prevent-default: true
+  where:
+    time: ".timeStamp"
+
+# The page leaves the account page with the panel up: put it away.
+event!: &on/leave-registration
+  type: "tonk-leave-registration"
+  where:
+    time: ".timeStamp"
+
+# The panel, one view per stage. Each is the same card, under the bar;
+# what it asks for is the stage's.
+view!:
+  this: tonk:registration/address
+  show:
+    panel: |
+      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="address">
+        <registration-address>
+        <form class="ocol" on:start-registration=tonk:start-registration>
+          <div class="ostack">
+            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
+            <div class="orow mblk editing">
+              <span class="k">email address</span>
+              <span class="v"><input class="ed" name="email" type="email" inputmode="email" enterkeyhint="go"
+                autocomplete="email" aria-label="email address" value={email} required
+                on:check-email=tonk:check-email></span>
+            </div>
+          </div>
+          <div class="oexp mblk">
+            <p aria-live="polite" data-address-says>Enter your email to continue. We’ll check whether you already have a Tonk account.</p>
+            <tonk-display model="tonk:email-status" view="hint"></tonk-display>
+          </div>
+          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
+          <button class="obtn" id="tonk-register-action" type="submit" disabled>continue</button>
+        </form>
+        </registration-address>
+      </div>
+
+view!:
+  this: tonk:registration/via
+  show:
+    panel: |
+      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="via">
+        <form class="ocol" on:sign-in-via-typed=tonk:sign-in-via>
+          <div class="ostack">
+            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
+            <div class="orow mblk editing">
+              <span class="k">tonk address</span>
+              <span class="v"><input class="ed" name="via" type="text" inputmode="url" enterkeyhint="go"
+                autocomplete="url" spellcheck="false" aria-label="tonk address" placeholder="tonk.network"
+                value={origin} required></span>
+            </div>
+          </div>
+          <div class="oexp mblk"><p aria-live="polite">Enter the address of the Tonk that holds your account. You’ll approve this browser there with your passkey.</p></div>
+          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
+          <button class="obtn" id="tonk-register-action" type="submit">continue</button>
+        </form>
+      </div>
+
+view!:
+  this: tonk:registration/naming
+  show:
+    panel: |
+      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="naming">
+        <form class="ocol" data-email={email} on:create-account=tonk:create-account>
+          <div class="ostack">
+            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
+            <div class="orow mblk"><span class="k">email</span><span class="v">{email}</span></div>
+            <div class="orow mblk editing">
+              <span class="k">display name</span>
+              <span class="v"><input class="ed" name="name" type="text" enterkeyhint="go" autocomplete="name"
+                aria-label="display name" required maxlength="50"></span>
+            </div>
+          </div>
+          <div class="oexp mblk"><p aria-live="polite">What should people see when you share a space? Your passkey comes next.</p></div>
+          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
+          <button class="obtn" id="tonk-register-action" type="submit">create a passkey</button>
+        </form>
+      </div>
+
+view!:
+  this: tonk:registration/ceremony
+  show:
+    panel: |
+      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="ceremony" data-kind={kind}>
+        <div class="ocol">
+          <div class="ostack">
+            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
+          </div>
+          <div class="oexp mblk"><p aria-live="polite">Waiting for your passkey…</p></div>
+          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
+          <button class="obtn wait" id="tonk-register-action" type="button" disabled aria-busy="true">waiting for device</button>
+        </div>
+      </div>
+
+view!:
+  this: tonk:registration/confirming
+  show:
+    panel: |
+      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="confirming" data-kind={kind}>
+        <div class="ocol">
+          <div class="ostack">
+            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
+            <div class="orow mblk"><span class="k">email</span><span class="v">awaiting confirmation</span></div>
+          </div>
+          <div class="oexp mblk"><p aria-live="polite">Open the confirmation link we emailed you to finish. You can leave this page open.</p></div>
+          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>close</button>
+        </div>
+      </div>
+
+view!:
+  this: tonk:registration/failed
+  show:
+    panel: |
+      <div id="tonk-register" class="tonk-ceremony tonk-cluster" data-anchored data-registration="failed" data-kind={kind}>
+        <div class="ocol">
+          <div class="ostack">
+            <div class="m-head mblk"><span class="fabb-task-disc" aria-hidden="true"></span><span class="fabb-task-title">add an account</span></div>
+          </div>
+          <div class="oexp mblk"><p aria-live="polite">{message}</p></div>
+          <button class="ghost" type="button" on:dismiss-registration=tonk:dismiss-registration>cancel</button>
+          <button class="obtn" id="tonk-register-action" type="button" data-retry="registration" on:retry-registration=tonk:open-registration>try again</button>
+          <button class="obtn" id="tonk-register-action" type="button" data-retry="sign-in-via" on:retry-sign-in-via=tonk:open-sign-in-via>try again</button>
+        </div>
+      </div>
+
+# What the address check said, under the address. Only the answers that
+# stop the panel need words: the others move it on.
+view!:
+  this: tonk:email-status
+  show:
+    hint: |
+      <span hidden data-email-status data-state={state} data-address={address}></span>
 
 concept!: &account/active
   this: tonk:account/active
@@ -4567,21 +5494,6 @@ element!: &inline-editable
         });
       }
 
-# Opens account recovery over the missing-space screen: a click asks the
-# top page to raise the passkey ceremony, which needs a `window` and a
-# user gesture this opaque realm has neither of.
-element!: &space-login
-  description: A click asks the top page to open account recovery.
-  method:
-    connected: |
-      (self) => {
-        if (self.__wired) return;
-        self.__wired = true;
-        self.addEventListener('click', () => {
-          window.tonk?.register?.('{"reason":"space-login"}');
-        });
-      }
-
 element!: &space-actions
   description: Controls a space card menu and its rename and duplicate dialogs.
   method:
@@ -4710,6 +5622,50 @@ element!: &space-remove
         if (button) button.textContent = self.hasAttribute('busy')
           ? (action === 'leave' ? 'leaving…' : 'deleting…') : submit;
       }
+    watch: |
+      (self, query) => {
+        // A subscription is the profile branch's `/query` answered as an
+        // event stream: what holds now, then what each change asserts.
+        const abort = new AbortController();
+        const branch = (window.tonk.context || {}).branch || 'main';
+        // Asked now, not at the first read: the caller claims next, and
+        // the answer to that claim must find the stream already open.
+        const opened = fetch(`/api/repository/profile:tonk/branch/${branch}/query`, {
+          method: 'POST',
+          signal: abort.signal,
+          headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+          body: JSON.stringify(query),
+        });
+        opened.catch(() => {});
+        const frames = (async function* () {
+          const response = await opened;
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+          let text = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) return;
+            text += value;
+            for (let end; (end = text.indexOf('\n\n')) >= 0; text = text.slice(end + 2)) {
+              const frame = text.slice(0, end);
+              if (!frame.startsWith('data:')) continue;
+              const said = JSON.parse(frame.slice(5));
+              yield Array.isArray(said) ? said : said.conclusions || said.asserted || [];
+            }
+          }
+        })();
+        return { read: () => frames.next(), cancel: async () => abort.abort() };
+      }
+    claim: |
+      async (self, request) => {
+        const branch = (window.tonk.context || {}).branch || 'main';
+        const response = await fetch(`/api/repository/profile:tonk/branch/${branch}/transact`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      }
     submit: |
       async (self, form) => {
         let reader;
@@ -4727,15 +5683,15 @@ element!: &space-remove
           await window.tonk.ready;
           if (!self.isConnected) return;
           const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
-          reader = window.tonk.subscribe({
+          reader = self.watch({
             predicate: { with: {
               status: { the: 'xyz.tonk.space-removal/status', as: 'Text', cardinality: 'one' },
               detail: { the: 'xyz.tonk.space-removal/detail', as: 'Text', cardinality: 'one' },
             } },
             terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
-          }).getReader();
+          });
           self.__reader = reader;
-          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+          await self.claim({ claims: [{ op: 'assert', application: {
             predicate: { kind: 'transient', concept: { with: {
               subject: { the: 'xyz.tonk.command.remove-space/subject', as: 'Entity' },
             } } },
@@ -4987,6 +5943,205 @@ view!:
 # so the click can assert it; the deletion phrase arms the submit; the
 # ceremony row is worded; and the seat the top page's passkey cluster
 # anchors to is measured, which only this realm can do.
+# The panel that adds an account, over a space: the space's bar asks for
+# it when sharing needs an account, and this answers. It seats the panel
+# where the bar is, opens and puts it away by command, and tells the bar how
+# it ended: `completed` once this device holds an account, `cancelled` when
+# the panel is put away without one.
+element!: &space-arrival
+  description: >
+    Watches a space that has not opened yet arrive: asks the space's own
+    worker to pull and how its branch stands, and says so when nothing is
+    left to arrive.
+  method:
+    # One look: pull, then read how `main` stands against where it syncs.
+    # Only `behind` means more is on its way.
+    look: |
+      async (self) => {
+        const space = self.getAttribute('space');
+        if (!space) return 'unknown';
+        const at = `/api/repository/${encodeURIComponent(space)}/branch/main/sync`;
+        try {
+          await fetch(`${at}/pull`, { method: 'POST' });
+          const answer = await fetch(`${at}/status`);
+          if (!answer.ok) return 'unknown';
+          return (await answer.json()).state === 'behind' ? 'arriving' : 'settled';
+        } catch {
+          return 'unknown';
+        }
+      }
+    show: |
+      (self, stalled) => {
+        for (const node of self.querySelectorAll('[data-arriving]')) node.hidden = stalled;
+        for (const node of self.querySelectorAll('[data-stalled]')) node.hidden = !stalled;
+      }
+    # Two settled looks in a row, or a worker that cannot say for a while,
+    # and nothing is arriving. A space that does arrive replaces this whole
+    # panel, so there is nothing to do for that here.
+    watch: |
+      async (self) => {
+        let quiet = 0;
+        while (self.isConnected && self._watching) {
+          const seen = await self.look();
+          quiet = seen === 'arriving' ? 0 : quiet + (seen === 'settled' ? 2 : 1);
+          if (!self.isConnected || !self._watching) return;
+          self.show(quiet >= 4);
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
+      }
+    connected: |
+      (self) => {
+        if (self._watching) return;
+        self._watching = true;
+        self.watch();
+      }
+    disconnected: |
+      (self) => { self._watching = false; }
+
+element!: &registration-address
+  description: >
+    The address step of the panel that adds an account: asks about the
+    address once typing pauses, and offers what the answer allows.
+  method:
+    # What the service said about the address as it is typed now. An answer
+    # about an address since edited away says nothing.
+    answer: |
+      (self) => {
+        const typed = self.querySelector('input[name="email"]')?.value.trim() ?? '';
+        const status = self.querySelector('[data-email-status]');
+        return typed && status?.dataset.address === typed ? status.dataset.state : '';
+      }
+    offer: |
+      (self) => {
+        const action = self.querySelector('#tonk-register-action');
+        const says = self.querySelector('[data-address-says]');
+        if (!action || !says) return;
+        const [label, ready, text] = ({
+          unregistered: ['create a passkey', true, 'No account has this address yet. Create one with a passkey.'],
+          active: ['log in with passkey', true, 'This address has an account. Log in with its passkey.'],
+          pending: ['log in with passkey', true, 'This address has an account. Log in with its passkey.'],
+          checking: ['checking…', false, 'Checking this address…'],
+          invalid: ['continue', false, 'That doesn’t look like an email address.'],
+          suspended: ['continue', false, 'This account is suspended. Contact support to restore it.'],
+          unavailable: ['continue', false, 'We couldn’t reach the account service. Check your connection and try again.'],
+        })[self.answer()] ?? ['continue', false, 'Enter your email to continue. We’ll check whether you already have a Tonk account.'];
+        if (action.textContent !== label) action.textContent = label;
+        action.disabled = !ready;
+        if (says.textContent !== text) says.textContent = text;
+      }
+    ask: |
+      (self) => {
+        const field = self.querySelector('input[name="email"]');
+        if (field?.value.trim()) field.dispatchEvent(new Event('tonk-check-email', { bubbles: true }));
+      }
+    connected: |
+      (self) => {
+        self._typed = () => {
+          self.offer();
+          clearTimeout(self._pause);
+          self._pause = setTimeout(() => self.ask(), 350);
+        };
+        self.addEventListener('input', self._typed);
+        self._answered = new MutationObserver(() => self.offer());
+        self._answered.observe(self, { subtree: true, childList: true, attributes: true,
+          attributeFilter: ['data-state', 'data-address'] });
+        self.offer();
+        self.querySelector('input[name="email"]')?.focus();
+      }
+    disconnected: |
+      (self) => {
+        clearTimeout(self._pause);
+        if (self._typed) self.removeEventListener('input', self._typed);
+        self._answered?.disconnect();
+      }
+
+element!: &account-task
+  description: Seats the panel that adds an account over a space's bar, and says how it ended.
+  method:
+    seat: |
+      (self, presentation) => {
+        const anchor = presentation?.anchor;
+        const seat = self.querySelector('.registration-seat');
+        if (!anchor || !seat) return;
+        seat.style.setProperty('--anchor-left', `${anchor.left}px`);
+        seat.style.setProperty('--anchor-width', `${anchor.width}px`);
+        seat.style.setProperty('--anchor-top', `${anchor.top}px`);
+        seat.style.setProperty('--anchor-bottom', `${window.innerHeight - anchor.bottom}px`);
+        seat.toggleAttribute('data-up', presentation.vertical === 'bottom');
+      }
+    linked: |
+      (self) => {
+        const state = self.querySelector('[data-account-link]')?.getAttribute('data-state');
+        return !!state && state !== 'empty' && state !== 'no-entity' && state !== 'no-model';
+      }
+    open: |
+      (self) => !!self.querySelector('.registration-seat tonk-display:not([data-state="empty"])')
+    task: |
+      (self, detail) => {
+        if (detail.action === 'open') {
+          self._task = detail.requestId;
+          self._shown = false;
+          self.seat(detail.presentation);
+          // Once the display around the trigger listens: an event raised
+          // before that has nobody to hear it.
+          const trigger = self.querySelector('[data-open-registration]');
+          const display = trigger?.closest('tonk-display');
+          const ask = () => trigger?.dispatchEvent(new Event('tonk-open-registration', { bubbles: true }));
+          if (!display || display.hasAttribute('data-bound')) {
+            ask();
+          } else {
+            const bound = new MutationObserver(() => {
+              if (!display.hasAttribute('data-bound')) return;
+              bound.disconnect();
+              if (self._task === detail.requestId) ask();
+            });
+            bound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
+          }
+        } else if (detail.requestId !== self._task) {
+          return;
+        } else if (detail.action === 'reseat') {
+          self.seat(detail.presentation);
+        } else if (detail.action === 'suspend') {
+          self.querySelector('.registration-seat')?.setAttribute('hidden', '');
+        } else if (detail.action === 'show') {
+          self.querySelector('.registration-seat')?.removeAttribute('hidden');
+        } else if (detail.action === 'dismiss') {
+          self._task = null;
+          self.querySelector('[data-leave-registration]')?.dispatchEvent(new Event('tonk-leave-registration', { bubbles: true }));
+        }
+      }
+    # The panel shows a stage until the worker records none: then the task
+    # is over, and an account linked meanwhile is what it was for. One stage
+    # gives way to the next across two displays, so the panel is taken for
+    # gone only once the displays have settled with none showing.
+    watch: |
+      (self) => {
+        if (!self._task) return;
+        if (self.open()) { self._shown = true; clearTimeout(self._settle); return; }
+        if (!self._shown) return;
+        clearTimeout(self._settle);
+        self._settle = setTimeout(() => {
+          if (!self._task || self.open()) return;
+          const task = self._task;
+          self._task = null;
+          window.tonkAccountTaskDone?.(task, self.linked() ? 'completed' : 'cancelled');
+        }, 400);
+      }
+    connected: |
+      (self) => {
+        self._onTask = (event) => self.task(event.detail);
+        window.addEventListener('tonk:account-task', self._onTask);
+        // A task the bar raised before this element was here to hear it.
+        for (const open of window.tonkAccountTasksOpen?.() ?? []) self.task(open);
+        self._observer = new MutationObserver(() => self.watch());
+        self._observer.observe(self, { subtree: true, attributes: true, attributeFilter: ['data-state'] });
+      }
+    disconnected: |
+      (self) => {
+        if (self._onTask) window.removeEventListener('tonk:account-task', self._onTask);
+        self._observer?.disconnect();
+      }
+
 element!: &account-settings
   description: The settings panel's location-bound acts, deletion arming, ceremony wording and custody seat.
   method:
@@ -5001,12 +6156,12 @@ element!: &account-settings
         const at = window.location;
         return { origin: at.origin, path: at.pathname, search: at.search, hash: at.hash };
       }
-    # The worker's HTTP API, reached the way any guest reaches it: the
-    # host relays a same-origin fetch. A refusal rejects with its status.
+    # The worker's HTTP API, on this page's own origin, where the worker
+    # holding the profile is. A refusal rejects with its status.
     api: |
       (self, path, body) => {
         const init = body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
-        return window.fetch(`${self.context().origin}${path}`, init).then(async (response) => {
+        return window.fetch(path, init).then(async (response) => {
           const text = await response.text();
           if (!response.ok) { const error = new Error(text || String(response.status)); error.status = response.status; throw error; }
           return text ? JSON.parse(text) : null;
@@ -5511,6 +6666,50 @@ element!: &account-settings
         if (submit) submit.disabled = true;
         self.profileNameSave(form, name);
       }
+    watch: |
+      (self, query) => {
+        // A subscription is the profile branch's `/query` answered as an
+        // event stream: what holds now, then what each change asserts.
+        const abort = new AbortController();
+        const branch = (window.tonk.context || {}).branch || 'main';
+        // Asked now, not at the first read: the caller claims next, and
+        // the answer to that claim must find the stream already open.
+        const opened = fetch(`/api/repository/profile:tonk/branch/${branch}/query`, {
+          method: 'POST',
+          signal: abort.signal,
+          headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+          body: JSON.stringify(query),
+        });
+        opened.catch(() => {});
+        const frames = (async function* () {
+          const response = await opened;
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+          let text = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) return;
+            text += value;
+            for (let end; (end = text.indexOf('\n\n')) >= 0; text = text.slice(end + 2)) {
+              const frame = text.slice(0, end);
+              if (!frame.startsWith('data:')) continue;
+              const said = JSON.parse(frame.slice(5));
+              yield Array.isArray(said) ? said : said.conclusions || said.asserted || [];
+            }
+          }
+        })();
+        return { read: () => frames.next(), cancel: async () => abort.abort() };
+      }
+    claim: |
+      async (self, request) => {
+        const branch = (window.tonk.context || {}).branch || 'main';
+        const response = await fetch(`/api/repository/profile:tonk/branch/${branch}/transact`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(request),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      }
     profile-name-save: |
       async (self, form, name) => {
         let reader;
@@ -5519,15 +6718,15 @@ element!: &account-settings
           await window.tonk.ready;
           if (!self.isConnected) return;
           const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
-          reader = window.tonk.subscribe({
+          reader = self.watch({
             predicate: { with: {
               status: { the: 'xyz.tonk.profile-rename/status', as: 'Text', cardinality: 'one' },
               detail: { the: 'xyz.tonk.profile-rename/detail', as: 'Text', cardinality: 'one' },
             } },
             terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
-          }).getReader();
+          });
           self._nameReader = reader;
-          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+          await self.claim({ claims: [{ op: 'assert', application: {
             predicate: { kind: 'transient', concept: { with: {
               name: { the: 'xyz.tonk.command.profile-rename/name', as: 'Text' },
             } } },
@@ -5625,35 +6824,12 @@ element!: &account-settings
       (self) => !!document.querySelector('[data-account-linked], [data-account-name]')
     unlinked: |
       (self) => !self.linked() && document.querySelector('[data-account-link]')?.dataset.state === 'empty'
-    # A ceremony is up: the flag is an attribute so a re-render keeps it.
-    link: |
-      (self, reason) => {
-        self.setAttribute('data-linking', 'true');
-        self._shown = 'show';
-        self._linking = reason;
-        self.place(reason);
-      }
+    # The panel is up: the flag is an attribute so a re-render keeps it.
     unlink: |
-      (self) => { self._shown = null; self._linking = null; self.setAttribute('data-linking', 'false'); }
-    # Pass the opener's bounds to the trusted top page. `reason`
-    # distinguishes an opening from a move: a move must never reopen a
-    # ceremony the person has just dismissed.
-    place: |
-      (self, reason) => {
-        const target = matchMedia('(max-width: 600px)').matches
-          ? document.querySelector('[data-account-nav]')
-          : document.querySelector('.hubbar');
-        const box = target?.getBoundingClientRect();
-        const anchor = box && box.width > 0 && box.height > 0 ? { left: box.left, bottom: box.bottom, width: box.width } : null;
-        if (!anchor && reason === 'reseat') return;
-        window.tonk?.register?.(JSON.stringify(anchor ? { reason, space: '', anchor } : { reason, space: '' }));
-      }
+      (self) => { self._shown = null; self._linking = null; self._staged = false; self.setAttribute('data-linking', 'false'); }
     # The link state the account page's rows are keyed on, and the door:
-    # the account page or the settings page with no account raises the
-    # ceremony itself once the link display has resolved empty. With no
-    # account the spaces collection stays behind the modal. WebAuthn needs
-    # a `window` and a user gesture, which this
-    # opaque realm has neither of, so the top page raises it.
+    # the account page or the settings page with no account opens the
+    # panel that adds one once the link display has resolved empty.
     door: |
       (self) => {
         const linked = self.linked() ? 'true' : self.unlinked() ? 'false' : '';
@@ -5687,14 +6863,75 @@ element!: &account-settings
         if (account && self.unlinked() && !self.viaRequest()) {
           const via = self.viaAsk();
           if (!linking || (self._linking === 'sign-in-via') !== via) {
-            if (via) self.link('sign-in-via');
-            else self.link('needs-account');
+            if (via) self.openSignInVia();
+            else self.openRegistration();
           }
         }
-        // Route changes can suspend and restore the ceremony with its
-        // typed address intact.
+        // A stage the worker still holds from another visit would show
+        // wherever this page loads. Off the account page nothing here
+        // asked for it, so its seat is not shown there. Not a command: one
+        // could land after the person opens the panel, and close it.
+        document.querySelector('.registration-seat')?.toggleAttribute('hidden', !account && !linking);
+        // Leaving the account page puts the panel away.
         const shown = account ? 'show' : 'suspend';
-        if (linking && self._shown !== shown) { self._shown = shown; self.place(shown); }
+        if (linking && self._shown !== shown) {
+          self._shown = shown;
+          if (shown === 'suspend') self.leaveRegistration();
+        }
+        // The panel went away on the account page, however it ended: back
+        // to the spaces, or it would only open again. One stage gives way to
+        // the next across two displays, so it is taken for gone once they
+        // have settled with none showing.
+        if (!linking) return;
+        if (self.staged()) { self._staged = true; clearTimeout(self._unstaged); self._unstaged = null; return; }
+        if (!self._staged || self._unstaged) return;
+        self._unstaged = setTimeout(() => {
+          self._unstaged = null;
+          if (self.staged() || self.getAttribute('data-linking') !== 'true') return;
+          self._staged = false;
+          self.unlink();
+          if (self.context().path === '/account') window.tonk?.navigate?.('/');
+        }, 400);
+      }
+    # Assert a command through one of the hidden triggers below, once the
+    # display around it listens: an event raised before that has nobody to
+    # hear it.
+    fire: |
+      (self, selector, type) => {
+        const trigger = self.querySelector(selector);
+        if (!trigger) return;
+        const display = trigger.closest('tonk-display');
+        const send = () => trigger.dispatchEvent(new Event(type, { bubbles: true }));
+        if (!display || display.hasAttribute('data-bound')) { send(); return; }
+        const bound = new MutationObserver(() => {
+          if (!display.hasAttribute('data-bound')) return;
+          bound.disconnect();
+          send();
+        });
+        bound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
+      }
+    staged: |
+      (self) => !!document.querySelector('.registration-seat tonk-display:not([data-state="empty"])')
+    # The panel that adds an account is views of the worker's stages: open
+    # it by command, once per visit to the account page.
+    open-registration: |
+      (self) => {
+        self.setAttribute('data-linking', 'true');
+        self._shown = 'show';
+        self._linking = 'needs-account';
+        self.fire('[data-open-registration]', 'tonk-open-registration');
+      }
+    open-sign-in-via: |
+      (self) => {
+        self.setAttribute('data-linking', 'true');
+        self._shown = 'show';
+        self._linking = 'sign-in-via';
+        self.fire('[data-open-sign-in-via]', 'tonk-open-sign-in-via');
+      }
+    leave-registration: |
+      (self) => {
+        self.unlink();
+        self.fire('[data-leave-registration]', 'tonk-leave-registration');
       }
     connected: |
       (self) => {
@@ -5774,16 +7011,6 @@ element!: &account-settings
         const resolved = new MutationObserver(() => self.door());
         resolved.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] });
         self._resolved = resolved;
-        // The top page tears the ceremony down, finished or dismissed.
-        const torn = () => { if (self.getAttribute('data-linking') === 'true') self.unlink(); };
-        window.addEventListener('tonk:registration-closed', torn);
-        self._torn = torn;
-        // Re-seat the ceremony on anything that can move the bar; the top
-        // page ignores the update when no ceremony is open.
-        const moveSeat = () => { if (self.getAttribute('data-linking') === 'true') self.place('reseat'); };
-        window.addEventListener('resize', moveSeat);
-        window.addEventListener('scroll', moveSeat, true);
-        self._moveSeat = moveSeat;
         self.describe();
         self.profiles();
         self.passkeyDates();
@@ -5796,11 +7023,6 @@ element!: &account-settings
         self._resolved?.disconnect();
         self._viaBound?.disconnect();
         self._viaBound = null;
-        if (self._torn) window.removeEventListener('tonk:registration-closed', self._torn);
-        if (self._moveSeat) {
-          window.removeEventListener('resize', self._moveSeat);
-          window.removeEventListener('scroll', self._moveSeat, true);
-        }
         self._teardown?.();
         self._teardown = null;
       }
@@ -6188,7 +7410,7 @@ element!: &command-palette
         const timing = {};
         const interpreted = async (branch) => {
           const field = (name, as) => ({ the: `tonk.dialog.intent.interpret/${name}`, as });
-          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+          await self.post(branch, 'transact', { claims: [{ op: 'assert', application: {
             predicate: { kind: 'transient', concept: {
               description: 'Interpret what was typed in the command palette, where it was opened.',
               with: {
@@ -6196,7 +7418,7 @@ element!: &command-palette
                 site: field('site', 'Entity'), time: field('time', 'Float'),
               } } },
             parameters: { expression, input: typed, site, time: now },
-          } }] }, { with: branch });
+          } }] });
           // The handler runs after the transact returns: wait until it has
           // recorded this line.
           const recorded = { predicate: { with: { input: {
@@ -6204,7 +7426,7 @@ element!: &command-palette
             terms: { this: expression, input: { '?': { name: 'input' } } } };
           for (let tries = 0; tries < 100; tries++) {
             if (self.__asked !== asked) return false;
-            const found = await window.tonk.query(recorded, { with: branch });
+            const found = await self.post(branch, 'query', recorded);
             const rows = Array.isArray(found) ? found : (found && found.rows) || [];
             if (rows.some((row) => (row.fields || {}).input === typed)) return true;
             await new Promise((resolve) => setTimeout(resolve, 10));
@@ -6238,7 +7460,7 @@ element!: &command-palette
           }) : false;
           if (self.__asked !== asked) return [];
           timing[branch] = Math.round(performance.now() - started);
-          return window.tonk.query(done ? ofExpression : ofLine, { with: branch })
+          return self.post(branch, 'query', done ? ofExpression : ofLine)
             .then((found) => (Array.isArray(found) ? found : (found && found.rows) || [])
               .map((row) => read(branch, row)))
             .catch((error) => {
@@ -6307,17 +7529,31 @@ element!: &command-palette
           list.append(row);
         });
       }
+    post: |
+      async (self, branch, operation, body) => {
+        // `branch` is a `{branch}@{repository}` location: its worker
+        // answers that branch's `/query` and `/transact`.
+        const at = branch.indexOf('@');
+        const response = await fetch(
+          `/api/repository/${branch.slice(at + 1)}/branch/${branch.slice(0, at)}/${operation}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+        return response.json();
+      }
     remember: |
       (self, proposal) => {
         const profile = self.getAttribute('profile');
         if (!profile) return;
         const field = (name, as) => ({ the: `tonk.dialog.intent.choice/${name}`, as });
-        window.tonk.transact({ claims: [{ op: 'assert', application: {
+        self.post(profile, 'transact', { claims: [{ op: 'assert', application: {
           predicate: { kind: 'durable', concept: { with: {
             command: field('command', 'Entity'), input: field('input', 'Text'), time: field('time', 'Float'),
           } } },
           parameters: { command: proposal.command, input: proposal.input || '', time: Date.now() },
-        } }] }, { with: profile }).catch((error) => console.warn('<command-palette> not remembered', error));
+        } }] }).catch((error) => console.warn('<command-palette> not remembered', error));
       }
     run: |
       async (self) => {
@@ -6333,7 +7569,7 @@ element!: &command-palette
         // opening one of its own panels (a site request).
         self.dismiss();
         try {
-          await window.tonk.transact(proposal.claim, { with: proposal.branch });
+          await self.post(proposal.branch, 'transact', proposal.claim);
           self.remember(proposal);
         } catch (error) {
           console.error('<command-palette> run failed', error);

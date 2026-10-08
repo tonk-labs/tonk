@@ -200,10 +200,9 @@ struct Inner {
     /// frame through every slide's binding diff, so `dom.host/*` is a
     /// live render input rather than a mount-time snapshot.
     host_watch: Option<HostAttrWatch>,
-    /// The model concept's descriptor JSON, handed to a `<tonk-portal>`
-    /// so its no-argument `tonk.subscribe()` can build the scoped-entity
-    /// query. Set on every connect; only read when a view frame routes
-    /// to portal mode (its projected `type` is `text/html`).
+    /// The model concept's descriptor JSON: the fields introspection
+    /// reports and the scalar fields a view is told about. Set on every
+    /// connect.
     portal_descriptor: Option<String>,
     /// The resolved model entity, surfaced to the portal as its `model`
     /// attribute (the bridge's `context.model`).
@@ -1954,8 +1953,8 @@ fn handle_portal_view_frame(host: &Element, s: &mut Inner, incoming: BTreeMap<St
     }
 }
 
-/// Mount a `<tonk-portal>` scoped to the displayed entity. Attributes
-/// and the descriptor property are set before append so the portal's
+/// Mount a `<tonk-portal>` scoped to the displayed entity. Attributes are
+/// set before append so the portal's
 /// `connected_callback` builds its bridge against the final context.
 fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Slide> {
     let document = window()?.document()?;
@@ -1966,13 +1965,6 @@ fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Sl
     }
     if let Some(model) = inner.portal_model.as_ref() {
         let _ = portal.set_attribute("model", model);
-    }
-    if let Some(descriptor) = inner.portal_descriptor.as_ref() {
-        let _ = Reflect::set(
-            portal.as_ref(),
-            &"descriptor".into(),
-            &JsValue::from_str(descriptor),
-        );
     }
     let _ = host.append_child(&portal);
     Some(Slide {
@@ -5830,13 +5822,6 @@ mod tests {
                 portal.get_attribute("entity").as_deref(),
                 Some("id:demo-counter"),
                 "the portal is scoped to the displayed entity",
-            );
-            let descriptor = Reflect::get(portal.as_ref(), &"descriptor".into())
-                .ok()
-                .and_then(|v| v.as_string());
-            assert!(
-                descriptor.is_some_and(|d| d.contains("counter/count")),
-                "the model descriptor is handed to the portal",
             );
             assert!(
                 display.query_selector("tonk-view").unwrap().is_none(),

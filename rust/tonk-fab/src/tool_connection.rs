@@ -8,7 +8,7 @@
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use js_sys::{Array, Function, JSON, Object, Reflect};
+use js_sys::{Array, Reflect};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
@@ -311,26 +311,7 @@ fn clear_surface(hide: bool) {
 }
 
 fn dispatch(space: &str) {
-    let claim = tool_connection_claim_json(space, js_sys::Date::now());
-    let Ok(json) = serde_json::to_string(&claim) else {
-        return;
-    };
-    let Some(win) = window() else { return };
-    let Some(tonk) = Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|value| value.dyn_into::<Object>().ok())
-    else {
-        return;
-    };
-    let Some(transact) = Reflect::get(&tonk, &"transact".into())
-        .ok()
-        .and_then(|value| value.dyn_into::<Function>().ok())
-    else {
-        return;
-    };
-    if let Ok(claim) = JSON::parse(&json) {
-        let _ = transact.call1(&tonk, &claim);
-    }
+    crate::profile::transact(&tool_connection_claim_json(space, js_sys::Date::now()));
 }
 
 /// Open the app-owned surface and request a fresh link for this exact space.

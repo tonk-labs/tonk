@@ -29,7 +29,10 @@
 /// The vocabulary itself lives with the concept in `tonk-schema`, so
 /// the worker that writes these strings and the registration form that
 /// routes on them cannot drift apart.
+use tonk_analytics::account::{AccountAction, AccountOutcome, Stage, Trigger};
 pub(crate) use tonk_schema::email_state as state;
+
+use super::account_journey::Attempt;
 
 /// Split an address into the `(domain, local)` pair the lookup path
 /// names, or `None` when it is not one.
@@ -87,23 +90,34 @@ impl dialog_capability::Provider<tonk_schema::command::CheckEmail> for crate::ro
         if email.trim().is_empty() {
             return;
         }
-        // Say the lookup is in flight BEFORE making it. The form
-        // renders the row and nothing else, so without this the
-        // wait would have to be painted into the DOM by the form
-        // itself, leaving two sources of truth that disagree while
-        // the lookup runs.
-        publish(self, &email, state::CHECKING).await;
-        let (state, service) = lookup(&email).await;
-        publish(self, &email, state).await;
-        // The document says where the account syncs as well as who
-        // it is, so one lookup answers both. Held for the login
-        // that follows: a device with only an address has nowhere
-        // else to learn the service, and the origin is a guess that
-        // is right only when both devices are on one deployment.
-        if let Some(service) = service {
-            remember_service(&service);
-        }
+        // A lookup the person's typing asked for, told once it is made.
+        let attempt = Attempt::begin(self.client(), AccountAction::CheckEmail, Trigger::User);
+        let tonk = self.state().read().await;
+        check(&tonk, &email).await;
+        attempt.end(Stage::EmailLookup, AccountOutcome::success());
     }
+}
+
+/// Look `email` up, record the answer on the profile overlay, and return
+/// it.
+pub(crate) async fn check(tonk: &crate::worker::TonkState, email: &str) -> &'static str {
+    // Say the lookup is in flight BEFORE making it. The form renders the
+    // row and nothing else, so without this the wait would have to be
+    // painted into the DOM by the form itself, leaving two sources of
+    // truth that disagree while the lookup runs.
+    record(tonk, email, state::CHECKING).await;
+    let (state, service) = lookup(email).await;
+    record(tonk, email, state).await;
+    super::registration::answered();
+    // The document says where the account syncs as well as who it is, so
+    // one lookup answers both. Held for the login that follows: a device
+    // with only an address has nowhere else to learn the service, and the
+    // origin is a guess that is right only when both devices are on one
+    // deployment.
+    if let Some(service) = service {
+        remember_service(&service);
+    }
+    state
 }
 
 /// Ask the access service about `email`.
@@ -117,7 +131,7 @@ async fn lookup(email: &str) -> (&'static str, Option<String>) {
     let Some((domain, local)) = split_address(email) else {
         return (state::INVALID, None);
     };
-    let Some(origin) = super::repository::worker_origin() else {
+    let Some(origin) = super::repository::app_origin() else {
         return (state::UNAVAILABLE, None);
     };
     let Ok(endpoint) = format!("{origin}/customer/{domain}/{local}/did.json").parse() else {
@@ -152,12 +166,6 @@ fn service_endpoint(body: &[u8]) -> Option<String> {
         .and_then(|entry| entry.get("serviceEndpoint"))
         .and_then(|endpoint| endpoint.as_str())
         .map(ToString::to_string)
-}
-
-/// Write the answer to the profile overlay, replacing any earlier one.
-async fn publish(env: &crate::router::CommandEnv, email: &str, state: &'static str) {
-    let tonk = env.state().read().await;
-    record(&tonk, email, state).await;
 }
 
 /// The lookup vocabulary for a registration status.
@@ -212,50 +220,6 @@ pub(crate) async fn record(tonk: &crate::worker::TonkState, email: &str, answer:
         .await
     {
         log!("failed to publish the email status: {error}");
-    }
-}
-
-/// Run `account/register`: raise the signup ceremony in the page.
-///
-/// The worker cannot create an account. WebAuthn needs a `window` and a
-/// user gesture, and a service worker has neither, so this asks the
-/// originating client to authorize with a passkey and stops there. On a
-/// host with no page the ask fails and the overlay answers
-/// `unavailable` — visible, not silent.
-///
-/// Nothing is awaited. The ceremony's outcome reaches every reader as
-/// facts — `AccountCustomer` appears at enrollment and gains a provider
-/// at activation — and the form is already subscribed to them. A provider
-/// that blocked on the ceremony would be holding a command open across a
-/// dialog the user might never finish.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl dialog_capability::Provider<tonk_schema::command::RegisterAccount>
-    for crate::router::CommandEnv
-{
-    async fn execute(&self, command: tonk_schema::command::RegisterAccount) {
-        use tonk_common::log;
-
-        let email = command.email.0;
-        if split_address(&email).is_none() {
-            return;
-        }
-        let Some(client) = self.client() else {
-            log!("account/register: no page asked for this, so no ceremony can run");
-            return;
-        };
-        // The address rides on the overlay rather than in the
-        // request: `WebAuthnRequest` carries a discriminator and
-        // nothing else, and the page reads what it needs from the
-        // row it is already watching.
-        publish(self, &email, state::PENDING_CEREMONY).await;
-        if let Err(error) =
-            super::navigate::request_webauthn(client, tonk_worker_api::WebAuthnKind::CreateAccount)
-                .await
-        {
-            log!("account/register: the page could not be asked: {error}");
-            publish(self, &email, state::UNAVAILABLE).await;
-        }
     }
 }
 

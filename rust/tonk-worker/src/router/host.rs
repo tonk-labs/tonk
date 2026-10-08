@@ -1,4 +1,4 @@
-//! Host/guest iframe bridge.
+//! Host/guest iframe binding.
 //!
 //! A hosting document (the Tonk shell) discovers its own
 //! service-worker Client ID from the `X-Tonk-Client-Id` header
@@ -70,7 +70,7 @@ pub struct ViewBinding {
 pub type ViewBindings =
     std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<ClientId, ViewBinding>>>;
 
-/// Path parameters for the bridge route.
+/// Path parameters for the host route.
 #[derive(Debug, Deserialize)]
 pub struct GuestPath {
     /// The hosting document's Client ID. Cosmetic — the
@@ -112,7 +112,7 @@ fn split_extension(entity: &str) -> (&str, Option<&str>) {
 /// Map a URL extension to the MIME type used as the claim's
 /// `the` attribute. Anything we don't have an explicit mapping
 /// for falls back to `application/<ext>` — a producer can assert
-/// under any attribute name and the bridge will route to it
+/// under any attribute name and the host route will serve it
 /// without a code change.
 fn mime_for_extension(ext: &str) -> String {
     match ext.to_ascii_lowercase().as_str() {
@@ -155,11 +155,7 @@ fn body_for(value: Value) -> Body {
 
 /// Wrap an agent-authored body fragment in a fixed shell. The agent
 /// writes only the `<body>` content; we provide the doctype, the
-/// bridge script, and the `<body>` boundary.
-///
-/// The bridge module's top-level installs `globalThis.tonk` and
-/// posts the `hello` handshake to the SW — loading it as a plain
-/// `<script type="module" src>` is enough.
+/// `<head>`, and the `<body>` boundary.
 ///
 /// The `color-scheme` meta must match the embedding page's (index.html
 /// declares `light dark`): Chrome paints an iframe whose color-scheme
@@ -174,7 +170,6 @@ fn wrap_html_body(body: &str) -> String {
 <head>
 <meta charset="utf-8">
 <meta name="color-scheme" content="light dark">
-<script type="module" src="/__tonk/bridge.js"></script>
 </head>
 <body>
 {body}
@@ -310,14 +305,14 @@ mod wrapper_tests {
     use super::*;
 
     #[dialog_common::test]
-    fn it_injects_the_bridge_module_in_head() {
+    fn it_wraps_the_body_in_a_document_without_scripts() {
         let body = "<h1>hi</h1>";
         let wrapped = wrap_html_body(body);
         assert!(wrapped.contains("<!doctype html>"));
         assert!(wrapped.contains("<head>"));
         assert!(
-            wrapped.contains("src=\"/__tonk/bridge.js\""),
-            "bridge module script tag missing: {wrapped}",
+            !wrapped.contains("<script"),
+            "the shell injects no script of its own: {wrapped}",
         );
         assert!(wrapped.contains("<body>"));
         assert!(wrapped.contains("<h1>hi</h1>"));

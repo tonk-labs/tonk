@@ -1285,6 +1285,28 @@ mod tests {
         calls
     }
 
+    /// Record the commands the account page asserts through its hidden
+    /// triggers, by the event each one hears. A detached trigger reaches
+    /// no listener here, so an earlier test's page cannot add to these.
+    fn record_triggers() -> js_sys::Array {
+        let heard = js_sys::Array::new();
+        for kind in [
+            "tonk-open-registration",
+            "tonk-open-sign-in-via",
+            "tonk-leave-registration",
+        ] {
+            let recorded = heard.clone();
+            let listener =
+                Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                    recorded.push(&event.type_().into());
+                });
+            let _ = document()
+                .add_event_listener_with_callback(kind, listener.as_ref().unchecked_ref());
+            listener.forget();
+        }
+        heard
+    }
+
     #[wasm_bindgen_test::wasm_bindgen_test]
     async fn it_reports_space_creation_until_the_command_finishes() {
         define_from_library(PROFILE_LIBRARY, "space-create");
@@ -1295,18 +1317,28 @@ mod tests {
             r#"
             const state = { claims: [], navigations: [], cancelled: 0 };
             bridge.ready = Promise.resolve();
-            bridge.subscribe = query => {
-                state.id = query.terms.this;
-                return new ReadableStream({
-                    start(controller) { state.controller = controller; },
-                    cancel() { state.cancelled++; },
-                });
+            state.transact = () => Promise.resolve(new Response('{}'));
+            const native = window.fetch;
+            window.fetch = (url, init) => {
+                if (String(url).endsWith('/transact')) {
+                    state.claims.push(JSON.parse(init.body));
+                    return state.transact();
+                }
+                if (String(url).endsWith('/query')) {
+                    state.id = JSON.parse(init.body).terms.this;
+                    init.signal.addEventListener('abort', () => state.cancelled++);
+                    return Promise.resolve(new Response(new ReadableStream({
+                        start(controller) { state.controller = controller; },
+                    })));
+                }
+                return native(url, init);
             };
-            bridge.transact = claim => { state.claims.push(claim); return Promise.resolve({}); };
             bridge.navigate = href => state.navigations.push(href);
-            state.finish = (status, detail) => state.controller.enqueue([
-                { this: state.id, fields: { status, detail } }
-            ]);
+            state.finish = (status, detail) => state.controller.enqueue(
+                new TextEncoder().encode(`data: ${JSON.stringify([
+                    { this: state.id, fields: { status, detail } }
+                ])}\n\n`)
+            );
             return state;
         "#,
         )
@@ -1422,7 +1454,7 @@ mod tests {
 
         let rejected: Element = host.clone_node_with_deep(true).unwrap().dyn_into().unwrap();
         let reject = js_sys::Function::new_no_args("return Promise.reject(new Error('offline'));");
-        Reflect::set(&host_bridge(), &"transact".into(), &reject).unwrap();
+        Reflect::set(&fixture, &"transact".into(), &reject).unwrap();
         document().body().unwrap().append_child(&rejected).unwrap();
         let form = rejected.query_selector("form").unwrap().unwrap();
         fire(form.unchecked_ref(), "submit");
@@ -1629,27 +1661,6 @@ mod tests {
         );
     }
 
-    #[wasm_bindgen_test::wasm_bindgen_test]
-    async fn it_asks_the_host_to_open_recovery_on_click_from_the_library() {
-        let calls = record_bridge_calls("register");
-        define_from_library(PROFILE_LIBRARY, "space-login");
-        let host = render("space-login").await;
-        settle_until(|| defined("space-login")).await;
-        assert!(
-            defined("space-login"),
-            "the library definition of <space-login> was never installed"
-        );
-        settle_briefly().await;
-
-        fire(&host, "click");
-        settle_until(|| calls.length() >= 1).await;
-        assert_eq!(
-            calls.get(0).as_string().as_deref(),
-            Some(r#"{"reason":"space-login"}"#),
-            "a click asks the host to open account recovery",
-        );
-    }
-
     fn space_remove_host(attributes: &[(&str, &str)]) -> Element {
         install_fake_host();
         install();
@@ -1793,17 +1804,27 @@ mod tests {
             r#"
             const state = { claims: [], cancelled: 0 };
             bridge.ready = Promise.resolve();
-            bridge.subscribe = query => {
-                state.id = query.terms.this;
-                return new ReadableStream({
-                    start(controller) { state.controller = controller; },
-                    cancel() { state.cancelled++; },
-                });
+            state.transact = () => Promise.resolve(new Response('{}'));
+            const native = window.fetch;
+            window.fetch = (url, init) => {
+                if (String(url).endsWith('/transact')) {
+                    state.claims.push(JSON.parse(init.body));
+                    return state.transact();
+                }
+                if (String(url).endsWith('/query')) {
+                    state.id = JSON.parse(init.body).terms.this;
+                    init.signal.addEventListener('abort', () => state.cancelled++);
+                    return Promise.resolve(new Response(new ReadableStream({
+                        start(controller) { state.controller = controller; },
+                    })));
+                }
+                return native(url, init);
             };
-            bridge.transact = claim => { state.claims.push(claim); return Promise.resolve({}); };
-            state.finish = (status, detail) => state.controller.enqueue([
-                { this: state.id, fields: { status, detail } }
-            ]);
+            state.finish = (status, detail) => state.controller.enqueue(
+                new TextEncoder().encode(`data: ${JSON.stringify([
+                    { this: state.id, fields: { status, detail } }
+                ])}\n\n`)
+            );
             return state;
         "#,
         )
@@ -2044,7 +2065,7 @@ mod tests {
     async fn it_raises_the_ceremony_on_an_unlinked_account_page() {
         install_fake_host();
         install();
-        let calls = record_bridge_calls("register");
+        let heard = record_triggers();
         set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
         // The bar beside the panel carries the link display the door reads.
         let bar = document().create_element("nav").expect("bar");
@@ -2057,18 +2078,21 @@ mod tests {
             .expect("body")
             .append_child(&bar)
             .expect("attach");
-        let host = account_settings(r#"<div class="pane" data-pane="account"></div>"#);
+        let host = account_settings(
+            r#"<div class="pane" data-pane="account"></div><span hidden data-open-registration></span><span hidden data-open-sign-in-via></span><span hidden data-leave-registration></span>"#,
+        );
         settle_briefly().await;
-        let before = calls.length();
+        let before = heard.length();
         let registration = bar
             .query_selector("[data-account-link]")
             .expect("query")
             .expect("the link display");
         let _ = registration.set_attribute("data-state", "empty");
-        settle_until(|| calls.length() > before).await;
-        let asked: serde_json::Value =
-            serde_json::from_str(&calls.get(before).as_string().expect("a payload")).expect("json");
-        assert_eq!(asked["reason"], "needs-account");
+        settle_until(|| heard.length() > before).await;
+        assert_eq!(
+            heard.get(before).as_string().as_deref(),
+            Some("tonk-open-registration")
+        );
         assert_eq!(host.get_attribute("data-linking").as_deref(), Some("true"));
         // The fake host is shared by every test on this page; leave it
         // on the spaces path the others expect.
@@ -2084,7 +2108,7 @@ mod tests {
     async fn it_asks_which_tonk_on_an_account_page_reached_with_option() {
         install_fake_host();
         install();
-        let calls = record_bridge_calls("register");
+        let heard = record_triggers();
         set_context(&[
             ("origin", "https://tonk.test"),
             ("path", "/account"),
@@ -2100,18 +2124,21 @@ mod tests {
             .expect("body")
             .append_child(&bar)
             .expect("attach");
-        let host = account_settings(r#"<div class="pane" data-pane="account"></div>"#);
+        let host = account_settings(
+            r#"<div class="pane" data-pane="account"></div><span hidden data-open-registration></span><span hidden data-open-sign-in-via></span><span hidden data-leave-registration></span>"#,
+        );
         settle_briefly().await;
-        let before = calls.length();
+        let before = heard.length();
         let registration = bar
             .query_selector("[data-account-link]")
             .expect("query")
             .expect("the link display");
         let _ = registration.set_attribute("data-state", "empty");
-        settle_until(|| calls.length() > before).await;
-        let asked: serde_json::Value =
-            serde_json::from_str(&calls.get(before).as_string().expect("a payload")).expect("json");
-        assert_eq!(asked["reason"], "sign-in-via");
+        settle_until(|| heard.length() > before).await;
+        assert_eq!(
+            heard.get(before).as_string().as_deref(),
+            Some("tonk-open-sign-in-via")
+        );
         // Close the ceremony the way the top page does, and let the panel
         // settle, so nothing it raised is still up to be suspended into
         // whichever test records next.
@@ -2139,7 +2166,7 @@ mod tests {
     async fn it_asks_for_the_face_each_visit_wants_with_a_ceremony_up() {
         install_fake_host();
         install();
-        let calls = record_bridge_calls("register");
+        let heard = record_triggers();
         let visit = |path: &str, search: &str| {
             set_context(&[
                 ("origin", "https://tonk.test"),
@@ -2151,11 +2178,9 @@ mod tests {
             );
             let _ = moved.call0(&JsValue::NULL);
         };
-        let reasons_since = |from: u32| -> Vec<String> {
-            (from..calls.length())
-                .filter_map(|at| calls.get(at).as_string())
-                .filter_map(|payload| serde_json::from_str::<serde_json::Value>(&payload).ok())
-                .filter_map(|asked| asked["reason"].as_str().map(str::to_owned))
+        let heard_since = |from: u32| -> Vec<String> {
+            (from..heard.length())
+                .filter_map(|at| heard.get(at).as_string())
                 .collect()
         };
         set_context(&[
@@ -2173,47 +2198,43 @@ mod tests {
             .expect("body")
             .append_child(&bar)
             .expect("attach");
-        let host = account_settings(r#"<div class="pane" data-pane="account"></div>"#);
+        let host = account_settings(
+            r#"<div class="pane" data-pane="account"></div><span hidden data-open-registration></span><span hidden data-open-sign-in-via></span><span hidden data-leave-registration></span>"#,
+        );
         settle_briefly().await;
         let registration = bar
             .query_selector("[data-account-link]")
             .expect("query")
             .expect("the link display");
-        let plain = calls.length();
+        let plain = heard.length();
         let _ = registration.set_attribute("data-state", "empty");
         settle_until(|| {
-            reasons_since(plain)
+            heard_since(plain)
                 .iter()
-                .any(|reason| reason == "needs-account")
+                .any(|reason| reason == "tonk-open-registration")
         })
         .await;
 
         visit("/", "");
         settle_briefly().await;
-        let option = calls.length();
+        let option = heard.length();
         visit("/account", "?via");
         settle_until(|| {
-            reasons_since(option)
+            heard_since(option)
                 .iter()
-                .any(|reason| reason == "sign-in-via")
+                .any(|reason| reason == "tonk-open-sign-in-via")
         })
         .await;
 
-        let again = calls.length();
+        let again = heard.length();
         visit("/account", "");
         settle_until(|| {
-            reasons_since(again)
+            heard_since(again)
                 .iter()
-                .any(|reason| reason == "needs-account")
+                .any(|reason| reason == "tonk-open-registration")
         })
         .await;
 
-        let closed = js_sys::Function::new_no_args(
-            "window.dispatchEvent(new CustomEvent('tonk:registration-closed'));",
-        );
-        let _ = closed.call0(&JsValue::NULL);
-        settle_until(|| host.get_attribute("data-linking").as_deref() != Some("true")).await;
-        settle_briefly().await;
         host.remove();
         bar.remove();
         set_context(&[
@@ -2302,7 +2323,7 @@ mod tests {
     async fn it_sends_an_unlinked_settings_page_to_the_account_page() {
         install_fake_host();
         install();
-        let registers = record_bridge_calls("register");
+        let heard = record_triggers();
         let navigations = record_bridge_calls("navigate");
         set_context(&[("origin", "https://tonk.test"), ("path", "/settings")]);
         let bar = document().create_element("nav").expect("bar");
@@ -2315,9 +2336,11 @@ mod tests {
             .expect("body")
             .append_child(&bar)
             .expect("attach");
-        let host = account_settings(r#"<div class="pane" data-pane="account"></div>"#);
+        let host = account_settings(
+            r#"<div class="pane" data-pane="account"></div><span hidden data-open-registration></span><span hidden data-open-sign-in-via></span><span hidden data-leave-registration></span>"#,
+        );
         settle_briefly().await;
-        let registered = registers.length();
+        let opened = heard.length();
         let before = navigations.length();
         let registration = bar
             .query_selector("[data-account-link]")
@@ -2329,24 +2352,20 @@ mod tests {
             navigations.get(before).as_string().as_deref(),
             Some("/account")
         );
-        assert_eq!(
-            registers.length(),
-            registered,
-            "no ceremony on a bare settings page"
-        );
+        assert_eq!(heard.length(), opened, "no panel on a bare settings page");
         assert_ne!(host.get_attribute("data-linking").as_deref(), Some("true"));
         set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
         host.remove();
         bar.remove();
     }
 
-    /// Switching to the spaces tab hides a standing ceremony and
-    /// switching back shows it again; neither tears it down.
+    /// Leaving the account page puts the panel away, and coming back opens
+    /// it again.
     #[dialog_common::test]
-    async fn it_holds_the_ceremony_across_a_tab_switch() {
+    async fn it_puts_the_panel_away_off_the_account_page_and_opens_it_on_return() {
         install_fake_host();
         install();
-        let calls = record_bridge_calls("register");
+        let heard = record_triggers();
         set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
         let bar = document().create_element("nav").expect("bar");
         bar.set_class_name("hubbar");
@@ -2358,23 +2377,18 @@ mod tests {
             .expect("body")
             .append_child(&bar)
             .expect("attach");
-        let host = account_settings(r#"<div class="pane" data-pane="account"></div>"#);
+        let host = account_settings(
+            r#"<div class="pane" data-pane="account"></div><span hidden data-open-registration></span><span hidden data-open-sign-in-via></span><span hidden data-leave-registration></span>"#,
+        );
         settle_until(|| host.get_attribute("data-linking").as_deref() == Some("true")).await;
-        let reason = |index: u32| -> String {
-            let asked: serde_json::Value =
-                serde_json::from_str(&calls.get(index).as_string().expect("a payload"))
-                    .expect("json");
-            asked["reason"].as_str().expect("a reason").to_owned()
-        };
-        let before = calls.length();
+        let last = || heard.get(heard.length() - 1).as_string();
         move_context("/");
-        settle_until(|| calls.length() > before).await;
-        assert_eq!(reason(before), "suspend");
-        assert_eq!(host.get_attribute("data-linking").as_deref(), Some("true"));
-        let before = calls.length();
+        settle_until(|| last().as_deref() == Some("tonk-leave-registration")).await;
+        assert_eq!(last().as_deref(), Some("tonk-leave-registration"));
+        assert_eq!(host.get_attribute("data-linking").as_deref(), Some("false"));
         move_context("/account");
-        settle_until(|| calls.length() > before).await;
-        assert_eq!(reason(before), "show");
+        settle_until(|| last().as_deref() == Some("tonk-open-registration")).await;
+        assert_eq!(last().as_deref(), Some("tonk-open-registration"));
         set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
         host.remove();
         bar.remove();

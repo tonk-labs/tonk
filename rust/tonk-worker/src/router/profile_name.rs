@@ -255,6 +255,7 @@ mod tests {
         let reactor = crate::Reactor::new(profile.credential().clone());
         TonkState {
             seed_upgrades: Default::default(),
+            site_origins: Default::default(),
             profile,
             operator: session.operator,
             storage,
@@ -266,7 +267,6 @@ mod tests {
             reject_admission_content_reads: Default::default(),
             retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             view_bindings: Default::default(),
-            bridges: Default::default(),
             sync_queue: Default::default(),
             commands: crate::router::command_providers(),
             clients: Default::default(),
@@ -275,6 +275,7 @@ mod tests {
             registry: crate::device::Registry {
                 profile: name.to_string(),
                 directory: dialog_effects::storage::Directory::Profile,
+                standing: Default::default(),
             },
             profile_transition: Default::default(),
             context_generation: Default::default(),

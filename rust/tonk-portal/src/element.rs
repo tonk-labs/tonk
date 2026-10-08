@@ -5,17 +5,16 @@
 //! - a **painter** — it mirrors the `content` attribute into the
 //!   iframe's `srcdoc`; and
 //! - a **transport** — it injects a small `tonk` object into the
-//!   iframe (see [`crate::bridge`]) through which author code reads and
-//!   writes live data, relaying the iframe's calls onto the existing
-//!   `tonk-query` / `tonk-subscribe` / `tonk-claim` consumer events.
+//!   iframe (see [`crate::bridge`]) through which author code asks the
+//!   trusted page for what a sealed frame cannot do itself: navigation,
+//!   titles, tasks, and fetches on the page's real origin.
 //!
 //! The iframe is sandboxed `allow-scripts` — an opaque origin. It
 //! cannot reach `parent.document`; it talks to the parent only over a
 //! `MessagePort` opened by the bridge bootstrap (see [`crate::bridge`]).
 //!
 //! State lives in [`crate::bridge::PortalState`] behind `Rc<RefCell<…>>`
-//! so the lifecycle callbacks, the prototype `reset` / `error` delegates,
-//! and the bridge closures all share it.
+//! so the lifecycle callbacks and the bridge closures share it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -25,7 +24,7 @@ use tonk_host::location::{Allow, Location};
 use web_sys::{Element, HtmlElement, window};
 
 use crate::bridge::{self, PortalState};
-use crate::shared::{connect_portal, install_method_shims, reload_portal};
+use crate::shared::{connect_portal, reload_portal};
 
 /// Parse an optional `with` attribute off a portal element. A malformed
 /// value is logged and treated as absent rather than failing the mount —
@@ -67,7 +66,7 @@ impl CustomElement for TonkPortal {
         // context). The allow list is exactly the pinned context (or
         // nothing): a generic content portal renders synced/untrusted
         // markup, so it must NOT be able to escape its pinned context — a
-        // guest-forwarded off-context route is denied.
+        // guest fetch of an off-context location is denied.
         let with = portal_with(this);
         let allow = with.clone().map(Allow::only).unwrap_or_else(Allow::none);
         connect_portal(this, &self.inner, with, allow, |iframe| {
@@ -88,7 +87,7 @@ impl CustomElement for TonkPortal {
             bridge::disconnect_task(&state);
             let mut s = state.borrow_mut();
             s.disposed = true;
-            s.clear_subs();
+            s.sever();
             if let Some(iframe) = s.iframe.take() {
                 bridge::unregister_portal(&iframe);
                 // Two-phase: unload the guest realm first, remove the
@@ -131,7 +130,7 @@ impl CustomElement for TonkPortal {
         // `attributeChangedCallback` fires on every setAttribute, same
         // value included — and the host re-sets these on re-renders
         // that changed nothing. A reload here is a full guest reboot:
-        // live subscriptions cancelled, DOM rebuilt, and a boot that
+        // relayed fetches aborted, DOM rebuilt, and a boot that
         // races a busy worker sits on its loader. Only an actual change
         // may cost that.
         if old == new {
@@ -155,16 +154,13 @@ impl CustomElement for TonkPortal {
 }
 
 /// Register `<tonk-portal>` with the page. Idempotent. Installs the
-/// page-level `hello` message listener, defines the element, and
-/// installs the `reset` / `error` prototype shims that route
-/// subscription frames into the per-instance delegates.
+/// page-level `hello` message listener and defines the element.
 pub fn register() {
     bridge::install_message_listener();
     if already_registered() {
         return;
     }
     TonkPortal::define("tonk-portal");
-    install_method_shims("tonk-portal");
 }
 
 fn already_registered() -> bool {

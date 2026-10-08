@@ -47,7 +47,7 @@ mod native {
         WebDriver,
     };
     use tonk_access_service::helpers::{AccessServiceAddress, AccessServiceSettings};
-    use tonk_worker_api::DeploymentConfig;
+    use tonk_worker_api::{DeploymentConfig, SiteOrigins};
     use url::Url;
 
     fn current_test_name() -> String {
@@ -199,12 +199,13 @@ mod native {
     }
 
     impl TestEnvironment {
-        /// The second deployment: the same app at `https://127.0.0.1:<port>`,
-        /// in front of an access service of its own. A browser keeps it
-        /// apart from [`TestEnvironment::tonk_web`] the way it keeps
-        /// tonk.host apart from tonk.network: its own service worker, its
-        /// own storage, and no passkey from the other (an IP address is no
-        /// relying party at all). Its service holds none of the other's
+        /// The second deployment: the same app at
+        /// `https://sibling.localhost:<port>`, in front of an access service
+        /// of its own. A browser keeps it apart from
+        /// [`TestEnvironment::tonk_web`] the way it keeps tonk.host apart
+        /// from tonk.network: its own service worker, its own storage, and
+        /// no passkey from the other (a passkey made for `localhost` is not
+        /// offered to a host under it). Only a browser resolves the name. Its service holds none of the other's
         /// customers or data, so a call sent to the wrong deployment is
         /// refused rather than quietly served.
         ///
@@ -240,7 +241,14 @@ mod native {
                 caps.set_headless()?;
             }
 
-            caps.add_arg("--host-resolver-rules=MAP tonk.network 127.0.0.1")?;
+            // A browser resolves `localhost` and every name under it to
+            // loopback itself. The production-shaped host needs telling, for
+            // the app's name and for each site's under it.
+            if self.tonk_web.host_str() == Some("tonk.network") {
+                caps.add_arg(
+                    "--host-resolver-rules=MAP tonk.network 127.0.0.1, MAP *.tonk.network 127.0.0.1",
+                )?;
+            }
             caps.add_arg(&format!("--user-data-dir={}", profile.display()))?;
             caps.accept_insecure_certs(true)?;
             // Every origin the harness serves: a service worker registers
@@ -249,6 +257,12 @@ mod native {
             let secure_origins = std::iter::once(&self.tonk_web)
                 .chain(self.sibling.as_ref())
                 .map(|web| web.origin().ascii_serialization())
+                // And every site's host under each.
+                .chain(
+                    std::iter::once(&self.tonk_web)
+                        .chain(self.sibling.as_ref())
+                        .filter_map(|web| web.host_str().map(|host| format!("*.{host}"))),
+                )
                 .collect::<Vec<_>>()
                 .join(",");
             caps.add_arg(&format!(
@@ -590,13 +604,17 @@ mod native {
             let deployment_root = workspace.directory("deployments")?;
             let browser_profile_root = workspace.directory("browser-profiles")?;
             let safari = std::env::var("TONK_TEST_BROWSER").as_deref() == Ok("safari");
-            // Local CLI/browser runs need a shared DNS name without editing
-            // /etc/hosts. CI keeps its production-shaped host mapping.
-            let loopback = std::env::var("TONK_TEST_WEB_HOST").as_deref() == Ok("localhost");
-            let web_host = if safari || loopback {
-                "localhost"
-            } else {
+            // The app is at `localhost`, which browser and CLI alike resolve
+            // with nothing mapped, and whose every subdomain a browser takes
+            // for loopback too: that is where the sites render.
+            // `TONK_TEST_WEB_HOST=tonk.network` asks for the production-shaped
+            // host instead, which needs the name mapped to loopback for the
+            // CLI (`/etc/hosts`) and is not available to Safari.
+            let mapped = std::env::var("TONK_TEST_WEB_HOST").as_deref() == Ok("tonk.network");
+            let web_host = if mapped && !safari {
                 "tonk.network"
+            } else {
+                "localhost"
             };
             // Chosen before the access service starts: activation links
             // must open on the page origin Caddy will serve, not on the
@@ -605,8 +623,17 @@ mod native {
                 free_local_port().expect("Could not get a free local port for test server");
             let TestServerSettings { sibling } = settings;
             let settings = AccessServiceSettings {
-                // The identity is filled in by the server itself.
-                deployment: Some(DeploymentConfig::default()),
+                // The identity is filled in by the server itself. Sites
+                // render at `{label}.{web_host}:{web_port}`, as they do
+                // wherever Tonk is deployed.
+                deployment: Some(DeploymentConfig {
+                    sites: Some(SiteOrigins {
+                        host: format!("{web_host}:{web_port}"),
+                        suffix: None,
+                        app: format!("https://{web_host}:{web_port}"),
+                    }),
+                    ..DeploymentConfig::default()
+                }),
                 public_origin: Some(format!("https://{web_host}:{web_port}")),
                 ..Default::default()
             };
@@ -618,9 +645,16 @@ mod native {
             let sibling = if sibling {
                 let port = free_local_port()
                     .expect("Could not get a free local port for the sibling deployment");
-                let web = Url::parse(&format!("https://127.0.0.1:{port}"))?;
+                let web = Url::parse(&format!("https://sibling.localhost:{port}"))?;
                 let service = tonk_access_service::helpers::access_service(AccessServiceSettings {
-                    deployment: Some(DeploymentConfig::default()),
+                    deployment: Some(DeploymentConfig {
+                        sites: Some(SiteOrigins {
+                            host: format!("sibling.localhost:{port}"),
+                            suffix: None,
+                            app: web.origin().ascii_serialization(),
+                        }),
+                        ..DeploymentConfig::default()
+                    }),
                     public_origin: Some(web.origin().ascii_serialization()),
                     ..Default::default()
                 })
@@ -791,9 +825,6 @@ mod native {
                 started.elapsed().as_millis()
             ));
 
-            // Safari has no host-resolver rule equivalent, so its release gate
-            // uses the loopback hostname that the same Caddy fixture also
-            // serves. Chrome retains the production-shaped tonk.network host.
             let (chromedriver, chromedriver_url) =
                 if let Some(webdriver_url) = std::env::var_os("TONK_WEBDRIVER_URL") {
                     (
@@ -1065,7 +1096,8 @@ mod native {
             assert!(args.iter().any(|arg| arg == "--disable-dev-shm-usage"));
             assert!(
                 args.iter()
-                    .any(|arg| arg == "--host-resolver-rules=MAP tonk.network 127.0.0.1")
+                    .any(|arg| arg
+                        == "--host-resolver-rules=MAP tonk.network 127.0.0.1, MAP *.tonk.network 127.0.0.1")
             );
             assert_eq!(
                 profile_from(env.chrome_capabilities_for_profile(&first)?)?,

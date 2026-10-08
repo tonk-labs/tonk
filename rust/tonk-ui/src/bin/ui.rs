@@ -5,6 +5,8 @@
 //! (see the `data-bin="ui"` link tag).
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tonk_worker_api::DeploymentConfig;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen::{JsCast, prelude::*};
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -14,34 +16,16 @@ const READINESS_FAILURE_MESSAGE: &str =
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen(main)]
 async fn main() {
-    // Diagnostics must remain available even when worker/Wasm startup fails.
-    if web_sys::window().is_some_and(|window| {
-        matches!(
-            window.location().pathname().as_deref(),
-            Ok("/doctor" | "/doctor/")
-        )
-    }) {
-        return;
-    }
-
     // Panic hook + (when a key is baked in and the user hasn't opted
     // out) posthog init, pageviews, and DOM-event listeners.
     tonk_ui::analytics::install();
 
-    // The outermost page is a thin SW relay: it installs the IO-owning host
-    // (document-level listeners — no element) and the `<tonk-site>` router,
-    // then mounts one `<tonk-site>`. Everything else — the hub, the space
-    // chrome, the FAB, the repo content — renders inside `<tonk-site>`'s
-    // sealed guests (the `tonk-guest` bundle), which `<tonk-site>` brings up
-    // per route. No framework, no per-route components: the profile's
-    // `route!` table decides what to render.
+    // This page mounts one `<tonk-site>` for the profile, on the profile's
+    // own origin, tells it where the address bar is, and runs the passkey
+    // ceremonies the profile's worker asks for. Everything else (the hub,
+    // a space's chrome, the bar, a space's content) renders in that site
+    // and the sites it nests, and this page asks no worker for anything.
     tonk_portal::register_site();
-
-    // Install the host IO surface before awaiting readiness; it registers
-    // document-level hooks but does not mount application elements. The
-    // top-document root waits below for the strict service-worker gate, while
-    // every later `/api/*` fetch retains the tolerant memoized host gate.
-    tonk_host::install();
 
     // Passkey ceremonies live on the window: `navigator.credentials`
     // does not exist in the service worker, and each ceremony needs a
@@ -52,112 +36,44 @@ async fn main() {
     // page must never look like one.
     tonk_identity::install();
     tonk_ui::custody_relay::install();
-    // A guest asking to register raises the dialog here, in the only
-    // document that can run the ceremony.
+    // The panel that adds an account is the profile frame's own; what a
+    // frame still asks of this page is where to seat the passkey rows a
+    // settings command raised, beside the column that asked.
     tonk_portal::on_register(|reason, return_focus| {
-        // The guest steers the anchored ceremony from the OTHER side of
-        // the frame boundary — it cannot reach the top-page cluster, so
-        // it asks. Tab switches SUSPEND and SHOW the cluster (a tab bar
-        // hides the background tab's content, it does not destroy it);
-        // dismiss remains the true teardown.
-        let request = tonk_ui::register_dialog::parse_request(reason);
-        match request.reason.as_str() {
-            "custody-anchor" => {
-                tonk_ui::custody_relay::return_to_approval(return_focus);
-                if let Some(anchor) = request.anchor {
-                    tonk_ui::custody_relay::reanchor(anchor);
-                }
-                return;
+        let request = tonk_ui::custody_relay::parse_seat_request(reason);
+        if request.reason == "custody-anchor" {
+            tonk_ui::custody_relay::return_to_approval(return_focus);
+            if let Some(anchor) = request.anchor {
+                tonk_ui::custody_relay::reanchor(anchor);
             }
-            "dismiss" => {
-                tonk_ui::register_dialog::close();
-                return;
-            }
-            "reseat" => {
-                tonk_ui::register_dialog::reseat(&request);
-                return;
-            }
-            "suspend" => {
-                tonk_ui::register_dialog::suspend();
-                return;
-            }
-            "show" => {
-                tonk_ui::register_dialog::resume();
-                return;
-            }
-            // Option on "add an account": sign in through the Tonk that
-            // holds the account rather than with a passkey on this one.
-            "sign-in-via" => {
-                let restore = return_focus.map(|return_focus| {
-                    Box::new(move || return_focus.restore()) as Box<dyn FnOnce()>
-                });
-                tonk_ui::register_dialog::raise_sign_in_via(&request, restore);
-                return;
-            }
-            _ => {}
         }
-        // The email face was asked for: one asking which Tonk gives way.
-        tonk_ui::register_dialog::leave_sign_in_via();
-        if tonk_ui::register_dialog::is_open() {
-            // A standing anchored ceremony keeps its typed state, but the
-            // guest bar may have moved after a scroll or resize.
-            tonk_ui::register_dialog::reanchor(&request);
-            // A repeat request re-shows the standing cluster — everything
-            // typed survives the round trip through the spaces tab.
-            tonk_ui::register_dialog::resume();
-            return;
-        }
-        if request.anchor.is_none() && !request.space.is_empty() {
-            // A blocked share: the linking screen IS the hub's settings
-            // route. The space rides sessionStorage across the navigation
-            // so the finished ceremony still offers the share link.
-            tonk_ui::register_dialog::stash_share(&request.space);
-            if let Some(location) = web_sys::window().map(|window| window.location()) {
-                let _ = location.assign("/settings");
-            }
-            return;
-        }
-        match return_focus {
-            Some(return_focus) => tonk_ui::register_dialog::open_with_return_focus(move || {
-                return_focus.restore();
-            }),
-            None => tonk_ui::register_dialog::open(),
-        }
-        tonk_ui::register_dialog::describe(reason);
-        tonk_ui::register_dialog::adopt_stashed_share();
     });
-    tonk_portal::on_task(tonk_ui::fabb_task::handle);
-    tonk_ui::activate::register();
+    // A delegation from the account is signed by the worker that holds the
+    // account, behind a passkey this page asks for.
+    tonk_portal::on_delegate(|request, reply| {
+        tonk_ui::custody_relay::delegate(
+            tonk_worker_api::RootDelegation {
+                subject: request.subject,
+                command: request.command,
+                audience: request.audience,
+            },
+            move |answer| reply.finish(answer),
+        );
+    });
+    // An account task is the profile frame's to answer. One that reaches
+    // this page has no panel here to open.
+    tonk_portal::on_task(|_request, reply| {
+        if let Some(reply) = reply {
+            reply.finish("invalid");
+        }
+    });
 
     // Dev-only hot reload client. `debug_assertions` is on under `trunk serve`
     // (debug profile) and off for release, so this never loads in production.
     #[cfg(debug_assertions)]
     inject_hot_swap();
 
-    if let Err(error) = tonk_host::ready::require().await {
-        tonk_ui::analytics::finish_startup(
-            tonk_analytics::product::Stage::Worker,
-            tonk_analytics::product::ProductResult::RetryableFailure,
-            Some(tonk_analytics::product::FailureKind::ServiceUnavailable),
-        );
-        web_sys::console::error_1(&error);
-        show_readiness_failure();
-        return;
-    }
-    tonk_ui::analytics::startup_checkpoint(tonk_analytics::product::Stage::Worker);
     mount_root();
-    if web_sys::window().is_some_and(|window| {
-        matches!(
-            window.location().pathname().as_deref(),
-            Ok("/activate" | "/activate/")
-        )
-    }) {
-        tonk_ui::analytics::finish_startup(
-            tonk_analytics::product::Stage::Ready,
-            tonk_analytics::product::ProductResult::Success,
-            None,
-        );
-    }
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -190,8 +106,7 @@ fn show_readiness_failure() {
     status.set_text_content(Some(READINESS_FAILURE_MESSAGE));
 }
 
-/// Mount the top-document shell. Account routes bypass sealed guests because
-/// WebAuthn ceremonies must run in the RP ID's top-level origin.
+/// Mount the top-document shell.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn mount_root() {
     let Some(document) = web_sys::window().and_then(|w| w.document()) else {
@@ -206,6 +121,7 @@ fn mount_root() {
     let _ = shell.set_attribute("id", "tonk-root");
     render_root(&shell);
     attach_navigation(&shell);
+    show_stages(&shell);
     let _ = body.append_child(&shell);
 }
 
@@ -221,40 +137,28 @@ fn render_root(shell: &web_sys::Element) {
         .ok()
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "/".to_owned());
-    let activate_route = path == "/activate" || path.starts_with("/activate/");
     let current = shell.first_element_child();
-
-    // The activation email lands here on any device, signed in or not,
-    // so the page bypasses sealed guests. Everything else, the account's
-    // settings included, renders inside the routed site.
-    if activate_route {
-        if current.as_ref().map(web_sys::Element::tag_name).as_deref() != Some("TONK-ACTIVATE") {
-            shell.set_inner_html("");
-            if let Some(document) = shell.owner_document()
-                && let Ok(activate) = document.create_element("tonk-activate")
-            {
-                let _ = shell.append_child(&activate);
-            }
-        }
-        return;
-    }
 
     if let Some(site) = current.filter(|element| element.tag_name() == "TONK-SITE") {
         let _ = site.set_attribute("path", &path);
         return;
     }
 
-    // The site mounts on the branch the profile is on, which only the
-    // worker knows: read it off `meta` first. A navigation while that
-    // read is in flight must not mount a second site.
+    // The profile renders on an origin of its own, which the deployment's
+    // configuration names. A navigation while that is being read must not
+    // mount a second site.
     if shell.has_attribute("data-mounting") {
         return;
     }
     let _ = shell.set_attribute("data-mounting", "");
     let shell = shell.clone();
     wasm_bindgen_futures::spawn_local(async move {
-        let with = tonk_host::bridge::resolve_profile_with().await;
+        let site_pattern = site_pattern().await;
         let _ = shell.remove_attribute("data-mounting");
+        let Some(site_pattern) = site_pattern else {
+            show_readiness_failure();
+            return;
+        };
         shell.set_inner_html("");
         let Some(document) = shell.owner_document() else {
             return;
@@ -262,9 +166,10 @@ fn render_root(shell: &web_sys::Element) {
         let Ok(site) = document.create_element("tonk-site") else {
             return;
         };
-        let _ = site.set_attribute("with", &with);
+        let _ = site.set_attribute("with", &tonk_host::bridge::profile_with());
         let _ = site.set_attribute("allow", "*");
-        // The path may have moved while the branch was being read.
+        let _ = site.set_attribute("origin", &site_pattern);
+        // The path may have moved while the configuration was being read.
         let path = web_sys::window()
             .and_then(|window| window.location().pathname().ok())
             .filter(|path| !path.is_empty())
@@ -272,6 +177,54 @@ fn render_root(shell: &web_sys::Element) {
         let _ = site.set_attribute("path", &path);
         let _ = shell.append_child(&site);
     });
+}
+
+/// The hostname this deployment renders each site at, with `*` where the
+/// site's label goes (`*.tonk.spot`), from its `/.well-known/tonk`. `None`
+/// when it names none, or the configuration cannot be read.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn site_pattern() -> Option<String> {
+    let origin = web_sys::window()?.location().origin().ok()?;
+    let config: DeploymentConfig = reqwest::get(format!("{origin}/.well-known/tonk"))
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    config.sites.map(|sites| sites.pattern())
+}
+
+/// Say, where the boot shell reports progress, how far along the profile's
+/// site is: its frame tells `<tonk-site>` each stage it reaches.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn show_stages(shell: &web_sys::Element) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+    let on_stage =
+        Closure::<dyn FnMut(web_sys::CustomEvent)>::new(|event: web_sys::CustomEvent| {
+            let Some(stage) = event.detail().as_string() else {
+                return;
+            };
+            let status = web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.query_selector("[data-boot-status]").ok().flatten());
+            if let Some(status) = status
+                && !status.has_attribute("data-failed")
+            {
+                // Nothing to say once the site is showing.
+                let said = if stage == "ready" {
+                    String::new()
+                } else {
+                    format!("{stage}…")
+                };
+                status.set_text_content(Some(&said));
+            }
+        });
+    let _ = shell.add_event_listener_with_callback(
+        tonk_portal::STAGE_EVENT,
+        on_stage.as_ref().unchecked_ref(),
+    );
+    on_stage.forget();
 }
 
 /// Keep the top-document root in sync with client-side navigation.

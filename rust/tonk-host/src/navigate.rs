@@ -46,7 +46,11 @@ pub(crate) fn install() -> Option<NavigateListener> {
     Some(NavigateListener { _closure: closure })
 }
 
-fn handle_worker_message(data: &JsValue) {
+/// Act on what a worker told its page: go to an address, load one afresh,
+/// push a commit, or reload for a changed profile. The page whose own worker
+/// says it hears it through [`install`]; the page framing a site hears that
+/// site's worker here, relayed by the frame.
+pub fn handle_worker_message(data: &JsValue) {
     if let Some(href) = navigate_href(data) {
         if replaces(data) {
             replace_page(&href);
@@ -195,6 +199,37 @@ pub fn navigate_to(href: &str) {
     } else {
         // No history access — fall back to a real (reloading) navigation.
         let _ = win.location().assign(href);
+    }
+}
+
+/// Change the address of the current history entry to `href` in place, and
+/// have the page route again as it does for [`navigate_to`].
+///
+/// In a guest, `history.replaceState` is the one its bootstrap put there,
+/// which tells the page that frames it instead.
+pub fn replace_to(href: &str) {
+    use wasm_bindgen::JsValue;
+    let Some(win) = window() else {
+        return;
+    };
+    let replaced = win.history().is_ok_and(|history| {
+        history
+            .replace_state_with_url(&JsValue::NULL, "", Some(href))
+            .is_ok()
+    });
+    if replaced && let Ok(event) = web_sys::Event::new("popstate") {
+        let _ = win.dispatch_event(&event);
+    }
+}
+
+/// Move `delta` entries through the page's history: back for a negative
+/// number, forward for a positive one.
+///
+/// In a guest, `history.go` is the one its bootstrap put there, which asks
+/// the page that frames it instead.
+pub fn traverse(delta: i32) {
+    if let Some(history) = window().and_then(|win| win.history().ok()) {
+        let _ = history.go_with_delta(delta);
     }
 }
 

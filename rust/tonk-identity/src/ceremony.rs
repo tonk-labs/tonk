@@ -8,12 +8,11 @@
 use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Context, Result};
-use dialog_credentials::{Ed25519Signer, Signer};
+use dialog_credentials::Ed25519Signer;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::timestamp::Timestamp;
 use dialog_ucan_core::{DelegationChain, InvocationBuilder, InvocationChain};
 use dialog_varsig::Principal;
-use ipld_core::cid::Cid;
 use url::Url;
 
 use crate::delegation::{mint_addressed_device_delegation, mint_device_delegation};
@@ -131,22 +130,6 @@ async fn build(
         descriptor_hex,
         invocation_hex,
     })
-}
-
-/// Sign a witnessed revocation with the passkey-derived root.
-///
-/// The root must be an issuer in the path prefix through the target. The
-/// resulting artifact carries the exact signed path and can be verified
-/// without an account provider.
-pub async fn sign_revocation(
-    root: impl Into<Signer>,
-    path: &DelegationChain,
-    target: &Cid,
-) -> Result<String> {
-    let bytes = crate::revocation::mint_root_revocation(root, path, target)
-        .await
-        .context("failed to sign the revocation")?;
-    Ok(hex::encode(bytes))
 }
 
 /// Build account creation around an existing stable local-root grant.
@@ -296,57 +279,6 @@ pub struct CustodyAccountRequest {
     pub root: RootCeremony,
     /// The root-signed request for the account service.
     pub account: AccountCeremony,
-}
-
-/// One assertion, one presigned GET, one unwrap: evaluate a custody
-/// passkey, resolve its cell, and open the envelope. The returned
-/// secret lives only in the caller's scope; every custody operation
-/// derives its keys inside a fresh user-verified assertion, and no key
-/// material is ever stored.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn assert_unlock(
-    endpoint: &str,
-    credential_id: Option<&[u8]>,
-) -> Result<(crate::envelope::AccountSecret, String)> {
-    use crate::envelope::{Envelope, custody_kek, custody_signer};
-
-    let evaluated = crate::passkey::evaluate_custody_passkey(credential_id).await?;
-    let credential_id = hex::encode(evaluated.id);
-    let evaluation = evaluated
-        .evaluation
-        .context("the authenticator returned no PRF outputs")?;
-    let custody = custody_signer(&evaluation.key).await?;
-    let kek = custody_kek(&evaluation.kek);
-    let sealed =
-        crate::custody::resolve_secret(dialog_credentials::Signer::from(custody), endpoint)
-            .await?
-            .context("no account custody is published for this passkey")?;
-    let envelope = Envelope::decode(&sealed)
-        .map_err(|error| anyhow::anyhow!("the custody cell is unreadable: {error}"))?;
-    let secret = kek
-        .open(&envelope)
-        .map_err(|error| anyhow::anyhow!("the custody envelope did not open: {error}"))?;
-    Ok((secret, credential_id))
-}
-
-/// Materialize the account signer through a custody assertion, for
-/// root-signed operations: CLI approval, link completion, revocation.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn unlock_root(endpoint: &str) -> Result<Ed25519Signer> {
-    let (secret, _) = assert_unlock(endpoint, None).await?;
-    secret.signer().await
-}
-
-/// Derive the account's X25519 recipient through a custody assertion,
-/// for a device whose root record predates the key: the worker asks the
-/// page for this when it needs custody set up and nothing recorded it.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub async fn publish_encryption_key(
-    endpoint: &str,
-    credential_id: Option<&[u8]>,
-) -> Result<String> {
-    let (secret, _) = assert_unlock(endpoint, credential_id).await?;
-    Ok(secret.secret().did().to_string())
 }
 
 /// Build the root-signed request that links a new device to an existing account.

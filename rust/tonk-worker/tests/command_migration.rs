@@ -240,28 +240,3 @@ fn the_two_renames_no_longer_need_a_marker_to_stay_apart() {
     );
     assert!(!repository.matches(&a_profile_rename));
 }
-
-/// And the pair that made a passkey prompt appear mid-keystroke.
-#[dialog_common::test]
-fn a_lookup_no_longer_decodes_as_a_registration() {
-    let lookup: Migrated<command::CheckEmail, command::legacy::CheckEmail> = Migrated::new();
-    let registration: Migrated<command::RegisterAccount, command::legacy::RegisterAccount> =
-        Migrated::new();
-
-    let asking = facts(vec![(
-        "xyz.tonk.command.check-email/email",
-        text("ada@example.com"),
-    )]);
-    let registering = facts(vec![(
-        "xyz.tonk.command.register-account/email",
-        text("ada@example.com"),
-    )]);
-
-    assert!(lookup.matches(&asking));
-    assert!(registration.matches(&registering));
-    assert!(
-        !registration.matches(&asking),
-        "asking whether an address is free must not create the account",
-    );
-    assert!(!lookup.matches(&registering));
-}

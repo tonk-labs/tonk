@@ -105,6 +105,8 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
             Err(error) => failures.push((subject, error.to_string())),
         }
     }
+    // Every space's worker acts for the account this profile does.
+    super::space_reach::changed(None);
     for (subject, reason) in &failures {
         log!("rotation: {subject} was not rotated: {reason}");
     }
@@ -662,7 +664,78 @@ pub(super) async fn reconcile_founder_membership(
 /// member DID necessarily changes the entity every role, name, and provenance
 /// stamp addresses. Existing account-side stamps win on a resumed or repeated
 /// migration; onboarding values only fill fields the account row lacks.
+///
+/// Where each space's content is held by a worker of its own, the person's
+/// profile holds no roster to move, and hands the move to that worker as a
+/// [`MoveMembership`](tonk_schema::command::MoveMembership) command.
 async fn migrate_membership_rows(
+    tonk: &TonkState,
+    space: &Did,
+    onboarding: &Did,
+    root: &Did,
+) -> Result<(), TonkWorkerError> {
+    if tonk.spaces_elsewhere() {
+        let claim = super::space_reach::command(
+            &[
+                (
+                    "previous",
+                    "xyz.tonk.command.move-membership/previous",
+                    "Entity",
+                ),
+                (
+                    "account",
+                    "xyz.tonk.command.move-membership/account",
+                    "Entity",
+                ),
+            ],
+            serde_json::json!({
+                "previous": onboarding.to_string(),
+                "account": root.to_string()
+            }),
+        );
+        return super::space_reach::run(
+            space.repo_key(),
+            super::space_reach::Surface::Space,
+            &claim,
+        )
+        .await;
+    }
+    move_membership_rows(tonk, space, onboarding, root).await
+}
+
+/// Run the [`MoveMembership`] command: move this space's roster entry, in
+/// the worker that holds the space.
+///
+/// [`MoveMembership`]: tonk_schema::command::MoveMembership
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::MoveMembership>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::MoveMembership) {
+        let repo = self.origin().repo.clone();
+        let moved = async {
+            let parse = |entity: &dialog_artifacts::Entity| {
+                entity.to_string().parse::<Did>().map_err(|e| {
+                    TonkWorkerError::Router(format!("'{entity}' is not an account: {e:?}"))
+                })
+            };
+            let space: Did = repo
+                .parse()
+                .map_err(|e| TonkWorkerError::Router(format!("'{repo}' is not a space: {e:?}")))?;
+            let (from, to) = (parse(&command.previous.0)?, parse(&command.account.0)?);
+            let tonk = self.state().read().await;
+            move_membership_rows(&tonk, &space, &from, &to).await
+        };
+        match moved.await {
+            Ok(()) => log!("Moved the roster entry of '{repo}' to the account that took it over"),
+            Err(error) => log!("MoveMembership for '{repo}' failed: {error}"),
+        }
+    }
+}
+
+/// [`migrate_membership_rows`], on the roster this worker holds.
+async fn move_membership_rows(
     tonk: &TonkState,
     space: &Did,
     onboarding: &Did,
@@ -1636,6 +1709,7 @@ mod native_tests {
         let registry = crate::device::Registry {
             profile: name.clone(),
             directory: dialog_effects::storage::Directory::Profile,
+            standing: Default::default(),
         };
         let state = crate::worker::boot_state(storage, name, profile, registry)
             .await

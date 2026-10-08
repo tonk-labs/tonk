@@ -78,6 +78,16 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
         item.map_err(error)?;
     }
 
+    collect(tonk, &snapshot).await
+}
+
+/// Read what a copy takes from `snapshot`: its content without the records of
+/// the space it was taken from, and every blob it holds. Every block the
+/// snapshot reaches has to be in this worker's store already.
+pub(super) async fn collect(
+    tonk: &TonkState,
+    snapshot: &Snapshot,
+) -> Result<Copy, RepositoryError> {
     let stream = snapshot
         .claims()
         .select(ArtifactSelector::new().of_starting_with(""))
@@ -130,6 +140,20 @@ pub(super) async fn create(
     let repository = create_repository(&tonk, name, &configuration).await?;
     let subject = repository.did();
     let key = subject.repo_key();
+    write(&tonk, &subject, name, copy).await?;
+    write_replica_status(&tonk, &subject, Replica::initialized_status(), None).await?;
+    Ok(key.to_owned())
+}
+
+/// Write `copy` onto `subject`'s content branch, under `name`: its blobs,
+/// then its content and the new space's own name in one commit.
+pub(super) async fn write(
+    tonk: &TonkState,
+    subject: &Did,
+    name: &str,
+    copy: Copy,
+) -> Result<(), RepositoryError> {
+    let key = subject.repo_key();
     let session = tonk
         .reactor
         .repository(key)
@@ -170,8 +194,7 @@ pub(super) async fn create(
         .perform(&tonk.operator)
         .await
         .map_err(error)?;
-    write_replica_status(&tonk, &subject, Replica::initialized_status(), None).await?;
-    Ok(key.to_owned())
+    Ok(())
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

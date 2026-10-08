@@ -214,6 +214,10 @@ async fn mount_and_record(
 /// since the background drain retries the pull and a mount without
 /// content is what it was before.
 async fn pull_content_on_mount(tonk: &TonkState, subject: &dialog_varsig::Did) {
+    // The space's own origin holds its content, and pulls it there.
+    if tonk.spaces_elsewhere() {
+        return;
+    }
     let key = subject.as_str();
     match tonk
         .reactor

@@ -1472,6 +1472,15 @@ async fn project_member_names(
     name: &str,
     republish: bool,
 ) {
+    // Where each space has an origin of its own, its own worker holds its
+    // roster and writes the name there: it is told the name with its
+    // delegation, and takes up a new one when told that changed.
+    if tonk.spaces_elsewhere() {
+        if republish {
+            super::space_reach::changed(None);
+        }
+        return;
+    }
     for key in crate::router::profile_name::real_space_keys(tonk).await {
         let changed = match crate::router::profile_name::project_member_name(
             tonk, &key, member, name,
@@ -2167,16 +2176,17 @@ pub(crate) mod tests {
             reject_admission_content_reads: Default::default(),
             retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             view_bindings: Default::default(),
-            bridges: Default::default(),
             sync_queue: Default::default(),
             commands: crate::router::command_providers(),
             clients: Default::default(),
             seed_upgrades: Default::default(),
+            site_origins: Default::default(),
             account_keys: Default::default(),
             profile_library: Default::default(),
             registry: crate::device::Registry {
                 profile: name.clone(),
                 directory: dialog_effects::storage::Directory::Profile,
+                standing: Default::default(),
             },
             profile_transition: Default::default(),
             context_generation: Default::default(),
@@ -2375,6 +2385,174 @@ pub(crate) mod tests {
         assert!(
             adopt_account_access(&state).await,
             "the second account's authority is adopted on {landing}",
+        );
+    }
+
+    /// A device's sync takes the account branch's head and brings down
+    /// only what it needs to act, leaving the rest to be read when wanted.
+    /// Signing out gives up the right to read it, and the branch is kept:
+    /// signing back in writes to it, and a write that reached a part never
+    /// brought down failed with "No delegation chain proves … may access
+    /// …", depending on which part it happened to reach. Signing out
+    /// brings the branch down whole first.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_signs_back_in_to_a_branch_it_had_not_brought_down_whole() {
+        use dialog_artifacts::{Artifact, Instruction, Value};
+        use dialog_varsig::Principal as _;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let (home, _service, root, remote) = ready_account_state(None).await;
+        assert_eq!(ensure_account_state(&home).await, AccountStateStatus::Ready);
+        let device = device_on(&root, &remote, None).await;
+        let (status, swept) = ensure_account_state_swept(&device).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.unwrap();
+
+        let (_, swept) = ensure_account_state_swept(&home).await;
+        swept.unwrap();
+        for round in 0..3u64 {
+            let facts: Vec<_> = (0..2048u64)
+                .map(|n| {
+                    Instruction::Assert(Artifact {
+                        the: "test/fact".parse().expect("a valid attribute"),
+                        of: format!("test:{round}:{n}").parse().expect("a valid entity"),
+                        is: Value::UnsignedInt(n.into()),
+                        cause: None,
+                    })
+                })
+                .collect();
+            home.reactor
+                .profile_repository()
+                .branch(&home.active_branch)
+                .acquire(&home.operator)
+                .await
+                .unwrap()
+                .handle()
+                .commit(futures_util::stream::iter(facts))
+                .perform(&home.operator)
+                .await
+                .unwrap();
+            push_account_main(&home).await.unwrap();
+        }
+
+        // The device takes the head the way its sync does, which brings
+        // down what it needs to act and leaves the rest where it is.
+        let (_, swept) = ensure_account_state_swept(&device).await;
+        swept.unwrap();
+
+        let device = Arc::new(RwLock::new(device));
+        super::super::profiles::sign_out(&device, None)
+            .await
+            .unwrap();
+        let back = super::super::profiles::for_account(device, &root.did(), None)
+            .await
+            .expect("the device returns to the account's branch");
+
+        // A write that reaches every part of what the branch holds.
+        let touched: Vec<_> = (0..3u64)
+            .flat_map(|round| (0..2048u64).map(move |n| (round, n)))
+            .map(|(round, n)| {
+                Instruction::Assert(Artifact {
+                    the: "test/touched".parse().expect("a valid attribute"),
+                    of: format!("test:{round}:{n}").parse().expect("a valid entity"),
+                    is: Value::UnsignedInt(n.into()),
+                    cause: None,
+                })
+            })
+            .collect();
+        let branch = back
+            .reactor
+            .profile_repository()
+            .branch(&back.active_branch)
+            .acquire(&back.operator)
+            .await
+            .unwrap();
+        branch.handle().refresh(&back.operator).await.unwrap();
+        let written = branch
+            .handle()
+            .commit(futures_util::stream::iter(touched))
+            .perform(&back.operator)
+            .await;
+        assert!(
+            written.is_ok(),
+            "writing after signing out: {:?}",
+            written.err()
+        );
+    }
+
+    /// The worker keeps one handle per branch, and something else can move
+    /// the branch under it: the pull a space's worker makes as it takes the
+    /// space up, while a page asks for a pull of its own. The handle then
+    /// publishes against a head that is no longer there. The pull that was
+    /// asked for takes the head as it now is and pulls again, as a sync
+    /// does, where it used to answer a conflict.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_pulls_through_a_head_another_pull_moved() {
+        use ::axum::extract::{Path, State};
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let (home, _service, root, remote) = ready_account_state(None).await;
+        assert_eq!(ensure_account_state(&home).await, AccountStateStatus::Ready);
+        let device = device_on(&root, &remote, None).await;
+        let (status, swept) = ensure_account_state_swept(&device).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.unwrap();
+
+        // The account changes elsewhere, and this device takes the change
+        // through a handle of its own, behind the worker's.
+        rename_display_name(&home, "First").await.unwrap();
+        push_account_main(&home).await.unwrap();
+        let aside = device
+            .reactor
+            .profile_repository()
+            .acquire(&device.operator)
+            .await
+            .unwrap()
+            .repository()
+            .branch(&device.active_branch)
+            .open()
+            .perform(&device.operator)
+            .await
+            .unwrap();
+        aside
+            .pull()
+            .download()
+            .operational()
+            .perform(&device.operator)
+            .await
+            .unwrap();
+
+        // It changes again, so the pull asked for has something to take.
+        rename_display_name(&home, "Second").await.unwrap();
+        push_account_main(&home).await.unwrap();
+
+        let repo = device.reactor.profile_key().to_owned();
+        let branch = device.active_branch.clone();
+        let device = Arc::new(RwLock::new(device));
+        let pulled = super::super::sync::pull(
+            State(device.clone()),
+            Path(super::super::sync::SyncPath { repo, branch }),
+        )
+        .await;
+
+        let pulled = pulled.expect("the pull takes the moved head and goes on").0;
+        let published = home
+            .reactor
+            .profile_repository()
+            .branch(&home.active_branch)
+            .acquire(&home.operator)
+            .await
+            .unwrap()
+            .handle()
+            .revision();
+        assert!(published.is_some());
+        assert_eq!(
+            pulled.after, published,
+            "and ends at what the other device last pushed"
         );
     }
 

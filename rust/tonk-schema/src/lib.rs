@@ -70,6 +70,12 @@ pub use account::{
     email_state,
 };
 
+pub mod registration;
+pub use registration::{
+    RegistrationAddress, RegistrationCeremony, RegistrationConfirming, RegistrationFailed,
+    RegistrationNaming, RegistrationVia,
+};
+
 pub mod custody;
 pub use custody::{Replacement, SecretMessage, SecretPrincipal, SeedKind};
 
@@ -116,8 +122,8 @@ pub use space::{DEFAULT_BRANCH, RouteTarget, SpaceRef, parse_space, resolve_path
 
 pub mod site;
 pub use site::{
-    ReplicaCheckFailure, ReplicaChecked, ReplicaChecking, Route, SeedAvailable, SeedInstall,
-    SeedInstalled, Site,
+    HttpRoute, ReplicaCheckFailure, ReplicaChecked, ReplicaChecking, Route, SeedAvailable,
+    SeedInstall, SeedInstalled, Site,
 };
 
 mod identity;

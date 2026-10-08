@@ -6,44 +6,8 @@ import vm from "node:vm";
 const read = path => readFileSync(new URL(path, import.meta.url), "utf8");
 const inline = (text, marker) => [...text.matchAll(/inline_js = r#"([\s\S]*?)"#/g)]
   .map(match => match[1]).find(js => js.includes(marker)).replaceAll("export ", "");
-const retry = inline(read("../src/analytics.rs"), "resolve_analytics_identity");
 const bridge = inline(read("../../tonk-analytics/src/web.rs"), "ph_init");
 const id = `tonk:${"a".repeat(64)}`;
-
-function resolver() {
-  // Shorten wall-clock timers while preserving timeout/backoff ordering.
-  const context = vm.createContext({
-    setTimeout: (fn, ms) => setTimeout(fn, ms === 5000 ? 10 : 0), clearTimeout,
-  });
-  vm.runInContext(retry, context);
-  return context.resolve_analytics_identity;
-}
-
-test("identity retries transient failure and stops after successful resolution", async () => {
-  let calls = 0;
-  assert.equal(await resolver()(() => {
-    if (++calls === 1) throw new Error("worker unavailable");
-    return id;
-  }), id);
-  assert.equal(calls, 2);
-});
-
-test("identity exhaustion stays unresolved and never returns a late result", async () => {
-  let calls = 0;
-  const late = [];
-  assert.equal(await resolver()(() => {
-    calls++;
-    return new Promise(resolve => late.push(resolve));
-  }), null);
-  assert.equal(calls, 3);
-  for (const resolve of late) resolve(id);
-});
-
-test("identity rejects malformed identifiers and eventually resolves", async () => {
-  let calls = 0;
-  assert.equal(await resolver()(() => ++calls < 3 ? "raw-profile" : id), id);
-  assert.equal(calls, 3);
-});
 
 function sdk({ optedOut = false, identifyThrows = false, acceptsIdentity = true } = {}) {
   const props = {};

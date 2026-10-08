@@ -57,13 +57,18 @@
     }
   });
 
-  window.addEventListener("message", async function(e){
-    var d=e.data; if(!d||d.__tonkRuntime!=="inject") return;
+  // Bring the element runtime up. `d` says how: a guest on its own origin
+  // loads everything from there (`fromOrigin`), a sealed one is handed it.
+  var start=async function(d){
     try {
       // Apply the parent document's exact root classes (WA theme + palette +
       // dark/light), so the injected WA CSS resolves its custom properties
       // identically to the host page.
       if (d.rootClass) document.documentElement.className=d.rootClass;
+      // The theme and palette the app's stylesheet is written for. The page
+      // that frames the outermost site carries no theme of its own to hand
+      // down, so each guest names them itself.
+      document.documentElement.classList.add("wa-theme-default","wa-palette-shoelace");
       // The injected rootClass is a one-time snapshot, so a later OS
       // light/dark switch wouldn't reach the guest (the parent retoggles its
       // own `wa-dark`/`wa-light` on `prefers-color-scheme`, but the guest's
@@ -91,36 +96,56 @@
       var base=document.createElement("style");
       base.textContent="html{color-scheme:light dark}html,body{height:100%;margin:0}body{display:flex;flex-direction:column;min-height:100%}";
       document.head.appendChild(base);
-      if (d.css) {
-        var style=document.createElement("style");
-        // Tag the injected app CSS so a NESTED guest (whose parent is THIS guest,
-        // not the top document) can discover it: the parent has no
-        // `<link rel=stylesheet href=/styles-*.css>` to read the href from — its
-        // app CSS lives in this inline `<style>` — so `app_stylesheet_css()`
-        // reads the content back off `[data-tonk-app-css]`.
-        style.setAttribute("data-tonk-app-css","");
-        style.textContent=d.css;
-        document.head.appendChild(style);
+      if (d.fromOrigin) {
+        // On its own origin the guest brings the runtime in itself: it reads
+        // which build's files to load from its own origin, links the
+        // stylesheets (fonts then resolve against them) and imports the
+        // modules. Its worker and the HTTP cache keep them, and nothing
+        // crosses the frame.
+        var manifest=window.tonkBuildFiles||await (await fetch("/guest/manifest.json",{cache:"no-cache"})).json();
+        var link=function(href){
+          var l=document.createElement("link");
+          l.rel="stylesheet"; l.href=href;
+          document.head.appendChild(l);
+        };
+        link("/guest/"+manifest.waCss);
+        if (manifest.css) link("/"+manifest.css);
+        await import("/guest/"+manifest.waJs);
+        var mod=await import("/guest/"+manifest.js);
+        await mod.default({ module_or_path: "/guest/"+manifest.wasm });
+        mod.start();
+      } else {
+        if (d.css) {
+          var style=document.createElement("style");
+          // Tag the injected app CSS so a NESTED guest (whose parent is THIS guest,
+          // not the top document) can discover it: the parent has no
+          // `<link rel=stylesheet href=/styles-*.css>` to read the href from — its
+          // app CSS lives in this inline `<style>` — so `app_stylesheet_css()`
+          // reads the content back off `[data-tonk-app-css]`.
+          style.setAttribute("data-tonk-app-css","");
+          style.textContent=d.css;
+          document.head.appendChild(style);
+        }
+        // Web Awesome component bundle: a self-contained ESM (no dynamic or
+        // relative imports). `d.wa` is the transferred ArrayBuffer (ownership
+        // moved, no copy); wrap it in a Blob (a zero-copy view over the bytes)
+        // and import the URL so the <wa-*> elements upgrade with no network.
+        if (d.wa) {
+          var waUrl=URL.createObjectURL(new Blob([d.wa],{type:"text/javascript"}));
+          await import(waUrl);
+        }
+        // Rewrite each snippet import statement to a guest-minted blob URL.
+        var glue=d.glue;
+        for (var i=0;i<d.snippets.length;i++){
+          var s=d.snippets[i];
+          var url=URL.createObjectURL(new Blob([s.src],{type:"text/javascript"}));
+          glue=glue.replace(s.stmt, s.stmt.replace(/from\s*['"][^'"]*['"]/, 'from "'+url+'"'));
+        }
+        var glueUrl=URL.createObjectURL(new Blob([glue],{type:"text/javascript"}));
+        var mod=await import(glueUrl);
+        await mod.default({ module_or_path: d.wasm });
+        mod.start();
       }
-      // Web Awesome component bundle: a self-contained ESM (no dynamic or
-      // relative imports). `d.wa` is the transferred ArrayBuffer (ownership
-      // moved, no copy); wrap it in a Blob (a zero-copy view over the bytes)
-      // and import the URL so the <wa-*> elements upgrade with no network.
-      if (d.wa) {
-        var waUrl=URL.createObjectURL(new Blob([d.wa],{type:"text/javascript"}));
-        await import(waUrl);
-      }
-      // Rewrite each snippet import statement to a guest-minted blob URL.
-      var glue=d.glue;
-      for (var i=0;i<d.snippets.length;i++){
-        var s=d.snippets[i];
-        var url=URL.createObjectURL(new Blob([s.src],{type:"text/javascript"}));
-        glue=glue.replace(s.stmt, s.stmt.replace(/from\s*['"][^'"]*['"]/, 'from "'+url+'"'));
-      }
-      var glueUrl=URL.createObjectURL(new Blob([glue],{type:"text/javascript"}));
-      var mod=await import(glueUrl);
-      await mod.default({ module_or_path: d.wasm });
-      mod.start();
       // Code-split editor bundles load sibling chunks via RELATIVE imports,
       // dead at this opaque origin. Mint a blob per file in DEPENDENCY ORDER
       // so each file's relative imports rewrite to the FINAL blob URLs of
@@ -193,6 +218,19 @@
           if (requested) return;
           requested=true;
           if (observer) { observer.disconnect(); observer=null; }
+          // On its own origin the guest imports the editor from there, and
+          // the editor's own relative imports find its chunks beside it.
+          if (d.fromOrigin) {
+            import("/tonk-code/tonk-code.js").catch(function(importErr){
+              parent.postMessage({__tonkRuntime:"warn",error:"tonk-code import: "+String(importErr)},"*");
+              requested=false;
+              if (!observer) {
+                observer=new MutationObserver(onMutations);
+                observer.observe(document.documentElement,{childList:true,subtree:true});
+              }
+            });
+            return;
+          }
           // A failed relay must not poison the trigger: clear `requested` and
           // re-arm the observer so the next element to appear retries the
           // whole handshake. (tonk-prose/tonk-table clear their cached core
@@ -267,6 +305,16 @@
       // AFTER tonk-code so code blocks inside documents upgrade to embedded
       // <tonk-code> editors (the node view checks for the element at draw
       // time).
+      // On its own origin each registration shell is imported from there,
+      // and finds its core beside it when an element first connects.
+      if (d.fromOrigin) {
+        for (const shell of ["/tonk-prose/tonk-prose.js","/tonk-table/tonk-table.js"]) {
+          try { await import(shell); }
+          catch(shellErr) {
+            parent.postMessage({__tonkRuntime:"warn",error:shell+" import: "+String(shellErr)},"*");
+          }
+        }
+      }
       if (d.prose && d.prose.length) {
         try {
           var proseBlobs=mintGraph(d.prose);
@@ -359,6 +407,16 @@
     } catch(err) {
       parent.postMessage({__tonkRuntime:"error",error:String(err)+(err&&err.stack?"\n"+err.stack:"")},"*");
     }
-  });
-  parent.postMessage({__tonkRuntime:"runtime-ready"},"*");
+  };
+  if (location.origin!=="null") {
+    // On an origin of its own the guest starts at once: it has everything
+    // it needs there, and nothing to wait on the page around it for.
+    window.tonkRuntime=start({fromOrigin:true});
+  } else {
+    window.addEventListener("message", function(e){
+      var d=e.data; if(!d||d.__tonkRuntime!=="inject") return;
+      start(d);
+    });
+    parent.postMessage({__tonkRuntime:"runtime-ready"},"*");
+  }
 })();

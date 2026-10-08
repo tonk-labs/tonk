@@ -129,32 +129,114 @@ impl Command for CheckEmail {
     type Output = ();
 }
 
-/// Create the account for an address, once the lookup said it is free.
+/// Raise the panel that adds an account to this profile.
 ///
-/// The lookup ([`CheckEmail`]) and this were once the same shape
-/// `{this, email}` under one shared DOM read path, so every keystroke's
-/// lookup also decoded as a registration and the worker started a
-/// passkey ceremony while the user was still typing. A marker attribute
-/// patched that; the two now live in separate namespaces, so the shapes
-/// cannot collide and the marker is gone.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RegisterAccount {
+/// The panel is views of the [`crate::registration`] stages, so raising
+/// it is recording its first stage.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct OpenRegistration {
     /// The command entity, minted per invocation.
     pub this: Entity,
-    /// The address to register.
-    pub email: crate::domain::command::current::register_account::Email,
+    /// The activation's timestamp, so each click is its own command.
+    pub time: crate::domain::command::current::open_registration::Time,
 }
 
-impl From<legacy::RegisterAccount> for RegisterAccount {
-    fn from(legacy: legacy::RegisterAccount) -> Self {
-        Self {
-            email: crate::domain::command::current::register_account::Email(legacy.email.0),
-            this: legacy.this,
-        }
-    }
+impl Command for OpenRegistration {
+    type Input = Self;
+    type Output = ();
 }
 
-impl Command for RegisterAccount {
+/// Go on with the address typed into the panel: name a new account for a
+/// free address, or log in to the one an address already has.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StartRegistration {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The address given.
+    pub email: crate::domain::command::current::start_registration::Email,
+}
+
+impl Command for StartRegistration {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Create the account for a free address, with a new passkey the page is
+/// asked to make.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CreateAccount {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The account's address.
+    pub email: crate::domain::command::current::create_account::Email,
+    /// What to call the account.
+    pub name: crate::domain::command::current::create_account::Name,
+}
+
+impl Command for CreateAccount {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Log in with a passkey the person picks: the page asks the browser for
+/// any passkey this site has, and the one picked names the account.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct LogIn {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The activation's timestamp, so each click is its own command.
+    pub time: crate::domain::command::current::log_in::Time,
+}
+
+impl Command for LogIn {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Activate the account an activation email was sent for.
+///
+/// The link in the email carries a complete, service-signed invocation,
+/// so presenting it is activating: it needs no key and works on any
+/// device. `this` is minted by the page that asks, which reads how it
+/// went off the same entity ([`crate::domain`]'s `account-activation`
+/// status and detail).
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct ActivateAccount {
+    /// The command entity, minted by the page per press.
+    pub this: Entity,
+    /// The link's invocation, base64url.
+    pub invocation: crate::domain::command::current::activate_account::Invocation,
+}
+
+impl Command for ActivateAccount {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Raise the panel that signs this browser in through another Tonk.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct OpenSignInVia {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The activation's timestamp, so each click is its own command.
+    pub time: crate::domain::command::current::open_sign_in_via::Time,
+}
+
+impl Command for OpenSignInVia {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Put the panel away, wherever it got to.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct DismissRegistration {
+    /// The command entity, minted per invocation.
+    pub this: Entity,
+    /// The activation's timestamp, so each click is its own command.
+    pub time: crate::domain::command::current::dismiss_registration::Time,
+}
+
+impl Command for DismissRegistration {
     type Input = Self;
     type Output = ();
 }
@@ -412,6 +494,60 @@ pub struct CheckUpdate {
 }
 
 impl Command for CheckUpdate {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Record, in a space, an invite to it that the person's profile minted.
+///
+/// Where each space's content is held by a worker on the space's own origin,
+/// minting an invite takes two workers. The profile's signs it: it holds the
+/// authority, and a delegation issued by the space's worker would lapse with
+/// that worker's own. The space's worker writes what the mint leaves in the
+/// space (the [`Authorization`], the roster's invitation, the retained
+/// delegation) and keeps the secret half in its session overlay. This is how
+/// the first hands the second what to write. It fires on the space's own
+/// branch and records an invite for that space only.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RecordInvite {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The delegation chain the invite grants.
+    pub proof: crate::domain::command::current::record_invite::Proof,
+    /// The `profile -> account` union edge, or empty.
+    pub union: crate::domain::command::current::record_invite::Union,
+    /// The complete invite URL.
+    pub link: crate::domain::command::current::record_invite::Link,
+    /// The membership seed.
+    pub seed: crate::domain::command::current::record_invite::Seed,
+}
+
+impl Command for RecordInvite {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Move a space's roster entry from one account to the account that took it
+/// over, in the space's own worker.
+///
+/// Signing in hands a device's onboarding account over to the signed-in one,
+/// and each space's roster entry made under the first moves to the second.
+/// Where each space's content is held by a worker on the space's own origin,
+/// the profile settling the handover has no roster to move, so it hands the
+/// move to that worker. Only the handover does: a worker told a different
+/// account for any other reason (another profile on the same device taking
+/// over) is looking at somebody else's entry, and leaves it alone.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MoveMembership {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The account the entry is under.
+    pub previous: crate::domain::command::current::move_membership::Previous,
+    /// The account it moves to.
+    pub account: crate::domain::command::current::move_membership::Account,
+}
+
+impl Command for MoveMembership {
     type Input = Self;
     type Output = ();
 }

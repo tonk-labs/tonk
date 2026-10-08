@@ -180,21 +180,67 @@ where
     S: PeerSpace + Resource<Location, Error: Display>,
     CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
 {
+    let peer = build_peer(location, base, storage, credentials, system, create, branch).await?;
+    onboard(&peer)
+        .await
+        .map_err(|error| PeerError::State(error.to_string()))?;
+    Ok(peer)
+}
+
+/// Open the peer a site's own worker is: its key, home and records as
+/// [`open_peer`] opens them, and no account. It is never
+/// [onboarded](onboard): it acts on what it is delegated, for the account
+/// the delegation names.
+pub async fn open_delegate<S>(
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    credentials: &CredentialStore<S>,
+    system: &SignerCredential,
+    create: bool,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
+    build_peer(
+        location,
+        base,
+        storage,
+        credentials,
+        system,
+        create,
+        ACCESS_BRANCH,
+    )
+    .await
+}
+
+/// The peer both [`open_peer_on`] and [`open_delegate`] open, before either
+/// decides whether it has an account.
+async fn build_peer<S>(
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    credentials: &CredentialStore<S>,
+    system: &SignerCredential,
+    create: bool,
+    branch: &str,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
     let credential = open_credential(&location, credentials, &storage, create).await?;
     record_location(&credential.did(), &location);
     let home = home(&location, &base, &credential.did(), &storage).await?;
-    let peer = Peer::new(credential.clone())
+    Peer::new(credential.clone())
         .at(home)
         .base(base)
         .space(Repository::from(credential.did()).branch(branch))
         .with(storage)
         .grant(Allowance::storage(system))
         .build()
-        .await?;
-    onboard(&peer)
         .await
-        .map_err(|error| PeerError::State(error.to_string()))?;
-    Ok(peer)
 }
 
 /// Where the home space of the profile `profile` is: among the spaces it

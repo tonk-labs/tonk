@@ -123,7 +123,71 @@ pub(crate) async fn account_link(
 pub(crate) async fn member_did(
     state: &crate::worker::TonkState,
 ) -> Result<dialog_varsig::Did, TonkWorkerError> {
+    if let Some(account) = acts_for(state).await? {
+        return Ok(account);
+    }
     current_account(state).await.map(|(did, _)| did)
+}
+
+/// The profile secret a space's own worker keeps the account it acts for
+/// under.
+const ACTS_FOR_SITE: &str = "tonk-acts-for-account";
+
+/// The account this worker acts for on someone else's say-so, when it is a
+/// space's own worker.
+///
+/// Such a worker runs under a profile of its own, generated on its origin,
+/// which belongs to no account. The person whose profile handed it the
+/// space tells it which account that is ([`act_for`]), and it is that
+/// account, not one this worker would mint for itself, that the space's
+/// memberships name. `None` in the person's own worker, which answers from
+/// its own account ([`current_account`]).
+pub(crate) async fn acts_for(
+    state: &crate::worker::TonkState,
+) -> Result<Option<dialog_varsig::Did>, TonkWorkerError> {
+    let bytes = match state
+        .profile
+        .secrets()
+        .site(ACTS_FOR_SITE)
+        .load::<Vec<u8>>()
+        .perform(&state.profile)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
+        Err(error) => {
+            return Err(TonkWorkerError::Internal(format!(
+                "failed to load the account this worker acts for: {error}"
+            )));
+        }
+    };
+    String::from_utf8(bytes)
+        .ok()
+        .and_then(|did| did.parse().ok())
+        .map(Some)
+        .ok_or_else(|| {
+            TonkWorkerError::Internal("the account this worker acts for is not a DID".to_string())
+        })
+}
+
+/// Record the account this worker, a space's own, acts for.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn act_for(
+    state: &crate::worker::TonkState,
+    account: &dialog_varsig::Did,
+) -> Result<(), TonkWorkerError> {
+    state
+        .profile
+        .secrets()
+        .site(ACTS_FOR_SITE)
+        .save(account.to_string().into_bytes())
+        .perform(&state.profile)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "failed to keep the account this worker acts for: {error}"
+            ))
+        })
 }
 
 /// The account this device acts for, and its grant to the device: the
@@ -137,6 +201,7 @@ pub(crate) async fn current_account(
     match super::identity::local_root(state).await {
         Ok(root) => Ok((root.root_did, root.delegation)),
         Err(TonkWorkerError::RootRequired) => {
+            state.registry.account()?;
             let grant = crate::onboarding::grant_device(state).await?;
             Ok((grant.issuer().clone(), grant))
         }

@@ -8,7 +8,6 @@ use std::rc::Rc;
 use js_sys::{Array, Function, Object, Reflect};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
-use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::wasm_bindgen_test_configure;
 use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
 
@@ -17,6 +16,15 @@ wasm_bindgen_test_configure!(run_in_browser);
 // In a subdirectory, so Cargo does not build it as a test suite of its own.
 #[path = "support/settle.rs"]
 mod settle;
+
+#[path = "support/profile_fetch.rs"]
+mod profile_fetch;
+
+/// What `fetch` answers a claim the worker accepted.
+const ACCEPTED: &str = "new Response('{}', { status: 200 })";
+
+/// Where a bar with no `with` of its own sends its claims.
+const PROFILE_TRANSACT: &str = "/api/repository/profile:tonk/branch/main/transact";
 
 fn mount() -> HtmlElement {
     tonk_fab::register();
@@ -121,13 +129,7 @@ async fn plain_account_action_does_not_request_a_share_link() {
 
 #[dialog_common::test]
 async fn rejected_invitation_request_exposes_a_retry_instead_of_staying_pending() {
-    let transact = Function::new_with_args(
-        "request",
-        "return Promise.reject(new Error('request failed'))",
-    );
-    let tonk = Object::new();
-    Reflect::set(&tonk, &"transact".into(), &transact).unwrap();
-    Reflect::set(&window().unwrap(), &"tonk".into(), &tonk).unwrap();
+    let profile = profile_fetch::install("Promise.reject(new Error('request failed'))");
 
     let bar = mount();
     bar.remove_attribute("data-account-required").unwrap();
@@ -137,8 +139,11 @@ async fn rejected_invitation_request_exposes_a_retry_instead_of_staying_pending(
     shadow(&bar, ".agent")
         .unchecked_into::<HtmlElement>()
         .click();
-    let _ = JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::NULL)).await;
-    let _ = JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::NULL)).await;
+    assert_eq!(
+        profile.requests().await.len(),
+        1,
+        "the invitation was requested"
+    );
     assert!(
         shadow(&bar, ".agent-status")
             .text_content()
@@ -148,23 +153,17 @@ async fn rejected_invitation_request_exposes_a_retry_instead_of_staying_pending(
     assert!(!shadow(&bar, ".agent-retry").has_attribute("hidden"));
 
     bar.remove();
-    clear_tonk();
 }
 
 #[dialog_common::test]
 async fn signed_out_agent_uses_the_account_gate_without_minting() {
-    let calls = Rc::new(RefCell::new(0));
-    let sink = calls.clone();
-    let transact = Closure::<dyn FnMut(wasm_bindgen::JsValue)>::new(move |_| {
-        *sink.borrow_mut() += 1;
-    });
+    let profile = profile_fetch::install(ACCEPTED);
     let task_payload = Rc::new(RefCell::new(None::<String>));
     let sink = task_payload.clone();
     let task = Closure::<dyn FnMut(String)>::new(move |payload| {
         *sink.borrow_mut() = Some(payload);
     });
     let tonk = Object::new();
-    Reflect::set(&tonk, &"transact".into(), transact.as_ref()).unwrap();
     Reflect::set(&tonk, &"task".into(), task.as_ref()).unwrap();
     Reflect::set(&window().unwrap(), &"tonk".into(), &tonk).unwrap();
 
@@ -178,7 +177,7 @@ async fn signed_out_agent_uses_the_account_gate_without_minting() {
     assert!(!shadow(&bar, "#agent-panel").has_attribute("hidden"));
     assert!(!shadow(&bar, ".agent-gate").has_attribute("hidden"));
     assert_eq!(
-        *calls.borrow(),
+        profile.requests().await.len(),
         0,
         "opening the gate must not mint an invitation"
     );
@@ -202,29 +201,20 @@ async fn signed_out_agent_uses_the_account_gate_without_minting() {
     let event = CustomEvent::new_with_event_init_dict("tonk:task-closed", &init).unwrap();
     window().unwrap().dispatch_event(&event).unwrap();
     assert!(!shadow(&bar, "#agent-panel").has_attribute("hidden"));
-    assert_eq!(*calls.borrow(), 1, "completion starts one agent invitation");
+    assert_eq!(
+        profile.requests().await.len(),
+        1,
+        "completion starts one agent invitation"
+    );
 
     bar.remove();
     clear_tonk();
     drop(task);
-    drop(transact);
 }
 
 #[dialog_common::test]
 async fn explicit_open_mints_once_and_a_ready_frame_renders_the_complete_prompt() {
-    let calls = Rc::new(RefCell::new(Vec::<(String, bool)>::new()));
-    let sink = calls.clone();
-    let transact = Closure::<dyn FnMut(wasm_bindgen::JsValue, wasm_bindgen::JsValue)>::new(
-        move |request, context: wasm_bindgen::JsValue| {
-            let request = js_sys::JSON::stringify(&request)
-                .map(String::from)
-                .unwrap_or_default();
-            sink.borrow_mut().push((request, context.is_undefined()));
-        },
-    );
-    let tonk = Object::new();
-    Reflect::set(&tonk, &"transact".into(), transact.as_ref()).unwrap();
-    Reflect::set(&window().unwrap(), &"tonk".into(), &tonk).unwrap();
+    let profile = profile_fetch::install(ACCEPTED);
 
     let bar = mount();
     bar.remove_attribute("data-account-required").unwrap();
@@ -235,16 +225,13 @@ async fn explicit_open_mints_once_and_a_ready_frame_renders_the_complete_prompt(
     agent_button.click();
     agent_button.click();
     agent_button.click();
+    let calls = profile.requests().await;
+    assert_eq!(calls.len(), 1, "an in-flight mint is not duplicated");
     assert_eq!(
-        calls.borrow().len(),
-        1,
-        "an in-flight mint is not duplicated"
-    );
-    assert!(
-        calls.borrow()[0].1,
+        calls[0].0, PROFILE_TRANSACT,
         "the command must use app chrome's profile route"
     );
-    let claim: serde_json::Value = serde_json::from_str(&calls.borrow()[0].0).unwrap();
+    let claim = &calls[0].1;
     assert_eq!(
         claim["claims"][0]["application"]["parameters"]["space"], "did:key:zAgentSpace",
         "the profile-mounted FAB must name the target space"
@@ -293,24 +280,11 @@ async fn explicit_open_mints_once_and_a_ready_frame_renders_the_complete_prompt(
     );
 
     bar.remove();
-    clear_tonk();
-    drop(transact);
 }
 
 #[dialog_common::test]
 async fn reopening_after_a_lost_invite_mints_again_without_try_again() {
-    let calls = Rc::new(RefCell::new(Vec::<String>::new()));
-    let sink = calls.clone();
-    let transact = Closure::<dyn FnMut(wasm_bindgen::JsValue)>::new(move |request| {
-        sink.borrow_mut().push(
-            js_sys::JSON::stringify(&request)
-                .map(String::from)
-                .unwrap_or_default(),
-        );
-    });
-    let tonk = Object::new();
-    Reflect::set(&tonk, &"transact".into(), transact.as_ref()).unwrap();
-    Reflect::set(&window().unwrap(), &"tonk".into(), &tonk).unwrap();
+    let profile = profile_fetch::install(ACCEPTED);
 
     let bar = mount();
     bar.remove_attribute("data-account-required").unwrap();
@@ -331,8 +305,9 @@ async fn reopening_after_a_lost_invite_mints_again_without_try_again() {
         .unchecked_into::<HtmlElement>()
         .click();
 
-    assert_eq!(calls.borrow().len(), 1);
-    let claim: serde_json::Value = serde_json::from_str(&calls.borrow()[0]).unwrap();
+    let calls = profile.requests().await;
+    assert_eq!(calls.len(), 1);
+    let claim = &calls[0].1;
     assert_eq!(
         claim["claims"][0]["application"]["parameters"]["fresh"],
         "new"
@@ -343,8 +318,6 @@ async fn reopening_after_a_lost_invite_mints_again_without_try_again() {
     );
 
     bar.remove();
-    clear_tonk();
-    drop(transact);
 }
 
 #[dialog_common::test]
@@ -354,9 +327,8 @@ async fn an_account_refusal_uses_the_typed_task_and_retains_the_space() {
     let task = Closure::<dyn FnMut(String)>::new(move |payload| {
         *sink.borrow_mut() = Some(payload);
     });
-    let transact = Closure::<dyn FnMut(wasm_bindgen::JsValue)>::new(|_| {});
+    let _profile = profile_fetch::install(ACCEPTED);
     let tonk = Object::new();
-    Reflect::set(&tonk, &"transact".into(), transact.as_ref()).unwrap();
     Reflect::set(&tonk, &"task".into(), task.as_ref()).unwrap();
     Reflect::set(&window().unwrap(), &"tonk".into(), &tonk).unwrap();
 
@@ -392,7 +364,6 @@ async fn an_account_refusal_uses_the_typed_task_and_retains_the_space() {
     bar.remove();
     clear_tonk();
     drop(task);
-    drop(transact);
 }
 
 fn agent_child(bar: &HtmlElement) -> HtmlElement {
@@ -446,9 +417,7 @@ fn assert_feedback_height(bar: &HtmlElement, expanded: bool) {
 
 #[dialog_common::test]
 async fn connection_feedback_is_local_transient_and_restores_the_collapsed_fab() {
-    let tonk = Object::new();
-    Reflect::set(&tonk, &"transact".into(), &Function::new_no_args("")).unwrap();
-    Reflect::set(&window().unwrap(), &"tonk".into(), &tonk).unwrap();
+    let _profile = profile_fetch::install(ACCEPTED);
     let bar = mount();
     let viewer = mount();
     let agent = agent_child(&bar);
@@ -535,14 +504,11 @@ async fn connection_feedback_is_local_transient_and_restores_the_collapsed_fab()
     deliver_receipts(&agent, &[mine], false);
     assert!(!reopened.has_attribute("data-agent-connected"));
     reopened.remove();
-    clear_tonk();
 }
 
 #[dialog_common::test]
 async fn connection_feedback_preserves_the_panel_and_clears_on_navigation() {
-    let tonk = Object::new();
-    Reflect::set(&tonk, &"transact".into(), &Function::new_no_args("")).unwrap();
-    Reflect::set(&window().unwrap(), &"tonk".into(), &tonk).unwrap();
+    let _profile = profile_fetch::install(ACCEPTED);
     let bar = mount();
     bar.remove_attribute("data-account-required").unwrap();
     shadow(&bar, ".space")
@@ -575,5 +541,4 @@ async fn connection_feedback_preserves_the_panel_and_clears_on_navigation() {
     deliver_receipts(&agent, &[receipt], true);
     assert!(!bar.has_attribute("data-agent-connected"));
     bar.remove();
-    clear_tonk();
 }

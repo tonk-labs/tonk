@@ -6,7 +6,7 @@ use js_sys::{Array, Function, Object, Promise, Reflect};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::wasm_bindgen_test_configure;
-use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
+use web_sys::{Element, HtmlElement, window};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -55,6 +55,11 @@ fn deliver_tag(roster: &HtmlElement, method: &str, payload: serde_json::Value, t
         .unwrap();
 }
 
+/// The session overlay's row naming the account this session acts for.
+fn viewer(account: &str) -> serde_json::Value {
+    serde_json::json!({ "this": "session", "fields": { "account": account } })
+}
+
 fn member(id: &str, name: &str) -> serde_json::Value {
     serde_json::json!({
         "this": id,
@@ -73,20 +78,7 @@ async fn settle() {
 }
 
 #[dialog_common::test]
-async fn repository_self_member_gets_a_separate_you_marker_and_refreshes_after_account_change() {
-    let win = window().unwrap();
-    let original_fetch = Reflect::get(&win, &"fetch".into()).unwrap();
-    let stub = |self_did: &str| {
-        Function::new_with_args(
-            "url",
-            &format!(
-                "return Promise.resolve(new Response(JSON.stringify({{members:[{{did:'did:key:owner',is_self:{}}},{{did:'did:key:member',is_self:{}}}]}}),{{status:200}}))",
-                self_did == "did:key:owner",
-                self_did == "did:key:member"
-            ),
-        )
-    };
-    Reflect::set(&win, &"fetch".into(), &stub("did:key:owner")).unwrap();
+async fn it_marks_the_session_account_as_you_and_follows_an_account_change() {
     let (bar, roster) = mount();
     deliver(
         &roster,
@@ -95,6 +87,12 @@ async fn repository_self_member_gets_a_separate_you_marker_and_refreshes_after_a
             { "this": "owner", "fields": { "name": "Owner", "member": "did:key:owner", "role": "tonk:founder" } },
             { "this": "member", "fields": { "name": "Member", "member": "did:key:member", "role": "tonk:member" } }
         ]),
+    );
+    deliver_tag(
+        &roster,
+        "reset",
+        serde_json::json!([viewer("did:key:owner")]),
+        "ui-member-viewer",
     );
     settle().await;
     let panel = shadow(&bar, ".members-list");
@@ -126,13 +124,13 @@ async fn repository_self_member_gets_a_separate_you_marker_and_refreshes_after_a
         Some("owner")
     );
 
-    Reflect::set(&win, &"fetch".into(), &stub("did:key:member")).unwrap();
-    let detail = Object::new();
-    Reflect::set(&detail, &"result".into(), &"completed".into()).unwrap();
-    let init = CustomEventInit::new();
-    init.set_detail(&detail);
-    win.dispatch_event(&CustomEvent::new_with_event_init_dict("tonk:task-closed", &init).unwrap())
-        .unwrap();
+    // Signing in as another account asserts the session's new account.
+    deliver_tag(
+        &roster,
+        "update",
+        serde_json::json!({ "asserted": [viewer("did:key:member")], "retracted": [viewer("did:key:owner")] }),
+        "ui-member-viewer",
+    );
     settle().await;
     assert_eq!(
         panel
@@ -163,7 +161,6 @@ async fn repository_self_member_gets_a_separate_you_marker_and_refreshes_after_a
     );
 
     bar.remove();
-    Reflect::set(&win, &"fetch".into(), &original_fetch).unwrap();
 }
 
 #[dialog_common::test]

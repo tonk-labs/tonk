@@ -68,9 +68,74 @@ pub fn decode_label(label: &str) -> Option<String> {
     Some(format!("did:key:{mb}"))
 }
 
+/// The longest a single DNS label may be.
+const MAX_LABEL_LENGTH: usize = 63;
+
+/// The hostname a site with `label` renders at under `pattern`, a hostname
+/// with `*` where the label goes: `*.tonk.spot`, or `*-pr33.tonk.spot` for a
+/// deployment that puts a suffix after it.
+///
+/// A suffix shares the label's 63 characters, so a label too long to fit
+/// beside it is cut short. Nothing reads a space back out of its hostname
+/// (its worker is told which space it holds), so the label only has to tell
+/// spaces apart, and each character it keeps carries five bits of the key:
+/// fifty still leave 250.
+pub fn site_hostname(pattern: &str, label: &str) -> String {
+    let (before, after) = pattern.split_once('*').unwrap_or(("", pattern));
+    let suffix = after.split('.').next().unwrap_or("");
+    let room = MAX_LABEL_LENGTH.saturating_sub(before.len() + suffix.len());
+    let kept: String = label.chars().take(room).collect();
+    format!("{before}{kept}{after}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const DID: &str = "did:key:z6Mki8Mf2Trp2qmXqNoSihfVi9sEg8Z4aSCSnyUfadj4jB1E";
+
+    fn first_label(hostname: &str) -> &str {
+        hostname.split('.').next().unwrap()
+    }
+
+    #[test]
+    fn it_puts_a_label_under_a_plain_host() {
+        let label = encode_label(DID).unwrap();
+        assert_eq!(
+            site_hostname("*.tonk.spot", &label),
+            format!("{label}.tonk.spot")
+        );
+        assert_eq!(
+            site_hostname("*.localhost:8080", "profile"),
+            "profile.localhost:8080"
+        );
+    }
+
+    #[test]
+    fn it_keeps_a_whole_label_beside_a_suffix_that_fits() {
+        let label = encode_label(DID).unwrap();
+        // 56 characters and `-pr9999` make 63: the last that fits whole.
+        let hostname = site_hostname("*-pr9999.tonk.spot", &label);
+        assert_eq!(hostname, format!("{label}-pr9999.tonk.spot"));
+        assert_eq!(first_label(&hostname).len(), 63);
+        assert_eq!(
+            site_hostname("*-pr33.tonk.spot", "profile"),
+            "profile-pr33.tonk.spot"
+        );
+    }
+
+    #[test]
+    fn it_cuts_a_label_short_to_fit_beside_a_long_suffix() {
+        let label = encode_label(DID).unwrap();
+        let hostname = site_hostname("*-pr12345.tonk.spot", &label);
+        assert_eq!(first_label(&hostname).len(), 63);
+        assert!(hostname.ends_with("-pr12345.tonk.spot"));
+        assert!(label.starts_with(first_label(&hostname).trim_end_matches("-pr12345")));
+        // Two spaces still land on different origins.
+        let other =
+            encode_label("did:key:z6MkkAKBuUTy2r88au4Ehu6uUwdRRpDYnKd1euvreZi3YG7M").unwrap();
+        assert_ne!(hostname, site_hostname("*-pr12345.tonk.spot", &other));
+    }
 
     #[test]
     fn label_round_trips() {

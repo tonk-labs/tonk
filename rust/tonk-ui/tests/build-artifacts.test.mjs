@@ -89,14 +89,6 @@ test("the publisher emits the complete immutable UI and guest resource graph", (
       ),
       "/ui-a1b2c3.js": sha256(join(dist, "ui-a1b2c3.js")),
     });
-    const worker = readFileSync(join(dist, "service_worker.js"), "utf8");
-    const stampedPaths = worker.match(/^const ASSET_PATHS = (.*);$/m);
-    assert.ok(stampedPaths, "the worker must carry its stamped immutable paths");
-    assert.deepEqual(
-      JSON.parse(stampedPaths[1]).sort(),
-      Object.keys(manifest.assets).sort(),
-      "the worker routing policy must carry the exact immutable graph it installed",
-    );
     assert.equal(
       manifest.assets["/service_worker.js"],
       undefined,
@@ -116,22 +108,21 @@ test("the page build tracks top-level document resources and ignores guest code"
   const stamp = (mutate) => {
     const dist = fixtureDist();
     try {
+      // What a site's own origin runs: its worker, stamped with the hash
+      // of the wasm it boots, and its shells.
+      for (const name of ["space_worker.js", "space.html", "profile.html"]) {
+        copyFileSync(join(UI, "assets", name), join(dist, name));
+      }
       mutate(dist);
       const result = spawnSync("sh", [STAMP, dist], { encoding: "utf8" });
       assert.equal(result.status, 0, result.stderr || result.stdout);
       const version = JSON.parse(readFileSync(join(dist, "version.json"), "utf8"));
       const document = readFileSync(join(dist, "index.html"), "utf8");
-      const worker = readFileSync(join(dist, "service_worker.js"), "utf8");
       assert.match(version.page, /^[0-9a-f]{16}$/);
       assert.match(
         document,
         new RegExp(`<meta name="tonk-page-build" content="${version.page}" />`),
         "the document names the page build it was emitted as",
-      );
-      assert.match(
-        worker,
-        new RegExp(`^const PAGE_BUILD = "${version.page}";$`, "m"),
-        "the worker reports the page build it serves",
       );
       return version;
     } finally {
@@ -154,6 +145,11 @@ test("the page build tracks top-level document resources and ignores guest code"
   assert.equal(guest.page, base.page, "guest and editor code do not change the page");
   assert.notEqual(worker.build, base.build);
   assert.equal(worker.page, base.page, "worker code does not change the page");
+  const shell = stamp((dist) => {
+    writeFileSync(join(dist, "profile.html"), "<!doctype html><title>another shell</title>\n");
+  });
+  assert.notEqual(shell.build, base.build);
+  assert.equal(shell.page, base.page, "what a site's origin runs does not change the page");
   assert.notEqual(page.page, base.page, "top-level code changes the page");
 });
 
@@ -260,10 +256,6 @@ test("the built document and worker carry the same immutable build id", () => {
         `<meta\\s+name="tonk-worker-build"\\s+content="${version.build}"\\s*/?>`,
       ),
       "index.html must embed the worker build it was emitted alongside; a live version probe is not document provenance",
-    );
-    assert.match(
-      worker,
-      new RegExp(`^const ASSET_MANIFEST_HASH = "${version.assetManifest}";$`, "m"),
     );
 
     const originalBuild = version.build;

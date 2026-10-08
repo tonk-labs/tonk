@@ -710,7 +710,7 @@
               done < "$ARTIFACT_ROOT/service_worker.js"
               SIBLING_SITE=""
               if [ -n "$SIBLING_PORT" ]; then
-                  SIBLING_SITE="https://127.0.0.1:$SIBLING_PORT {
+                  SIBLING_SITE="https://sibling.localhost:$SIBLING_PORT, https://*.sibling.localhost:$SIBLING_PORT {
                   tls internal
                   handle /.well-known/tonk {
                       reverse_proxy localhost:$SIBLING_ACCESS_SERVICE_PORT
@@ -742,7 +742,7 @@
                       protocols h1 h2
                   }
               }
-              https://tonk.network:$PORT, https://localhost:$PORT {
+              https://tonk.network:$PORT, https://localhost:$PORT, https://*.tonk.network:$PORT, https://*.localhost:$PORT {
                   tls internal
                   handle /.well-known/tonk {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT

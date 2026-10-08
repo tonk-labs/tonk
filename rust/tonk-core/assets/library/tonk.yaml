@@ -1,0 +1,18 @@
+# Tonk's data API as a module a page imports.
+#
+# A space's pages read and write through the routes their own worker
+# serves: `/query`, `/transact` and `/evaluate` of a branch. This component
+# puts wrappers over those routes at a path of the space, so a view's
+# script asks for them by name:
+#
+#   import { query, subscribe, transact, evaluate } from "/tonk.js";
+#
+# Importing it also puts the four on `window.tonk`. The module is content
+# of the space like any other: the route below is a `route/http!`, which
+# the space's worker answers with this body. A space that writes its own
+# route for `/tonk.js` serves its own module there.
+route/http!:
+  path: /tonk.js
+  header:
+    content-type: "text/javascript"
+  body: !include ./tonk/tonk.js

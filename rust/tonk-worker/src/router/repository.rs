@@ -41,8 +41,10 @@ use url::Url;
 use zeroize::Zeroizing;
 
 use super::AppState;
+use super::space_reach::{self, Surface};
 
 mod duplication;
+use crate::reactor::BranchReference;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
 
 /// Name of the device-local meta branch every *space* repository has
@@ -734,7 +736,14 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
                 ))
             } else {
                 let tonk = env.state().read().await;
-                duplication::prepare(&tonk, source).await
+                // Where the source's content is held by its own worker,
+                // there is nothing here to read: the copy is made between
+                // that worker and the new space's.
+                if tonk.spaces_elsewhere() {
+                    Ok(None)
+                } else {
+                    duplication::prepare(&tonk, source).await.map(Some)
+                }
             };
             match result {
                 Ok(copy) => Some(copy),
@@ -757,9 +766,10 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     //    whether or not a remote was given (and never vanishes on
     //    a remote failure). The create mints a fresh identity and
     //    returns its routing key.
-    let created = match copy {
-        Some(copy) => duplication::create(env.state(), &name, copy).await,
-        None => create_space_inner(env.state(), &name, description.as_deref()).await,
+    let created = match (copy, &request.copy_from) {
+        (Some(Some(copy)), _) => duplication::create(env.state(), &name, copy).await,
+        (Some(None), Some(source)) => create_deferred_copy(env.state(), &name, source).await,
+        _ => create_space_inner(env.state(), &name, description.as_deref()).await,
     };
     let key = match created {
         Ok(key) => key,
@@ -781,12 +791,26 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     if let Some(seed) = seed {
         let applied = {
             let tonk = env.state().read().await;
-            super::evaluate::seed_syntax_on_branch(
-                &tonk,
-                tonk.reactor.repository(&key).branch("main"),
-                seed,
-            )
-            .await
+            // Where the space's content is its own worker's to create, so
+            // is adding these to it: that worker is handed where they come
+            // from, with the rest of what the space starts from.
+            match (
+                tonk.spaces_elsewhere(),
+                request.template.as_ref().or(request.seed.as_ref()),
+            ) {
+                (true, Some(reference)) => {
+                    deferred_definitions(&tonk, &key, reference, request.template.is_some())
+                        .await
+                        .map(|()| None)
+                }
+                _ => super::evaluate::seed_syntax_on_branch(
+                    &tonk,
+                    tonk.reactor.repository(&key).branch("main"),
+                    seed,
+                )
+                .await
+                .map(Some),
+            }
         };
         if let Err(error) = applied {
             log!("CreateSpace '{}': seed failed: {}", key, error);
@@ -863,6 +887,57 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     {
         log!("CreateSpace '{}': remote attach failed: {}", key, error);
     }
+}
+
+/// Keep `reference` for the worker of the space `key` to add when it creates
+/// the space's content.
+async fn deferred_definitions(
+    tonk: &TonkState,
+    key: &str,
+    reference: &str,
+    template: bool,
+) -> Result<(), TonkWorkerError> {
+    let subject: Did = key
+        .parse()
+        .map_err(|e| TonkWorkerError::Internal(format!("'{key}' is not a space: {e:?}")))?;
+    let definitions = SeedDefinitions {
+        reference: reference.to_owned(),
+        template,
+    };
+    amend_seed(tonk, &subject, |seed| seed.definitions = Some(definitions))
+        .await
+        .map_err(|e| TonkWorkerError::Internal(e.to_string()))
+}
+
+/// Create a space that is to be a copy of `source`, where each space's
+/// content is held by a worker of its own: this worker creates the new
+/// space's identity, and its own worker is handed `source`'s content by
+/// `source`'s worker and copies it in.
+async fn create_deferred_copy(
+    state: &AppState,
+    name: &str,
+    source: &str,
+) -> Result<String, RepositoryError> {
+    let source: Did = source
+        .parse()
+        .map_err(|e| RepositoryError::Internal(format!("duplicate space: {e:?}")))?;
+    {
+        let tonk = state.read().await;
+        // Do not create a copy of a typo, or of a subject that is no space.
+        require_real_space(&tonk, &source)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("duplicate space: {e}")))?;
+    }
+    let key = create_space_inner(state, name, None).await?;
+    let subject: Did = key
+        .parse()
+        .map_err(|e| RepositoryError::Internal(format!("'{key}' is not a space: {e:?}")))?;
+    let tonk = state.read().await;
+    amend_seed(&tonk, &subject, |seed| {
+        seed.copy_from = Some(source.to_string())
+    })
+    .await?;
+    Ok(key)
 }
 
 /// Fetch and check the seed at `reference` against the standard library a
@@ -1084,13 +1159,42 @@ async fn execute_invite(env: crate::router::CommandEnv, request: InviteRequest) 
     }
     log!("command Invite repo={}", repo_name);
 
+    // A space's own worker holds the space under a delegation that lapses
+    // within hours, and an invite minted from it would lapse with it. The
+    // person's profile holds the lasting authority, so the space asks it to
+    // mint; what the mint leaves in the space comes back as a command.
+    let own_worker = {
+        let tonk = env.state().read().await;
+        matches!(super::account::acts_for(&tonk).await, Ok(Some(_)))
+    };
+    if own_worker {
+        if let Err(error) = space_reach::ask_profile(&serde_json::json!({ "invite": time })).await {
+            log!("Invite for repo '{repo_name}': the profile was not asked: {error}");
+        }
+        return;
+    }
+    mint_invite(&env, &repo_name, time).await;
+}
+
+/// Mint an invite to the space this worker's profile holds as `key`, as
+/// though its share control had been clicked at `time`. For a space whose own
+/// worker was asked for an invite and has passed the asking on.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn invite_space(state: &AppState, key: &str, time: f64) {
+    let env =
+        crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+    mint_invite(&env, key, time).await;
+}
+
+async fn mint_invite(env: &crate::router::CommandEnv, repo_name: &str, time: f64) {
+    let repo_name = repo_name.to_owned();
     // A pass that attached a remote leaves the space ready but
     // unminted, so run once more. Bounded to a single retry: the
     // second pass either mints or refuses for a reason attaching
     // cannot fix.
-    let outcome = run_invite(&env, &repo_name, time).await;
+    let outcome = run_invite(env, &repo_name, time).await;
     if let Ok(RunInvite::Attached) = outcome
-        && let Err(error) = run_invite(&env, &repo_name, time).await
+        && let Err(error) = run_invite(env, &repo_name, time).await
     {
         log!(
             "Invite for repo '{}' failed after attaching: {}",
@@ -1181,6 +1285,38 @@ impl dialog_capability::Command for AgentHandoffRequest {
     type Output = ();
 }
 
+/// The branch an agent invitation's state is published on, and read back
+/// from: the one its command was committed on. The bar commits on the
+/// profile's branch, wherever the space's content is held; a space's own
+/// view commits on the space's.
+#[derive(Clone, Copy)]
+enum HandoffSurface<'a> {
+    /// The profile's active branch.
+    Profile,
+    /// The content branch of the space with this key.
+    Space(&'a str),
+}
+
+impl<'a> HandoffSurface<'a> {
+    fn of(env: &crate::router::CommandEnv, repo: &'a str) -> Self {
+        if env.from_profile() {
+            Self::Profile
+        } else {
+            Self::Space(repo)
+        }
+    }
+
+    fn branch(self, tonk: &'a TonkState) -> BranchReference<'a> {
+        match self {
+            Self::Profile => tonk
+                .reactor
+                .profile_repository()
+                .branch(&tonk.active_branch),
+            Self::Space(repo) => tonk.reactor.repository(repo).branch(CONTENT_BRANCH),
+        }
+    }
+}
+
 /// Mint an account-scoped handoff for the originating space.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -1208,16 +1344,14 @@ impl dialog_capability::Provider<AgentHandoffRequest> for crate::router::Command
 #[cfg(not(feature = "connection-invites"))]
 async fn publish_agent_handoff(
     tonk: &TonkState,
-    repo: &str,
+    on: HandoffSurface<'_>,
     subject: &Did,
     account: &Did,
     status: String,
     link: String,
 ) -> Result<(), TonkWorkerError> {
     use tonk_schema::prelude::DidExt as _;
-    tonk.reactor
-        .repository(repo)
-        .branch(CONTENT_BRANCH)
+    on.branch(tonk)
         .overlay()
         .assert(tonk_schema::command::AgentHandoffState {
             this: subject.this(),
@@ -1237,16 +1371,14 @@ async fn publish_agent_handoff(
 #[cfg(feature = "connection-invites")]
 async fn publish_connection_invite(
     tonk: &TonkState,
-    repo: &str,
+    on: HandoffSurface<'_>,
     subject: &Did,
     account: &Did,
     mode: &str,
     status: String,
     link: String,
 ) -> Result<(), TonkWorkerError> {
-    tonk.reactor
-        .repository(repo)
-        .branch(CONTENT_BRANCH)
+    on.branch(tonk)
         .overlay()
         .assert(tonk_schema::command::AgentHandoffState {
             this: subject.this(),
@@ -1274,13 +1406,11 @@ async fn publish_connection_invite(
 #[cfg(feature = "connection-invites")]
 async fn publish_connection_receipt(
     tonk: &TonkState,
-    repo: &str,
+    on: HandoffSurface<'_>,
     subject: &Did,
     grant_id: &str,
 ) -> Result<(), TonkWorkerError> {
-    tonk.reactor
-        .repository(repo)
-        .branch(CONTENT_BRANCH)
+    on.branch(tonk)
         .overlay()
         .assert(
             dialog_query::the!("xyz.tonk.agent-handoff/receipt")
@@ -1396,6 +1526,7 @@ async fn run_connection_invite_for(
     fresh: bool,
     repo: &str,
 ) -> Result<(), TonkWorkerError> {
+    let on = HandoffSurface::of(env, repo);
     let mut issued = CONNECTION_ISSUANCE.lock().await;
     issued.retain(|entry| entry.state.strong_count() > 0);
     let (subject, expected, sync_remote) = {
@@ -1412,7 +1543,7 @@ async fn run_connection_invite_for(
             log!("agent invite target refused: {error}");
             return publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &tonk.profile.did(),
                 "unavailable",
@@ -1427,7 +1558,7 @@ async fn run_connection_invite_for(
                 log!("agent invite identity unavailable: {error}");
                 return publish_connection_invite(
                     &tonk,
-                    repo,
+                    on,
                     &subject,
                     &tonk.profile.did(),
                     connection_invite_recovery(&error).0,
@@ -1449,7 +1580,7 @@ async fn run_connection_invite_for(
             };
             return publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &expected.root_did,
                 mode,
@@ -1469,7 +1600,7 @@ async fn run_connection_invite_for(
                         None => {
                             return publish_connection_invite(
                                 &tonk,
-                                repo,
+                                on,
                                 &subject,
                                 &expected.root_did,
                                 "account",
@@ -1483,7 +1614,7 @@ async fn run_connection_invite_for(
                     let (mode, status) = connection_remote_recovery(reason);
                     return publish_connection_invite(
                         &tonk,
-                        repo,
+                        on,
                         &subject,
                         &expected.root_did,
                         mode,
@@ -1498,7 +1629,7 @@ async fn run_connection_invite_for(
                 let (mode, status) = connection_invite_recovery(&error);
                 return publish_connection_invite(
                     &tonk,
-                    repo,
+                    on,
                     &subject,
                     &expected.root_did,
                     mode,
@@ -1521,10 +1652,8 @@ async fn run_connection_invite_for(
             })
             .map(|entry| entry.link);
         if !fresh && let Some(saved) = saved {
-            let branch = tonk
-                .reactor
-                .repository(repo)
-                .branch(CONTENT_BRANCH)
+            let branch = on
+                .branch(&tonk)
                 .acquire(&tonk.operator)
                 .await
                 .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
@@ -1552,7 +1681,7 @@ async fn run_connection_invite_for(
             // another grant set as a side effect of rendering this panel.
             return publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &expected.root_did,
                 "new",
@@ -1566,7 +1695,7 @@ async fn run_connection_invite_for(
                 Ok(false) => {}
                 Ok(true) => return publish_connection_invite(
                     &tonk,
-                    repo,
+                    on,
                     &subject,
                     &expected.root_did,
                     "new",
@@ -1579,7 +1708,7 @@ async fn run_connection_invite_for(
                     log!("agent invite history unavailable: {error}");
                     return publish_connection_invite(
                         &tonk,
-                        repo,
+                        on,
                         &subject,
                         &expected.root_did,
                         "retry",
@@ -1599,7 +1728,7 @@ async fn run_connection_invite_for(
         });
         publish_connection_invite(
             &tonk,
-            repo,
+            on,
             &subject,
             &expected.root_did,
             "busy",
@@ -1618,7 +1747,7 @@ async fn run_connection_invite_for(
                 let (mode, status) = connection_invite_recovery(&error);
                 return publish_connection_invite(
                     &tonk,
-                    repo,
+                    on,
                     &subject,
                     &tonk.profile.did(),
                     mode,
@@ -1631,7 +1760,7 @@ async fn run_connection_invite_for(
         if current.bytes != expected.bytes {
             return publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &tonk.profile.did(),
                 "retry",
@@ -1644,7 +1773,7 @@ async fn run_connection_invite_for(
             log!("agent invite sync setup failed: {error}");
             return publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &expected.root_did,
                 "retry",
@@ -1655,7 +1784,7 @@ async fn run_connection_invite_for(
         }
     }
     let origin = crate::axum::RequestOrigin::parse(
-        &worker_origin().unwrap_or_else(|| "https://tonk.network".into()),
+        &app_origin().unwrap_or_else(|| "https://tonk.network".into()),
     )
     .map_err(|_| TonkWorkerError::Internal("invalid connection origin".into()))?;
     let minted = super::agent_connections::mint(env.state().clone(), repo.to_owned(), origin).await;
@@ -1676,7 +1805,7 @@ async fn run_connection_invite_for(
                     let (mode, status) = connection_invite_recovery(&error);
                     return publish_connection_invite(
                         &tonk,
-                        repo,
+                        on,
                         &subject,
                         &tonk.profile.did(),
                         mode,
@@ -1700,7 +1829,7 @@ async fn run_connection_invite_for(
             {
                 return publish_connection_invite(
                     &tonk,
-                    repo,
+                    on,
                     &subject,
                     &tonk.profile.did(),
                     "retry",
@@ -1710,10 +1839,10 @@ async fn run_connection_invite_for(
                 .await;
             }
             let digest = *blake3::hash(response.url.as_bytes()).as_bytes();
-            publish_connection_receipt(&tonk, repo, &subject, &response.connection.id).await?;
+            publish_connection_receipt(&tonk, on, &subject, &response.connection.id).await?;
             publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &expected.root_did,
                 "scoped",
@@ -1734,7 +1863,7 @@ async fn run_connection_invite_for(
             let (mode, status) = connection_invite_recovery(&error);
             publish_connection_invite(
                 &tonk,
-                repo,
+                on,
                 &subject,
                 &tonk.profile.did(),
                 mode,
@@ -1761,9 +1890,10 @@ async fn agent_invitations_unavailable(
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
     let subject = repository.did();
     require_real_space(&tonk, &subject).await?;
+    let on = HandoffSurface::of(env, repo);
     publish_agent_handoff(
         &tonk,
-        repo,
+        on,
         &subject,
         &tonk.profile.did(),
         "Tool connections are not enabled on this deployment yet.".into(),
@@ -1958,10 +2088,6 @@ async fn run_invite(
 ) -> Result<RunInvite, TonkWorkerError> {
     use dialog_artifacts::Entity;
     use dialog_varsig::Principal as _;
-    use tonk_schema::command::{Authorization, Credential};
-    use tonk_schema::domain::authorization::{Proof, Remote as AuthorizationRemote};
-    use tonk_schema::domain::credential::{Link, Seed};
-    use tonk_schema::{Invitation, InvitationExecution};
 
     let tonk = env.state().read().await;
 
@@ -2015,24 +2141,24 @@ async fn run_invite(
             // offer only when a provider exists to attach to.
             let reason = super::create_invite::explain_refusal(&tonk, reason).await;
             log!("Invite for repo '{}' refused: {}", repo_name, reason.code());
-            let subject = repository.did().to_string();
             drop(tonk);
 
             // Whether to issue a link or get an account first is the
             // worker's call, not the caller's. A share that needs an
             // account is not a failure the control should interpret
-            // and repair — it is this handler's next step, so it
-            // asks for the account itself and the share resumes when
-            // the account facts land.
-            //
-            // Not awaited: registration may take a ceremony, an
-            // email round trip, or never finish, and a handler held
-            // open across that is held open forever.
-            if reason.code() == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT
-                && let Some(client) = env.client()
-                && let Err(error) = super::navigate::request_account_link(client, &subject).await
-            {
-                log!("Invite: could not ask the page to add an account: {error}");
+            // and repair: it is this handler's next step, so it opens
+            // the panel that adds an account, and the share resumes
+            // when the account facts land.
+            if reason.code() == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT {
+                super::registration::opened(env.client());
+                let tonk = env.state().read().await;
+                super::registration::record(
+                    &tonk,
+                    Some(super::registration::Stage::Address {
+                        email: String::new(),
+                    }),
+                )
+                .await;
             }
 
             // `not-synced` is not a refusal either: the account has a
@@ -2149,7 +2275,13 @@ async fn run_invite(
     // independently, the name as the invitation's historical fact ("you
     // were invited to a space called X", true after any rename).
     let mut meta = tonk_invite::home_address_meta(&remote_execution.access_url);
-    if let Some(name) = repository_display_name(&tonk, &repository, repo_name).await {
+    let elsewhere = tonk.spaces_elsewhere();
+    let name = if elsewhere {
+        directory_space_name(&tonk, &repository.did()).await
+    } else {
+        repository_display_name(&tonk, &repository, repo_name).await
+    };
+    if let Some(name) = name {
         meta.extend(tonk_invite::space_name_meta(&name));
     }
     let delegation: dialog_ucan::UcanDelegation = tonk
@@ -2162,14 +2294,6 @@ async fn run_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
     let chain = delegation.into_chain();
-
-    // Derive the invitation record from the chain as minted — before it's
-    // serialized away — so the meta-branch roster carries this invite. The
-    // claim side self-heals a missing record, but the mint should write its
-    // own. Guaranteed `Some`: the delegation is scoped to the repo subject.
-    let invitation =
-        Invitation::from_chain(&chain).expect("invite delegation is scoped to a specific subject");
-    let execution = InvitationExecution::new(&invitation, "open");
 
     // base58-encode the delegation chain — the `?access=` parameter the
     // view reads back and assembles into the final URL.
@@ -2217,42 +2341,60 @@ async fn run_invite(
     let link = shortened_or_full(link).await;
     let tonk = env.state().read().await;
 
-    let authorization = Authorization {
-        this: subject_entity.clone(),
-        proof: Proof(proof),
-        remote: AuthorizationRemote(remote),
-    };
-
-    // Write the private seed and the assembled URL into the session overlay
-    // and schedule a poll of this branch so the change propagates even
-    // though it never commits durably. Neither reaches replicated storage:
-    // the URL carries the seed in its `#` fragment, so it is exactly as
-    // secret as the seed and lives on the same overlay-only concept.
-    // `Credential` is cardinality-one keyed on the subject, so asserting
-    // supersedes any prior credential in place — no whole-overlay clear,
-    // which would also drop the tab's `tonk:site` fact and collapse the
-    // share view to "not found".
-    tonk.reactor
-        .repository(repo_name)
-        .branch(CONTENT_BRANCH)
-        .overlay()
-        .assert(Credential {
-            this: subject_entity.clone(),
-            seed: Seed(seed),
-            link: Link(link.clone()),
-        })
-        .write()
-        .perform(&tonk.operator)
+    // What the mint leaves in the space is the space's to write. Where its
+    // content is held by a worker of its own, that worker is handed it and
+    // writes it; the union edge is this profile's to sign either way.
+    let union = super::create_invite::account_union(&tonk).await;
+    if elsewhere {
+        let union = match &union {
+            Some(union) => bs58::encode(union.to_bytes().map_err(|e| {
+                TonkWorkerError::Internal(format!("failed to serialize the union edge: {e}"))
+            })?)
+            .into_string(),
+            None => String::new(),
+        };
+        drop(tonk);
+        space_reach::run(
+            repo_name,
+            Surface::Space,
+            &record_invite_claim(&proof, &union, &link, &seed),
+        )
+        .await?;
+        // A share is a promise the recipient can pull. The space's worker
+        // pushes on its own time, and a space attached to its remote a
+        // moment ago has pushed nothing yet: the link is handed over once
+        // what it leads to is there. A push that fails now is retried by
+        // that worker's sync, and the link is good once it lands.
+        if let Err(error) = space_reach::ask(
+            repo_name,
+            "POST",
+            &format!("/api/repository/{repo_name}/branch/{CONTENT_BRANCH}/sync"),
+            Some(&serde_json::json!({})),
+        )
         .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("failed to write credential overlay: {e}"))
-        })?;
+        {
+            log!("Invite for repo '{repo_name}': the space was not pushed before sharing: {error}");
+        }
+    } else {
+        record_invite(
+            &tonk,
+            repo_name,
+            InviteRecord {
+                chain,
+                union,
+                proof,
+                link: link.clone(),
+                seed,
+            },
+        )
+        .await?;
+        drop(tonk);
+    }
+    let tonk = env.state().read().await;
 
-    // The same answer in the shape the share control subscribes to, on
-    // PROFILE main rather than the space: one row per space whose
-    // `status` says where the invite has got to, carrying the url once
-    // there is one. `Credential` above keeps the seed beside it on the
-    // space for readers that need both; this is what a view renders.
+    // The answer in the shape the share control subscribes to, on PROFILE
+    // main rather than the space: one row per space whose `status` says
+    // where the invite has got to, carrying the url once there is one.
     //
     // On profile main because the Hub renders one share control per row,
     // and a control subscribed to the space made merely LISTING spaces
@@ -2265,50 +2407,6 @@ async fn run_invite(
         tonk_schema::command::InviteState::granted(subject_entity, link.clone()),
     )
     .await;
-
-    // Ensure the self-identity overlay (`state:self`) is present so the
-    // topbar identity chip renders. The overlay builder above no longer
-    // clears the whole overlay (which previously wiped `state:self` and the
-    // tab's `tonk:site`), so this is a guarantee, not a recovery: if no
-    // sync-status poll has stamped it yet, this fills it in.
-    crate::router::sync::publish_self_identity(&tonk, repo_name, CONTENT_BRANCH).await;
-
-    // Assert the public authorization durably — committed **through the
-    // reactor** so its cached branch sees the fact. The commit schedules
-    // its own poll on the same branch; the dispatcher's drain coalesces it
-    // with the overlay write above into a single re-evaluation that fans
-    // the now-complete invitation out to the share view.
-    tonk.reactor
-        .repository(repo_name)
-        .branch(CONTENT_BRANCH)
-        .transaction()
-        .assert(authorization)
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("failed to commit authorization fact: {e}"))
-        })?;
-
-    // Record the invitation on the repo's content branch — the durable
-    // roster half of the invite (the URL with its secret fragment is never
-    // stored). Mirrors the HTTP `create_invite` route so both mint paths
-    // leave the same roster fact for the claim side to match against, and
-    // routes through the *reactor's* cached handle for the same reason the
-    // `Authorization` commit above does: a commit on a separately-opened
-    // handle would leave the cached one pinned at a stale head.
-    tonk.reactor
-        .repository(repo_name)
-        .branch(CONTENT_BRANCH)
-        .transaction()
-        .assert(invitation)
-        .assert(execution)
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
-
-    super::create_invite::retain_invite_authority(&tonk, repo_name, &chain).await?;
 
     crate::router::navigate::notify_analytics(
         env.client(),
@@ -2428,6 +2526,207 @@ async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::Inv
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
+/// What a minted invite leaves in its space.
+struct InviteRecord {
+    /// The delegation chain the invite grants.
+    chain: dialog_ucan_core::DelegationChain,
+    /// The `profile -> account` union edge retained beside it, when the
+    /// minting profile has an account root.
+    union: Option<dialog_ucan_core::DelegationChain>,
+    /// The chain, base58: the `?access=` parameter.
+    proof: String,
+    /// The complete invite URL, carrying the seed in its fragment.
+    link: String,
+    /// The base58 membership seed.
+    seed: String,
+}
+
+/// Write what a minted invite leaves in `repo_name`: the secret half in the
+/// session overlay, the public [`Authorization`] and the roster's invitation
+/// on the content branch, and the retained delegation.
+///
+/// [`Authorization`]: tonk_schema::command::Authorization
+async fn record_invite(
+    tonk: &TonkState,
+    repo_name: &str,
+    record: InviteRecord,
+) -> Result<(), TonkWorkerError> {
+    use dialog_artifacts::Entity;
+    use tonk_schema::command::{Authorization, Credential};
+    use tonk_schema::domain::authorization::{Proof, Remote as AuthorizationRemote};
+    use tonk_schema::domain::credential::{Link, Seed};
+    use tonk_schema::{Invitation, InvitationExecution};
+
+    // Both facts are keyed by the repository's *subject* DID — the entity
+    // the share view already addresses (`entity={subject}`) — not the
+    // membership DID.
+    let subject_entity = record
+        .chain
+        .subject()
+        .ok_or_else(|| {
+            TonkWorkerError::Router("an invite delegation names the space it is for".into())
+        })?
+        .to_string()
+        .parse::<Entity>()
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("repository subject is not a valid entity: {e}"))
+        })?;
+    // Derive the invitation record from the chain as minted, so the
+    // meta-branch roster carries this invite. The claim side self-heals a
+    // missing record, but the mint should write its own.
+    let invitation = Invitation::from_chain(&record.chain).ok_or_else(|| {
+        TonkWorkerError::Router("an invite delegation names the space it is for".into())
+    })?;
+    let execution = InvitationExecution::new(&invitation, "open");
+
+    // The endpoint rides inside the signed chain (`home.address` meta), so
+    // the URL carries no `&remote=` suffix any more. The suffix slot stays
+    // empty rather than removed: `tonk:authorization.remote` is a required
+    // field of the seeded concept, and the URL assembler treats an empty
+    // suffix as absent.
+    let authorization = Authorization {
+        this: subject_entity.clone(),
+        proof: Proof(record.proof),
+        remote: AuthorizationRemote(String::new()),
+    };
+
+    // Write the private seed and the assembled URL into the session overlay
+    // and schedule a poll of this branch so the change propagates even
+    // though it never commits durably. Neither reaches replicated storage:
+    // the URL carries the seed in its `#` fragment, so it is exactly as
+    // secret as the seed and lives on the same overlay-only concept.
+    // `Credential` is cardinality-one keyed on the subject, so asserting
+    // supersedes any prior credential in place — no whole-overlay clear,
+    // which would also drop the tab's `tonk:site` fact and collapse the
+    // share view to "not found".
+    tonk.reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .overlay()
+        .assert(Credential {
+            this: subject_entity,
+            seed: Seed(record.seed),
+            link: Link(record.link),
+        })
+        .write()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to write credential overlay: {e}"))
+        })?;
+
+    // Ensure the self-identity overlay (`state:self`) is present so the
+    // topbar identity chip renders. The overlay builder above no longer
+    // clears the whole overlay (which previously wiped `state:self` and the
+    // tab's `tonk:site`), so this is a guarantee, not a recovery: if no
+    // sync-status poll has stamped it yet, this fills it in.
+    crate::router::sync::publish_self_identity(tonk, repo_name, CONTENT_BRANCH).await;
+
+    // Assert the public authorization durably — committed **through the
+    // reactor** so its cached branch sees the fact. The commit schedules
+    // its own poll on the same branch; the dispatcher's drain coalesces it
+    // with the overlay write above into a single re-evaluation that fans
+    // the now-complete invitation out to the share view.
+    tonk.reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(authorization)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to commit authorization fact: {e}"))
+        })?;
+
+    // Record the invitation on the repo's content branch — the durable
+    // roster half of the invite (the URL with its secret fragment is never
+    // stored). Mirrors the HTTP `create_invite` route so both mint paths
+    // leave the same roster fact for the claim side to match against, and
+    // routes through the *reactor's* cached handle for the same reason the
+    // `Authorization` commit above does: a commit on a separately-opened
+    // handle would leave the cached one pinned at a stale head.
+    tonk.reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(invitation)
+        .assert(execution)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
+
+    super::create_invite::retain_invite_chains(tonk, repo_name, &record.chain, record.union).await
+}
+
+/// The [`RecordInvite`] command as a transact request, for the space's own
+/// worker to run on the space's branch.
+///
+/// [`RecordInvite`]: tonk_schema::command::RecordInvite
+fn record_invite_claim(proof: &str, union: &str, link: &str, seed: &str) -> serde_json::Value {
+    space_reach::command(
+        &[
+            ("proof", "xyz.tonk.command.record-invite/proof", "Text"),
+            ("union", "xyz.tonk.command.record-invite/union", "Text"),
+            ("link", "xyz.tonk.command.record-invite/link", "Text"),
+            ("seed", "xyz.tonk.command.record-invite/seed", "Text"),
+        ],
+        serde_json::json!({ "proof": proof, "union": union, "link": link, "seed": seed }),
+    )
+}
+
+/// Run the [`RecordInvite`] command: write, in the space this worker holds,
+/// the invite the person's profile minted for it. The chain says which space
+/// it is for, and one for any other than the branch it fired on is refused.
+///
+/// [`RecordInvite`]: tonk_schema::command::RecordInvite
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::RecordInvite> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::RecordInvite) {
+        let repo = self.origin().repo.clone();
+        let recorded = async {
+            let decode = |text: &str| {
+                let bytes = bs58::decode(text)
+                    .into_vec()
+                    .map_err(|e| TonkWorkerError::Router(format!("not base58: {e}")))?;
+                dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
+                    .map_err(|e| TonkWorkerError::Router(format!("malformed delegation: {e}")))
+            };
+            let chain = decode(&command.proof.0)?;
+            if chain.subject().map(|subject| subject.to_string()) != Some(repo.clone()) {
+                return Err(TonkWorkerError::Forbidden(format!(
+                    "the invite is not for '{repo}'"
+                )));
+            }
+            let union = match command.union.0.as_str() {
+                "" => None,
+                union => Some(decode(union)?),
+            };
+            let tonk = self.state().read().await;
+            record_invite(
+                &tonk,
+                &repo,
+                InviteRecord {
+                    chain,
+                    union,
+                    proof: command.proof.0.clone(),
+                    link: command.link.0.clone(),
+                    seed: command.seed.0.clone(),
+                },
+            )
+            .await?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            Ok(())
+        };
+        match recorded.await {
+            Ok(()) => log!("Recorded an invite to '{repo}'"),
+            Err(error) => log!("RecordInvite for '{repo}' failed: {error}"),
+        }
+    }
+}
+
 /// The shortcut for `link`, or `link` itself when there isn't one.
 ///
 /// Every way the attempt can end badly resolves to the full URL: an
@@ -2521,6 +2820,23 @@ pub(super) fn worker_origin() -> Option<String> {
     }
 }
 
+/// The origin of the app a person opens, for a link made for them to follow.
+///
+/// A worker on a site's own origin is not served from it: its script names
+/// the app through `tonkAppOrigin`, from the deployment's configuration.
+/// Elsewhere the worker's own origin is the app's.
+pub(super) fn app_origin() -> Option<String> {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if let Some(app) = js_sys::Reflect::get(&js_sys::global(), &"tonkAppOrigin".into())
+        .ok()
+        .and_then(|app| app.as_string())
+        .filter(|app| !app.is_empty())
+    {
+        return Some(app);
+    }
+    worker_origin()
+}
+
 /// Assemble the long (un-shortened) invite URL.
 ///
 /// `base` is the resolved `…/join` base on the host serving the space —
@@ -2600,6 +2916,23 @@ impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::rou
         }
         let branch = CONTENT_BRANCH.to_string();
         log!("command PauseSync repo={} branch={}", repo, branch);
+
+        // Whether a device syncs a space is kept by the worker that syncs
+        // it. Where that is a worker on the space's own origin, the toggle
+        // is that worker's to make, on its own profile's branch.
+        if self.from_profile() && self.state().read().await.spaces_elsewhere() {
+            let claim = space_reach::command(
+                &[
+                    ("time", "xyz.tonk.command.pause-sync/time", "Float"),
+                    ("space", "xyz.tonk.pause-sync/space", "Entity"),
+                ],
+                serde_json::json!({ "time": command.time.0, "space": repo }),
+            );
+            if let Err(error) = space_reach::run(&repo, Surface::Profile, &claim).await {
+                log!("PauseSync for repo '{}' failed: {}", repo, error);
+            }
+            return;
+        }
 
         if let Err(error) = run_pause_sync(self, &repo, &branch).await {
             log!("PauseSync for repo '{}' failed: {}", repo, error);
@@ -2774,41 +3107,54 @@ async fn run_rename_repository(
 ) -> Result<(), RepositoryError> {
     use tonk_schema::prelude::DidExt as _;
 
-    let tonk = env.state().read().await;
-
-    // The durable key: the repository's own subject DID, read straight off
-    // the branch handle rather than re-parsed from `repo` (they're the same
-    // DID either way).
-    let session = tonk
-        .reactor
-        .repository(repo)
-        .branch(CONTENT_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|e| {
-            RepositoryError::Internal(format!("{repo}/{CONTENT_BRANCH} not found: {e}"))
-        })?;
-    let subject = session.handle().of().this();
-
     log!("RenameRepository repo={} name={}", repo, name);
 
-    // Commit the new name through the reactor so subscriptions re-poll. `name`
-    // is cardinality-one, so the assert supersedes the prior value — the same
-    // fact the standard-library rule wrote.
-    tonk.reactor
-        .repository(repo)
-        .branch(CONTENT_BRANCH)
-        .transaction()
-        .assert(RepositoryName {
-            this: subject,
-            name: tonk_schema::domain::repo::Name(name.to_string()),
-        })
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("failed to commit repository name: {e}")))?;
+    // Where sites have origins of their own, the name is the space's own
+    // worker's to write: it holds the content, and runs this same command
+    // on the space's branch. Only the directory below is this worker's.
+    let elsewhere = env.from_profile() && env.state().read().await.spaces_elsewhere();
+    if elsewhere {
+        space_reach::run(repo, Surface::Space, &rename_claim(repo, name))
+            .await
+            .map_err(|e| RepositoryError::Internal(e.to_string()))?;
+    }
 
-    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    let tonk = env.state().read().await;
+    if !elsewhere {
+        // The durable key: the repository's own subject DID, read straight
+        // off the branch handle rather than re-parsed from `repo` (they're
+        // the same DID either way).
+        let session = tonk
+            .reactor
+            .repository(repo)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .map_err(|e| {
+                RepositoryError::Internal(format!("{repo}/{CONTENT_BRANCH} not found: {e}"))
+            })?;
+        let subject = session.handle().of().this();
+
+        // Commit the new name through the reactor so subscriptions re-poll.
+        // `name` is cardinality-one, so the assert supersedes the prior
+        // value — the same fact the standard-library rule wrote.
+        tonk.reactor
+            .repository(repo)
+            .branch(CONTENT_BRANCH)
+            .transaction()
+            .assert(RepositoryName {
+                this: subject,
+                name: tonk_schema::domain::repo::Name(name.to_string()),
+            })
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| {
+                RepositoryError::Internal(format!("failed to commit repository name: {e}"))
+            })?;
+
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    }
     // Mirror the new name into the account directory so devices that
     // have not replicated this space still label it correctly.
     if let Ok(subject) = repo.parse::<Did>()
@@ -2825,6 +3171,20 @@ async fn run_rename_repository(
         log!("RenameRepository directory mirror skipped: {error}");
     }
     Ok(())
+}
+
+/// The [`RenameRepository`] command as a transact request, for the space's
+/// own worker to run on the space's branch.
+///
+/// [`RenameRepository`]: tonk_schema::command::RenameRepository
+fn rename_claim(space: &str, name: &str) -> serde_json::Value {
+    space_reach::command(
+        &[
+            ("name", "xyz.tonk.command.rename-repository/name", "Text"),
+            ("space", "xyz.tonk.rename-repository/space", "Entity"),
+        ],
+        serde_json::json!({ "space": space, "name": name }),
+    )
 }
 
 /// Run the [`RemoveSpace`] command: the user confirmed a Hub row's
@@ -3035,6 +3395,11 @@ pub(crate) async fn remove_space_inner(
         );
     } else {
         delete_space_storage_for(subject.repo_key()).await;
+    }
+    // Where the space's content is on an origin of its own, that is where
+    // most of it is, and its worker is the one that can remove it.
+    if state.read().await.spaces_elsewhere() {
+        space_reach::forget(subject.repo_key()).await;
     }
 
     // The delete ran unlocked, so a concurrent `drain_sync` could have
@@ -3392,6 +3757,173 @@ async fn delete_space_storage_for(key: &str) {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export async function release_space_content(name) {
+    const database = await new Promise((resolve, reject) => {
+        const request = indexedDB.open(name);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+    // The worker's own connection adds an object store by upgrading the
+    // database, which waits on every other connection.
+    database.onversionchange = () => database.close();
+    try {
+        const names = [...database.objectStoreNames];
+        const stores = names.filter((store) => store === 'memory' || store.startsWith('archive/'));
+        if (stores.length > 0) {
+            await new Promise((resolve, reject) => {
+                const transaction = database.transaction(stores, 'readwrite');
+                transaction.oncomplete = () => resolve();
+                transaction.onabort = transaction.onerror = () => reject(transaction.error);
+                for (const store of stores) {
+                    if (store === 'memory') {
+                        transaction.objectStore(store).delete(IDBKeyRange.bound('branch/', 'branch/\uffff'));
+                    } else {
+                        transaction.objectStore(store).clear();
+                    }
+                }
+            });
+        }
+    } finally {
+        database.close();
+    }
+    const empty = async (directory) => {
+        for await (const [entry, handle] of directory.entries()) {
+            if (handle.kind === 'directory') await empty(handle);
+            else await directory.removeEntry(entry);
+        }
+    };
+    await navigator.storage.getDirectory()
+        .then((root) => root.getDirectoryHandle('current'))
+        .then((spaces) => spaces.getDirectoryHandle(name))
+        .then(empty)
+        .catch(() => {});
+}
+"#)]
+extern "C" {
+    /// Empty a space's storage of its branches: every block, every blob, and
+    /// each branch's head and how far it has synced, in one transaction. The
+    /// space's identity and the certificates kept with it stay, and so does
+    /// the database, which the worker has open. Rejects if the transaction
+    /// does; a blob that would not go is left behind.
+    fn release_space_content(name: &str) -> js_sys::Promise;
+}
+
+/// Whether this worker holds anything on the `main` of the space `key`.
+pub(crate) async fn holds_content(tonk: &TonkState, key: &str) -> bool {
+    let Ok(repository) = tonk.profile.space(key).load().perform(&tonk.operator).await else {
+        return false;
+    };
+    match repository
+        .branch(CONTENT_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(branch) => branch.revision().is_some(),
+        Err(_) => false,
+    }
+}
+
+/// Keep none of `subject`'s content in this worker's storage: its own origin
+/// holds it now, and a space is to be held once on a device.
+///
+/// Where each space has an origin of its own, this worker is the person's
+/// profile's. It can still come to hold a space's content: it held every
+/// space before spaces had origins, and a join pulls a space here to read the
+/// invitation's roster and commit its claim. What it needs of a space
+/// afterwards is what a replica that was never filled has: the space's
+/// public identity, the certificates this profile acts on it with, and where
+/// it syncs. So the storage stays and is emptied of its branches, and where
+/// it syncs is recorded again.
+///
+/// `push_first` is for a space whose own worker filled from the remote and
+/// not from here: what this copy holds that the remote does not would be
+/// lost with it, so it is pushed, and kept if that fails.
+///
+/// Answers whether anything was released. Leaves alone a space with nothing
+/// on `main` here, and one another profile on this browser may share the
+/// storage of, as removing a space does.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn release_content(
+    state: &AppState,
+    subject: &Did,
+    push_first: bool,
+) -> Result<bool, TonkWorkerError> {
+    let key = subject.repo_key();
+    let (configuration, synced) = {
+        let tonk = state.read().await;
+        if !tonk.spaces_elsewhere() {
+            return Ok(false);
+        }
+        require_real_space(&tonk, subject).await?;
+        if !holds_content(&tonk, key).await {
+            return Ok(false);
+        }
+        let Ok(repository) = tonk.profile.space(key).load().perform(&tonk.operator).await else {
+            return Ok(false);
+        };
+        let shared = tonk
+            .registry
+            .read_roster(&tonk.storage, &tonk.operator)
+            .await
+            .map_or(true, |roster| roster.len() > 1);
+        if shared {
+            log!("keeping the content of '{key}': another profile on this browser may share it");
+            return Ok(false);
+        }
+        let info = build_repository_info(&tonk, key, &repository).await;
+        let synced = !info.remote.is_empty();
+        let configuration = RepositoryConfiguration {
+            remote: info.remote,
+            branch: info
+                .branch
+                .into_iter()
+                .map(|(name, branch)| {
+                    (
+                        name,
+                        BranchConfiguration {
+                            upstream: branch.upstream,
+                            revision: None,
+                        },
+                    )
+                })
+                .collect(),
+        };
+        (configuration, synced)
+    };
+    if push_first {
+        if !synced {
+            // Nowhere to push to, and its own worker did not take it from
+            // here: this is the only copy.
+            return Ok(false);
+        }
+        super::sync::sync_repository(state, key)
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("'{key}' is kept until it has synced: {error}"))
+            })?;
+    }
+    let tonk = state.write().await;
+    {
+        let _admission_mutation = tonk.admission.mutation(key);
+        tonk.reactor.evict(key);
+        tonk.sync_queue.forget(key);
+        wasm_bindgen_futures::JsFuture::from(release_space_content(key))
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("'{key}' could not be emptied: {error:?}"))
+            })?;
+        tonk.reactor.evict(key);
+    }
+    // Where the space syncs was recorded in what just went. Record it again.
+    // Stopped before this, the next mount records it from the directory.
+    super::join::mount_replica_with_configuration(&tonk, subject, configuration).await?;
+    log!("released the content of '{key}': its own origin holds it");
+    Ok(true)
+}
+
 /// Delete the storage a legacy hidden account repository left behind.
 /// Its content synced with the same remote profile main now follows, so
 /// everything it held is recoverable by pulling.
@@ -3649,6 +4181,8 @@ async fn enable_sync_for_repository(
     // the request's (possibly repair-supplied) address must not
     // overwrite it there.
     record_space_mount(tonk, &repository.did(), &effective, None).await;
+    // The space's own worker is the one that syncs it.
+    super::space_reach::changed(Some(key));
 
     Ok(())
 }
@@ -3847,6 +4381,15 @@ async fn seed_and_initialize(
     {
         let tonk = state.read().await;
         if bail_if_space_removed(&tonk, subject, key, "seed").await? {
+            return Ok(());
+        }
+        // The space renders on an origin of its own, where its own worker
+        // holds its content: leave the content for that worker to create,
+        // and keep what it needs to do so until it asks.
+        if tonk.spaces_elsewhere() {
+            defer_seed(&tonk, subject, display_name, description).await?;
+            write_replica_status(&tonk, subject, Replica::initialized_status(), description)
+                .await?;
             return Ok(());
         }
     }
@@ -5472,6 +6015,9 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/table.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/table.yaml").to_owned())
         }
+        "/library/tonk.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/tonk.yaml").to_owned())
+        }
         other => Err(TonkWorkerError::Internal(format!(
             "no embedded library for '{other}'"
         ))),
@@ -5723,17 +6269,340 @@ pub async fn create_repository(
     // is the repository DID. The `display_name` is only threaded for log
     // context — the name itself is seeded into the repository's own
     // `tonk/repository` concept by the caller's seed step.
-    // The opener of a freshly created repo is its founder.
-    record_repository_meta(
-        tonk,
-        &repository,
-        display_name,
-        configuration,
-        MemberRole::FOUNDER,
-    )
-    .await?;
+    // The opener of a freshly created repo is its founder. Where the
+    // space's own worker holds its content, the founder's membership is
+    // written there with the rest of it (see [`SpaceSeed`]).
+    if tonk.spaces_elsewhere() {
+        record_replica_meta(tonk, &repository, display_name, configuration).await?;
+    } else {
+        record_repository_meta(
+            tonk,
+            &repository,
+            display_name,
+            configuration,
+            MemberRole::FOUNDER,
+        )
+        .await?;
+    }
 
     Ok(repository)
+}
+
+/// The profile secret a space's pending [`SpaceSeed`] is kept under.
+const PENDING_SEED_SITE_PREFIX: &str = "tonk-space-seed:";
+
+/// What a new space's content is created from, by the space's own worker.
+///
+/// Where each space renders on an origin of its own, this worker creates a
+/// space's identity and its place in the profile, and nothing on its content
+/// branch: the worker of the space's origin holds that, and there is to be
+/// one copy of it. That worker writes what creating a space writes (the
+/// standard library, the space's name, the founder's membership) from this.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpaceSeed {
+    /// The space's display name.
+    pub name: String,
+    /// The space's description, when it was given one.
+    pub description: Option<String>,
+    /// Who founded it: the account the creating profile acts for.
+    pub founder: String,
+    /// The name the founder goes by on the space's roster.
+    pub founder_name: String,
+    /// The definitions the space was made for, added on top of the standard
+    /// library. `None` for a blank space.
+    #[serde(default)]
+    pub definitions: Option<SeedDefinitions>,
+    /// The space this one is a copy of. Its content then comes from that
+    /// space's own worker, in place of the standard library.
+    #[serde(default)]
+    pub copy_from: Option<String>,
+}
+
+/// Where the definitions a space is created with come from: a template the
+/// app ships, or notation at a URL. The person's profile fetched and checked
+/// them before the space was created; the space's own worker fetches them
+/// again to add them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeedDefinitions {
+    /// The template's name, or the notation's URL.
+    pub reference: String,
+    /// Whether `reference` names a template.
+    pub template: bool,
+}
+
+/// The part of a [`SpaceSeed`] known when the space is created. The founder
+/// is read when the seed is handed over, as the account the profile then
+/// acts for.
+#[derive(Serialize, Deserialize)]
+struct PendingSeed {
+    name: String,
+    description: Option<String>,
+    #[serde(default)]
+    definitions: Option<SeedDefinitions>,
+    #[serde(default)]
+    copy_from: Option<String>,
+}
+
+fn pending_seed_site(subject: &Did) -> String {
+    format!("{PENDING_SEED_SITE_PREFIX}{subject}")
+}
+
+/// Keep what `subject`'s content is to be created from until its own worker
+/// asks for it ([`pending_seed`]).
+async fn defer_seed(
+    tonk: &TonkState,
+    subject: &Did,
+    display_name: &str,
+    description: Option<&str>,
+) -> Result<(), RepositoryError> {
+    let pending = PendingSeed {
+        name: display_name.to_owned(),
+        description: description.map(str::to_owned),
+        definitions: None,
+        copy_from: None,
+    };
+    let bytes = serde_json::to_vec(&pending)
+        .map_err(|e| RepositoryError::Internal(format!("space seed does not encode: {e}")))?;
+    save_pending_seed(tonk, subject, bytes).await
+}
+
+/// Change what `subject`'s own worker is to create the space's content from.
+/// For a space this worker created and left for that worker to fill.
+async fn amend_seed(
+    tonk: &TonkState,
+    subject: &Did,
+    amend: impl FnOnce(&mut PendingSeed),
+) -> Result<(), RepositoryError> {
+    let stored = tonk
+        .profile
+        .secrets()
+        .site(pending_seed_site(subject))
+        .load::<Vec<u8>>()
+        .perform(&tonk.profile)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("failed to load the space seed: {e}")))?;
+    let mut pending: PendingSeed = serde_json::from_slice(&stored)
+        .map_err(|e| RepositoryError::Internal(format!("stored space seed is invalid: {e}")))?;
+    amend(&mut pending);
+    let bytes = serde_json::to_vec(&pending)
+        .map_err(|e| RepositoryError::Internal(format!("space seed does not encode: {e}")))?;
+    save_pending_seed(tonk, subject, bytes).await
+}
+
+async fn save_pending_seed(
+    tonk: &TonkState,
+    subject: &Did,
+    bytes: Vec<u8>,
+) -> Result<(), RepositoryError> {
+    tonk.profile
+        .secrets()
+        .site(pending_seed_site(subject))
+        .save(bytes)
+        .perform(&tonk.profile)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("failed to keep the space seed: {e}")))
+}
+
+/// What `subject`'s own worker is to create its content from, or `None` when
+/// this worker created that content itself or the seed has been settled.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn pending_seed(
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<Option<SpaceSeed>, TonkWorkerError> {
+    let bytes = match tonk
+        .profile
+        .secrets()
+        .site(pending_seed_site(subject))
+        .load::<Vec<u8>>()
+        .perform(&tonk.profile)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
+        Err(error) => {
+            return Err(TonkWorkerError::Internal(format!(
+                "failed to load the space seed: {error}"
+            )));
+        }
+    };
+    // Settled: see [`settle_seed`].
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let pending: PendingSeed = serde_json::from_slice(&bytes)
+        .map_err(|e| TonkWorkerError::Internal(format!("stored space seed is invalid: {e}")))?;
+    let founder = crate::router::account::member_did(tonk).await?;
+    let founder_name = crate::router::profile_name::resolve_display_name(tonk).await;
+    Ok(Some(SpaceSeed {
+        name: pending.name,
+        description: pending.description,
+        founder: founder.to_string(),
+        founder_name,
+        definitions: pending.definitions,
+        copy_from: pending.copy_from,
+    }))
+}
+
+/// The space's own worker has created its content: there is nothing left to
+/// hand over.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn settle_seed(tonk: &TonkState, subject: &Did) -> Result<(), TonkWorkerError> {
+    save_pending_seed(tonk, subject, Vec::new())
+        .await
+        .map_err(|e| TonkWorkerError::Internal(e.to_string()))
+}
+
+/// Create `subject`'s content from `seed`, in the worker that holds it: the
+/// standard library and the space's name on a `main` with nothing on it yet,
+/// and the founder's membership. Each is safe to repeat, so a worker stopped
+/// part-way picks it up when it is asked again.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn create_content(
+    tonk: &TonkState,
+    subject: &Did,
+    seed: &SpaceSeed,
+) -> Result<(), RepositoryError> {
+    let library = fetch_standard_library(STANDARD_LIBRARY_URL)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}")))?;
+    create_content_with(tonk, subject, seed, &library).await
+}
+
+/// [`create_content`], with the standard library's text in hand.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn create_content_with(
+    tonk: &TonkState,
+    subject: &Did,
+    seed: &SpaceSeed,
+    library: &str,
+) -> Result<(), RepositoryError> {
+    let key = subject.repo_key();
+    let empty = tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("open '{key}': {e}")))?
+        .handle()
+        .revision()
+        .is_none();
+    if empty {
+        let name = repository_name_claims(subject, &seed.name, seed.description.as_deref())?;
+        install_fresh_seed(tonk, key, CONTENT_BRANCH, library, &name).await?;
+    }
+    let founder: Did = seed
+        .founder
+        .parse()
+        .map_err(|e| RepositoryError::Internal(format!("founder '{}': {e:?}", seed.founder)))?;
+    assert_membership(
+        tonk,
+        key,
+        subject,
+        founder,
+        MemberRole::FOUNDER,
+        seed.founder_name.clone(),
+    )
+    .await?;
+    // The definitions the space was made for go on top of the standard
+    // library. Only onto a space this call filled: adding them again over
+    // one already in use could overwrite what has been made of them since.
+    // The profile checked them before the space existed, so a failure here
+    // is the network's, and leaves a space that works without them.
+    if empty
+        && let Some(definitions) = &seed.definitions
+        && let Err(error) = add_definitions(tonk, key, definitions).await
+    {
+        log!(
+            "'{key}' was created without its definitions from {}: {error}",
+            definitions.reference
+        );
+    }
+    Ok(())
+}
+
+/// Create `subject`'s content as a copy of another space's, in the worker
+/// that holds it: `content` and `revision` are that space's snapshot, from
+/// its own worker. Its blocks are stored here, read as they stood at that
+/// revision, and written under this space's own identity without the
+/// source's history or its records of itself. Then the founder's membership,
+/// as for any new space. Nothing is written over a `main` that has content.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn create_copy(
+    tonk: &TonkState,
+    subject: &Did,
+    seed: &SpaceSeed,
+    content: &[u8],
+    revision: &[u8],
+) -> Result<(), RepositoryError> {
+    use dialog_repository::{RepositoryExt as _, Revision, codec};
+
+    let failed = |what: &str, error: &dyn std::fmt::Display| {
+        RepositoryError::Internal(format!("duplicate space: {what}: {error}"))
+    };
+    let key = subject.repo_key();
+    let empty = tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| failed("open", &e))?
+        .handle()
+        .revision()
+        .is_none();
+    if empty {
+        let repository = tonk
+            .profile
+            .space(key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| failed("load", &e))?;
+        let revision: Revision =
+            serde_json::from_slice(revision).map_err(|e| failed("revision", &e))?;
+        let items = codec::decode(content).map_err(|e| failed("snapshot", &e))?;
+        repository
+            .import(futures_util::stream::iter(items))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| failed("store", &e))?;
+        let copy = duplication::collect(tonk, &repository.snapshot(revision)).await?;
+        duplication::write(tonk, subject, &seed.name, copy).await?;
+    }
+    let founder: Did = seed
+        .founder
+        .parse()
+        .map_err(|e| RepositoryError::Internal(format!("founder '{}': {e:?}", seed.founder)))?;
+    assert_membership(
+        tonk,
+        key,
+        subject,
+        founder,
+        MemberRole::FOUNDER,
+        seed.founder_name.clone(),
+    )
+    .await
+}
+
+/// Fetch `definitions` and add them to `key`'s content.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn add_definitions(
+    tonk: &TonkState,
+    key: &str,
+    definitions: &SeedDefinitions,
+) -> Result<(), String> {
+    let syntax = prepare_seed(&definitions.reference, definitions.template).await?;
+    super::evaluate::seed_syntax_on_branch(
+        tonk,
+        tonk.reactor.repository(key).branch(CONTENT_BRANCH),
+        syntax,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 /// Provision owned `subject` under this profile's account, repairing a stale
@@ -6140,6 +7009,32 @@ pub(crate) async fn record_space_name(tonk: &TonkState, subject: &Did, display_n
     }
 }
 
+/// A space's display name as the account directory has it: the copy kept
+/// for a device that holds none of the space's content. Where each space's
+/// content is on an origin of its own, the person's profile is such a
+/// device.
+pub(super) async fn directory_space_name(tonk: &TonkState, subject: &Did) -> Option<String> {
+    let main = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+        .ok()?;
+    let names: Vec<tonk_schema::SpaceName> = main
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::SpaceName> {
+            this: Term::from(subject.this()),
+            name: Term::var("name"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    names.into_iter().next().map(|row| row.name.0)
+}
+
 /// Mirror a space's remote/branch configuration — and optionally its
 /// display name — into the account directory as plain facts on
 /// directory-anchored entities, so any device can rebuild the full
@@ -6285,13 +7180,26 @@ where
             TonkWorkerError::RootRequired => RepositoryError::RootRequired,
             error => RepositoryError::Internal(error.to_string()),
         })?;
-    let membership = Membership::new(member, repository.did());
+    let display_name = crate::router::profile_name::resolve_display_name(tonk).await;
+    assert_membership(tonk, key, &repository.did(), member, role_uri, display_name).await
+}
+
+/// Assert `member`'s [`Membership`] of `subject`, with its role and the name
+/// it goes by, on the content branch of the repository at `key`.
+pub(crate) async fn assert_membership(
+    tonk: &TonkState,
+    key: &str,
+    subject: &Did,
+    member: Did,
+    role_uri: &str,
+    display_name: String,
+) -> Result<(), RepositoryError> {
+    let membership = Membership::new(member, subject.clone());
     let role = if role_uri == MemberRole::FOUNDER {
         MemberRole::founder(membership.this().clone())
     } else {
         MemberRole::member(membership.this().clone())
     };
-    let display_name = crate::router::profile_name::resolve_display_name(tonk).await;
     let member_name = MemberName::new(membership.this().clone(), display_name);
 
     // Write through the *reactor's* cached content-branch handle, not a
@@ -7224,6 +8132,9 @@ pub(super) const CONTENT_BRANCH: &str = "main";
 /// visible everywhere the content branch syncs. Falls back to the
 /// routing `key` when the content branch can't be opened or carries no
 /// name yet (a freshly created repo before its name is seeded).
+///
+/// Where each space's content is on an origin of its own, this worker holds
+/// none of it, and the label is the copy the account directory keeps.
 async fn repository_label<'a, R>(
     tonk: &'a TonkState,
     repository: &'a Repository<R>,
@@ -7232,9 +8143,12 @@ async fn repository_label<'a, R>(
 where
     R: Principal + Clone,
 {
-    repository_display_name(tonk, repository, key)
-        .await
-        .unwrap_or_else(|| key.to_string())
+    let name = if tonk.spaces_elsewhere() {
+        directory_space_name(tonk, &repository.did()).await
+    } else {
+        repository_display_name(tonk, repository, key).await
+    };
+    name.unwrap_or_else(|| key.to_string())
 }
 
 /// Read the repository-authored display name without inventing a routing-key
@@ -9000,6 +9914,52 @@ mod invite_chain_tests {
             .expect("authorization query")
     }
 
+    /// A share is a promise the recipient can pull. Where a space's content
+    /// is held by a worker of its own, that worker pushes on its own time:
+    /// the mint hands it the invite to record, then has it sync, and only
+    /// then reports the link. A link reported sooner led to a space with
+    /// nothing on its remote yet, and joining it failed for good.
+    #[dialog_common::test]
+    async fn it_has_the_spaces_worker_sync_before_a_link_is_reported() {
+        use std::sync::atomic::Ordering;
+
+        let (tonk, _service, _root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let key = create_space_inner(&state, "Pushed Before Shared", None)
+            .await
+            .expect("the space creates");
+        enable_sync_inner(&state, &key, &remote)
+            .await
+            .expect("the remote attaches");
+
+        // From here the space's content is its own worker's.
+        state
+            .read()
+            .await
+            .site_origins
+            .store(true, Ordering::Relaxed);
+        space_reach::stand_in::answer_with(|_| Ok(serde_json::Value::Null));
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        let minted = run_invite(&env, &key, 1.0).await;
+        let asked = space_reach::stand_in::asked();
+        minted.expect("the mint settles");
+
+        let of_the_space = |operation: &str| {
+            (
+                key.clone(),
+                "POST".to_owned(),
+                format!("/api/repository/{key}/branch/{CONTENT_BRANCH}/{operation}"),
+            )
+        };
+        assert_eq!(
+            asked,
+            [of_the_space("transact"), of_the_space("sync")],
+            "the space's worker records the invite, then syncs"
+        );
+    }
+
     /// The chain a real mint produces, via the real path end to end: a
     /// linked, activated account against a live access service,
     /// `create_space_inner` (which delegates the fresh space to the
@@ -9531,6 +10491,7 @@ route!: &foreign-profile-route
             .expect("test session opens");
         TonkState {
             seed_upgrades: Default::default(),
+            site_origins: Default::default(),
             profile: profile.clone(),
             operator: session.operator,
             storage,
@@ -9542,7 +10503,6 @@ route!: &foreign-profile-route
             reject_admission_content_reads: Default::default(),
             retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             view_bindings: Default::default(),
-            bridges: Default::default(),
             sync_queue: Default::default(),
             commands: crate::router::command_providers(),
             clients: Default::default(),
@@ -9551,6 +10511,7 @@ route!: &foreign-profile-route
             registry: crate::device::Registry {
                 profile: name,
                 directory: dialog_effects::storage::Directory::Profile,
+                standing: Default::default(),
             },
             profile_transition: Default::default(),
             context_generation: Default::default(),
@@ -10479,6 +11440,345 @@ mod tests {
         );
     }
 
+    /// A profile that holds none of a space's content still calls the space
+    /// by its name: the one the account directory keeps.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_labels_a_space_held_elsewhere_from_the_account_directory() {
+        use super::{build_repository_info, record_space_name};
+        use dialog_repository::RepositoryExt as _;
+        use std::sync::atomic::Ordering;
+
+        let (_app, state, key) = fresh_repo("label-elsewhere").await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let tonk = state.read().await;
+        tonk.site_origins.store(true, Ordering::Relaxed);
+        let repository = tonk
+            .profile
+            .space(key.as_str())
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+
+        // The directory's copy and the content's differ here, to tell which
+        // of the two is read.
+        record_space_name(&tonk, &subject, "Shared Garden").await;
+
+        assert_eq!(
+            build_repository_info(&tonk, &key, &repository).await.label,
+            "Shared Garden"
+        );
+    }
+
+    /// A space is held once on a device. Where its own origin holds it, the
+    /// profile lets go of what it held of it: the space stays mounted and
+    /// listed, with nothing on `main`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_lets_go_of_a_space_its_own_origin_holds() {
+        use super::{holds_content, release_content};
+        use crate::router::join::find_replica_for_subject;
+        use dialog_repository::RepositoryExt as _;
+        use std::sync::atomic::Ordering;
+
+        let (_app, state, key) = fresh_repo("let-go").await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        assert!(
+            !release_content(&state, &subject, false).await.unwrap(),
+            "a worker that holds every space lets go of none"
+        );
+
+        state
+            .read()
+            .await
+            .site_origins
+            .store(true, Ordering::Relaxed);
+        assert!(holds_content(&*state.read().await, &key).await);
+        let before = {
+            let tonk = state.read().await;
+            let repository = tonk
+                .profile
+                .space(key.as_str())
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            super::build_repository_info(&tonk, &key, &repository).await
+        };
+        assert!(release_content(&state, &subject, false).await.unwrap());
+
+        {
+            let tonk = state.read().await;
+            assert!(
+                !holds_content(&tonk, &key).await,
+                "nothing of the space's content is left here"
+            );
+            assert!(
+                find_replica_for_subject(&tonk, &subject).await.unwrap(),
+                "the space is still one of this profile's"
+            );
+            let repository = tonk
+                .profile
+                .space(key.as_str())
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("the space is still mounted");
+            let after = super::build_repository_info(&tonk, &key, &repository).await;
+            assert_eq!(
+                (
+                    after.remote.keys().collect::<Vec<_>>(),
+                    after.branch.keys().collect::<Vec<_>>()
+                ),
+                (
+                    before.remote.keys().collect::<Vec<_>>(),
+                    before.branch.keys().collect::<Vec<_>>()
+                ),
+                "where the space syncs and its branches are recorded again"
+            );
+        }
+        assert!(
+            !release_content(&state, &subject, false).await.unwrap(),
+            "there is nothing left to let go of"
+        );
+    }
+
+    /// Where a space's content is held by a worker of its own, the profile
+    /// forwards a rename to it as a transact request. Committed on the
+    /// space's branch, that request has to decode as the command and write
+    /// the name: the two are otherwise only related by attribute strings.
+    #[dialog_common::test]
+    async fn it_renames_a_space_from_the_claim_its_profile_forwards() {
+        use super::{CONTENT_BRANCH, RepositoryName};
+        use dialog_query::{Output as _, Query, Term};
+
+        let (app, state, key) = fresh_repo("forwarded-rename").await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{key}/branch/{CONTENT_BRANCH}/transact"
+                    ))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        super::rename_claim(&key, "forwarded-garden").to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The command runs after the commit answers.
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let mut name = None;
+        for _ in 0..40 {
+            let tonk = state.read().await;
+            let content = tonk
+                .reactor
+                .repository(&key)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap();
+            let names: Vec<RepositoryName> = content
+                .handle()
+                .query()
+                .select(Query::<RepositoryName> {
+                    this: Term::from(tonk_schema::prelude::DidExt::this(&subject)),
+                    name: Term::var("name"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            name = names.into_iter().next().map(|row| row.name.0);
+            if name.as_deref() == Some("forwarded-garden") {
+                break;
+            }
+            drop(tonk);
+            crate::r#async::sleep(web_time::Duration::from_millis(50))
+                .await
+                .unwrap();
+        }
+        assert_eq!(name.as_deref(), Some("forwarded-garden"));
+    }
+
+    /// Where a space's content is held by a worker of its own, the profile
+    /// mints an invite and hands that worker what to write, as a transact
+    /// request. Committed on the space's branch, the request has to decode
+    /// as the command and leave the invite's public half in the space.
+    #[dialog_common::test]
+    async fn it_records_an_invite_from_the_claim_its_profile_forwards() {
+        use super::CONTENT_BRANCH;
+        use dialog_capability::Subject;
+        use dialog_effects::Use;
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_varsig::Principal as _;
+        use tonk_schema::command::Authorization;
+
+        let (app, state, key) = fresh_repo("recorded-invite").await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let proof = {
+            let tonk = state.read().await;
+            let (member, _seed) = crate::router::create_invite::generate_ephemeral()
+                .await
+                .unwrap();
+            let delegation: dialog_ucan::UcanDelegation = tonk
+                .profile
+                .access()
+                .claim(Subject::from(subject.clone()).attenuate(Use))
+                .delegate(member.did())
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            bs58::encode(delegation.into_chain().to_bytes().unwrap()).into_string()
+        };
+        let claim = super::record_invite_claim(&proof, "", "https://tonk.test/join#seed", "seed");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{key}/branch/{CONTENT_BRANCH}/transact"
+                    ))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(claim.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The command runs after the commit answers.
+        let mut recorded = None;
+        for _ in 0..40 {
+            let tonk = state.read().await;
+            let content = tonk
+                .reactor
+                .repository(&key)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap();
+            let rows: Vec<Authorization> = content
+                .handle()
+                .query()
+                .select(Query::<Authorization> {
+                    this: Term::from(tonk_schema::prelude::DidExt::this(&subject)),
+                    proof: Term::var("proof"),
+                    remote: Term::var("remote"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            recorded = rows.into_iter().next().map(|row| row.proof.0);
+            if recorded.is_some() {
+                break;
+            }
+            drop(tonk);
+            crate::r#async::sleep(web_time::Duration::from_millis(50))
+                .await
+                .unwrap();
+        }
+        assert_eq!(recorded, Some(proof));
+    }
+
+    /// Where a space's content is held by a worker of its own, the profile
+    /// settling a sign-in hands that worker the move of the roster entry, as
+    /// a transact request. Committed on the space's branch, the request has
+    /// to decode as the command and move the entry.
+    #[dialog_common::test]
+    async fn it_moves_a_roster_entry_from_the_claim_its_profile_forwards() {
+        use super::CONTENT_BRANCH;
+        use crate::router::space_reach;
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::{Membership, prelude::DidExt as _};
+
+        let (app, state, key) = fresh_repo("forwarded-move").await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let founder = {
+            let tonk = state.read().await;
+            crate::router::account::member_did(&tonk).await.unwrap()
+        };
+        let signed_in: dialog_varsig::Did =
+            "did:key:z6MkkAKBuUTy2r88au4Ehu6uUwdRRpDYnKd1euvreZi3YG7M"
+                .parse()
+                .unwrap();
+        let claim = space_reach::command(
+            &[
+                (
+                    "previous",
+                    "xyz.tonk.command.move-membership/previous",
+                    "Entity",
+                ),
+                (
+                    "account",
+                    "xyz.tonk.command.move-membership/account",
+                    "Entity",
+                ),
+            ],
+            serde_json::json!({
+                "previous": founder.to_string(),
+                "account": signed_in.to_string()
+            }),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{key}/branch/{CONTENT_BRANCH}/transact"
+                    ))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(claim.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The command runs after the commit answers.
+        let mut members = Vec::new();
+        for _ in 0..40 {
+            let tonk = state.read().await;
+            let content = tonk
+                .reactor
+                .repository(&key)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap();
+            let rows: Vec<Membership> = content
+                .handle()
+                .query()
+                .select(Query::<Membership> {
+                    this: Term::var("this"),
+                    subject: Term::from(subject.this()),
+                    member: Term::var("member"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            members = rows
+                .into_iter()
+                .map(|row| row.member.0.to_string())
+                .collect();
+            if members == [signed_in.to_string()] {
+                break;
+            }
+            drop(tonk);
+            crate::r#async::sleep(web_time::Duration::from_millis(50))
+                .await
+                .unwrap();
+        }
+        assert_eq!(members, [signed_in.to_string()]);
+    }
+
     #[dialog_common::test]
     async fn enable_sync_records_the_preserved_upstream_in_the_directory() {
         use dialog_query::{Output as _, Query, Term};
@@ -10573,6 +11873,85 @@ mod tests {
         assert!(founder.is_self, "founder is the active profile");
         assert!(founder.invited_by.is_none(), "founder has no inviter");
         assert!(founder.name.is_some(), "founder is named");
+    }
+
+    /// Where a space has an origin of its own, creating it leaves its content
+    /// branch untouched and keeps a seed for the space's own worker, which
+    /// creates the content from it: the library, the name and the founder.
+    #[dialog_common::test]
+    async fn it_leaves_a_new_space_for_its_own_worker_to_fill() {
+        const SEED_LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+        let tonk = test_state().await;
+        tonk.site_origins
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (app, state, _lsp) = api_router_with_state(tonk);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/test-deferred-content")
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let info: RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        let key = info.name.as_str();
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+
+        let tonk = state.read().await;
+        let main = || async {
+            tonk.reactor
+                .repository(key)
+                .branch(super::CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("main acquires")
+                .handle()
+                .revision()
+        };
+        assert!(main().await.is_none(), "nothing is written to the content");
+        let seed = super::pending_seed(&tonk, &subject)
+            .await
+            .unwrap()
+            .expect("a seed is kept for the space's own worker");
+        assert_eq!(seed.name, "test-deferred-content");
+
+        // What the space's own worker does with the seed, run here.
+        super::create_content_with(&tonk, &subject, &seed, SEED_LIBRARY)
+            .await
+            .unwrap();
+        assert!(main().await.is_some(), "the content now exists");
+        use dialog_repository::RepositoryExt as _;
+        let repository: dialog_repository::Repository = tonk
+            .profile
+            .space(key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let info = super::build_repository_info(&tonk, key, &repository).await;
+        assert_eq!(info.members.len(), 1, "exactly the founder");
+        assert!(info.members[0].is_self, "the founder is who created it");
+
+        // Creating it again changes nothing, and once settled the seed is gone.
+        let before = main().await;
+        super::create_content_with(&tonk, &subject, &seed, SEED_LIBRARY)
+            .await
+            .unwrap();
+        assert_eq!(main().await, before);
+        super::settle_seed(&tonk, &subject).await.unwrap();
+        assert!(
+            super::pending_seed(&tonk, &subject)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// All `Replica` rows on the profile meta branch (any kind), read
@@ -13545,6 +14924,7 @@ route!: &probe/dropped
             paths,
             [
                 "/",
+                "/asset:{hash}",
                 "/{*entity}@{*model}",
                 "/{*entity}@{*model}!{*view}",
                 "/{*model}"
@@ -13598,6 +14978,33 @@ mod connection_invite_overlay_tests {
             .query()
             .select(Query::<tonk_schema::command::AgentHandoffState> {
                 this: Term::var("this"),
+                status: Term::var("status"),
+                link: Term::var("link"),
+                account: Term::var("account"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap()
+            .len()
+    }
+
+    /// The answers on the profile's branch about the space `subject`: where
+    /// what the bar asked is answered.
+    async fn profile_response_count(state: &AppState, subject: &Did) -> usize {
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::command::AgentHandoffState> {
+                this: Term::from(subject.this()),
                 status: Term::var("status"),
                 link: Term::var("link"),
                 account: Term::var("account"),
@@ -13696,15 +15103,15 @@ mod connection_invite_overlay_tests {
             .await
             .unwrap();
         let before = branch.handle().revision().unwrap().tree;
-        publish_connection_receipt(&tonk, &repo, &subject, "first")
+        publish_connection_receipt(&tonk, HandoffSurface::Space(&repo), &subject, "first")
             .await
             .unwrap();
-        publish_connection_receipt(&tonk, &repo, &subject, "second")
+        publish_connection_receipt(&tonk, HandoffSurface::Space(&repo), &subject, "second")
             .await
             .unwrap();
         publish_connection_invite(
             &tonk,
-            &repo,
+            HandoffSurface::Space(&repo),
             &subject,
             &tonk.profile.did(),
             "scoped",
@@ -13810,7 +15217,11 @@ mod connection_invite_overlay_tests {
             },
         )
         .await;
-        assert_eq!(response_count(&state, &selected).await, 1);
+        // The bar asked on the profile's branch, and is answered there,
+        // about the space it named and no other.
+        assert_eq!(profile_response_count(&state, &selected_did).await, 1);
+        assert_eq!(profile_response_count(&state, &other_did).await, 0);
+        assert_eq!(response_count(&state, &selected).await, 0);
         assert_eq!(response_count(&state, &other).await, 0);
 
         let selected_space = crate::router::CommandEnv::new(
@@ -13830,6 +15241,7 @@ mod connection_invite_overlay_tests {
         )
         .await;
         assert_eq!(response_count(&state, &other).await, 0);
+        assert_eq!(profile_response_count(&state, &other_did).await, 0);
     }
 
     #[dialog_common::test]
@@ -14029,7 +15441,7 @@ mod connection_invite_overlay_tests {
             let root = super::super::identity::local_root(&tonk).await.unwrap();
             publish_connection_invite(
                 &tonk,
-                &repo,
+                HandoffSurface::Space(&repo),
                 &subject,
                 &root.root_did,
                 "scoped",
@@ -14098,7 +15510,7 @@ mod connection_invite_overlay_tests {
             let tonk = state.read().await;
             publish_connection_invite(
                 &tonk,
-                &repo,
+                HandoffSurface::Space(&repo),
                 &subject,
                 &account,
                 "scoped",

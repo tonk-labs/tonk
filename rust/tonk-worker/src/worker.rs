@@ -11,7 +11,7 @@ use crate::{
     LspHub,
     axum::{RequestConversion, ResponseConversion},
     bootstrap_profile,
-    router::{AppState, BridgeRegistry, ClientId, ViewBindings, api_router_with_state},
+    router::{AppState, ClientId, ViewBindings, api_router_with_state},
 };
 use axum::{
     Router,
@@ -20,6 +20,8 @@ use axum::{
 };
 use dialog_peer::{Peer, Session};
 use dialog_storage::provider::storage::Storage;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use dialog_varsig::Did;
 use js_sys::Promise;
 use send_wrapper::SendWrapper;
 use tokio::sync::Mutex;
@@ -30,6 +32,16 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_futures::future_to_promise;
 use web_sys::{FetchEvent, Request, Response};
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use crate::router::repository::{
+    SpaceSeed, create_content, create_copy, pending_seed, settle_seed,
+};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use crate::router::{
+    Saved, client_context_is_current, clients::sweep_stale_clients, registration::ceremony_refused,
+    space_worker,
+};
 
 /// The fetch event whose lifetime owns background work started by one of its
 /// routed handlers.
@@ -105,12 +117,9 @@ enum Route {
 /// - View clients (registered via `view_bindings`) hitting `/api/`
 ///   paths receive [`Route::Reject`] — the SW returns a synthetic
 ///   404 without invoking axum. The data plane is not reachable
-///   directly from an iframe; only the bridge is.
+///   from a view client.
 /// - Paths under `/api/` from non-view clients are handled by the
 ///   axum router as-is.
-/// - A small allow-list of shared dist-root assets (the iframe
-///   bridge module) is passed straight through, even from guest
-///   iframes — see [`is_shared_asset`] for why.
 /// - Requests whose initiating client is a registered guest
 ///   iframe are *also* handled by the router, but with their
 ///   path rewritten to live under
@@ -142,9 +151,6 @@ async fn route_for(path: &str, client_id: &str, state: &AppState) -> Route {
             rewritten_path: None,
         };
     }
-    if is_shared_asset(path) {
-        return Route::Passthrough;
-    }
     let Some(binding) = view_binding else {
         return Route::Passthrough;
     };
@@ -161,15 +167,6 @@ async fn route_for(path: &str, client_id: &str, state: &AppState) -> Route {
     Route::Handle {
         rewritten_path: Some(rewritten),
     }
-}
-
-/// Paths that must reach the network even when the requesting
-/// client is a registered guest iframe. The iframe shell loads
-/// `/__tonk/bridge.js` to install `globalThis.tonk`; without this
-/// exemption the guest-binding rewrite would re-root that fetch
-/// under the iframe's branch and 404.
-fn is_shared_asset(path: &str) -> bool {
-    matches!(path, "/__tonk/bridge.js")
 }
 
 /// Route the request through the axum router, apply response
@@ -410,10 +407,6 @@ pub struct TonkState {
     /// lookup doesn't contend with profile/operator access on
     /// the outer state lock.
     pub view_bindings: ViewBindings,
-    /// Per-client bridge sessions keyed by service-worker Client
-    /// ID. Each session owns the transferred `MessagePort` and the
-    /// abort handles for any open subscriptions on that client.
-    pub bridges: BridgeRegistry,
     /// Registered command handlers — the typed-Rust effects fired by
     /// transient command concepts after a commit. Two vocabularies
     /// (profile / space), selected per dispatch by the triggering
@@ -431,6 +424,11 @@ pub struct TonkState {
     /// Spaces whose seed this worker instance already checked against the
     /// shipped bundle. See [`crate::router::adopt::SeedUpgrades`].
     pub(crate) seed_upgrades: crate::router::adopt::SeedUpgrades,
+    /// Whether this deployment renders each space on an origin of its own,
+    /// where the space's own worker holds its content. This worker then
+    /// creates a space's identity and leaves its content to that worker
+    /// (see `router::repository::SpaceSeed`).
+    pub site_origins: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Routing keys the hidden account repository answers to, resolved lazily.
     /// Consulted by the middleware that keeps that repository off the generic
     /// HTTP surface, so it sits on the hot path for every repository request.
@@ -454,6 +452,15 @@ pub struct TonkState {
 }
 
 impl TonkState {
+    /// Whether each space's content is held by a worker on the space's own
+    /// origin, and none of it by this one: this is the worker of a person's
+    /// profile where sites have origins of their own. What a command here
+    /// does to a space's content is then that worker's to do (see
+    /// [`space_reach`](crate::router::space_reach)).
+    pub(crate) fn spaces_elsewhere(&self) -> bool {
+        self.site_origins.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Enter the one-way retiring state and release every query stream.
     pub(crate) fn retire(&self) {
         self.retiring.store(true, Ordering::Release);
@@ -540,16 +547,6 @@ mod route_for_tests {
                 }
             ),
             "view client static subresource should be rewritten, got {r:?}",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_passes_through_bridge_js_for_view_clients() {
-        let state = state_with_view_client("c1", "r", "main").await;
-        let r = route_for("/__tonk/bridge.js", "c1", &state).await;
-        assert!(
-            matches!(r, Route::Passthrough),
-            "bridge module must bypass the rewrite, got {r:?}",
         );
     }
 
@@ -1842,11 +1839,11 @@ pub(crate) async fn boot_state_with_profile_library(
         reject_admission_content_reads: Default::default(),
         retiring: Arc::new(AtomicBool::new(false)),
         view_bindings: Default::default(),
-        bridges: Default::default(),
         commands: crate::router::command_providers(),
         sync_queue: Default::default(),
         clients: Default::default(),
         seed_upgrades: Default::default(),
+        site_origins: Default::default(),
         account_keys: Default::default(),
         profile_library,
         registry,
@@ -2166,10 +2163,10 @@ impl TonkServiceWorker {
         let response = future_to_promise(async move {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             let _loading_guard = loading_guard;
-            // Opportunistic cleanup of stale bridge sessions and view
-            // bindings. Cheap enough to run on every fetch.
+            // Opportunistic cleanup of what dead clients left behind.
+            // Cheap enough to run on every fetch.
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            crate::router::bridge::sweep_stale_clients(&state).await;
+            sweep_stale_clients(&state).await;
 
             match route_for(&path, &effective_client_id, &state).await {
                 Route::Handle { rewritten_path } => {
@@ -2194,9 +2191,389 @@ impl TonkServiceWorker {
         response
     }
 
-    /// Handles `message` events from view clients. Routes the
-    /// initial `hello` envelope (and future query/subscribe/evaluate
-    /// envelopes) to the bridge module.
+    /// The DID of the profile this worker signs as. A space's own worker asks
+    /// for its delegation with it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "profileDid")]
+    pub fn profile_did(&self) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let tonk = state.read().await;
+            Ok(JsValue::from_str(tonk.profile.did().as_str()))
+        })
+    }
+
+    /// Issue the space worker whose profile is `audience` a delegation to use
+    /// `space`. Resolves to `{ chain, expires }`: the encoded chain, and when
+    /// it lapses (unix seconds). Where the space syncs and which account it
+    /// is for are signed into the chain.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "delegateSpace")]
+    pub fn delegate_space(&self, space: String, audience: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let audience: Did = audience
+                .parse()
+                .map_err(|e| JsError::new(&format!("audience: {e:?}")))?;
+            let tonk = state.read().await;
+            let grant = space_worker::delegate(&tonk, &space, &audience)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            let result = js_sys::Object::new();
+            let chain = js_sys::Uint8Array::from(grant.chain.as_slice());
+            let _ = js_sys::Reflect::set(&result, &"chain".into(), &chain);
+            let _ =
+                js_sys::Reflect::set(&result, &"expires".into(), &(grant.expires as f64).into());
+            Ok(result.into())
+        })
+    }
+
+    /// Keep none of `space`'s content here: its own origin's worker has said
+    /// it holds it. `push_first` when that worker filled from the remote and
+    /// not from this one. Resolves to whether anything was released.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "releaseSpace")]
+    pub fn release_space(&self, space: String, push_first: bool) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let released = crate::router::repository::release_content(&state, &space, push_first)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(JsValue::from_bool(released))
+        })
+    }
+
+    /// Mint an invite to `space`, as though its share control had been
+    /// clicked at `time`. For a space whose own worker was asked for one: a
+    /// delegation that worker issued would lapse with its own.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "inviteSpace")]
+    pub fn invite_space(&self, space: String, time: f64) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            use tonk_schema::prelude::DidExt as _;
+
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            crate::router::repository::invite_space(&state, space.repo_key(), time).await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Where `space` syncs and which account this profile acts for, as its
+    /// own worker last has to have taken them up. Resolves to
+    /// `{ remote, account, name }`, the remote `null` for a space that only exists
+    /// here.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "spaceTerms")]
+    pub fn space_terms(&self, space: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            let terms = space_worker::terms(&tonk, &space)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            let result = js_sys::Object::new();
+            let remote = terms
+                .remote
+                .map_or(JsValue::NULL, |remote| JsValue::from_str(&remote));
+            let _ = js_sys::Reflect::set(&result, &"remote".into(), &remote);
+            let _ = js_sys::Reflect::set(
+                &result,
+                &"account".into(),
+                &terms.account.to_string().into(),
+            );
+            let name = terms
+                .name
+                .map_or(JsValue::NULL, |name| JsValue::from_str(&name));
+            let _ = js_sys::Reflect::set(&result, &"name".into(), &name);
+            Ok(result.into())
+        })
+    }
+
+    /// Snapshot `space`'s `main` for its own worker to seed from. Resolves to
+    /// `{ content, revision }` (a CARv1 and the revision as JSON), or `null`
+    /// when `main` has nothing on it yet.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "snapshotSpace")]
+    pub fn snapshot_space(&self, space: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            let Some(snapshot) = space_worker::snapshot(&tonk, &space)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?
+            else {
+                return Ok(JsValue::NULL);
+            };
+            let result = js_sys::Object::new();
+            let content = js_sys::Uint8Array::from(snapshot.content.as_slice());
+            let revision = js_sys::Uint8Array::from(snapshot.revision.as_slice());
+            let _ = js_sys::Reflect::set(&result, &"content".into(), &content);
+            let _ = js_sys::Reflect::set(&result, &"revision".into(), &revision);
+            Ok(result.into())
+        })
+    }
+
+    /// Seed this worker's freshly mounted replica of `space` from the host's
+    /// snapshot. A replica that already has content is left alone.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "seedSpace")]
+    pub fn seed_space(
+        &self,
+        space: String,
+        content: js_sys::Uint8Array,
+        revision: js_sys::Uint8Array,
+    ) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            space_worker::seed(&tonk, &space, &content.to_vec(), &revision.to_vec())
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Take up a delegation for `space` issued by the person's profile: save
+    /// its chain and mount the space as a replica syncing where the chain
+    /// was signed to say. Resolves to the `{ remote, account, name }` taken up.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "adoptSpace")]
+    pub fn adopt_space(&self, space: String, chain: js_sys::Uint8Array) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            let terms = space_worker::adopt(&tonk, &space, &chain.to_vec())
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            let result = js_sys::Object::new();
+            let remote = terms
+                .remote
+                .map_or(JsValue::NULL, |remote| JsValue::from_str(&remote));
+            let _ = js_sys::Reflect::set(&result, &"remote".into(), &remote);
+            let _ = js_sys::Reflect::set(
+                &result,
+                &"account".into(),
+                &terms.account.to_string().into(),
+            );
+            let name = terms
+                .name
+                .map_or(JsValue::NULL, |name| JsValue::from_str(&name));
+            let _ = js_sys::Reflect::set(&result, &"name".into(), &name);
+            Ok(result.into())
+        })
+    }
+
+    /// Put `name` on the roster entry of the account this worker acts for
+    /// in `space`, which it holds. Resolves to whether the roster changed.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "nameMember")]
+    pub fn name_member(&self, space: String, name: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            let named = space_worker::name_member(&tonk, &space, &name)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            Ok(JsValue::from_bool(named))
+        })
+    }
+
+    /// Put back what a restart of this worker lost about `space`, which it
+    /// holds: who its session acts for. Called each time a space's own
+    /// worker starts.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "resumeSpace")]
+    pub fn resume_space(&self, space: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            space_worker::resume(&tonk, &space)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Say whether this deployment renders each space on an origin of its
+    /// own. Where it does, this worker creates a space's identity and leaves
+    /// its content to the worker of the space's origin.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "setSiteOrigins")]
+    pub fn set_site_origins(&self, on: bool) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            state
+                .read()
+                .await
+                .site_origins
+                .store(on, std::sync::atomic::Ordering::Relaxed);
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// What `space`'s own worker is to create its content from, as JSON, or
+    /// `null` when there is nothing left to hand over.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "pendingSeed")]
+    pub fn pending_seed(&self, space: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            let seed = pending_seed(&tonk, &space)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(match seed {
+                Some(seed) => serde_json::to_string(&seed)
+                    .map_err(|e| JsError::new(&e.to_string()))?
+                    .into(),
+                None => JsValue::NULL,
+            })
+        })
+    }
+
+    /// `space`'s own worker has created its content from the seed.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "settleSeed")]
+    pub fn settle_seed(&self, space: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            settle_seed(&tonk, &space)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Create the content of `space`, which this worker holds, from the seed
+    /// the person's profile handed over (JSON, as [`pendingSeed`] gives it).
+    ///
+    /// [`pendingSeed`]: Self::pending_seed
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "createContent")]
+    pub fn create_content(&self, space: String, seed: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let seed: SpaceSeed =
+                serde_json::from_str(&seed).map_err(|e| JsError::new(&format!("seed: {e}")))?;
+            let tonk = state.read().await;
+            create_content(&tonk, &space, &seed)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Create `space`'s content, in this worker, as a copy of another
+    /// space's: `seed` is what the person's profile handed over (JSON, as
+    /// [`pendingSeed`] gives it), `content` and `revision` the other space's
+    /// snapshot from its own worker.
+    ///
+    /// [`pendingSeed`]: Self::pending_seed
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "createCopy")]
+    pub fn create_copy(
+        &self,
+        space: String,
+        seed: String,
+        content: js_sys::Uint8Array,
+        revision: js_sys::Uint8Array,
+    ) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let seed: SpaceSeed =
+                serde_json::from_str(&seed).map_err(|e| JsError::new(&format!("seed: {e}")))?;
+            let tonk = state.read().await;
+            create_copy(&tonk, &space, &seed, &content.to_vec(), &revision.to_vec())
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// The site stamps this worker holds, as bytes for the next instance to
+    /// [`restore_session`](Self::restore_session) from. Equal state yields
+    /// equal bytes, so the caller can skip saving what has not changed.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "savedSession")]
+    pub fn saved_session(&self) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let clients = state.read().await.clients.clone();
+            let saved = Saved::of(&clients).await;
+            let bytes = serde_json::to_vec(&saved).map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(js_sys::Uint8Array::from(bytes.as_slice()).into())
+        })
+    }
+
+    /// Make again the site stamps a previous instance saved, for the clients
+    /// in `live` (the ids `clients.matchAll()` lists now). Saved state this
+    /// worker cannot read is ignored: its pages claim their sites again.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "restoreSession")]
+    pub fn restore_session(&self, bytes: js_sys::Uint8Array, live: Vec<String>) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let live: std::collections::HashSet<String> = live.into_iter().collect();
+            let Some(saved) = Saved::read(&bytes.to_vec(), |client| live.contains(client)) else {
+                return Ok(JsValue::FALSE);
+            };
+            let tonk = state.read().await;
+            saved.restore(&tonk).await;
+            Ok(JsValue::TRUE)
+        })
+    }
+
+    /// Handles `message` events posted to the worker. Two envelopes
+    /// arrive this way: `custody`, carrying the PRF outputs of a passkey
+    /// ceremony, and `ceremony-refused`, the top-level page saying it
+    /// could not run a ceremony the account panel asked for. Queries,
+    /// subscriptions, transactions and evaluations never do: pages reach
+    /// those over the branch's HTTP routes.
     ///
     /// Wired into the SW global by the same JS bootstrap that sets
     /// `self.onfetch`.
@@ -2211,7 +2588,7 @@ impl TonkServiceWorker {
         future_to_promise(async move {
             // A custody envelope carries two transient PRF typed arrays,
             // which must not pass through JSON. Recognise it on the raw
-            // value before the ordinary typed protocol parses anything.
+            // value before anything parses the envelope.
             if crate::router::custody::is_custody_envelope(&data) {
                 crate::router::custody::receive(state, source_client_id.map(ClientId), data, ports)
                     .await;
@@ -2231,8 +2608,26 @@ impl TonkServiceWorker {
                 return Ok(JsValue::UNDEFINED);
             };
 
-            crate::router::bridge::handle_message(state, ClientId(client_id), envelope, ports)
-                .await;
+            let client = ClientId(client_id);
+            let tonk = state.read().await;
+            if !client_context_is_current(&tonk, &client).await {
+                log!("on_message: stale client rejected after profile change");
+                return Ok(JsValue::UNDEFINED);
+            }
+
+            let field = |name: &str| envelope.get(name).and_then(|v| v.as_str()).unwrap_or("");
+            match field("type") {
+                // The top-level page could not run a passkey ceremony the
+                // panel that adds an account asked for: the prompt was
+                // closed, or the browser would not show it. Nothing reached
+                // the worker to fail here, so the page says so.
+                "ceremony-refused" => {
+                    ceremony_refused(&tonk, field("kind"), field("name")).await;
+                }
+                other => {
+                    log!("on_message: unexpected envelope type '{other}' from {client:?}");
+                }
+            }
             Ok(JsValue::UNDEFINED)
         })
     }
@@ -2315,7 +2710,14 @@ impl TonkServiceWorker {
         future_to_promise(async move {
             if offline {
                 crate::router::mark_offline(&state).await;
-            } else if scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
+                return Ok(JsValue::UNDEFINED);
+            }
+            // Work queued while the service could not be reached, above all
+            // provisioning a space created offline: until it replays, the
+            // service refuses that space's every sync. Before the drain
+            // below, so the sync that follows finds the space provisioned.
+            crate::router::customer::drain_pending(&*state.read().await).await;
+            if scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
@@ -2639,10 +3041,9 @@ pub(crate) fn offline() -> bool {
 
 /// Extracts the `source.id` string from an `ExtendableMessageEvent`.
 ///
-/// The source of a service-worker message event is a `Client`; we
-/// need its id so we can look up (or create) the `BridgeSession` in
-/// the registry. Returns `None` if the source is absent or cannot be
-/// cast to a `Client`.
+/// The source of a service-worker message event is a `Client`; its id
+/// says which page an envelope came from. Returns `None` if the source
+/// is absent or cannot be cast to a `Client`.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn event_source_client_id(event: &web_sys::ExtendableMessageEvent) -> Option<String> {
     use wasm_bindgen::JsCast;

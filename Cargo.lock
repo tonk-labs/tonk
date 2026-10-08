@@ -5172,24 +5172,14 @@ dependencies = [
 name = "tonk-portal"
 version = "0.6.16-rc.1"
 dependencies = [
- "anyhow",
- "bs58",
  "custom-elements",
  "dialog-common",
- "dialog-credentials",
- "dialog-ucan-core",
- "dialog-varsig",
- "indexmap",
- "ipld-core",
  "js-sys",
  "serde",
- "serde-wasm-bindgen",
  "serde_json",
  "tonk-common",
  "tonk-display",
  "tonk-host",
- "tonk-identity",
- "tonk-worker-api",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -5457,6 +5447,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tonk-account",
+ "tonk-analytics",
  "url",
  "wasm-bindgen-test",
 ]

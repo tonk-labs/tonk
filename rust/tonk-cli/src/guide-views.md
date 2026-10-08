@@ -415,8 +415,8 @@ Rules of the road:
 ## Escape hatch: the `portal` model
 
 For an imperative HTML document, assert the always-seeded `portal` concept.
-Its `content` may contain scripts and query through `window.tonk` in the live
-browser:
+Its `content` may contain scripts, which read and write the branch over HTTP
+(`POST /api/repository/<space>/branch/<branch>/query`) in the live browser:
 
 ```yaml tonk=eval
 portal!: &about
@@ -424,7 +424,15 @@ portal!: &about
   content: |
     <h1>About</h1>
     <script>
-      window.tonk.query().then(console.log)
+      const { repo, branch } = window.tonk.context;
+      fetch(`/api/repository/${repo}/branch/${branch}/query`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          predicate: { with: { name: { the: 'xyz.tonk.space/name', as: 'Text', cardinality: 'one' } } },
+          terms: { name: { '?': { name: 'name' } } },
+        }),
+      }).then((response) => response.json()).then(console.log)
     </script>
 ```
 

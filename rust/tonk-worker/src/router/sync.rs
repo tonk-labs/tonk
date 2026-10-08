@@ -156,6 +156,44 @@ pub async fn publish_self_identity(tonk: &crate::worker::TonkState, repo: &str, 
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
+/// The fact saying which account a session acts for, on dialog's session
+/// entity beside the profile and operator dialog records there.
+const SESSION_ACCOUNT: &str = "xyz.tonk.session/account";
+
+/// Say, in the session overlay of a space's branch, which account this
+/// session acts for: the one the space's memberships name, so a view can
+/// tell which member is looking at it by joining the roster against this. An
+/// overlay lives only as long as the worker, so it is said again each time
+/// one starts.
+pub async fn publish_session_account(
+    tonk: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+) -> Result<(), crate::TonkWorkerError> {
+    use crate::TonkWorkerError;
+    use dialog_repository::schema::Session;
+    use tonk_schema::prelude::DidExt as _;
+
+    let account = super::account::member_did(tonk).await?;
+    let the = SESSION_ACCOUNT
+        .parse()
+        .map_err(|e| TonkWorkerError::Internal(format!("{SESSION_ACCOUNT}: {e}")))?;
+    tonk.reactor
+        .repository(repo)
+        .branch(branch)
+        .overlay()
+        .assert(super::claim::RawClaim {
+            the,
+            of: Session::entity(),
+            is: dialog_artifacts::Value::Entity(account.this()),
+            unique: true,
+        })
+        .write()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to say who {repo} is for: {e}")))
+}
+
 /// Whether auto-sync is enabled for `repo`'s content branch: reads the durable
 /// boolean [`ReplicaSyncEnabled`](tonk_schema::ReplicaSyncEnabled) preference
 /// keyed on this device's replica entity, on the space content branch. An
@@ -729,13 +767,37 @@ pub async fn pull(
     // account claims its capability chains by proving them instead,
     // started detached below.
     let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
-    let pulled = tonk_state
+    // With the same bounded refresh-and-retry [`sync`] gives a head that
+    // moved under the pull: a commit, or another pull of this branch,
+    // landed while this one merged.
+    let mut pulled = tonk_state
         .reactor
         .repository(&params.repo)
         .branch(&params.branch)
         .pull()
         .perform(&tonk_state.operator)
         .await;
+    for attempt in 1..SYNC_RETRY_LIMIT {
+        if !pulled.as_ref().is_err_and(is_head_moved) {
+            break;
+        }
+        log!(
+            "Pull raced another update on {}@{} (attempt {attempt}); refreshing",
+            params.branch,
+            params.repo
+        );
+        if let Err(error) = session.handle().refresh(&tonk_state.operator).await {
+            log!("Pull refresh failed: {error}");
+            break;
+        }
+        pulled = tonk_state
+            .reactor
+            .repository(&params.repo)
+            .branch(&params.branch)
+            .pull()
+            .perform(&tonk_state.operator)
+            .await;
+    }
     match pulled {
         Ok(after) => {
             log!("Pull succeeded: {}@{}", params.branch, params.repo);
@@ -1380,9 +1442,18 @@ pub async fn drain_sync(state: &AppState) {
     // Every currently-open repository — the pull population. Read the reactor's
     // cached repo map; a repo only appears once acquired, which every rendered
     // space has done.
+    //
+    // Where each space's content is held by a worker of its own, that worker
+    // is the one that follows the space. This one still pushes what it wrote
+    // to a space itself (a join's claim), which is in `pending`, and follows
+    // none.
     let open: Vec<String> = {
         let tonk = state.read().await;
-        tonk.reactor.spaces()
+        if tonk.spaces_elsewhere() {
+            Vec::new()
+        } else {
+            tonk.reactor.spaces()
+        }
     };
 
     // Union, pending-first, de-duplicated while preserving order.
@@ -1394,6 +1465,17 @@ pub async fn drain_sync(state: &AppState) {
         .collect();
 
     for repo in &order {
+        // A space this worker holds nothing of has nothing to push, and a
+        // pull would fetch what its own worker already holds.
+        {
+            let tonk = state.read().await;
+            if tonk.spaces_elsewhere()
+                && !super::account_state::is_account_key(&tonk, repo).await
+                && !super::repository::holds_content(&tonk, repo).await
+            {
+                continue;
+            }
+        }
         if let Err(e) = sync_repository(state, repo).await {
             // Push didn't fully land — re-mark so the next heartbeat retries.
             log!("drain_sync: {repo} did not fully reconcile: {e}");

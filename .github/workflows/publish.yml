@@ -170,6 +170,7 @@ jobs:
             fi
             echo "$id"
           }
+          number="${{ github.event.pull_request.number }}"
           control="tonk-access-control-pr-${{ github.event.pull_request.number }}"
           ingest="tonk-access-ingest-pr-${{ github.event.pull_request.number }}"
           revocations="tonk-access-revocations-pr-${{ github.event.pull_request.number }}"
@@ -187,13 +188,17 @@ jobs:
             -e "s/database_id = \"INGEST-REPLACED-PER-PULL-REQUEST\"/database_id = \"$ingest_id\"/" \
             -e "s/id = \"REPLACED-PER-PULL-REQUEST\"/id = \"$revocations_id\"/" \
             -e "s/id = \"SERVABILITY-REPLACED-PER-PULL-REQUEST\"/id = \"$servability_id\"/" \
+            -e "s/SITE_SUFFIX = \"-prREPLACED-PER-PULL-REQUEST\"/SITE_SUFFIX = \"-pr$number\"/" \
+            -e "s|APP_ORIGIN = \"https://pr-REPLACED-PER-PULL-REQUEST.tonk.foundation\"|APP_ORIGIN = \"https://pr-$number.tonk.foundation\"|" \
             "$config"
           if ! grep -Fq "database_name = \"$control\"" "$config" \
             || ! grep -Fq "database_id = \"$control_id\"" "$config" \
             || ! grep -Fq "database_name = \"$ingest\"" "$config" \
             || ! grep -Fq "database_id = \"$ingest_id\"" "$config" \
             || ! grep -Fq "id = \"$revocations_id\"" "$config" \
-            || ! grep -Fq "id = \"$servability_id\"" "$config"; then
+            || ! grep -Fq "id = \"$servability_id\"" "$config" \
+            || ! grep -Fq "SITE_SUFFIX = \"-pr$number\"" "$config" \
+            || ! grep -Fq "APP_ORIGIN = \"https://pr-$number.tonk.foundation\"" "$config"; then
             echo "::error::Could not bind the access preview config to $control/$ingest/$revocations"
             exit 1
           fi
@@ -236,6 +241,10 @@ jobs:
             exit 1
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
+          # The name the site router gives this preview in the dev zone,
+          # where its sites have origins of their own. The alias above still
+          # answers, with its sites in sealed frames.
+          echo "site=https://pr-${{ github.event.pull_request.number }}.tonk.foundation" >> "$GITHUB_OUTPUT"
           {
             echo 'command-output<<WRANGLER_OUTPUT_EOF'
             cat "$log"
@@ -264,6 +273,15 @@ jobs:
       - name: Deploy dev
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: nix --accept-flake-config develop --command wrangler deploy --env dev -c wrangler.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # After the dev worker, which it binds to: the router sends the dev
+      # zone's subdomains to it, and a pull request's names to its preview.
+      - name: Deploy the dev zone's site router
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: nix --accept-flake-config develop --command wrangler deploy -c workers/site-router/wrangler.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -314,16 +332,18 @@ jobs:
           message: |
             **Preview of `${{ steps.commit.outputs.short }}`** · [run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
-            ${{ steps.deploy-preview.outputs.url }}
+            ${{ steps.deploy-preview.outputs.site }}
 
             To link the CLI to it:
 
             ```
             tonk account login \
-              --via ${{ steps.deploy-preview.outputs.url }}/account/link
+              --via ${{ steps.deploy-preview.outputs.site }}/account/link
             ```
 
             <details><summary>Wrangler output</summary>
+
+            Also at ${{ steps.deploy-preview.outputs.url }}, with its sites in sealed frames.
 
             ```
             ${{ steps.deploy-preview.outputs.command-output }}

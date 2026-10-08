@@ -25,12 +25,8 @@
 // framework runtime, so there is no global executor to spawn onto.
 use std::cell::RefCell;
 
-use wasm_bindgen_futures::spawn_local;
-
-use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
-
-use crate::api;
+use wasm_bindgen::{JsCast, JsValue};
 
 thread_local! {
     static SPACE_ENTRIES: RefCell<tonk_analytics::discover::SpaceEntries> = RefCell::new(Default::default());
@@ -64,7 +60,7 @@ pub fn install() {
     capture_current_pageview();
     attach_listeners();
     start_startup_attempt();
-    spawn_local(identify());
+    follow_identity();
 }
 
 fn start_startup_attempt() {
@@ -399,6 +395,15 @@ fn attach_worker_lifecycle_listener() {
                 tonk_worker_api::AnalyticsEvent::SpaceShared { space } => {
                     tonk_analytics::web::capture_space_shared(&space);
                 }
+                tonk_worker_api::AnalyticsEvent::AccountCreated => {
+                    tonk_analytics::web::capture_account_created();
+                }
+                tonk_worker_api::AnalyticsEvent::AccountWithoutKey => {
+                    tonk_analytics::web::capture_account_without_key();
+                }
+                tonk_worker_api::AnalyticsEvent::Account { event } => {
+                    let _ = tonk_analytics::web::capture_account(&event);
+                }
             }
         });
     let _ =
@@ -406,48 +411,39 @@ fn attach_worker_lifecycle_listener() {
     listener.forget();
 }
 
-#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
-export async function resolve_analytics_identity(lookup) {
-    // Bound readiness + fetch together. A late lookup cannot change identity:
-    // only the result returned here is passed to PostHog by the caller.
-    for (let attempt = 0; attempt < 3; attempt++) {
-        if (attempt) await new Promise(resolve => setTimeout(resolve, attempt * 500));
-        let timer;
-        try {
-            const id = await Promise.race([
-                Promise.resolve().then(lookup),
-                new Promise((_, reject) => {
-                    timer = setTimeout(() => reject(new Error("identity timeout")), 5000);
-                }),
-            ]);
-            if (typeof id === "string" && /^tonk:[a-f0-9]{64}$/.test(id)) return id;
-        } catch (_) {
-            // Retry transient worker/readiness failures without sending errors.
-        } finally {
-            clearTimeout(timer);
+/// Take the profile this browser acts as from the profile's own frame, which
+/// says so once its worker answers. Arrival events stay unresolved until
+/// then; they are traffic, never evidence of an active account. The DID is
+/// hashed here and goes no further.
+fn follow_identity() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let listener = Closure::<dyn Fn(web_sys::MessageEvent)>::new(|event: web_sys::MessageEvent| {
+        let data = event.data();
+        let said = |key: &str| {
+            js_sys::Reflect::get(&data, &key.into())
+                .ok()
+                .and_then(|value| value.as_string())
+        };
+        if said("__tonkOrigin").as_deref() != Some("identity") {
+            return;
         }
-    }
-    return null;
-}
-"#)]
-extern "C" {
-    async fn resolve_analytics_identity(lookup: &js_sys::Function) -> wasm_bindgen::JsValue;
-}
-
-/// Resolve a profile with bounded retries, without delaying product startup.
-/// Arrival events remain unresolved until this succeeds; they are traffic,
-/// never evidence of an active account. No analytics persistence is added.
-pub(crate) async fn identify() {
-    let lookup = Closure::<dyn Fn() -> js_sys::Promise>::new(|| {
-        wasm_bindgen_futures::future_to_promise(async {
-            api::identify()
-                .await
-                .map(|response| tonk_analytics::distinct_id(&response.did).into())
-                .map_err(|_| wasm_bindgen::JsValue::NULL)
-        })
+        // Only the frame this page mounted for the profile is heard.
+        let source = js_sys::Reflect::get(&event, &"source".into()).unwrap_or(JsValue::NULL);
+        let framed = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.query_selector("tonk-site > iframe").ok().flatten())
+            .and_then(|frame| frame.dyn_into::<web_sys::HtmlIFrameElement>().ok())
+            .and_then(|frame| frame.content_window())
+            .is_some_and(|window| JsValue::from(window) == source);
+        if !framed {
+            return;
+        }
+        if let Some(did) = said("did") {
+            tonk_analytics::web::identify(&tonk_analytics::distinct_id(&did));
+        }
     });
-    let id = resolve_analytics_identity(lookup.as_ref().unchecked_ref()).await;
-    if let Some(id) = id.as_string() {
-        tonk_analytics::web::identify(&id);
-    }
+    let _ = window.add_event_listener_with_callback("message", listener.as_ref().unchecked_ref());
+    listener.forget();
 }

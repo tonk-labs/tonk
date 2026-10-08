@@ -19,7 +19,7 @@ use ::axum::Json;
 use ::axum::extract::{Request, State};
 use ::axum::http::HeaderMap;
 use axum_wasm_macros::wasm_compat;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 
@@ -60,11 +60,12 @@ pub struct SiteResponse {
 /// true, and the client has since disappeared.
 #[derive(Debug, Default, Clone)]
 pub struct ClientState {
-    /// Site entities this client has stamped. Tracked per client (not as
-    /// a `site → client` map) because the site URI is not a function of
-    /// the client: the `/site` endpoints key it `site:<client-id>`, but
-    /// the page-minted `tonk:load` command keys it `site:<uuid>`.
-    pub sites: std::collections::HashSet<String>,
+    /// The stamps this client holds, by site entity. Tracked per client
+    /// (not as a `site → client` map) because the site URI is not a
+    /// function of the client: the `/site` endpoints key it
+    /// `site:<client-id>`, but the page-minted `tonk:load` command keys it
+    /// `site:<uuid>`.
+    pub sites: std::collections::HashMap<String, Stamp>,
     /// Latched once this client appeared in `clients.matchAll()`. Until
     /// then the client is presumed to be booting, never dead.
     pub seen_live: bool,
@@ -101,6 +102,89 @@ pub(crate) async fn client_context_is_current(
 pub type ClientRegistry =
     std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<super::ClientId, ClientState>>>;
 
+/// What a site stamp was made from. The stamp itself (route, concept,
+/// captured params) is derived from these against the branch, so keeping
+/// the inputs is enough to make it again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Stamp {
+    /// The site entity the stamp lands on.
+    pub site: String,
+    /// The repository recorded on the site.
+    pub repo: String,
+    /// The branch the site routes against.
+    pub branch: String,
+    /// Whether `branch` is the profile's rather than `repo`'s.
+    pub profile: bool,
+    /// The path recorded on the site.
+    pub path: String,
+    /// The part of `path` matched against the branch's route table.
+    pub rest: String,
+    /// The active anchor (URL hash).
+    pub anchor: String,
+}
+
+/// The version of [`Saved`]. A worker that finds another version starts
+/// without the saved stamps, and pages claim their sites again.
+const SAVED_VERSION: u32 = 1;
+
+/// The stamps a worker holds, in the form it saves them in so that the next
+/// instance (after the browser stops this one, or after an update) can make
+/// them again instead of waiting for every page to claim its site anew.
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Saved {
+    version: u32,
+    /// Stamps by the client they serve.
+    clients: std::collections::BTreeMap<String, Vec<Stamp>>,
+}
+
+impl Saved {
+    /// The stamps held by `clients`, sorted so that equal state saves the
+    /// same bytes.
+    pub async fn of(clients: &ClientRegistry) -> Self {
+        let clients = clients.read().await;
+        let clients = clients
+            .iter()
+            .filter(|(_, state)| !state.sites.is_empty())
+            .map(|(client, state)| {
+                let mut stamps: Vec<Stamp> = state.sites.values().cloned().collect();
+                stamps.sort_by(|a, b| a.site.cmp(&b.site));
+                (client.0.clone(), stamps)
+            })
+            .collect();
+        Self {
+            version: SAVED_VERSION,
+            clients,
+        }
+    }
+
+    /// Read saved stamps, keeping only those of the clients `live` accepts:
+    /// a client that closed while no worker ran has nothing to restore.
+    /// `None` for a version this worker does not read.
+    pub fn read(bytes: &[u8], live: impl Fn(&str) -> bool) -> Option<Self> {
+        let mut saved: Self = serde_json::from_slice(bytes).ok()?;
+        if saved.version != SAVED_VERSION {
+            return None;
+        }
+        saved.clients.retain(|client, _| live(client));
+        Some(saved)
+    }
+
+    /// Make every saved stamp again. The clients were alive when the stamps
+    /// were saved and still are, so they are recorded as seen alive: once
+    /// one closes, the sweep reaps its stamps.
+    pub async fn restore(self, tonk: &crate::worker::TonkState) {
+        for (client, stamps) in self.clients {
+            let client = ClientId(client);
+            for stamp in stamps {
+                stamp_site_on(tonk, client.clone(), stamp).await;
+            }
+            if let Some(state) = tonk.clients.write().await.get_mut(&client) {
+                state.seen_live = true;
+            }
+        }
+    }
+}
+
 /// Read a header as a `&str`, empty when absent or non-ASCII.
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
     headers
@@ -133,7 +217,7 @@ pub async fn register_site(
     let path = header(&headers, "x-tonk-path").to_owned();
     let anchor = header(&headers, "x-tonk-hash").to_owned();
     let tonk = state.read().await;
-    stamp_site(&tonk, &site, ClientId(client_id), &path, anchor).await;
+    stamp_site(&tonk, site.clone(), ClientId(client_id), path, anchor).await;
 
     Ok(Json(SiteResponse { site }))
 }
@@ -187,14 +271,16 @@ pub async fn register_site_on_repo(
     }
     stamp_site_on(
         &tonk,
-        &site,
         client,
-        &path.repo,
-        &path.branch,
-        false,
-        &body.path,
-        &body.path,
-        body.anchor,
+        Stamp {
+            site: site.clone(),
+            repo: path.repo,
+            branch: path.branch,
+            profile: false,
+            rest: body.path.clone(),
+            path: body.path,
+            anchor: body.anchor,
+        },
     )
     .await;
     Ok(Json(SiteResponse { site }))
@@ -214,17 +300,18 @@ async fn register_site_on_profile(
     let (site, client) = client_site(&request)?;
     let body = read_site_request(request).await?;
     let tonk = state.read().await;
-    let repo = tonk.profile_name.clone();
     stamp_site_on(
         &tonk,
-        &site,
         client,
-        &repo,
-        &path.branch,
-        true,
-        &body.path,
-        &body.path,
-        body.anchor,
+        Stamp {
+            site: site.clone(),
+            repo: tonk.profile_name.clone(),
+            branch: path.branch,
+            profile: true,
+            rest: body.path.clone(),
+            path: body.path,
+            anchor: body.anchor,
+        },
     )
     .await;
     Ok(Json(SiteResponse { site }))
@@ -274,26 +361,28 @@ async fn read_site_request(request: Request) -> Result<SiteRequest, TonkWorkerEr
 /// branch named in the request URL.
 async fn stamp_site(
     tonk: &crate::worker::TonkState,
-    site: &str,
+    site: String,
     client: ClientId,
-    path: &str,
+    path: String,
     anchor: String,
 ) {
     use tonk_schema::{RouteTarget, resolve_path};
 
-    let Some(RouteTarget::Space { space, rest }) = resolve_path(path) else {
+    let Some(RouteTarget::Space { space, rest }) = resolve_path(&path) else {
         return;
     };
     stamp_site_on(
         tonk,
-        site,
         client,
-        &space.name,
-        &space.branch,
-        false,
-        path,
-        &rest,
-        anchor,
+        Stamp {
+            site,
+            repo: space.name,
+            branch: space.branch,
+            profile: false,
+            path,
+            rest,
+            anchor,
+        },
     )
     .await;
 }
@@ -308,19 +397,15 @@ async fn stamp_site(
 /// route, and writes `{path, anchor, repo, branch, replica, route, concept}`
 /// plus the captured route params into the session overlay. Best-effort: an
 /// unacquirable branch, an absent replica, or no matched route skip stamping.
-#[allow(clippy::too_many_arguments)]
-async fn stamp_site_on(
-    tonk: &crate::worker::TonkState,
-    site: &str,
-    client: ClientId,
-    repo: &str,
-    branch_name: &str,
-    profile: bool,
-    path: &str,
-    rest: &str,
-    anchor: String,
-) {
+async fn stamp_site_on(tonk: &crate::worker::TonkState, client: ClientId, stamp: Stamp) {
     use tonk_schema::Site;
+
+    let site = stamp.site.as_str();
+    let repo = stamp.repo.as_str();
+    let branch_name = stamp.branch.as_str();
+    let profile = stamp.profile;
+    let path = stamp.path.as_str();
+    let rest = stamp.rest.as_str();
 
     let Ok(entity): Result<dialog_artifacts::Entity, _> = site.parse() else {
         return;
@@ -342,6 +427,16 @@ async fn stamp_site_on(
             return;
         }
     };
+    // A page is looking at this space: say who its session acts for, where
+    // the space's roster is, so a view can tell which member that is. Here
+    // because a stamp is made whenever a page loads a space and again when
+    // a restarted worker restores it, and the overlay lasts no longer than
+    // either.
+    if !profile
+        && let Err(error) = super::sync::publish_session_account(tonk, repo, branch_name).await
+    {
+        tonk_common::log!("register_site: {error}");
+    }
 
     let Some(replica) = origin_entity(tonk, &state).await else {
         tonk_common::log!(
@@ -349,9 +444,18 @@ async fn stamp_site_on(
         );
         return;
     };
-    let Some(matched) = match_route(tonk, &state, rest).await else {
-        tonk_common::log!("[stamp] {site} SKIPPED: no route match for rest={rest:?}");
-        return;
+    let matched = match match_route(tonk, &state, rest).await {
+        Some(Matched::View(matched)) => matched,
+        // A path answered with content is not a page to show in place: the
+        // worker answers a request for it, and there is no model to mount.
+        Some(Matched::Http(_)) => {
+            tonk_common::log!("[stamp] {site} SKIPPED: rest={rest:?} answers with content");
+            return;
+        }
+        None => {
+            tonk_common::log!("[stamp] {site} SKIPPED: no route match for rest={rest:?}");
+            return;
+        }
     };
 
     // A re-stamp REPLACES this site's overlay facts, not merges into them:
@@ -378,10 +482,10 @@ async fn stamp_site_on(
     // picks the ones it declares — the same per-field pickup `tonk:space/route`
     // uses for `replica`. Params are variable per route, so they ride raw claims
     // rather than the fixed `Site` struct.
-    let stamp = Site::new(
+    let fact = Site::new(
         entity.clone(),
         path.to_owned(),
-        anchor,
+        stamp.anchor.clone(),
         repo.to_owned(),
         branch_name.to_owned(),
         replica,
@@ -389,7 +493,7 @@ async fn stamp_site_on(
         matched.concept,
         tonk.active_branch.clone(),
     );
-    let mut overlay = branch.overlay().assert(stamp);
+    let mut overlay = branch.overlay().assert(fact);
     for (name, value) in matched.params.iter() {
         // Decode captured params so both URL spellings of a value stamp the same
         // fact — a raw `/space/did:key:z…` and its `encodeURIComponent`'d
@@ -442,7 +546,7 @@ async fn stamp_site_on(
                 .entry(client)
                 .or_default()
                 .sites
-                .insert(site.to_owned());
+                .insert(site.to_owned(), stamp.clone());
         }
         tonk_common::log!("[stamp] {site} WROTE path={path}");
     }
@@ -584,14 +688,16 @@ impl dialog_capability::Provider<tonk_schema::command::Load> for crate::router::
         // recorded `path` and the `rest` matched against the route table.
         stamp_site_on(
             &tonk,
-            &site,
             client,
-            &repo,
-            &branch,
-            profile,
-            &path,
-            &path,
-            String::new(),
+            Stamp {
+                site,
+                repo,
+                branch,
+                profile,
+                rest: path.clone(),
+                path,
+                anchor: String::new(),
+            },
         )
         .await;
     }
@@ -630,13 +736,29 @@ async fn origin_entity(
 
 /// A matched route: the route-table entry, the model the shell mounts, and the
 /// params captured from the path (`{model}`, `{entity}`, `{view}`, …).
-struct MatchedRoute {
+pub(super) struct MatchedRoute {
     /// The route-table entry's entity.
     route: dialog_artifacts::Entity,
     /// The route model to mount.
     concept: dialog_artifacts::Entity,
     /// The captured path params, by name.
     params: tonk_router::Params,
+}
+
+/// A matched `route/http`: the entry and the body it answers with.
+pub(super) struct MatchedHttp {
+    /// The route-table entry's entity, which its headers are read from.
+    pub(super) route: dialog_artifacts::Entity,
+    /// The response's body.
+    pub(super) body: String,
+}
+
+/// What a path matched: a route a page shows, or one the worker answers.
+pub(super) enum Matched {
+    /// A `route`: the page mounts its model.
+    View(MatchedRoute),
+    /// A `route/http`: a request is answered with its content.
+    Http(MatchedHttp),
 }
 
 /// Order routes for insertion into the router: the space's own routes first,
@@ -663,25 +785,34 @@ fn route_order(routes: &mut [tonk_schema::Route], pinned: &std::collections::Has
 }
 
 /// Match `rest` (the Level 1 remaining path) against the branch's durable
-/// `tonk:route` table.
+/// route tables: `tonk:route`, whose match a page shows, and
+/// `tonk:route/http`, whose match the worker answers with.
 ///
 /// Builds a fresh [`tonk_router::Router`] per call from the queried routes:
-/// each route's `path` pattern compiles via [`Route::parse_pattern`], paired with
-/// its `(route entity, model)`. [`recognize`](tonk_router::Router::recognize)
-/// matches most-specific-first (static > param > catch-all) and returns the
-/// captured params. Routes are inserted in [`route_order`] so equal-specificity
-/// ties resolve deterministically. Returns `None` when nothing matches or a
-/// pattern fails to compile.
+/// each route's `path` pattern compiles via [`Route::parse_pattern`], paired
+/// with what it matches to. [`recognize`](tonk_router::Router::recognize)
+/// matches most-specific-first (static > param > catch-all) across both
+/// kinds and returns the captured params. Routes are inserted in
+/// [`route_order`] so equal-specificity ties resolve deterministically, the
+/// ones answered with content ahead of the ones a page shows. Returns `None`
+/// when nothing matches.
 ///
 /// [`recognize`]: tonk_router::Router::recognize
-async fn match_route(
+pub(super) async fn match_route(
     tonk: &crate::worker::TonkState,
     state: &dialog_reactor::BranchSession,
     rest: &str,
-) -> Option<MatchedRoute> {
+) -> Option<Matched> {
     use dialog_query::{Output as _, Query, Term};
     use tonk_router::Route as RoutePattern;
-    use tonk_schema::Route;
+    use tonk_schema::{HttpRoute, Route};
+
+    /// What a pattern in the router stands for.
+    #[derive(Clone)]
+    enum Target {
+        View(dialog_artifacts::Entity, dialog_artifacts::Entity),
+        Http(dialog_artifacts::Entity, String),
+    }
 
     let mut routes: Vec<Route> = state
         .handle()
@@ -704,32 +835,50 @@ async fn match_route(
         .collect();
     route_order(&mut routes, &pinned);
 
+    let mut answered: Vec<HttpRoute> = state
+        .handle()
+        .query()
+        .select(Query::<HttpRoute> {
+            this: Term::var("this"),
+            path: Term::var("path"),
+            body: Term::var("body"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+    answered.sort_by_key(|route| route.this.to_string());
+
+    let patterns = answered
+        .into_iter()
+        .map(|route| (route.path.0, Target::Http(route.this, route.body.0)))
+        .chain(
+            routes
+                .into_iter()
+                .map(|route| (route.path.0, Target::View(route.this, route.concept.0))),
+        );
+
     let mut router = tonk_router::Router::new();
-    for route in &routes {
-        match RoutePattern::parse_pattern(&route.path.0) {
+    for (path, target) in patterns {
+        match RoutePattern::parse_pattern(&path) {
             Ok(pattern) => {
-                router.insert(pattern, (route.this.clone(), route.concept.0.clone()));
+                router.insert(pattern, target);
             }
             Err(e) => {
-                tonk_common::log!(
-                    "match_route: skipping invalid route {}: {e:?}",
-                    route.path.0
-                );
+                tonk_common::log!("match_route: skipping invalid route {path}: {e:?}");
             }
         }
     }
 
-    match router.recognize(rest) {
-        Ok(matched) => {
-            let (route, concept) = matched.value.clone();
-            Some(MatchedRoute {
-                route,
-                concept,
-                params: matched.params,
-            })
-        }
-        Err(_) => None,
-    }
+    let matched = router.recognize(rest).ok()?;
+    Some(match matched.value.clone() {
+        Target::View(route, concept) => Matched::View(MatchedRoute {
+            route,
+            concept,
+            params: matched.params,
+        }),
+        Target::Http(route, body) => Matched::Http(MatchedHttp { route, body }),
+    })
 }
 
 /// The route entity [`match_route`] picks for `rest`, for tests outside this
@@ -740,9 +889,10 @@ pub(super) async fn matched_route(
     state: &dialog_reactor::BranchSession,
     rest: &str,
 ) -> Option<dialog_artifacts::Entity> {
-    match_route(tonk, state, rest)
-        .await
-        .map(|matched| matched.route)
+    match match_route(tonk, state, rest).await? {
+        Matched::View(matched) => Some(matched.route),
+        Matched::Http(matched) => Some(matched.route),
+    }
 }
 
 /// End-to-end: the route table a branch actually holds, resolved through
@@ -787,9 +937,10 @@ mod match_route_tests {
             .acquire(&tonk.operator)
             .await
             .expect("main acquires");
-        super::match_route(&tonk, &session, path)
-            .await
-            .map(|matched| matched.concept.to_string())
+        match super::match_route(&tonk, &session, path).await? {
+            super::Matched::View(matched) => Some(matched.concept.to_string()),
+            super::Matched::Http(matched) => Some(matched.body),
+        }
     }
 
     /// A route a library ships as a command resolves: the rule wrote it.
@@ -800,6 +951,41 @@ mod match_route_tests {
         assert_eq!(
             resolve(shipped, None, "/probe").await.as_deref(),
             Some("probe:library")
+        );
+    }
+
+    /// A path a route answers with content is matched with the paths pages
+    /// show, most specific first: a literal content path wins over the
+    /// catch-all that would otherwise read it as a model's name.
+    #[dialog_common::test]
+    async fn it_prefers_a_content_route_over_a_broader_view_route() {
+        let routes = "route/http!:\n  path: /lib/tonk.js\n  body: export {};\n\nroute!:\n  path: \"/{*anything}\"\n  concept: probe:catch-all\n";
+
+        assert_eq!(
+            resolve("", Some(routes), "/lib/tonk.js").await.as_deref(),
+            Some("export {};"),
+            "the content route is the more specific match"
+        );
+        assert_eq!(
+            resolve("", Some(routes), "/lib/other.js").await.as_deref(),
+            Some("probe:catch-all"),
+            "any other path is still the view route's"
+        );
+    }
+
+    /// The same holds the other way round: a literal view path wins over a
+    /// content route's pattern.
+    #[dialog_common::test]
+    async fn it_prefers_a_view_route_over_a_broader_content_route() {
+        let routes = "route/http!:\n  path: \"/docs/{*page}\"\n  body: \"fallback\"\n\nroute!:\n  path: /docs/index\n  concept: probe:index\n";
+
+        assert_eq!(
+            resolve("", Some(routes), "/docs/index").await.as_deref(),
+            Some("probe:index")
+        );
+        assert_eq!(
+            resolve("", Some(routes), "/docs/guide").await.as_deref(),
+            Some("fallback")
         );
     }
 
@@ -815,6 +1001,81 @@ mod match_route_tests {
             Some("probe:space"),
             "the space's own route must win the tie against the pinned one"
         );
+    }
+}
+
+#[cfg(test)]
+mod saved_tests {
+    use super::{ClientRegistry, ClientState, SAVED_VERSION, Saved, Stamp};
+    use crate::router::ClientId;
+
+    fn stamp(site: &str) -> Stamp {
+        Stamp {
+            site: site.to_owned(),
+            repo: "did:key:z6Mkspace".to_owned(),
+            branch: "main".to_owned(),
+            profile: false,
+            path: "/notes".to_owned(),
+            rest: "/notes".to_owned(),
+            anchor: String::new(),
+        }
+    }
+
+    async fn registry(clients: &[(&str, &[&str])]) -> ClientRegistry {
+        let registry = ClientRegistry::default();
+        {
+            let mut ledger = registry.write().await;
+            for (client, sites) in clients {
+                let state = ledger.entry(ClientId((*client).to_owned())).or_default();
+                for site in *sites {
+                    state.sites.insert((*site).to_owned(), stamp(site));
+                }
+            }
+            ledger.insert(ClientId("bare".to_owned()), ClientState::default());
+        }
+        registry
+    }
+
+    #[dialog_common::test]
+    async fn it_reads_back_what_it_saved() {
+        let clients = registry(&[("a", &["site:1", "site:2"]), ("b", &["site:3"])]).await;
+        let saved = Saved::of(&clients).await;
+        let bytes = serde_json::to_vec(&saved).expect("saves");
+        let read = Saved::read(&bytes, |_| true).expect("reads");
+        assert_eq!(read, saved);
+        assert_eq!(
+            read.clients.len(),
+            2,
+            "a client with no stamps is not saved"
+        );
+        assert_eq!(read.clients["a"], vec![stamp("site:1"), stamp("site:2")]);
+    }
+
+    #[dialog_common::test]
+    async fn it_saves_equal_state_as_equal_bytes() {
+        let first = registry(&[("a", &["site:1", "site:2", "site:3"])]).await;
+        let second = registry(&[("a", &["site:3", "site:1", "site:2"])]).await;
+        let first = serde_json::to_vec(&Saved::of(&first).await).expect("saves");
+        let second = serde_json::to_vec(&Saved::of(&second).await).expect("saves");
+        assert_eq!(first, second);
+    }
+
+    #[dialog_common::test]
+    async fn it_drops_the_stamps_of_clients_that_closed() {
+        let clients = registry(&[("a", &["site:1"]), ("b", &["site:2"])]).await;
+        let bytes = serde_json::to_vec(&Saved::of(&clients).await).expect("saves");
+        let read = Saved::read(&bytes, |client| client == "b").expect("reads");
+        assert_eq!(read.clients.keys().collect::<Vec<_>>(), vec!["b"]);
+    }
+
+    #[dialog_common::test]
+    async fn it_ignores_a_version_it_does_not_read() {
+        let clients = registry(&[("a", &["site:1"])]).await;
+        let mut saved = serde_json::to_value(Saved::of(&clients).await).expect("saves");
+        saved["version"] = (SAVED_VERSION + 1).into();
+        let bytes = serde_json::to_vec(&saved).expect("encodes");
+        assert!(Saved::read(&bytes, |_| true).is_none());
+        assert!(Saved::read(b"not json", |_| true).is_none());
     }
 }
 
