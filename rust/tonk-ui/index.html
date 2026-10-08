@@ -76,7 +76,7 @@
         />
 
         <link rel="icon" type="image/png" href="/images/tonk-icon.png" />
-        <link rel="apple-touch-icon" href="/images/tonk-icon.png" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 
         <!-- Boot-shell critical CSS, inlined so first paint needs ZERO
        external resources: both stylesheets below load async (media="print"
@@ -1040,6 +1040,10 @@
             rel="copy-file"
             href="./assets/tonk-media-preview.png"
         />
+        <!-- Root icons for clients that probe the default paths (iMessage,
+       Safari) on pages without their own icon links, e.g. /agent/. -->
+        <link data-trunk rel="copy-file" href="./assets/favicon.ico" />
+        <link data-trunk rel="copy-file" href="./assets/apple-touch-icon.png" />
         <!-- Cache policy for Cloudflare Workers Assets. `immutable` on the
        content-hashed bundles, `no-store` on the service-worker chain and
        live build metadata. -->
