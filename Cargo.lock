@@ -959,7 +959,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -997,7 +997,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "async-trait",
  "base58",
@@ -1023,7 +1023,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1052,7 +1052,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1078,7 +1078,7 @@ dependencies = [
 [[package]]
 name = "dialog-csv"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "async-trait",
  "base58",
@@ -1093,7 +1093,7 @@ dependencies = [
 [[package]]
 name = "dialog-did-web"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "async-trait",
  "base58",
@@ -1116,7 +1116,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "async-trait",
  "base58",
@@ -1131,7 +1131,7 @@ dependencies = [
 [[package]]
 name = "dialog-identity"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1149,7 +1149,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "blake3",
  "convert_case",
@@ -1161,7 +1161,7 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1177,7 +1177,7 @@ dependencies = [
 [[package]]
 name = "dialog-peer"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1216,7 +1216,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1281,7 +1281,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-fs"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1298,7 +1298,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1337,7 +1337,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1366,7 +1366,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1404,7 +1404,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1447,7 +1447,7 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1479,7 +1479,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1522,7 +1522,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "async-trait",
  "base58",
@@ -1543,7 +1543,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "base64",
  "dialog-varsig",
@@ -1571,7 +1571,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#d57b98c2d20dc67fc5919e39a26c27e8974c7153"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fpr-580-review-assessment-jkgwxr#e96a9a2a2ee46c24940351793a6bb3e7150821cf"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",
