@@ -24,3 +24,12 @@ Validation:
   Live email resolution and actual passkey handoff remain unverified.
 
 Storybook WEB-10 documents the final screen and its evidence boundary.
+
+CI follow-up: web debug failed in the registry test that still expected the old
+host-specific heading. Updated that test and the neighboring loopback test to
+use shared connection wording and preserve the email supplied by the account
+view, while retaining authority-data and decline-callback assertions. A focused
+Node execution of the actual profile methods passed for loopback and HTTPS
+requests; formatting and diff checks passed. Full Wasm test execution remains
+for CI. The other test matrix legs were cancelled by fail-fast, not independent
+failures. The unrelated macOS CLI cache-download failure passed on retry.
