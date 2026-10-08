@@ -217,6 +217,8 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<super::repository::EnableSyncRequest>()
         .command::<tonk_schema::command::Load>()
         .command::<tonk_schema::command::PromoteMember>()
+        .command::<tonk_schema::command::PublishSpace>()
+        .command::<tonk_schema::command::UnpublishSpace>()
         .command::<tonk_schema::command::EnrollCustomer>()
         .command::<tonk_schema::command::ResendActivation>()
         .command::<tonk_schema::command::DeleteAccount>()

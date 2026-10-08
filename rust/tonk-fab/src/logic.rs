@@ -553,6 +553,48 @@ pub fn collapsed_claim_json(collapsed: bool) -> Value {
     })
 }
 
+/// Build a `TransactRequest` JSON body for `space/publish` (`publish`
+/// true) or `space/unpublish`. Routeless like `promote_claim_json`: the
+/// worker reads `space` off the command, and `time` makes each press a
+/// new transient.
+pub fn publication_claim_json(space: &str, publish: bool, time: f64) -> Value {
+    let (verb, description) = if publish {
+        ("publish", "Make a space readable by anyone.")
+    } else {
+        ("unpublish", "Make a published space private again.")
+    };
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": description,
+                        "with": {
+                            "space": { "the": format!("xyz.tonk.{verb}/space"), "cardinality": "one", "as": "Entity" },
+                            "time": { "the": format!("xyz.tonk.{verb}/time"), "cardinality": "one", "as": "Float" }
+                        }
+                    }
+                },
+                "parameters": { "space": space, "time": time }
+            }
+        }]
+    })
+}
+
+/// The subscribe body for whether a space is published: the invitations
+/// on its branch recorded with kind `public`. Any row means published.
+pub fn publication_query_body() -> String {
+    json!({
+        "predicate": { "with": { "kind": {
+            "the": "xyz.tonk.invitation-execution/kind", "as": "Text", "cardinality": "one"
+        } } },
+        "terms": { "this": { "?": { "name": "this" } }, "kind": "public" }
+    })
+    .to_string()
+}
+
 /// Build a `TransactRequest` JSON body for the `member/promote` command.
 ///
 /// Asserted once the page has minted the admin hop under the passkey:
@@ -1415,6 +1457,31 @@ pub fn repo_name_query_body(subject: &str) -> Result<String, String> {
         "terms": { "this": subject, "name": { "?": { "name": "name" } } }
     })
     .to_string())
+}
+
+#[cfg(test)]
+mod publication {
+    use super::*;
+
+    /// The worker decodes `space/publish` and `space/unpublish` from their
+    /// own attribute namespaces; a claim in the other's would publish a
+    /// space someone meant to make private.
+    #[test]
+    fn it_names_each_verb_in_its_own_namespace() {
+        let publish = publication_claim_json("did:key:z6Mk", true, 1.0).to_string();
+        assert!(publish.contains("xyz.tonk.publish/space"));
+        assert!(!publish.contains("xyz.tonk.unpublish"));
+        let unpublish = publication_claim_json("did:key:z6Mk", false, 1.0).to_string();
+        assert!(unpublish.contains("xyz.tonk.unpublish/space"));
+        assert!(unpublish.contains("xyz.tonk.unpublish/time"));
+    }
+
+    #[test]
+    fn it_reads_publication_from_the_public_invitation_kind() {
+        let body = publication_query_body();
+        assert!(body.contains("xyz.tonk.invitation-execution/kind"));
+        assert!(body.contains(r#""kind":"public""#));
+    }
 }
 
 #[cfg(test)]

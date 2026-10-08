@@ -3553,7 +3553,7 @@ async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
 /// A sync remote is never wired here — it would make a remote/auth
 /// failure abort the whole create, so the space never appears.
 /// [`CreateSpaceHandler`] attaches the remote separately, after this.
-async fn create_space_inner(
+pub(super) async fn create_space_inner(
     state: &AppState,
     name: &str,
     description: Option<&str>,
@@ -3590,7 +3590,7 @@ async fn create_space_inner(
 /// sync" forms. A missing repository or empty URL is a no-op (logged),
 /// not an error.
 ///
-async fn enable_sync_inner(
+pub(super) async fn enable_sync_inner(
     state: &AppState,
     key: &str,
     remote: &str,

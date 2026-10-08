@@ -245,6 +245,18 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
     if let Ok(Some(home)) = root.query_selector("[data-action=home]") {
         listeners.push(shadow::on_click(&home, || tonk_host::navigate_to("/")));
     }
+    for (action, publish) in [("publish", true), ("unpublish", false)] {
+        if let Ok(Some(button)) = root.query_selector(&format!("[data-action={action}]")) {
+            let host = this.clone();
+            let shared = state.clone();
+            listeners.push(shadow::on_click(&button, move || {
+                if let Some(space) = host.get_attribute("space").filter(|s| !s.is_empty()) {
+                    crate::publication::dispatch(&space, publish);
+                }
+                close(&host, &shared);
+            }));
+        }
+    }
     if let Ok(Some(condition)) = root.query_selector("[data-action=condition]") {
         let host = this.clone();
         listeners.push(shadow::on_click(&condition, move || {

@@ -29,7 +29,7 @@ use web_sys::{CustomEvent, HtmlElement, Response, window};
 
 use crate::logic::{
     member_invitations_query_body, member_roster_query_body, repository_endpoint,
-    self_member_did_from_repository,
+    role_manages_members, self_member_did_from_repository,
 };
 use crate::member_graph::{self, Member};
 use crate::shadow::{self, Bound};
@@ -427,6 +427,7 @@ fn render_rows(
     viewer: Option<&str>,
     invitations: &BTreeMap<String, String>,
 ) {
+    stamp_manages(host, members, viewer);
     let Some(panel) = member_panel(host) else {
         return;
     };
@@ -935,6 +936,25 @@ fn show_member_detail(panel: &HtmlElement, description: Option<&str>) {
 /// Resolve the current member from the repository's `is_self` projection.
 /// Its DID is the account principal that owns the membership, which need not
 /// be this device's profile DID. Repaint rows delivered during the request.
+/// Stamp the bar with whether the viewer runs the space (`data-manages`),
+/// which is what offers it publishing: the worker refuses anyone else, and a
+/// reader of a published space must not be offered to make it private.
+fn stamp_manages(host: &HtmlElement, members: &[Member], viewer: Option<&str>) {
+    let Some(bar) = host.closest("tonk-fab").ok().flatten() else {
+        return;
+    };
+    let manages = viewer.is_some_and(|viewer| {
+        members
+            .iter()
+            .any(|member| member.did == viewer && role_manages_members(&member.role))
+    });
+    if manages {
+        let _ = bar.set_attribute("data-manages", "");
+    } else {
+        let _ = bar.remove_attribute("data-manages");
+    }
+}
+
 fn resolve_viewer(
     host: &HtmlElement,
     members: Rc<RefCell<Vec<Member>>>,

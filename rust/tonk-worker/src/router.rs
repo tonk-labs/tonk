@@ -69,6 +69,8 @@ pub(crate) mod custody;
 pub(crate) mod rotation;
 
 mod join;
+pub(crate) mod public_access;
+mod publication;
 pub use join::{JoinRequest, JoinResponse};
 mod local_space_link;
 

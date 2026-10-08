@@ -542,13 +542,40 @@ fn it_keeps_keyboard_focus_visible_on_inverted_hub_controls() {
     );
 }
 
+/// The body of the `<tonk-display>` opened by `opening`, up to the close
+/// that matches it rather than the first close of a display nested in it.
+fn display_body<'a>(source: &'a str, opening: &str) -> Option<&'a str> {
+    let body = source.split_once(opening)?.1;
+    let mut depth = 1usize;
+    let mut at = 0;
+    while depth > 0 {
+        let rest = &body[at..];
+        let open = rest.find("<tonk-display");
+        let close = rest.find("</tonk-display>")?;
+        match open {
+            Some(open) if open < close => {
+                depth += 1;
+                at += open + "<tonk-display".len();
+            }
+            _ => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&body[..at + close]);
+                }
+                at += close + "</tonk-display>".len();
+            }
+        }
+    }
+    None
+}
+
 #[dialog_common::test]
 fn it_hides_space_absence_slots_before_display_initialization() {
-    let chrome = PROFILE_LIBRARY
-        .split("<tonk-display with={id} entity={id} model=tonk:repository view=title>")
-        .nth(1)
-        .and_then(|source| source.split("</tonk-display>").next())
-        .expect("space chrome must contain its repository title display");
+    let chrome = display_body(
+        PROFILE_LIBRARY,
+        "<tonk-display with={id} entity={id} model=tonk:repository view=title>",
+    )
+    .expect("space chrome must contain its repository title display");
     for slot in ["no-model", "no-entity", "no-view"] {
         let marker = format!("slot=\"{slot}\"");
         let attributes = chrome
@@ -565,11 +592,11 @@ fn it_hides_space_absence_slots_before_display_initialization() {
 
 #[dialog_common::test]
 fn it_recovers_from_every_absent_space_directory_state() {
-    let directory_probe = PROFILE_LIBRARY
-        .split("<tonk-display with=\"{profile-branch}@profile:tonk\" entity={id} model=space view=downloading>")
-        .nth(1)
-        .and_then(|source| source.split("</tonk-display>").next())
-        .expect("absent-space chrome must consult the profile directory");
+    let directory_probe = display_body(
+        PROFILE_LIBRARY,
+        "<tonk-display with=\"{profile-branch}@profile:tonk\" entity={id} model=space view=downloading>",
+    )
+    .expect("absent-space chrome must consult the profile directory");
 
     for state in ["no-model", "no-entity"] {
         assert!(
@@ -578,11 +605,16 @@ fn it_recovers_from_every_absent_space_directory_state() {
         );
     }
     assert_eq!(
-        directory_probe
-            .matches("New to this space? Ask someone in it to send you an invite link")
-            .count(),
+        directory_probe.matches("New to this space?").count(),
         2,
         "both absence states must explain how to obtain an invite link"
+    );
+    assert_eq!(
+        directory_probe
+            .matches("from <strong>share</strong>")
+            .count(),
+        2,
+        "both absence states must say where an invite link comes from"
     );
     assert_eq!(
         directory_probe.matches("<space-login>").count(),
@@ -640,6 +672,8 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         "class=\"space-unknown-mast\"",
         "class=\"space-unknown-wall\"",
         "open this space",
+        // What a visit to a space that keeps no public ticket ends on.
+        "this space is private",
         "class=\"space-unknown-back\" href=\"/\">go to home",
         "<space-login><button type=\"button\"",
     ] {

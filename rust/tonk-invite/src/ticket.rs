@@ -62,6 +62,40 @@ impl Ticket {
         })
     }
 
+    /// The ticket a published space keeps for the public principal (see
+    /// [`crate::public`]), claimed from the access service at `remote`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `remote` has no origin to claim at.
+    pub fn public(subject: Did, remote: &Url) -> Result<Self> {
+        Self::new(subject, crate::public::seed(), remote)
+    }
+
+    /// Whether this is the public principal's ticket rather than an
+    /// invite's: it makes its redeemer a reader, not a member.
+    pub fn is_public(&self) -> bool {
+        self.seed == crate::public::seed()
+    }
+
+    /// The public ticket of the space a bare space address opens,
+    /// `/space/{did}` with no seed beside it, or `None` when `url` is not
+    /// one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when `url` does not parse as a URL.
+    pub fn public_for_url(url: &str) -> Result<Option<Self>> {
+        let parsed = Url::parse(url).context("space address is not a valid URL")?;
+        if parsed.fragment().and_then(decode_seed).is_some() {
+            return Ok(None);
+        }
+        let Some(subject) = space_subject(&parsed) else {
+            return Ok(None);
+        };
+        Self::public(subject, &parsed).map(Some)
+    }
+
     /// The space the ticket opens.
     pub fn subject(&self) -> &Did {
         &self.subject
@@ -84,7 +118,8 @@ impl Ticket {
             .context("failed to import the ticket key from its seed")
     }
 
-    /// The link: `{origin}/space/{subject}#{seed}`.
+    /// The link: `{origin}/space/{subject}#{seed}`, or for the public
+    /// ticket the space's bare address, since its seed is everyone's.
     ///
     /// # Errors
     ///
@@ -94,7 +129,9 @@ impl Ticket {
             .remote
             .join(&format!("/{SPACE_PATH}/{}", self.subject))
             .context("ticket link did not assemble")?;
-        url.set_fragment(Some(&bs58::encode(self.seed).into_string()));
+        if !self.is_public() {
+            url.set_fragment(Some(&bs58::encode(self.seed).into_string()));
+        }
         Ok(url.into())
     }
 
@@ -111,16 +148,7 @@ impl Ticket {
     /// Returns an error only when `url` does not parse as a URL.
     pub fn parse_url(url: &str) -> Result<Option<Self>> {
         let parsed = Url::parse(url).context("ticket link is not a valid URL")?;
-        let mut segments = match parsed.path_segments() {
-            Some(segments) => segments,
-            None => return Ok(None),
-        };
-        let (Some(SPACE_PATH), Some(subject), None) =
-            (segments.next(), segments.next(), segments.next())
-        else {
-            return Ok(None);
-        };
-        let Ok(subject) = subject.parse::<Did>() else {
+        let Some(subject) = space_subject(&parsed) else {
             return Ok(None);
         };
         let Some(seed) = parsed.fragment().and_then(decode_seed) else {
@@ -141,6 +169,27 @@ impl Ticket {
     /// grants a space other than the one the link names, or if its
     /// audience is not the key the link's seed derives.
     pub async fn redeem(self, ticket: &[u8]) -> Result<Invite> {
+        let chain = self.accept(ticket).await?;
+        // The chain's own signed endpoint wins, as it does on an
+        // `access=` invite; the link's origin is where it was claimed.
+        let remote = home_address(&chain)?.unwrap_or(self.remote);
+        Invite::new(
+            chain,
+            InviteAudience::Open { seed: self.seed },
+            Some(remote),
+        )
+        .await
+    }
+
+    /// Read the fetched `ticket` as the delegation chain it is, checking
+    /// that it grants the space the link opens to the key the link's
+    /// seed derives.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the ticket is not a delegation chain, grants
+    /// another space, or was kept for another key.
+    pub async fn accept(&self, ticket: &[u8]) -> Result<DelegationChain> {
         let chain = DelegationChain::try_from(ticket)
             .context("the space's ticket is not a delegation chain")?;
         anyhow::ensure!(
@@ -151,15 +200,13 @@ impl Ticket {
                 .map_or_else(|| "any subject".to_owned(), ToString::to_string),
             self.subject,
         );
-        // The chain's own signed endpoint wins, as it does on an
-        // `access=` invite; the link's origin is where it was claimed.
-        let remote = home_address(&chain)?.unwrap_or(self.remote);
-        Invite::new(
-            chain,
-            InviteAudience::Open { seed: self.seed },
-            Some(remote),
-        )
-        .await
+        let holder = Self::holder_did(&self.seed).await?;
+        anyhow::ensure!(
+            chain.audience() == &holder,
+            "the ticket was kept for {} but the link holds {holder}",
+            chain.audience(),
+        );
+        Ok(chain)
     }
 
     /// The DID of the key a seed derives: the holder a space keeps a
@@ -187,6 +234,17 @@ fn claim_endpoint(url: &Url) -> Result<Url> {
     origin
         .join("/ucan/")
         .with_context(|| format!("'{url}' has no origin to claim a ticket at"))
+}
+
+/// The space a `/space/{did}` address opens.
+fn space_subject(url: &Url) -> Option<Did> {
+    let mut segments = url.path_segments()?;
+    let (Some(SPACE_PATH), Some(subject), None) =
+        (segments.next(), segments.next(), segments.next())
+    else {
+        return None;
+    };
+    subject.parse().ok()
 }
 
 fn decode_seed(fragment: &str) -> Option<EphemeralSeed> {
@@ -322,5 +380,54 @@ mod tests {
             .redeem(&chain.to_bytes().unwrap())
             .await;
         assert!(refused.is_err());
+    }
+
+    /// A bare space address claims the public principal's ticket; one
+    /// with a seed is an invite's ticket link and not a public visit.
+    #[dialog_common::test]
+    async fn it_reads_a_bare_space_address_as_its_public_ticket() {
+        let subject = did(&SPACE_SEED).await;
+        let bare = format!("https://tonk.example/space/{subject}?tonk_channel=share");
+        let public = Ticket::public_for_url(&bare)
+            .unwrap()
+            .expect("a space address");
+        assert!(public.is_public());
+        assert_eq!(
+            public.to_url().unwrap(),
+            format!("https://tonk.example/space/{subject}")
+        );
+        assert_eq!(public.subject(), &subject);
+        assert_eq!(public.remote().as_str(), "https://tonk.example/ucan/");
+        assert_eq!(
+            public.holder().await.unwrap().did(),
+            crate::public::did().await.unwrap()
+        );
+
+        let link = format!(
+            "https://tonk.example/space/{subject}#{}",
+            bs58::encode(TICKET_SEED).into_string()
+        );
+        assert!(Ticket::public_for_url(&link).unwrap().is_none());
+        assert!(!Ticket::parse_url(&link).unwrap().unwrap().is_public());
+        for elsewhere in [
+            format!("https://tonk.example/space/{subject}/inspector"),
+            "https://tonk.example/join".to_owned(),
+        ] {
+            assert!(Ticket::public_for_url(&elsewhere).unwrap().is_none());
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_accepts_the_public_ticket_only_for_the_public_key() {
+        let subject = did(&SPACE_SEED).await;
+        let remote = Url::parse("https://tonk.example/ucan/").unwrap();
+        let ticket = Ticket::public(subject, &remote).unwrap();
+
+        let published = ticket_chain(&SPACE_SEED, &crate::public::did().await.unwrap()).await;
+        let accepted = ticket.accept(&published.to_bytes().unwrap()).await.unwrap();
+        assert_eq!(accepted.audience(), &crate::public::did().await.unwrap());
+
+        let invited = ticket_chain(&SPACE_SEED, &did(&TICKET_SEED).await).await;
+        assert!(ticket.accept(&invited.to_bytes().unwrap()).await.is_err());
     }
 }

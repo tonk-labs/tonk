@@ -4,11 +4,14 @@
 //! the key's seed can redeem it (see `tonk_invite::ticket`).
 
 use dialog_capability::{Fork, Provider};
-use dialog_effects::memory::prelude::PublishCellExt as _;
-use dialog_effects::memory::{MemoryError, Publish};
+use dialog_effects::memory::prelude::{
+    PublishCellExt as _, ResolveCellExt as _, RetractCellExt as _,
+};
+use dialog_effects::memory::{MemoryError, Publish, Resolve, Retract};
 use dialog_effects::ticket;
 use dialog_repository::{PeersEnv, RemoteSite, SiteAddress};
 use dialog_ucan_core::DelegationChain;
+use dialog_varsig::Did;
 use thiserror::Error;
 
 use crate::peer::{ConnectReplicaError, connect};
@@ -58,4 +61,40 @@ where
         .perform(&remote.connection(env))
         .await?;
     Ok(())
+}
+
+/// Take back the ticket `space` keeps for `holder`, at the service reached
+/// at `address`, so the next claim finds none.
+///
+/// This hides the grant from whoever has not claimed it yet. It does not
+/// revoke it: a chain already claimed keeps proving until the delegation
+/// is revoked. Returns whether there was a ticket to take back.
+///
+/// # Errors
+///
+/// [`IssueTicketError`] when the service cannot be reached or does not
+/// empty the cell.
+pub async fn withdraw<Env>(
+    address: SiteAddress,
+    space: &Did,
+    holder: &Did,
+    env: &Env,
+) -> Result<bool, IssueTicketError>
+where
+    Env: PeersEnv + Provider<Fork<RemoteSite, Resolve>> + Provider<Fork<RemoteSite, Retract>>,
+{
+    let remote = connect(address, space.clone(), env).await?;
+    let connection = remote.connection(env);
+    let Some(edition) = ticket::reader(space, holder)
+        .resolve()
+        .perform(&connection)
+        .await?
+    else {
+        return Ok(false);
+    };
+    ticket::remover(space, holder)
+        .retract(edition.version)
+        .perform(&connection)
+        .await?;
+    Ok(true)
 }

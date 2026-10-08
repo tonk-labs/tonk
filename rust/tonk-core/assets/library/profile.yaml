@@ -3381,9 +3381,9 @@ view!:
         .space-unknown-home:hover {
           background:linear-gradient(var(--edge-wash),var(--edge-wash)), var(--edge-ink); }
         .space-unknown-home:active { scale:.96; }
-        /* A ticket link (`/space/{did}#{seed}`) redeems here: the page
-           mounts the join, and while it runs (or once it fails) its status
-           replaces the "open this space" wall. The join's own surfaces, the
+        /* The page mounts the join here: a ticket link (`/space/{did}#{seed}`)
+           redeems, and a bare address opens a published space. While it
+           runs (or once a ticket link fails) its status replaces the wall. The join's own surfaces, the
            opening pulse and the failure wall, are styled as on `/join`. */
         .space-unknown:has(.join-status) .space-unknown-wall { display:none; }
         .space-unknown .join-opening { position:fixed; inset:0; z-index:3;
@@ -3502,14 +3502,18 @@ view!:
                 <span slot="loading"></span>
                 <span slot="no-entity"></span>
               </tonk-display>
+              <!-- What the join leaves when it found no access: the account
+                   holds none and the space keeps no public ticket. Hidden
+                   while the join is still looking (`.space-unknown:has(.join-status)`),
+                   so a public space never flashes it on the way in. -->
               <div class="space-unknown-wall">
-                <h1 class="space-unknown-statement">open this space</h1>
+                <h1 class="space-unknown-statement">this space is private</h1>
                 <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
                 <!-- The recovery control opens the top-page account ceremony. -->
                 <div class="space-unknown-run">
                   <space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></space-login>
                 </div>
-                <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
+                <p class="space-unknown-narrator">New to this space? Opening it takes an invite: ask someone in it to send you a link from <strong>share</strong>.</p>
                 <a class="space-unknown-back" href="/">go to home</a>
               </div>
             </div>

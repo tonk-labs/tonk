@@ -1133,6 +1133,41 @@ pub mod command {
         pub struct Chain(pub String);
     }
 
+    /// Attributes of the `space/publish` command.
+    pub mod publish {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The space to make readable by anyone: dispatched routeless from
+        /// the FAB, the command names its target. Derived attribute:
+        /// `xyz.tonk.publish/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.publish")]
+        pub struct Space(pub Entity);
+
+        /// The click's timestamp, so a repeated press is a new command.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.publish")]
+        pub struct Time(pub f64);
+    }
+
+    /// Attributes of the `space/unpublish` command.
+    pub mod unpublish {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The space to make private again. Derived attribute:
+        /// `xyz.tonk.unpublish/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.unpublish")]
+        pub struct Space(pub Entity);
+
+        /// The click's timestamp, so a repeated press is a new command.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.unpublish")]
+        pub struct Time(pub f64);
+    }
+
     /// Attributes of the `member/expel` command.
     pub mod expel {
         use super::super::Entity;
