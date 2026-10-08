@@ -90,6 +90,29 @@ async function file(request) {
     return fresh;
 }
 
+// What the page loaded before this worker was there to keep it. The page
+// says what that was once the worker is, and it is kept now: the browser
+// still holds each, so asking again costs nothing. Without it a first
+// visit could not be opened again with no network.
+self.onmessage = event => {
+    const urls = event.data?.type === "keep" ? event.data.urls : null;
+    if (!KEEPS || !Array.isArray(urls)) return;
+    event.waitUntil((async () => {
+        const cache = await caches.open(CACHE);
+        for (const url of urls) {
+            const at = new URL(url, self.location.origin);
+            if (at.origin !== self.location.origin || served(at.pathname)) continue;
+            if (await cache.match(at.href)) continue;
+            try {
+                const fresh = await fetch(at.href);
+                if (fresh.ok) await cache.put(at.href, fresh);
+            } catch {
+                // Not to be had now: kept when the page next loads it.
+            }
+        }
+    })());
+};
+
 self.onfetch = event => {
     const request = event.request;
     const url = new URL(request.url);

@@ -18,28 +18,147 @@ pub(crate) mod tests {
 
     use crate::helpers::TestEnvironment;
 
-    async fn worker_health(driver: &WebDriver) -> Result<Value> {
-        let result = driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                fetch("/api/health")
-                    .then(async response => {
-                        const body = await response.text();
-                        try {
-                            done({ status: response.status, body: JSON.parse(body) });
-                        } catch (error) {
-                            done({ status: response.status, error: String(error), body });
-                        }
-                    })
-                    .catch(error => done({ error: String(error) }));
-                "#,
-                vec![],
-            )
-            .await?;
-        Ok(result.json().clone())
+    /// Enter the frame the page mounts the profile's site in. `false` while
+    /// the page has none.
+    async fn enter_site(driver: &WebDriver) -> bool {
+        if driver.enter_default_frame().await.is_err() {
+            return false;
+        }
+        match driver.find(By::Css("tonk-site > iframe")).await {
+            Ok(frame) => frame.enter_frame().await.is_ok(),
+            Err(_) => false,
+        }
     }
 
+    /// Run an asynchronous `script` in the profile's site, whose worker
+    /// holds the database, and come back to the page.
+    async fn in_site(driver: &WebDriver, script: &str, arguments: Vec<Value>) -> Result<Value> {
+        ensure!(enter_site(driver).await, "the page frames no site");
+        let result = driver.execute_async(script, arguments).await;
+        driver.enter_default_frame().await?;
+        Ok(result?.json().clone())
+    }
+
+    /// How the profile's worker says it is: answered by its script, with
+    /// the wasm it booted, when it started, and what it has logged.
+    async fn worker_health(driver: &WebDriver) -> Result<Value> {
+        in_site(
+            driver,
+            r#"
+            const done = arguments[arguments.length - 1];
+            fetch("/api/health")
+                .then(async response => {
+                    const body = await response.text();
+                    try {
+                        done({ status: response.status, body: JSON.parse(body) });
+                    } catch (error) {
+                        done({ status: response.status, error: String(error), body });
+                    }
+                })
+                .catch(error => done({ error: String(error) }));
+            "#,
+            vec![],
+        )
+        .await
+    }
+
+    /// One look at the page and at the profile's site in it: which build
+    /// each is, which worker controls it, and how far it has come up.
+    async fn observed(driver: &WebDriver) -> Value {
+        let _ = driver.enter_default_frame().await;
+        let page = driver
+            .execute_async(
+                r##"
+                const done = arguments[arguments.length - 1];
+                (async () => {
+                    const registration = await navigator.serviceWorker.getRegistration();
+                    const site = document.querySelector("tonk-site");
+                    done({
+                        build: document.querySelector('meta[name="tonk-worker-build"]')?.content || null,
+                        controlled: !!navigator.serviceWorker.controller,
+                        active: registration?.active?.state || null,
+                        installing: registration?.installing?.state || null,
+                        waiting: registration?.waiting?.state || null,
+                        caches: await caches.keys(),
+                        mounted: !!site,
+                        ready: !!site?.hasAttribute("data-ready"),
+                        guard: sessionStorage.getItem("tonk:sw-upgrade-reload"),
+                        documents: Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0,
+                        roots: JSON.parse(sessionStorage.getItem("tonk:test:sw-roots") || "{}"),
+                    });
+                })().catch(error => done({ error: String(error) }));
+                "##,
+                vec![],
+            )
+            .await
+            .map(|value| value.json().clone())
+            .unwrap_or(Value::Null);
+        let site = in_site(
+            driver,
+            r##"
+            const done = arguments[arguments.length - 1];
+            (async () => {
+                const registration = await navigator.serviceWorker.getRegistration();
+                // Asking a worker anything keeps it busy, and the browser
+                // neither looks for a newer one nor lets a successor take
+                // over from a busy one: while one is on its way, only what
+                // the registration says is read.
+                const settled = !registration?.installing && !registration?.waiting;
+                const health = settled
+                    ? await fetch("/api/health")
+                        .then(response => response.json())
+                        .catch(error => ({ error: String(error) }))
+                    : {};
+                done({
+                    controlled: !!navigator.serviceWorker.controller,
+                    active: registration?.active?.state || null,
+                    installing: registration?.installing?.state || null,
+                    waiting: registration?.waiting?.state || null,
+                    worker: health.worker ?? null,
+                    workerWasm: health.workerWasm ?? null,
+                    startedAt: health.startedAt ?? null,
+                    failure: health.error ?? null,
+                    // When this document of the site loaded: it changes
+                    // when the frame loads again.
+                    loaded: Math.round(performance.timeOrigin),
+                    rendered: !!document.querySelector("tonk-display"),
+                    guest: globalThis.__tonkTestGuestGeneration ?? null,
+                });
+            })().catch(error => done({ error: String(error) }));
+            "##,
+            vec![],
+        )
+        .await
+        .unwrap_or(Value::Null);
+        serde_json::json!({ "page": page, "site": site })
+    }
+
+    /// The last of what the profile's worker logged, for a failure report.
+    async fn worker_log(driver: &WebDriver) -> String {
+        let health = worker_health(driver).await.unwrap_or(Value::Null);
+        health["body"]["log"]
+            .as_array()
+            .map(|log| {
+                log.iter()
+                    .rev()
+                    .take(60)
+                    .rev()
+                    .filter_map(|entry| {
+                        let message = entry["message"].as_str()?;
+                        let at = entry["t"].as_u64().unwrap_or_default();
+                        Some(format!(
+                            "{at} {}",
+                            message.chars().take(200).collect::<String>()
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    }
+
+    /// Wait for the profile's worker to be one that started at another time
+    /// than `previous`, and say when it started.
     async fn wait_for_worker_started_at(driver: &WebDriver, previous: Option<u64>) -> Result<u64> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
@@ -51,38 +170,19 @@ pub(crate) mod tests {
             {
                 return Ok(started_at);
             }
-            if tokio::time::Instant::now() >= deadline {
-                let document_state = driver
-                    .execute(
-                        r##"
-                        return {
-                            count: Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0,
-                            roots: JSON.parse(sessionStorage.getItem("tonk:test:sw-roots") || "{}"),
-                            mounted: !!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate"),
-                            guard: sessionStorage.getItem("tonk:sw-upgrade-reload"),
-                        };
-                        "##,
-                        vec![],
-                    )
-                    .await
-                    .map(|value| value.json().clone())
-                    .unwrap_or(Value::Null);
-                return Err(anyhow!(
-                    "timed out waiting for a different worker; health={last}, document={document_state}"
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for a different worker; health={last}, state={}",
+                observed(driver).await
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
     async fn wait_for_guest_selector(driver: &WebDriver, selector: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
-            driver.enter_default_frame().await?;
-            if let Ok(frame) = driver.find(By::Css("tonk-site > iframe")).await
-                && frame.enter_frame().await.is_ok()
-                && driver.find(By::Css(selector.to_owned())).await.is_ok()
-            {
+            if enter_site(driver).await && driver.find(By::Css(selector.to_owned())).await.is_ok() {
                 return Ok(());
             }
             ensure!(
@@ -93,109 +193,87 @@ pub(crate) mod tests {
         }
     }
 
+    /// Leave something in the profile's own storage, where a person's data
+    /// is, for an upgrade to keep.
     async fn create_state_sentinels(driver: &WebDriver) -> Result<()> {
-        let result = driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                (async () => {
-                    const database = await new Promise((resolve, reject) => {
-                        const request = indexedDB.open("tonk-sw-upgrade-sentinel", 1);
-                        request.onupgradeneeded = () => request.result.createObjectStore("state");
-                        request.onsuccess = () => resolve(request.result);
-                        request.onerror = () => reject(request.error);
-                    });
-                    await new Promise((resolve, reject) => {
-                        const transaction = database.transaction("state", "readwrite");
-                        transaction.objectStore("state").put("preserved", "value");
-                        transaction.oncomplete = resolve;
-                        transaction.onerror = () => reject(transaction.error);
-                    });
-                    database.close();
+        let result = in_site(
+            driver,
+            r#"
+            const done = arguments[arguments.length - 1];
+            (async () => {
+                const database = await new Promise((resolve, reject) => {
+                    const request = indexedDB.open("tonk-sw-upgrade-sentinel", 1);
+                    request.onupgradeneeded = () => request.result.createObjectStore("state");
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                });
+                await new Promise((resolve, reject) => {
+                    const transaction = database.transaction("state", "readwrite");
+                    transaction.objectStore("state").put("preserved", "value");
+                    transaction.oncomplete = resolve;
+                    transaction.onerror = () => reject(transaction.error);
+                });
+                database.close();
 
-                    const cache = await caches.open("tonk-sw-upgrade-sentinel");
-                    await cache.put("/__tonk/sw-upgrade-sentinel", new Response("preserved"));
-                    done({ ok: true });
-                })().catch(error => done({ error: String(error) }));
-                "#,
-                vec![],
-            )
-            .await?;
+                const cache = await caches.open("tonk-sw-upgrade-sentinel");
+                await cache.put("/__tonk/sw-upgrade-sentinel", new Response("preserved"));
+                done({ ok: true });
+            })().catch(error => done({ error: String(error) }));
+            "#,
+            vec![],
+        )
+        .await?;
         ensure!(
-            result.json()["ok"] == true,
-            "failed to create state sentinels: {}",
-            result.json()
+            result["ok"] == true,
+            "failed to create state sentinels: {result}"
         );
         Ok(())
     }
 
     async fn state_sentinels(driver: &WebDriver) -> Result<Value> {
-        let result = driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                (async () => {
-                    const database = await new Promise((resolve, reject) => {
-                        const request = indexedDB.open("tonk-sw-upgrade-sentinel", 1);
-                        request.onsuccess = () => resolve(request.result);
-                        request.onerror = () => reject(request.error);
-                    });
-                    const indexedDb = await new Promise((resolve, reject) => {
-                        const request = database.transaction("state").objectStore("state").get("value");
-                        request.onsuccess = () => resolve(request.result);
-                        request.onerror = () => reject(request.error);
-                    });
-                    database.close();
-                    const cache = await caches.open("tonk-sw-upgrade-sentinel");
-                    const response = await cache.match("/__tonk/sw-upgrade-sentinel");
-                    done({ indexedDb, cache: response ? await response.text() : null });
-                })().catch(error => done({ error: String(error) }));
-                "#,
-                vec![],
-            )
-            .await?;
-        Ok(result.json().clone())
+        in_site(
+            driver,
+            r#"
+            const done = arguments[arguments.length - 1];
+            (async () => {
+                const database = await new Promise((resolve, reject) => {
+                    const request = indexedDB.open("tonk-sw-upgrade-sentinel", 1);
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                });
+                const indexedDb = await new Promise((resolve, reject) => {
+                    const request = database.transaction("state").objectStore("state").get("value");
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                });
+                database.close();
+                const cache = await caches.open("tonk-sw-upgrade-sentinel");
+                const response = await cache.match("/__tonk/sw-upgrade-sentinel");
+                done({ indexedDb, cache: response ? await response.text() : null });
+            })().catch(error => done({ error: String(error) }));
+            "#,
+            vec![],
+        )
+        .await
     }
 
+    /// Wait for the page to have mounted its site under the profile's
+    /// worker that started at `started_at`.
     async fn wait_for_mounted_worker(driver: &WebDriver, started_at: u64) -> Result<Value> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        let mut last = Value::Null;
         loop {
-            let state = driver
-                .execute_async(
-                    r##"
-                    const done = arguments[arguments.length - 1];
-                    Promise.all([
-                        navigator.serviceWorker.getRegistration(),
-                        fetch("/api/health").then(response => response.json()),
-                    ]).then(([registration, health]) => done({
-                        health,
-                        controlled: !!navigator.serviceWorker.controller,
-                        active: registration?.active?.state || null,
-                        installing: registration?.installing?.state || null,
-                        waiting: registration?.waiting?.state || null,
-                        mounted: !!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate"),
-                        guard: sessionStorage.getItem("tonk:sw-upgrade-reload"),
-                        documents: Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0,
-                        roots: JSON.parse(sessionStorage.getItem("tonk:test:sw-roots") || "{}"),
-                    })).catch(error => done({ error: String(error) }));
-                    "##,
-                    vec![],
-                )
-                .await;
-            if let Ok(state) = state {
-                last = state.json().clone();
-                if last["health"]["startedAt"].as_u64() == Some(started_at)
-                    && last["mounted"] == true
-                {
-                    return Ok(last);
-                }
+            let last = observed(driver).await;
+            if last["site"]["startedAt"].as_u64() == Some(started_at)
+                && last["site"]["rendered"] == true
+                && last["page"]["ready"] == true
+            {
+                return Ok(last);
             }
             ensure!(
                 tokio::time::Instant::now() < deadline,
-                "timed out waiting for the cached page to mount under worker {started_at}: {last}"
+                "timed out waiting for the site to mount under worker {started_at}: {last}"
             );
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
@@ -221,18 +299,14 @@ pub(crate) mod tests {
         Ok(build.to_owned())
     }
 
+    /// Whether the app's worker of `build` kept the cache `name`.
     fn cache_belongs_to_build(name: &str, build: &str) -> bool {
-        name == format!("TONK_SHELL_{build}")
-            || name == format!("TONK_WORKER_{build}")
-            || name == format!("TONK_GENERATION_{build}")
-            || name.starts_with(&format!("TONK_SHELL_STAGE_{build}_"))
-            || name.starts_with(&format!("TONK_WORKER_STAGE_{build}_"))
+        name == format!("TONK_APP_{build}")
     }
 
     #[derive(Debug)]
     pub(crate) struct GenerationContract {
         pub(crate) build: String,
-        pub(crate) profile_library: String,
         /// Digest prefix stamped into the worker glue and re-observed from the
         /// exact ArrayBuffer handed to wasm-bindgen initialization.
         worker_wasm: String,
@@ -279,11 +353,6 @@ pub(crate) mod tests {
             };
 
         let mut probes = BTreeMap::new();
-        let profile_library = assets
-            .get("/library/profile.yaml")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("asset manifest has no profile library digest"))?
-            .to_owned();
         for (path, digest) in [
             select_one("document", &|path| path == "/")?,
             select_one("UI Wasm", &|path| {
@@ -310,7 +379,6 @@ pub(crate) mod tests {
             .collect::<Result<BTreeMap<_, _>>>()?;
         Ok(GenerationContract {
             build,
-            profile_library,
             worker_wasm,
             probes,
             worker_members,
@@ -547,20 +615,44 @@ pub(crate) mod tests {
 
     /// Record `generation` in the guest realm, so a test can tell which
     /// guest runtime a mounted site is running.
+    ///
+    /// The glue is named for its content, as every build names it: a site's
+    /// worker keeps a file so named for good, and one changed under the
+    /// same name would never be asked for again.
     fn mark_guest_generation(root: &Path, generation: &str) -> Result<()> {
+        use std::hash::{Hash as _, Hasher as _};
+
         let glue = guest_glue(root)?;
         let source = std::fs::read_to_string(&glue)?;
         let marker = "globalThis.__tonkTestGuestGeneration = ";
         let unmarked = source
             .split_once(&format!("\n{marker}"))
             .map_or(source.as_str(), |(before, _)| before);
-        std::fs::write(&glue, format!("{unmarked}\n{marker}{generation:?};\n"))?;
+        let marked = format!("{unmarked}\n{marker}{generation:?};\n");
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        marked.hash(&mut hasher);
+        let named = format!("guest-{:016x}.js", hasher.finish());
+        let previous = glue
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow!("the guest glue has no name"))?
+            .to_owned();
+        std::fs::remove_file(&glue)?;
+        std::fs::write(glue.with_file_name(&named), marked)?;
+        let manifest = root.join("guest/manifest.json");
+        let listed = std::fs::read_to_string(&manifest)?;
+        ensure!(
+            listed.contains(&previous),
+            "the guest manifest does not name its glue"
+        );
+        std::fs::write(&manifest, listed.replace(&previous, &named))?;
         Ok(())
     }
 
-    /// A and B whose top-level documents are identical and whose guest
-    /// runtimes differ, the shape of a deploy that changed only guest code.
-    fn prepare_guest_only_generation(
+    /// A and B whose pages are identical and whose sites differ: another
+    /// worker and another guest runtime, the shape of a deploy that changed
+    /// nothing of the page itself.
+    fn prepare_site_only_generation(
         env: &TestEnvironment,
     ) -> Result<(GenerationContract, GenerationContract)> {
         let generation_a = env.deployment_root.join("generation-a");
@@ -571,11 +663,16 @@ pub(crate) mod tests {
         let generation_a_contract = generation_contract(&generation_a)?;
         copy_artifact_tree(&generation_a, &generation_b)?;
         mark_guest_generation(&generation_b, "B")?;
+        append_wasm_generation_marker(&generation_b.join("worker_bg.wasm"))?;
         stamp_generation(&generation_b)?;
         let generation_b_contract = generation_contract(&generation_b)?;
         ensure!(
             generation_a_contract.build != generation_b_contract.build,
             "A and B must have distinct build ids"
+        );
+        ensure!(
+            generation_a_contract.worker_wasm != generation_b_contract.worker_wasm,
+            "A and B must have distinct site workers"
         );
         let page = |root: &Path| -> Result<Value> {
             let version = std::fs::read_to_string(root.join("version.json"))?;
@@ -583,7 +680,7 @@ pub(crate) mod tests {
         };
         ensure!(
             page(&generation_a)? == page(&generation_b)?,
-            "a guest-only change must keep the page build"
+            "a change to the site alone must keep the page build"
         );
         Ok((generation_a_contract, generation_b_contract))
     }
@@ -593,9 +690,7 @@ pub(crate) mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         let mut last = Value::Null;
         loop {
-            driver.enter_default_frame().await?;
-            if let Ok(frame) = driver.find(By::Css("tonk-site > iframe")).await
-                && frame.enter_frame().await.is_ok()
+            if enter_site(driver).await
                 && let Ok(value) = driver
                     .execute(
                         "return globalThis.__tonkTestGuestGeneration ?? null;",
@@ -623,10 +718,8 @@ pub(crate) mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let mut last = String::new();
         loop {
-            driver.enter_default_frame().await?;
             let mut current = String::new();
-            if let Ok(frame) = driver.find(By::Css("tonk-site > iframe")).await
-                && frame.enter_frame().await.is_ok()
+            if enter_site(driver).await
                 && let Ok(text) = driver
                     .execute(
                         r#"
@@ -651,16 +744,7 @@ pub(crate) mod tests {
             }
             ensure!(
                 tokio::time::Instant::now() < deadline,
-                "timed out waiting for settled guest text; last={last:?} html={html}",
-                html = driver
-                    .execute(
-                        r#"const frame = document.querySelector("tonk-site > iframe");
-                           return frame?.contentDocument?.body?.innerHTML?.slice(0, 1500) ?? null;"#,
-                        vec![],
-                    )
-                    .await
-                    .map(|value| value.json().to_string())
-                    .unwrap_or_default()
+                "timed out waiting for settled guest text; last={last:?}"
             );
             last = current;
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -716,122 +800,57 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Wait for the page to be the document of `build`, with its site up.
     async fn wait_for_mounted_build(driver: &WebDriver, build: &str) -> Result<Value> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-        let mut last = Value::Null;
         loop {
-            if let Ok(state) = driver
-                .execute_async(
-                    r##"
-                    const expectedBuild = arguments[0];
-                    const done = arguments[arguments.length - 1];
-                    (async () => {
-                        const registration = await navigator.serviceWorker.getRegistration();
-                        const documentBuild = document.querySelector('meta[name="tonk-worker-build"]')?.content || null;
-                        const lifecycle = {
-                            documentBuild,
-                            controlled: !!navigator.serviceWorker.controller,
-                            active: registration?.active?.state || null,
-                            installing: registration?.installing?.state || null,
-                            waiting: registration?.waiting?.state || null,
-                            mounted: !!document.querySelector("#tonk-root, tonk-site, tonk-account, tonk-activate"),
-                            guard: sessionStorage.getItem("tonk:sw-upgrade-reload"),
-                            evictionGuard: sessionStorage.getItem("tonk:sw-eviction-reload"),
-                            testErrors: globalThis.__tonkTestErrors || [],
-                            testInstallProgress: (globalThis.__tonkTestInstallProgress || []).slice(-5),
-                            documents: Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0,
-                            roots: JSON.parse(sessionStorage.getItem("tonk:test:sw-roots") || "{}"),
-                        };
-                        // Polling the retiring worker's fetch boundary can
-                        // itself keep that worker alive and prevent Chrome
-                        // from advancing an installed successor. Wait on only
-                        // registration/document state until B is actually the
-                        // document, then verify its data plane and manifest.
-                        if (documentBuild !== expectedBuild) {
-                            done(lifecycle);
-                            return;
-                        }
-                        const generationCache = `TONK_GENERATION_${expectedBuild}`;
-                        const generationMarkerUrl = new URL(
-                            `/.tonk-generation-${expectedBuild}`,
-                            location.origin,
-                        ).href;
-                        const [healthResponse, cacheNames, manifestResponse, markerResponse] = await Promise.all([
-                            fetch("/api/health"),
-                            caches.keys(),
-                            fetch("/asset-manifest.json", { cache: "no-store" }),
-                            caches.match(generationMarkerUrl, { cacheName: generationCache }),
-                        ]);
-                        const healthBody = await healthResponse.text();
-                        const manifestBody = await manifestResponse.text();
-                        const markerBody = markerResponse ? await markerResponse.text() : "";
-                        const parse = body => {
-                            try { return JSON.parse(body); } catch { return null; }
-                        };
-                        const parsedManifest = parse(manifestBody);
-                        done({
-                            ...lifecycle,
-                            health: parse(healthBody),
-                            healthStatus: healthResponse.status,
-                            healthBody: healthBody.slice(0, 200),
-                            cacheNames,
-                            manifest: parsedManifest && { build: parsedManifest.build },
-                            manifestStatus: manifestResponse.status,
-                            manifestBody: manifestBody.slice(0, 200),
-                            generationMarker: parse(markerBody),
-                            generationMarkerBody: markerBody.slice(0, 200),
-                        });
-                    })().catch(error => done({ error: String(error) }));
-                    "##,
-                    vec![build.into()],
-                )
-                .await
+            let last = observed(driver).await;
+            if last["page"]["build"] == build
+                && last["page"]["ready"] == true
+                && last["site"]["worker"] == "ok"
+                && last["site"]["rendered"] == true
             {
-                last = state.json().clone();
-                if last["health"]["build"] == build
-                    && last["health"]["worker"] == "ok"
-                    && last["documentBuild"] == build
-                    && last["manifest"]["build"] == build
-                    && last["mounted"] == true
-                {
-                    return Ok(last);
-                }
+                return Ok(last);
             }
             if tokio::time::Instant::now() >= deadline {
-                // Sample only after the observation window: health fetches
-                // during retirement can themselves delay worker activation.
-                // The controlling worker's own log says whether it retired,
-                // released its streams, and handed off its overlay, which is
-                // what a successor stuck in `waiting` depends on.
-                let mut health = worker_health(driver).await;
-                let controller_log = health
-                    .as_mut()
-                    .ok()
-                    .and_then(|health| health["body"].as_object_mut())
-                    .and_then(|body| body.remove("log"))
-                    .and_then(|log| log.as_array().cloned())
-                    .map(|log| {
-                        log.iter()
-                            .rev()
-                            .take(80)
-                            .rev()
-                            .filter_map(|entry| {
-                                let message = entry["message"].as_str()?;
-                                let at = entry["t"].as_u64().unwrap_or_default();
-                                Some(format!(
-                                    "{at} {}",
-                                    message.chars().take(200).collect::<String>()
-                                ))
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
                 anyhow::bail!(
-                    "timed out waiting for coherent build {build}: {last}; incumbent health: {health:?}\ncontroller log:\n{}",
-                    controller_log.join("\n")
+                    "timed out waiting for the page of build {build} with its site up: {last}\nprofile worker log:\n{}",
+                    worker_log(driver).await
                 );
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// Wait for the profile's site to be served by the worker built with
+    /// `generation`, and up under it.
+    pub(crate) async fn wait_for_site_generation(
+        driver: &WebDriver,
+        generation: &GenerationContract,
+    ) -> Result<Value> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            let last = observed(driver).await;
+            let site = &last["site"];
+            if site["worker"] == "ok"
+                && site["workerWasm"] == generation.worker_wasm.as_str()
+                && site["controlled"] == true
+                && site["active"] == "activated"
+                && site["installing"].is_null()
+                && site["waiting"].is_null()
+                && site["rendered"] == true
+                && last["page"]["ready"] == true
+            {
+                return Ok(last);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                anyhow::bail!(
+                    "timed out waiting for the site under the worker of {}: {last}\nprofile worker log:\n{}",
+                    generation.worker_wasm,
+                    worker_log(driver).await
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
@@ -839,11 +858,7 @@ pub(crate) mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let mut last = Value::Null;
         loop {
-            driver.enter_default_frame().await?;
-            if let Ok(frame) = driver.find(By::Css("tonk-site > iframe")).await
-                && frame.enter_frame().await.is_ok()
-                && driver.find(By::Css(".hub-page")).await.is_ok()
-            {
+            if enter_site(driver).await && driver.find(By::Css(".hub-page")).await.is_ok() {
                 let snapshot = driver
                     .execute(
                         r#"
@@ -878,6 +893,10 @@ pub(crate) mod tests {
         }
     }
 
+    /// Wait for the whole of `generation` to be what runs: the page is its
+    /// document under its worker, which keeps only its files, and the
+    /// profile's site is up under the worker built with it. `obsolete_build`
+    /// is a build nothing may be kept of any more.
     pub(crate) async fn wait_for_complete_generation(
         driver: &WebDriver,
         generation: &GenerationContract,
@@ -886,57 +905,66 @@ pub(crate) mod tests {
     ) -> Result<Value> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         loop {
-            let state = wait_for_mounted_build(driver, &generation.build).await?;
-            let cache_names = state["cacheNames"].as_array();
-            let has_cache = |expected: &str| {
-                cache_names.is_some_and(|names| names.iter().any(|name| name == expected))
-            };
-            let obsolete_pruned = obsolete_build.is_none_or(|build| {
-                cache_names.is_some_and(|names| {
-                    names.iter().all(|name| {
-                        !name
-                            .as_str()
+            let state = observed(driver).await;
+            let (page, site) = (&state["page"], &state["site"]);
+            let kept = page["caches"].as_array();
+            let keeps = |build: &str| {
+                kept.is_some_and(|names| {
+                    names.iter().any(|name| {
+                        name.as_str()
                             .is_some_and(|name| cache_belongs_to_build(name, build))
                     })
                 })
-            });
+            };
+            let settled = |side: &Value| {
+                side["controlled"] == true
+                    && side["active"] == "activated"
+                    && side["installing"].is_null()
+                    && side["waiting"].is_null()
+            };
             let documents_ready = expected_documents
-                .is_none_or(|expected| state["documents"].as_u64() == Some(expected));
-            if state["health"]["worker"] == "ok"
-                && state["health"]["workerWasm"] == generation.worker_wasm
-                && state["generationMarker"]["build"] == generation.build
-                && state["generationMarker"]["state"] == "adopted"
-                && has_cache(&format!("TONK_SHELL_{}", generation.build))
-                && has_cache(&format!("TONK_WORKER_{}", generation.build))
-                && has_cache(&format!("TONK_GENERATION_{}", generation.build))
+                .is_none_or(|expected| page["documents"].as_u64() == Some(expected));
+            if page["build"] == generation.build.as_str()
+                && settled(page)
+                && page["ready"] == true
+                && keeps(&generation.build)
+                && obsolete_build.is_none_or(|build| !keeps(build))
+                && settled(site)
+                && site["worker"] == "ok"
+                && site["workerWasm"] == generation.worker_wasm.as_str()
+                && site["rendered"] == true
                 && documents_ready
-                && obsolete_pruned
             {
                 return Ok(state);
             }
             if let Some(expected) = expected_documents
-                && state["documents"]
+                && page["documents"]
                     .as_u64()
                     .is_some_and(|actual| actual > expected)
             {
                 return Err(anyhow!(
-                    "document count exceeded {expected} while waiting for complete generation {}: {state}",
+                    "the page loaded more than {expected} times while waiting for complete generation {}: {state}",
                     generation.build
                 ));
             }
-            ensure!(
-                tokio::time::Instant::now() < deadline,
-                "timed out waiting for complete generation {} with documents={expected_documents:?} and obsolete build {obsolete_build:?} pruned: {state}",
-                generation.build
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            if tokio::time::Instant::now() >= deadline {
+                anyhow::bail!(
+                    "timed out waiting for complete generation {} with documents={expected_documents:?} and nothing kept of {obsolete_build:?}: {state}\nprofile worker log:\n{}",
+                    generation.build,
+                    worker_log(driver).await
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
+    /// What the page is served under each of `expected`'s addresses, which
+    /// has to be this generation's bytes and no other's.
     async fn fetched_asset_digests(
         driver: &WebDriver,
         expected: &BTreeMap<String, String>,
     ) -> Result<Value> {
+        driver.enter_default_frame().await?;
         let paths = expected.keys().cloned().collect::<Vec<_>>();
         let result = driver
             .execute_async(
@@ -966,120 +994,60 @@ pub(crate) mod tests {
         Ok(result.json().clone())
     }
 
-    pub(crate) async fn cached_profile_library_digest(
-        driver: &WebDriver,
-        generation: &GenerationContract,
-    ) -> Result<String> {
-        let result = driver
-            .execute_async(
-                r#"
-                const build = arguments[0];
-                const done = arguments[arguments.length - 1];
-                (async () => {
-                    const cacheName = `TONK_SHELL_${build}`;
-                    const cache = await caches.open(cacheName);
-                    const keys = await cache.keys();
-                    const request = keys.find(key =>
-                        new URL(key.url).pathname === "/library/profile.yaml"
-                    );
-                    const response = request ? await cache.match(request) : null;
-                    if (!response) {
-                        done({
-                            error: "profile library missing from generation cache",
-                            cacheName,
-                            cacheNames: await caches.keys(),
-                            keys: keys.map(key => key.url),
-                        });
-                        return;
-                    }
-                    const bytes = await response.arrayBuffer();
-                    const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-                    done(Array.from(hash, byte => byte.toString(16).padStart(2, "0")).join(""));
-                })().catch(error => done({ error: String(error) }));
-                "#,
-                vec![generation.build.clone().into()],
-            )
-            .await?;
-        let digest = result
-            .json()
-            .as_str()
-            .ok_or_else(|| anyhow!("profile-library cache digest failed: {}", result.json()))?;
-        ensure!(
-            digest == generation.profile_library,
-            "profile-library cache digest mismatch: expected={} actual={digest}",
-            generation.profile_library
-        );
-        Ok(digest.to_owned())
+    /// Have the browser look for a newer worker for the profile's site, the
+    /// way it does on its own: when the site is loaded. A page may not ask
+    /// for it, the site's policy letting none of its documents start a
+    /// worker, so another tab loads the app, and with it the site. The tab
+    /// this was called in is left as it was, and is the one returned to.
+    async fn update_site_worker(driver: &WebDriver) -> Result<()> {
+        driver.enter_default_frame().await?;
+        let here = driver.window().await?;
+        let app = driver.current_url().await?.join("/")?;
+        let other = driver.new_tab().await?;
+        driver.switch_to_window(other).await?;
+        driver.goto(app.as_str()).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while !enter_site(driver).await {
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the tab opened to find the update never framed the site"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        driver.enter_default_frame().await?;
+        driver.switch_to_window(here).await?;
+        Ok(())
     }
 
-    async fn opaque_origin_build_probe(driver: &WebDriver, build: &str) -> Result<Value> {
-        let result = driver
-            .execute_async(
-                r#"
-                const build = arguments[0];
-                const done = arguments[arguments.length - 1];
-                const token = `tonk-cors-${crypto.randomUUID()}`;
-                const iframe = document.createElement("iframe");
-                iframe.setAttribute("sandbox", "allow-scripts");
-                const finish = value => {
-                    window.removeEventListener("message", receive);
-                    iframe.remove();
-                    done(value);
-                };
-                const timeout = setTimeout(
-                    () => finish({ error: "opaque relay timed out" }),
-                    10000,
-                );
-                const receive = async event => {
-                    if (event.source !== iframe.contentWindow || event.data?.token !== token) return;
-                    if (event.data.type === "request") {
-                        try {
-                            // A sandboxed opaque document is not a service-
-                            // worker client in Chrome. Mirror the production
-                            // portal boundary: the trusted parent performs the
-                            // authorized fetch and stamps immutable provenance.
-                            const response = await fetch("/api/health");
-                            iframe.contentWindow.postMessage({
-                                token,
-                                type: "result",
-                                status: response.status,
-                                body: await response.json(),
-                            }, "*");
-                        } catch (error) {
-                            iframe.contentWindow.postMessage({
-                                token,
-                                type: "result",
-                                error: String(error),
-                            }, "*");
-                        }
-                        return;
-                    }
-                    if (event.data.type === "outcome") {
-                        clearTimeout(timeout);
-                        finish({ ...event.data, opaqueOrigin: event.origin === "null" });
-                    }
-                };
-                window.addEventListener("message", receive);
-                iframe.srcdoc = `<script>
-                    addEventListener("message", event => {
-                        if (event.data?.token !== ${JSON.stringify(token)} || event.data?.type !== "result") return;
-                        parent.postMessage({ ...event.data, type: "outcome" }, "*");
-                    });
-                    parent.postMessage({ token: ${JSON.stringify(token)}, type: "request" }, "*");
-                <\/script>`;
-                document.body.appendChild(iframe);
-                "#,
-                vec![build.into()],
+    /// How many documents the page has been in this tab.
+    async fn documents(driver: &WebDriver) -> Result<u64> {
+        driver.enter_default_frame().await?;
+        let count = driver
+            .execute(
+                r#"return Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0;"#,
+                vec![],
             )
             .await?;
-        ensure!(
-            result.json()["opaqueOrigin"] == true
-                && result.json()["status"] == 200
-                && result.json()["body"]["build"] == build,
-            "opaque relay did not preserve trusted build provenance: {}",
-            result.json()
-        );
-        Ok(result.json().clone())
+        Ok(count.json().as_u64().unwrap_or(0))
+    }
+
+    /// Cut the browser off from the network, or put it back.
+    async fn set_offline(driver: &WebDriver, offline: bool) -> Result<()> {
+        driver.enter_default_frame().await?;
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        devtools.execute_cdp("Network.enable").await?;
+        devtools
+            .execute_cdp_with_params(
+                "Network.emulateNetworkConditions",
+                serde_json::json!({
+                    "offline": offline,
+                    "latency": 0,
+                    "downloadThroughput": if offline { 0 } else { -1 },
+                    "uploadThroughput": if offline { 0 } else { -1 },
+                }),
+            )
+            .await?;
+        Ok(())
     }
 
     #[dialog_common::test]
@@ -1093,6 +1061,7 @@ pub(crate) mod tests {
         // A fresh profile has no spaces; give the upgrade a persisted roster to preserve.
         crate::account_flow::tests::create_space(&driver, "Upgrade fixture").await?;
 
+        driver.enter_default_frame().await?;
         driver.goto(env.tonk_web.as_str()).await?;
         let historical = wait_for_hub_snapshot(&driver).await?;
         ensure!(
@@ -1109,7 +1078,7 @@ pub(crate) mod tests {
         let current =
             wait_for_complete_generation(&driver, &generation_b, None, Some(&generation_a.build))
                 .await?;
-        let current_started_at = current["health"]["startedAt"]
+        let current_started_at = current["site"]["startedAt"]
             .as_u64()
             .context("the current worker reported no start time")?;
 
@@ -1149,25 +1118,14 @@ pub(crate) mod tests {
         wait_for_guest_selector(&driver, "account-settings").await?;
         driver.enter_default_frame().await?;
 
+        // The repaired library is the profile's own, kept with it: a worker
+        // that starts again with no network still shows it.
+        set_offline(&driver, true).await?;
         let devtools = ChromeDevTools::new(driver.handle.clone());
-        devtools.execute_cdp("Network.enable").await?;
         devtools.execute_cdp("ServiceWorker.enable").await?;
-        devtools
-            .execute_cdp_with_params(
-                "Network.emulateNetworkConditions",
-                serde_json::json!({
-                    "offline": true,
-                    "latency": 0,
-                    "downloadThroughput": 0,
-                    "uploadThroughput": 0,
-                }),
-            )
-            .await?;
         devtools.execute_cdp("ServiceWorker.stopAllWorkers").await?;
-        let offline_result: Result<u64> = async {
+        let offline_result: Result<()> = async {
             driver.refresh().await?;
-            let restarted = wait_for_worker_started_at(&driver, Some(current_started_at)).await?;
-            wait_for_mounted_worker(&driver, restarted).await?;
             driver.goto(env.tonk_web.as_str()).await?;
             let offline = wait_for_hub_snapshot(&driver).await?;
             ensure!(offline["spaces"] == spaces, "{offline}");
@@ -1175,27 +1133,17 @@ pub(crate) mod tests {
                 offline["text"]
                     .as_str()
                     .is_some_and(|text| !text.contains("no spaces yet")),
-                "the offline worker restart lost the repaired facet: {offline}"
+                "the offline load lost the repaired facet: {offline}"
             );
-            Ok(restarted)
+            Ok(())
         }
         .await;
-        devtools
-            .execute_cdp_with_params(
-                "Network.emulateNetworkConditions",
-                serde_json::json!({
-                    "offline": false,
-                    "latency": 0,
-                    "downloadThroughput": -1,
-                    "uploadThroughput": -1,
-                }),
-            )
-            .await?;
-        let restarted = offline_result?;
+        set_offline(&driver, false).await?;
+        offline_result?;
 
         driver.enter_default_frame().await?;
         driver.refresh().await?;
-        wait_for_mounted_worker(&driver, restarted).await?;
+        wait_for_site_generation(&driver, &generation_b).await?;
         driver.goto(env.tonk_web.as_str()).await?;
         let reconnected = wait_for_hub_snapshot(&driver).await?;
         ensure!(reconnected["spaces"] == spaces, "{reconnected}");
@@ -1205,8 +1153,8 @@ pub(crate) mod tests {
                 .is_some_and(|text| !text.contains("no spaces yet")),
             "the reconnected sweep did not preserve the repaired facet: {reconnected}"
         );
+        let _ = current_started_at;
 
-        driver.enter_default_frame().await?;
         let sentinels = state_sentinels(&driver).await?;
         ensure!(sentinels["indexedDb"] == "preserved", "{sentinels}");
         ensure!(sentinels["cache"] == "preserved", "{sentinels}");
@@ -1215,63 +1163,50 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A deploy replaces every layer at once, and a visit after it ends on
+    /// the new one whole: the page is the new document on the first load,
+    /// its worker and the profile's hand over to their successors, the site
+    /// loads again under the worker that now serves it, and nothing of the
+    /// build before is kept or served.
     #[dialog_common::test]
     async fn it_adopts_a_complete_second_generation_without_mixing_assets(
         env: TestEnvironment,
     ) -> Result<()> {
         let (generation_a, generation_b) = prepare_second_generation(&env)?;
         let driver = env.driver().await?;
-        let build_a = &generation_a.build;
-        let build_b = &generation_b.build;
         let initial = wait_for_complete_generation(&driver, &generation_a, None, None).await?;
         assert_eq!(
-            initial["health"]["build"].as_str(),
-            Some(build_a.as_str()),
-            "{initial}"
-        );
-        assert_eq!(
-            initial["health"]["workerWasm"].as_str(),
+            initial["site"]["workerWasm"].as_str(),
             Some(generation_a.worker_wasm.as_str()),
             "{initial}"
         );
         fetched_asset_digests(&driver, &generation_a.probes).await?;
         create_state_sentinels(&driver).await?;
+        let site_before = initial["site"]["loaded"].clone();
+
         promote_second_generation(&env)?;
-        // An ordinary warm load mounts A immediately while its update check
-        // discovers B in the background. B activates automatically, and the
-        // update-aware A document performs one guarded alignment reload.
+        // The page is asked of the server first, so this load is B's
+        // document at once, and it stays: the worker that takes over is its
+        // own build's.
         driver.refresh().await?;
-        let state =
-            wait_for_complete_generation(&driver, &generation_b, Some(3), Some(build_a)).await?;
-        assert_eq!(state["controlled"], true, "{state}");
-        assert_eq!(state["active"], "activated", "{state}");
-        assert!(state["installing"].is_null(), "{state}");
-        assert!(state["waiting"].is_null(), "{state}");
-        assert_eq!(state["mounted"], true, "{state}");
-        assert_eq!(state["documents"], 3, "{state}");
-        assert_eq!(state["roots"]["1"], true, "{state}");
-        assert_eq!(state["roots"]["2"], true, "{state}");
-        assert_eq!(state["roots"]["3"], true, "{state}");
-        assert_eq!(
-            state["health"]["workerWasm"].as_str(),
-            Some(generation_b.worker_wasm.as_str()),
-            "{state}"
-        );
-        assert!(state["guard"].is_null(), "{state}");
-        assert!(state["evictionGuard"].is_null(), "{state}");
+        let state = wait_for_complete_generation(
+            &driver,
+            &generation_b,
+            Some(2),
+            Some(&generation_a.build),
+        )
+        .await?;
+        let page = &state["page"];
+        assert_eq!(page["documents"], 2, "{state}");
+        assert_eq!(page["roots"]["1"], true, "{state}");
+        assert_eq!(page["roots"]["2"], true, "{state}");
         assert!(
-            state["cacheNames"]
-                .as_array()
-                .is_some_and(|names| names.iter().all(|name| !name
-                    .as_str()
-                    .is_some_and(|name| cache_belongs_to_build(name, build_a)))),
-            "the incumbent lifecycle caches must be pruned: {state}"
+            page["guard"].is_null(),
+            "the page was not loaded again: {state}"
         );
-        assert!(
-            state["cacheNames"].as_array().is_some_and(|names| names
-                .iter()
-                .any(|name| name == &format!("TONK_SHELL_{build_b}"))),
-            "the successor generation cache must be complete: {state}"
+        assert_ne!(
+            state["site"]["loaded"], site_before,
+            "the site is a document the new worker served: {state}"
         );
         fetched_asset_digests(&driver, &generation_b.probes).await?;
 
@@ -1283,6 +1218,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A tab left open across a deploy is the build before, under a worker
+    /// that is not. When the new worker takes over, each such tab loads the
+    /// page that goes with it, once.
     #[dialog_common::test]
     async fn it_reloads_every_update_aware_tab_after_controller_replacement(
         env: TestEnvironment,
@@ -1301,22 +1239,18 @@ pub(crate) mod tests {
         promote_second_generation(&env)?;
         driver.switch_to_window(first_tab.clone()).await?;
         driver.refresh().await?;
-        let first =
-            wait_for_complete_generation(&driver, &generation_b, None, Some(&generation_a.build))
-                .await?;
-        let first_documents = first["documents"]
-            .as_u64()
-            .context("the first tab reported no document count")?;
-        assert!(
-            matches!(first_documents, 2 | 3),
-            "the first tab must mount B directly or after one alignment reload: {first}"
-        );
-        assert_eq!(first["roots"]["1"], true, "{first}");
-        assert_eq!(first["roots"]["2"], true, "{first}");
-        if first_documents == 3 {
-            assert_eq!(first["roots"]["3"], true, "{first}");
-        }
+        let first = wait_for_complete_generation(
+            &driver,
+            &generation_b,
+            Some(2),
+            Some(&generation_a.build),
+        )
+        .await?;
+        assert_eq!(first["page"]["roots"]["1"], true, "{first}");
+        assert_eq!(first["page"]["roots"]["2"], true, "{first}");
+        assert!(first["page"]["guard"].is_null(), "{first}");
 
+        // The other tab was never touched: it follows the worker.
         driver.switch_to_window(second_tab).await?;
         let second = wait_for_complete_generation(
             &driver,
@@ -1325,18 +1259,12 @@ pub(crate) mod tests {
             Some(&generation_a.build),
         )
         .await?;
-        assert_eq!(second["documents"], 2, "{second}");
-        assert_eq!(second["roots"]["1"], true, "{second}");
-        assert_eq!(second["roots"]["2"], true, "{second}");
-        assert!(second["guard"].is_null(), "{second}");
-        assert!(second["evictionGuard"].is_null(), "{second}");
+        assert_eq!(second["page"]["documents"], 2, "{second}");
+        assert_eq!(second["page"]["roots"]["1"], true, "{second}");
+        assert_eq!(second["page"]["roots"]["2"], true, "{second}");
         assert!(
-            second["cacheNames"]
-                .as_array()
-                .is_some_and(|names| names.iter().all(|name| !name
-                    .as_str()
-                    .is_some_and(|name| cache_belongs_to_build(name, &generation_a.build)))),
-            "the incumbent lifecycle caches must be pruned: {second}"
+            second["page"]["guard"].is_string(),
+            "it loaded again for this page build, and will not for it twice: {second}"
         );
         fetched_asset_digests(&driver, &generation_b.probes).await?;
         let sentinels = state_sentinels(&driver).await?;
@@ -1345,11 +1273,13 @@ pub(crate) mod tests {
 
         driver.switch_to_window(first_tab).await?;
         let first_after = wait_for_mounted_build(&driver, &generation_b.build).await?;
-        assert_eq!(first_after["documents"], first_documents, "{first_after}");
+        assert_eq!(first_after["page"]["documents"], 2, "{first_after}");
         driver.quit().await?;
         Ok(())
     }
 
+    /// The browser may drop what a worker kept. A page whose kept copy is
+    /// gone still loads, and a deploy after that is taken up as any other.
     #[dialog_common::test]
     async fn it_recovers_an_evicted_root_into_the_current_generation(
         env: TestEnvironment,
@@ -1358,6 +1288,7 @@ pub(crate) mod tests {
         let driver = env.driver().await?;
         wait_for_complete_generation(&driver, &generation_a, None, None).await?;
         create_state_sentinels(&driver).await?;
+        driver.enter_default_frame().await?;
         let removed = driver
             .execute_async(
                 r#"
@@ -1368,7 +1299,7 @@ pub(crate) mod tests {
                     .then(removed => done({ removed }))
                     .catch(error => done({ error: String(error) }));
                 "#,
-                vec![format!("TONK_SHELL_{}", generation_a.build).into()],
+                vec![format!("TONK_APP_{}", generation_a.build).into()],
             )
             .await?;
         ensure!(
@@ -1385,19 +1316,9 @@ pub(crate) mod tests {
             Some(&generation_a.build),
         )
         .await?;
-        assert_eq!(state["documents"], 2, "{state}");
-        assert_eq!(state["roots"]["1"], true, "{state}");
-        assert_eq!(state["roots"]["2"], true, "{state}");
-        assert!(state["guard"].is_null(), "{state}");
-        assert!(state["evictionGuard"].is_null(), "{state}");
-        assert!(
-            state["cacheNames"]
-                .as_array()
-                .is_some_and(|names| names.iter().all(|name| !name
-                    .as_str()
-                    .is_some_and(|name| cache_belongs_to_build(name, &generation_a.build)))),
-            "the evicted incumbent lifecycle caches must be pruned: {state}"
-        );
+        assert_eq!(state["page"]["roots"]["1"], true, "{state}");
+        assert_eq!(state["page"]["roots"]["2"], true, "{state}");
+        assert!(state["page"]["guard"].is_null(), "{state}");
         fetched_asset_digests(&driver, &generation_b.probes).await?;
         let sentinels = state_sentinels(&driver).await?;
         assert_eq!(sentinels["indexedDb"], "preserved", "{sentinels}");
@@ -1407,16 +1328,10 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    #[dialog_common::test]
-    async fn it_relays_build_provenance_to_an_opaque_child(env: TestEnvironment) -> Result<()> {
-        let driver = env.driver().await?;
-        let build = worker_build_id(&env.service_worker_script)?;
-        wait_for_mounted_build(&driver, &build).await?;
-        opaque_origin_build_probe(&driver, &build).await?;
-        driver.quit().await?;
-        Ok(())
-    }
-
+    /// A subscription is a response that never ends, and a worker with one
+    /// open counts as busy for good. The profile's worker lets its streams
+    /// go when a successor installs, or the successor would wait behind
+    /// them and the site would never leave the build before.
     #[dialog_common::test]
     async fn it_releases_incumbent_streams_for_an_automatic_successor(
         env: TestEnvironment,
@@ -1424,67 +1339,68 @@ pub(crate) mod tests {
         let (generation_a, generation_b) = prepare_second_generation(&env)?;
         let driver = env.driver().await?;
         wait_for_complete_generation(&driver, &generation_a, None, None).await?;
-        let build_b = generation_b.build;
 
         let query = tonk_worker::helpers::named_concept_wire_query();
-        let opened = driver
-            .execute_async(
-                r#"
-                const query = arguments[0];
-                const done = arguments[arguments.length - 1];
-                (async () => {
-                    const queryResponse = await fetch("/api/repository/profile:tonk/branch/main/query", {
-                        method: "POST",
-                        headers: {
-                            "content-type": "application/json",
-                            "accept": "text/event-stream",
-                        },
-                        body: JSON.stringify(query),
-                    });
-                    const queryReader = queryResponse.body.getReader();
-                    const first = await queryReader.read();
-                    const lspResponse = await fetch("/api/language-server", {
-                        headers: { "accept": "text/event-stream" },
-                    });
-                    const lspReader = lspResponse.body.getReader();
-                    globalThis.__tonkRetirementStreams = { queryReader, lspReader };
-                    done({
-                        queryStatus: queryResponse.status,
-                        queryFirstDone: first.done,
-                        lspStatus: lspResponse.status,
-                    });
-                })().catch(error => done({ error: String(error) }));
-                "#,
-                vec![query.clone()],
-            )
-            .await?;
+        let opened = in_site(
+            &driver,
+            r#"
+            const query = arguments[0];
+            const done = arguments[arguments.length - 1];
+            (async () => {
+                const profiles = await (await fetch("/api/profiles")).json();
+                const queryResponse = await fetch(`/api/repository/profile:tonk/branch/${profiles.active}/query`, {
+                    method: "POST",
+                    headers: {
+                        "content-type": "application/json",
+                        "accept": "text/event-stream",
+                    },
+                    body: JSON.stringify(query),
+                });
+                const queryReader = queryResponse.body.getReader();
+                const first = await queryReader.read();
+                const lspResponse = await fetch("/api/language-server", {
+                    headers: { "accept": "text/event-stream" },
+                });
+                const lspReader = lspResponse.body.getReader();
+                globalThis.__tonkRetirementStreams = { queryReader, lspReader };
+                done({
+                    queryStatus: queryResponse.status,
+                    queryFirstDone: first.done,
+                    lspStatus: lspResponse.status,
+                });
+            })().catch(error => done({ error: String(error) }));
+            "#,
+            vec![query.clone()],
+        )
+        .await?;
         ensure!(
-            opened.json()["queryStatus"] == 200
-                && opened.json()["queryFirstDone"] == false
-                && opened.json()["lspStatus"] == 200,
-            "failed to open incumbent query/LSP streams: {}",
-            opened.json()
+            opened["queryStatus"] == 200
+                && opened["queryFirstDone"] == false
+                && opened["lspStatus"] == 200,
+            "failed to open incumbent query/LSP streams: {opened}"
         );
 
         promote_second_generation(&env)?;
-        // The warm load drives automatic activation. Reaching mounted B proves
-        // the incumbent streams did not pin A during the handoff.
-        driver.refresh().await?;
-        wait_for_mounted_build(&driver, &build_b).await?;
-        let successor = driver
-            .execute_async(
-                r#"
-                const query = arguments[0];
-                const done = arguments[arguments.length - 1];
-                const open = async (url, init) => {
-                    const response = await fetch(url, init);
-                    const status = response.status;
-                    const type = response.headers.get("content-type");
-                    await response.body.cancel();
-                    return { status, type };
-                };
-                Promise.all([
-                    open("/api/repository/profile:tonk/branch/main/query", {
+        // The site stays open, with its streams, while the browser finds
+        // the successor. Coming up under B proves they did not hold A.
+        update_site_worker(&driver).await?;
+        wait_for_site_generation(&driver, &generation_b).await?;
+        let successor = in_site(
+            &driver,
+            r#"
+            const query = arguments[0];
+            const done = arguments[arguments.length - 1];
+            const open = async (url, init) => {
+                const response = await fetch(url, init);
+                const status = response.status;
+                const type = response.headers.get("content-type");
+                await response.body.cancel();
+                return { status, type };
+            };
+            (async () => {
+                const profiles = await (await fetch("/api/profiles")).json();
+                const [query_, lsp] = await Promise.all([
+                    open(`/api/repository/profile:tonk/branch/${profiles.active}/query`, {
                         method: "POST",
                         headers: {
                             "content-type": "application/json",
@@ -1495,26 +1411,24 @@ pub(crate) mod tests {
                     open("/api/language-server", {
                         headers: { "accept": "text/event-stream" },
                     }),
-                ]).then(([query, lsp]) => done({ query, lsp }))
-                  .catch(error => done({ error: String(error) }));
-                "#,
-                vec![query],
-            )
-            .await?;
-        assert_eq!(successor.json()["query"]["status"], 200, "{successor:?}");
-        assert_eq!(successor.json()["lsp"]["status"], 200, "{successor:?}");
+                ]);
+                done({ query: query_, lsp });
+            })().catch(error => done({ error: String(error) }));
+            "#,
+            vec![query],
+        )
+        .await?;
+        assert_eq!(successor["query"]["status"], 200, "{successor}");
+        assert_eq!(successor["lsp"]["status"], 200, "{successor}");
 
         driver.quit().await?;
         Ok(())
     }
 
     /// Chrome activates a `skipWaiting` successor only once the outgoing
-    /// worker has no pending events. A busy incumbent page (the boot
-    /// `connectivity` nudge, steady asset traffic) used to leave a deferred
-    /// offline fill on the incumbent's `waitUntil` for up to a minute, holding
-    /// the installed successor out of activation that whole time. Steady data
-    /// traffic did the same: every request scheduled a debounced sync drain on
-    /// its `waitUntil`, even on a retiring worker that would refuse it.
+    /// worker has no pending events. A site busy with ordinary work (asset
+    /// traffic, a query every quarter second, each of which schedules a
+    /// sync) must not hold the installed successor out of activation.
     #[dialog_common::test]
     async fn it_activates_a_successor_while_the_incumbent_page_is_busy(
         env: TestEnvironment,
@@ -1522,92 +1436,68 @@ pub(crate) mod tests {
         let (generation_a, generation_b) = prepare_second_generation(&env)?;
         let driver = env.driver().await?;
         wait_for_complete_generation(&driver, &generation_a, None, None).await?;
-        // A returning visit: only a document that loaded under a controller
-        // performs the alignment reload onto a successor.
-        driver.refresh().await?;
-        wait_for_mounted_build(&driver, &generation_a.build).await?;
-        let asset = generation_a
-            .probes
-            .keys()
-            .find(|path| path.as_str() != "/")
-            .cloned()
-            .context("generation A exposes no static asset probe")?;
         let query = tonk_worker::helpers::named_concept_wire_query();
 
         promote_second_generation(&env)?;
-        let started = driver
-            .execute_async(
-                r#"
-                const [asset, query] = arguments;
-                const done = arguments[arguments.length - 1];
+        let started = in_site(
+            &driver,
+            r#"
+            const query = arguments[0];
+            const done = arguments[arguments.length - 1];
+            (async () => {
+                const key = "tonk:test:successor-states";
+                const record = state => {
+                    const states = JSON.parse(sessionStorage.getItem(key) || "{}");
+                    states[state] ??= Date.now();
+                    sessionStorage.setItem(key, JSON.stringify(states));
+                };
+                const registration = await navigator.serviceWorker.getRegistration();
+                const profiles = await (await fetch("/api/profiles")).json();
+                const queryUrl = `/api/repository/profile:tonk/branch/${profiles.active}/query`;
+                // The ordinary work of a live site. The loop ends when the
+                // site loads again under the successor.
                 (async () => {
-                    const key = "tonk:test:successor-states";
-                    const record = state => {
-                        const states = JSON.parse(sessionStorage.getItem(key) || "{}");
-                        states[state] ??= Date.now();
-                        sessionStorage.setItem(key, JSON.stringify(states));
-                    };
-                    const registration = await navigator.serviceWorker.getRegistration();
-                    // The ordinary work of a live incumbent page. The busy
-                    // loop ends with the document's alignment reload.
-                    navigator.serviceWorker.controller.postMessage({ type: "connectivity" });
-                    const profiles = await (await fetch("/api/profiles")).json();
-                    const queryUrl = `/api/repository/profile:tonk/branch/${profiles.active}/query`;
-                    (async () => {
-                        for (;;) {
-                            try { await (await fetch(asset)).arrayBuffer(); } catch {}
-                            try {
-                                await (await fetch(queryUrl, {
-                                    method: "POST",
-                                    headers: { "content-type": "application/json" },
-                                    body: JSON.stringify(query),
-                                })).text();
-                            } catch {}
-                            await new Promise(resolve => setTimeout(resolve, 250));
-                        }
-                    })();
-                    registration.addEventListener("updatefound", () => {
-                        const incoming = registration.installing;
-                        const observe = () => record(incoming.state);
-                        incoming.addEventListener("statechange", observe);
-                        observe();
-                    }, { once: true });
-                    await registration.update();
-                    done({ ok: true });
-                })().catch(error => done({ error: String(error) }));
-                "#,
-                vec![asset.into(), query],
-            )
-            .await?;
+                    for (;;) {
+                        try { await (await fetch("/guest/manifest.json")).arrayBuffer(); } catch {}
+                        try {
+                            await (await fetch(queryUrl, {
+                                method: "POST",
+                                headers: { "content-type": "application/json" },
+                                body: JSON.stringify(query),
+                            })).text();
+                        } catch {}
+                        await new Promise(resolve => setTimeout(resolve, 250));
+                    }
+                })();
+                registration.addEventListener("updatefound", () => {
+                    const incoming = registration.installing;
+                    const observe = () => record(incoming.state);
+                    incoming.addEventListener("statechange", observe);
+                    observe();
+                }, { once: true });
+                await registration.update();
+                done({ ok: true });
+            })().catch(error => done({ error: String(error) }));
+            "#,
+            vec![query],
+        )
+        .await?;
         ensure!(
-            started.json()["ok"] == true,
-            "failed to start the update: {}",
-            started.json()
+            started["ok"] == true,
+            "failed to start the update: {started}"
         );
 
-        if let Err(error) = wait_for_mounted_build(&driver, &generation_b.build).await {
-            let states = driver
-                .execute(
-                    r#"return {
-                        states: JSON.parse(sessionStorage.getItem("tonk:test:successor-states") || "{}"),
-                        controller: navigator.serviceWorker.controller?.scriptURL || null,
-                    };"#,
-                    vec![],
-                )
+        let read_states = r#"
+            const done = arguments[arguments.length - 1];
+            done(JSON.parse(sessionStorage.getItem("tonk:test:successor-states") || "{}"));
+        "#;
+        if let Err(error) = wait_for_site_generation(&driver, &generation_b).await {
+            let states = in_site(&driver, read_states, vec![])
                 .await
-                .map(|value| value.json().clone())
                 .unwrap_or(Value::Null);
-            let health = worker_health(&driver).await.unwrap_or(Value::Null);
-            return Err(error.context(format!("successor={states}, health={health}")));
+            return Err(error.context(format!("successor={states}")));
         }
-        let states = driver
-            .execute(
-                r#"return JSON.parse(sessionStorage.getItem("tonk:test:successor-states") || "{}");"#,
-                vec![],
-            )
-            .await?
-            .json()
-            .clone();
+        let states = in_site(&driver, read_states, vec![]).await?;
         let installed = states["installed"]
             .as_u64()
             .context(format!("successor never reported installed: {states}"))?;
@@ -1625,73 +1515,34 @@ pub(crate) mod tests {
     }
 
     /// A deploy that changed only worker and guest code keeps the open
-    /// document: the new worker takes over, the page remounts its guest from
-    /// it, and nothing reloads.
+    /// page: the profile's new worker takes over, the site loads again
+    /// under it with the new guest runtime, and the page around it stays.
     #[dialog_common::test]
     async fn it_remounts_guests_without_reloading_when_the_page_is_unchanged(
         env: TestEnvironment,
     ) -> Result<()> {
-        let (generation_a, generation_b) = prepare_guest_only_generation(&env)?;
+        let (generation_a, generation_b) = prepare_site_only_generation(&env)?;
         let driver = env.driver().await?;
         wait_for_complete_generation(&driver, &generation_a, None, None).await?;
-        driver.refresh().await?;
-        wait_for_mounted_build(&driver, &generation_a.build).await?;
         wait_for_guest_generation(&driver, "A").await?;
         let rendered = settled_guest_text(&driver).await?;
-        let documents = |driver: &WebDriver| {
-            let driver = driver.clone();
-            async move {
-                driver.enter_default_frame().await?;
-                let count = driver
-                    .execute(
-                        r#"return Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0;"#,
-                        vec![],
-                    )
-                    .await?;
-                anyhow::Ok(count.json().as_u64().unwrap_or(0))
-            }
-        };
         let before = documents(&driver).await?;
 
         promote_second_generation(&env)?;
-        let started = driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                navigator.serviceWorker.getRegistration()
-                    .then(registration => registration.update())
-                    .then(() => done({ ok: true }))
-                    .catch(error => done({ error: String(error) }));
-                "#,
-                vec![],
-            )
-            .await?;
-        ensure!(
-            started.json()["ok"] == true,
-            "failed to start the update: {}",
-            started.json()
-        );
+        update_site_worker(&driver).await?;
 
         wait_for_guest_generation(&driver, "B").await?;
-        let health = worker_health(&driver).await?;
-        assert_eq!(
-            health["body"]["build"].as_str(),
-            Some(generation_b.build.as_str()),
-            "{health}"
-        );
+        let state = wait_for_site_generation(&driver, &generation_b).await?;
         assert_eq!(
             documents(&driver).await?,
             before,
-            "the document must not reload"
+            "the page must not reload: {state}"
         );
-        let guard = driver
-            .execute(
-                r#"return sessionStorage.getItem("tonk:sw-upgrade-reload");"#,
-                vec![],
-            )
-            .await?;
-        assert!(guard.json().is_null(), "no alignment reload was requested");
-        // The remounted guest renders the same live data from the new worker.
+        assert!(
+            state["page"]["guard"].is_null(),
+            "the page was not asked to load again: {state}"
+        );
+        // The site, loaded again, renders the same live data from the new worker.
         assert_eq!(settled_guest_text(&driver).await?, rendered);
 
         driver.quit().await?;
@@ -1702,31 +1553,30 @@ pub(crate) mod tests {
     /// worker reads them. The failure lives only in that worker's session
     /// overlay.
     async fn join_failures(driver: &WebDriver) -> Result<Value> {
-        let result = driver
-            .execute_async(
-                r#"
-                const query = arguments[0];
-                const done = arguments[arguments.length - 1];
-                (async () => {
-                    const profiles = await (await fetch("/api/profiles")).json();
-                    const response = await fetch(`/api/repository/profile:tonk/branch/${profiles.active}/query`, {
-                        method: "POST",
-                        headers: { "content-type": "application/json" },
-                        body: JSON.stringify(query),
-                    });
-                    done({ status: response.status, rows: await response.json() });
-                })().catch(error => done({ error: String(error) }));
-                "#,
-                vec![tonk_worker::helpers::join_failure_wire_query()],
-            )
-            .await?;
-        Ok(result.json().clone())
+        in_site(
+            driver,
+            r#"
+            const query = arguments[0];
+            const done = arguments[arguments.length - 1];
+            (async () => {
+                const profiles = await (await fetch("/api/profiles")).json();
+                const response = await fetch(`/api/repository/profile:tonk/branch/${profiles.active}/query`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify(query),
+                });
+                done({ status: response.status, rows: await response.json() });
+            })().catch(error => done({ error: String(error) }));
+            "#,
+            vec![tonk_worker::helpers::join_failure_wire_query()],
+        )
+        .await
     }
 
     async fn wait_for_join_failure(driver: &WebDriver) -> Result<Value> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
-            let result = join_failures(driver).await?;
+            let result = join_failures(driver).await.unwrap_or(Value::Null);
             if result["rows"]
                 .as_array()
                 .is_some_and(|rows| !rows.is_empty())
@@ -1749,12 +1599,13 @@ pub(crate) mod tests {
     async fn it_carries_the_session_overlay_to_a_successor_worker(
         env: TestEnvironment,
     ) -> Result<()> {
-        let (generation_a, generation_b) = prepare_guest_only_generation(&env)?;
+        let (generation_a, generation_b) = prepare_site_only_generation(&env)?;
         let driver = env.driver().await?;
         wait_for_complete_generation(&driver, &generation_a, None, None).await?;
 
         // Invite-shaped, so the join runs, but its `access` is not base58:
         // the join fails as malformed without touching the network.
+        driver.enter_default_frame().await?;
         let origin = driver.current_url().await?;
         driver
             .goto(
@@ -1771,30 +1622,9 @@ pub(crate) mod tests {
         assert_eq!(before["rows"], failed["rows"], "{before}");
 
         promote_second_generation(&env)?;
-        let started = driver
-            .execute_async(
-                r#"
-                const done = arguments[arguments.length - 1];
-                navigator.serviceWorker.getRegistration()
-                    .then(registration => registration.update())
-                    .then(() => done({ ok: true }))
-                    .catch(error => done({ error: String(error) }));
-                "#,
-                vec![],
-            )
-            .await?;
-        ensure!(
-            started.json()["ok"] == true,
-            "failed to start the update: {}",
-            started.json()
-        );
+        update_site_worker(&driver).await?;
         wait_for_guest_generation(&driver, "B").await?;
-        let health = worker_health(&driver).await?;
-        assert_eq!(
-            health["body"]["build"].as_str(),
-            Some(generation_b.build.as_str()),
-            "{health}"
-        );
+        wait_for_site_generation(&driver, &generation_b).await?;
 
         let after = join_failures(&driver).await?;
         assert_eq!(
@@ -1806,36 +1636,30 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// With no network, the browser's look for a newer worker fails, and
+    /// that is all that fails: the page loads from what its worker kept,
+    /// and the profile's site comes up under the worker it had.
     #[dialog_common::test]
     async fn it_keeps_the_active_worker_when_the_load_time_update_check_is_offline(
         env: TestEnvironment,
     ) -> Result<()> {
         let driver = env.driver().await?;
+        let build = worker_build_id(&env.service_worker_script)?;
+        wait_for_mounted_build(&driver, &build).await?;
         let worker_a = wait_for_worker_started_at(&driver, None).await?;
         create_state_sentinels(&driver).await?;
 
-        let devtools = ChromeDevTools::new(driver.handle.clone());
-        devtools.execute_cdp("Network.enable").await?;
-        devtools
-            .execute_cdp_with_params(
-                "Network.emulateNetworkConditions",
-                serde_json::json!({
-                    "offline": true,
-                    "latency": 0,
-                    "downloadThroughput": 0,
-                    "uploadThroughput": 0,
-                }),
-            )
-            .await?;
-
+        set_offline(&driver, true).await?;
         let test_result: Result<()> = async {
             driver.refresh().await?;
             let state = wait_for_mounted_worker(&driver, worker_a).await?;
-            ensure!(state["controlled"] == true, "{state}");
-            ensure!(state["active"] == "activated", "{state}");
-            ensure!(state["installing"].is_null(), "{state}");
-            ensure!(state["waiting"].is_null(), "{state}");
-            ensure!(state["guard"].is_null(), "{state}");
+            for side in [&state["page"], &state["site"]] {
+                ensure!(side["controlled"] == true, "{state}");
+                ensure!(side["active"] == "activated", "{state}");
+                ensure!(side["installing"].is_null(), "{state}");
+                ensure!(side["waiting"].is_null(), "{state}");
+            }
+            ensure!(state["page"]["guard"].is_null(), "{state}");
 
             let sentinels = state_sentinels(&driver).await?;
             ensure!(sentinels["indexedDb"] == "preserved", "{sentinels}");
@@ -1844,17 +1668,7 @@ pub(crate) mod tests {
         }
         .await;
 
-        let restore_result = devtools
-            .execute_cdp_with_params(
-                "Network.emulateNetworkConditions",
-                serde_json::json!({
-                    "offline": false,
-                    "latency": 0,
-                    "downloadThroughput": -1,
-                    "uploadThroughput": -1,
-                }),
-            )
-            .await;
+        let restore_result = set_offline(&driver, false).await;
         let quit_result = driver.quit().await;
 
         test_result?;

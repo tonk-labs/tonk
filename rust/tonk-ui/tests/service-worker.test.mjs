@@ -109,6 +109,40 @@ test("it keeps a file the page loads and answers with it afterwards", async () =
   assert.equal(fetches, 1);
 });
 
+test("it keeps what the page loaded before it was there, when the page says", async () => {
+  const fetched = [];
+  const { self, stores, settle } = worker({
+    fetched: async (request) => {
+      const url = typeof request === "string" ? request : request.url;
+      fetched.push(new URL(url).pathname);
+      return new Response(`bytes of ${new URL(url).pathname}`, { status: 200 });
+    },
+  });
+  await settle(self.oninstall);
+  fetched.length = 0;
+
+  await settle(self.onmessage, {
+    data: {
+      type: "keep",
+      urls: [
+        "https://tonk.test/ui-1.js",
+        "https://tonk.test/styles-1.css",
+        "https://tonk.test/version.json",
+        "https://elsewhere.test/x.js",
+      ],
+    },
+  });
+
+  assert.deepEqual(fetched, ["/ui-1.js", "/styles-1.css"], "only this origin's own files are asked for");
+  const kept = stores.get("TONK_APP_0123456789abcdef");
+  assert.equal(await kept.get("https://tonk.test/ui-1.js").clone().text(), "bytes of /ui-1.js");
+  assert.ok(!kept.has("https://tonk.test/version.json"), "what the server answers itself is not kept");
+
+  // Said twice, each file is asked for once.
+  await settle(self.onmessage, { data: { type: "keep", urls: ["https://tonk.test/ui-1.js"] } });
+  assert.deepEqual(fetched, ["/ui-1.js", "/styles-1.css"]);
+});
+
 test("it keeps nothing under the dev server", async () => {
   const { self, stores, settle, asked } = worker({ build: "dev" });
   await settle(self.oninstall);

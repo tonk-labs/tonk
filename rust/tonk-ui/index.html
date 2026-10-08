@@ -242,18 +242,20 @@
                 (() => {
                     const container = navigator.serviceWorker;
                     // A worker that takes over a page already open under
-                    // another is a newer build's, and this page is the build
-                    // before: load the page that goes with it. A page loaded
-                    // straight onto the new build is that build already and
-                    // stays. Once per build, so a page that cannot be had
-                    // (offline, an older copy kept) does not load in a loop.
+                    // another is a newer build's. When that build's page is
+                    // another page than this one, load it. A page loaded
+                    // straight onto the new build stays, and so does one a
+                    // build left as it was, having changed only what the
+                    // sites run. Once per page build, so a page that cannot
+                    // be had (offline, an older copy kept) does not load in
+                    // a loop.
                     if (container.controller) {
                         container.addEventListener("controllerchange", async () => {
-                            const own = document.querySelector('meta[name="tonk-worker-build"]')?.content;
+                            const own = document.querySelector('meta[name="tonk-page-build"]')?.content;
                             let served = null;
                             try {
                                 const response = await fetch("/version.json", { cache: "no-store" });
-                                served = response.ok ? (await response.json()).build : null;
+                                served = response.ok ? (await response.json()).page : null;
                             } catch {}
                             if (!/^[0-9a-f]{16}$/.test(served ?? "") || served === own) return;
                             try {
@@ -264,6 +266,22 @@
                             }
                             location.reload();
                         });
+                    }
+                    // What this page loaded before a worker was there to
+                    // keep it, said to the worker once there is one, so a
+                    // first visit opens again with no network. Said again
+                    // once the app has started, for what was still loading.
+                    const keep = () =>
+                        container.controller?.postMessage({
+                            type: "keep",
+                            urls: performance
+                                .getEntriesByType("resource")
+                                .map((entry) => entry.name)
+                                .filter((name) => name.startsWith(`${location.origin}/`)),
+                        });
+                    if (!container.controller) {
+                        container.addEventListener("controllerchange", keep, { once: true });
+                        addEventListener("TrunkApplicationStarted", keep, { once: true });
                     }
                     container
                         .register("/service_worker.js", { updateViaCache: "none" })

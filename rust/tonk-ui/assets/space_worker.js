@@ -1718,6 +1718,10 @@ self.addEventListener("fetch", event => {
         (event.request.method === "GET" || event.request.method === "HEAD")
     ) {
         event.respondWith(healthResponse());
+        // Asking how it is must not keep a worker a successor waits on.
+        if (self.registration.waiting) {
+            event.waitUntil(retire("a successor is waiting"));
+        }
         return;
     }
     if (url.pathname.startsWith("/api/")) {

@@ -4578,29 +4578,25 @@ pub(crate) mod tests {
             None,
         )
         .await?;
-        crate::service_worker_upgrade::tests::cached_profile_library_digest(
-            &old_writer,
-            &generation_a,
-        )
-        .await?;
         // This scenario needs a genuinely historical writer even after the
-        // other device upgrades. Pin only this browser's deployment assets;
-        // account traffic and the real worker lifecycle remain untouched.
+        // other device upgrades. Pin only this browser's deployment assets,
+        // on the app's origin and on the profile's, whose worker is the
+        // writer; account traffic and the real worker lifecycle remain
+        // untouched.
+        old_writer.enter_default_frame().await?;
         old_writer
             .add_cookie(Cookie::new("tonk-test-generation", "a"))
             .await?;
+        enter_profile(&old_writer).await?;
+        old_writer
+            .add_cookie(Cookie::new("tonk-test-generation", "a"))
+            .await?;
+        old_writer.enter_default_frame().await?;
         raise_cluster_from_hub(&old_writer, &env).await?;
         run_cluster_login(&old_writer, EMAIL).await?;
-        let old_health = get_json(&old_writer, "/api/health").await?;
-        anyhow::ensure!(
-            old_health["body"]["build"] == generation_a.build,
-            "the competing writer did not remain on generation A: {old_health}"
-        );
-        crate::service_worker_upgrade::tests::cached_profile_library_digest(
-            &old_writer,
-            &generation_a,
-        )
-        .await?;
+        crate::service_worker_upgrade::tests::wait_for_site_generation(&old_writer, &generation_a)
+            .await
+            .context("the competing writer did not remain on generation A")?;
 
         crate::service_worker_upgrade::tests::promote_second_generation(&env)?;
         owner.enter_default_frame().await?;
@@ -4624,11 +4620,9 @@ pub(crate) mod tests {
             "publish stale profile claims from generation A",
             &post_json(&old_writer, "/api/sync", serde_json::json!({})).await?,
         );
-        crate::service_worker_upgrade::tests::cached_profile_library_digest(
-            &old_writer,
-            &generation_a,
-        )
-        .await?;
+        crate::service_worker_upgrade::tests::wait_for_site_generation(&old_writer, &generation_a)
+            .await
+            .context("the competing writer left generation A after the deploy")?;
         goto(&old_writer, env.tonk_web.as_str()).await?;
         enter_hub(&old_writer)
             .await
