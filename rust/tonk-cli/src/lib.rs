@@ -63,7 +63,6 @@ pub mod listing;
 pub mod migrate;
 pub mod onboarding;
 pub mod output;
-pub mod publish;
 pub mod recovery;
 pub mod remote;
 pub mod remote_deadline;

@@ -88,7 +88,7 @@ and this contract are delivered together on base `90ba1f90d`.
 | `assert [CONCEPT] [ENTITY] ...` | `DATA-03`, `DATA-04` | Dynamic help, create/update/no-op, schema flags, JSON commit/verification/push receipt, notation/dry-run/no-sync/quiet. |
 | `query CONCEPT [--where FIELD=VALUE]` | `DATA-05` | Empty/many/ambiguous, typed equality and repeated AND filters, human/JSON, invalid/missing concept or field, broken pipe. |
 | `retract CONCEPT ENTITY [--field]` | `DATA-06` | Whole/field/many field, notation/dry-run/no-sync/quiet, already retracted. |
-| `eval` | `DATA-07` | `-c`, file, explicit `-`, implicit piped stdin, query/write/mixed, JSON/quiet/home/dry-run/no-sync; a file resolves `!include` / `!include/text` / `!include/blob` next to itself, other sources refuse them. |
+| `eval` | `DATA-07` | `-c`, file, directory (path-ordered documents, hidden entries skipped, one commit; empty directory; rejected document named, nothing committed), explicit `-`, implicit piped stdin, query/write/mixed, JSON/quiet/home/dry-run/no-sync; a file resolves `!include` / `!include/text` / `!include/blob` next to itself, other sources refuse them. |
 | `render ROUTE [--out PATH]` | `DATA-09` | Directory/detail/explicit view, every matching view once in entity order, frame-wide portal mode, default fallback only for an empty renderable match, stdout/file, missing route/view, output failure. |
 
 ### Collaboration and sync
@@ -97,9 +97,8 @@ and this contract are delivered together on base `90ba1f90d`.
 | --- | --- | --- |
 | `invite` | `COLLAB-01`, `COLLAB-02` | Default/base URL, remote/no-remote, recipient root, shorten/no-shorten/env, zero/one/many remotes. |
 | `join TOOL_URL [--name NAME] [--agent-name LABEL] [--installation ID] [--via ORIGIN]`, `--space NAME join` | `COLLAB-03`, `COLLAB-05`, `ACCT-C14` | Scoped v1/v2 full/short, default/explicit/environment deployment selection, route mismatch, malformed/mixed/expired/revoked/already imported, ordinary-link rejection, scoped resume, persisted legacy-person resume, name/site collision; bounded self-reported agent labels remain separate from local aliases and persist across setup retries; a caller-chosen installation identity (hidden, for CI) persists the same way and makes repeated from-scratch joins confirm one installation. |
-| `push` | `SYNC-02` | `R0`–`R6`, timeout/lost response/concurrent push, account/invite authority. |
+| `push` | `SYNC-02` | `R0`–`R6`, timeout/lost response/concurrent push, account/invite authority; the push after a committing write pulls and retries when the upstream moved. |
 | `pull` | `SYNC-03` | `R0`–`R6`, divergence, concurrent local/remote change, restart before ref update. |
-| `publish DIR [--attempts N] [--dry-run] [--json]` | `SYNC-02`, `DATA-07` | Path-ordered documents with hidden entries skipped, empty directory, rejected document (named, nothing pushed), unchanged directory (no commit, no push), dry run, no upstream, upstream moved before push (pull + retry), attempts exhausted. |
 | `remote`, `remote --json` | `CLI-03` | Empty/many, stable JSON, malformed registry. |
 | `remote add NAME URL [--revocation-url] [--subject]` | `CLI-03` | Invalid/conflicting values, existing upstream preserved, partial meta write. |
 | `remote set-upstream REMOTE` | `CLI-03`, `SYNC-01` | Missing/valid remote, existing upstream replacement, branch/registry write failure. |

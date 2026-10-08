@@ -1,16 +1,18 @@
-//! `tonk publish`: a directory of notation documents is asserted in
-//! path order and delivered once, an unchanged directory publishes
-//! nothing, `!include/blob` stores referenced files as blobs, and a
-//! push that finds the upstream moved pulls and pushes again.
+//! `tonk eval <DIR>`: every notation document under a directory is
+//! evaluated in path order as one commit, an unchanged directory commits
+//! nothing, `!include/blob` stores referenced files as blobs in that
+//! commit, and the push after the write pulls and pushes again when
+//! another writer moved the upstream.
 
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use dialog_query::the;
 use dialog_repository::Revision;
-use tonk_cli::publish::{self, Options, PublishError};
+use tonk_cli::auto_sync::{self, WriteSession};
+use tonk_cli::eval::{self, EvalError, Options, Outcome, Source};
 use tonk_cli::{blob, sync};
 
 use crate::common::TestSite;
@@ -48,8 +50,8 @@ page!:
 "#;
 
 /// Lay out `site/00-schema.yaml`, `site/pages/home.yaml` and the asset
-/// the page includes, and return the directory to publish.
-fn site(test: &TestSite) -> Result<std::path::PathBuf> {
+/// the page includes, and return the directory to evaluate.
+fn site(test: &TestSite) -> Result<PathBuf> {
     let root = test.parent.join("site");
     std::fs::create_dir_all(root.join("pages"))?;
     std::fs::create_dir_all(root.join("assets"))?;
@@ -59,16 +61,21 @@ fn site(test: &TestSite) -> Result<std::path::PathBuf> {
     Ok(root)
 }
 
+/// Evaluate `root` the way `tonk eval <DIR>` does, syncing around it.
+async fn publish(test: &TestSite, root: &Path) -> Result<Outcome, EvalError> {
+    auto_sync::run_eval(
+        &test.site,
+        Source::File(root.to_path_buf()),
+        Options::default(),
+        true,
+    )
+    .await
+}
+
 /// Wire `main`'s upstream to a sibling branch in the same repo, the
 /// in-process stand-in for a remote.
 async fn wire_sibling_upstream(test: &TestSite) -> Result<()> {
-    let upstream = test
-        .site
-        .repository
-        .branch("upstream")
-        .open()
-        .perform(&test.site.operator)
-        .await?;
+    let upstream = upstream(test).await?;
     test.site
         .branch()
         .await?
@@ -93,59 +100,64 @@ async fn upstream_revision(test: &TestSite) -> Result<Option<Revision>> {
     Ok(upstream(test).await?.revision())
 }
 
-mod when_publishing_a_directory {
+async fn local_revision(test: &TestSite) -> Result<Option<Revision>> {
+    Ok(test.site.branch().await?.handle().revision())
+}
+
+mod when_evaluating_a_directory {
     use super::*;
 
     #[dialog_common::test]
-    async fn it_evaluates_documents_in_path_order_skipping_hidden_entries() -> Result<()> {
+    async fn it_finds_documents_in_path_order_skipping_hidden_entries() -> Result<()> {
         let test = TestSite::new().await?;
         let root = site(&test)?;
         std::fs::create_dir_all(root.join(".github"))?;
         std::fs::write(root.join(".github/ci.yml"), "not: notation\n")?;
         std::fs::write(root.join("README.md"), "not notation either")?;
 
-        let found = publish::documents(&root)?;
-        let relative: Vec<_> = found
-            .iter()
+        let relative: Vec<_> = eval::directory_documents(&root)?
+            .into_iter()
             .map(|path| path.strip_prefix(&root).unwrap().to_path_buf())
             .collect();
         assert_eq!(
             relative,
             vec![
-                Path::new("00-schema.yaml").to_path_buf(),
-                Path::new("pages/home.yaml").to_path_buf()
+                PathBuf::from("00-schema.yaml"),
+                PathBuf::from("pages/home.yaml")
             ]
         );
         Ok(())
     }
 
+    /// The page uses a concept the schema document declares, which only
+    /// resolves because both are evaluated in one transaction.
     #[dialog_common::test]
-    async fn it_asserts_every_document_and_pushes_once() -> Result<()> {
+    async fn it_commits_every_document_once_and_pushes() -> Result<()> {
         let test = TestSite::new().await?;
         wire_sibling_upstream(&test).await?;
         let root = site(&test)?;
 
-        let outcome = publish::run(&test.site, &root, Options::default()).await?;
-        assert!(outcome.changed, "a fresh space gains the documents' facts");
-        assert!(outcome.pushed, "the commit reaches the upstream");
-        assert_eq!(outcome.attempts, 1);
-        assert_eq!(outcome.documents.len(), 2);
-
-        let local = test.site.branch().await?.handle().revision();
+        let outcome = publish(&test, &root).await?;
+        assert!(outcome.committed);
+        let after = local_revision(&test).await?.expect("committed");
+        assert_eq!(
+            after.edition,
+            outcome.response.revision_after.unwrap().edition
+        );
         assert_eq!(
             upstream_revision(&test).await?.map(|r| r.tree),
-            local.map(|r| r.tree),
-            "the upstream holds exactly what was published"
+            Some(after.tree),
+            "the upstream holds exactly what was evaluated"
         );
 
         let found = test
             .eval_inline("page:\n  this: id:page-home\n  title: ?title\n  hero: ?hero\n")
             .await?;
         assert!(found.stdout.contains("Home"), "{}", found.stdout);
-        let hero = blob::ls(&test.site).await?;
-        assert_eq!(hero.len(), 1);
+        let blobs = blob::ls(&test.site).await?;
+        assert_eq!(blobs.len(), 1);
         assert!(
-            found.stdout.contains(hero[0].entity.as_str()),
+            found.stdout.contains(blobs[0].entity.as_str()),
             "the page refers to the stored blob: {}",
             found.stdout
         );
@@ -157,7 +169,7 @@ mod when_publishing_a_directory {
         let test = TestSite::new().await?;
         let root = site(&test)?;
 
-        publish::run(&test.site, &root, Options::default()).await?;
+        publish(&test, &root).await?;
 
         let rows = blob::ls(&test.site).await?;
         let hero = rows
@@ -172,34 +184,35 @@ mod when_publishing_a_directory {
     }
 
     #[dialog_common::test]
-    async fn it_publishes_nothing_when_the_directory_is_unchanged() -> Result<()> {
+    async fn it_commits_nothing_when_the_directory_is_unchanged() -> Result<()> {
         let test = TestSite::new().await?;
         wire_sibling_upstream(&test).await?;
         let root = site(&test)?;
-        publish::run(&test.site, &root, Options::default()).await?;
-        let before = upstream_revision(&test).await?;
+        publish(&test, &root).await?;
+        let local = local_revision(&test).await?;
+        let pushed = upstream_revision(&test).await?;
 
-        let again = publish::run(&test.site, &root, Options::default()).await?;
-        assert!(!again.changed, "re-asserting held facts mints no revision");
-        assert!(!again.pushed, "and so there is nothing to deliver");
-        assert_eq!(again.attempts, 0);
-        assert_eq!(upstream_revision(&test).await?, before);
+        let again = publish(&test, &root).await?;
+        assert_eq!(
+            again.response.revision_after, again.response.revision_before,
+            "re-asserting held facts mints no revision"
+        );
+        assert_eq!(local_revision(&test).await?, local);
+        assert_eq!(upstream_revision(&test).await?, pushed);
         Ok(())
     }
 
     #[dialog_common::test]
-    async fn it_publishes_an_edited_document() -> Result<()> {
+    async fn it_supersedes_an_edited_field() -> Result<()> {
         let test = TestSite::new().await?;
-        wire_sibling_upstream(&test).await?;
         let root = site(&test)?;
-        publish::run(&test.site, &root, Options::default()).await?;
+        publish(&test, &root).await?;
 
         std::fs::write(
             root.join("pages/home.yaml"),
             PAGE.replace("Home", "Welcome"),
         )?;
-        let edited = publish::run(&test.site, &root, Options::default()).await?;
-        assert!(edited.changed && edited.pushed);
+        publish(&test, &root).await?;
 
         let found = test
             .eval_inline("page:\n  this: id:page-home\n  title: ?title\n  hero: ?hero\n")
@@ -213,25 +226,26 @@ mod when_publishing_a_directory {
         Ok(())
     }
 
+    /// A dry run spans documents like a real one (the page resolves the
+    /// schema's concept) and stores nothing, blobs included.
     #[dialog_common::test]
     async fn it_commits_nothing_on_a_dry_run() -> Result<()> {
         let test = TestSite::new().await?;
-        wire_sibling_upstream(&test).await?;
         let root = site(&test)?;
-        let before = test.site.branch().await?.handle().revision();
+        let before = local_revision(&test).await?;
 
-        let outcome = publish::run(
+        let outcome = eval::run_against_site(
             &test.site,
-            &root,
+            Source::File(root),
             Options {
                 dry_run: true,
                 ..Options::default()
             },
         )
         .await?;
-        assert!(!outcome.changed && !outcome.pushed);
-        assert_eq!(test.site.branch().await?.handle().revision(), before);
-        assert!(upstream_revision(&test).await?.is_none());
+        assert!(!outcome.committed);
+        assert_eq!(local_revision(&test).await?, before);
+        assert!(blob::ls(&test.site).await?.is_empty());
         Ok(())
     }
 }
@@ -246,24 +260,34 @@ mod when_a_document_is_rejected {
         let root = site(&test)?;
         std::fs::write(
             root.join("pages/broken.yaml"),
-            "page!:\n  this: id:broken\n  hero: !include/blob ../assets/missing.png\n",
+            "page!:\n  this: id:broken\n  title: Broken\n  hero: !include/blob ../assets/missing.png\n",
         )?;
+        let before = local_revision(&test).await?;
 
-        let before = test.site.branch().await?.handle().revision();
-
-        let error = publish::run(&test.site, &root, Options::default())
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(&error, PublishError::Document { path, .. } if path.ends_with("pages/broken.yaml")),
-            "{error}"
-        );
+        let error = publish(&test, &root).await.unwrap_err();
+        assert!(matches!(error, EvalError::Parse(_)), "{error}");
+        assert!(error.to_string().contains("broken.yaml"), "{error}");
         assert_eq!(
-            test.site.branch().await?.handle().revision(),
+            local_revision(&test).await?,
             before,
             "the documents before it are not committed either"
         );
         assert!(upstream_revision(&test).await?.is_none());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_names_the_document_an_analysis_error_is_in() -> Result<()> {
+        let test = TestSite::new().await?;
+        let root = site(&test)?;
+        std::fs::write(
+            root.join("pages/unknown.yaml"),
+            "nonesuch!:\n  this: id:x\n  title: X\n",
+        )?;
+
+        let error = publish(&test, &root).await.unwrap_err();
+        assert!(matches!(error, EvalError::Analyze(_)), "{error}");
+        assert!(error.to_string().contains("unknown.yaml"), "{error}");
         Ok(())
     }
 
@@ -274,27 +298,28 @@ mod when_a_document_is_rejected {
         std::fs::create_dir_all(&root)?;
         std::fs::write(root.join("notes.md"), "no notation here")?;
 
-        let error = publish::run(&test.site, &root, Options::default())
-            .await
-            .unwrap_err();
-        assert!(matches!(error, PublishError::Empty(_)), "{error}");
+        let error = publish(&test, &root).await.unwrap_err();
+        assert!(matches!(error, EvalError::Empty(_)), "{error}");
         Ok(())
     }
 }
 
-mod when_the_upstream_moved {
+mod when_the_upstream_moves_during_a_write {
     use super::*;
 
-    /// Publish, then let another writer advance the upstream while this
-    /// replica commits an edit of its own without pulling, so the two
-    /// have diverged.
-    async fn diverge(test: &TestSite) -> Result<()> {
-        wire_sibling_upstream(test).await?;
-        let root = site(test)?;
-        publish::run(&test.site, &root, Options::default()).await?;
+    /// Another writer advances the upstream after the write's pull: the
+    /// first push is refused as a non-fast-forward, so the push after the
+    /// write pulls, merging both writers' facts, and pushes again.
+    #[dialog_common::test]
+    async fn it_pulls_and_pushes_again() -> Result<()> {
+        let test = TestSite::new().await?;
+        wire_sibling_upstream(&test).await?;
+        let root = site(&test)?;
+        publish(&test, &root).await?;
 
+        let session = WriteSession::begin(&test.site, true).await;
         let entity: dialog_artifacts::Entity = "id:page-elsewhere".parse()?;
-        upstream(test)
+        upstream(&test)
             .await?
             .transaction()
             .assert(
@@ -306,26 +331,12 @@ mod when_the_upstream_moved {
             .publish()
             .perform(&test.site.operator)
             .await?;
-
         std::fs::write(
             root.join("pages/home.yaml"),
             PAGE.replace("Home", "Welcome"),
         )?;
-        tonk_cli::eval::run_against_site(
-            &test.site,
-            tonk_cli::eval::Source::File(root.join("pages/home.yaml")),
-            tonk_cli::eval::Options::default(),
-        )
-        .await?;
-        Ok(())
-    }
-
-    /// The first push is refused as a non-fast-forward; delivery pulls,
-    /// merging both writers' facts, and the second push lands.
-    #[dialog_common::test]
-    async fn it_pulls_and_pushes_again() -> Result<()> {
-        let test = TestSite::new().await?;
-        diverge(&test).await?;
+        let outcome =
+            eval::run_against_site(&test.site, Source::File(root), Options::default()).await?;
         assert!(
             matches!(
                 sync::push(&test.site).await,
@@ -334,14 +345,11 @@ mod when_the_upstream_moved {
             "the moved upstream refuses a plain push"
         );
 
-        let (pushed, attempts) = publish::deliver(&test.site, 3).await?;
-        assert!(pushed);
-        assert_eq!(attempts, 2, "one refused push, then a pull and a push");
-
-        let local = test.site.branch().await?.handle().revision();
+        let report = session.finish(outcome.committed).await;
+        assert_eq!(report.receipt()["push"], "pushed", "{:?}", report.receipt());
         assert_eq!(
             upstream_revision(&test).await?.map(|r| r.tree),
-            local.map(|r| r.tree)
+            local_revision(&test).await?.map(|r| r.tree)
         );
         let found = test
             .eval_inline("heading:\n  this: ?page\n  title: ?title\n")
@@ -352,18 +360,6 @@ mod when_the_upstream_moved {
             "{}",
             found.stdout
         );
-        Ok(())
-    }
-
-    #[dialog_common::test]
-    async fn it_gives_up_after_the_attempts_it_was_given() -> Result<()> {
-        let test = TestSite::new().await?;
-        diverge(&test).await?;
-        let before = upstream_revision(&test).await?;
-
-        let error = publish::deliver(&test.site, 1).await.unwrap_err();
-        assert!(matches!(error, PublishError::Contended(1)), "{error}");
-        assert_eq!(upstream_revision(&test).await?, before);
         Ok(())
     }
 }

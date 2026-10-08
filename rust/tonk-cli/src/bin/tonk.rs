@@ -59,7 +59,6 @@ write facts
    assert     Create an instance of a concept, or update fields on one
    retract    Retract a field, or a whole instance
    eval       Evaluate a notation document: anything the verbs can't say
-   publish    Assert a directory of notation documents and push them
 
 define
    concept    List concepts, or define one with typed fields
@@ -266,6 +265,10 @@ enum Command {
     /// The escape hatch for anything the verbs don't cover: rules,
     /// multi-statement documents, joins, retractions inside
     /// assertions. `tonk help notation` documents the grammar.
+    ///
+    /// Given a directory, evaluates every document under it as one
+    /// commit, so a directory kept in git can be re-run on every change:
+    /// facts that already hold commit nothing.
     Eval(EvalArgs),
 
     /// Render a view to HTML, headlessly
@@ -367,36 +370,6 @@ enum Command {
     /// Pull local main from its upstream
     #[command(after_help = "Examples:\n  tonk pull")]
     Pull,
-
-    /// Assert a directory of notation documents and push the result
-    ///
-    /// Evaluates every `*.yaml` / `*.yml` under DIR in path order
-    /// (hidden entries skipped) into one commit, so `00-schema.yaml`
-    /// runs before the documents that use it and a rejected document
-    /// commits nothing. `!include/blob ./asset.png` stores a
-    /// referenced file as a blob. Publishing asserts and never
-    /// retracts: removing a file leaves its facts in the space.
-    ///
-    /// Pulls first, then pushes once after the last document. When
-    /// another writer moved the upstream meanwhile, pulls (merging
-    /// both sides) and pushes again, up to --attempts times.
-    #[command(
-        after_help = "Safe to re-run: an unchanged directory commits and pushes nothing.\n\nExamples:\n  tonk publish ./site\n  tonk publish ./site --dry-run\n  tonk publish ./site --attempts 10 --json"
-    )]
-    Publish {
-        /// Directory of notation documents.
-        #[arg(value_name = "DIR")]
-        dir: PathBuf,
-        /// Push attempts before giving up on an upstream that keeps moving.
-        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..))]
-        attempts: u32,
-        /// Evaluate every document without committing or syncing.
-        #[arg(long)]
-        dry_run: bool,
-        /// Emit the outcome as camelCase JSON.
-        #[arg(long)]
-        json: bool,
-    },
 
     /// List or manage remotes
     Remote {
@@ -1004,7 +977,7 @@ impl WriteArgs {
 
 #[derive(Args, Debug)]
 #[command(
-    after_help = "Examples:\n  tonk eval -c 'person:'\n  tonk eval ./doc.notation\n  cat doc.notation | tonk eval -\n  tonk eval -c 'person:' --json\n  tonk eval ./doc.notation --home todo\n  tonk eval ./doc.notation --no-sync\n  tonk eval ./doc.notation --dry-run"
+    after_help = "Examples:\n  tonk eval -c 'person:'\n  tonk eval ./doc.notation\n  tonk eval ./site/\n  cat doc.notation | tonk eval -\n  tonk eval -c 'person:' --json\n  tonk eval ./doc.notation --home todo\n  tonk eval ./doc.notation --no-sync\n  tonk eval ./doc.notation --dry-run"
 )]
 struct EvalArgs {
     /// Inline document. Mutually exclusive with the positional
@@ -1022,7 +995,9 @@ struct EvalArgs {
     quiet: bool,
 
     /// Path to a notation document, or `-` to read from stdin.
-    /// Omit to read from a piped stdin.
+    /// Omit to read from a piped stdin. A directory evaluates every
+    /// `*.yaml` / `*.yml` under it in path order (hidden entries
+    /// skipped) as one commit.
     #[arg(value_name = "PATH")]
     path: Option<String>,
 
@@ -1093,7 +1068,6 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Import { .. } => ("import", None),
         Command::Push => ("push", None),
         Command::Pull => ("pull", None),
-        Command::Publish { .. } => ("publish", None),
         Command::Status { .. } => ("status", None),
         Command::Invite { .. } => ("invite", None),
         Command::Join { .. } => ("join", None),
@@ -1154,7 +1128,6 @@ fn uses_active_space(command: &Command) -> bool {
             | Command::Import { .. }
             | Command::Push
             | Command::Pull
-            | Command::Publish { .. }
             | Command::Status { .. }
             | Command::Invite { .. }
             | Command::Remote { .. }
@@ -1276,12 +1249,6 @@ async fn main() {
         } => import_op(file, &branch, write, space.as_deref()).await,
         Command::Push => sync_op(SyncOp::Push, space.as_deref()).await,
         Command::Pull => sync_op(SyncOp::Pull, space.as_deref()).await,
-        Command::Publish {
-            dir,
-            attempts,
-            dry_run,
-            json,
-        } => publish_op(dir, attempts, dry_run, json, space.as_deref()).await,
         Command::Status { json } => status_op(json, space.as_deref()).await,
         Command::Invite {
             base_url,
@@ -1996,53 +1963,6 @@ async fn sync_op(op: SyncOp, space: Option<&str>) -> ExitCode {
         // gave, verbatim, wrapped in a fix read from the roster the replica
         // already holds.
         Err(err @ sync::SyncError::Rejected { .. }) => {
-            let sync::SyncError::Rejected { reason, .. } = &err else {
-                unreachable!("matched one line above")
-            };
-            eprintln!(
-                "error: {}",
-                sync::rejection_report(&site, &resolved.name, reason).await
-            );
-            err.exit_code()
-        }
-        Err(err) => print_coded(err),
-    }
-}
-
-async fn publish_op(
-    dir: PathBuf,
-    attempts: u32,
-    dry_run: bool,
-    json: bool,
-    space: Option<&str>,
-) -> ExitCode {
-    let (resolved, site) = match open_selected(space).await {
-        Ok(opened) => opened,
-        Err(code) => return code,
-    };
-    let options = tonk_cli::publish::Options { attempts, dry_run };
-    match tonk_cli::publish::run(&site, &dir, options).await {
-        Ok(outcome) => {
-            if json {
-                match serde_json::to_string_pretty(&outcome) {
-                    Ok(text) => println!("{text}"),
-                    Err(error) => return print_failure(error),
-                }
-            } else {
-                for document in &outcome.documents {
-                    println!("{}\t{} claims", document.path.display(), document.claims);
-                }
-                let state = match (dry_run, outcome.changed, outcome.pushed) {
-                    (true, _, _) => "dry run: nothing committed",
-                    (false, false, false) => "up to date: nothing to publish",
-                    (false, true, false) => "committed locally; no upstream to push to",
-                    (false, _, true) => "published",
-                };
-                println!("{state}");
-            }
-            ExitCode::Success
-        }
-        Err(tonk_cli::publish::PublishError::Sync(err @ sync::SyncError::Rejected { .. })) => {
             let sync::SyncError::Rejected { reason, .. } = &err else {
                 unreachable!("matched one line above")
             };

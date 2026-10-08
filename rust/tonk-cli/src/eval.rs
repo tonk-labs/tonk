@@ -1,11 +1,11 @@
-//! `tonk eval` — read a notation document, evaluate it against
-//! the local site, and render the response.
+//! `tonk eval` — read a notation document, or a directory of them,
+//! evaluate it against the local site, and render the response.
 
 use std::path::PathBuf;
 
 use thiserror::Error;
 use tokio::io::AsyncReadExt as _;
-use tonk_evaluator::evaluate::{EvaluateError, SyntaxEvaluateExt};
+use tonk_evaluator::evaluate::{CommitSummary, EvaluateError, SyntaxEvaluateExt};
 use tonk_notation::{INLINE_LOCATION, Load, Parsed, Syntax, Url, expand, parse_at};
 
 use crate::ExitCode;
@@ -20,7 +20,7 @@ pub enum Source {
     /// Inline string from `-c "<doc>"`.
     Inline(String),
     /// File on disk — the path becomes the diagnostic source
-    /// label.
+    /// label. A directory stands for every document under it.
     File(PathBuf),
     /// Piped stdin or `-`. Diagnostics are labelled `<stdin>`.
     Stdin,
@@ -58,6 +58,18 @@ impl Source {
                 Ok(Url::parse(INLINE_LOCATION).expect("INLINE_LOCATION is a valid URI"))
             }
             Source::Library(_) => Ok(tonk_library::location("core.yaml")),
+        }
+    }
+
+    /// The documents this source stands for: a directory's documents
+    /// (see [`directory_documents`]), or the source itself.
+    fn documents(self) -> Result<Vec<Source>, EvalError> {
+        match self {
+            Source::File(path) if path.is_dir() => Ok(directory_documents(&path)?
+                .into_iter()
+                .map(Source::File)
+                .collect()),
+            source => Ok(vec![source]),
         }
     }
 
@@ -160,15 +172,25 @@ impl crate::Coded for EvalError {
 /// Evaluate `source` against an already-opened [`TonkSite`].
 /// Lets integration tests reuse a single site across many
 /// `eval` calls without paying the open cost each time.
+///
+/// A [`Source::File`] naming a directory evaluates every notation
+/// document under it (see [`directory_documents`]) into one transaction
+/// and one commit: a later document sees what an earlier one declared,
+/// and a rejected document leaves nothing committed. The response
+/// covers all of them.
 pub async fn run_against_site(
     site: &TonkSite,
     source: Source,
     options: Options,
 ) -> Result<Outcome, EvalError> {
-    let label = source.label();
-    let location = source.location()?;
-    let mut text = source.read().await?;
-    if let Some(model) = &options.home {
+    let several = matches!(&source, Source::File(path) if path.is_dir());
+    let mut documents = Vec::new();
+    for source in source.documents()? {
+        documents.push((source.label(), source.location()?, source.read().await?));
+    }
+    if let Some(model) = &options.home
+        && let Some((_, _, text)) = documents.last_mut()
+    {
         text.push('\n');
         // Keep validation inside this same analyzed document: an empty query
         // binds no variables and writes nothing, but forces ordinary concept
@@ -178,44 +200,66 @@ pub async fn run_against_site(
         text.push_str(":\n\n");
         text.push_str(&build_home_recipe(std::slice::from_ref(model)));
     }
-    let mut syntax = parse_or_diagnose(&label, location, &text)?;
 
     let session = site
         .branch()
         .await
         .map_err(|e| EvalError::Io(format!("acquire branch: {e}")))?;
     let branch = session.handle();
-
-    let blobs = expand_includes(&label, &mut syntax).await?;
-
     let revision_before = branch.revision();
-    let mut evaluated = syntax
-        .evaluate(branch.transaction())
-        .perform(&site.operator)
-        .await
-        .map_err(map_evaluate_error)?;
-    for blob in &blobs {
-        evaluated.txn = crate::blob::describe(evaluated.txn, blob);
-    }
 
-    // Compute the post-evaluation match view by re-running the
-    // analyzer's queries against the txn overlay. The overlay
-    // reflects every applied write plus the induce pass, so this
-    // is the same answer a post-commit branch query would give —
-    // computed *before* commit so we don't need the branch after
-    // the txn is consumed.
-    let matches_after = evaluated
-        .matches_after(&site.operator)
-        .await
-        .map_err(map_evaluate_error)?;
+    let mut txn = branch.transaction();
+    let mut writes = false;
+    let mut matches_before = Vec::new();
+    let mut matches_after = Vec::new();
+    let mut commits = CommitSummary::default();
+    for (label, location, text) in documents {
+        // A parse error names its document at every diagnostic; the
+        // others need the name when there is more than one document.
+        let named = |error: EvalError| match error {
+            EvalError::Analyze(message) if several => {
+                EvalError::Analyze(format!("{label}: {message}"))
+            }
+            EvalError::Commit(message) if several => {
+                EvalError::Commit(format!("{label}: {message}"))
+            }
+            other => other,
+        };
+        let mut syntax = parse_or_diagnose(&label, location, &text)?;
+        let blobs = expand_includes(&label, &mut syntax).await?;
+        let mut evaluated = syntax
+            .evaluate(txn)
+            .perform(&site.operator)
+            .await
+            .map_err(|e| named(map_evaluate_error(e)))?;
+        for blob in &blobs {
+            evaluated.txn = crate::blob::describe(evaluated.txn, blob);
+        }
+
+        // Compute the post-evaluation match view by re-running the
+        // analyzer's queries against the txn overlay. The overlay
+        // reflects every applied write plus the induce pass, so this
+        // is the same answer a post-commit branch query would give —
+        // computed *before* commit so we don't need the branch after
+        // the txn is consumed.
+        matches_after.extend(
+            evaluated
+                .matches_after(&site.operator)
+                .await
+                .map_err(|e| named(map_evaluate_error(e)))?,
+        );
+        writes |= evaluated.analysis.analysis.has_statements();
+        matches_before.extend(evaluated.matches);
+        commits.claims += evaluated.commits.claims;
+        commits.entities.extend(evaluated.commits.entities);
+        txn = evaluated.txn;
+    }
 
     // Commit only a mutating document that wasn't run as a dry
     // run. Pure-query docs and `--dry-run` short-circuit so we
     // don't pay for (or apply) a commit.
-    let (response, committed) = if !options.dry_run && evaluated.analysis.analysis.has_statements()
-    {
-        let revision_after = evaluated
-            .txn
+    let (response, committed) = if !options.dry_run && writes {
+        let revision_after = txn
             .commit()
             .publish()
             .perform(&site.operator)
@@ -229,9 +273,9 @@ pub async fn run_against_site(
             EvaluateResponse {
                 revision_before,
                 revision_after: Some(revision_after),
-                matches_before: evaluated.matches,
+                matches_before,
                 matches_after,
-                commits: evaluated.commits,
+                commits,
             },
             true,
         )
@@ -241,14 +285,13 @@ pub async fn run_against_site(
         // landed. Zero `claims` so the summary reflects what *did*
         // commit (nothing), not what *would* have — same contract
         // the worker's `transact=false` preview honors.
-        let mut commits = evaluated.commits;
         commits.claims = 0;
         (
             EvaluateResponse {
                 revision_before: revision_before.clone(),
                 revision_after: revision_before,
-                matches_before: evaluated.matches.clone(),
-                matches_after: evaluated.matches,
+                matches_before: matches_before.clone(),
+                matches_after: matches_before,
                 commits,
             },
             false,
@@ -263,6 +306,45 @@ pub async fn run_against_site(
         response,
         committed,
     })
+}
+
+/// The notation documents under `root`, in the order a directory is
+/// evaluated: sorted by relative path, so `00-schema.yaml` precedes the
+/// documents that use its concepts. Every `*.yaml` / `*.yml` file counts;
+/// hidden files and directories (`.git`, `.github`) are skipped, and so
+/// is anything else, which documents can still `!include`.
+pub fn directory_documents(root: &std::path::Path) -> Result<Vec<PathBuf>, EvalError> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) -> Result<(), EvalError> {
+        let io =
+            |e: std::io::Error| EvalError::Io(format!("failed to read {}: {e}", dir.display()));
+        for entry in std::fs::read_dir(dir).map_err(io)? {
+            let entry = entry.map_err(io)?;
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            if entry.file_type().map_err(io)?.is_dir() {
+                walk(&path, out)?;
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "yaml" || extension == "yml")
+            {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut found = Vec::new();
+    walk(root, &mut found)?;
+    if found.is_empty() {
+        return Err(EvalError::Empty(format!(
+            "{}: no *.yaml or *.yml documents",
+            root.display()
+        )));
+    }
+    found.sort();
+    Ok(found)
 }
 
 /// Replace every `!include` in `syntax` with what it names. Returns the
@@ -280,44 +362,6 @@ async fn expand_includes(
         return Err(EvalError::Parse(format_diagnostics(label, &unexpanded)));
     }
     Ok(files.blobs.into_inner().unwrap_or_else(|e| e.into_inner()))
-}
-
-/// One document evaluated into a shared transaction by [`evaluate_into`].
-pub struct Applied<'a> {
-    /// The transaction, now carrying this document's writes as well.
-    pub txn: dialog_repository::Transaction<&'a dialog_repository::Branch>,
-    /// Claims the document asserted.
-    pub claims: usize,
-    /// Whether the document wrote anything (rather than only querying).
-    pub writes: bool,
-}
-
-/// Evaluate `source` into `txn` without committing, so several
-/// documents can land in one commit. Names a document declares are
-/// visible to the documents evaluated after it, because resolution
-/// reads through the transaction's overlay.
-pub async fn evaluate_into<'a>(
-    site: &TonkSite,
-    txn: dialog_repository::Transaction<&'a dialog_repository::Branch>,
-    source: Source,
-) -> Result<Applied<'a>, EvalError> {
-    let label = source.label();
-    let text = source.read().await?;
-    let mut syntax = parse_or_diagnose(&label, source.location()?, &text)?;
-    let blobs = expand_includes(&label, &mut syntax).await?;
-    let mut evaluated = syntax
-        .evaluate(txn)
-        .perform(&site.operator)
-        .await
-        .map_err(map_evaluate_error)?;
-    for blob in &blobs {
-        evaluated.txn = crate::blob::describe(evaluated.txn, blob);
-    }
-    Ok(Applied {
-        writes: evaluated.analysis.analysis.has_statements(),
-        claims: evaluated.commits.claims,
-        txn: evaluated.txn,
-    })
 }
 
 /// Drive the parser and project diagnostics onto either a clean

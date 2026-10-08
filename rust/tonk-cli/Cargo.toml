@@ -99,8 +99,8 @@ name = "include"
 path = "tests/include.rs"
 
 [[test]]
-name = "publish"
-path = "tests/publish.rs"
+name = "eval_directory"
+path = "tests/eval_directory.rs"
 
 [[test]]
 name = "authoring"
