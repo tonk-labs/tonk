@@ -1042,14 +1042,14 @@ window.STORYBOOK_DATA = {
         "ACCT-C06",
         "ACCT-C15"
       ],
-      "name": "CLI authorization handoff",
+      "name": "Tonk connection approval",
       "source_paths": [
         "rust/tonk-core/assets/library/profile.yaml",
         "rust/tonk-ui/styles.css",
         "rust/tonk-cli/src/account.rs"
       ],
       "status": "captured",
-      "summary": "The browser names the waiting CLI device, or the page another deployment is signing in, and requires explicit passkey approval or cancellation.",
+      "summary": "The browser shows the Tonk connection name and granting account email, explains full-account access, and offers decline or passkey approval. Device IDs and callback destinations stay internal.",
       "surface": "browser"
     },
     {
