@@ -15257,3 +15257,99 @@ attribute!: &probe/next
         );
     }
 }
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod library_quarantine_tests {
+    use super::*;
+
+    /// The rules `branch` of `repo` sets aside, read as
+    /// `dialog.rule/quarantined`.
+    async fn quarantined(tonk: &TonkState, repo: &str, branch: &str) -> Vec<String> {
+        let predicate: dialog_query::ConceptDescriptor =
+            serde_json::from_value(serde_json::json!({ "with": {
+                "concept": { "the": "dialog.rule/quarantined", "as": "Entity" }
+            }}))
+            .expect("a descriptor");
+        let mut terms = dialog_query::Parameters::new();
+        terms.insert("this".into(), dialog_query::Term::var("this"));
+        terms.insert("concept".into(), dialog_query::Term::var("concept"));
+        tonk.reactor
+            .repository(repo)
+            .branch(branch)
+            .query(dialog_query::ConceptQuery { predicate, terms })
+            .perform(&tonk.operator)
+            .await
+            .expect("the quarantine reads")
+            .iter()
+            .map(|row| format!("{row:?}"))
+            .collect()
+    }
+
+    /// dialog sets aside a rule that closes a cycle through an absence
+    /// test, so a library rule that does is silently left out. None of
+    /// the standard libraries may: each is installed onto a space, and
+    /// the profile library onto the profile branch, and neither sets any
+    /// rule aside.
+    ///
+    /// Native only: it needs a whole worker state, which the native test
+    /// fixture builds. dialog's quarantine runs the same on wasm, covered
+    /// by dialog-repository's `transaction::quarantine` tests.
+    #[dialog_common::test]
+    async fn no_standard_library_rule_is_set_aside() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let key = create_space_inner(&state, "Library audit", None)
+            .await
+            .expect("the space creates");
+        let tonk = state.read().await;
+        for (name, body) in [
+            (
+                "issue",
+                include_str!("../../../tonk-core/assets/library/issue.yaml"),
+            ),
+            (
+                "meta",
+                include_str!("../../../tonk-core/assets/library/meta.yaml"),
+            ),
+            (
+                "notebook",
+                include_str!("../../../tonk-core/assets/library/notebook.yaml"),
+            ),
+            (
+                "prose",
+                include_str!("../../../tonk-core/assets/library/prose.yaml"),
+            ),
+            (
+                "table",
+                include_str!("../../../tonk-core/assets/library/table.yaml"),
+            ),
+        ] {
+            super::super::evaluate::evaluate_body(
+                &tonk,
+                &key,
+                CONTENT_BRANCH,
+                body.to_owned(),
+                true,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("the {name} library installs: {error}"));
+        }
+        assert_eq!(
+            quarantined(&tonk, &key, CONTENT_BRANCH).await,
+            Vec::<String>::new(),
+            "no space library rule is set aside"
+        );
+
+        reconcile_profile_library_from(
+            &tonk,
+            include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned(),
+        )
+        .await
+        .expect("the profile library installs");
+        let profile = tonk.reactor.profile_repository().name().to_owned();
+        assert_eq!(
+            quarantined(&tonk, &profile, &tonk.active_branch).await,
+            Vec::<String>::new(),
+            "no profile library rule is set aside"
+        );
+    }
+}

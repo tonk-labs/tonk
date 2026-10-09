@@ -118,23 +118,16 @@ fn request_client(request: &Request) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
-/// Until when a space's first read re-installs the rules an earlier
-/// dialog release stored (2026-11-15, unix seconds). After it the upgrade
-/// is not attempted; remove [`upgrade_rules_while_migrating`] then.
-const RULE_UPGRADE_UNTIL: u64 = 1_794_700_800;
-
 /// Re-install the rules `branch` stores under an identity an earlier
 /// dialog release gave them, the first time this worker reads the branch
-/// and until [`RULE_UPGRADE_UNTIL`]. Such rules are otherwise inert: no
-/// read finds them and no commit fires them. A failure is logged and
-/// leaves the read to proceed; the next read tries again.
+/// (see [`crate::reactor::BranchReference::upgrade_rules_once`], which
+/// stops after its cutoff date). Such rules are otherwise inert: no read
+/// finds them and no commit fires them. A failure is logged and the read
+/// proceeds.
 async fn upgrade_rules_while_migrating(
     tonk: &crate::worker::TonkState,
     branch: crate::reactor::BranchReference<'_>,
 ) {
-    if crate::session::now() >= RULE_UPGRADE_UNTIL {
-        return;
-    }
     match branch.upgrade_rules_once(&tonk.operator).await {
         Ok(Some(upgraded)) if !upgraded.reinstalled.is_empty() => tonk_common::log!(
             "re-installed {} rule(s) on '{}' under their current identity",

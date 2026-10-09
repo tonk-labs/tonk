@@ -384,25 +384,38 @@ impl TonkSite {
 
     /// Acquire the site's `main` branch, naming the remedy when the data
     /// predates this build's format.
+    ///
+    /// The first acquisition in a process also re-installs the rules the
+    /// branch stores under an identity an earlier dialog release gave them
+    /// ([`BranchReference::upgrade_rules_once`]), which would otherwise be
+    /// inert. A failed upgrade is reported on stderr and the command
+    /// proceeds.
+    ///
+    /// [`BranchReference::upgrade_rules_once`]: dialog_reactor::BranchReference::upgrade_rules_once
     pub async fn branch(&self) -> Result<BranchSession, ReactorError> {
-        self.reactor
-            .repository(REPO_NAME)
-            .branch(BRANCH_NAME)
-            .acquire(&self.operator)
-            .await
-            .map_err(|error| {
-                let text = error.to_string();
-                if tonk_account::is_legacy_format(&text) {
-                    // `reason` carries the remedy, so it travels with the
-                    // existing variant rather than needing a new one here.
-                    return ReactorError::BranchNotFound {
-                        repo: REPO_NAME.to_owned(),
-                        branch: BRANCH_NAME.to_owned(),
-                        reason: tonk_account::LEGACY_FORMAT_REMEDY.to_owned(),
-                    };
-                }
-                error
-            })
+        let branch = self.reactor.repository(REPO_NAME).branch(BRANCH_NAME);
+        let session = branch.acquire(&self.operator).await.map_err(|error| {
+            let text = error.to_string();
+            if tonk_account::is_legacy_format(&text) {
+                // `reason` carries the remedy, so it travels with the
+                // existing variant rather than needing a new one here.
+                return ReactorError::BranchNotFound {
+                    repo: REPO_NAME.to_owned(),
+                    branch: BRANCH_NAME.to_owned(),
+                    reason: tonk_account::LEGACY_FORMAT_REMEDY.to_owned(),
+                };
+            }
+            error
+        })?;
+        match branch.upgrade_rules_once(&self.operator).await {
+            Ok(Some(upgraded)) if !upgraded.reinstalled.is_empty() => eprintln!(
+                "note: re-installed {} rule(s) under their current identity",
+                upgraded.reinstalled.len()
+            ),
+            Ok(_) => {}
+            Err(error) => eprintln!("warning: rule upgrade failed: {error}"),
+        }
+        Ok(session)
     }
 }
 

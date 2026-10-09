@@ -2758,8 +2758,9 @@ rule!:
     /// required-but-unbound binding and the rule failed to compile,
     /// naming a variable that appears nowhere in the author's source.
     /// A blank is a wildcard and is skipped. A deductive rule admits
-    /// the negation: outside a dependency cycle it is stratified,
-    /// inside one dialog's cycle policy evaluates it.
+    /// the negation: outside a dependency cycle it is stratified, and a
+    /// rule closing a cycle through one is set aside by dialog's
+    /// quarantine.
     #[dialog_common::test]
     async fn it_blanks_an_omitted_premise_entity_so_a_negation_compiles() {
         let fixture = new_fixture().await;
