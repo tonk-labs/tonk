@@ -236,7 +236,9 @@ fn claim_endpoint(url: &Url) -> Result<Url> {
         .with_context(|| format!("'{url}' has no origin to claim a ticket at"))
 }
 
-/// The space a `/space/{did}` address opens.
+/// The space a `/space/{did}` address opens. The DID may arrive
+/// percent-encoded (`did%3Akey%3A…`), as an address bar, a chat client or
+/// `encodeURIComponent` leaves it; it names the same space.
 fn space_subject(url: &Url) -> Option<Did> {
     let mut segments = url.path_segments()?;
     let (Some(SPACE_PATH), Some(subject), None) =
@@ -244,7 +246,7 @@ fn space_subject(url: &Url) -> Option<Did> {
     else {
         return None;
     };
-    subject.parse().ok()
+    urlencoding::decode(subject).ok()?.parse().ok()
 }
 
 fn decode_seed(fragment: &str) -> Option<EphemeralSeed> {
@@ -409,6 +411,23 @@ mod tests {
         );
         assert!(Ticket::public_for_url(&link).unwrap().is_none());
         assert!(!Ticket::parse_url(&link).unwrap().unwrap().is_public());
+
+        // The same address with the DID percent-encoded, as it arrives
+        // from an address bar or a chat client, opens the same space.
+        let encoded = format!(
+            "https://tonk.example/space/{}",
+            urlencoding::encode(subject.as_ref())
+        );
+        assert!(encoded.contains("did%3Akey%3A"), "{encoded}");
+        let public = Ticket::public_for_url(&encoded)
+            .unwrap()
+            .expect("an encoded space address");
+        assert_eq!(public.subject(), &subject);
+        let encoded_link = format!("{encoded}#{}", bs58::encode(TICKET_SEED).into_string());
+        assert_eq!(
+            Ticket::parse_url(&encoded_link).unwrap().unwrap().subject(),
+            &subject
+        );
         for elsewhere in [
             format!("https://tonk.example/space/{subject}/inspector"),
             "https://tonk.example/join".to_owned(),

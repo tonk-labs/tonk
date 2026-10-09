@@ -62,6 +62,7 @@ tonk-access-service = { workspace = true, features = ["helpers"], optional = tru
 tempfile = { workspace = true }
 
 [dev-dependencies]
+urlencoding = { workspace = true }
 dialog-common = { workspace = true, features = [
     "helpers",
     "integration-tests",

@@ -5082,6 +5082,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "url",
+ "urlencoding",
  "wasm-bindgen-test",
 ]
 
@@ -5358,6 +5359,7 @@ dependencies = [
  "tonk-worker",
  "tonk-worker-api",
  "url",
+ "urlencoding",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

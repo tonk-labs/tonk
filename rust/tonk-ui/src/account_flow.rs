@@ -10098,8 +10098,8 @@ pub(crate) mod tests {
     }
 
     /// What a page shows of a space, read where a person reads it: the
-    /// bar's name and "observing" tag in the guest frame, its publication
-    /// actions, and the absent-space wall. Each element is measured, so
+    /// bar's name and its half-filled observer's sync disc in the guest
+    /// frame, its publication actions, and the absent-space wall. Each element is measured, so
     /// "shown" means laid out and not hidden, not merely present.
     async fn space_page_state(driver: &WebDriver) -> Result<serde_json::Value> {
         enter_guest(driver).await?;
@@ -10120,7 +10120,7 @@ pub(crate) mod tests {
                 return {
                     name: (root?.querySelector('.space .n')?.textContent || '').trim(),
                     observer: !!bar?.hasAttribute('data-observer'),
-                    observing: shown(root?.querySelector('.space .observing')),
+                    observing: shown(root?.querySelector('.fab .disc.observing')),
                     published: !!bar?.hasAttribute('data-published'),
                     publish: shown(root?.querySelector('.publish')),
                     unpublish: shown(root?.querySelector('.unpublish')),
@@ -10177,6 +10177,69 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Say `said` in the bar's command palette and run its top suggestion,
+    /// as a person does: open the command line, type, wait for a
+    /// suggestion that runs as it is, press Enter.
+    async fn run_in_palette(driver: &WebDriver, said: &str) -> Result<()> {
+        enter_guest(driver).await?;
+        driver
+            .execute(
+                r#"
+                const palette = document.querySelector('tonk-fab command-palette');
+                if (!palette.closest('tonk-fab').hasAttribute('commanding')) palette.summon();
+                palette.__input.value = arguments[0];
+                palette.__input.dispatchEvent(new Event('input', { bubbles: true }));
+                "#,
+                vec![serde_json::json!(said)],
+            )
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last = serde_json::Value::Null;
+        loop {
+            last = driver
+                .execute(
+                    r#"
+                    const palette = document.querySelector('tonk-fab command-palette');
+                    return (palette.__proposals || []).map((proposal) => ({
+                        text: (proposal.display || []).map((part) => part.text).join(' '),
+                        runs: !!proposal.claim,
+                    }));
+                    "#,
+                    Vec::new(),
+                )
+                .await?
+                .json()
+                .clone();
+            let top = &last[0];
+            if top["runs"] == true
+                && top["text"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with(said))
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                driver.enter_default_frame().await?;
+                return Err(anyhow!(
+                    "the palette never offered {said:?} as runnable; it offered {last}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        driver
+            .execute(
+                r#"
+                const palette = document.querySelector('tonk-fab command-palette');
+                palette.__input.dispatchEvent(
+                    new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                "#,
+                Vec::new(),
+            )
+            .await?;
+        driver.enter_default_frame().await?;
+        Ok(())
+    }
+
     /// A published space opens for anyone from its address, as an
     /// observer, and an unpublished one does not.
     ///
@@ -10184,10 +10247,11 @@ pub(crate) mod tests {
     /// the owner makes the space public from the bar; a visitor with no
     /// invite and no passkey opens `/space/{did}` and the page claims the
     /// space's public ticket, replicates the space, and shows it by name
-    /// with "observing" beside it and no share link (a reader cannot
-    /// mint one). The owner, a member, never sees "observing". Once the
-    /// owner makes the space private again, the next visitor gets the
-    /// private wall.
+    /// with its sync disc half filled (it observes, syncing nothing of its
+    /// own) and no share link (a reader cannot mint one). The visitor opens
+    /// the address percent-encoded, as a normalizing deployment redirects
+    /// it. The owner, a member, never sees the observer's disc. Once the owner makes the space private again, from the
+    /// command palette, the next visitor gets the private wall.
     #[dialog_common::test]
     async fn it_opens_a_published_space_to_a_visitor_as_an_observer(
         env: TestEnvironment,
@@ -10235,7 +10299,12 @@ pub(crate) mod tests {
         // A visitor: a fresh browser, no account, no invite. Only the
         // space's address, which is the first page it loads, as following
         // a link would be.
-        let address = env.tonk_web.join(&format!("space/{subject}"))?;
+        // Percent-encoded, as a deployment that normalizes paths (Cloudflare
+        // redirects `/space/did:key:…` here) and most copied links carry it.
+        let address = env
+            .tonk_web
+            .join(&format!("space/{}", urlencoding::encode(&subject)))?;
+        assert!(address.as_str().contains("did%3Akey%3A"), "{address}");
         let visitor = env.blank_driver().await?;
         goto(&visitor, address.as_str()).await?;
         let observed = await_space_page(&visitor, "the visitor sees the space", |state| {
@@ -10263,7 +10332,9 @@ pub(crate) mod tests {
         );
 
         // The owner takes it back.
-        click_publication_action(&owner, "unpublish").await?;
+        // Made private again from the command palette, on the space's own
+        // page: the palette names the space it is open on.
+        run_in_palette(&owner, "make space private").await?;
         await_space_page(&owner, "the owner's bar knows it private", |state| {
             state["published"] == false
         })
