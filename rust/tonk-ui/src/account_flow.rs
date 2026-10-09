@@ -10312,6 +10312,14 @@ pub(crate) mod tests {
             observed["private"], false,
             "a published space never shows its visitor the private wall: {observed}"
         );
+        // And the space itself renders, not just the bar: its view mounted
+        // while the space was absent, and once the join lands it has to
+        // load the space without the visitor reloading.
+        enter_space_view(&visitor).await?;
+        wait_for_displayed(&visitor, ".blank-canvas")
+            .await
+            .context("the visitor's page renders the space itself, without a reload")?;
+        visitor.enter_default_frame().await?;
         open_space_actions(&visitor).await?;
         // The menu is open (its home action shows), so what is missing from
         // it is left out, not merely folded away.

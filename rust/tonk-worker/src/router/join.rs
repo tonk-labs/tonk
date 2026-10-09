@@ -1697,6 +1697,12 @@ fn is_bare_space_address(url: &str) -> bool {
     matches!(Ticket::public_for_url(url), Ok(Some(_)))
 }
 
+/// Whether `url` is a space's own address, bare or as a ticket link: the
+/// page a join from it runs on is already that space's page.
+fn opens_in_place(url: &str) -> bool {
+    matches!(Ticket::parse_url(url), Ok(Some(_))) || is_bare_space_address(url)
+}
+
 /// Drop this join's own overlay facts, and only those (scoped clear).
 ///
 /// The branch overlay is SHARED: the tab's `tonk:site` facts (path,
@@ -1808,7 +1814,20 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
                     },
                 );
             }
-            crate::router::navigate::notify_navigate(env.client(), &href);
+            // A space's own address (bare, or a ticket link) is already
+            // the page the join ran on. When the join installed the space,
+            // its view mounted while the space was absent, and a route
+            // change to where the page already is re-mounts nothing: the
+            // view stayed on its loading state until a manual reload. Load
+            // the space afresh instead, in place of the entry, which also
+            // keeps a ticket link's seed out of the history. A space that
+            // was already here (a page that opened its own space a moment
+            // before the directory listed it) needs no reload.
+            if opens_in_place(&url) && !outcome.renewed {
+                crate::router::navigate::notify_replace(env.client(), &href);
+            } else {
+                crate::router::navigate::notify_navigate(env.client(), &href);
+            }
             log!(
                 "join: succeeded (subject {}, key {})",
                 outcome.subject,
@@ -1969,6 +1988,30 @@ mod invite_presence_tests {
             "https://tonk.space/space/{space}#{seed}"
         )));
         assert!(!is_bare_space_address(&format!(
+            "https://tonk.space/space/{space}/inspector"
+        )));
+    }
+
+    /// A join from a space's own address, bare or as a ticket link, raw or
+    /// percent-encoded, runs on that space's page, so its success reloads
+    /// the page in place; a join from anywhere else navigates to the space.
+    #[test]
+    fn it_reloads_in_place_after_a_join_from_the_spaces_own_address() {
+        use super::opens_in_place;
+        let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let encoded = space.replace(':', "%3A");
+        let seed = bs58::encode([6u8; 32]).into_string();
+
+        for address in [
+            format!("https://tonk.space/space/{space}"),
+            format!("https://tonk.space/space/{encoded}"),
+            format!("https://tonk.space/space/{space}#{seed}"),
+            format!("https://tonk.space/space/{encoded}#{seed}"),
+        ] {
+            assert!(opens_in_place(&address), "{address}");
+        }
+        assert!(!opens_in_place("https://tonk.space/join?access=abc"));
+        assert!(!opens_in_place(&format!(
             "https://tonk.space/space/{space}/inspector"
         )));
     }
