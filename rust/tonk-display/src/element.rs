@@ -2661,10 +2661,15 @@ async fn diagnose_no_entity(
                 }
                 match (found, declared_wire) {
                     (Some((spelled, actual)), Some(declared_wire)) => {
+                        let actual = actual.anchor();
+                        let article = if actual.starts_with(['a', 'e', 'i', 'o', 'u']) {
+                            "an"
+                        } else {
+                            "a"
+                        };
                         let message = format!(
-                            "Attribute {uri} holds {spelled} — a {actual} value; the \
+                            "Attribute {uri} holds {spelled} — {article} {actual} value; the \
                              concept reads it as {declared}",
-                            actual = actual.anchor(),
                             declared = declared_wire.anchor(),
                         );
                         mistyped.push((field.clone(), spelled, message));
@@ -6680,7 +6685,7 @@ mod tests {
                     rows(&[]),
                     // TYPED probe of `count`: no unsigned value
                     rows(&[]),
-                    // SignedInteger re-probe: the fact lives there
+                    // `integer:` re-probe: the fact lives there
                     rows(&[("id:demo-counter", &[("count", "41")])]),
                 ],
                 Some(model_concept_frame()),
@@ -6716,7 +6721,7 @@ mod tests {
                 .expect("the mistyped line carries its story");
             let message = notation.get_attribute("data-error-2").unwrap_or_default();
             assert!(
-                message.contains("signed-integer") && message.contains("unsigned-integer"),
+                message.contains("an integer value") && message.contains("reads it as natural"),
                 "the squiggle names both types: {message}"
             );
             let callout = display
