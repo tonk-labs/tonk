@@ -10191,7 +10191,7 @@ pub(crate) mod tests {
             )
             .await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let mut last = serde_json::Value::Null;
+        let mut last;
         loop {
             last = driver
                 .execute(
