@@ -45,9 +45,9 @@ pub struct Upgraded {
 }
 
 /// Until when [`BranchReference::upgrade_once`] moves what an earlier
-/// release stored: 2026-11-15, in unix seconds.
+/// release stored: 2026-12-09, in unix seconds.
 /// After it the upgrade is not attempted; remove the upgrade then.
-pub const RULE_UPGRADE_UNTIL: u64 = 1_794_700_800;
+pub const RULE_UPGRADE_UNTIL: u64 = 1_796_774_400;
 
 /// Whether the rule upgrade window is still open.
 fn rule_upgrade_open() -> bool {
