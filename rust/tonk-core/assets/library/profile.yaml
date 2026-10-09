@@ -2638,7 +2638,9 @@ element!: &space-create
           if (!self.isConnected) return;
           // The status stream broke; the create may still have finished.
           // Ask once before saying so.
-          const found = await window.tonk.query(status).catch(() => null);
+          const found = await Promise.resolve()
+            .then(() => window.tonk.query(status))
+            .catch(() => null);
           const rows = Array.isArray(found) ? found : (found && found.rows) || [];
           const result = rows.find(row => row.this === id)?.fields;
           if (result?.status === 'created') {
@@ -2668,9 +2670,9 @@ element!: &space-create
       (self, href) => {
         clearTimeout(self.__landing);
         const cancel = () => clearTimeout(self.__landing);
-        window.addEventListener('pagehide', cancel, { once: true });
+        window.addEventListener?.('pagehide', cancel, { once: true });
         self.__landing = setTimeout(() => {
-          window.removeEventListener('pagehide', cancel);
+          window.removeEventListener?.('pagehide', cancel);
           if (self.isConnected) window.tonk.navigate(href);
         }, 2000);
       }
