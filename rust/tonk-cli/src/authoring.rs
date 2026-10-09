@@ -225,7 +225,10 @@ pub fn build_concept_decl(name: &str, description: Option<&str>, attrs: &[AttrSp
         );
         let _ = writeln!(out, "  the:         xyz.tonk.{name}/{field}");
         let _ = writeln!(out, "  as:          {type_name}");
-        let _ = writeln!(out, "  cardinality: {cardinality}");
+        // `many` reads every value; `one` is the default pick, `last`.
+        if cardinality == "many" {
+            let _ = writeln!(out, "  pick:        all");
+        }
         out.push('\n');
     }
     let _ = writeln!(out, "concept!: &{name}");
@@ -803,7 +806,8 @@ mod tests {
         let doc = build_concept_decl("note", Some("a note"), &attrs);
         assert!(doc.contains("attribute!: &note-title"));
         assert!(doc.contains("the:         xyz.tonk.note/title"));
-        assert!(doc.contains("as:          Text"));
+        assert!(doc.contains("as:          text"));
+        assert!(!doc.contains("cardinality:"), "{doc}");
         assert!(doc.contains("concept!: &note"));
         assert!(doc.contains("title: note-title"));
     }

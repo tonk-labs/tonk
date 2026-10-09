@@ -2078,7 +2078,7 @@ mod tests {
             .map(|i| i["label"].as_str().unwrap_or_default())
             .collect();
         // Built-in `attribute` concept declares these fields.
-        for field in ["this", "id", "type", "cardinality", "description"] {
+        for field in ["this", "id", "as", "pick", "description"] {
             assert!(
                 labels.contains(&field),
                 "expected `{field}` in field completions, got {labels:?}",
