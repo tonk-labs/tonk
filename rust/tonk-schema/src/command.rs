@@ -553,6 +553,30 @@ impl Command for RetainInvite {
     type Output = ();
 }
 
+/// Admit a member of a space as admin, in the space's own worker.
+///
+/// [`PromoteMember`] is what the bar fires, on the person's profile, naming
+/// the space. Where each space is held by a worker of its own, the chains
+/// the promotion composes onto and the roster it stamps are in that
+/// worker's hands, so the profile passes the promotion on as this. It fires
+/// on the space's own branch and admits to that space only. The gate is the
+/// same cryptographic one: the hop has to be the promoter's account's `/`
+/// over this space to the member.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AdmitMember {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The DID the member's membership is keyed on.
+    pub member: crate::domain::command::current::admit_member::Member,
+    /// The page-minted `promoter-account -> member` hop, base58.
+    pub hop: crate::domain::command::current::admit_member::Hop,
+}
+
+impl Command for AdmitMember {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Commit, in a space, a claim on it that the person's profile prepared.
 ///
 /// Where each space is held by a worker on the space's own origin, joining

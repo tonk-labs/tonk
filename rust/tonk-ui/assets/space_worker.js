@@ -618,6 +618,13 @@ function bindSpacePort(port, { repo, branch }) {
                 port.postMessage({ id, invited: true });
                 return;
             }
+            // The space's worker was asked to admit an admin, and the
+            // chains the space retains prove no authority for it to compose
+            // the admission onto: this profile has the one on record.
+            if (data.authority === true) {
+                port.postMessage({ id, authority: await worker.spaceAuthority(repo) });
+                return;
+            }
             // The space's worker was asked to revoke a grant on the space.
             // It holds the path that reaches the grant; this profile holds
             // the authority, and signs.

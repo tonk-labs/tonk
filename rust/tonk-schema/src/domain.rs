@@ -1465,6 +1465,23 @@ pub mod command {
             pub struct Open(pub bool);
         }
 
+        /// `tonk/admit-member` — a space's own worker admits a member as
+        /// admin, with the hop the person's page minted.
+        pub mod admit_member {
+            use super::super::super::Entity;
+            use dialog_query::Attribute;
+
+            /// The DID the member's membership is keyed on.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.admit-member")]
+            pub struct Member(pub Entity);
+
+            /// The page-minted `promoter-account -> member` hop, base58.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.admit-member")]
+            pub struct Hop(pub String);
+        }
+
         /// `tonk/claim-membership` — a space's own worker commits a claim
         /// on the space that the person's profile prepared.
         pub mod claim_membership {

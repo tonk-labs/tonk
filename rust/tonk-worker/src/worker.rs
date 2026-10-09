@@ -2272,6 +2272,25 @@ impl TonkServiceWorker {
         })
     }
 
+    /// The person's account's authority over `space`, as this profile has
+    /// it on record, for the space's own worker to compose onto. Resolves
+    /// to the chain, base58.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "spaceAuthority")]
+    pub fn space_authority(&self, space: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            let authority = crate::router::revoke_invite::authority_for_space(&tonk, &space)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(JsValue::from_str(&authority))
+        })
+    }
+
     /// Sign and publish the revocation of a grant on `space` that its own
     /// worker asked for: `request` is what that worker sent, as JSON.
     /// Resolves to the access service's receipt, as JSON.
