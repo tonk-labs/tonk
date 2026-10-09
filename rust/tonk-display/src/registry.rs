@@ -2726,8 +2726,16 @@ mod tests {
             .expect("query")
             .expect("the status line");
 
+        // WEB-10: a result belonging to another approval must not be worded.
         rows.set_inner_html(
-            r#"<span data-ceremony-row data-ceremony="add-passkey" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
+            r#"<span data-ceremony-row data-of="urn:tonk:approval:previous" data-ceremony="authorize-device" data-ceremony-state="done" data-ceremony-detail="" hidden></span>"#,
+        );
+        settle_briefly().await;
+        assert!(status.has_attribute("hidden"));
+        assert_eq!(text_of(&host, "[data-ceremony-status]"), "");
+
+        rows.set_inner_html(
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
         );
         settle_until(|| !status.has_attribute("hidden")).await;
         assert_eq!(
@@ -2740,7 +2748,7 @@ mod tests {
         );
 
         rows.set_inner_html(
-            r#"<span data-ceremony-row data-ceremony="add-passkey" data-ceremony-state="refused" data-ceremony-detail="no passkey" hidden></span>"#,
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="refused" data-ceremony-detail="no passkey" hidden></span>"#,
         );
         settle_until(|| text_of(&host, "[data-ceremony-status]").contains("did not finish")).await;
         assert_eq!(

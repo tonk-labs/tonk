@@ -1020,7 +1020,9 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
         panel.contains(r#"<tonk-display model="tonk:account/registered" view="settings">"#),
         "the account pane must render the registration facts, not paint them",
     );
-    assert!(panel.contains(r#"<tonk-display model="state:ceremony" view="settings">"#));
+    assert!(panel.contains(
+        r#"<tonk-display model="state:ceremony" entity="state:ceremony" view="settings">"#
+    ));
 
     // The deletion dialog rides the registration view, because the
     // command carries the verified address and that view has it.
