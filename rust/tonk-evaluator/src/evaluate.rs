@@ -60,7 +60,7 @@ use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
 use dialog_effects::memory::{Publish, Resolve};
-use dialog_query::attribute::Relation;
+use dialog_query::attribute::The;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::{ConceptDescriptor, ConceptQuery, Output as _, Parameters, Term};
 use dialog_repository::{Branch, Hydrate, RemoteSite, Transaction};
@@ -713,14 +713,14 @@ fn merge_frames(a: &Parameters, b: &Parameters) -> Option<Parameters> {
 /// Wraps dialog's `Statement` trait so retraction targets land
 /// in the transaction the same way an `ApplicationPlan` does.
 struct RawClaim {
-    the: dialog_artifacts::Attribute,
+    the: dialog_artifacts::Relation,
     of: Entity,
     is: Value,
 }
 
 impl dialog_artifacts::Statement for RawClaim {
     fn assert(self, update: &mut impl dialog_artifacts::Update) {
-        update.associate(self.the, self.of, self.is, dialog_artifacts::Policy::All);
+        update.associate(self.the, self.of, self.is, dialog_artifacts::Pick::All);
     }
     fn retract(self, update: &mut impl dialog_artifacts::Update) {
         update.dissociate(self.the, self.of, self.is);
@@ -772,7 +772,7 @@ async fn resolve_retraction_targets<Env: EvaluateEnv>(
         let the = match attribute.the().attribute() {
             Some(the) => the,
             None => {
-                let key = plan.statement.terms.get(&Relation::key_operand(field_name));
+                let key = plan.statement.terms.get(&The::key_operand(field_name));
                 let Some(Term::Constant(Value::String(key))) = key else {
                     continue;
                 };
@@ -1216,7 +1216,7 @@ fn render_one_result(
         // a multi-entry query ride satellite `join` terms — fold
         // them into the same object.
         if attr.the().attribute().is_none() {
-            let key_operand = dialog_query::attribute::Relation::key_operand(field_name);
+            let key_operand = dialog_query::attribute::The::key_operand(field_name);
             let mut entry = serde_json::Map::new();
             for terms in std::iter::once(terms).chain(satellite_terms.iter().copied()) {
                 let Some(value) = resolve(terms.get(field_name)) else {
@@ -1371,29 +1371,11 @@ mod tests {
         descriptor: &ConceptDescriptor,
     ) -> Transaction<&'a Branch> {
         for (_, attr) in descriptor.with().iter() {
-            let attr_entity: dialog_artifacts::Entity =
-                attr.to_uri().parse().expect("attribute URI");
-            txn = txn
-                .assert(
-                    the!("db.attribute/id")
-                        .of(attr_entity.clone())
-                        .is(attr.the().to_string()),
-                )
-                .assert(
-                    the!("db.attribute/type")
-                        .of(attr_entity.clone())
-                        .is("Text".to_string()),
-                )
-                .assert(
-                    the!("db.attribute/cardinality")
-                        .of(attr_entity.clone())
-                        .is("one".to_string()),
-                )
-                .assert(
-                    the!("db.meta/description")
-                        .of(attr_entity)
-                        .is(String::new()),
-                );
+            for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
+                .expect("attribute facts")
+            {
+                txn = txn.assert(statement);
+            }
         }
         txn
     }
@@ -1634,7 +1616,7 @@ concept!: &note
         let claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("repro.demo/edge"))
+                Term::<dialog_query::attribute::Relation>::from(the!("repro.demo/edge"))
                     .of(Term::<dialog_artifacts::Entity>::from(a))
                     .is(Term::<dialog_artifacts::Entity>::var("edge")),
             ))
@@ -2112,7 +2094,7 @@ concept!: &note
         // The stored value carries the DECLARED type, so the concept's
         // typed read matches it.
         let entity: dialog_artifacts::Entity = "test:1".parse()?;
-        let the: dialog_artifacts::Attribute = "io.test.person/age".parse()?;
+        let the: dialog_artifacts::Relation = "io.test.person/age".parse()?;
         let claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::new(
@@ -2172,7 +2154,7 @@ concept!: &note
         let entity: dialog_artifacts::Entity = "test:raw".parse()?;
         let mut by_field = std::collections::BTreeMap::new();
         for field in ["bare", "signed", "negative", "float"] {
-            let the: dialog_artifacts::Attribute = format!("io.test.raw/{field}").parse()?;
+            let the: dialog_artifacts::Relation = format!("io.test.raw/{field}").parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
@@ -2253,7 +2235,7 @@ concept!: &note
         for key in ["N", "N5"] {
             // A position-named attribute is not a `The` (those are the
             // symbol-named half), so the lookup pins the raw attribute.
-            let the: dialog_artifacts::Attribute = format!("xyz.test.notebook/{key}").parse()?;
+            let the: dialog_artifacts::Relation = format!("xyz.test.notebook/{key}").parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
@@ -2350,7 +2332,7 @@ concept!: &note
         let nb: dialog_artifacts::Entity = "id:nb".parse()?;
         let mut counts = Vec::new();
         for key in ["N", "N5"] {
-            let the: dialog_artifacts::Attribute = format!("xyz.test.notebook/{key}").parse()?;
+            let the: dialog_artifacts::Relation = format!("xyz.test.notebook/{key}").parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
@@ -2433,7 +2415,7 @@ concept!: &note
             refused.err()
         );
 
-        let the: dialog_artifacts::Attribute = "xyz.test.ticket/queue".parse()?;
+        let the: dialog_artifacts::Relation = "xyz.test.ticket/queue".parse()?;
         let queues: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::new(
@@ -2523,7 +2505,7 @@ name!:
         let claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("db.name/referent"))
+                Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::<dialog_artifacts::Entity>::from(id_copy))
                     .is(Term::<dialog_artifacts::Entity>::var("referent")),
             ))
@@ -2590,7 +2572,7 @@ name!:
         let effect_source_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.rule/source"))
+                Term::<dialog_query::attribute::Relation>::from(the!("dialog.rule/source"))
                     .of(Term::<dialog_artifacts::Entity>::var("effect"))
                     .is(Term::<Vec<u8>>::var("source")),
             ))
@@ -2734,7 +2716,7 @@ rule!:
         let marker_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.concept/transient"))
+                Term::<dialog_query::attribute::Relation>::from(the!("dialog.concept/transient"))
                     .of(Term::from(ping_entity.clone()))
                     .is(Term::from(true)),
             ))
@@ -2753,7 +2735,7 @@ rule!:
         let pong_marker_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.concept/transient"))
+                Term::<dialog_query::attribute::Relation>::from(the!("dialog.concept/transient"))
                     .of(Term::from(pong_entity))
                     .is(Term::from(true)),
             ))
@@ -2894,7 +2876,7 @@ counter!: &counter-demo
         let referent: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("db.name/referent"))
+                Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
                     .is(Term::<dialog_artifacts::Entity>::var("e")),
             ))
@@ -3065,7 +3047,7 @@ counter!: &counter-demo
         let referent: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("db.name/referent"))
+                Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
                     .is(Term::<dialog_artifacts::Entity>::var("e")),
             ))
@@ -3186,7 +3168,7 @@ counter!: &counter-demo
         let referent: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("db.name/referent"))
+                Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
                     .is(Term::<dialog_artifacts::Entity>::var("e")),
             ))
@@ -3436,7 +3418,7 @@ concept!: &pong
         let installed: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.rule/source"))
+                Term::<dialog_query::attribute::Relation>::from(the!("dialog.rule/source"))
                     .of(Term::<Entity>::var("rule"))
                     .is(Term::<Vec<u8>>::var("source")),
             ))
@@ -3450,7 +3432,7 @@ concept!: &pong
         );
         let chosen = installed[0].of.clone();
         let source_query = dialog_query::AttributeQuery::from(
-            Term::<dialog_query::attribute::The>::from(the!("dialog.rule/source"))
+            Term::<dialog_query::attribute::Relation>::from(the!("dialog.rule/source"))
                 .of(Term::<Entity>::from(chosen.clone()))
                 .is(Term::<Vec<u8>>::var("source")),
         );
@@ -3585,7 +3567,7 @@ concept!: &pong
         let installed: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.rule/source"))
+                Term::<dialog_query::attribute::Relation>::from(the!("dialog.rule/source"))
                     .of(Term::<dialog_artifacts::Entity>::var("rule"))
                     .is(Term::<Vec<u8>>::var("source")),
             ))
@@ -4910,12 +4892,12 @@ workspace!:
         ])?;
         let entity = descriptor.this();
 
-        let nickname_the: dialog_query::attribute::The =
+        let nickname_the: dialog_query::attribute::Relation =
             "db.concept.optional/nickname".parse().unwrap();
         let nickname_markers: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(nickname_the)
+                Term::<dialog_query::attribute::Relation>::from(nickname_the)
                     .of(Term::from(entity.clone()))
                     .is(Term::<bool>::var("v")),
             ))
@@ -4929,11 +4911,12 @@ workspace!:
         );
         assert_eq!(nickname_markers[0].is, Value::Boolean(true));
 
-        let name_the: dialog_query::attribute::The = "db.concept.optional/name".parse().unwrap();
+        let name_the: dialog_query::attribute::Relation =
+            "db.concept.optional/name".parse().unwrap();
         let name_markers: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(name_the)
+                Term::<dialog_query::attribute::Relation>::from(name_the)
                     .of(Term::from(entity.clone()))
                     .is(Term::<bool>::var("v")),
             ))

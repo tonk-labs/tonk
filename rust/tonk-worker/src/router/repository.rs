@@ -3169,7 +3169,7 @@ async fn remove_replica_from_profile(
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                policy: dialog_artifacts::Policy::All,
+                policy: dialog_artifacts::Pick::All,
             });
         }
     }
@@ -3200,7 +3200,7 @@ async fn remove_replica_from_profile(
             the: artifact.the,
             of: artifact.of,
             is: artifact.is,
-            policy: dialog_artifacts::Policy::All,
+            policy: dialog_artifacts::Pick::All,
         });
     }
     if !found {
@@ -3301,13 +3301,13 @@ pub(crate) async fn carry_replica_rows(
             the: artifact.the.clone(),
             of: artifact.of.clone(),
             is: artifact.is.clone(),
-            policy: dialog_artifacts::Policy::All,
+            policy: dialog_artifacts::Pick::All,
         });
         there = there.retract(super::claim::RawClaim {
             the: artifact.the,
             of: artifact.of,
             is: artifact.is,
-            policy: dialog_artifacts::Policy::All,
+            policy: dialog_artifacts::Pick::All,
         });
     }
     let revision = here
@@ -4234,7 +4234,7 @@ async fn live_install_records_in(
                 the: claim.the,
                 of: claim.of,
                 is: claim.is,
-                policy: dialog_artifacts::Policy::All,
+                policy: dialog_artifacts::Pick::All,
             }),
             _ => None,
         })
@@ -4917,7 +4917,7 @@ async fn stage_reinstall(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_artifacts::Policy::All,
+                    policy: dialog_artifacts::Pick::All,
                 })
             }
             dialog_artifacts::Instruction::Retract(artifact) => {
@@ -4925,7 +4925,7 @@ async fn stage_reinstall(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_artifacts::Policy::All,
+                    policy: dialog_artifacts::Pick::All,
                 })
             }
         };
@@ -4995,7 +4995,7 @@ async fn rekey_sites(
                 the: dialog_query::the!("xyz.tonk.site/concept").into(),
                 of: site.this,
                 is: dialog_artifacts::Value::Entity(now.clone()),
-                policy: dialog_artifacts::Policy::Last,
+                policy: dialog_artifacts::Pick::Last,
             });
         }
     }
@@ -5191,7 +5191,7 @@ async fn live_claims(
                 the: found.the,
                 of: found.of,
                 is: found.is,
-                policy: dialog_artifacts::Policy::All,
+                policy: dialog_artifacts::Pick::All,
             });
         }
     }
@@ -5219,21 +5219,21 @@ fn repository_name_claims(
         .parse()
         .map_err(|e| RepositoryError::Internal(format!("space subject: {e}")))?;
     let attribute = |name: &str| {
-        name.parse::<dialog_artifacts::Attribute>()
+        name.parse::<dialog_artifacts::Relation>()
             .map_err(|e| RepositoryError::Internal(format!("attribute '{name}': {e}")))
     };
     let mut claims = vec![super::claim::RawClaim {
         the: attribute("xyz.tonk.repo/name")?,
         of: of.clone(),
         is: dialog_artifacts::Value::String(display_name.to_owned()),
-        policy: dialog_artifacts::Policy::Last,
+        policy: dialog_artifacts::Pick::Last,
     }];
     if let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) {
         claims.push(super::claim::RawClaim {
             the: attribute("xyz.tonk.repo/description")?,
             of,
             is: dialog_artifacts::Value::String(description.to_owned()),
-            policy: dialog_artifacts::Policy::Last,
+            policy: dialog_artifacts::Pick::Last,
         });
     }
     Ok(claims)
@@ -5326,7 +5326,7 @@ async fn assertions_at_version(
             the: claim.the.clone(),
             of: claim.of.clone(),
             is: claim.is.clone(),
-            policy: dialog_artifacts::Policy::All,
+            policy: dialog_artifacts::Pick::All,
         });
     }
     Ok(claims)
@@ -6931,7 +6931,7 @@ async fn assertions_are_current(
     use futures_util::StreamExt as _;
 
     let mut grouped: HashMap<
-        (dialog_artifacts::Entity, dialog_artifacts::Attribute),
+        (dialog_artifacts::Entity, dialog_artifacts::Relation),
         (bool, Vec<dialog_artifacts::Value>),
     > = HashMap::new();
     for expected in assertions {
@@ -7025,7 +7025,7 @@ fn raw_seed_metadata(installation: &ProfileInstallation) -> Vec<super::claim::Ra
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                policy: dialog_artifacts::Policy::All,
+                policy: dialog_artifacts::Pick::All,
             }
         })
         .collect()
@@ -10029,7 +10029,7 @@ route!: &foreign-profile-route
             .await
             .expect("installation history resolves");
 
-        let the: dialog_artifacts::Attribute = "db.meta/description"
+        let the: dialog_artifacts::Relation = "db.meta/description"
             .parse()
             .expect("description attribute parses");
         let of: dialog_artifacts::Entity = "tonk:space".parse().expect("space entity parses");
@@ -10048,13 +10048,13 @@ route!: &foreign-profile-route
                 the: the.clone(),
                 of: of.clone(),
                 is: desired.clone(),
-                policy: dialog_artifacts::Policy::All,
+                policy: dialog_artifacts::Pick::All,
             })
             .assert(super::super::claim::RawClaim {
                 the: the.clone(),
                 of: of.clone(),
                 is: dialog_artifacts::Value::String("stale account writer".to_owned()),
-                policy: dialog_artifacts::Policy::All,
+                policy: dialog_artifacts::Pick::All,
             })
             .commit()
             .publish()
@@ -10106,7 +10106,7 @@ route!: &foreign-profile-route
                 is: dialog_artifacts::Value::String(
                     "<div data-stale-profile-library></div>".to_owned(),
                 ),
-                policy: dialog_artifacts::Policy::All,
+                policy: dialog_artifacts::Pick::All,
             };
             let session = tonk
                 .reactor
@@ -10119,7 +10119,7 @@ route!: &foreign-profile-route
             if stale_first {
                 txn = txn.retract(expected.clone()).assert(stale.clone()).assert(
                     super::super::claim::RawClaim {
-                        policy: dialog_artifacts::Policy::All,
+                        policy: dialog_artifacts::Pick::All,
                         ..expected.clone()
                     },
                 );

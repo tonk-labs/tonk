@@ -1474,7 +1474,7 @@ concept!: &db/session:
           Active branch(es) in this session. Can be multiple when overlays are used.
       the: dialog.session/branch
       as: entity
-      select: all
+      pick: all
 
 concept!: &db/branch:
   this: concept:branch
@@ -1502,7 +1502,7 @@ concept!: &db/branch:
     edition:
       description: Causal depth (Lamport edition) of the current revision
       the: dialog.branch/edition
-      as: unsigned-integer
+      as: natural
 
 # A space (replica) the profile has access to. These records live on
 # the profile repository's main branch — one per repository this device

@@ -155,7 +155,7 @@ pub struct Description(pub String);
 /// `Attribute` derive trait re-imported by anyone using
 /// `tonk_schema::meta::*`.
 pub mod attribute {
-    use super::Attribute;
+    use super::{Attribute, Entity};
 
     /// The selector value of an attribute entity —
     /// `db.attribute/id`. Carries the human-readable
@@ -167,31 +167,19 @@ pub mod attribute {
     #[domain("db.attribute")]
     pub struct Id(pub String);
 
-    /// The dialog `Type` discriminant of an attribute entity —
-    /// `db.attribute/type`. The string form (e.g. `"Text"`,
-    /// `"UnsignedInteger"`) is what
-    /// `dialog_query::AttributeDescriptor` round-trips through
-    /// serde, not the underlying `ValueDataType` variant name.
+    /// The value type of an attribute entity — `db.attribute/as`:
+    /// the entity dialog names the type by (`text:`, `integer:`,
+    /// ...). Absent on an attribute that admits any type.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("db.attribute")]
-    pub struct Type(pub String);
+    pub struct As(pub Entity);
 
-    /// The cardinality of an attribute entity —
-    /// `db.attribute/cardinality`. Takes `"one"` or
-    /// `"many"`; the textual form matches what
-    /// `dialog_query::Cardinality` serialises to.
+    /// Which of its relation's candidates an attribute entity reads —
+    /// `db.attribute/pick`: `"last"`, `"all"`, `"top"`, `"max"` or
+    /// `"min"`, as `pick:` spells it.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("db.attribute")]
-    pub struct Cardinality(pub String);
-
-    /// The policy an attribute entity is read under —
-    /// `db.attribute/select`. Takes `"last"`, `"all"`, `"top"`,
-    /// `"max"` or `"min"`, as `select:` spells it. Absent on an
-    /// attribute declared before the policy was recorded, which
-    /// reads under its cardinality alone.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("db.attribute")]
-    pub struct Select(pub String);
+    pub struct Pick(pub String);
 
     /// The values a `top` attribute ranks among, best first —
     /// `db.attribute/among`, a JSON list. Present only on a ranked
@@ -201,10 +189,10 @@ pub mod attribute {
     pub struct Among(pub String);
 }
 
-/// A typed view over an attribute entity carrying the
-/// always-present fact set: `id`, `type`, `cardinality`,
-/// `description`. Matches every attribute on a branch
-/// regardless of whether the user gave it a published name.
+/// A typed view over an attribute entity: its `id`, `pick` and
+/// `description`, and its value type `as` when it has one. Matches
+/// every attribute on a branch regardless of whether the user gave it
+/// a published name.
 ///
 /// Use this when you need an attribute by entity URI and
 /// don't care whether it was named — for example, when
@@ -221,10 +209,10 @@ pub struct AnonymousAttribute {
     pub this: Entity,
     /// Selector — `domain/name` form.
     pub id: attribute::Id,
-    /// Value-type descriptor name.
-    pub r#type: attribute::Type,
-    /// `"one"` or `"many"`.
-    pub cardinality: attribute::Cardinality,
+    /// The value type, absent when the attribute admits any.
+    pub r#as: Option<attribute::As>,
+    /// `"last"`, `"all"`, `"top"`, `"max"` or `"min"`.
+    pub pick: attribute::Pick,
     /// Human-readable description.
     pub description: Description,
 }

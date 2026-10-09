@@ -215,7 +215,7 @@ mod tests {
                     is: Value::String(format!("Item {index}")),
                     cause: None,
                 },
-                dialog_artifacts::Policy::All,
+                dialog_artifacts::Pick::All,
             )
         });
         tree.apply(remote, &mut delta, stream::iter(instructions))

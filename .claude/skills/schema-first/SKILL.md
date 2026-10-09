@@ -58,8 +58,8 @@ Put a concept in the document whose branch actually holds the facts.
 
 ## Field types
 
-`text`, `entity`, `unsigned-integer`, `float`, `boolean`, `bytes`
-(`tonk-analyzer/src/analyzer/declaration.rs:881`). `bytes` is what a sealed
+`text`, `entity`, `natural`, `integer`, `float`, `boolean`, `bytes`
+(built-in type anchors, `tonk_notation::ValueType`). `bytes` is what a sealed
 envelope declares — see `xyz.tonk.custody/sealed`.
 
 Use `with:` for required fields and `maybe:` for optional ones. A required

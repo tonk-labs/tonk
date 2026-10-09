@@ -60,7 +60,7 @@ async fn record(
             the: SELECTION.parse().expect("the selection attribute parses"),
             of: site.clone(),
             is: value,
-            policy: dialog_artifacts::Policy::Last,
+            policy: dialog_artifacts::Pick::Last,
         });
     }
     if !text.is_empty() {
@@ -68,7 +68,7 @@ async fn record(
             the,
             of: site.clone(),
             is: Value::String(text.to_owned()),
-            policy: dialog_artifacts::Policy::Last,
+            policy: dialog_artifacts::Pick::Last,
         });
     }
     if let Err(error) = overlay.write().perform(&tonk.operator).await {

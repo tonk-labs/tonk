@@ -16,7 +16,7 @@ use super::field::{
 use super::resolver_registry::{ResolverInfo, lookup_resolver};
 use super::scope::Scope;
 use crate::analyzer::Working;
-use dialog_query::attribute::Relation;
+use dialog_query::attribute::The;
 use tonk_schema::transact::{Application, DomainApplication, ThisIntent};
 
 pub(crate) fn build_query_application(
@@ -110,7 +110,7 @@ pub(crate) fn build_query_application(
                     let (key, value) = entries
                         .next()
                         .expect("collection_entry_terms yields at least one entry");
-                    terms.insert(Relation::key_operand(field_name), key);
+                    terms.insert(The::key_operand(field_name), key);
                     terms.insert(field_name.into(), value);
                     // A `Parameters` map holds one `(key, value)`
                     // slot pair per field, so every further entry
@@ -120,7 +120,7 @@ pub(crate) fn build_query_application(
                     for (key, value) in entries {
                         let mut satellite = Parameters::new();
                         satellite.insert("this".into(), this_term.clone());
-                        satellite.insert(Relation::key_operand(field_name), key);
+                        satellite.insert(The::key_operand(field_name), key);
                         satellite.insert(field_name.into(), value);
                         join.push(ConceptQuery {
                             terms: satellite,

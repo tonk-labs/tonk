@@ -111,7 +111,7 @@ concept!: &space
         local-only space made here from a space joined through somebody
         else's invite; hosted ownership is still decided by `provider`.
       the: xyz.tonk.space/founded-at
-      as: unsigned-integer
+      as: natural
 
 # The Add Space command. The Hub's named creation dialogs submit this shape.
 # The worker records the replica, seeds the repository, and navigates the
@@ -1082,7 +1082,7 @@ command!: &account/resend-activation
     at:
       description: The click timestamp, so every resend is a distinct request.
       the: xyz.tonk.resend-activation/at
-      as: unsigned-integer
+      as: natural
 
 # Toggle auto-sync (pause ⇄ resume) for a space. Dispatched by the FAB's
 # `<ui-sync-status onpause=…>` cap on alt/option-click. Defined here on the
@@ -2148,7 +2148,7 @@ concept!: &account/passkey
     created-at:
       description: When it was made, unix seconds.
       the: xyz.tonk.recovery/created-at
-      as: unsigned-integer
+      as: natural
 
 # The settings page's account pane.
 #
@@ -3574,7 +3574,7 @@ concept!: &account/registered
     registered-at:
       description: When enrollment recorded the address, unix seconds.
       the: xyz.tonk.account/registered-at
-      as: unsigned-integer
+      as: natural
     email:
       description: The address enrollment named.
       the: xyz.tonk.account/customer-email
@@ -3649,7 +3649,7 @@ concept!: &account/active
         When the emailed link was opened and the service confirmed it,
         unix seconds.
       the: xyz.tonk.account/activated-at
-      as: unsigned-integer
+      as: natural
 
 # Suspension: the service withdrew.
 concept!: &account/suspended
@@ -3662,7 +3662,7 @@ concept!: &account/suspended
         When the withdrawal took effect, unix seconds. A support
         conversation starts with when service stopped.
       the: xyz.tonk.account/suspended-at
-      as: unsigned-integer
+      as: natural
     reason:
       description: Why the service withdrew, in words a person can act on.
       the: xyz.tonk.account/suspension-reason
@@ -3696,7 +3696,7 @@ concept!: &account/onboarding
     minted-at:
       description: When this device minted the onboarding account, unix seconds.
       the: xyz.tonk.account/onboarding-minted-at
-      as: unsigned-integer
+      as: natural
   maybe:
     custodian:
       description: >
@@ -3712,7 +3712,7 @@ concept!: &account/onboarding
         says this account is no longer the one in use — the row stays so
         the handover is visible rather than silently gone.
       the: xyz.tonk.account/onboarding-retired-at
-      as: unsigned-integer
+      as: natural
 
 # The account's status, DERIVED from the facts above.
 #
@@ -4089,7 +4089,7 @@ concept!: &recovery/passkey
     created-at:
       description: Unix seconds at credential creation.
       the: xyz.tonk.recovery/created-at
-      as: unsigned-integer
+      as: natural
     created-on:
       description: Browser and operating-system label, e.g. "Chrome on macOS".
       the: xyz.tonk.recovery/created-on
@@ -4157,7 +4157,7 @@ concept!: &account/device-link
         the act, so a re-issued grant with the same window still gets a
         new time.
       the: xyz.tonk.device/created-at
-      as: unsigned-integer
+      as: natural
     title:
       description: >
         Human label, e.g. "Chrome on macOS". Kept here so a list renders
@@ -4290,7 +4290,7 @@ concept!: &ucan/delegation
     expiration:
       description: Unix seconds, absent when the delegation never expires.
       the: dialog.ucan/expiration
-      as: unsigned-integer
+      as: natural
       # `dialog.ucan/notBefore` is deliberately not declared: the notation's
       # attribute parser rejects a camelCase last segment, and that is the
       # name dialog writes. A lower validity bound is therefore readable

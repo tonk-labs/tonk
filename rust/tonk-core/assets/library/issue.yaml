@@ -50,7 +50,7 @@ attribute!: &issue/blocks
     Hard dependency. Another issue this blocks
   the: io.gozala.issue/blocks
   as: entity
-  select: all
+  pick: all
 
 concept!: &issue
   description: |

@@ -385,13 +385,14 @@ impl TonkSite {
     /// Acquire the site's `main` branch, naming the remedy when the data
     /// predates this build's format.
     ///
-    /// The first acquisition in a process also re-installs the rules the
-    /// branch stores under an identity an earlier dialog release gave them
-    /// ([`BranchReference::upgrade_rules_once`]), which would otherwise be
-    /// inert. A failed upgrade is reported on stderr and the command
-    /// proceeds.
+    /// The first acquisition in a process also moves what an earlier
+    /// release stored to the shape this one reads
+    /// ([`BranchReference::upgrade_once`]): definitions recorded the
+    /// earlier way, and rules stored under an identity an earlier dialog
+    /// release gave them, which would otherwise be inert. A failed
+    /// upgrade is reported on stderr and the command proceeds.
     ///
-    /// [`BranchReference::upgrade_rules_once`]: dialog_reactor::BranchReference::upgrade_rules_once
+    /// [`BranchReference::upgrade_once`]: dialog_reactor::BranchReference::upgrade_once
     pub async fn branch(&self) -> Result<BranchSession, ReactorError> {
         let branch = self.reactor.repository(REPO_NAME).branch(BRANCH_NAME);
         let session = branch.acquire(&self.operator).await.map_err(|error| {
@@ -407,13 +408,23 @@ impl TonkSite {
             }
             error
         })?;
-        match branch.upgrade_rules_once(&self.operator).await {
-            Ok(Some(upgraded)) if !upgraded.reinstalled.is_empty() => eprintln!(
-                "note: re-installed {} rule(s) under their current identity",
-                upgraded.reinstalled.len()
-            ),
-            Ok(_) => {}
-            Err(error) => eprintln!("warning: rule upgrade failed: {error}"),
+        match branch.upgrade_once(&self.operator).await {
+            Ok(Some(upgraded)) => {
+                if !upgraded.definitions.is_empty() {
+                    eprintln!(
+                        "note: moved {} definition(s) to their current identity",
+                        upgraded.definitions.moves.len() + upgraded.definitions.rewritten.len()
+                    );
+                }
+                if !upgraded.rules.reinstalled.is_empty() {
+                    eprintln!(
+                        "note: re-installed {} rule(s) under their current identity",
+                        upgraded.rules.reinstalled.len()
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("warning: upgrade failed: {error}"),
         }
         Ok(session)
     }

@@ -772,7 +772,7 @@ enum ConceptCommand {
     /// `tonk assert <name> --help` shows the typed flags right
     /// after this succeeds.
     #[command(
-        after_help = "Types: text, entity, unsigned-integer... run with a bad type to see the list.\n\nExamples:\n  tonk concept add habit --field name:text:one --field target:text:one --description \"a tracked habit\"\n  tonk concept add note --field body:text:one --field tag:text:many"
+        after_help = "Types: text, entity, natural, integer... run with a bad type to see the list.\n\nExamples:\n  tonk concept add habit --field name:text:one --field target:text:one --description \"a tracked habit\"\n  tonk concept add note --field body:text:one --field tag:text:many"
     )]
     Add {
         /// Name for the concept (also the anchor).

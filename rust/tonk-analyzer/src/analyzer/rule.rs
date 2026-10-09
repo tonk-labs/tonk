@@ -40,7 +40,7 @@ use super::resolver_registry::{ResolverInfo, lookup_resolver};
 use super::scope::Scope;
 use crate::analyzer::Working;
 use dialog_artifacts::Entity;
-use dialog_query::attribute::Relation;
+use dialog_query::attribute::The;
 use dialog_query::rule::inductive::Polarity;
 use tonk_schema::rule::Rule as StoredRule;
 
@@ -863,7 +863,7 @@ fn lift_premise(
             let (key, value) = entries
                 .next()
                 .expect("collection_entry_terms yields at least one entry");
-            terms.insert(Relation::key_operand(field_name), key);
+            terms.insert(The::key_operand(field_name), key);
             terms.insert(field_name.to_string(), value);
             for (key, value) in entries {
                 extra_entries.push((field_name.to_string(), key, value));
@@ -932,13 +932,13 @@ fn lift_premise(
             }
             if attr.the().attribute().is_none() {
                 satellite.insert(
-                    Relation::key_operand(field_name),
+                    The::key_operand(field_name),
                     Term::<dialog_query::Any>::blank(),
                 );
             }
             satellite.insert(field_name.to_string(), Term::<dialog_query::Any>::blank());
         }
-        satellite.insert(Relation::key_operand(&entry_field), key);
+        satellite.insert(The::key_operand(&entry_field), key);
         satellite.insert(entry_field, value);
         propositions.push(Proposition::Concept(ConceptQuery {
             terms: satellite,
@@ -1260,33 +1260,11 @@ mod tests {
         async fn declare(&self, name: &str, descriptor: ConceptDescriptor) {
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
-                let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
-                let type_label = attr
-                    .content_type()
-                    .and_then(|t| serde_json::to_value(t).ok())
-                    .and_then(|v| v.as_str().map(str::to_owned))
-                    .unwrap_or_else(|| "String".to_owned());
-                txn = txn
-                    .assert(
-                        the!("db.attribute/id")
-                            .of(attr_entity.clone())
-                            .is(attr.the().to_string()),
-                    )
-                    .assert(
-                        the!("db.attribute/type")
-                            .of(attr_entity.clone())
-                            .is(type_label),
-                    )
-                    .assert(
-                        the!("db.attribute/cardinality")
-                            .of(attr_entity.clone())
-                            .is("one".to_owned()),
-                    )
-                    .assert(
-                        the!("db.meta/description")
-                            .of(attr_entity)
-                            .is(String::new()),
-                    );
+                for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
+                    .expect("attribute facts")
+                {
+                    txn = txn.assert(statement);
+                }
             }
             let concept_entity = descriptor.this();
             let id_entity: Entity = format!("id:{name}").parse().expect("id:<name> parses");

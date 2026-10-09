@@ -359,7 +359,6 @@ impl From<DomainApplication> for ConceptQuery {
     fn from(d: DomainApplication) -> Self {
         use dialog_query::{
             AttributeDescriptor, Cardinality as DialogCardinality, ConceptDescriptor,
-            attribute::The,
         };
 
         let mut entries: Vec<(String, AttributeDescriptor)> = Vec::new();
@@ -372,7 +371,7 @@ impl From<DomainApplication> for ConceptQuery {
                 continue;
             }
             let uri = format!("{}/{}", d.domain, name);
-            let the: The = uri
+            let the: Relation = uri
                 .parse()
                 .expect("DomainApplication parameters were validated at analysis time");
             entries.push((
@@ -385,7 +384,7 @@ impl From<DomainApplication> for ConceptQuery {
         // set, so fall back to a single placeholder field — the
         // predicate is unused for matching in that degenerate case.
         if entries.is_empty() {
-            let the: The = format!("{}/_", d.domain)
+            let the: Relation = format!("{}/_", d.domain)
                 .parse()
                 .expect("domain is a valid attribute prefix");
             entries.push((
@@ -655,10 +654,12 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
         // A collection entry is written under `domain/key`; the key is
         // the literal the assertion named, carried in the field's key
         // operand. An entry with no key has no fact to write.
-        let the: dialog_artifacts::Attribute = match attribute.the().attribute() {
+        let the: dialog_artifacts::Relation = match attribute.the().attribute() {
             Some(the) => the,
             None => {
-                let key = query.terms.get(&Relation::key_operand(field_name));
+                let key = query
+                    .terms
+                    .get(&dialog_query::attribute::The::key_operand(field_name));
                 let Some(Term::Constant(Value::String(key))) = key else {
                     continue;
                 };
@@ -676,7 +677,7 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
                 the,
                 this_entity.clone(),
                 value.clone(),
-                attribute.descriptor().policy(),
+                attribute.descriptor().pick().clone(),
             );
         } else {
             update.dissociate(the, this_entity.clone(), value.clone());
@@ -750,7 +751,7 @@ mod tests {
         let mut changes = Changes::new();
         plan.assert(&mut changes);
 
-        let width_attr: dialog_artifacts::Attribute = "xyz.tonk.column/width".parse().unwrap();
+        let width_attr: dialog_artifacts::Relation = "xyz.tonk.column/width".parse().unwrap();
         let saw_width = changes.into_instructions().into_iter().any(|inst| {
             let artifact = match &inst {
                 Instruction::Assert(a, _) => a,
@@ -774,7 +775,7 @@ mod tests {
 
         let id_alice: Entity = "id:alice".parse().unwrap();
         let target: Entity = target_uri.parse().unwrap();
-        let meta_name: dialog_artifacts::Attribute = "db.name/referent".parse().unwrap();
+        let meta_name: dialog_artifacts::Relation = "db.name/referent".parse().unwrap();
 
         let mut id_alice_name_claim_count = 0;
         let mut wrong_direction_count = 0;
@@ -818,7 +819,7 @@ mod tests {
 
         let id_alice: Entity = "id:alice".parse().unwrap();
         let target: Entity = target_uri.parse().unwrap();
-        let meta_name: dialog_artifacts::Attribute = "db.name/referent".parse().unwrap();
+        let meta_name: dialog_artifacts::Relation = "db.name/referent".parse().unwrap();
 
         let saw_dissociate = changes.into_instructions().into_iter().any(|inst| {
             matches!(
@@ -859,11 +860,11 @@ mod tests {
         let mut changes = Changes::new();
         plan.assert(&mut changes);
 
-        let meta_name: dialog_artifacts::Attribute = "db.name/referent".parse().unwrap();
+        let meta_name: dialog_artifacts::Relation = "db.name/referent".parse().unwrap();
         let saw_meta_name = changes
             .into_instructions()
             .into_iter()
-            .any(|inst| matches!(inst, Instruction::Assert(a, dialog_artifacts::Policy::All) if a.the == meta_name));
+            .any(|inst| matches!(inst, Instruction::Assert(a, dialog_artifacts::Pick::All) if a.the == meta_name));
         assert!(
             !saw_meta_name,
             "anonymous bindings should not emit any db.meta/name claim"

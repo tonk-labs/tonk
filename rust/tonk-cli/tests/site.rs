@@ -908,7 +908,7 @@ mod when_syncing_with_an_upstream {
         branch
             .transaction()
             .integrate(
-                vec![Instruction::Assert(artifact, dialog_artifacts::Policy::All)]
+                vec![Instruction::Assert(artifact, dialog_artifacts::Pick::All)]
                     .into_iter()
                     .collect(),
             )
@@ -1052,7 +1052,7 @@ mod when_syncing_with_an_upstream {
 
 mod when_authoring_an_html_view {
     use anyhow::{Result, anyhow};
-    use dialog_artifacts::{Attribute, Value};
+    use dialog_artifacts::{Relation, Value};
     use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 
     use crate::common::{self, VIEW_DECL};
@@ -1061,10 +1061,10 @@ mod when_authoring_an_html_view {
     async fn select_text_html_claims(
         site: &tonk_cli::site::TonkSite,
     ) -> Result<Vec<dialog_query::Claim>> {
-        let the: Attribute = "text/html"
+        let the: Relation = "text/html"
             .parse()
             .map_err(|e| anyhow!("text/html should be a valid attribute URI: {e:?}"))?;
-        let the_term: attribute::The = the.into();
+        let the_term: attribute::Relation = the.into();
         let session = site.branch().await?;
         session
             .handle()

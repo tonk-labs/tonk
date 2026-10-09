@@ -35,8 +35,17 @@ pub struct BranchReference<'a> {
     pub name: &'a str,
 }
 
-/// Until when [`BranchReference::upgrade_rules_once`] re-installs the
-/// rules an earlier dialog release stored: 2026-11-15, in unix seconds.
+/// What [`BranchReference::upgrade_once`] moved.
+#[derive(Debug, Clone)]
+pub struct Upgraded {
+    /// The attribute and concept definitions written again.
+    pub definitions: tonk_schema::upgrade::DefinitionsUpgraded,
+    /// The rules re-installed.
+    pub rules: dialog_repository::RulesUpgraded,
+}
+
+/// Until when [`BranchReference::upgrade_once`] moves what an earlier
+/// release stored: 2026-11-15, in unix seconds.
 /// After it the upgrade is not attempted; remove the upgrade then.
 pub const RULE_UPGRADE_UNTIL: u64 = 1_794_700_800;
 
@@ -117,22 +126,22 @@ impl<'a> BranchReference<'a> {
         Ok(BranchSession { state })
     }
 
-    /// Re-install the rules this branch stores under an identity an
-    /// earlier dialog release gave them ([`Branch::upgrade_rules`]), once
-    /// per branch while the reactor holds it open, and only until
-    /// [`RULE_UPGRADE_UNTIL`]. A later call returns `None` without reading
-    /// anything, since the upgrade decodes every rule body the branch
-    /// holds. A failed upgrade is not retried until the branch is opened
-    /// again (the next worker or CLI start): a cause like an unreachable
-    /// remote would otherwise repeat on every read. Runs under the
-    /// branch's transactor lock, as a commit does, and schedules a poll
-    /// when it commits.
+    /// Move what an earlier release stored to the shape this one reads,
+    /// once per branch while the reactor holds it open, and only until
+    /// [`RULE_UPGRADE_UNTIL`]: first the attribute and concept
+    /// definitions recorded the earlier way
+    /// ([`tonk_schema::upgrade::upgrade_definitions`]), then the rules
+    /// stored under an identity an earlier dialog release gave them
+    /// ([`Branch::upgrade_rules`]). A later call returns `None` without
+    /// reading anything, since both decode every definition and rule body
+    /// the branch holds. A failed upgrade is not retried until the branch
+    /// is opened again (the next worker or CLI start): a cause like an
+    /// unreachable remote would otherwise repeat on every read. Runs under
+    /// the branch's transactor lock, as a commit does, and schedules a
+    /// poll when it commits.
     ///
     /// [`Branch::upgrade_rules`]: dialog_repository::Branch::upgrade_rules
-    pub async fn upgrade_rules_once<Env>(
-        &self,
-        env: &Env,
-    ) -> Result<Option<dialog_repository::RulesUpgraded>, ReactorError>
+    pub async fn upgrade_once<Env>(&self, env: &Env) -> Result<Option<Upgraded>, ReactorError>
     where
         Env: LoadProvider + BranchOpenProvider + CommitProvider,
     {
@@ -145,10 +154,13 @@ impl<'a> BranchReference<'a> {
         }
         let upgraded = {
             let _transacting = session.state.transactor().lock().await;
-            session.state.branch.upgrade_rules().perform(env).await
+            let definitions = tonk_schema::upgrade::upgrade_definitions(&session.state.branch, env)
+                .await
+                .map_err(|reason| ReactorError::Upgrade { reason })?;
+            let rules = session.state.branch.upgrade_rules().perform(env).await?;
+            Upgraded { definitions, rules }
         };
-        let upgraded = upgraded?;
-        if upgraded.revision.is_some() {
+        if !upgraded.definitions.is_empty() || upgraded.rules.revision.is_some() {
             self.reactor().schedule_poll(Arc::clone(&session.state));
         }
         Ok(Some(upgraded))

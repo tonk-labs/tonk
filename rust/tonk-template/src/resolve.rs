@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 use indexmap::IndexMap;
 use serde_json::{Value, json};
+use tonk_notation::ValueType;
 use tonk_schema::query::Query;
 
 /// The facet a `<tonk-display>` with an `entity` renders when no
@@ -300,12 +301,15 @@ pub fn scalar_field_names(descriptor_json: &str) -> std::collections::BTreeSet<S
     out
 }
 
-/// Whether a field's spec reads one value per subject: not `select:
-/// all`, and not `cardinality: many`.
+/// Whether a field's spec reads one value per subject: not `pick:
+/// all`, and not `cardinality: many` (or the preview `select: all`)
+/// without a `pick` saying otherwise.
 fn is_scalar_field(spec: &Value) -> bool {
-    let select = spec.get("select").and_then(Value::as_str);
-    let cardinality = spec.get("cardinality").and_then(Value::as_str);
-    select != Some("all") && cardinality != Some("many")
+    let text = |key: &str| spec.get(key).and_then(Value::as_str);
+    match text("pick").or(text("select")) {
+        Some(pick) => pick != "all",
+        None => text("cardinality") != Some("many"),
+    }
 }
 
 /// The descriptor of the built-in `view` concept.
@@ -673,17 +677,17 @@ fn coerce_filter_value(
     as_type: Option<&str>,
     raw: &str,
 ) -> Result<serde_json::Value, Phase2Error> {
-    let coerced = match as_type {
-        Some("UnsignedInteger") => raw.parse::<u64>().ok().map(|n| json!(n)),
-        Some("SignedInteger") => raw.parse::<i64>().ok().map(|n| json!(n)),
+    let coerced = match as_type.and_then(ValueType::from_wire) {
+        Some(ValueType::Natural) => raw.parse::<u64>().ok().map(|n| json!(n)),
+        Some(ValueType::Integer) => raw.parse::<i64>().ok().map(|n| json!(n)),
         // Reject non-finite floats too: `serde_json` can't represent
         // `inf`/`NaN` and would silently serialize them as `null`.
-        Some("Float") => raw
+        Some(ValueType::Float) => raw
             .parse::<f64>()
             .ok()
             .filter(|n| n.is_finite())
             .map(|n| json!(n)),
-        Some("Boolean") => match raw {
+        Some(ValueType::Boolean) => match raw {
             "true" => Some(json!(true)),
             "false" => Some(json!(false)),
             _ => None,
@@ -693,7 +697,7 @@ fn coerce_filter_value(
     };
     coerced.ok_or_else(|| Phase2Error::Filter {
         field: field.to_owned(),
-        as_type: as_type.unwrap_or("Text").to_owned(),
+        as_type: as_type.unwrap_or(ValueType::Text.uri()).to_owned(),
         value: raw.to_owned(),
     })
 }

@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use dialog_artifacts::{Entity, Value};
-use dialog_query::{Term, Type, attribute::The as AttributeThe};
+use dialog_query::{Term, Type, attribute::The as AttributeRelation};
 use tonk_notation::{FieldValue, Scalar};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
@@ -332,7 +332,7 @@ pub(crate) fn validate_claim_attribute(
     range: lsp_types::Range,
 ) -> Result<(), AnalyzeError> {
     let uri = format!("{domain}/{field}");
-    uri.parse::<AttributeThe>().map(|_| ()).map_err(|e| {
+    uri.parse::<AttributeRelation>().map(|_| ()).map_err(|e| {
         AnalyzeError::at(
             AnalyzeErrorKind::InvalidClaimAttribute {
                 domain: domain.to_owned(),

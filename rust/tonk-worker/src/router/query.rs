@@ -118,28 +118,39 @@ fn request_client(request: &Request) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
-/// Re-install the rules `branch` stores under an identity an earlier
-/// dialog release gave them, the first time this worker reads the branch
-/// (see [`crate::reactor::BranchReference::upgrade_rules_once`], which
-/// stops after its cutoff date). Such rules are otherwise inert: no read
-/// finds them and no commit fires them. A failure is logged and the read
-/// proceeds.
+/// Move what an earlier release stored on `branch` to the shape this one
+/// reads, the first time this worker reads the branch (see
+/// [`crate::reactor::BranchReference::upgrade_once`], which stops after
+/// its cutoff date): attribute and concept definitions recorded the
+/// earlier way, and rules stored under an identity an earlier dialog
+/// release gave them, which no read finds and no commit fires until then.
+/// A failure is logged and the read proceeds.
 async fn upgrade_rules_while_migrating(
     tonk: &crate::worker::TonkState,
     branch: crate::reactor::BranchReference<'_>,
 ) {
-    match branch.upgrade_rules_once(&tonk.operator).await {
-        Ok(Some(upgraded)) if !upgraded.reinstalled.is_empty() => tonk_common::log!(
-            "re-installed {} rule(s) on '{}' under their current identity",
-            upgraded.reinstalled.len(),
-            branch.repository.name()
-        ),
-        Ok(_) => {}
+    match branch.upgrade_once(&tonk.operator).await {
+        Ok(Some(upgraded)) => {
+            if !upgraded.definitions.is_empty() {
+                tonk_common::log!(
+                    "moved {} definition(s) on '{}' to their current identity",
+                    upgraded.definitions.moves.len() + upgraded.definitions.rewritten.len(),
+                    branch.repository.name()
+                );
+            }
+            if !upgraded.rules.reinstalled.is_empty() {
+                tonk_common::log!(
+                    "re-installed {} rule(s) on '{}' under their current identity",
+                    upgraded.rules.reinstalled.len(),
+                    branch.repository.name()
+                );
+            }
+        }
+        Ok(None) => {}
         Err(error) if is_absence(&error) => {}
-        Err(error) => tonk_common::log!(
-            "rule upgrade on '{}' failed: {error}",
-            branch.repository.name()
-        ),
+        Err(error) => {
+            tonk_common::log!("upgrade on '{}' failed: {error}", branch.repository.name())
+        }
     }
 }
 
@@ -303,7 +314,8 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         | ReactorError::Commit(_)
         | ReactorError::Pull(_)
         | ReactorError::Download(_)
-        | ReactorError::Push(_) => TonkWorkerError::Internal(err.to_string()),
+        | ReactorError::Push(_)
+        | ReactorError::Upgrade { .. } => TonkWorkerError::Internal(err.to_string()),
     }
 }
 
@@ -396,7 +408,8 @@ mod tests {
                 | ReactorError::Commit(_)
                 | ReactorError::Pull(_)
                 | ReactorError::Download(_)
-                | ReactorError::Push(_) => false,
+                | ReactorError::Push(_)
+                | ReactorError::Upgrade { .. } => false,
             }
         }
         // `is_absence` must agree with that intent for the cases we can
@@ -419,7 +432,7 @@ mod tests {
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[dialog_common::test]
     async fn the_first_read_of_a_branch_re_installs_rules_stored_the_earlier_way() {
-        use dialog_artifacts::{ArtifactSelector, Entity, Policy, Value};
+        use dialog_artifacts::{ArtifactSelector, Entity, Pick, Value};
         use dialog_query::rule::DeductiveRuleDescriptor;
         use dialog_query::rule::statement::source_attr;
         use dialog_query::{AttributeStatement, Cardinality};
@@ -449,7 +462,7 @@ mod tests {
                 is: Value::Bytes(rule.encode()),
                 cause: None,
                 cardinality: Some(Cardinality::Many),
-                policy: Some(Policy::All),
+                pick: Some(Pick::All),
             })
             .commit()
             .perform(&tonk.operator)
@@ -489,7 +502,7 @@ mod tests {
             "and no longer under the earlier entity"
         );
         assert!(
-            matches!(branch.upgrade_rules_once(&tonk.operator).await, Ok(None)),
+            matches!(branch.upgrade_once(&tonk.operator).await, Ok(None)),
             "a second read does not upgrade again"
         );
     }

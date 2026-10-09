@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
 use anyhow::{Context, Result, anyhow};
-use dialog_artifacts::{Attribute, Entity, Value};
+use dialog_artifacts::{Entity, Relation, Value};
 use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 use tonk_render::QueryBackend as _;
 
@@ -140,7 +140,7 @@ pub async fn list(site: &TonkSite) -> Result<Vec<ViewSummary>> {
 /// claim — the host route 404s on anything that doesn't.
 pub async fn entity_has_text_html(site: &TonkSite, entity: &Entity) -> Result<bool> {
     let the = text_html_attribute()?;
-    let the_term: attribute::The = the.into();
+    let the_term: attribute::Relation = the.into();
     let session = site.branch().await?;
     let rows: Vec<dialog_query::Claim> = session
         .handle()
@@ -224,10 +224,10 @@ async fn show_dictionaries(site: &TonkSite) -> Result<Vec<(Entity, BTreeMap<Stri
 
 /// Select every current claim under one attribute URI.
 async fn claims_for_attribute(site: &TonkSite, uri: &str) -> Result<Vec<dialog_query::Claim>> {
-    let the: Attribute = uri
+    let the: Relation = uri
         .parse()
         .map_err(|e| anyhow!("{uri} should be a valid attribute URI: {e:?}"))?;
-    let the_term: attribute::The = the.into();
+    let the_term: attribute::Relation = the.into();
     let session = site.branch().await?;
     session
         .handle()
@@ -271,10 +271,10 @@ pub async fn names_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String>>
 }
 
 async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String>> {
-    let name_attr: Attribute = "db.name/referent"
+    let name_attr: Relation = "db.name/referent"
         .parse()
         .context("db.name/referent should be a valid attribute URI")?;
-    let the_term: attribute::The = name_attr.into();
+    let the_term: attribute::Relation = name_attr.into();
     let session = site.branch().await?;
     let claims: Vec<dialog_query::Claim> = session
         .handle()
@@ -408,7 +408,7 @@ pub async fn facts_for_entity(
         .handle()
         .query()
         .select(AttributeQuery::new(
-            Term::<attribute::The>::var("the"),
+            Term::<attribute::Relation>::var("the"),
             Term::from(entity.clone()),
             Term::<dialog_query::Any>::var("is"),
             Term::<attribute::Cause>::blank(),
@@ -429,7 +429,7 @@ pub async fn facts_for_entity(
     Ok(Some((entity, facts)))
 }
 
-fn text_html_attribute() -> Result<Attribute> {
+fn text_html_attribute() -> Result<Relation> {
     "text/html"
         .parse()
         .map_err(|e| anyhow!("text/html should be a valid attribute URI: {e:?}"))

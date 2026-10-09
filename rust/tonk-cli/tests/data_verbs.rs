@@ -19,13 +19,13 @@ use crate::common::{
 /// stops matching the row the instant *any* field is missing.
 async fn select_claims(test: &TestSite, the: &str) -> Result<Vec<dialog_query::Claim>> {
     use anyhow::anyhow;
-    use dialog_artifacts::Attribute;
+    use dialog_artifacts::Relation;
     use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 
-    let attr: Attribute = the
+    let attr: Relation = the
         .parse()
         .map_err(|e| anyhow!("{the} should be a valid attribute URI: {e:?}"))?;
-    let the_term: attribute::The = attr.into();
+    let the_term: attribute::Relation = attr.into();
     let session = test.site.branch().await?;
     session
         .handle()

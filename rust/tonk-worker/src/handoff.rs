@@ -174,7 +174,7 @@ mod tests {
             "test/status".parse().expect("attribute"),
             "tonk:test/handoff".parse().expect("entity"),
             Value::String("failed".into()),
-            dialog_artifacts::Policy::All,
+            dialog_artifacts::Pick::All,
         );
         vec![OverlaySnapshot {
             repository: None,

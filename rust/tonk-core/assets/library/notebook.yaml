@@ -52,7 +52,7 @@ concept!: &notebook
       # template then substitutes `{block}` once instead of iterating
       # the entries, so the order rows never render and every block
       # reads as unplaced.
-      select: all
+      pick: all
       as: {[position]: entity}
 
 # The title alone, so a create or a rename writes one field rather than

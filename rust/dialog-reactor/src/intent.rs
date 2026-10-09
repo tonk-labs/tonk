@@ -168,8 +168,8 @@ pub async fn interpret<Env: SelectProvider>(
     // text there ("install notebook") as possibly naming one; `suggest`
     // then fills the field from what was derived, or leaves it empty.
     for attribute in &mut source.attributes {
-        if attribute.fields.get("type").and_then(Json::as_str) == Some("Entity") {
-            attribute.fields.insert("type".to_owned(), json!("Text"));
+        if attribute.fields.get("type").and_then(Json::as_str) == Some("entity:") {
+            attribute.fields.insert("type".to_owned(), json!("text:"));
         }
     }
     let selection = match site {
@@ -382,7 +382,7 @@ async fn fragments<Env: SelectProvider>(
                 continue;
             };
             let kind = attribute.fields.get("type").and_then(Json::as_str);
-            let (Some(selector), Some("Entity")) =
+            let (Some(selector), Some("entity:")) =
                 (attribute.fields.get("id").and_then(Json::as_str), kind)
             else {
                 continue;
@@ -534,13 +534,9 @@ fn attributes() -> Json {
     json!({
         "predicate": { "with": {
             "id": text("db.attribute/id", "one"),
-            "type": text("db.attribute/type", "one"),
-            "cardinality": text("db.attribute/cardinality", "one")
+            "type": entity("db.attribute/as", true)
         } },
-        "terms": {
-            "this": var("this"), "id": var("id"), "type": var("type"),
-            "cardinality": var("cardinality")
-        }
+        "terms": { "this": var("this"), "id": var("id"), "type": var("type") }
     })
 }
 

@@ -950,33 +950,11 @@ mod tests {
         async fn assert_concept_named(&self, name: &str, descriptor: &ConceptDescriptor) {
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
-                let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
-                let type_label = attr
-                    .content_type()
-                    .and_then(|t| serde_json::to_value(t).ok())
-                    .and_then(|v| v.as_str().map(str::to_owned))
-                    .unwrap_or_else(|| "Text".to_owned());
-                txn = txn
-                    .assert(
-                        the!("db.attribute/id")
-                            .of(attr_entity.clone())
-                            .is(attr.the().to_string()),
-                    )
-                    .assert(
-                        the!("db.attribute/type")
-                            .of(attr_entity.clone())
-                            .is(type_label),
-                    )
-                    .assert(
-                        the!("db.attribute/cardinality")
-                            .of(attr_entity.clone())
-                            .is("one".to_owned()),
-                    )
-                    .assert(
-                        the!("db.meta/description")
-                            .of(attr_entity)
-                            .is(String::new()),
-                    );
+                for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
+                    .expect("attribute facts")
+                {
+                    txn = txn.assert(statement);
+                }
             }
             let concept_entity = descriptor.this();
             let id_entity: Entity = format!("id:{name}").parse().expect("id:<name> parses");
@@ -1041,28 +1019,11 @@ mod tests {
                     .expect("descriptor JSON is well-formed");
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
-                let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
-                txn = txn
-                    .assert(
-                        the!("db.attribute/id")
-                            .of(attr_entity.clone())
-                            .is(attr.the().to_string()),
-                    )
-                    .assert(
-                        the!("db.attribute/type")
-                            .of(attr_entity.clone())
-                            .is("Text".to_owned()),
-                    )
-                    .assert(
-                        the!("db.attribute/cardinality")
-                            .of(attr_entity.clone())
-                            .is("one".to_owned()),
-                    )
-                    .assert(
-                        the!("db.meta/description")
-                            .of(attr_entity)
-                            .is(String::new()),
-                    );
+                for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
+                    .expect("attribute facts")
+                {
+                    txn = txn.assert(statement);
+                }
             }
             // Pin the concept at `entity` by emitting its facts there
             // directly (mirrors `emit_concept_facts`): the marker plus
@@ -1075,7 +1036,7 @@ mod tests {
             for (field, attr) in descriptor.with().iter() {
                 let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
                 let the = format!("db.concept.with/{field}")
-                    .parse::<dialog_query::attribute::The>()
+                    .parse::<dialog_query::attribute::Relation>()
                     .expect("with attribute parses");
                 txn = txn.assert(the.of(entity.clone()).is(attr_entity));
             }
@@ -1216,9 +1177,9 @@ mod tests {
     }
 
     /// An attribute declares how a field reads it: a listed `as:` or
-    /// `the:` is a ranked choice, and `select:` names any other of
-    /// dialog's policies. An unknown policy is refused by the analyzer,
-    /// and a policy its attribute cannot read under by dialog.
+    /// `the:` is a ranked choice, and `pick:` names any other of
+    /// dialog's picks. An unknown pick is refused by the analyzer, and a
+    /// pick its attribute cannot read under by dialog.
     #[dialog_common::test]
     fn it_lowers_a_select_policy_with_its_listed_values() {
         let syntax = must_parse(
@@ -1252,7 +1213,7 @@ concept!: &job
       description: \"where it stands\"
       the: x.y/status
       as: entity
-      select: newest
+      pick: newest
 ",
         );
         let result = super::analyze_local(&syntax);
@@ -1260,7 +1221,7 @@ concept!: &job
             result
                 .as_ref()
                 .err()
-                .is_some_and(|error| format!("{error:?}").contains("unknown select policy")),
+                .is_some_and(|error| format!("{error:?}").contains("unknown pick")),
             "an unknown policy is refused: {result:?}"
         );
 
@@ -1273,7 +1234,7 @@ concept!: &job
       description: \"where it stands\"
       the: x.y/status
       as: entity
-      select: top
+      pick: top
 ",
         );
         let result = super::analyze_local(&syntax);
@@ -1519,7 +1480,7 @@ attribute!: &tags
   the: x.y/tags
   description: "labels"
   as: text
-  select: all
+  pick: all
 attribute!: &name
   the: x.y/name
   description: "a name"
@@ -1539,20 +1500,24 @@ attribute!: &name
             Some(Term::Constant(Value::String(text))) => Some(text.clone()),
             _ => None,
         };
+        let entity = |terms: &dialog_query::Parameters, field: &str| match terms.get(field) {
+            Some(Term::Constant(Value::Entity(entity))) => Some(entity.to_string()),
+            _ => None,
+        };
         let status = terms_of(0);
-        assert_eq!(text(&status, "select").as_deref(), Some("top"));
-        assert_eq!(text(&status, "cardinality").as_deref(), Some("one"));
+        assert_eq!(text(&status, "pick").as_deref(), Some("top"));
+        assert_eq!(entity(&status, "as").as_deref(), Some("entity:"));
         assert_eq!(
             text(&status, "among").as_deref(),
             Some(r#"["case:suspended","case:active"]"#),
             "the ranked values ride as a JSON list, best first"
         );
         let tags = terms_of(1);
-        assert_eq!(text(&tags, "select").as_deref(), Some("all"));
-        assert_eq!(text(&tags, "cardinality").as_deref(), Some("many"));
+        assert_eq!(text(&tags, "pick").as_deref(), Some("all"));
+        assert_eq!(entity(&tags, "as").as_deref(), Some("text:"));
         assert!(text(&tags, "among").is_none(), "a set ranks nothing");
         let name = terms_of(2);
-        assert_eq!(text(&name, "select").as_deref(), Some("last"));
+        assert_eq!(text(&name, "pick").as_deref(), Some("last"));
         assert!(text(&name, "among").is_none());
     }
 
@@ -2909,12 +2874,12 @@ attribute:
         let Application::Concept { query, .. } = &q.queries[0] else {
             panic!("expected Concept application");
         };
-        // The four anonymous-attribute fields — id/type/
-        // cardinality/description — must all be present in the
+        // The anonymous-attribute fields — id/as/pick/description —
+        // must all be present in the
         // unified term map. `name` is intentionally not in the
         // built-in `attribute:` view (only anchor-form attrs
         // carry a `db.meta/name` claim).
-        for field in ["id", "type", "cardinality", "description"] {
+        for field in ["id", "as", "pick", "description"] {
             assert!(query.terms.contains(field), "missing {field}");
         }
     }
@@ -2953,7 +2918,7 @@ branch:
         let Application::Concept { query, .. } = &q.queries[0] else {
             panic!("expected Concept application");
         };
-        for field in ["id", "type", "cardinality", "description"] {
+        for field in ["id", "as", "pick", "description"] {
             assert!(query.terms.contains(field), "missing {field}");
         }
     }

@@ -13,7 +13,7 @@ concept!: &counter
     count:
       description: The current count
       the: xyz.tonk.counter/count
-      as: unsigned-integer
+      as: natural
 ```
 
 `&counter` names this concept so we can refer to it as `counter` later. Every concept and attribute needs a `description`: it is stored with the data and makes concepts discoverable, so write it for a stranger.

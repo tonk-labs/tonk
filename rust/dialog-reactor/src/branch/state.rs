@@ -46,10 +46,10 @@ pub struct BranchState {
     /// block — a transaction. Per branch, so commits to different branches
     /// proceed in parallel.
     transactor: tokio::sync::Mutex<()>,
-    /// Whether [`BranchReference::upgrade_rules_once`] has run on this
+    /// Whether [`BranchReference::upgrade_once`] has run on this
     /// branch since it was opened.
     ///
-    /// [`BranchReference::upgrade_rules_once`]: crate::BranchReference::upgrade_rules_once
+    /// [`BranchReference::upgrade_once`]: crate::BranchReference::upgrade_once
     rules_upgraded: std::sync::atomic::AtomicBool,
 }
 

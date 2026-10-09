@@ -137,17 +137,13 @@ pub enum AuthoringError {
     },
 }
 
-/// Canonical `as:` type spellings the analyzer accepts, matching
-/// `schema::type_to_notation`'s output (which `tonk show --notation` proves
-/// re-submittable). Input is matched case-insensitively.
+/// Canonical `as:` type spellings the analyzer accepts: the built-in
+/// type anchors, matching `schema::type_to_notation`'s output (which
+/// `tonk show --notation` proves re-submittable). Input is matched
+/// case-insensitively, and the names an earlier release used
+/// (`UnsignedInteger`, `signed-integer`, ...) normalize to these.
 const VALID_TYPES: &[&str] = &[
-    "Text",
-    "Entity",
-    "UnsignedInteger",
-    "SignedInteger",
-    "Float",
-    "Boolean",
-    "Symbol",
+    "text", "entity", "natural", "integer", "float", "boolean", "symbol",
 ];
 
 /// Parse a raw `--field field:type:cardinality` flag value into an
@@ -159,9 +155,16 @@ pub fn parse_attr_spec(raw: &str) -> Result<AttrSpec, AuthoringError> {
     let [field, ty, card] = parts.as_slice() else {
         return Err(AuthoringError::BadAttrSpec { raw: raw.into() });
     };
-    let type_name = VALID_TYPES
-        .iter()
-        .find(|t| t.eq_ignore_ascii_case(ty))
+    let lowered = ty.to_ascii_lowercase();
+    let type_name = tonk_notation::ValueType::from_anchor(&lowered)
+        .or_else(|| tonk_notation::ValueType::from_wire(ty))
+        .or_else(|| match lowered.as_str() {
+            "unsignedinteger" => Some(tonk_notation::ValueType::Natural),
+            "signedinteger" => Some(tonk_notation::ValueType::Integer),
+            _ => None,
+        })
+        .map(|kind| kind.anchor())
+        .filter(|anchor| VALID_TYPES.contains(anchor))
         .ok_or_else(|| AuthoringError::BadType {
             raw: (*ty).into(),
             valid: VALID_TYPES.to_vec(),
@@ -760,29 +763,29 @@ mod tests {
                 spec.type_name.as_str(),
                 spec.cardinality.as_str()
             ),
-            ("title", "Text", "one")
+            ("title", "text", "one")
         );
     }
     #[test]
     fn it_accepts_canonical_type_spellings_case_insensitively() {
         assert_eq!(
             parse_attr_spec("n:UnsignedInteger:one").unwrap().type_name,
-            "UnsignedInteger"
+            "natural"
         );
         assert_eq!(
             parse_attr_spec("n:unsignedinteger:one").unwrap().type_name,
-            "UnsignedInteger"
+            "natural"
         );
         assert_eq!(
             parse_attr_spec("n:boolean:many").unwrap().type_name,
-            "Boolean"
+            "boolean"
         );
     }
     #[test]
     fn it_rejects_an_unknown_type_enumerating_the_valid_ones() {
         let err = parse_attr_spec("n:string:one").unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("Text") && msg.contains("Boolean"), "{msg}");
+        assert!(msg.contains("text") && msg.contains("boolean"), "{msg}");
     }
     #[test]
     fn it_rejects_a_bad_cardinality() {

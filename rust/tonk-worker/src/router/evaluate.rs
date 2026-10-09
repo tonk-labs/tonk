@@ -411,7 +411,7 @@ pub(super) async fn stage_and_publish(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_artifacts::Policy::All,
+                    policy: dialog_artifacts::Pick::All,
                 })
             }
             dialog_artifacts::Instruction::Retract(artifact) => {
@@ -419,7 +419,7 @@ pub(super) async fn stage_and_publish(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_artifacts::Policy::All,
+                    policy: dialog_artifacts::Pick::All,
                 })
             }
         };
@@ -727,7 +727,7 @@ async fn evaluate_on_branch_with<'a>(
                     the: found.the,
                     of: found.of,
                     is: found.is,
-                    policy: dialog_artifacts::Policy::All,
+                    policy: dialog_artifacts::Pick::All,
                 };
                 if !kept.contains(&identity(&stale)) {
                     txn = txn.retract(stale);
@@ -875,7 +875,7 @@ async fn evaluate_on_branch_with<'a>(
                         the: "xyz.tonk.test/raced-head".parse().expect("test attribute"),
                         of: "test:evaluate-race".parse().expect("test entity"),
                         is: dialog_artifacts::Value::String("advanced".to_owned()),
-                        policy: dialog_artifacts::Policy::All,
+                        policy: dialog_artifacts::Pick::All,
                     })
                     .commit()
                     .perform(&tonk_state.operator)

@@ -12,7 +12,7 @@ use ::axum::{
 use axum::extract::Query as AxumQuery;
 use axum_wasm_macros::wasm_compat;
 use base64::Engine;
-use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Policy, Statement, Update, Value};
+use dialog_artifacts::{ArtifactSelector, Entity, Pick, Relation, Statement, Update, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -100,10 +100,10 @@ pub struct QueryResponse {
 /// latest navigation rather than accumulate one value per visited route.
 #[derive(Clone)]
 pub(crate) struct RawClaim {
-    pub(crate) the: Attribute,
+    pub(crate) the: Relation,
     pub(crate) of: Entity,
     pub(crate) is: Value,
-    pub(crate) policy: Policy,
+    pub(crate) policy: Pick,
 }
 
 impl Statement for RawClaim {
@@ -222,7 +222,7 @@ pub async fn assert_claim(
         .map_err(|e| TonkWorkerError::Router(format!("Invalid entity '{}': {}", path.entity, e)))?;
 
     // Parse attribute
-    let attribute: Attribute = attribute_str
+    let attribute: Relation = attribute_str
         .parse()
         .map_err(|e| TonkWorkerError::Router(format!("Invalid attribute: {}", e)))?;
 
@@ -238,7 +238,7 @@ pub async fn assert_claim(
         the: attribute,
         of: entity,
         is: value,
-        policy: dialog_artifacts::Policy::All,
+        policy: dialog_artifacts::Pick::All,
     };
 
     tonk_state
@@ -303,7 +303,7 @@ pub async fn retract_claim(
     let tonk_state = state.write().await;
 
     // Parse attribute
-    let attribute: Attribute = attribute_str
+    let attribute: Relation = attribute_str
         .parse()
         .map_err(|e| TonkWorkerError::Router(format!("Invalid attribute: {}", e)))?;
 
@@ -311,7 +311,7 @@ pub async fn retract_claim(
         the: attribute,
         of: entity,
         is: value,
-        policy: dialog_artifacts::Policy::All,
+        policy: dialog_artifacts::Pick::All,
     };
 
     tonk_state
@@ -394,7 +394,7 @@ pub async fn select_claims(
     let selector = ArtifactSelector::new();
 
     // Parse optional attribute
-    let attribute: Option<Attribute> = match &query.the {
+    let attribute: Option<Relation> = match &query.the {
         Some(attr) => {
             if !attr.contains('/') {
                 return Err(TonkWorkerError::Router(format!(

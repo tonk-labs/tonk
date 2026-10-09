@@ -2414,7 +2414,7 @@ pub(crate) mod tests {
                         is: Value::UnsignedInt(n),
                         cause: None,
                     },
-                    dialog_artifacts::Policy::All,
+                    dialog_artifacts::Pick::All,
                 )
             })
             .collect();

@@ -1,8 +1,8 @@
 //! Keys what a space wrote itself by the identities its library now carries.
 //!
-//! dialog names an attribute by a hash of its relation, type and policy, and
-//! an unnamed concept by a hash of its attributes. The release before select
-//! policies hashed less, so every attribute's identity changed, and every
+//! dialog names an attribute by a hash of its relation, type and pick, and
+//! an unnamed concept by a hash of its attributes. The release before picks
+//! hashed less, so every attribute's identity changed, and every
 //! unnamed concept's with it. An upgrade reverts what the last install wrote
 //! and installs the library again, which moves the library's own definitions
 //! to their new identities. What the space wrote itself stays as it was: a
@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use dialog_artifacts::{Artifact, ArtifactSelector, Attribute, Entity, Policy, Value};
+use dialog_artifacts::{Artifact, ArtifactSelector, Entity, Pick, Relation, Value};
 use dialog_query::migration::{attribute_uri_v0, concept_identity_v0};
 use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor};
 use futures_util::StreamExt as _;
@@ -36,7 +36,7 @@ pub(super) struct Rekey {
 }
 
 /// Each attribute and unnamed concept `entities` holds on `batch`, paired
-/// with the identity the release before select policies gave it, where the
+/// with the identity the release before picks gave it, where the
 /// two differ. See [`moves_in`].
 pub(super) async fn moves(
     tonk: &TonkState,
@@ -75,14 +75,15 @@ pub(super) async fn moves(
 }
 
 /// Facts about entities, each as its `(attribute, value)` pairs.
-pub(super) type Facts = HashMap<Entity, Vec<(Attribute, Value)>>;
+pub(super) type Facts = HashMap<Entity, Vec<(Relation, Value)>>;
 
 /// Each attribute and unnamed concept `facts` define, paired with the
-/// identity the release before select policies gave it, where the two
+/// identity the release before picks gave it, where the two
 /// differ: `(identity then, identity now)`.
 ///
 /// An attribute's earlier identity hashed its relation, cardinality and type,
-/// which its `db.attribute/*` facts spell. A concept's hashed its fields'
+/// which its `db.attribute/*` facts spell: the cardinality is its pick's
+/// arity. A concept's hashed its fields'
 /// attributes and whether each is optional, which its `db.concept.with/*` and
 /// `db.concept.optional/*` facts spell. A concept named by an entity of its
 /// own (`tonk:workspace/shell`) kept that entity and has no move.
@@ -182,8 +183,8 @@ pub(super) async fn rekey(
                 // Moved with the entity it is about, below.
                 continue;
             }
-            retract.push(raw(&claim.the, &claim.of, &claim.is, Policy::All));
-            assert.push(raw(&claim.the, &claim.of, &follow(&claim.is), Policy::All));
+            retract.push(raw(&claim.the, &claim.of, &claim.is, Pick::All));
+            assert.push(raw(&claim.the, &claim.of, &follow(&claim.is), Pick::All));
         }
 
         let about = select(tonk, batch, ArtifactSelector::new().of(earlier.clone())).await?;
@@ -199,12 +200,12 @@ pub(super) async fn rekey(
         }
         for claims in by_relation.into_values() {
             let policy = if claims.len() == 1 {
-                Policy::Last
+                Pick::Last
             } else {
-                Policy::All
+                Pick::All
             };
             for claim in claims {
-                retract.push(raw(&claim.the, &claim.of, &claim.is, Policy::All));
+                retract.push(raw(&claim.the, &claim.of, &claim.is, Pick::All));
                 assert.push(raw(&claim.the, now, &follow(&claim.is), policy.clone()));
             }
         }
@@ -218,7 +219,7 @@ pub(super) async fn rekey(
 
 /// Whether a fact about an attribute or concept entity is part of its
 /// definition, which the install writes.
-fn is_definition(the: &Attribute) -> bool {
+fn is_definition(the: &Relation) -> bool {
     let the = the.to_string();
     the.starts_with("db.attribute/")
         || the.starts_with("db.concept.")
@@ -227,25 +228,24 @@ fn is_definition(the: &Attribute) -> bool {
 }
 
 /// The descriptor an attribute's `db.attribute/*` facts spell, enough to
-/// compute its earlier identity: relation, type and cardinality.
-fn attribute_descriptor(claims: &[(Attribute, Value)]) -> Option<AttributeDescriptor> {
-    let text = |name: &str| {
-        claims.iter().find_map(|(the, is)| match is {
-            Value::String(text) if the.to_string() == name => Some(text.clone()),
-            _ => None,
-        })
+/// compute its earlier identity: relation, type and pick, whose arity is
+/// the cardinality the earlier identity hashed.
+fn attribute_descriptor(claims: &[(Relation, Value)]) -> Option<AttributeDescriptor> {
+    let fact = |name: &str| {
+        claims
+            .iter()
+            .find_map(|(the, is)| (the.as_str() == name).then_some(is))
     };
-    let id = text("db.attribute/id")?;
+    let Some(Value::String(id)) = fact("db.attribute/id") else {
+        return None;
+    };
     let mut shape = serde_json::Map::new();
-    shape.insert("the".to_owned(), serde_json::Value::String(id));
-    if let Some(r#type) = text("db.attribute/type").filter(|t| !t.is_empty()) {
-        shape.insert("as".to_owned(), serde_json::Value::String(r#type));
+    shape.insert("the".to_owned(), serde_json::Value::String(id.clone()));
+    if let Some(Value::Entity(kind)) = fact("db.attribute/as") {
+        shape.insert("as".to_owned(), serde_json::Value::String(kind.to_string()));
     }
-    if let Some(cardinality) = text("db.attribute/cardinality").filter(|c| !c.is_empty()) {
-        shape.insert(
-            "cardinality".to_owned(),
-            serde_json::Value::String(cardinality),
-        );
+    if let Some(Value::String(pick)) = fact("db.attribute/pick") {
+        shape.insert("pick".to_owned(), serde_json::Value::String(pick.clone()));
     }
     serde_json::from_value(serde_json::Value::Object(shape)).ok()
 }
@@ -258,7 +258,7 @@ fn push_move(moves: &mut Vec<(Entity, Entity)>, earlier: String, now: &Entity) {
     }
 }
 
-fn raw(the: &Attribute, of: &Entity, is: &Value, policy: Policy) -> RawClaim {
+fn raw(the: &Relation, of: &Entity, is: &Value, policy: Pick) -> RawClaim {
     RawClaim {
         the: the.clone(),
         of: of.clone(),

@@ -56,7 +56,7 @@
 
 use ::axum::{Json, extract::State, http::StatusCode};
 use axum_wasm_macros::wasm_compat;
-use dialog_artifacts::{ArtifactSelector, Attribute, Changes, Entity, Statement as _, Value};
+use dialog_artifacts::{ArtifactSelector, Changes, Entity, Relation, Statement as _, Value};
 use dialog_capability::access::{AuthorizeError, Prove, Retain};
 use dialog_capability::{Fork, Provider};
 use dialog_credentials::Credential;
@@ -1050,7 +1050,7 @@ async fn first_value<Env: BranchEnv>(
     entity: Entity,
     attribute: &str,
 ) -> Result<Option<Value>, JoinFailure> {
-    let attribute: Attribute = attribute
+    let attribute: Relation = attribute
         .parse()
         .map_err(|error| JoinFailure::claim_failed(format!("bad validation attribute: {error}")))?;
     let claims = branch

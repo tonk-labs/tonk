@@ -521,7 +521,7 @@ fn site_param_claim(
         the: attribute,
         of: site.clone(),
         is,
-        policy: dialog_artifacts::Policy::Last,
+        policy: dialog_artifacts::Pick::Last,
     })
 }
 

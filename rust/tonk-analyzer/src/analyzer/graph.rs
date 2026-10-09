@@ -649,6 +649,18 @@ impl Graph {
         scope: &Scope,
         resolver: &R,
     ) -> Result<Resolved, AnalyzeError> {
+        // An anchor the document declares under a built-in type's name
+        // shadows the type within the document.
+        for expression in &syntax.expressions {
+            if let Expression::Claim(Effectful {
+                anchor: Some(anchor),
+                ..
+            }) = expression
+                && tonk_notation::ValueType::from_anchor(&anchor.name).is_some()
+            {
+                scope.shadowed_types.lock().insert(anchor.name.clone());
+            }
+        }
         // Pass 1 — attribute needs (concept `with:` dependencies).
         for need in &self.needs {
             match need {
@@ -747,7 +759,7 @@ impl Graph {
             let anchor = anchor.as_ref();
             match pending.kind {
                 DeclarationKind::Attribute => {
-                    let plan = parse_attribute_body(a)?;
+                    let plan = parse_attribute_body(a, scope)?;
                     let entity = plan.entity.clone();
                     let attribute = AttrDef {
                         entity: entity.clone(),

@@ -287,8 +287,8 @@ pub(super) fn read_path_and_coerce(
 /// shape that fits.
 pub(super) fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
     match as_type {
-        "Text" | "String" | "text" | "string" => value.as_string().map(Value::String),
-        "Entity" | "entity" => {
+        "text:" | "Text" | "String" | "text" | "string" => value.as_string().map(Value::String),
+        "entity:" | "Entity" | "entity" => {
             // Entities are URIs encoded as strings on the wire.
             let s = value.as_string()?;
             // Cheap sanity-check: a URI has a `:`. If a binding
@@ -300,9 +300,10 @@ pub(super) fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
                 None
             }
         }
-        "Boolean" | "boolean" => value.as_bool().map(Value::Bool),
-        "UnsignedInt" | "SignedInt" | "Integer" | "integer" | "unsigned-integer"
-        | "signed-integer" | "UnsignedInteger" | "SignedInteger" => {
+        "boolean:" | "Boolean" | "boolean" => value.as_bool().map(Value::Bool),
+        "integer:" | "natural:" | "UnsignedInt" | "SignedInt" | "Integer" | "integer"
+        | "natural" | "unsigned-integer" | "signed-integer" | "UnsignedInteger"
+        | "SignedInteger" => {
             let n = value.as_f64()?;
             if n.is_finite() && n.fract() == 0.0 {
                 serde_json::Number::from_f64(n).map(Value::Number)
@@ -310,14 +311,14 @@ pub(super) fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
                 None
             }
         }
-        "Float" | "float" | "Number" | "number" => {
+        "float:" | "Float" | "float" | "Number" | "number" => {
             let n = value.as_f64()?;
             serde_json::Number::from_f64(n).map(Value::Number)
         }
         // Bytes / Record both deserialize from JSON arrays of u8.
         // Accept a JS `Uint8Array` or any array-like whose entries
         // are numbers in 0..=255.
-        "Bytes" | "bytes" | "Record" | "record" => js_to_bytes_array(value),
+        "bytes:" | "record:" | "Bytes" | "bytes" | "Record" | "record" => js_to_bytes_array(value),
         // Symbol is dialog's `Attribute` value — domain/name. On the
         // wire it deserializes as a JSON string, but server-side it
         // collides with Entity (Entity::try_from runs first on string
@@ -326,7 +327,9 @@ pub(super) fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
         // the consumer expects Symbol it has to use a non-URI form;
         // otherwise the deserializer picks Entity. Documented as a
         // gotcha rather than re-encoded here.
-        "Symbol" | "symbol" | "Attribute" | "attribute" => value.as_string().map(Value::String),
+        "symbol:" | "Symbol" | "symbol" | "Attribute" | "attribute" => {
+            value.as_string().map(Value::String)
+        }
         _ => None,
     }
 }

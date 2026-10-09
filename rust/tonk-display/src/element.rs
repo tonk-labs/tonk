@@ -32,6 +32,7 @@ use js_sys::{Array, Function, Promise, Reflect};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
 use tonk_host::error::{ErrorDetail, ErrorKind};
 use tonk_host::install_depth_annotator;
+use tonk_notation::ValueType;
 use tonk_schema::conclusion::Conclusion;
 use tonk_schema::query::Query;
 use wasm_bindgen::JsCast;
@@ -2633,16 +2634,24 @@ async fn diagnose_no_entity(
                 // pins which type actually holds it, so the value can
                 // be shown in ITS spelling (`+33`, not a bare `33`
                 // that would read as the very type it is not).
-                let declared_wire = spec.get("as").and_then(|t| t.as_str());
-                let mut found: Option<(String, &str)> = None;
+                let declared_wire = spec
+                    .get("as")
+                    .and_then(|t| t.as_str())
+                    .and_then(ValueType::from_wire);
+                let mut found: Option<(String, ValueType)> = None;
                 if let Some(declared_wire) = declared_wire {
-                    for candidate in ["SignedInteger", "UnsignedInteger", "Float", "Text"] {
+                    for candidate in [
+                        ValueType::Integer,
+                        ValueType::Natural,
+                        ValueType::Float,
+                        ValueType::Text,
+                    ] {
                         if candidate == declared_wire {
                             continue;
                         }
                         let mut probe = spec.clone();
                         if let Some(probe) = probe.as_object_mut() {
-                            probe.insert("as".into(), serde_json::json!(candidate));
+                            probe.insert("as".into(), serde_json::json!(candidate.uri()));
                         }
                         if let Some(value) = probe_field(host, &entity, field, &probe).await {
                             found = Some((spell_value(&value, candidate), candidate));
@@ -2655,8 +2664,8 @@ async fn diagnose_no_entity(
                         let message = format!(
                             "Attribute {uri} holds {spelled} — a {actual} value; the \
                              concept reads it as {declared}",
-                            actual = type_spelling(actual),
-                            declared = type_spelling(declared_wire),
+                            actual = actual.anchor(),
+                            declared = declared_wire.anchor(),
                         );
                         mistyped.push((field.clone(), spelled, message));
                     }
@@ -2708,27 +2717,12 @@ fn first_field_text(value: &JsValue, field: &str) -> Option<String> {
 /// Spell a probed value the way its type is written in notation:
 /// signed integers carry an explicit sign, floats their decimal
 /// point, text its quotes.
-fn spell_value(value: &str, wire_type: &str) -> String {
+fn spell_value(value: &str, wire_type: ValueType) -> String {
     match wire_type {
-        "SignedInteger" if !value.starts_with('-') => format!("+{value}"),
-        "Float" if !value.contains('.') => format!("{value}.0"),
-        "Text" => format!("{value:?}"),
+        ValueType::Integer if !value.starts_with('-') => format!("+{value}"),
+        ValueType::Float if !value.contains('.') => format!("{value}.0"),
+        ValueType::Text => format!("{value:?}"),
         _ => value.to_owned(),
-    }
-}
-
-/// The `as:` spelling of a wire descriptor type, for the diagnosis
-/// message.
-fn type_spelling(ty: &str) -> String {
-    match ty {
-        "Text" => "text".into(),
-        "UnsignedInteger" => "unsigned-integer".into(),
-        "SignedInteger" => "signed-integer".into(),
-        "Float" => "float".into(),
-        "Boolean" => "boolean".into(),
-        "Entity" => "entity".into(),
-        "Symbol" => "symbol".into(),
-        other => other.to_owned(),
     }
 }
 

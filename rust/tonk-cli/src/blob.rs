@@ -435,7 +435,7 @@ pub async fn ls(site: &TonkSite) -> Result<Vec<LsRow>, BlobError> {
 async fn claims_by_entity(
     site: &TonkSite,
     session: &BranchSession,
-    the: dialog_query::attribute::The,
+    the: dialog_query::attribute::Relation,
 ) -> Result<std::collections::HashMap<Entity, String>, String> {
     use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 

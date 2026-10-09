@@ -99,7 +99,7 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
                 artifact.the,
                 artifact.of,
                 artifact.is,
-                dialog_artifacts::Policy::All,
+                dialog_artifacts::Pick::All,
             );
         }
     }
@@ -264,7 +264,7 @@ mod tests {
                     attribute.parse().unwrap(),
                     entity.parse().unwrap(),
                     value,
-                    dialog_artifacts::Policy::All,
+                    dialog_artifacts::Pick::All,
                 );
             }
             tonk.reactor
@@ -281,7 +281,7 @@ mod tests {
                 "example/private".parse().unwrap(),
                 "id:other".parse().unwrap(),
                 Value::Boolean(true),
-                dialog_artifacts::Policy::All,
+                dialog_artifacts::Pick::All,
             );
             tonk.reactor
                 .repository(&source)
@@ -364,7 +364,7 @@ mod tests {
             "example/text".parse().unwrap(),
             "id:copy-only".parse::<Entity>().unwrap(),
             Value::String("Independent".into()),
-            dialog_artifacts::Policy::All,
+            dialog_artifacts::Pick::All,
         );
         tonk.reactor
             .repository(&destination)
