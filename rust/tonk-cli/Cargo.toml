@@ -228,7 +228,7 @@ tonk-notation = { workspace = true }
 tonk-render = { workspace = true }
 tonk-schema = { workspace = true }
 tonk-router = { workspace = true }
-percent-encoding = "2.3.2"
+percent-encoding = { workspace = true }
 tonk-template = { workspace = true }
 tonk-worker-api = { workspace = true }
 unicode-width = { workspace = true }
