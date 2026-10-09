@@ -13,6 +13,18 @@ use tempfile::TempDir;
 use tonk_cli::eval::{self, Source};
 use tonk_cli::site::{SiteConfig, TonkSite};
 
+/// The concept the core library's default `/` route renders.
+pub const LIBRARY_ROOT_CONCEPT: &str = "tonk:workspace/shell";
+
+/// The entity the space's home route is pinned to.
+pub const HOME_ROUTE: &str = "id:space/home-route";
+
+/// The concept the space's home route renders.
+pub const HOME_ROUTE_CONCEPT: &str = "space:home-route";
+
+/// The tab entity [`TestSite::render_root`] stamps.
+const TEST_TAB: &str = "id:test/tab";
+
 pub struct TestSite {
     pub site: TonkSite,
     pub config: SiteConfig,
@@ -58,6 +70,102 @@ impl TestSite {
             eval::Options::default(),
         )
         .await
+    }
+
+    /// Every route the branch holds for `/`, as `(route entity,
+    /// concept)` pairs: the library's seeded one plus any the space
+    /// wrote.
+    pub async fn root_routes(&self) -> Result<Vec<(String, String)>> {
+        let outcome = self
+            .eval_inline("route:\n  path: \"/\"\n  concept: ?concept\n")
+            .await?;
+        Ok(outcome
+            .response
+            .matches_after
+            .iter()
+            .filter(|block| block.label == "route")
+            .flat_map(|block| block.results.iter())
+            .filter_map(|row| {
+                let concept = row.fields.get("concept")?.as_str()?;
+                Some((row.this.clone(), concept.to_owned()))
+            })
+            .collect())
+    }
+
+    /// The `/` routes the space wrote itself: every `/` route but the
+    /// library's default shell.
+    pub async fn space_root_routes(&self) -> Result<Vec<(String, String)>> {
+        let mut routes = self.root_routes().await?;
+        routes.retain(|(_, concept)| concept != LIBRARY_ROOT_CONCEPT);
+        Ok(routes)
+    }
+
+    /// Render the space's `/` the way a tab does: take the `/` route
+    /// the space wrote (it outranks the library's, see the worker's
+    /// `route_order`), else the library's shell; stamp a tab entity
+    /// with the `xyz.tonk.site/*` fields the service worker stamps;
+    /// and render the route's concept on that tab.
+    ///
+    /// Stamping the tab commits, so call this after any revision
+    /// bookkeeping a test does.
+    pub async fn render_root(&self) -> Result<String> {
+        let concept = self
+            .space_root_routes()
+            .await?
+            .into_iter()
+            .map(|(_, concept)| concept)
+            .next()
+            .unwrap_or_else(|| LIBRARY_ROOT_CONCEPT.to_owned());
+        let tab = self.stamp_tab().await?;
+        let route = tonk_cli::render::RenderRoute::parse(&format!("{tab}@{concept}"))?;
+        Ok(tonk_cli::render::render(&self.site, &route).await?)
+    }
+
+    /// Assert the site fields a route concept picks off a tab (`space`,
+    /// `branch`, `repo`, `replica`) on a test tab entity, and return
+    /// that entity.
+    async fn stamp_tab(&self) -> Result<String> {
+        let replica = tonk_cli::data_ops::query(&self.site, "tonk/replica", false).await?;
+        let replica = replica
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("this: ").map(str::to_owned))
+            .ok_or_else(|| anyhow::anyhow!("a fresh site has a replica entity"))?;
+        let repo = self.site.repository.did();
+        self.eval_inline(&format!(
+            "concept!: &test/tab
+  this: test:tab
+  description: The site fields the service worker stamps on a tab.
+  with:
+    space: {{ description: The space., the: xyz.tonk.site/space, as: text, cardinality: one }}
+    branch: {{ description: The branch., the: xyz.tonk.site/branch, as: text, cardinality: one }}
+    repo: {{ description: The repository., the: xyz.tonk.site/repo, as: text, cardinality: one }}
+    replica: {{ description: The replica., the: xyz.tonk.site/replica, as: entity, cardinality: one }}
+
+test/tab!:
+  this: {TEST_TAB}
+  space: \"home\"
+  branch: \"main\"
+  repo: \"{repo}\"
+  replica: {replica}
+"
+        ))
+        .await?;
+        Ok(TEST_TAB.to_owned())
+    }
+
+    /// The entity the `id:tonk/space` name binding points at, if any.
+    /// The alias is gone: nothing should write it.
+    pub async fn space_alias(&self) -> Result<Option<String>> {
+        let outcome = self
+            .eval_inline("name:\n  this: id:tonk/space\n  entity: ?e\n")
+            .await?;
+        Ok(outcome
+            .response
+            .matches_after
+            .iter()
+            .filter(|block| block.label == "name")
+            .flat_map(|block| block.results.iter())
+            .find_map(|row| row.fields.get("entity")?.as_str().map(str::to_owned)))
     }
 
     pub async fn eval_inline_with(

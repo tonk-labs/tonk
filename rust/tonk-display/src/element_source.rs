@@ -14,8 +14,7 @@
 //!
 //! The author's method sources are interpolated verbatim as JS
 //! expressions. That is the same trust boundary a view template
-//! already has — the branch — and the same one the older `component`
-//! concept had, which carried a whole module. The one new failure mode
+//! already has — the branch. The one failure mode it adds
 //! is syntactic: a malformed method makes its element's module fail to
 //! parse, so that element does not register. It is contained to the one
 //! element, since each gets its own module.

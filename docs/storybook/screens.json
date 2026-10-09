@@ -26,7 +26,7 @@
       "surface": "browser",
       "area": "Hub",
       "name": "Space directory",
-      "summary": "The Hub lists local, owned, and joined spaces and offers create, duplicate, and Discover template-copy actions. Visited homes can show cached blurred thumbnails without opening spaces from the Hub. The screenshot predates duplication, Discover, and real previews.",
+      "summary": "The Hub lists local, owned, and joined spaces and offers create, duplicate, and Discover template-copy actions; Discover lists the deployment's default catalog plus any the account owner adds. Visited homes can show cached blurred thumbnails without opening spaces from the Hub. The screenshot predates duplication, Discover, and real previews.",
       "artifact": "app/screens/web-02-space-directory.png",
       "capture": "running product",
       "status": "captured",

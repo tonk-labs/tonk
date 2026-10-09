@@ -259,6 +259,11 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::ReplicateSpace>()
         .command::<tonk_schema::command::ForgetInvite>()
         .command::<tonk_schema::command::CheckUpdate>()
+        // The Discover tab's catalogs. Profile-only: a catalog decides
+        // what code new spaces are seeded with, so it is the account
+        // owner's to add from the Hub, never a space's to ask for.
+        .command::<tonk_schema::command::AddCatalog>()
+        .command::<tonk_schema::command::RemoveCatalog>()
 }
 
 /// A space branch's vocabulary — see [`CommandProviders`] for why each
@@ -1044,6 +1049,151 @@ pub(crate) mod tests {
                     "an unusable seed ({seed}) must not create a space"
                 );
             }
+        }
+
+        /// The exact transient the Discover tab's catalogs control commits.
+        fn add_catalog_transient(url: &str) -> Changes {
+            let mut changes = Changes::new();
+            the!("xyz.tonk.command.add-catalog/url")
+                .of("cmd:add-catalog".parse::<Entity>().unwrap())
+                .is(url.to_string())
+                .assert(&mut changes);
+            changes
+        }
+
+        /// The exact transient a catalog row's remove button commits.
+        fn remove_catalog_transient(catalog: &Entity) -> Changes {
+            let mut changes = Changes::new();
+            the!("xyz.tonk.command.remove-catalog/catalog")
+                .of("cmd:remove-catalog".parse::<Entity>().unwrap())
+                .is(catalog.clone())
+                .assert(&mut changes);
+            changes
+        }
+
+        async fn catalog_urls(state: &AppState) -> Vec<String> {
+            let tonk = state.read().await;
+            let mut urls: Vec<String> = crate::router::discover::catalogs(&tonk)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|row| row.url.0)
+                .collect();
+            urls.sort();
+            urls
+        }
+
+        /// The Discover tab's catalogs control, end to end: an admitted
+        /// URL becomes a `discover/catalog` row on the profile branch,
+        /// canonical and once however often it is added, and its row's
+        /// remove takes it away again.
+        #[dialog_common::test]
+        async fn it_adds_and_removes_a_discover_catalog_from_the_profile() {
+            let state = test_state().await;
+            assert!(catalog_urls(&state).await.is_empty());
+
+            let local = "http://localhost:8777/catalog.json";
+            for _ in 0..2 {
+                dispatch(
+                    &state,
+                    CommandOrigin::default(),
+                    add_catalog_transient(&format!(" {local}#ignored ")),
+                )
+                .await;
+            }
+            let remote = "https://example.com/catalog.json";
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                add_catalog_transient(remote),
+            )
+            .await;
+            assert_eq!(catalog_urls(&state).await, vec![local, remote]);
+
+            let row = tonk_schema::DiscoverCatalog::new(local);
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                remove_catalog_transient(&row.this),
+            )
+            .await;
+            assert_eq!(catalog_urls(&state).await, vec![remote]);
+        }
+
+        /// "A catalog must be https (or http on localhost)": a plain-http
+        /// catalog on another host, committed by the profile's own
+        /// control, is refused as `Insecure` and writes nothing. So are
+        /// the other shapes a typed URL can take.
+        #[dialog_common::test]
+        async fn it_refuses_an_insecure_catalog_and_writes_nothing() {
+            use crate::router::discover::{CatalogError, add_catalog};
+            use tonk_worker_api::CatalogRefusal;
+
+            let state = test_state().await;
+            for url in [
+                "http://example.com/catalog.json",
+                "http://localhost.example.com/catalog.json",
+                "javascript:alert(1)",
+                "not a url",
+            ] {
+                dispatch(&state, CommandOrigin::default(), add_catalog_transient(url)).await;
+                assert!(
+                    catalog_urls(&state).await.is_empty(),
+                    "`{url}` must not be listed"
+                );
+            }
+
+            let tonk = state.read().await;
+            let error = add_catalog(&tonk, "http://example.com/catalog.json")
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    CatalogError::Refused(CatalogRefusal::Insecure { scheme }) if scheme == "http"
+                ),
+                "got {error:?}"
+            );
+            drop(tonk);
+            assert!(catalog_urls(&state).await.is_empty());
+        }
+
+        /// "A space cannot add a catalog": the same transient committed
+        /// on a space's content branch lists nothing, and cannot remove
+        /// one the owner added either.
+        #[dialog_common::test]
+        async fn it_refuses_catalog_commands_from_a_space_branch() {
+            let state = test_state().await;
+            let space = CommandOrigin {
+                repo: "did:key:zSomeSpace".to_string(),
+                branch: "main".to_string(),
+                client: None,
+            };
+            let url = "https://example.com/catalog.json";
+            dispatch(&state, space.clone(), add_catalog_transient(url)).await;
+            assert!(catalog_urls(&state).await.is_empty());
+
+            dispatch(&state, CommandOrigin::default(), add_catalog_transient(url)).await;
+            let row = tonk_schema::DiscoverCatalog::new(url);
+            dispatch(&state, space, remove_catalog_transient(&row.this)).await;
+            assert_eq!(catalog_urls(&state).await, vec![url]);
+        }
+
+        /// Removing names a row; a command naming anything else is
+        /// `NotFound` and retracts nothing.
+        #[dialog_common::test]
+        async fn it_refuses_to_remove_a_catalog_that_is_not_listed() {
+            use crate::router::discover::{CatalogError, remove_catalog};
+
+            let state = test_state().await;
+            let url = "https://example.com/catalog.json";
+            dispatch(&state, CommandOrigin::default(), add_catalog_transient(url)).await;
+            let stranger = tonk_schema::DiscoverCatalog::new("https://other.example/c.json");
+            let tonk = state.read().await;
+            let error = remove_catalog(&tonk, &stranger.this).await.unwrap_err();
+            assert!(matches!(error, CatalogError::NotFound), "got {error:?}");
+            drop(tonk);
+            assert_eq!(catalog_urls(&state).await, vec![url]);
         }
     }
 }

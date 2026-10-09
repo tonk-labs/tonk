@@ -318,6 +318,46 @@ impl Command for EnableSync {
     type Output = ();
 }
 
+/// List another template catalog in the Hub's Discover tab.
+///
+/// Asserted transiently by the Discover tab's catalogs control, on the
+/// profile branch only: a catalog decides what code is installed into
+/// new spaces, so adding one is the account owner's explicit act and no
+/// space branch can ask for it. The handler admits only `https:` or
+/// loopback `http:` (`tonk_worker_api::admit_catalog_url`) before it
+/// records a [`crate::DiscoverCatalog`], and answers on a
+/// [`crate::CatalogReceipt`] keyed by `this`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AddCatalog {
+    /// The command entity (a fresh id per submit); the receipt's key.
+    pub this: Entity,
+    /// The catalog URL, as typed.
+    pub url: crate::domain::command::current::add_catalog::Url,
+}
+
+impl Command for AddCatalog {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Stop listing a catalog the account owner added.
+///
+/// Names the `discover/catalog` row itself, so it can only ever retract
+/// one; the deployment's default catalog has no row and cannot be
+/// removed.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RemoveCatalog {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The `discover/catalog` row to retract.
+    pub catalog: crate::domain::command::current::remove_catalog::Catalog,
+}
+
+impl Command for RemoveCatalog {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Rotate onto a fresh profile and open the account ceremony on it.
 ///
 /// Adding an account IS the regular signup, run for a profile that has

@@ -124,6 +124,7 @@ pub(crate) mod profiles;
 
 mod profile_name;
 
+mod discover;
 mod evaluate;
 mod library;
 mod seed;

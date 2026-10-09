@@ -458,11 +458,28 @@ fn it_leaves_network_bearing_space_bindings_unquoted() {
     );
 }
 
+/// A space's home is its own `/` route. Core names no `tonk/space` alias
+/// for the shell to mount through: its default `/` (the workspace shell)
+/// mounts the blank canvas directly, and a space that routes `/` itself
+/// outranks it.
 #[dialog_common::test]
-fn it_defaults_the_space_alias_to_blank_in_core() {
+fn it_mounts_the_blank_canvas_at_the_default_home_in_core() {
     assert!(
-        STANDARD_LIBRARY.contains("entity: tonk:blank"),
-        "core.yaml must seed the default tonk/space -> tonk:blank alias",
+        !STANDARD_LIBRARY.contains("tonk/space"),
+        "core.yaml must not name the removed tonk/space alias",
+    );
+    let shell = STANDARD_LIBRARY
+        .split("view!:\n  this: tonk:workspace/shell\n")
+        .nth(1)
+        .and_then(|tail| tail.split("# The directory page").next())
+        .expect("the workspace shell view");
+    assert!(
+        shell.contains("entity={replica} model=tonk:blank"),
+        "the library's `/` mounts the blank canvas",
+    );
+    assert!(
+        STANDARD_LIBRARY.contains("this: id:space/home-route"),
+        "core documents the home route recipe, pinned to id:space/home-route",
     );
 }
 
@@ -1129,7 +1146,7 @@ fn it_keeps_ready_agent_invites_to_one_primary_action() {
     let ready = library
         .split("<div data-agent-mode=\"scoped\" hidden>")
         .nth(1)
-        .and_then(|tail| tail.split("</tonk-agent-prompt>").next())
+        .and_then(|tail| tail.split("</agent-invite-prompt>").next())
         .expect("the ready agent prompt");
     assert!(ready.contains("class=\"agent-prompt__copy\""));
     assert!(
@@ -1678,6 +1695,14 @@ fn every_handled_command_matches_attributes_its_declaration_carries() {
             "tonk/load",
             tonk_schema::command::Load::trigger_attributes(),
         ),
+        (
+            "discover/add-catalog",
+            tonk_schema::command::AddCatalog::trigger_attributes(),
+        ),
+        (
+            "discover/remove-catalog",
+            tonk_schema::command::RemoveCatalog::trigger_attributes(),
+        ),
     ];
 
     for (name, required) in handled {
@@ -1897,4 +1922,64 @@ fn it_routes_a_seed_link_to_the_seed_page_with_the_url_intact() {
         matched.params.get("url"),
         Some("https://tonk.network/library/notebook.yaml")
     );
+}
+
+/// Discover lists the deployment's default catalog and then the owner's
+/// own `discover/catalog` rows, which it reads off a nested display.
+///
+/// The default comes from `/.well-known/tonk/discover`, with the
+/// `catalog-url` attribute kept as the fallback an older server needs.
+/// The owner's rows render with their URL (what the element fetches) and
+/// a remove that names the row. Adding one is the catalogs form's
+/// command and nothing else's: no route, link or query string asserts
+/// `discover/add-catalog`, because a catalog decides what code new
+/// spaces are seeded with.
+#[dialog_common::test]
+fn it_lists_the_owners_catalogs_beside_the_deployment_default() {
+    assert!(PROFILE_LIBRARY.contains("concept!: &discover/catalog\n  this: tonk:discover/catalog"));
+    assert!(PROFILE_LIBRARY.contains("the: xyz.tonk.discover-catalog/url"));
+
+    let discover = PROFILE_LIBRARY
+        .split("element!: &hub-discover\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\nelement!: &").next())
+        .expect("the profile library defines <hub-discover>");
+    assert!(
+        discover.contains("fetch('/.well-known/tonk/discover'"),
+        "<hub-discover> reads the deployment's default catalog"
+    );
+    assert!(
+        discover.contains("self.getAttribute('catalog-url')"),
+        "the attribute stays the fallback for a server without the endpoint"
+    );
+    assert!(
+        discover.contains("[data-discover-catalog][data-url]"),
+        "<hub-discover> fetches the owner's rows as the display renders them"
+    );
+
+    let hub = PROFILE_LIBRARY
+        .split("<hub-discover data-spaces-view")
+        .nth(1)
+        .and_then(|rest| rest.split("</hub-discover>").next())
+        .expect("the hub view mounts <hub-discover>");
+    assert!(hub.contains(r#"catalog-url="https://goblinoats.github.io/honky-tonks/catalog.json""#));
+    assert!(hub.contains(r#"<tonk-display model="discover/catalog" view="discover">"#));
+    assert!(hub.contains("<form class=\"catalog-add\" data-catalog-add>"));
+
+    let row = PROFILE_LIBRARY
+        .split("  this: discover/catalog\n  show:\n")
+        .nth(1)
+        .expect("discover/catalog has a row view");
+    assert!(row.contains("data-url={url}"));
+    assert!(row.contains("data-catalog={this}"));
+    assert!(row.contains("on:remove-catalog=discover/remove-catalog"));
+
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("xyz.tonk.command.add-catalog/url")
+            .count(),
+        2,
+        "only the command's declaration and the catalogs form name add-catalog"
+    );
+    assert!(!STANDARD_LIBRARY.contains("xyz.tonk.command.add-catalog"));
 }

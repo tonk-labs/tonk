@@ -4736,9 +4736,11 @@ async fn installed_seed(
 ///
 /// The library is asserted as analyzed on its own (see
 /// [`library_claims`]), and commit-time induction runs over it: the routes
-/// and the space home it ships as commands are written only where the space
-/// has not written its own, in the install commit with the rest. [`uninstall_claims`] is what the uninstall reverts; the space's own
-/// facts are never among them.
+/// it ships as commands are written only where the space has not written
+/// its own, in the install commit with the rest. [`uninstall_claims`] is what
+/// the uninstall reverts; the space's own facts are never among them. A space
+/// whose home was the `tonk/space` alias moves onto a `/` route of its own in
+/// the uninstall commit ([`migrate_space_home`]), ahead of the install.
 async fn install_seed(
     tonk: &TonkState,
     key: &str,
@@ -4773,13 +4775,25 @@ async fn install_seed(
     }
     let mut attempt = 0;
     loop {
-        let uninstall = uninstall_claims(tonk, session, &current, &subject).await?;
+        let mut uninstall = uninstall_claims(tonk, session, &current, &subject).await?;
+        let home = migrate_space_home(tonk, session, &uninstall).await?;
+        uninstall.extend(home.retract);
         let prior = current.seed.to_string();
         let source = current.source.clone();
         let record = |installed: &dialog_artifacts::history::Version| {
             installed_seed_facts(&shipped, &source, &prior, installed)
         };
-        match stage_reinstall(tonk, session, &uninstall, &install, &record, &[]).await {
+        match stage_reinstall(
+            tonk,
+            session,
+            &uninstall,
+            &home.assert,
+            &install,
+            &record,
+            &[],
+        )
+        .await
+        {
             Ok(()) => {
                 log!(
                     "seed upgrade: '{key}' moves from {prior} to {shipped}: reverted {}, installed {}",
@@ -4846,29 +4860,34 @@ pub(super) async fn install_fresh_from(
         installed_seed_facts(&seed, source, SEED_NONE, installed)
     };
     let mut attempt = 0;
-    while let Err(error) = stage_reinstall(tonk, &session, &[], &install, &record, own).await {
+    while let Err(error) = stage_reinstall(tonk, &session, &[], &[], &install, &record, own).await {
         retry_after_race(tonk, key, &session, &mut attempt, error).await?;
     }
     session.poll(&tonk.operator).await;
     Ok(())
 }
 
-/// Stage `uninstall`, then `install`, then the record `record` writes for the
-/// install's version together with `own`, and publish the three at once.
+/// Stage `uninstall` with `migrated`, then `install`, then the record
+/// `record` writes for the install's version together with `own`, and
+/// publish the three at once.
 ///
-/// The uninstall commit is skipped when there is nothing to revert, as on a
-/// space's first install.
+/// `migrated` is what the space's own content becomes before the library
+/// installs ([`migrate_space_home`]): it rides the uninstall commit, which no
+/// upgrade reverts, and is in place when the install's rules decide which
+/// defaults the space has not written itself. The uninstall commit is skipped
+/// when there is nothing to revert or migrate, as on a space's first install.
 async fn stage_reinstall(
     tonk: &TonkState,
     session: &crate::reactor::BranchSession,
     uninstall: &[super::claim::RawClaim],
+    migrated: &[super::claim::RawClaim],
     install: &LibraryClaims,
     record: super::evaluate::SeedRecord<'_>,
     own: &[super::claim::RawClaim],
 ) -> Result<(), dialog_repository::CommitError> {
     let operator = &tonk.operator;
     let mut first = session.handle().transaction();
-    let installed = if uninstall.is_empty() {
+    let installed = if uninstall.is_empty() && migrated.is_empty() {
         with_library(first, install)
             .commit()
             .perform(operator)
@@ -4876,6 +4895,9 @@ async fn stage_reinstall(
     } else {
         for claim in uninstall {
             first = first.retract(claim.clone());
+        }
+        for claim in migrated {
+            first = first.assert(claim.clone());
         }
         let reverted = first.commit().perform(operator).await?;
         with_library(reverted.transaction(), install)
@@ -5063,6 +5085,129 @@ async fn declared_by(seed: &InstalledSeed) -> Vec<super::claim::RawClaim> {
             Vec::new()
         }
     }
+}
+
+/// The name the space route mounted a space's content through before a
+/// space's home was its own `/` route. Libraries pointed it at the blank
+/// canvas, and a space re-pointed it at its own home model.
+const SPACE_HOME_ALIAS: &str = "id:tonk/space";
+
+/// What the library's `seed/name` wrote the alias at when the space never
+/// chose a home: nothing to carry over.
+const BLANK_CANVAS: &str = "tonk:blank";
+
+/// The attribute a published name points at its referent with.
+const NAME_REFERENT: &str = "db.name/referent";
+
+/// What moving a space off the [`SPACE_HOME_ALIAS`] writes: see
+/// [`migrate_space_home`].
+#[derive(Default)]
+struct HomeMigration {
+    /// The alias bindings to withdraw, beside the uninstall.
+    retract: Vec<super::claim::RawClaim>,
+    /// The home route recipe, when the space chose a home through the alias.
+    assert: Vec<super::claim::RawClaim>,
+}
+
+/// Move a space whose home was the [`SPACE_HOME_ALIAS`] onto a `/` route of
+/// its own, as the upgrade that installs a library without the alias runs.
+///
+/// `uninstall` is what the upgrade reverts, so an alias binding among it is
+/// the library's default rather than the space's choice. When the space
+/// pointed the alias at a model `X` other than the blank canvas, and has
+/// neither a route pinned at [`super::seed::HOME_ROUTE`] nor any `/` route of
+/// its own (one the uninstall leaves), the space gets the canonical home
+/// recipe ([`super::seed::home_route_recipe`]) whose view renders exactly
+/// what the shell rendered through the alias:
+/// `<tonk-display with="{branch}@{repo}" entity={replica} model=X />`.
+/// Every live alias binding is withdrawn either way, so the next install
+/// finds nothing to migrate: the migration is idempotent, and a space with
+/// no alias is left alone.
+async fn migrate_space_home(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+    uninstall: &[super::claim::RawClaim],
+) -> Result<HomeMigration, RepositoryError> {
+    use dialog_artifacts::Value;
+
+    let reverted: std::collections::HashSet<_> = uninstall.iter().map(claim_identity).collect();
+    let bindings: Vec<super::claim::RawClaim> = live_claims(tonk, session, &[SPACE_HOME_ALIAS])
+        .await?
+        .into_iter()
+        .filter(|claim| claim.the.as_str() == NAME_REFERENT)
+        .filter(|claim| !reverted.contains(&claim_identity(claim)))
+        .collect();
+    let chosen = bindings.iter().find_map(|claim| match &claim.is {
+        Value::Entity(model) if model.to_string() != BLANK_CANVAS => Some(model.to_string()),
+        _ => None,
+    });
+    let mut migration = HomeMigration {
+        retract: bindings,
+        assert: Vec::new(),
+    };
+    let Some(model) = chosen else {
+        return Ok(migration);
+    };
+    if routes_its_own_home(tonk, session, &reverted).await? {
+        log!("home migration: the space routes `/` itself, leaving its route alone");
+        return Ok(migration);
+    }
+    let recipe = super::seed::home_route_recipe(&format!(
+        "<tonk-display with=\"{{branch}}@{{repo}}\" entity={{replica}} model={model} />"
+    ));
+    let core = fetch_library_document(STANDARD_LIBRARY_URL)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}")))?;
+    migration.assert = library_claims_after(Some(&core), &recipe, "space home route")
+        .await?
+        .durable;
+    log!("home migration: `/` now renders '{model}', the alias is withdrawn");
+    Ok(migration)
+}
+
+/// Whether the space has a home route of its own once `reverted` is undone:
+/// anything pinned at [`super::seed::HOME_ROUTE`], or a `/` route that is
+/// neither the library's (among `reverted`) nor one a library pinned
+/// ([`LEGACY_ROUTES`]).
+async fn routes_its_own_home(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+    reverted: &std::collections::HashSet<(String, String, String)>,
+) -> Result<bool, RepositoryError> {
+    use dialog_artifacts::Value;
+
+    let pinned = live_claims(tonk, session, &[super::seed::HOME_ROUTE]).await?;
+    if pinned
+        .iter()
+        .any(|claim| !reverted.contains(&claim_identity(claim)))
+    {
+        return Ok(true);
+    }
+    let routes: Vec<tonk_schema::Route> = session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::Route> {
+            this: Term::var("this"),
+            path: Term::var("path"),
+            concept: Term::var("concept"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("read the route table: {e}")))?;
+    let path: dialog_artifacts::Attribute = "xyz.tonk.route/path"
+        .parse()
+        .map_err(|e| RepositoryError::Internal(format!("route path attribute: {e}")))?;
+    Ok(routes.into_iter().any(|route| {
+        route.path.0 == "/"
+            && !LEGACY_ROUTES.contains(&route.this.to_string().as_str())
+            && !reverted.contains(&claim_identity(&super::claim::RawClaim {
+                the: path.clone(),
+                of: route.this.clone(),
+                is: Value::String("/".to_owned()),
+                unique: false,
+            }))
+    }))
 }
 
 /// The routes the space library pinned to fixed entities before it shipped
@@ -14162,6 +14307,7 @@ mod connection_invite_overlay_tests {
 /// here against the exact `core.yaml` production shipped before the release.
 #[cfg(test)]
 mod seed_upgrade_tests {
+    use super::super::seed::HOME_ROUTE;
     use super::*;
     use tonk_schema::meta::Name;
 
@@ -14171,9 +14317,9 @@ mod seed_upgrade_tests {
     /// The `core.yaml` this worker ships.
     const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
 
-    /// An app built into a space the way `tonk` builds one: its model, a
-    /// home concept and view over it, and the `name!:` that re-points
-    /// `id:tonk/space` at that home (`tonk-cli`'s `build_home_recipe`).
+    /// An app built into a space the way `tonk` built one before a space's
+    /// home was its own `/` route: its model, a home concept and view over
+    /// it, and the `name!:` that re-pointed `id:tonk/space` at that home.
     const AGENT_APP: &str = r#"
 concept!: &plot
   this: garden:plot
@@ -14534,6 +14680,25 @@ name!:
             .map(|route| route.concept.0.to_string())
     }
 
+    /// The markup the space's home-route views render, one entry per view.
+    async fn home_markup(tonk: &TonkState, key: &str) -> Vec<String> {
+        use dialog_artifacts::Value;
+
+        let session = content(tonk, key).await;
+        let mut views = Vec::new();
+        for claim in live_claims(tonk, &session, &["space:home-route"])
+            .await
+            .expect("the home route's claims read")
+        {
+            if let Value::String(text) = claim.is
+                && text.contains("<tonk-display")
+            {
+                views.push(text.trim().to_owned());
+            }
+        }
+        views
+    }
+
     /// A concept `probe:thing` declaring `fields`, as a library would.
     fn probe(fields: &[&str]) -> String {
         let mut text = String::from(
@@ -14601,7 +14766,11 @@ name!:
         assert!(install(&tonk, &key, &format!("{CORE}\n# the next release\n")).await);
 
         assert_eq!(routes_at(&tonk, &key, "/").await, ["tonk:workspace/shell"]);
-        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["tonk:blank"]);
+        assert_eq!(
+            referents(&tonk, &key, "tonk/space").await,
+            Vec::<String>::new(),
+            "the library names no home alias"
+        );
         for attribute in [
             "xyz.tonk.seed-route/path",
             "xyz.tonk.seed-route/concept",
@@ -14678,9 +14847,11 @@ name!:
 
     /// B-09: a space an agent built is upgraded from production's library to
     /// the shipped one, and must still open on the agent's home, on that
-    /// upgrade and the ones after it.
+    /// upgrade and the ones after it. Its home was the `tonk/space` alias the
+    /// shell mounted; the upgrade moves it onto a `/` route of the space's
+    /// own, rendering what the alias rendered, and withdraws the alias.
     #[dialog_common::test]
-    async fn upgrading_keeps_the_home_an_agent_built() {
+    async fn upgrading_moves_the_home_an_agent_built_onto_its_own_route() {
         let tonk = test_state().await;
         let (key, _) = legacy_space(&tonk, PRODUCTION_CORE, "Garden").await;
         author(&tonk, &key, AGENT_APP).await;
@@ -14691,33 +14862,165 @@ name!:
             "a space on production's library is behind the shipped one"
         );
         assert_eq!(
+            resolved(&tonk, &key, "/").await.as_deref(),
+            Some("space:home-route"),
+            "the upgrade must not open an authored home on the blank canvas"
+        );
+        assert_eq!(routes_at(&tonk, &key, "/").await, ["space:home-route"]);
+        assert_eq!(
             referents(&tonk, &key, "tonk/space").await,
-            ["space:home"],
-            "the upgrade must not point an authored home back at the blank canvas"
+            Vec::<String>::new(),
+            "the alias is withdrawn"
+        );
+        assert_eq!(
+            home_markup(&tonk, &key).await,
+            [r#"<tonk-display with="{branch}@{repo}" entity={replica} model=space:home />"#],
+            "the home renders what the shell rendered through the alias"
+        );
+        assert_eq!(
+            referents(&tonk, &key, "space-home").await,
+            ["space:home-route"],
+            "the `space-home` name follows the home to its route concept"
+        );
+        assert!(
+            !installed_claims(&tonk, &key)
+                .await
+                .iter()
+                .any(|(_, of, _)| of == HOME_ROUTE || of == "space:home-route"),
+            "the home is the space's, not the install's, so no upgrade reverts it"
         );
 
         assert!(install(&tonk, &key, &format!("{CORE}\n# the next release\n")).await);
-        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["space:home"]);
+        assert_eq!(
+            resolved(&tonk, &key, "/").await.as_deref(),
+            Some("space:home-route")
+        );
     }
 
-    /// A space that never chose a home still gets the blank canvas from the
-    /// default, before an upgrade and after.
+    /// The migration runs once: a second upgrade finds no alias, writes no
+    /// second `/` route, and leaves the home the first one wrote as it was.
+    #[dialog_common::test]
+    async fn moving_the_home_onto_its_route_is_idempotent() {
+        let tonk = test_state().await;
+        let (key, _) = legacy_space(&tonk, PRODUCTION_CORE, "Garden").await;
+        author(&tonk, &key, AGENT_APP).await;
+        assert!(install(&tonk, &key, CORE).await);
+        let home = state_of(&tonk, &key, &[HOME_ROUTE, "space:home-route"]).await;
+
+        for release in ["# the next release", "# the release after"] {
+            assert!(install(&tonk, &key, &format!("{CORE}\n{release}\n")).await);
+            assert_eq!(
+                routes_at(&tonk, &key, "/").await,
+                ["space:home-route"],
+                "one `/` route, the space's"
+            );
+            assert_eq!(home_markup(&tonk, &key).await.len(), 1);
+            assert_eq!(
+                state_of(&tonk, &key, &[HOME_ROUTE, "space:home-route"]).await,
+                home,
+                "the home the first upgrade wrote is left as it was"
+            );
+            assert!(referents(&tonk, &key, "tonk/space").await.is_empty());
+        }
+    }
+
+    /// A space that already routes `/` at the pinned home route keeps it: the
+    /// alias it still carries is withdrawn, and nothing is written over the
+    /// route it chose.
+    #[dialog_common::test]
+    async fn a_home_route_the_space_pinned_is_not_overwritten() {
+        let own = format!(
+            "{AGENT_APP}\nroute!:\n  this: {HOME_ROUTE}\n  path: \"/\"\n  concept: garden:plot\n"
+        );
+        let tonk = test_state().await;
+        let (key, _) = legacy_space(&tonk, PRODUCTION_CORE, "Garden").await;
+        author(&tonk, &key, &own).await;
+        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["space:home"]);
+
+        assert!(install(&tonk, &key, CORE).await);
+
+        assert_eq!(routes_at(&tonk, &key, "/").await, ["garden:plot"]);
+        assert_eq!(
+            resolved(&tonk, &key, "/").await.as_deref(),
+            Some("garden:plot")
+        );
+        assert!(
+            home_markup(&tonk, &key).await.is_empty(),
+            "no home recipe is written beside the route the space chose"
+        );
+        assert!(referents(&tonk, &key, "tonk/space").await.is_empty());
+    }
+
+    /// A home routed AFTER the library wrote its own `/` default wins at
+    /// once. That is how every home arrives on a space created today: the
+    /// library is seeded first, then a template's route or `tonk space
+    /// home` adds the space's. The two routes tie on specificity, and the
+    /// library's default must lose that tie however the entity URIs sort
+    /// (the library's derived `did:key:` sorts before `id:space/home-route`).
+    #[dialog_common::test]
+    async fn a_home_routed_after_the_library_default_wins_the_root() {
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, "Garden").await;
+        assert_eq!(routes_at(&tonk, &key, "/").await, ["tonk:workspace/shell"]);
+
+        author(
+            &tonk,
+            &key,
+            &super::super::seed::home_route_recipe(
+                "<tonk-display with=\"{branch}@{repo}\" model=tonk:blank />",
+            ),
+        )
+        .await;
+
+        let mut both = routes_at(&tonk, &key, "/").await;
+        both.sort();
+        assert_eq!(both, ["space:home-route", "tonk:workspace/shell"]);
+        assert_eq!(
+            resolved(&tonk, &key, "/").await.as_deref(),
+            Some("space:home-route"),
+            "the space's home must win over the library's default"
+        );
+    }
+
+    /// A space that never chose a home opens on the library's `/`, the
+    /// workspace shell over the blank canvas, before an upgrade and after.
+    /// A space whose alias was still at the blank canvas gets no home route
+    /// of its own: the alias goes, and the library's default stands.
     #[dialog_common::test]
     async fn a_space_without_a_home_of_its_own_opens_on_the_default() {
         let tonk = test_state().await;
         let (new, _) = new_space(&tonk, CORE, "Fresh").await;
         let (legacy, _) = legacy_space(&tonk, PRODUCTION_CORE, "Legacy").await;
-        assert_eq!(referents(&tonk, &new, "tonk/space").await, ["tonk:blank"]);
-
-        let next = format!("{CORE}\n# the next release\n");
-        assert!(install(&tonk, &new, &next).await);
-        assert!(install(&tonk, &legacy, CORE).await);
-
-        assert_eq!(referents(&tonk, &new, "tonk/space").await, ["tonk:blank"]);
+        let (chose_blank, _) = legacy_space(&tonk, PRODUCTION_CORE, "Chose blank").await;
+        author(
+            &tonk,
+            &chose_blank,
+            "name!:\n  this: id:tonk/space\n  entity: tonk:blank\n",
+        )
+        .await;
+        assert!(referents(&tonk, &new, "tonk/space").await.is_empty());
         assert_eq!(
             referents(&tonk, &legacy, "tonk/space").await,
             ["tonk:blank"]
         );
+
+        let next = format!("{CORE}\n# the next release\n");
+        assert!(install(&tonk, &new, &next).await);
+        assert!(install(&tonk, &legacy, CORE).await);
+        assert!(install(&tonk, &chose_blank, CORE).await);
+
+        for key in [&new, &legacy, &chose_blank] {
+            assert!(referents(&tonk, key, "tonk/space").await.is_empty());
+            assert_eq!(routes_at(&tonk, key, "/").await, ["tonk:workspace/shell"]);
+            assert_eq!(
+                resolved(&tonk, key, "/").await.as_deref(),
+                Some("tonk:workspace/shell")
+            );
+            assert!(
+                state_of(&tonk, key, &[HOME_ROUTE]).await.is_empty(),
+                "no home route is written for a space that never chose a home"
+            );
+        }
     }
 
     /// A space created before installs were complete carried its name in its
@@ -14825,7 +15128,10 @@ name!:
 
         assert!(declares(&tonk, &key, "probe:thing", "y").await);
         assert!(!declares(&tonk, &key, "probe:thing", "z").await);
-        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["space:home"]);
+        assert_eq!(
+            resolved(&tonk, &key, "/").await.as_deref(),
+            Some("space:home-route")
+        );
         assert_eq!(space_names(&tonk, &key, &subject).await, ["Garden"]);
     }
 
@@ -14959,7 +15265,11 @@ name!:
         assert_eq!(
             routes_at(&tonk, &key, "/").await,
             ["space:home"],
-            "the library writes no `/` of its own beside the app's"
+            "neither the library nor the home migration writes a `/` beside the app's"
+        );
+        assert!(
+            referents(&tonk, &key, "tonk/space").await.is_empty(),
+            "the alias is withdrawn all the same"
         );
 
         assert!(install(&tonk, &key, &format!("{CORE}\n# the next release\n")).await);

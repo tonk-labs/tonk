@@ -517,52 +517,38 @@ pub async fn concept_add(
     ))
 }
 
-/// Resolve a published bookmark name (`name!: {this: id:<name>, entity:
-/// …}`) to the entity it currently points at, or `None` if the name
-/// was never published. Pure query — nothing commits. Always re-reads
-/// the branch rather than trusting an assertion's own echoed matches,
-/// because a `name!:` assertion can print a stale pre-commit echo.
-async fn resolve_name(site: &TonkSite, name: &str) -> Result<Option<String>, DataOpError> {
-    let doc = format!("name:\n  this: id:{name}\n  entity: ?e\n");
+/// The concept the core library's default `/` route renders: the
+/// workspace shell over `tonk:blank`. A space whose every `/` route
+/// still points here has not set a home.
+const LIBRARY_ROOT_CONCEPT: &str = "tonk:workspace/shell";
+
+/// True when the space has not routed its own home: no `/` route
+/// renders anything but the library's default shell. That is the
+/// case on a fresh space, where the only `/` route is the one core
+/// seeds, and the case where `tonk view add`'s auto-surface is safe to
+/// route `/` without clobbering a home a human (or a template) set —
+/// whether through the pinned `id:space/home-route` or a `/` route of
+/// its own.
+async fn home_is_unset(site: &TonkSite) -> Result<bool, DataOpError> {
+    let doc = "route:\n  path: \"/\"\n  concept: ?concept\n".to_string();
     let outcome = eval::run_against_site(site, Source::Inline(doc), Options::default()).await?;
     Ok(outcome
         .response
         .matches_after
         .iter()
-        .find(|block| block.label == "name")
-        .and_then(|block| block.results.first())
-        .and_then(|row| row.fields.get("entity"))
-        .and_then(|value| value.as_str())
-        .map(str::to_owned))
-}
-
-/// True when the `tonk/space` alias is either unpublished or still
-/// pointing at the fresh-repo default (`tonk:blank`) — the two cases
-/// where `tonk view add`'s auto-surface is safe to repoint the home
-/// without clobbering something a human explicitly set.
-async fn home_is_unset(site: &TonkSite) -> Result<bool, DataOpError> {
-    let Some(space) = resolve_name(site, "tonk/space").await? else {
-        return Ok(true);
-    };
-    // The alias value renders as whatever shape the claim stored: on a
-    // fresh repo the core.yaml seed stores the `tonk:blank` symbol
-    // itself, so match the literal first; a claim that stored the
-    // resolved entity instead is covered by comparing against
-    // `tonk:blank`'s own name-table resolution.
-    if space == "tonk:blank" {
-        return Ok(true);
-    }
-    let blank = resolve_name(site, "tonk:blank").await?;
-    Ok(blank.as_deref() == Some(space.as_str()))
+        .filter(|block| block.label == "route")
+        .flat_map(|block| block.results.iter())
+        .filter_map(|row| row.fields.get("concept").and_then(|value| value.as_str()))
+        .all(|concept| concept == LIBRARY_ROOT_CONCEPT))
 }
 
 /// Put one or more concepts' directories on the space home: validate
 /// every model exists first ([`require_concept`], so a typo'd name
 /// fails before anything is asserted), then author and commit the
-/// verified origin-keyed root-concept recipe
-/// ([`build_home_recipe`]) that re-points the `tonk/space` alias.
-/// Cardinality-one — safe to re-run; each call replaces the home
-/// wholesale.
+/// home-route recipe ([`build_home_recipe`]): the space's own `/`
+/// route, pinned to `id:space/home-route`. Pinned, so it is safe to
+/// re-run; each call supersedes the previous home wholesale rather
+/// than adding a second `/` route.
 pub async fn home(
     site: &TonkSite,
     models: &[String],
@@ -588,9 +574,9 @@ pub async fn home(
 /// Author a declarative view for `concept`: a `view!:` writing
 /// `template` under the kind's facet of the model's `show`
 /// dictionary (cardinality one per entry, so re-authoring the same
-/// facet supersedes rather than duplicates). When the space home is
-/// unset (a fresh repo still showing `tonk:blank`, or nothing
-/// published at all), the concept is auto-surfaced onto the home via
+/// facet supersedes rather than duplicates). When the space has not
+/// routed its home (`/` still renders the library's default shell —
+/// see [`home_is_unset`]), the concept is auto-surfaced onto the home via
 /// [`home`] so an agent's first view build actually lands somewhere
 /// visible; an explicitly-set home is left alone.
 pub async fn view_add(

@@ -545,6 +545,25 @@ view!:
       .template-photo-dialog > button { display:block; margin-left:auto; min-height:44px; padding:8px 12px; }
       .template-photo-dialog > img { display:block; width:100%; height:auto; }
       .template-detail-image { display:block; width:100%; height:auto; margin-bottom:20px; }
+      .discover-errors:empty { display:none; }
+      .discover-errors { margin-bottom:12px; }
+      .discover-catalogs { margin-top:30px; padding-top:10px; border-top:1px solid var(--sep); }
+      .discover-catalogs > summary { display:inline-flex; align-items:center; min-height:44px;
+        cursor:pointer; font:500 13px/1 var(--cond); }
+      .catalog-list { display:flex; flex-direction:column; gap:7px; margin:8px 0 19px; }
+      .catalog-list tonk-display { display:contents; }
+      .catalog-row { display:flex; align-items:center; gap:12px; min-height:44px; padding:0 0 0 12px;
+        background:var(--card); box-shadow:0 0 0 1px var(--ring); font:12px/1.4 var(--cond); }
+      .catalog-url { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+        text-transform:none; }
+      .catalog-row > small { padding:0 12px; font:inherit; color:var(--soft); }
+      .catalog-remove { align-self:stretch; min-width:44px; padding:0 12px; font:500 12px var(--cond); }
+      .catalog-remove:hover { background:var(--wash); }
+      .catalog-add { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end;
+        gap:7px 12px; margin-bottom:12px; }
+      .catalog-add .m-go { height:48px; align-items:center; justify-content:center; min-width:96px; padding:0 18px; }
+      .catalog-add .m-go:disabled { opacity:.5; cursor:default; }
+      .catalog-add .space-create-error { grid-column:1 / -1; }
       .template-card [data-copying-label], .template-card[busy] [data-copy-label] { display:none; }
       .template-card[busy] [data-copying-label] { display:inline; }
       @media (max-width:900px) { .template-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
@@ -2393,11 +2412,117 @@ element!: &hub-collection
     disconnected: |
       (self) => self._observer?.disconnect()
 
+# A template catalog the account owner added to the Hub's Discover tab.
+#
+# Discover lists the deployment's default catalog (served at
+# `/.well-known/tonk/discover`, so each deployment chooses its own) and
+# then every row of this concept. A catalog decides what code is
+# installed into the spaces made from it, so a row is only ever written
+# by `discover/add-catalog`, whose handler admits nothing but `https:`
+# (or `http:` on a loopback host for development) — and only from the
+# Hub, on the profile branch. There is deliberately no link or query
+# string that adds one.
+#
+# On the profile's active branch, so the list follows the account to
+# every device it syncs to. The entity is derived from the URL: adding
+# the same catalog twice is one row.
+concept!: &discover/catalog
+  this: tonk:discover/catalog
+  description: A template catalog the account owner added to the Hub's Discover tab.
+  with:
+    url:
+      description: >
+        The catalog's canonical URL, a `catalog.json` in the Honky Tonks
+        shape (`schemaVersion: 1`, `templates`). The fragment is dropped,
+        since a template reference is this URL with its slug as the
+        fragment.
+      the: xyz.tonk.discover-catalog/url
+      cardinality: one
+      as: text
+
+# How one catalog command came out, keyed by the command's own entity so
+# the control that asked waits for its own answer. On the profile
+# overlay: a refusal is this session's business, not the account's.
+concept!: &discover/catalog-receipt
+  this: tonk:discover/catalog-receipt
+  description: The outcome of one discover/add-catalog or discover/remove-catalog.
+  with:
+    status:
+      description: '`added`, `removed`, or `refused`.'
+      the: xyz.tonk.discover-catalog-receipt/status
+      cardinality: one
+      as: text
+    detail:
+      description: The catalog URL that was listed or removed, or why the command was refused.
+      the: xyz.tonk.discover-catalog-receipt/detail
+      cardinality: one
+      as: text
+
+# List another catalog. Asserted by `<hub-discover>`'s catalogs form,
+# which waits on the receipt so it can show a refusal in place. The
+# worker's provider validates the URL itself; the form's own check only
+# saves a round trip.
+command!: &discover/add-catalog
+  this: tonk:discover/add-catalog
+  description: List another template catalog in the Hub's Discover tab.
+  with:
+    url:
+      description: The catalog URL as typed; https, or http on localhost.
+      the: xyz.tonk.command.add-catalog/url
+      as: text
+
+# Stop listing one. The row's remove button names the row itself, so the
+# command can only ever retract a catalog the owner added; the
+# deployment's default has no row and no button.
+event!: &on/remove-catalog
+  type: "click"
+  prevent-default: true
+  where:
+    catalog: ".currentTarget.dataset.catalog"
+
+command!: &discover/remove-catalog
+  this: tonk:discover/remove-catalog
+  description: Stop listing a template catalog the account owner added.
+  with:
+    catalog:
+      description: The `discover/catalog` row to retract, read off the remove button.
+      the: xyz.tonk.command.remove-catalog/catalog
+      as: entity
+
+# A catalog row as the Discover tab's catalogs control lists it. The
+# `data-url` is also what `<hub-discover>` reads to know which catalogs
+# to fetch: the rendered rows ARE its list.
+view!:
+  this: discover/catalog
+  show:
+    discover: |
+      <div class="catalog-row" data-discover-catalog data-of={this} data-url={url}>
+        <span class="catalog-url">{url}</span>
+        <button type="button" class="catalog-remove" data-catalog={this}
+          on:remove-catalog=discover/remove-catalog>remove</button>
+      </div>
+
+# The Discover tab: the deployment's default catalog plus the owner's
+# `discover/catalog` rows, fetched in parallel. A catalog that fails says
+# so on its own line and the rest still list; the same URL twice is
+# fetched once. Every card names its catalog, and every id in a card is
+# prefixed by its catalog's position, so two catalogs publishing the same
+# slug cannot collide.
 element!: &hub-discover
-  description: Switches between the user's spaces and the remote community template collection.
+  description: Switches between the user's spaces and the template catalogs, and edits which catalogs are listed.
   method:
+    escape: |
+      (self, text) => String(text ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      })[char])
+    # A catalog is named by its own `name` when it gives one, else by host.
+    label: |
+      (self, catalog, catalogUrl) => {
+        const name = typeof catalog?.name === 'string' ? catalog.name.trim() : '';
+        return name ? name.slice(0, 80) : new URL(catalogUrl).host;
+      }
     card: |
-      (self, template, catalogUrl) => {
+      (self, template, catalogUrl, source, index = 0) => {
         const escape = text => String(text ?? '').replace(/[&<>"']/g, char => ({
           '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
         })[char]);
@@ -2405,14 +2530,16 @@ element!: &hub-discover
         if (!/^[a-z0-9-]+$/.test(slug) || typeof summary !== 'string') throw new Error('Invalid template');
         const preview = template.images?.[0];
         const imageUrl = new URL(preview.url, catalogUrl);
-        if (imageUrl.protocol !== 'https:' && !(imageUrl.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(imageUrl.hostname))) throw new Error('Invalid preview URL');
+        if (imageUrl.protocol !== 'https:' && !(imageUrl.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(imageUrl.hostname))) throw new Error('Invalid preview URL');
         const image = escape(imageUrl.href);
         const reference = new URL(catalogUrl);
         reference.hash = slug;
-        return `<space-create class="template-card srow-wrap" data-template="${slug}">
+        const from = escape(source ?? reference.host);
+        const id = `copy-template-${Number(index) || 0}-${slug}`;
+        return `<space-create class="template-card srow-wrap" data-template="${slug}" data-catalog="${Number(index) || 0}">
           <button type="button" class="template-preview" data-template-details-open aria-label="Preview ${escape(name)}">
             <img src="${image}" alt="${escape(preview.alt)}" loading="lazy">
-            <span class="template-caption"><strong>${escape(name)}</strong><span class="template-summary">${escape(summary)}</span><span class="template-footer"><small>by ${escape(author.name)}</small><span class="template-open">open <span aria-hidden="true">↗</span></span></span></span>
+            <span class="template-caption"><strong>${escape(name)}</strong><span class="template-summary">${escape(summary)}</span><span class="template-footer"><small>by ${escape(author.name)} · <span data-template-source>${from}</span></small><span class="template-open">open <span aria-hidden="true">↗</span></span></span></span>
           </button>
           <tonk-dialog appearance="hub" data-template-details heading="${escape(name)}">
             <div class="space-create-form">
@@ -2421,7 +2548,7 @@ element!: &hub-discover
                 <span>expand photo ↗</span>
               </button>
               <p class="space-create-help">${escape(description)}</p>
-              <p class="space-create-help">By ${escape(author.name)} · ${escape(license)} · from Honky Tonks. This template includes code that runs in your new space. Your copy won't change the original.</p>
+              <p class="space-create-help">By ${escape(author.name)} · ${escape(license)} · from ${from}. This template includes code that runs in your new space. Your copy won't change the original.</p>
 
             </div>
             <button class="m-cancel" slot="actions" type="button" data-dialog="close">back to discover</button>
@@ -2432,7 +2559,7 @@ element!: &hub-discover
             <img src="${image}" alt="${escape(preview.alt)}">
           </dialog>
           <tonk-dialog appearance="hub" data-space-create-dialog heading="Copy ${escape(name)}">
-            <form id="copy-template-${slug}" class="space-create-form" data-space-create-form>
+            <form id="${id}" class="space-create-form" data-space-create-form>
               <label class="space-create-field"><span>space name</span><input name="name" type="text" value="${escape(name)}" required maxlength="100" autocomplete="off"></label>
               <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240">${escape(summary.slice(0, 240))}</textarea></label>
               <input type="hidden" name="open" value="true">
@@ -2440,35 +2567,160 @@ element!: &hub-discover
               <p class="space-create-error" data-space-create-error role="alert"></p>
             </form>
             <button class="m-cancel" slot="actions" type="button" data-template-back>back to details</button>
-            <button class="m-go" slot="actions" type="submit" form="copy-template-${slug}" data-space-create-submit><span data-copy-label>create space</span><span data-copying-label>copying…</span></button>
+            <button class="m-go" slot="actions" type="submit" form="${id}" data-space-create-submit><span data-copy-label>create space</span><span data-copying-label>copying…</span></button>
           </tonk-dialog>
         </space-create>`;
       }
+    # The deployment's default catalog, read once from
+    # `/.well-known/tonk/discover` through the host's relayed fetch. A
+    # server that predates the endpoint, or names no catalog, leaves the
+    # `catalog-url` attribute in charge.
+    deployment: |
+      async (self) => {
+        if (self.__deployment) return self.__deployment;
+        let timer;
+        try {
+          await window.tonk?.ready;
+          const answer = await Promise.race([
+            fetch('/.well-known/tonk/discover', { credentials: 'omit' }).then(async response => {
+              if (!response.ok) return null;
+              const config = await response.json();
+              return typeof config?.catalog === 'string' ? config.catalog : null;
+            }),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 5000); }),
+          ]);
+          self.__deployment = { catalog: answer };
+          return self.__deployment;
+        } catch (_) { return { catalog: null }; }
+        finally { clearTimeout(timer); }
+      }
+    # Every catalog to list, in order and once each: the default first,
+    # then the owner's rows as the nested display renders them.
+    catalogs: |
+      async (self) => {
+        const { catalog } = await self.deployment();
+        const primary = catalog || self.getAttribute('catalog-url');
+        const shown = self.querySelector('[data-discover-default-url]');
+        if (shown && shown.textContent !== (primary ?? '')) shown.textContent = primary ?? '';
+        const own = [...self.querySelectorAll('[data-discover-catalog][data-url]')].map(row => row.dataset.url);
+        const urls = [];
+        for (const url of [primary, ...own]) {
+          let href;
+          try { href = new URL(url).href; } catch (_) { continue; }
+          if (!urls.includes(href)) urls.push(href);
+        }
+        return urls;
+      }
+    fetch-catalog: |
+      async (self, url) => {
+        const response = await fetch(url, { credentials: 'omit', signal: AbortSignal.timeout(15000) });
+        if (!response.ok) throw new Error('Catalog unavailable');
+        const catalog = await response.json();
+        if (catalog.schemaVersion !== 1 || !Array.isArray(catalog.templates)) throw new Error('Invalid catalog');
+        return catalog;
+      }
     load: |
       async (self) => {
-        if (self.__loading || self.__loaded) return;
+        if (self.__loading) { self.__again = true; return; }
         self.__loading = true;
         const status = self.querySelector('[data-discover-status]');
         const retry = self.querySelector('[data-discover-retry]');
+        const errors = self.querySelector('[data-discover-errors]');
         const grid = self.querySelector('.template-grid');
-        status.textContent = 'Loading community templates…';
-        retry.hidden = true;
+        self.__fetched ??= new Map();
         try {
-          const url = self.getAttribute('catalog-url');
-          const response = await fetch(url, { credentials: 'omit', signal: AbortSignal.timeout(15000) });
-          if (!response.ok) throw new Error('Catalog unavailable');
-          const catalog = await response.json();
-          if (catalog.schemaVersion !== 1 || !Array.isArray(catalog.templates)) throw new Error('Invalid catalog');
-          const cards = catalog.templates.map(template => self.card(template, url)).join('');
+          const urls = await self.catalogs();
+          const missing = urls.filter(url => !self.__fetched.has(url));
+          if (missing.length) {
+            status.textContent = 'Loading community templates…';
+            retry.hidden = true;
+          }
+          const results = await Promise.all(urls.map(async url => {
+            if (self.__fetched.has(url)) return { url, catalog: self.__fetched.get(url) };
+            try {
+              const catalog = await self.fetchCatalog(url);
+              self.__fetched.set(url, catalog);
+              return { url, catalog };
+            } catch (error) { return { url, error }; }
+          }));
           if (!self.isConnected) return;
-          grid.innerHTML = cards;
-          grid.deal?.();
-          status.textContent = catalog.templates.length ? '' : 'No templates are available yet.';
-          self.__loaded = true;
+          const key = results.map(result => `${result.url} ${result.error ? 'failed' : 'ok'}`).join('\n');
+          if (key !== self.__rendered) {
+            let count = 0;
+            grid.innerHTML = results.map((result, index) => {
+              if (result.error) return '';
+              const source = self.label(result.catalog, result.url);
+              return result.catalog.templates.map(template => {
+                try { const card = self.card(template, result.url, source, index); count++; return card; }
+                catch (_) { return ''; }
+              }).join('');
+            }).join('');
+            grid.deal?.();
+            self.__rendered = key;
+            self.__count = count;
+          }
+          const failed = results.filter(result => result.error);
+          if (errors) errors.innerHTML = failed.length === results.length ? '' : failed.map(result =>
+            `<p class="space-create-help" data-discover-error>Couldn’t load templates from ${self.escape(new URL(result.url).host)}.</p>`).join('');
+          status.textContent = results.length && failed.length === results.length
+            ? 'Couldn’t load community templates. Check your connection and try again.'
+            : (self.__count ? '' : 'No templates are available yet.');
+          retry.hidden = !failed.length;
         } catch (error) {
           status.textContent = 'Couldn’t load community templates. Check your connection and try again.';
           retry.hidden = false;
-        } finally { self.__loading = false; }
+        } finally {
+          self.__loading = false;
+          if (self.__again) { self.__again = false; self.load(); }
+        }
+      }
+    # The catalogs form: checked here to save a round trip, then asserted
+    # as `discover/add-catalog`, whose receipt says whether the worker —
+    # which checks again, and is the check that counts — listed it.
+    add: |
+      async (self, form) => {
+        const error = self.querySelector('[data-catalog-error]');
+        const submit = form.querySelector('[type=submit]');
+        const raw = form.elements.url.value.trim();
+        error.textContent = '';
+        let url;
+        try { url = new URL(raw); } catch (_) { error.textContent = 'Enter the full URL of a catalog.json.'; return; }
+        const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+        if (!(url.protocol === 'https:' || (url.protocol === 'http:' && loopback))) {
+          error.textContent = 'A catalog must be an https URL (or http on localhost).';
+          return;
+        }
+        let reader;
+        if (submit) submit.disabled = true;
+        try {
+          await window.tonk.ready;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.discover-catalog-receipt/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.discover-catalog-receipt/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              url: { the: 'xyz.tonk.command.add-catalog/url', as: 'Text' },
+            } } },
+            parameters: { this: id, url: raw },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Catalog receipt stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'refused') { error.textContent = result.detail; return; }
+            if (result?.status === 'added') { form.reset(); return; }
+          }
+        } catch (_) {
+          error.textContent = 'Couldn’t add that catalog. Try again.';
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (submit) submit.disabled = false;
+        }
       }
     connected: |
       (self) => {
@@ -2485,6 +2737,24 @@ element!: &hub-discover
             tab.setAttribute('aria-pressed', String(tab === button));
           }
         });
+        self.addEventListener('submit', event => {
+          const form = event.target?.closest?.('form[data-catalog-add]');
+          if (!form) return;
+          event.preventDefault();
+          event.stopPropagation();
+          self.add(form);
+        });
+        // The owner's rows arrive (and go) as the nested display renders
+        // them; once Discover has been opened, every change re-lists.
+        // Only the display's own subtree: the default row beside it is
+        // written by `load`, and watching it would re-list forever.
+        const list = self.querySelector('[data-discover-catalog-list] > tonk-display');
+        if (list) {
+          self.__rows = new MutationObserver(() => {
+            if (self.getAttribute('collection') === 'discover' || self.__rendered) self.load();
+          });
+          self.__rows.observe(list, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-url'] });
+        }
       }
 
 # Owns one New Space opener and its dialog. Capture owns dispatch so each
@@ -2810,8 +3080,27 @@ view!:
           <tonk-display model="space"></tonk-display>
           <section class="discover-collection" aria-label="Discover templates">
             <p class="space-create-help" data-discover-status role="status"></p>
+            <div class="discover-errors" data-discover-errors></div>
             <button type="button" class="cta" data-discover-retry hidden>try again</button>
             <hub-collection class="template-grid"></hub-collection>
+            <!-- Which catalogs Discover lists: this deployment's default,
+                 which cannot be removed, and the ones this account added.
+                 The rows are `discover/catalog` facts, and adding one is
+                 a command the worker checks. -->
+            <details class="discover-catalogs" data-discover-catalogs>
+              <summary>catalogs</summary>
+              <div class="catalog-list" data-discover-catalog-list>
+                <div class="catalog-row"><span class="catalog-url" data-discover-default-url></span><small>default</small></div>
+                <tonk-display model="discover/catalog" view="discover"></tonk-display>
+              </div>
+              <form class="catalog-add" data-catalog-add>
+                <label class="space-create-field"><span>add a catalog</span>
+                  <input name="url" type="url" required autocomplete="off" spellcheck="false" placeholder="https://example.com/catalog.json"></label>
+                <button class="m-go" type="submit">add +</button>
+                <p class="space-create-error" data-catalog-error role="alert"></p>
+              </form>
+              <p class="space-create-help">a catalog's templates include code that runs in the spaces you make from them. add only catalogs you trust.</p>
+            </details>
           </section>
         </hub-discover>
         <section class="settings chrome" data-settings-view>

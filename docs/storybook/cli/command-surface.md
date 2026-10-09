@@ -89,7 +89,7 @@ and this contract are delivered together on base `90ba1f90d`.
 | --- | --- | --- |
 | `concept`, `concept --json`, `concept add` | `DATA-01` | Empty/list, typed fields/cardinality, optional description, notation, write modifiers. |
 | `view`, `view --json`, `view add` | `DATA-02` | Detail/directory/label/title, inline/file template, explicit/default anchor and derived entity, entity-like anchor rejection, home, notation, write modifiers. |
-| `element`, `element --json`, `element add` | `DATA-12` | Empty/list, inline/file method source, attribute defaults, description required, re-authoring one method or one default, legacy `component` rows alongside, notation, write modifiers. |
+| `element`, `element --json`, `element add` | `DATA-12` | Empty/list, inline/file method source, attribute defaults, description required, re-authoring one method or one default, a `component!:` assertion refused (the concept is removed), notation, write modifiers. |
 | `assert [CONCEPT] [ENTITY] ...` | `DATA-03`, `DATA-04` | Dynamic help, create/update/no-op, schema flags, JSON commit/verification/push receipt, notation/dry-run/no-sync/quiet. |
 | `query CONCEPT [--where FIELD=VALUE]` | `DATA-05` | Empty/many/ambiguous, typed equality and repeated AND filters, human/JSON, invalid/missing concept or field, broken pipe. |
 | `retract CONCEPT ENTITY [--field]` | `DATA-06` | Whole/field/many field, notation/dry-run/no-sync/quiet, already retracted. |

@@ -28,6 +28,9 @@ until ORIGIN="$(sed -n 's|^ACCESS_SERVICE_URL=||p' "$RUN/access.log" | head -n1)
 echo "access service: $ORIGIN"
 
 cp rust/tonk-ui/Trunk.toml rust/tonk-ui/.Trunk.dev.toml
+# A trunk proxy forwards its path's sub-paths too, so `/.well-known/tonk`
+# also carries `/.well-known/tonk/discover` (the Discover tab's default
+# catalog, from `TEMPLATE_CATALOG_URL` in this environment).
 for path in "/@" "/.well-known/tonk" "/.well-known/did.json" "/customer/"; do
   printf '\n[[proxies]]\nbackend = "%s%s"\n' "$ORIGIN" "$path" >>rust/tonk-ui/.Trunk.dev.toml
 done

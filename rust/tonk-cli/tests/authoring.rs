@@ -4,6 +4,35 @@ use anyhow::Result;
 
 use crate::common::TestSite;
 
+/// Every current claim under the module attribute the removed
+/// `component` concept wrote, subject left open.
+async fn module_claims(test: &TestSite) -> Result<Vec<dialog_query::Claim>> {
+    use anyhow::anyhow;
+    use dialog_artifacts::Attribute;
+    use dialog_query::{AttributeQuery, Output as _, Term, attribute};
+
+    let the = "xyz.tonk.component/module";
+    let attr: Attribute = the
+        .parse()
+        .map_err(|e| anyhow!("{the} should be a valid attribute URI: {e:?}"))?;
+    let the_term: attribute::The = attr.into();
+    let session = test.site.branch().await?;
+    session
+        .handle()
+        .query()
+        .select(AttributeQuery::new(
+            Term::from(the_term),
+            Term::<dialog_artifacts::Entity>::var("of"),
+            Term::<dialog_query::Any>::var("is"),
+            Term::<attribute::Cause>::blank(),
+            None,
+        ))
+        .perform(&test.site.operator)
+        .try_vec()
+        .await
+        .map_err(|e| anyhow!("{the} query failed: {e:?}"))
+}
+
 mod when_adding_a_concept {
     use super::*;
 
@@ -100,7 +129,7 @@ mod when_setting_the_home {
     use super::*;
 
     #[dialog_common::test]
-    async fn it_repoints_the_space_alias_and_renders_the_data() -> Result<()> {
+    async fn it_routes_the_root_to_the_home_and_renders_the_data() -> Result<()> {
         let test = TestSite::new().await?;
         seed_habit(&test).await?;
         // The verified recipe (repoint-findings recipe 3) always pairs
@@ -122,15 +151,9 @@ mod when_setting_the_home {
             "home should print the live path:\n{out}"
         );
         // End to end through the same resolution pipeline the browser
-        // runs: the replica entity rendered at model tonk/space must
-        // now show the habit data (repoint-findings recipe 3).
-        let replica = tonk_cli::data_ops::query(&test.site, "tonk/replica", false).await?;
-        let entity = replica
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("this: ").map(str::to_owned))
-            .expect("a fresh site has a replica entity");
-        let route = tonk_cli::render::RenderRoute::parse(&format!("{entity}@tonk/space"))?;
-        let html = tonk_cli::render::render(&test.site, &route).await?;
+        // runs: a tab at `/` takes the space's own route, whose
+        // concept must now nest the habit data.
+        let html = test.render_root().await?;
         assert!(
             html.contains("Run"),
             "the space home must render the habit directory:\n{html}"
@@ -152,18 +175,166 @@ mod when_setting_the_home {
     }
 }
 
+/// A space's home is its own `/` route: `tonk space home` writes the
+/// route pinned at `id:space/home-route`, whose concept's view nests
+/// the home's model. The `id:tonk/space` alias it replaced is gone.
+mod when_routing_the_home {
+    use super::*;
+    use crate::common::{HOME_ROUTE, HOME_ROUTE_CONCEPT};
+
+    /// A `model` concept with one `title` instance and a directory
+    /// view listing titles.
+    async fn seed_titled(test: &TestSite, model: &str, title: &str) -> Result<()> {
+        tonk_cli::data_ops::concept_add(
+            &test.site,
+            model,
+            &["title:text:one".into()],
+            Some("a titled thing"),
+            Default::default(),
+        )
+        .await?;
+        tonk_cli::data_ops::assert_op(&test.site, model, None, &["--title".into(), title.into()])
+            .await?;
+        test.eval_inline(&format!(
+            "view!:\n  this: {model}\n  show:\n    directory: |\n      <li>{{title}}</li>\n"
+        ))
+        .await?;
+        Ok(())
+    }
+
+    async fn home_template(test: &TestSite) -> Result<String> {
+        Ok(tonk_cli::views::describe(&test.site, HOME_ROUTE_CONCEPT)
+            .await?
+            .expect("the home route concept carries a ui view")
+            .template)
+    }
+
+    #[dialog_common::test]
+    async fn a_fresh_space_has_no_home_route() -> Result<()> {
+        let test = TestSite::new().await?;
+        assert_eq!(test.space_root_routes().await?, vec![]);
+        assert!(
+            !test.root_routes().await?.is_empty(),
+            "the library routes `/` to its shell"
+        );
+        assert_eq!(test.space_alias().await?, None);
+        let html = test.render_root().await?;
+        assert!(html.contains("class=\"blank-canvas\""), "{html}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn home_routes_the_root_to_a_view_nesting_the_model() -> Result<()> {
+        let test = TestSite::new().await?;
+        seed_titled(&test, "todo", "Write").await?;
+
+        tonk_cli::data_ops::home(&test.site, &["todo".into()], Default::default()).await?;
+
+        assert_eq!(
+            test.space_root_routes().await?,
+            vec![(HOME_ROUTE.to_owned(), HOME_ROUTE_CONCEPT.to_owned())]
+        );
+        let template = home_template(&test).await?;
+        assert!(
+            template.contains("<tonk-display with=\"{branch}@{repo}\" model=todo />"),
+            "{template}"
+        );
+        let html = test.render_root().await?;
+        assert!(html.contains("Write"), "{html}");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn repointing_the_home_supersedes_the_one_root_route() -> Result<()> {
+        let test = TestSite::new().await?;
+        seed_titled(&test, "todo", "Write").await?;
+        seed_titled(&test, "note", "Jot").await?;
+        tonk_cli::data_ops::home(&test.site, &["todo".into()], Default::default()).await?;
+
+        tonk_cli::data_ops::home(&test.site, &["note".into()], Default::default()).await?;
+
+        assert_eq!(
+            test.space_root_routes().await?,
+            vec![(HOME_ROUTE.to_owned(), HOME_ROUTE_CONCEPT.to_owned())],
+            "re-routing `/` must supersede the pinned route, not add a second"
+        );
+        let template = home_template(&test).await?;
+        assert!(template.contains("model=note"), "{template}");
+        assert!(!template.contains("model=todo"), "{template}");
+        let html = test.render_root().await?;
+        assert!(html.contains("Jot"), "{html}");
+        assert!(
+            !html.contains("Write"),
+            "the old home still renders:\n{html}"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn no_home_writer_publishes_the_space_alias() -> Result<()> {
+        let test = TestSite::new().await?;
+        seed_titled(&test, "todo", "Write").await?;
+
+        tonk_cli::data_ops::home(&test.site, &["todo".into()], Default::default()).await?;
+        tonk_cli::data_ops::view_add(
+            &test.site,
+            "todo",
+            tonk_cli::authoring::ViewKind::Detail,
+            "<b>{title}</b>",
+            true,
+            Default::default(),
+        )
+        .await?;
+        test.eval_inline_with(
+            "todo:\n",
+            tonk_cli::eval::Options {
+                home: Some("todo".to_owned()),
+                ..tonk_cli::eval::Options::default()
+            },
+        )
+        .await?;
+
+        assert_eq!(test.space_alias().await?, None);
+        assert_eq!(test.space_root_routes().await?.len(), 1);
+        Ok(())
+    }
+
+    /// A `/` route the space wrote itself — a template's own landing
+    /// page, unpinned — is a home too, so `view add` leaves it alone and
+    /// writes no second `/` route.
+    #[dialog_common::test]
+    async fn view_add_does_not_route_over_a_root_route_of_the_spaces_own() -> Result<()> {
+        let test = TestSite::new().await?;
+        seed_titled(&test, "todo", "Write").await?;
+        test.eval_inline(
+            "concept!: &landing\n  this: space:landing\n  description: A landing page.\n  with:\n    repo: { description: The repo., the: xyz.tonk.site/repo, as: text, cardinality: one }\n\nview!:\n  this: space:landing\n  show:\n    ui: <p>Landing</p>\n\nroute!:\n  path: \"/\"\n  concept: space:landing\n",
+        )
+        .await?;
+        let routes = test.space_root_routes().await?;
+        assert_eq!(routes.len(), 1, "{routes:?}");
+
+        let out = tonk_cli::data_ops::view_add(
+            &test.site,
+            "todo",
+            tonk_cli::authoring::ViewKind::Detail,
+            "<b>{title}</b>",
+            false,
+            Default::default(),
+        )
+        .await?;
+
+        assert!(out.contains("home unchanged"), "{out}");
+        assert_eq!(test.space_root_routes().await?, routes);
+        Ok(())
+    }
+}
+
 mod when_adding_a_view {
     use super::*;
     use tonk_cli::authoring::ViewKind;
 
     async fn render_home(test: &TestSite) -> Result<String> {
-        let replica = tonk_cli::data_ops::query(&test.site, "tonk/replica", false).await?;
-        let entity = replica
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("this: ").map(str::to_owned))
-            .expect("a fresh site has a replica entity");
-        let route = tonk_cli::render::RenderRoute::parse(&format!("{entity}@tonk/space"))?;
-        Ok(tonk_cli::render::render(&test.site, &route).await?)
+        test.render_root().await
     }
 
     #[dialog_common::test]
@@ -249,8 +420,13 @@ mod when_adding_a_view {
         )
         .await?;
         assert!(
-            !out.contains("home set:"),
+            out.contains("home unchanged"),
             "an explicitly set home must not be re-pointed by view add:\n{out}"
+        );
+        assert_eq!(
+            test.space_root_routes().await?.len(),
+            1,
+            "view add wrote a second `/` route"
         );
         Ok(())
     }
@@ -371,13 +547,10 @@ mod when_adding_a_view {
     }
 }
 
-/// The reason `element` exists beside the deprecated `component`: a
-/// tag you can repoint. A `component!:` with no `this:` is keyed by
-/// its body digest and nothing names it, so editing it writes a SECOND
-/// row and the realm loads both. An `element!: &<tag>` is keyed by its
-/// body too, but the anchor publishes `id:<tag>` over the result — so
-/// an edit mints a new value AND moves the tag onto it, and everything
-/// resolving by name follows.
+/// What makes an element: a tag you can repoint. An `element!: &<tag>`
+/// is keyed by its body, but the anchor publishes `id:<tag>` over the
+/// result — so an edit mints a new value AND moves the tag onto it, and
+/// everything resolving by name follows.
 mod when_defining_an_element {
     use super::*;
 
@@ -415,7 +588,6 @@ mod when_defining_an_element {
             .collect();
         assert_eq!(ours.len(), 1, "{listed:?}");
         assert_eq!(ours[0].methods, vec!["connected", "disconnected"]);
-        assert!(!ours[0].deprecated);
         Ok(())
     }
 
@@ -605,72 +777,29 @@ mod when_defining_an_element {
         Ok(())
     }
 
-    /// The two shapes share nothing — different attributes, different
-    /// loaders — so a branch can carry both without either shadowing
-    /// the other. Nothing has to be migrated to adopt `element`.
+    /// `component`, the anonymous-module shape `element` replaced, is
+    /// gone from the standard library. Asserting one is refused by the
+    /// analyzer as an unknown concept, and nothing reaches the branch:
+    /// no module claim, and no element row standing in for it.
     #[dialog_common::test]
-    async fn it_carries_component_and_element_rows_side_by_side() -> Result<()> {
+    async fn it_refuses_a_component_assertion() -> Result<()> {
         let test = TestSite::new().await?;
-        test.eval_inline(
-            "component!:\n  module: |\n    customElements.define('old-widget', class extends HTMLElement {});\n",
-        )
-        .await?;
-        tonk_cli::data_ops::element_add(
-            &test.site,
-            "new-widget",
-            "The new shape",
-            &tonk_cli::authoring::ElementParts {
-                methods: &methods(&[("connected", "(self) => { self.textContent = 'new'; }")]),
-                // A default, so this row answers the generic concept
-                // query below — see
-                // `it_answers_the_generic_concept_query_only_with_defaults`.
-                attributes: &[("tone".to_owned(), "new".to_owned())],
-                ..Default::default()
-            },
-            Default::default(),
-        )
-        .await?;
-
-        // The library seeds elements of its own; the rows this test
-        // authored are what it asserts on.
-        let listed = tonk_cli::elements::list(&test.site).await?;
-        let ours: Vec<_> = listed
-            .iter()
-            .filter(|row| row.deprecated || row.tag.as_deref() == Some("new-widget"))
-            .collect();
-        assert_eq!(ours.len(), 2, "{listed:?}");
-        let new = ours
-            .iter()
-            .find(|row| !row.deprecated)
-            .expect("element row present");
-        assert_eq!(new.tag.as_deref(), Some("new-widget"));
-        assert_eq!(new.methods, vec!["connected"]);
+        let before = tonk_cli::elements::list(&test.site).await?.len();
+        let err = test
+            .eval_inline(
+                "component!:\n  module: |\n    customElements.define('old-widget', class extends HTMLElement {});\n",
+            )
+            .await
+            .expect_err("a component assertion must be refused");
         assert!(
-            listed.iter().any(|row| row.deprecated),
-            "component row disappeared: {listed:?}",
-        );
-
-        // Each shape's facts stay its own: the component's module is
-        // not visible under the element's domains, and the element's
-        // methods are not visible as a component.
-        //
-        // Read through the per-domain queries rather than through
-        // `tonk query element`, which needs every dictionary set — see
-        // `it_answers_the_generic_concept_query_only_when_every_map_is_set`.
-        assert!(
-            !tonk_cli::elements::methods_of(&test.site, "new-widget")
-                .await?
-                .is_empty(),
+            matches!(&err, tonk_cli::eval::EvalError::Analyze(message) if message.contains("component")),
+            "{err:?}",
         );
         assert!(
-            tonk_cli::elements::methods_of(&test.site, "old-widget")
-                .await?
-                .is_empty(),
-            "the legacy module must not read back as element methods",
+            module_claims(&test).await?.is_empty(),
+            "a refused component must write no module",
         );
-        let components = tonk_cli::data_ops::query(&test.site, "component", false).await?;
-        assert!(components.contains("old-widget"), "{components}");
-        assert!(!components.contains("The new shape"), "{components}");
+        assert_eq!(tonk_cli::elements::list(&test.site).await?.len(), before);
         Ok(())
     }
 
@@ -1171,22 +1300,23 @@ mod when_defining_an_element {
         }
     }
 
-    /// Both concepts are anchored, not pinned — their entities are
-    /// content-addressed from their declarations. What coexistence
-    /// actually needs is only that the two are DISTINCT and that each
-    /// name resolves to its own, so neither can shadow the other.
+    /// `element` resolves by name; `component` no longer names
+    /// anything, so a branch seeded today has no concept to assert one
+    /// against.
     #[dialog_common::test]
-    async fn it_resolves_each_concept_name_to_its_own_entity() -> Result<()> {
+    async fn it_resolves_element_but_not_component() -> Result<()> {
         let test = TestSite::new().await?;
-        let element = tonk_cli::views::entity_for_name(&test.site, "element")
-            .await?
-            .expect("element should resolve");
-        let component = tonk_cli::views::entity_for_name(&test.site, "component")
-            .await?
-            .expect("component should resolve");
-        assert_ne!(
-            element, component,
-            "the two concepts collapsed onto one entity"
+        assert!(
+            tonk_cli::views::entity_for_name(&test.site, "element")
+                .await?
+                .is_some(),
+            "element should resolve",
+        );
+        assert!(
+            tonk_cli::views::entity_for_name(&test.site, "component")
+                .await?
+                .is_none(),
+            "component should no longer resolve",
         );
         Ok(())
     }

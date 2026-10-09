@@ -31,8 +31,12 @@ command = "nix build .#tonk-cloudflare-artifacts"
 directory = "./result/tonk-ui"
 not_found_handling = "single-page-application"
 binding = "ASSETS"
+# The one list for every environment: `[assets]` is inherited, and no
+# `[env.*]` table overrides it.
 run_worker_first = [
   "/.well-known/tonk",
+  # `/.well-known/tonk/discover`, the Discover tab's default catalog.
+  "/.well-known/tonk/*",
   "/.well-known/did.json",
   "/@",
   "/@/*",
@@ -119,6 +123,12 @@ namespace_id = "1001"
 [vars]
 ACCOUNT_SERVICE_URL = "https://accounts.tonk.xyz"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
+# The template catalog the Discover tab lists by default, served at
+# `/.well-known/tonk/discover`. Must be https (or http on localhost);
+# anything else is served as no default and the page falls back to the
+# catalog its library names. Each environment sets its own, so pointing
+# one deployment at a different catalog is a one-line change.
+TEMPLATE_CATALOG_URL = "https://goblinoats.github.io/honky-tonks/catalog.json"
 
 [env.staging]
 routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
@@ -174,6 +184,8 @@ namespace_id = "1001"
 [env.staging.vars]
 ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.xyz"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
+# Vars are not inherited: each environment names its own Discover catalog.
+TEMPLATE_CATALOG_URL = "https://goblinoats.github.io/honky-tonks/catalog.json"
 
 # Dev. Every push to `main` deploys here, so tonk.foundation always runs the
 # development branch. Its state is disjoint from staging and production, and
@@ -228,6 +240,8 @@ namespace_id = "1001"
 
 [env.dev.vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
+# Vars are not inherited: each environment names its own Discover catalog.
+TEMPLATE_CATALOG_URL = "https://goblinoats.github.io/honky-tonks/catalog.json"
 
 # Preview. Every pull request uploads a version of this environment under a
 # `--preview-alias` and is reached at its own workers.dev URL, so the
@@ -298,6 +312,8 @@ namespace_id = "1001"
 
 [env.preview.vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
+# Vars are not inherited: each environment names its own Discover catalog.
+TEMPLATE_CATALOG_URL = "https://goblinoats.github.io/honky-tonks/catalog.json"
 # Replaced per pull request with the account worker's own preview alias, which
 # is only known once that upload returns. The checked-in values are deliberately
 # unresolvable: a preview that failed to wire itself has to break visibly rather
