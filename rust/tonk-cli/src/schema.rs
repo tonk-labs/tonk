@@ -587,7 +587,7 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
             None => {
                 let _ = writeln!(out, "    {field}:");
                 let _ = writeln!(out, "      the:         {uri}");
-                let among = attr_descriptor.among();
+                let among = attr_descriptor.descriptor().among();
                 if !among.is_empty() {
                     let _ = writeln!(out, "      as:");
                     for value in among {
@@ -596,7 +596,7 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
                 } else if let Some(t) = attr_descriptor.content_type() {
                     let _ = writeln!(out, "      as:          {}", type_to_notation(&t));
                 }
-                let pick = attr_descriptor.pick();
+                let pick = attr_descriptor.descriptor().pick();
                 let implied = if among.is_empty() { "last" } else { "top" };
                 if pick.name() != implied {
                     let _ = writeln!(out, "      pick:        {}", pick.name());
