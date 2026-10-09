@@ -5,7 +5,8 @@
 //! handler asks the page for the passkey through the custody relay, the
 //! page hands back derivation handles, and the worker does the work with
 //! the account it opens from them. Progress goes on the profile overlay
-//! as a [`CeremonyStatus`] row the page subscribes to.
+//! as a [`CeremonyStatus`] row the page subscribes to. Approvals use a
+//! request-specific entity so another handoff cannot supply their status.
 
 use tonk_common::log;
 use tonk_schema::{CeremonyStatus, ceremony, ceremony_state};
@@ -14,7 +15,11 @@ use crate::worker::TonkState;
 
 /// Write where `ceremony` got to, replacing the last report.
 pub(crate) async fn report(tonk: &TonkState, ceremony: &str, state: &str, detail: &str) {
-    let Ok(this) = CeremonyStatus::ENTITY.parse::<dialog_artifacts::Entity>() else {
+    report_to(tonk, CeremonyStatus::ENTITY, ceremony, state, detail).await;
+}
+
+async fn report_to(tonk: &TonkState, entity: &str, ceremony: &str, state: &str, detail: &str) {
+    let Ok(this) = entity.parse::<dialog_artifacts::Entity>() else {
         return;
     };
     log!("{ceremony}: {state} {detail}");
@@ -32,6 +37,30 @@ pub(crate) async fn report(tonk: &TonkState, ceremony: &str, state: &str, detail
     }
 }
 
+// Keep approval progress separate from earlier requests and other tabs. The
+// settings element derives the same entity from the unencoded request fields.
+fn authorization_entity(authorization: &tonk_worker_api::DeviceAuthorization) -> String {
+    let request = serde_json::to_vec(&[&authorization.audience, &authorization.callback])
+        .expect("strings serialize as JSON");
+    format!("urn:tonk:approval:{}", bs58::encode(request).into_string())
+}
+
+async fn report_authorization(
+    tonk: &TonkState,
+    authorization: &tonk_worker_api::DeviceAuthorization,
+    state: &str,
+    detail: &str,
+) {
+    report_to(
+        tonk,
+        &authorization_entity(authorization),
+        ceremony::AUTHORIZE_DEVICE,
+        state,
+        detail,
+    )
+    .await;
+}
+
 /// Ask the page for the passkey, reporting the ask and its failure. On
 /// a host with no page the ask fails and the failure is reported — the
 /// ceremony refuses visibly rather than silently not existing.
@@ -40,10 +69,17 @@ pub(crate) async fn ask_for_passkey(
     ceremony: &str,
     intent: tonk_worker_api::CustodyIntent,
 ) {
+    let entity = match &intent {
+        tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization) => {
+            authorization_entity(authorization)
+        }
+        _ => CeremonyStatus::ENTITY.to_owned(),
+    };
     let Some(client) = env.client() else {
         let tonk = env.state().read().await;
-        report(
+        report_to(
             &tonk,
+            &entity,
             ceremony,
             ceremony_state::REFUSED,
             "no page asked for this, so no passkey can be asked for",
@@ -53,7 +89,14 @@ pub(crate) async fn ask_for_passkey(
     };
     let credential_id = {
         let tonk = env.state().read().await;
-        report(&tonk, ceremony, ceremony_state::PENDING_CEREMONY, "").await;
+        report_to(
+            &tonk,
+            &entity,
+            ceremony,
+            ceremony_state::PENDING_CEREMONY,
+            "",
+        )
+        .await;
         // A CLI authorization may use any passkey belonging to the signed-in
         // account. Pinning it to this profile's original credential prevents
         // another enrolled provider (for example 1Password) from offering its
@@ -78,8 +121,9 @@ pub(crate) async fn ask_for_passkey(
     .await
     {
         let tonk = env.state().read().await;
-        report(
+        report_to(
             &tonk,
+            &entity,
             ceremony,
             ceremony_state::FAILED,
             &format!("the page could not be asked for the passkey: {error}"),
@@ -193,13 +237,7 @@ impl dialog_capability::Provider<AuthorizeDeviceRequest> for crate::router::Comm
         // before asking anyone to touch a passkey.
         if let Err(error) = tonk_worker_api::callback::delivery_url(&authorization.callback, &[]) {
             let tonk = self.state().read().await;
-            report(
-                &tonk,
-                ceremony::AUTHORIZE_DEVICE,
-                ceremony_state::REFUSED,
-                &error,
-            )
-            .await;
+            report_authorization(&tonk, &authorization, ceremony_state::REFUSED, &error).await;
             return;
         }
         ask_for_passkey(
@@ -226,22 +264,10 @@ pub(crate) async fn authorize_device(
     let tonk = state.read().await;
     match &outcome {
         Ok(target) => {
-            report(
-                &tonk,
-                ceremony::AUTHORIZE_DEVICE,
-                ceremony_state::DONE,
-                target,
-            )
-            .await
+            report_authorization(&tonk, &authorization, ceremony_state::DONE, target).await
         }
         Err(error) => {
-            report(
-                &tonk,
-                ceremony::AUTHORIZE_DEVICE,
-                ceremony_state::FAILED,
-                error,
-            )
-            .await
+            report_authorization(&tonk, &authorization, ceremony_state::FAILED, error).await
         }
     }
     outcome
@@ -257,13 +283,7 @@ async fn authorize_device_inner(
 
     {
         let tonk = state.read().await;
-        report(
-            &tonk,
-            ceremony::AUTHORIZE_DEVICE,
-            ceremony_state::WORKING,
-            "",
-        )
-        .await;
+        report_authorization(&tonk, authorization, ceremony_state::WORKING, "").await;
     }
     let account = super::custody::held_account(custodian).await?;
     let dialog_credentials::Signer::Ed25519(root) = account
@@ -351,6 +371,28 @@ async fn authorize_device_inner(
 mod authorization_tests {
     use super::decode_authorization;
     use dialog_artifacts::{Artifact, Value};
+
+    #[test]
+    fn approval_progress_is_scoped_to_the_request() {
+        let mut request = tonk_worker_api::DeviceAuthorization {
+            audience: "did:key:test".into(),
+            callback: "https://example.test/callback?request=1".into(),
+            name: "Tonk connection".into(),
+            expected_account: None,
+        };
+        let entity = super::authorization_entity(&request);
+        // Shared with approval-progress.test.mjs, including the JSON encoding.
+        assert_eq!(
+            entity,
+            "urn:tonk:approval:q5ieDH7i7UxzSkRNRGzuyDmYp5EvkdFMK3Xbzs7kzj2N354oyxRSb5xCqx2pBRNmmPRTa3UCjAE5Byv"
+        );
+        assert!(entity.parse::<dialog_artifacts::Entity>().is_ok());
+        request.callback.push('2');
+        assert_ne!(entity, super::authorization_entity(&request));
+        request.callback.pop();
+        request.audience = "did:key:other".into();
+        assert_ne!(entity, super::authorization_entity(&request));
+    }
 
     #[dialog_common::test]
     fn agent_handoff_authorization_preserves_optional_constraint() {

@@ -8,6 +8,17 @@ email, with an explicit full-account access warning and decline / approve with
 passkey actions. Device DIDs and callback destinations are not displayed; their
 validation and delivery behavior is unchanged. Details stack on narrow screens.
 
+Approval progress belongs to the current audience and callback. Opening a fresh
+link must not display an earlier request's "Approved" message or failure. A
+remounted panel can resume its own progress; changing requests clears the old
+status. This changes progress reporting only, not the authority grant or delivery.
+
+The focused `rust/tonk-ui/tests/approval-progress.test.mjs` suite exercises stale
+rows, fast terminal outcomes, request changes, remounts, and other ceremonies.
+The worker's `approval_progress_is_scoped_to_the_request` test shares its entity
+encoding vector. Live passkey approval and callback delivery remain separate
+browser verification requirements; these tests do not prove their completion.
+
 The refreshed WEB-10 capture is a production-source fixture with sample account
 data, taken from the changes based on `85c2a1599` on 2026-10-08. Desktop light and
 mobile dark previews were inspected. The updated handoff tests compiled; live
