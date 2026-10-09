@@ -50,19 +50,42 @@ dialog::backdrop{ background:var(--fabb-dim, rgba(56,24,42,.32)); }
 :host([appearance="hub"]) dialog{ max-width:470px; max-height:calc(100dvh - 32px); }
 :host([appearance="hub"]) dialog::backdrop{ backdrop-filter:blur(3px); }
 :host([appearance="hub"]) .w{ position:relative; border:1px solid var(--_ink);
-  background:var(--card, var(--_panel)); box-shadow:none; }
-:host([appearance="hub"]) .w::before{ content:""; position:absolute; pointer-events:none;
-  top:-1px; right:-7px; bottom:-7px; left:-1px;
-  background:linear-gradient(var(--_ink),var(--_ink)) right top/6px 100% no-repeat,
-    linear-gradient(var(--_ink),var(--_ink)) left bottom/66.667% 6px no-repeat;
-  z-index:-1; }
+  background:var(--card, var(--_panel)); box-shadow:none;
+  --_stroke:6px; --_side:calc(var(--_stroke) / 1.6180339887); }
+/* Two strokes outside the frame: the right one runs the frame's height and
+   stops at its bottom edge, one golden ratio thinner than the bottom one
+   (`--_side` = `--_stroke` / φ); the bottom one runs out to the right
+   stroke's outer edge, so a sweep reaches into the corner with no gap. */
+:host([appearance="hub"]) .w::before, :host([appearance="hub"]) .w::after{
+  content:""; position:absolute; pointer-events:none; z-index:-1; }
+:host([appearance="hub"]) .w::before{ top:-1px; bottom:-1px;
+  right:calc(-1px - var(--_side)); width:var(--_side);
+  background:var(--_ink); }
+:host([appearance="hub"]) .w::after{ left:-1px; right:calc(-1px - var(--_side));
+  bottom:calc(-1px - var(--_stroke)); height:var(--_stroke);
+  background:linear-gradient(var(--_ink),var(--_ink)) left top/66.667% 100% no-repeat; }
+/* While the dialog's work runs (`busy`, set by whoever owns it — a space
+   create, say), the bottom stroke is the loading bar: its segment sweeps
+   out past the right stroke's outer edge and comes back in from the left. The right
+   stroke stays put. Positions are of the segment's free travel (a third of
+   the width), so -200% starts it wholly off the left and 300% wholly off
+   the right. */
+:host([appearance="hub"][busy]) .w::after{
+  animation:tonk-dialog-sweep 1.6s ease-in-out infinite; }
+@keyframes tonk-dialog-sweep{
+  from{ background-position:-200% 0; }
+  to{ background-position:300% 0; } }
+@media(prefers-reduced-motion:reduce){
+  :host([appearance="hub"][busy]) .w::after{ animation:none; background-size:100% 100%; } }
 :host([appearance="hub"]) .stack{ gap:0; }
 :host([appearance="hub"]) .hrow{ gap:0; }
+/* 24px above the heading, the same as below the actions (.frow), with the
+   × centred on the heading's first line. */
 :host([appearance="hub"]) .t{ min-height:72px; height:auto; align-items:center;
-  justify-content:flex-start; padding:16px 64px 12px 24px;
+  justify-content:flex-start; padding:24px 64px 12px 24px;
   background:transparent; box-shadow:none; color:var(--_ink);
   font:300 36px/1.1 Gestalte,Georgia,serif; text-transform:none; }
-:host([appearance="hub"]) .x{ position:absolute; top:12px; right:12px;
+:host([appearance="hub"]) .x{ position:absolute; top:22px; right:12px;
   width:44px; height:44px; border-radius:0; background:transparent;
   box-shadow:none; font-size:24px; }
 :host([appearance="hub"]) .main{ display:block; margin:0; }
@@ -456,6 +479,57 @@ mod tests {
         let event =
             KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).expect("Tab event");
         target.dispatch_event(&event).expect("dispatch Tab");
+    }
+
+    /// A busy hub dialog sweeps its bottom stroke as the loading bar; an idle
+    /// one, or a dialog of the default appearance, holds it still.
+    #[wasm_bindgen_test]
+    fn it_sweeps_the_bottom_stroke_while_busy() {
+        super::register();
+        let document = window().expect("window").document().expect("document");
+        let host: HtmlElement = document
+            .create_element("tonk-dialog")
+            .expect("dialog host")
+            .dyn_into()
+            .expect("HtmlElement");
+        host.set_attribute("appearance", "hub").unwrap();
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("append dialog");
+        super::show_dialog(&host);
+        let frame = host
+            .shadow_root()
+            .expect("shadow root")
+            .query_selector(".w")
+            .unwrap()
+            .expect("dialog frame");
+        let stroke = || {
+            window()
+                .unwrap()
+                .get_computed_style_with_pseudo_elt(&frame, "::after")
+                .unwrap()
+                .expect("stroke style")
+                .get_property_value("animation-name")
+                .unwrap()
+        };
+
+        assert_eq!(stroke(), "none", "an idle dialog's stroke holds still");
+        host.set_attribute("busy", "").unwrap();
+        assert_eq!(
+            stroke(),
+            "tonk-dialog-sweep",
+            "a busy dialog sweeps its stroke"
+        );
+        host.remove_attribute("busy").unwrap();
+        assert_eq!(stroke(), "none", "the sweep stops with the work");
+
+        host.remove_attribute("appearance").unwrap();
+        host.set_attribute("busy", "").unwrap();
+        assert_eq!(stroke(), "none", "only the hub appearance has the stroke");
+        super::close_dialog(&host);
+        host.remove();
     }
 
     #[wasm_bindgen_test]

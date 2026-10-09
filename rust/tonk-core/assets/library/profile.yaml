@@ -781,19 +781,9 @@ view!:
         font:400 13px/1.45 var(--sans); }
       .space-create-error { color:var(--ink); min-height:1.45em; }
       .space-create-error:empty { min-height:0; }
-      /* While a create runs, every create dialog shows one indeterminate
-         sweep above its form: a large template takes a while, and the
-         worker reports no steps a bar could fill by. */
-      .space-create-form { position:relative; }
-      space-create[busy] .space-create-form::before { content:''; position:absolute;
-        inset-block-start:-11px; inset-inline:0; block-size:2px;
-        background:linear-gradient(var(--ink), var(--ink)) no-repeat;
-        background-size:35% 100%; animation:space-create-progress 1.6s ease-in-out infinite; }
-      @keyframes space-create-progress { from { background-position:-60% 0; }
-        to { background-position:160% 0; } }
-      @media (prefers-reduced-motion: reduce) {
-        space-create[busy] .space-create-form::before { animation:none;
-          background-size:100% 100%; opacity:.35; } }
+      /* While a create runs, its dialog is `busy` and the dialog's own
+         bottom stroke sweeps as the loading bar (tonk-fab dialog.rs): a large
+         template takes a while, and the worker reports no steps to fill by. */
       /* The copy link's dialog offers "try again" only once a copy failed. */
       .hub-page .copy-link:not([failed]) [data-copy-retry] { display:none; }
       .template-share [data-shared-label],
@@ -2531,6 +2521,7 @@ element!: &space-create
         form?.reset();
         if (error) error.textContent = '';
         self.removeAttribute('busy');
+        self.querySelector('[data-space-create-dialog]')?.removeAttribute('busy');
         for (const control of self.querySelectorAll('[data-space-create-submit]')) {
           control.disabled = false;
         }
@@ -2562,6 +2553,8 @@ element!: &space-create
         }
         if (error) error.textContent = '';
         self.setAttribute('busy', '');
+        // The dialog's bottom stroke is the loading bar while the create runs.
+        self.querySelector('[data-space-create-dialog]')?.setAttribute('busy', '');
         for (const control of self.querySelectorAll('[data-space-create-submit]')) {
           control.disabled = true;
         }
@@ -2661,6 +2654,7 @@ element!: &space-create
           if (self.__reader === reader) self.__reader = null;
           if (!landing) {
             self.removeAttribute('busy');
+            self.querySelector('[data-space-create-dialog]')?.removeAttribute('busy');
             for (const control of self.querySelectorAll('[data-space-create-submit]')) control.disabled = false;
           }
         }
