@@ -6341,6 +6341,46 @@ pub(crate) mod tests {
         }))
     }
 
+    /// Whether the owner's branch holds `description` on the attribute
+    /// declared over the relation `the`.
+    async fn owner_sees_description(
+        driver: &WebDriver,
+        key: &str,
+        the: &str,
+        description: &str,
+    ) -> Result<bool> {
+        let query = serde_json::json!({
+            "terms": {
+                "this": { "?": { "name": "this" } },
+                "id": { "?": { "name": "id" } },
+                "description": { "?": { "name": "description" } }
+            },
+            "predicate": {
+                "with": {
+                    "id": { "the": "db.attribute/id", "as": "text:" },
+                    "description": { "the": "db.meta/description", "as": "text:" }
+                }
+            }
+        });
+        let response = post_json(
+            driver,
+            &format!("/api/repository/{key}/branch/main/query"),
+            query,
+        )
+        .await?;
+        let rows = response["body"].as_array().cloned().unwrap_or_default();
+        let field = |row: &serde_json::Value, name: &str| {
+            row["fields"][name]
+                .as_str()
+                .or_else(|| row[name].as_str())
+                .map(str::to_owned)
+        };
+        Ok(rows.iter().any(|row| {
+            field(row, "id").as_deref() == Some(the)
+                && field(row, "description").as_deref() == Some(description)
+        }))
+    }
+
     fn successful_body<'a>(
         operation: &str,
         result: &'a serde_json::Value,
@@ -9974,17 +10014,14 @@ pub(crate) mod tests {
         // invite was revoked. The guest in those versions never wrote
         // anything at all, so the write path this test exists to check was
         // never exercised.
-        let before_marker = "xyz.tonk.e2e/before-revocation";
-        let after_marker = "xyz.tonk.e2e/after-revocation";
-        // Distinct bookmark names, so the owner can tell the two writes
-        // apart in the Name index.
-        let declare = |bookmark: &str, attribute: &str| {
+        let marker = "xyz.tonk.e2e/revocation";
+        let after_description = "written after revocation";
+        let declare = |description: &str| {
             format!(
-                r#"attribute!: &{bookmark}
-  the:         {attribute}
+                r#"attribute!: &before-revocation
+  the:         {marker}
   as:          text
-  cardinality: one
-  description: revocation e2e marker
+  description: {description}
 "#
             )
         };
@@ -9992,7 +10029,7 @@ pub(crate) mod tests {
         let wrote = post_yaml(
             &guest,
             &format!("/api/repository/{key}/branch/main/evaluate"),
-            &declare("before-revocation", before_marker),
+            &declare("revocation e2e marker"),
         )
         .await?;
         assert_eq!(
@@ -10018,7 +10055,8 @@ pub(crate) mod tests {
             )
             .await?,
         );
-        let owner_sees_before = owner_sees(&owner, &key, "before-revocation").await?;
+        let owner_sees_before = owner_sees(&owner, &key, "before-revocation").await?
+            && owner_sees_description(&owner, &key, marker, "revocation e2e marker").await?;
         assert!(
             owner_sees_before,
             "the guest's pre-revocation write must reach the owner, or the \
@@ -10041,10 +10079,19 @@ pub(crate) mod tests {
         // successful push for an upload the access service refused, so
         // only the owner's view distinguishes a revoked invite from a
         // working one.
+        //
+        // The write rewrites the declaration the guest made while
+        // connected. A replica that pulled by reference holds only the
+        // leaves its own reads and writes touched, and a commit reads the
+        // leaf its write lands in: a fresh declaration lands wherever its
+        // hash falls, and when that leaf is not held the commit needs the
+        // remote that has just refused this bearer. The description is
+        // not part of the attribute's identity, so the rewrite stays in
+        // the leaf this replica minted.
         let wrote_after = post_yaml(
             &guest,
             &format!("/api/repository/{key}/branch/main/evaluate"),
-            &declare("after-revocation", after_marker),
+            &declare(after_description),
         )
         .await?;
         assert_eq!(
@@ -10071,7 +10118,7 @@ pub(crate) mod tests {
             )
             .await?;
             assert!(
-                !owner_sees(&owner, &key, "after-revocation").await?,
+                !owner_sees_description(&owner, &key, marker, after_description).await?,
                 "a revoked invite still reached storage: the owner can see \
                  the guest's post-revocation write"
             );
