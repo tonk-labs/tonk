@@ -4,6 +4,13 @@ use anyhow::Result;
 use serde_json::json;
 use tonk_cli::{mcp_runtime::Runtime, site::TonkSite};
 
+// Nextest archives relocate binaries away from Cargo's build-time paths.
+fn runtime_bin() -> std::path::PathBuf {
+    std::env::var_os("NEXTEST_BIN_EXE_tonk-mcp-runtime")
+        .map(Into::into)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_tonk-mcp-runtime").into())
+}
+
 struct AccountProcess {
     child: std::process::Child,
     input: std::process::ChildStdin,
@@ -12,7 +19,7 @@ struct AccountProcess {
 
 impl AccountProcess {
     fn start(root: &std::path::Path) -> Result<(Self, serde_json::Value)> {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_tonk-mcp-runtime"));
+        let mut command = std::process::Command::new(runtime_bin());
         command.arg("--account-data").arg(root);
         Self::from_command(command)
     }
@@ -59,10 +66,7 @@ async fn oauth_callback_accepts_real_native_grant_and_issues_tenant_bound_token(
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../mcp/fixtures/oauth-native-flow.mjs");
     let mut command = std::process::Command::new("node");
-    command
-        .arg(script)
-        .arg(env!("CARGO_BIN_EXE_tonk-mcp-runtime"))
-        .arg(root.path());
+    command.arg(script).arg(runtime_bin()).arg(root.path());
     let (mut process, greeting) = AccountProcess::from_command(command)?;
     let device = greeting["deviceDid"].as_str().unwrap();
     let approved = tonk_identity::ceremony::authorize_device(
