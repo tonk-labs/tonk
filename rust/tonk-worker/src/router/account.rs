@@ -411,10 +411,12 @@ pub async fn link(
 pub(crate) async fn finish_link(
     state: &crate::worker::TonkState,
 ) -> Result<AccountStatus, TonkWorkerError> {
+    let mut timing = super::link_timing::LinkTiming::new("attachment", "hydrate-account");
     // Mount/hydrate the hidden account repository before touching user
     // spaces. Each account-service request is bounded by the shared HTTP
     // timeout, and awaiting the sequence keeps it inside the fetch lifetime.
     super::account_state::ensure_account_state(state).await;
+    timing.next("rotate-onboarding");
     // Everything created or joined before this account existed hangs off
     // the onboarding account; re-issue it to the root from the custodied
     // seeds ahead of the backup sweep, so what gets backed up is the
@@ -425,12 +427,15 @@ pub(crate) async fn finish_link(
     // Roster upkeep: this profile just became an account row. The email
     // comes best-effort from the provider; a failed fetch leaves it
     // blank until a later refresh.
+    timing.next("account-summary");
     let email = super::account_devices::account_summary(state)
         .await
         .ok()
         .and_then(|summary| summary.email);
+    timing.next("update-roster");
     super::profiles::upsert_active_entry(state, email).await;
 
+    timing.next("read-status");
     status(state).await
 }
 
