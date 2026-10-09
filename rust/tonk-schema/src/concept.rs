@@ -404,9 +404,8 @@ impl AttributePolicyFacts {
             let Value::String(value) = claim.is else {
                 continue;
             };
-            match the.as_str() {
-                "db.attribute/among" => facts.among = Some(value),
-                _ => {}
+            if the.as_str() == "db.attribute/among" {
+                facts.among = Some(value);
             }
         }
         facts
