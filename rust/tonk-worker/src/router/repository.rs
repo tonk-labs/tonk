@@ -14899,24 +14899,36 @@ route!:
     #[dialog_common::test]
     async fn an_upgrade_keeps_what_a_template_built_on_the_library() {
         let tonk = test_state().await;
-        let (key, moves) = earlier_template_space(&tonk, NOTES, TEMPLATE).await;
-        let concept = moves
-            .iter()
-            .find(|(_, now)| now.as_str().starts_with("concept:"))
-            .cloned()
-            .expect("the note concept's identity moved");
-        let attribute = moves
-            .iter()
-            .find(|(_, now)| now.as_str().starts_with("the:"))
-            .cloned()
-            .expect("the title attribute's identity moved");
-        assert_eq!(
-            routes_at(&tonk, &key, "/").await,
-            [concept.0.to_string()],
+        let library = format!("{CORE}\n{NOTES}");
+        let (key, moves) = earlier_template_space(&tonk, &library, TEMPLATE).await;
+        let notes = library_claims(NOTES, "notes")
+            .await
+            .expect("the notes analyze");
+        let declaring = |the: &str| {
+            notes
+                .durable
+                .iter()
+                .find(|claim| claim.the.to_string() == the)
+                .map(|claim| claim.of.clone())
+                .expect("the notes declare it")
+        };
+        let moved = |now: dialog_artifacts::Entity| {
+            moves
+                .iter()
+                .find(|(_, current)| *current == now)
+                .cloned()
+                .expect("its identity moved")
+        };
+        let concept = moved(declaring("db.concept.with/title"));
+        let attribute = moved(declaring("db.attribute/id"));
+        assert!(
+            routes_at(&tonk, &key, "/")
+                .await
+                .contains(&concept.0.to_string()),
             "before the upgrade the template's route names the earlier identity"
         );
 
-        assert!(install(&tonk, &key, NOTES).await, "the space is behind");
+        assert!(install(&tonk, &key, &library).await, "the space is behind");
 
         assert_eq!(
             routes_at(&tonk, &key, "/").await,
@@ -14952,6 +14964,98 @@ route!:
                 "nothing names the withdrawn identity {then}"
             );
         }
+    }
+
+    /// A template's app: one concept of its own, which its home renders.
+    const APP: &str = r#"
+concept!: &writer-app
+  description: The app.
+  with:
+    title:
+      description: The app's title.
+      the: xyz.example.app/title
+      as: text
+"#;
+
+    /// The attribute the concept `of` reads its `field` through.
+    async fn field_attribute(
+        tonk: &TonkState,
+        key: &str,
+        of: &str,
+        field: &str,
+    ) -> Option<dialog_artifacts::Entity> {
+        use futures_util::StreamExt as _;
+        let session = content(tonk, key).await;
+        let stream = session
+            .handle()
+            .claims()
+            .select(
+                dialog_artifacts::ArtifactSelector::new()
+                    .the(
+                        format!("db.concept.with/{field}")
+                            .parse()
+                            .expect("an attribute"),
+                    )
+                    .of(of.parse().expect("an entity")),
+            )
+            .perform(&tonk.operator)
+            .await
+            .expect("the claims read");
+        futures_util::pin_mut!(stream);
+        let claim = stream.next().await?.expect("a claim");
+        match claim.to_owned().expect("the claim decodes").is {
+            dialog_artifacts::Value::Entity(attribute) => Some(attribute),
+            _ => None,
+        }
+    }
+
+    /// Whether `attribute` is declared on the space.
+    async fn declared(tonk: &TonkState, key: &str, attribute: &dialog_artifacts::Entity) -> bool {
+        state_of(tonk, key, &[attribute.as_str()])
+            .await
+            .iter()
+            .any(|(the, _, _)| the == "db.attribute/id")
+    }
+
+    /// A space a discovery template seeded under the release before select
+    /// policies keeps the home the installer wrote for it through the upgrade
+    /// that moves core to this release's identities: `tonk/space` still names
+    /// `space:home`, and the home's `subject` field reads
+    /// `dialog.replica/subject`, which core declares, where core declares it
+    /// now. Before re-keying, the field named the identity the upgrade
+    /// withdrew, so the home concept could not be rebuilt and the space
+    /// rendered "Model not found".
+    #[dialog_common::test]
+    async fn an_upgrade_keeps_the_home_the_discovery_installer_wrote() {
+        let tonk = test_state().await;
+        let template = format!("{APP}\n{}", super::super::seed::home_recipe("writer-app"));
+        let (key, _) = earlier_template_space(&tonk, CORE, &template).await;
+        let earlier = field_attribute(&tonk, &key, "space:home", "subject")
+            .await
+            .expect("the home reads the subject");
+        assert!(declared(&tonk, &key, &earlier).await);
+        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["space:home"]);
+
+        assert!(install(&tonk, &key, CORE).await, "the space is behind");
+
+        assert_eq!(
+            referents(&tonk, &key, "tonk/space").await,
+            ["space:home"],
+            "the home the installer wrote is still the space's home"
+        );
+        let now = field_attribute(&tonk, &key, "space:home", "subject")
+            .await
+            .expect("the home still reads the subject");
+        assert_ne!(now, earlier, "the field follows the attribute's identity");
+        assert!(
+            declared(&tonk, &key, &now).await,
+            "the attribute the home reads is declared"
+        );
+        assert_eq!(
+            naming(&tonk, &key, &earlier).await,
+            Vec::<Triple>::new(),
+            "nothing names the identity the upgrade withdrew"
+        );
     }
 
     /// B-09: a space an agent built is upgraded from production's library to

@@ -147,8 +147,22 @@ pub(super) async fn prepare_template(reference: &str, core: &Syntax) -> Result<S
     // Starter space already defines its home. Other catalog entries rely on
     // the installer's --home option; supply the same home recipe here.
     if slug != "starter-space" {
-        let home = format!(
-            r#"concept!: &space-home
+        syntax.expressions.extend(
+            parse_source(url.clone(), &home_recipe(&template.entrypoint))
+                .await?
+                .expressions,
+        );
+    }
+    check(core, &syntax).map_err(|e| format!("Template does not fit a new space: {e}"))?;
+    Ok(syntax)
+}
+
+/// The home a template gets when it does not define one: a `space:home`
+/// concept keyed by the repository's subject, a view of it that renders
+/// `entrypoint`, and `id:tonk/space` pointed at it.
+pub(super) fn home_recipe(entrypoint: &str) -> String {
+    format!(
+        r#"concept!: &space-home
   this: space:home
   description: The space home page.
   with:
@@ -162,20 +176,13 @@ view!:
   this: space:home
   show:
     ui: |
-      <tonk-display model={} />
+      <tonk-display model={entrypoint} />
 
 name!:
   this: id:tonk/space
   entity: space:home
-"#,
-            template.entrypoint
-        );
-        syntax
-            .expressions
-            .extend(parse_source(url.clone(), &home).await?.expressions);
-    }
-    check(core, &syntax).map_err(|e| format!("Template does not fit a new space: {e}"))?;
-    Ok(syntax)
+"#
+    )
 }
 
 /// Whether a seed may be fetched from `url` at all.
