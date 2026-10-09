@@ -43,6 +43,7 @@ use zeroize::Zeroizing;
 use super::AppState;
 
 mod duplication;
+mod identity;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
 
 /// Name of the device-local meta branch every *space* repository has
@@ -4780,12 +4781,14 @@ async fn install_seed(
             installed_seed_facts(&shipped, &source, &prior, installed)
         };
         match stage_reinstall(tonk, session, &uninstall, &install, &record, &[]).await {
-            Ok(()) => {
+            Ok(moves) => {
                 log!(
-                    "seed upgrade: '{key}' moves from {prior} to {shipped}: reverted {}, installed {}",
+                    "seed upgrade: '{key}' moves from {prior} to {shipped}: reverted {}, installed {}, re-keyed {} identities",
                     uninstall.len(),
-                    install.durable.len()
+                    install.durable.len(),
+                    moves.len()
                 );
+                rekey_sites(tonk, session, &moves).await;
                 break;
             }
             Err(error) => {
@@ -4857,7 +4860,10 @@ pub(super) async fn install_fresh_from(
 /// install's version together with `own`, and publish the three at once.
 ///
 /// The uninstall commit is skipped when there is nothing to revert, as on a
-/// space's first install.
+/// space's first install. An upgrade also re-keys, in the record's commit,
+/// what the space wrote itself about an attribute or concept the library
+/// declared under an earlier identity (see [`identity`]), and returns each
+/// identity it moved.
 async fn stage_reinstall(
     tonk: &TonkState,
     session: &crate::reactor::BranchSession,
@@ -4865,7 +4871,8 @@ async fn stage_reinstall(
     install: &LibraryClaims,
     record: super::evaluate::SeedRecord<'_>,
     own: &[super::claim::RawClaim],
-) -> Result<(), dialog_repository::CommitError> {
+) -> Result<Vec<(dialog_artifacts::Entity, dialog_artifacts::Entity)>, dialog_repository::CommitError>
+{
     let operator = &tonk.operator;
     let mut first = session.handle().transaction();
     let installed = if uninstall.is_empty() {
@@ -4884,6 +4891,24 @@ async fn stage_reinstall(
             .await?
     };
     let version = installed.version();
+    let rekey = if uninstall.is_empty() {
+        None
+    } else {
+        let declared: std::collections::HashSet<dialog_artifacts::Entity> = install
+            .durable
+            .iter()
+            .map(|claim| claim.of.clone())
+            .collect();
+        let rekeyed = match identity::moves(tonk, &installed, &declared).await {
+            Ok(moves) if moves.is_empty() => Ok(None),
+            Ok(moves) => identity::rekey(tonk, &installed, moves).await.map(Some),
+            Err(error) => Err(error),
+        };
+        rekeyed.unwrap_or_else(|error| {
+            log!("seed upgrade: re-keying earlier identities skipped: {error}");
+            None
+        })
+    };
     let mut last = installed.transaction();
     for instruction in record(&version) {
         last = match instruction {
@@ -4908,13 +4933,72 @@ async fn stage_reinstall(
     for claim in own {
         last = last.assert(claim.clone());
     }
+    let mut moves = Vec::new();
+    if let Some(rekey) = rekey {
+        for claim in rekey.retract {
+            last = last.retract(claim);
+        }
+        for claim in rekey.assert {
+            last = last.assert(claim);
+        }
+        moves = rekey.moves;
+    }
     last.commit()
         .perform(operator)
         .await?
         .publish()
         .perform(operator)
         .await?;
-    Ok(())
+    Ok(moves)
+}
+
+/// Point every open tab on `session` whose route concept an upgrade moved at
+/// the concept's current identity. A tab stamped before the upgrade names the
+/// concept the uninstall withdrew, and would report it missing until reload.
+async fn rekey_sites(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+    moves: &[(dialog_artifacts::Entity, dialog_artifacts::Entity)],
+) {
+    if moves.is_empty() {
+        return;
+    }
+    let current: HashMap<_, _> = moves.iter().cloned().collect();
+    let sites: Vec<tonk_schema::Site> = match session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::Site> {
+            this: Term::var("this"),
+            path: Term::var("path"),
+            anchor: Term::var("anchor"),
+            space: Term::var("space"),
+            branch: Term::var("branch"),
+            branch_entity: Term::var("branch_entity"),
+            replica: Term::var("replica"),
+            route: Term::var("route"),
+            concept: Term::var("concept"),
+            profile_branch: Term::var("profile_branch"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+    {
+        Ok(sites) => sites,
+        Err(error) => {
+            log!("seed upgrade: open tabs not re-keyed: {error:?}");
+            return;
+        }
+    };
+    for site in sites {
+        if let Some(now) = current.get(&site.concept.0) {
+            session.state.assert_overlay(super::claim::RawClaim {
+                the: dialog_query::the!("xyz.tonk.site/concept").into(),
+                of: site.this,
+                is: dialog_artifacts::Value::Entity(now.clone()),
+                policy: dialog_artifacts::Policy::Last,
+            });
+        }
+    }
 }
 
 /// `transaction` with `install`'s claims asserted and its commands
@@ -14660,6 +14744,214 @@ name!:
             "left over from earlier libraries: {left:?}"
         );
         assert!(lacking.is_empty(), "missing after the upgrade: {lacking:?}");
+    }
+
+    /// A library of one unnamed concept over one attribute.
+    const NOTES: &str = r#"
+concept!: &note
+  description: A note.
+  with:
+    title:
+      description: The note's title.
+      the: xyz.example.note/title
+      as: text
+"#;
+
+    /// What a template writes over the library, the way the discovery
+    /// installer's home recipe does: a home concept of its own whose field
+    /// reads the library's attribute, and the space's `/` routed to the
+    /// library's concept.
+    const TEMPLATE: &str = r#"
+concept!: &space-home
+  this: space:home
+  description: The space home page.
+  with:
+    title:
+      description: The home's title.
+      the: xyz.example.note/title
+      as: text
+
+route!:
+  path: "/"
+  concept: note
+"#;
+
+    /// `claims` under the identities `earlier` maps each current one to.
+    fn under_earlier_identities(
+        claims: Vec<super::super::claim::RawClaim>,
+        earlier: &HashMap<dialog_artifacts::Entity, dialog_artifacts::Entity>,
+    ) -> Vec<super::super::claim::RawClaim> {
+        claims
+            .into_iter()
+            .map(|mut claim| {
+                if let Some(then) = earlier.get(&claim.of) {
+                    claim.of = then.clone();
+                }
+                if let dialog_artifacts::Value::Entity(entity) = &claim.is
+                    && let Some(then) = earlier.get(entity)
+                {
+                    claim.is = dialog_artifacts::Value::Entity(then.clone());
+                }
+                claim
+            })
+            .collect()
+    }
+
+    /// A space the release before select policies seeded with `library` and
+    /// then `template`: what this release writes for both, under the
+    /// identities that release gave the library's attributes and unnamed
+    /// concepts. Returns the space and each `(identity then, identity now)`.
+    async fn earlier_template_space(
+        tonk: &TonkState,
+        library: &str,
+        template: &str,
+    ) -> (
+        String,
+        Vec<(dialog_artifacts::Entity, dialog_artifacts::Entity)>,
+    ) {
+        let (key, subject) = empty_space(tonk, "Template").await;
+        let install = library_claims(library, "library")
+            .await
+            .expect("the library analyzes");
+        let mut facts: identity::Facts = HashMap::new();
+        for claim in &install.durable {
+            facts
+                .entry(claim.of.clone())
+                .or_default()
+                .push((claim.the.clone(), claim.is.clone()));
+        }
+        let moves = identity::moves_in(&facts);
+        let earlier: HashMap<_, _> = moves
+            .iter()
+            .map(|(then, now)| (now.clone(), then.clone()))
+            .collect();
+        let install = LibraryClaims {
+            durable: under_earlier_identities(install.durable, &earlier),
+            transient: install.transient,
+        };
+        let seed = seed_version(&format!(
+            "{library}\n# the release before select policies\n"
+        ));
+        let record = |installed: &dialog_artifacts::history::Version| {
+            installed_seed_facts(&seed, STANDARD_LIBRARY_URL, SEED_NONE, installed)
+        };
+        let own = repository_name_claims(&subject, "Template", None).expect("the name encodes");
+        let session = content(tonk, &key).await;
+        stage_reinstall(tonk, &session, &[], &install, &record, &own)
+            .await
+            .expect("the library installs");
+
+        let seeded = library_claims_after(Some(library), template, "template")
+            .await
+            .expect("the template analyzes");
+        let mut transaction = session.handle().transaction();
+        for claim in under_earlier_identities(seeded.durable, &earlier) {
+            transaction = transaction.assert(claim);
+        }
+        transaction
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .expect("the template commits")
+            .publish()
+            .perform(&tonk.operator)
+            .await
+            .expect("the template publishes");
+        (key, moves)
+    }
+
+    /// Every live claim on the space whose value is `entity`.
+    async fn naming(tonk: &TonkState, key: &str, entity: &dialog_artifacts::Entity) -> Vec<Triple> {
+        use futures_util::StreamExt as _;
+        let session = content(tonk, key).await;
+        let stream = session
+            .handle()
+            .claims()
+            .select(
+                dialog_artifacts::ArtifactSelector::new()
+                    .is(dialog_artifacts::Value::Entity(entity.clone())),
+            )
+            .perform(&tonk.operator)
+            .await
+            .expect("the claims read");
+        futures_util::pin_mut!(stream);
+        let mut claims = Vec::new();
+        while let Some(claim) = stream.next().await {
+            let claim = claim
+                .expect("a claim")
+                .to_owned()
+                .expect("the claim decodes");
+            claims.push((
+                claim.the.to_string(),
+                claim.of.to_string(),
+                format!("{:?}", claim.is),
+            ));
+        }
+        claims
+    }
+
+    /// A space seeded by the release before select policies keeps what its
+    /// template built on the library through the upgrade that moves the
+    /// library to the identities this release gives it: the `/` it routed
+    /// to a library concept mounts that concept, and its home concept's
+    /// field reads the library's attribute. Nothing on the branch names an
+    /// identity the upgrade withdrew.
+    #[dialog_common::test]
+    async fn an_upgrade_keeps_what_a_template_built_on_the_library() {
+        let tonk = test_state().await;
+        let (key, moves) = earlier_template_space(&tonk, NOTES, TEMPLATE).await;
+        let concept = moves
+            .iter()
+            .find(|(_, now)| now.as_str().starts_with("concept:"))
+            .cloned()
+            .expect("the note concept's identity moved");
+        let attribute = moves
+            .iter()
+            .find(|(_, now)| now.as_str().starts_with("the:"))
+            .cloned()
+            .expect("the title attribute's identity moved");
+        assert_eq!(
+            routes_at(&tonk, &key, "/").await,
+            [concept.0.to_string()],
+            "before the upgrade the template's route names the earlier identity"
+        );
+
+        assert!(install(&tonk, &key, NOTES).await, "the space is behind");
+
+        assert_eq!(
+            routes_at(&tonk, &key, "/").await,
+            [concept.1.to_string()],
+            "the template's route follows the concept to its current identity"
+        );
+        assert_eq!(
+            resolved(&tonk, &key, "/").await.as_deref(),
+            Some(concept.1.as_str()),
+            "the router mounts the concept the library now declares"
+        );
+        let concept_now = concept.1.to_string();
+        let home = state_of(&tonk, &key, &[concept_now.as_str(), "space:home"]).await;
+        let reads = |of: &str| {
+            (
+                "db.concept.with/title".to_owned(),
+                of.to_owned(),
+                format!("{:?}", dialog_artifacts::Value::Entity(attribute.1.clone())),
+            )
+        };
+        assert!(
+            home.contains(&reads(&concept_now)),
+            "the library's concept is defined at its current identity: {home:?}"
+        );
+        assert!(
+            home.contains(&reads("space:home")),
+            "the template's home reads the library's attribute at its current identity: {home:?}"
+        );
+        for (then, _) in &moves {
+            assert_eq!(
+                naming(&tonk, &key, then).await,
+                Vec::<Triple>::new(),
+                "nothing names the withdrawn identity {then}"
+            );
+        }
     }
 
     /// B-09: a space an agent built is upgraded from production's library to
