@@ -156,13 +156,14 @@ pub fn parse_attr_spec(raw: &str) -> Result<AttrSpec, AuthoringError> {
         return Err(AuthoringError::BadAttrSpec { raw: raw.into() });
     };
     let lowered = ty.to_ascii_lowercase();
+    let spelled_together = match lowered.as_str() {
+        "unsignedinteger" => Some(tonk_notation::ValueType::Natural),
+        "signedinteger" => Some(tonk_notation::ValueType::Integer),
+        _ => None,
+    };
     let type_name = tonk_notation::ValueType::from_anchor(&lowered)
         .or_else(|| tonk_notation::ValueType::from_wire(ty))
-        .or_else(|| match lowered.as_str() {
-            "unsignedinteger" => Some(tonk_notation::ValueType::Natural),
-            "signedinteger" => Some(tonk_notation::ValueType::Integer),
-            _ => None,
-        })
+        .or(spelled_together)
         .map(|kind| kind.anchor())
         .filter(|anchor| VALID_TYPES.contains(anchor))
         .ok_or_else(|| AuthoringError::BadType {
