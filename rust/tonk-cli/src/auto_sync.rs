@@ -217,14 +217,32 @@ async fn pull_before(site: &TonkSite) {
     }
 }
 
+/// Push attempts after a write before giving up on an upstream that
+/// keeps moving.
+pub const PUSH_ATTEMPTS: u32 = 5;
+
 /// Push the local branch to its upstream after a write. A missing
 /// upstream is a silent skip; any other failure is a warning — the
 /// local write is already committed.
+///
+/// Another writer may have moved the upstream since the pull before
+/// the write. The push is then refused as a non-fast-forward, so this
+/// pulls, merging both sides' facts, and pushes again, up to
+/// [`PUSH_ATTEMPTS`] times.
 async fn push_after(site: &TonkSite) -> (&'static str, Option<SyncError>) {
-    match sync::push(site).await {
-        Ok(_) => ("pushed", None),
-        Err(SyncError::UpstreamNotConfigured { .. }) => ("no-upstream", None),
-        Err(error) => ("failed", Some(error)),
+    let mut attempt = 1;
+    loop {
+        match sync::push(site).await {
+            Ok(_) => return ("pushed", None),
+            Err(SyncError::UpstreamNotConfigured { .. }) => return ("no-upstream", None),
+            Err(SyncError::NonFastForward) if attempt < PUSH_ATTEMPTS => {
+                attempt += 1;
+                if let Err(error) = sync::pull(site).await {
+                    return ("failed", Some(error));
+                }
+            }
+            Err(error) => return ("failed", Some(error)),
+        }
     }
 }
 

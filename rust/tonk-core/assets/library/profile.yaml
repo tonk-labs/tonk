@@ -2240,6 +2240,8 @@ concept!: &account/passkey
 view!:
   this: tonk:account/registered
   show:
+    link-email: |
+      <span data-link-account>{email}</span>
     email: |
       <div class="settings-field">
         <span>account email</span>
@@ -2882,15 +2884,20 @@ view!:
                   </div>
                 </div>
                 <div class="pane" data-pane="link" hidden data-link-approval>
-                  <div class="sect" data-link-heading>a terminal is asking for access</div>
-                  <div class="srowd"><span>name</span><b data-link-name></b></div>
-                  <div class="srowd"><span>goes to</span><b class="lft" data-link-return></b></div>
-                  <div class="srowd"><span>account</span><b class="lft" data-link-account></b></div>
-                  <div class="srowd"><span>device</span><b class="lft" data-link-did></b></div>
+                  <h2 class="link-heading" data-link-heading>connect to your Tonk account</h2>
+                  <dl class="link-details">
+                    <div><dt>name</dt><dd data-link-name></dd></div>
+                    <div><dt>account</dt><dd>
+                      <tonk-display model="tonk:account/registered" view="link-email">
+                        <span slot="loading">loading account…</span>
+                        <span slot="no-entity">account email unavailable</span>
+                      </tonk-display>
+                    </dd></div>
+                  </dl>
                   <p class="expl" data-link-explanation>
-                    approving gives that terminal the same access to your account as this
-                    browser: every space, on every device. decline if you did not request
-                    account access from this device yourself.
+                    approving gives this connection the same access to your account as this
+                    browser: every space, on every device. only approve if you started
+                    this connection yourself.
                   </p>
                   <div class="link-foot">
                     <button class="m-cancel" type="button" data-link-decline>decline</button>
@@ -5342,7 +5349,7 @@ element!: &account-settings
         const audience = params.get('audience');
         const callback = params.get('callback');
         if (!audience || !callback) return null;
-        const name = (params.get('name') ?? '').trim() || 'terminal';
+        const name = (params.get('name') ?? '').trim() || 'Tonk connection';
         return { audience, callback, name, expectedAccount: params.get('expectedAccount') };
       }
     # An https callback is a page on another deployment signing a browser
@@ -5468,17 +5475,10 @@ element!: &account-settings
           self.connectionsRefresh();
           return;
         }
-        // A web callback is a page on another deployment, and approving
-        // sends the grant there: name the page, not a terminal.
-        const page = self.webCallback(request.callback);
-        self.text('[data-link-heading]', page ? `${new URL(page).host} is asking for access` : 'a terminal is asking for access');
-        self.text('[data-link-return]', page ?? 'this computer');
-        self.text('[data-link-explanation]', page
-          ? `approving signs that page into your account as a new device, with the same access as this browser: every space, on every device. decline if you did not ask ${new URL(page).host} to sign in yourself.`
-          : 'approving gives that terminal the same access to your account as this browser: every space, on every device. decline if you did not request account access from this device yourself.');
+        self.text('[data-link-heading]', 'connect to your Tonk account');
+        self.text('[data-link-explanation]',
+          'approving gives this connection the same access to your account as this browser: every space, on every device. only approve if you started this connection yourself.');
         self.text('[data-link-name]', request.name);
-        self.text('[data-link-did]', request.audience);
-        self.text('[data-link-account]', request.expectedAccount ?? 'your signed-in account');
         const approve = self.querySelector('[data-link-approve]');
         if (approve) {
           approve.dataset.audience = request.audience;
@@ -5660,14 +5660,14 @@ element!: &account-settings
         const detail = row.dataset.ceremonyDetail ?? '';
         const subject = {
           'delete-account': 'Deleting the account',
-          'authorize-device': 'Approving the terminal',
+          'authorize-device': 'Approving the connection',
           'add-passkey': 'Adding the passkey',
           'sign-in-via': 'Signing in',
         }[which];
         if (!subject) return;
         const done = {
           'delete-account': 'Account deleted.',
-          'authorize-device': 'Approved. Handing the terminal its access…',
+          'authorize-device': 'Approved. Completing the connection…',
           'sign-in-via': 'Signed in.',
         }[which] ?? 'Done.';
         const text = {
