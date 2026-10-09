@@ -94,20 +94,50 @@ pub(crate) async fn receive(
         return;
     };
 
-    let context_current = match source.as_ref() {
-        Some(client) => {
-            let tonk = state.read().await;
-            super::session::client_context_is_current(&tonk, client).await
-        }
-        None => true,
-    };
-    let answer = if !context_current {
-        Err("profile changed; reload required".to_string())
+    // Only device approval opts into progress. Keep other custody ceremonies
+    // on their established protocol and lifetime.
+    let request = js_sys::Reflect::get(&data, &"request".into()).unwrap_or(JsValue::UNDEFINED);
+    let approval = js_sys::Reflect::get(&request, &"kind".into())
+        .ok()
+        .and_then(|value| value.as_string())
+        .as_deref()
+        == Some("authorize-device");
+    let progress_requested = js_sys::Reflect::get(&data, &"progress".into())
+        .ok()
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    // The guard is owned by receive and its message event's waitUntil. Its
+    // progress is independent of background sync and stops on every exit.
+    let _progress = if approval && progress_requested {
+        tonk_identity::handoff::CustodyProgress::start(&port).ok()
     } else {
-        match custodian_from(&data).await {
-            Ok(custodian) => perform(state, source.as_ref(), &data, custodian).await,
-            Err(error) => Err(error),
+        None
+    };
+    let operation = async {
+        let context_current = match source.as_ref() {
+            Some(client) => {
+                let tonk = state.read().await;
+                super::session::client_context_is_current(&tonk, client).await
+            }
+            None => true,
+        };
+        if !context_current {
+            Err("profile changed; reload required".to_string())
+        } else {
+            match custodian_from(&data).await {
+                Ok(custodian) => perform(state, source.as_ref(), &data, custodian).await,
+                Err(error) => Err(error),
+            }
         }
+    };
+    // Bound the WHOLE approval, including lock waits, key import and status
+    // publication. Dropping it prevents a late success after this reply.
+    // Leave room inside the receivers' five-minute lifetime for the passkey
+    // and for importing the published grant.
+    let answer = if approval {
+        authorization_deadline(operation, web_time::Duration::from_secs(120)).await
+    } else {
+        operation.await
     };
 
     let reply = js_sys::Object::new();
@@ -136,6 +166,73 @@ pub(crate) async fn receive(
     }
     if let Err(error) = port.post_message(&reply) {
         log!("custody: the reply did not post: {error:?}");
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn authorization_deadline<T>(
+    operation: impl std::future::Future<Output = Result<T, String>>,
+    timeout: web_time::Duration,
+) -> Result<T, String> {
+    let deadline = crate::sleep(timeout);
+    match futures_util::future::select(std::pin::pin!(operation), std::pin::pin!(deadline)).await {
+        futures_util::future::Either::Left((outcome, _)) => outcome,
+        futures_util::future::Either::Right(_) => Err(
+            "The connection took too long to finish. Start a new connection and try again.".into(),
+        ),
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod deadline_tests {
+    use super::authorization_deadline;
+    use std::{cell::Cell, rc::Rc};
+    use web_time::Duration;
+
+    #[dialog_common::test]
+    async fn approval_deadline_cancels_work_before_it_can_report_late_success() {
+        struct Dropped(Rc<Cell<bool>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let dropped = Rc::new(Cell::new(false));
+        let completed = Rc::new(Cell::new(false));
+        let guard = Dropped(dropped.clone());
+        let finish = completed.clone();
+        let operation = async move {
+            let _guard = guard;
+            crate::sleep(Duration::from_millis(50)).await.unwrap();
+            finish.set(true);
+            Ok(String::from("callback"))
+        };
+        let result = authorization_deadline(operation, Duration::from_millis(5)).await;
+        assert!(result.unwrap_err().contains("took too long"));
+        assert!(
+            dropped.get(),
+            "the worker operation must be cancelled, not detached"
+        );
+        crate::sleep(Duration::from_millis(75)).await.unwrap();
+        assert!(
+            !completed.get(),
+            "a timed-out approval must never report DONE later"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn approval_deadline_preserves_completed_results_and_refusals() {
+        for expected in [
+            Ok(String::from("callback")),
+            Err(String::from("wrong account")),
+        ] {
+            let result = authorization_deadline(
+                std::future::ready(expected.clone()),
+                Duration::from_millis(100),
+            )
+            .await;
+            assert_eq!(result, expected);
+        }
     }
 }
 

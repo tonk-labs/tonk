@@ -22,7 +22,13 @@ async fn report_to(tonk: &TonkState, entity: &str, ceremony: &str, state: &str, 
     let Ok(this) = entity.parse::<dialog_artifacts::Entity>() else {
         return;
     };
-    log!("{ceremony}: {state} {detail}");
+    // The successful authorization detail is a callback carrying a grant.
+    // It belongs in the response, never in diagnostic logs.
+    if ceremony == ceremony::AUTHORIZE_DEVICE && state == ceremony_state::DONE {
+        log!("{ceremony}: {state}");
+    } else {
+        log!("{ceremony}: {state} {detail}");
+    }
     if let Err(error) = tonk
         .reactor
         .profile_repository()
@@ -260,8 +266,11 @@ pub(crate) async fn authorize_device(
     custodian: &tonk_identity::custodian::Custodian,
     authorization: tonk_worker_api::DeviceAuthorization,
 ) -> Result<String, String> {
+    let mut timing = super::link_timing::LinkTiming::new("approval", "authorize");
     let outcome = authorize_device_inner(state, custodian, &authorization).await;
+    timing.next("status-lock");
     let tonk = state.read().await;
+    timing.next("publish-status");
     match &outcome {
         Ok(target) => {
             report_authorization(&tonk, &authorization, ceremony_state::DONE, target).await
@@ -270,6 +279,7 @@ pub(crate) async fn authorize_device(
             report_authorization(&tonk, &authorization, ceremony_state::FAILED, error).await
         }
     }
+    timing.next("reply");
     outcome
 }
 
@@ -281,15 +291,20 @@ async fn authorize_device_inner(
 ) -> Result<String, String> {
     use dialog_varsig::Principal as _;
 
+    let mut timing = super::link_timing::LinkTiming::new("approval-work", "start-status");
+
     {
         let tonk = state.read().await;
         report_authorization(&tonk, authorization, ceremony_state::WORKING, "").await;
     }
+    timing.next("custody-read");
     let account = super::custody::held_account(custodian).await?;
+    timing.next("derive-signer");
     let dialog_credentials::Signer::Ed25519(root) = account
         .signer()
         .await
         .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
+    timing.next("local-root");
     let linked = {
         let tonk = state.read().await;
         super::identity::local_root(&tonk)
@@ -317,12 +332,14 @@ async fn authorize_device_inner(
     // the account registered with, so every attach path hands out the
     // one recorded address. Only an unattached profile falls back to
     // the deployment's own endpoint.
+    timing.next("provider");
     let remote = {
         let tonk = state.read().await;
         super::account::provider(&tonk)
             .await
             .unwrap_or_else(|| format!("{}ucan/", origin))
     };
+    timing.next("sign-grant");
     let authorized = tonk_identity::ceremony::authorize_device(root, audience, &remote)
         .await
         .map_err(|error| format!("the device grant did not sign: {error:#}"))?;
@@ -330,6 +347,7 @@ async fn authorize_device_inner(
     // member, which this browser is and the waiting device is not:
     // register it here, before the grant is delivered, so a device that
     // installs the grant is already listed and able to reach the service.
+    timing.next("register-device");
     let registered = super::account_devices::register(
         axum::extract::State(state.clone()),
         axum::Json(super::account_devices::RegisterDeviceRequest {
@@ -340,6 +358,7 @@ async fn authorize_device_inner(
     )
     .await
     .map_err(|error| format!("the device was not registered: {error}"))?;
+    timing.next("encode-callback");
     let attachment_id = registered
         .0
         .get("attachmentId")
