@@ -1,0 +1,24 @@
+{
+  "name": "@tonk/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test",
+    "start": "node server.mjs",
+    "check:desktop": "node scripts/sync-desktop.mjs --check",
+    "build:ui": "node scripts/build-ui.mjs",
+    "pretest": "npm run build:ui"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.0",
+    "esbuild": "0.24.2"
+  }
+}

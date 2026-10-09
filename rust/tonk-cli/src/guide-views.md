@@ -48,6 +48,77 @@ home is blank. Label and title views do not. `--home` explicitly replaces an
 existing home with this one concept's directory and commits the view plus home
 change atomically. Without it, an existing home is always preserved.
 
+## Home page from inline notation
+
+Creating a directory facet alone does not change `/`. The automatic home
+behavior above belongs to the CLI authoring command, not an arbitrary
+`view!:` assertion through `/evaluate` or MCP.
+
+First inspect the existing home with this read-only query:
+
+```yaml tonk=parse
+name:
+  this: id:tonk/space
+```
+
+If it points to `tonk:blank`, and the user wants the app on the home page,
+use the following recipe. It assumes an existing `integration-task` model
+with a `directory` facet; substitute your model name. Preserve an existing
+custom home unless the user requests replacing it. No special homepage MCP
+tool is needed: submit this notation through `tonk_evaluate`.
+
+<!-- tested-example: space-home -->
+```yaml tonk=parse
+concept!: &space-home
+  this: space:home
+  description: The space home page
+  with:
+    subject:
+      description: The repository subject
+      the: dialog.replica/subject
+      as: entity
+
+view!:
+  this: space:home
+  show:
+    ui: |
+      <tonk-display model=integration-task></tonk-display>
+
+name!:
+  this: id:tonk/space
+  entity: space:home
+```
+
+Read back `name: { this: id:tonk/space }`, then open `/`. The home uses the
+repository context; do not create a fabricated task as the home entity.
+Opening `/<model>` instead reaches the model directory without changing home.
+
+## Checkbox state and directory rows
+
+Bind stored booleans to the checkbox property with `checked={done}`.
+A bare `{done}` in the input tag does not bind checked state. Native inputs
+change visually on click even without saving; verify persistence by reading
+records and reloading the view. The `onchange` command handles the write
+separately (see the events guide).
+
+This example assumes `integration-task` has `title` and boolean `done` fields.
+It displays saved state; add the event handler only after defining its command
+and rule.
+
+<!-- tested-example: task-views -->
+```yaml tonk=parse
+view!:
+  this: integration-task
+  show:
+    ui: |
+      <label><input type="checkbox" checked={done}> {title}</label>
+    directory: |
+      <section><h2>Tasks</h2><tonk-display model=integration-task view=ui></tonk-display></section>
+```
+
+The directory's nested display explicitly selects `view=ui`. Omitting it
+selects `directory` again, recursively rendering the same template.
+
 ## `<tonk-display>` — one entity through a view
 
 `<tonk-display entity=<uri> model=<concept> view=<facet>>`
