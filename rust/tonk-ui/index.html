@@ -285,25 +285,8 @@
        theme from `.wa-light` / `.wa-dark` on the root element; toggle
        the class immediately (before paint) and keep it in sync with
        `prefers-color-scheme` changes. -->
-        <script>
-            (() => {
-                // Activate the default theme with the shoelace palette. Light/dark
-                // is toggled reactively on `prefers-color-scheme` changes.
-                document.documentElement.classList.add(
-                    "wa-theme-default",
-                    "wa-palette-shoelace",
-                );
-
-                const mq = window.matchMedia("(prefers-color-scheme: dark)");
-                const apply = (isDark) => {
-                    const cls = document.documentElement.classList;
-                    cls.toggle("wa-dark", isDark);
-                    cls.toggle("wa-light", !isDark);
-                };
-                apply(mq.matches);
-                mq.addEventListener("change", (e) => apply(e.matches));
-            })();
-        </script>
+        <link data-trunk rel="copy-file" href="./assets/space-theme.js" />
+        <script src="/space-theme.js"></script>
 
         <!-- Must define `serviceWorkerActivates` before the Wasm blob loads:
          the shell awaits it before issuing any /api/* fetch. -->

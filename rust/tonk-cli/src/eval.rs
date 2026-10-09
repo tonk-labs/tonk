@@ -177,6 +177,32 @@ pub async fn run_documents(
     sources: Vec<Source>,
     options: Options,
 ) -> Result<Outcome, EvalError> {
+    run_documents_with_revision(site, sources, options, None).await
+}
+
+/// Apply durable notation only at the exact revision previously previewed.
+/// The caller serializes access to the site's branch handle. Never replay an
+/// uncertain publication against a different revision.
+pub async fn run_conditional(
+    site: &TonkSite,
+    document: String,
+    expected_revision: Option<dialog_repository::Revision>,
+) -> Result<Outcome, EvalError> {
+    run_documents_with_revision(
+        site,
+        vec![Source::Inline(document)],
+        Options::default(),
+        Some(expected_revision),
+    )
+    .await
+}
+
+async fn run_documents_with_revision(
+    site: &TonkSite,
+    sources: Vec<Source>,
+    options: Options,
+    expected_revision: Option<Option<dialog_repository::Revision>>,
+) -> Result<Outcome, EvalError> {
     let several = sources.len() > 1;
     let mut documents = Vec::new();
     for source in sources {
@@ -201,6 +227,11 @@ pub async fn run_documents(
         .map_err(|e| EvalError::Io(format!("acquire branch: {e}")))?;
     let branch = session.handle();
     let revision_before = branch.revision();
+    if let Some(expected) = &expected_revision
+        && expected != &revision_before
+    {
+        return Err(EvalError::Commit("The space changed since preview. Nothing was applied by this request. Read and preview again.".into()));
+    }
 
     let mut txn = branch.transaction();
     let mut writes = false;
@@ -226,6 +257,9 @@ pub async fn run_documents(
             .perform(&site.operator)
             .await
             .map_err(|e| named(map_evaluate_error(e)))?;
+        if expected_revision.is_some() && !evaluated.transients.is_empty() {
+            return Err(EvalError::Analyze("Conditional builds accept durable changes only; transient commands are unavailable.".into()));
+        }
         for blob in &blobs {
             evaluated.txn = crate::blob::describe(evaluated.txn, blob);
         }

@@ -93,3 +93,16 @@ Not checkable without a product decision:
 - Exact CLI exit-code taxonomy beyond currently pinned cancellation behavior.
 - Atomic output-file guarantees for render/export and other file-producing
   commands.
+
+## Hosted ChatGPT integration
+
+Evidence recorded on 2026-10-09 for the integration based on `3b4516e88`;
+review branch integrates main at `4c4588d26`. Source and native checks do not
+replace browser evidence. The user's acceptance was on the development service,
+not the merged review build. `WEB-03` is the shared browser space-home
+reference, not a screenshot of ChatGPT; no ChatGPT capture is claimed.
+
+| ID | P | Condition | Claim | Setup | Steps | Expected | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `MCP-01` | P1 | ChatGPT + browser | An account-ready user can build and use an app through the ordinary Tonk frontend. | Development connector, approved account, disposable fresh space. | 1. Connect and select space.<br>2. Ask for a tracker with three tasks and working checkboxes using an ordinary prompt.<br>3. Toggle, reload and compare the browser runtime. | Three records remain; views and home resolve; checked state matches saved booleans; unrelated data preserved. | User confirmed fresh-prompt success and earlier checkbox/browser behavior on 2026-10-09. Native test executes the documented home and checkbox recipes. Not independently captured as an automated browser journey. |
+| `MCP-02` | P1 | idle + restart + fault | Recover without replaying an uncertain write or extending expired authority. | Same connection; independently readable remote; injected response loss. | 1. Idle past access expiry.<br>2. Replace container.<br>3. Interrupt write response.<br>4. Reach fixed connection expiry and revoke access.<br>5. Inspect saved data before any retry. | Valid sessions recover; expired/revoked authority rejected; ambiguous write is not replayed. | Unit/native coverage and earlier user-observed restart recovery only; full multi-tab, expiry, revocation and fault journey remains unverified. |

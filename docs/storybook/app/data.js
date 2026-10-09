@@ -816,6 +816,14 @@ window.STORYBOOK_DATA = {
       "id": "UI-05",
       "title": "Recover from service-worker or deployment failure; inspect /doctor and copy an agent debug bundle.",
       "variants": "Missing env, wrong origins/DIDs, worker exception, stale cache, no controller, unavailable clipboard."
+    },
+    {
+      "evidence": "Development acceptance reported by the user on 2026-10-09; native and MCP tests. See verification.",
+      "gaps": "Automated browser end-to-end, long idle, expiry, multi-tab, revocation and interrupted publication; not fully covered.",
+      "group": "Hosted ChatGPT integration",
+      "id": "MCP-01",
+      "title": "Connect an account, select a space, build an app and use it in the embedded Tonk frontend.",
+      "variants": "Unconnected; pending approval; registered/account ready (I4); selected space; saved locally; published; expired session."
     }
   ],
   "schemaVersion": 1,
@@ -880,7 +888,8 @@ window.STORYBOOK_DATA = {
         "SPACE-09",
         "DATA-02",
         "DATA-09",
-        "UI-04"
+        "UI-04",
+        "MCP-01"
       ],
       "name": "Space home",
       "source_paths": [
@@ -2392,12 +2401,28 @@ window.STORYBOOK_DATA = {
       "id": "UI-12",
       "priority": "P1",
       "result": "Node contracts and isolated Chrome fixtures passed. Full Trunk/installed-worker lifecycle, actual account services, Safari and hosted behavior unrun."
+    },
+    {
+      "claim": "An account-ready user can build and use an app through the ordinary Tonk frontend.",
+      "device": "ChatGPT + browser",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "MCP-01",
+      "priority": "P1",
+      "result": "User confirmed fresh-prompt success and earlier checkbox/browser behavior on 2026-10-09. Native test executes the documented home and checkbox recipes. Not independently captured as an automated browser journey."
+    },
+    {
+      "claim": "Recover without replaying an uncertain write or extending expired authority.",
+      "device": "idle + restart + fault",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "MCP-02",
+      "priority": "P1",
+      "result": "Unit/native coverage and earlier user-observed restart recovery only; full multi-tab, expiry, revocation and fault journey remains unverified."
     }
   ],
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 14,
+    "other": 16,
     "pass": 2,
     "unrun": 107
   },

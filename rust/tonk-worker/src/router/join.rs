@@ -1248,7 +1248,7 @@ pub(crate) async fn mount_replica(
         Err(_) => {
             let space_credential = tonk_account::peer::mount_verifier(
                 tonk.profile.storage(),
-                crate::device::space_location(&key),
+                tonk.registry.space_location(&key),
                 subject,
             )
             .await
@@ -1324,7 +1324,7 @@ pub(crate) async fn mount_replica_with_configuration(
         Err(_) => {
             let space_credential = tonk_account::peer::mount_verifier(
                 tonk.profile.storage(),
-                crate::device::space_location(&key),
+                tonk.registry.space_location(&key),
                 subject,
             )
             .await

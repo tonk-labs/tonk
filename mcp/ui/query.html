@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tonk query</title>
+<style>
+  :root { color-scheme: light dark; font: 15px/1.5 system-ui, sans-serif; }
+  body { margin: 0; padding: 20px; color: light-dark(#242421, #eeeeea); background: light-dark(#fafaf7, #21211f); }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  h1 { font-size: 19px; margin: 0; } h2 { font-size: 16px; margin: 24px 0 8px; }
+  p { margin: 8px 0; color: light-dark(#62625a, #babab0); }
+  button { font: inherit; color: inherit; background: transparent; border: 1px solid light-dark(#b5b5aa, #77776f); border-radius: 8px; padding: 9px 15px; min-height: 44px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .scroll { overflow-x: auto; } table { border-collapse: collapse; width: 100%; text-align: left; }
+  th, td { border-bottom: 1px solid light-dark(#deded5, #474741); padding: 10px 12px; vertical-align: top; overflow-wrap: anywhere; }
+  th { font-weight: 600; } td { max-width: 400px; } #status { min-height: 23px; }
+</style>
+<header><h1>Tonk</h1><button id="refresh" disabled>Refresh</button></header>
+<p id="status" role="status">Connecting to Tonk…</p>
+<main id="results"></main>
+<script type="module">
+  const results = document.querySelector('#results');
+  const status = document.querySelector('#status');
+  const refresh = document.querySelector('#refresh');
+  const pending = new Map();
+  let nextId = 0, query, ready = false, busy = false;
+  function request(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = ++nextId;
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error('The connection timed out. Try refreshing.')); }, 65000);
+      pending.set(id, { resolve, reject, timer });
+      parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
+    });
+  }
+  function element(tag, text) { const node = document.createElement(tag); node.textContent = text; return node; }
+  function render(response) {
+    if (response?.isError) throw new Error(response.content?.find(item => item.type === 'text')?.text || 'Could not read the space.');
+    const data = response?.structuredContent;
+    if (!Array.isArray(data?.matches) || typeof data.document !== 'string') return;
+    query = data.document;
+    results.replaceChildren();
+    let total = 0;
+    for (const block of data.matches) {
+      const rows = Array.isArray(block.results) ? block.results : [];
+      total += rows.length;
+      results.append(element('h2', block.label));
+      if (!rows.length) { results.append(element('p', 'No matching records.')); continue; }
+      const fields = [...new Set(rows.flatMap(row => Object.keys(row.fields || {})))];
+      const table = document.createElement('table');
+      const head = document.createElement('thead');
+      const headings = document.createElement('tr');
+      for (const field of fields.length ? fields : ['Record']) {
+        const cell = element('th', field); cell.scope = 'col'; headings.append(cell);
+      }
+      const hasLinks = rows.some(row => row.url);
+      if (hasLinks) headings.append(element('th', 'Open'));
+      head.append(headings); table.append(head);
+      const body = document.createElement('tbody');
+      for (const row of rows) {
+        const tr = document.createElement('tr');
+        for (const value of fields.length ? fields.map(field => row.fields?.[field]) : [row.this]) {
+          tr.append(element('td', value == null ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value)));
+        }
+        if (hasLinks) {
+          const cell = document.createElement('td');
+          if (row.url) {
+            const url = new URL(row.url);
+            if (url.origin === 'https://tonk.foundation' && url.pathname.startsWith('/space/') && !url.search && !url.hash) {
+              const link = element('a', 'Open in Tonk'); link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer';
+              link.addEventListener('click', event => { if (window.openai?.openExternal) { event.preventDefault(); window.openai.openExternal({ href: link.href, redirectUrl: false }); } });
+              cell.append(link);
+            }
+          }
+          tr.append(cell);
+        }
+        body.append(tr);
+      }
+      table.append(body);
+      const scroll = document.createElement('div'); scroll.className = 'scroll'; scroll.append(table); results.append(scroll);
+    }
+    status.textContent = `${total} ${total === 1 ? 'record' : 'records'} · Read from Tonk`;
+    refresh.disabled = !ready || busy;
+  }
+  addEventListener('message', event => {
+    if (event.source !== parent || event.data?.jsonrpc !== '2.0') return;
+    const message = event.data;
+    if (message.id != null && pending.has(message.id)) {
+      const item = pending.get(message.id); pending.delete(message.id); clearTimeout(item.timer);
+      message.error ? item.reject(new Error(message.error.message || 'Connection failed.')) : item.resolve(message.result);
+    } else if (message.method === 'ui/notifications/tool-result') {
+      try { render(message.params); } catch (error) { status.textContent = error.message; }
+    }
+  });
+  refresh.addEventListener('click', async () => {
+    if (!ready || busy || !query) return;
+    busy = true; refresh.disabled = true; status.textContent = 'Refreshing…';
+    try { render(await request('tools/call', { name: 'tonk_show_query', arguments: { document: query } })); }
+    catch (error) { status.textContent = error.message; }
+    finally { busy = false; refresh.disabled = !ready || !query; }
+  });
+  try {
+    await request('ui/initialize', { appInfo: { name: 'tonk', version: '0.1.0' }, appCapabilities: {}, protocolVersion: '2026-01-26' });
+    ready = true; refresh.disabled = !query;
+    if (!query) status.textContent = 'Waiting for query results…';
+    parent.postMessage({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} }, '*');
+  } catch (error) { status.textContent = error.message; }
+</script>
+</html>

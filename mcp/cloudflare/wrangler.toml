@@ -1,0 +1,38 @@
+name = "tonk-mcp-test"
+main = "worker.mjs"
+compatibility_date = "2026-10-07"
+account_id = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
+workers_dev = true
+routes = []
+
+[[containers]]
+class_name = "TonkRuntime"
+image = "./Dockerfile.worker"
+image_build_context = "../.."
+max_instances = 1
+instance_type = "basic"
+
+[[durable_objects.bindings]]
+name = "RUNTIME"
+class_name = "TonkRuntime"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TonkRuntime"]
+
+[[r2_buckets]]
+binding = "CHECKPOINTS"
+bucket_name = "tonk-mcp-test-checkpoints"
+
+# Set these through `wrangler secret put --config mcp/cloudflare/wrangler.toml`:
+# TONK_MCP_ISSUER, TONK_MCP_SPACE, TONK_MCP_CLIENT_ID, TONK_MCP_REDIRECT_URI.
+# Use the exact callback displayed by ChatGPT. No guessed redirect or default
+# space is accepted. Logs are disabled to avoid recording OAuth callback URLs.
+[observability]
+enabled = false
+
+[assets]
+directory = "../public"
+binding = "ASSETS"
+run_worker_first = true
+html_handling = "none"

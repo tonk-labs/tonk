@@ -89,6 +89,39 @@ async fn list_and_pull_choose_the_first_alias_for_a_local_subject() -> Result<()
 }
 
 #[tokio::test]
+async fn explicit_tenant_config_lists_and_opens_only_its_own_registry() -> Result<()> {
+    let first = common::AccountFixture::new().await?;
+    let second = common::AccountFixture::new().await?;
+    let site =
+        TonkSite::init_at_with(&first.tmp.path().join("source"), first.config.clone()).await?;
+    configure_upstream(&site, "http://127.0.0.1:9/ucan/").await?;
+    let mut registry = first.store.load()?;
+    registry
+        .spaces
+        .insert("garden".into(), SpaceEntry::at(site.root.canonicalize()?));
+    first.store.save(&registry)?;
+    account_spaces::record_site_in("garden", &site, &first.store).await?;
+
+    let rows = account_spaces::list_with_config(&first.config).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].local_name.as_deref(), Some("garden"));
+    assert!(
+        account_spaces::list_with_config(&second.config)
+            .await?
+            .is_empty()
+    );
+    let pulled = account_spaces::pull_with_config(&first.config, &rows[0].subject, None).await?;
+    assert!(pulled.already_local);
+    assert_eq!(pulled.site, site.root.canonicalize()?);
+    let error = account_spaces::pull_with_config(&second.config, &rows[0].subject, None)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("no mount record"), "{error:#}");
+    assert!(second.store.load()?.spaces.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn pull_rejects_an_ambiguous_directory_name_with_exact_subjects() -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
     let first = fixture
@@ -365,8 +398,7 @@ async fn pull_from_a_live_access_service_syncs_the_canonical_unbound_site(
         account_spaces::RecordOutcome::Recorded
     );
 
-    let outcome =
-        account_spaces::pull(&fixture.profile, &fixture.store, subject.as_ref(), None).await?;
+    let outcome = account_spaces::pull_with_config(&fixture.config, subject.as_ref(), None).await?;
     assert!(outcome.warning.is_none(), "{:?}", outcome.warning);
     assert_eq!(
         outcome.site,
@@ -410,6 +442,86 @@ async fn pull_from_a_live_access_service_syncs_the_canonical_unbound_site(
     assert_eq!(registry.spaces.len(), 1);
     assert_eq!(registry.spaces["garden"].site, outcome.site);
     assert!(registry.bindings.is_empty());
+
+    // The hosted path opens through an explicit profile, refreshes even a
+    // cached registration, and executes with account-bound remote authority.
+    let mut hosted_config = fixture.config.clone();
+    hosted_config.require_account = true;
+    let mut runtime =
+        tonk_cli::mcp_runtime::Runtime::open_account_space(&hosted_config, &subject).await?;
+    let document = format!(
+        "{}\n{}\ntask!:\n  this: urn:task:hosted\n  title: Hosted account task\n  done: false\n",
+        common::ATTRIBUTE_DECL,
+        common::CONCEPT_DECL
+    );
+    let preview = runtime
+        .call("tonk_preview", serde_json::json!({"document": document}))
+        .await?;
+    runtime
+        .call(
+            "tonk_apply",
+            serde_json::json!({"document": document, "expectedRevision": preview["revision"]}),
+        )
+        .await?;
+    runtime.push().await?;
+    tonk_cli::sync::pull(&source).await?;
+    let mut source_runtime = tonk_cli::mcp_runtime::Runtime::new(source);
+    let read = source_runtime
+        .call("tonk_query", serde_json::json!({"document": "task:\n"}))
+        .await?;
+    assert_eq!(
+        read["matches"][0]["results"][0]["fields"]["title"],
+        "Hosted account task"
+    );
+    let revision = runtime
+        .call("tonk_query", serde_json::json!({"document": "task:\n"}))
+        .await?["revision"]
+        .clone();
+    drop(runtime);
+    let mut reopened =
+        tonk_cli::mcp_runtime::Runtime::open_account_space(&hosted_config, &subject).await?;
+    assert_eq!(
+        reopened
+            .call("tonk_query", serde_json::json!({"document": "task:\n"}))
+            .await?["revision"],
+        revision
+    );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn hosted_open_rejects_a_cached_space_without_signed_membership(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let fixture = common::AccountFixture::new().await?;
+    fixture.activate_with(&env).await?;
+    let source = TonkSite::init_at_with(
+        &fixture.tmp.path().join("unrostered"),
+        fixture.config.clone(),
+    )
+    .await?;
+    let subject = source.repository.did();
+    env.provision_subject(subject.as_str()).await?;
+    configure_upstream(&source, &env.access_service_url).await?;
+    tonk_cli::sync::push(&source).await?;
+    account_spaces::record_site_in("unrostered", &source, &fixture.store).await?;
+    let mut registry = fixture.store.load()?;
+    registry.spaces.insert(
+        "unrostered".into(),
+        SpaceEntry::at(source.root.canonicalize()?),
+    );
+    fixture.store.save(&registry)?;
+    let mut config = fixture.config.clone();
+    config.require_account = true;
+    let result = tonk_cli::mcp_runtime::Runtime::open_account_space(&config, &subject).await;
+    let error = match result {
+        Ok(_) => anyhow::bail!("cached registration bypassed membership"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("no signed membership"),
+        "{error:#}"
+    );
     Ok(())
 }
 

@@ -1,0 +1,113 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Tonk space</title>
+<style>html,body{height:100%;margin:0;color-scheme:light dark}body{display:flex;flex-direction:column}#error{margin:0;padding:12px;font:14px system-ui}#error[hidden]{display:none}iframe{flex:1;min-height:560px;border:0;width:100%}</style>
+<p id="error" role="alert" hidden></p>
+<iframe title="Tonk space" sandbox="allow-scripts allow-forms"></iframe>
+<script>
+(()=>{
+const origin='https://tonk-mcp-test.tonk.workers.dev',frame=document.querySelector('iframe'),errorMessage=document.querySelector('#error');
+let route,session,pack,port,serial=0,rpcId=0,controller=new AbortController();
+const pending=new Map(),encode=new TextEncoder(),bytes=value=>Uint8Array.from(atob(value),c=>c.charCodeAt(0));
+function rpc(method,params){return new Promise((resolve,reject)=>{const id=++rpcId;pending.set(id,{resolve,reject});parent.postMessage({jsonrpc:'2.0',id,method,params},'*');});}
+const base=()=>'/api/repository/'+encodeURIComponent(route.subject)+'/branch/main';
+let renewal,renewalTimer,failedSession;
+function scheduleRenewal(){
+ clearTimeout(renewalTimer);
+ renewalTimer=setTimeout(()=>ensureSession().catch(e=>showError(e.message)),Math.max(1000,session.expiresAt-Date.now()-60000));
+}
+async function ensureSession(){
+ if(!session)throw Error('Open this space from the chat.');
+ if(failedSession===session)throw Error('Connection could not renew. Reopen this space from ChatGPT.');
+ if(Date.now()<session.expiresAt-60000)return;
+ if(renewal)return renewal;
+ const previous=session;
+ renewal=(async()=>{
+  if(!previous.refreshToken||Date.now()>=previous.refreshExpiresAt)throw Error('Connection expired. Reconnect Tonk from ChatGPT.');
+  const response=await fetch(origin+'/space-api/session/renew',{method:'POST',headers:{authorization:'Bearer '+previous.refreshToken},credentials:'omit',signal:AbortSignal.timeout(30000)});
+  if(!response.ok)throw Error('Connection could not renew. Reopen this space from ChatGPT.');
+  const next=await response.json();
+  if(session===previous){session=next;scheduleRenewal();showError('');}
+ })().catch(error=>{if(session===previous)failedSession=previous;throw error;}).finally(()=>{renewal=null;});
+ return renewal;
+}
+addEventListener('pageshow',()=>{if(session)ensureSession().catch(e=>showError(e.message));});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&session)ensureSession().catch(e=>showError(e.message));});
+async function request(path,options={}){
+ await ensureSession();
+ const incoming=new Headers(options.headers),headers=new Headers();for(const key of ['accept','content-type'])if(incoming.has(key))headers.set(key,incoming.get(key));headers.set('authorization','Bearer '+session.token);
+ const response=await fetch(origin+'/space-api'+path,{...options,headers,credentials:'omit',signal:controller.signal});
+ if(!response.ok)throw Error(response.status===401?'Connection expired. Reopen this space from the chat.':'Tonk request failed ('+response.status+'). Read the space before retrying a change.');
+ return response;
+}
+function showError(message){errorMessage.textContent=message;errorMessage.hidden=!message;}
+async function navigate(path){
+ if(!path.startsWith('/')||path.startsWith('//'))throw Error('Choose a route in this space.');
+ controller.abort();controller=new AbortController();port?.close();port=null;
+ route={...route,path};
+ const response=await request(base()+'/site',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path})});
+ const {site}=await response.json();route.site=site;route.model='tonk:site';
+ showError('');
+ frame.src=origin+'/worker-guest.html?instance='+(++serial);
+}
+async function guest(message,current){
+ if(message.type==='title'){document.title=String(message.text||'Tonk').slice(0,200);return;}
+ if(message.type==='navigate'){
+  const u=new URL(message.href,'https://tonk.foundation/space/'+route.subject+route.path),prefix='/space/'+route.subject;
+  if(u.origin!=='https://tonk.foundation'||u.search)throw Error('Navigation outside this space is unavailable.');
+  return navigate(u.pathname.startsWith(prefix+'/')?u.pathname.slice(prefix.length):u.pathname);
+ }
+ if(message.type==='reload')return navigate(route.path,false);
+ if(['analytics','unsubscribe'].includes(message.type))return;
+ if(message.type==='fetch'){
+  const target=new URL(message.path,'https://tonk.foundation');
+  if(target.origin!=='https://tonk.foundation')throw Error('External requests are unavailable.');
+  let path=target.pathname+target.search;
+  if(target.pathname==='/query')path=base()+'/query'+target.search;
+  if(target.pathname==='/api/site'){path=base()+'/site';message={...message,body:JSON.stringify({path:route.path}),headers:{'content-type':'application/json'}};}
+  if(![encodeURIComponent(route.subject),route.subject].some(subject=>{const prefix='/api/repository/'+subject;return path===prefix||path.startsWith(prefix+'/')||path.startsWith(prefix+'?');})){current.postMessage({v:1,type:'fetch-result',id:message.id,status:403,statusText:'Forbidden',headers:[],body:encode.encode('This request is outside the connected space.')});return;}
+  const response=await request(path,{method:message.method,headers:message.headers,body:message.body});
+  const streaming=response.headers.get('content-type')?.includes('text/event-stream');
+  const body=streaming?response.body:new Uint8Array(await response.arrayBuffer());
+  current.postMessage({v:1,type:'fetch-result',id:message.id,status:response.status,statusText:response.statusText,headers:[...response.headers],body},streaming?[body]:[]);
+  return;
+ }
+ if(message.type==='evaluate'){
+  const response=await request(base()+'/evaluate?transact='+(message.transact!==false),{method:'POST',headers:{'content-type':'text/plain'},body:message.document});
+  current.postMessage({v:1,type:'evaluate-result',id:message.id,result:await response.json()});return;
+ }
+ if(message.type==='transact'||message.type==='query'){
+  const action=message.type==='transact'?'transact':'query';
+  const response=await request(base()+'/'+action,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(message.request??message.body)});
+  const value=await response.json();current.postMessage({v:1,type:action+'-result',id:message.id,...(action==='query'?{rows:value}:{receipt:value})});return;
+ }
+ throw Error('This host operation is unavailable: '+String(message.type).slice(0,40));
+}
+function send(value){frame.contentWindow.postMessage(value,'*');}
+addEventListener('message',event=>{
+ const m=event.data;
+ if(event.source===parent&&m?.jsonrpc==='2.0'){
+  if(pending.has(m.id)){const p=pending.get(m.id);pending.delete(m.id);m.error?p.reject(Error(m.error.message)):p.resolve(m.result);}
+  else if(m.method==='ui/notifications/tool-result'&&m.params?._meta?.session){ready.then(async()=>{route=m.params.structuredContent;session=m.params._meta.session;
+if(session.resumeToken){
+ const response=await fetch(origin+'/space-api/session/resume',{method:'POST',headers:{authorization:'Bearer '+session.resumeToken},credentials:'omit',signal:AbortSignal.timeout(30000)});
+ if(!response.ok)throw Error('Connection expired. Reopen this space from ChatGPT.');
+ session=await response.json();
+}
+scheduleRenewal();await navigate(route.path,false);}).catch(e=>showError(e.message));}
+  return;
+ }
+ if(event.source!==frame.contentWindow||!pack||!route)return;
+ if(m?.type==='hello'&&m.v===1&&event.ports[0]){
+  port?.close();port=event.ports[0];const current=port;
+  current.onmessage=e=>guest(e.data,current).catch(error=>{if(error.name==='AbortError')return;showError(error.message);if(e.data.id)current.postMessage({v:1,type:e.data.type+'-error',id:e.data.id,error:error.message});});
+  current.postMessage({v:1,type:'ready',context:{origin:'https://tonk.foundation',path:'/space/'+route.subject+route.path,repo:route.subject,branch:'main',with:'main@'+route.subject,site:route.site,this:route.site,model:route.model,selectionReporting:false}});
+ }
+ if(m?.__tonkRuntime==='runtime-ready'){send({type:'tonk-mount',...route,hideFab:true});send({__tonkRuntime:'inject',glue:pack.glue,snippets:pack.snippets,wasm:bytes(pack.wasm),wa:bytes(pack.wa),css:pack.css,prose:pack.prose,table:pack.table});}
+ if(m?.__tonkRuntime==='need-prose')send({__tonkRuntime:'inject-prose',prose:pack.proseCore});
+ if(m?.__tonkRuntime==='need-table')send({__tonkRuntime:'inject-table',table:pack.tableGrid});
+ if(m?.__tonkRuntime==='need-code')send({__tonkRuntime:'inject-code',code:pack.code});
+ if(m?.__tonkRuntime==='error')showError('Tonk runtime could not load.');
+});
+const ready=(async()=>{const response=await fetch(origin+'/space-runtime.json',{credentials:'omit'});if(!response.ok)throw Error('Could not load Tonk runtime.');pack=await response.json();await rpc('ui/initialize',{appInfo:{name:'tonk-space',version:'0.2.0'},appCapabilities:{},protocolVersion:'2026-01-26'});parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/initialized',params:{}},'*');})();
+ready.catch(e=>showError(e.message));
+})();
+</script></html>

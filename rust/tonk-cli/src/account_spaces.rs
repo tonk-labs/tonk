@@ -19,7 +19,7 @@ use tonk_schema::prelude::DidExt as _;
 #[cfg(feature = "integration-tests")]
 use crate::account;
 use crate::remote::{self, DEFAULT_REMOTE};
-use crate::site::TonkSite;
+use crate::site::{SiteConfig, TonkSite};
 use crate::space::{self, SpaceStore};
 use crate::staged_directory::StagedDirectory;
 
@@ -87,7 +87,15 @@ fn site_config(_profile: &Peer<NativeSpace>) -> Result<crate::site::SiteConfig> 
 }
 
 async fn open_site(path: &std::path::Path, profile: &Peer<NativeSpace>) -> Result<TonkSite> {
-    let site = TonkSite::open_with(path, site_config(profile)?).await?;
+    open_site_with_config(path, profile, &site_config(profile)?).await
+}
+
+async fn open_site_with_config(
+    path: &Path,
+    profile: &Peer<NativeSpace>,
+    config: &SiteConfig,
+) -> Result<TonkSite> {
+    let site = TonkSite::open_with(path, config.clone()).await?;
     if site.profile.did() != profile.did() {
         bail!("registered site profile does not match the active account profile");
     }
@@ -103,11 +111,12 @@ struct LocalSpace {
 async fn local_subjects(
     profile: &Peer<NativeSpace>,
     store: &SpaceStore,
+    config: &SiteConfig,
 ) -> Result<HashMap<String, LocalSpace>> {
     let registry = store.load()?;
     let mut subjects: HashMap<String, LocalSpace> = HashMap::new();
     for (name, entry) in registry.spaces {
-        let site = match open_site(&entry.site, profile).await {
+        let site = match open_site_with_config(&entry.site, profile, config).await {
             Ok(site) => site,
             Err(error) => {
                 eprintln!("warning: local space '{name}' could not be inspected: {error:#}");
@@ -177,13 +186,33 @@ async fn ready_account_branch(
 /// registered locally. Reads the account DB — the same directory facts
 /// the Hub renders — not the retired space-backup escrow.
 pub async fn list(profile: &Peer<NativeSpace>, store: &SpaceStore) -> Result<Vec<AccountSpaceRow>> {
+    list_for_profile(profile, store, &site_config(profile)?).await
+}
+
+/// List spaces using only an explicit tenant profile and its account store.
+/// Unlike [`list`], this never resolves the CLI's global profile directory.
+pub async fn list_with_config(config: &SiteConfig) -> Result<Vec<AccountSpaceRow>> {
+    let profile = crate::site::open_profile(
+        &config.profile_name,
+        config.profile_directory.clone(),
+        false,
+    )
+    .await?;
+    list_for_profile(&profile, &config.account_store, config).await
+}
+
+async fn list_for_profile(
+    profile: &Peer<NativeSpace>,
+    store: &SpaceStore,
+    config: &SiteConfig,
+) -> Result<Vec<AccountSpaceRow>> {
     let (operator, branch) = ready_account_branch(profile, store).await?;
     // Freshen best-effort: an offline listing still renders the local
     // copy of the directory.
     if let Err(error) = branch.pull().download().perform(&operator).await {
         eprintln!("warning: account sync failed; listing the local copy: {error:#}");
     }
-    let local = local_subjects(profile, store).await?;
+    let local = local_subjects(profile, store, config).await?;
     let rows = tonk_schema::directory::spaces(&branch, &operator)
         .await
         .map_err(|error| anyhow::anyhow!("account directory query failed: {error:?}"))?
@@ -211,6 +240,46 @@ fn name_error(name: Option<&str>, reason: impl std::fmt::Display) -> anyhow::Err
 pub async fn pull(
     profile: &Peer<NativeSpace>,
     store: &SpaceStore,
+    name_or_subject: &str,
+    requested_name: Option<&str>,
+) -> Result<PullOutcome> {
+    pull_for_profile(
+        profile,
+        store,
+        &site_config(profile)?,
+        name_or_subject,
+        requested_name,
+    )
+    .await
+}
+
+/// Pull a space with an explicit tenant profile, account store and site config.
+/// The usual delegation-chain and signed-membership checks still apply.
+pub async fn pull_with_config(
+    config: &SiteConfig,
+    name_or_subject: &str,
+    requested_name: Option<&str>,
+) -> Result<PullOutcome> {
+    let profile = crate::site::open_profile(
+        &config.profile_name,
+        config.profile_directory.clone(),
+        false,
+    )
+    .await?;
+    pull_for_profile(
+        &profile,
+        &config.account_store,
+        config,
+        name_or_subject,
+        requested_name,
+    )
+    .await
+}
+
+async fn pull_for_profile(
+    profile: &Peer<NativeSpace>,
+    store: &SpaceStore,
+    config: &SiteConfig,
     name_or_subject: &str,
     requested_name: Option<&str>,
 ) -> Result<PullOutcome> {
@@ -271,7 +340,7 @@ pub async fn pull(
         .find(|space| space.subject == requested)
         .and_then(|space| space.name);
 
-    let local = local_subjects(profile, store).await?;
+    let local = local_subjects(profile, store, config).await?;
     if let Some(local) = local.get(requested.as_ref()) {
         return Ok(PullOutcome {
             subject: requested.to_string(),
@@ -364,7 +433,7 @@ pub async fn pull(
             target.display()
         )
     })?;
-    let site = crate::site::mount_delegated_in_empty(stage.path(), chain, site_config(profile)?)
+    let site = crate::site::mount_delegated_in_empty(stage.path(), chain, config.clone())
         .await
         .context("failed to mount account space")?;
     remote::add_with_revocation(

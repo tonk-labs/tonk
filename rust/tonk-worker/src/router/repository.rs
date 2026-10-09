@@ -294,7 +294,10 @@ pub async fn put_repository(
     // when `tonk` drops at the end of this scope) and re-acquires it.
     drop(tonk);
     let branches: Vec<String> = configuration.branch.keys().cloned().collect();
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     spawn_seed(state, display_name, key, subject, branches);
+    #[cfg(not(target_arch = "wasm32"))]
+    seed_and_initialize(&state, &display_name, None, &key, &subject, &branches).await?;
 
     Ok((StatusCode::CREATED, Json(info)))
 }
@@ -3731,8 +3734,7 @@ where
 /// repository. Returns immediately; the work runs after the PUT
 /// response is sent.
 ///
-/// Native builds have no service-worker scope (and no `spawn_local`
-/// runtime here), so they no-op — the seed/status path is browser-only.
+/// Native hosts await this same seed operation before returning from PUT.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn spawn_seed(
     state: AppState,
@@ -3750,16 +3752,6 @@ fn spawn_seed(
         let tonk = state.read().await;
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     });
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-fn spawn_seed(
-    _state: AppState,
-    _display_name: String,
-    _key: String,
-    _subject: Did,
-    _branches: Vec<String>,
-) {
 }
 
 /// Whether `subject` still has a recorded [`Replica`] on the profile's
@@ -5623,7 +5615,7 @@ pub async fn create_repository(
 
     let space_credential = tonk_account::peer::mount_verifier(
         tonk.profile.storage(),
-        crate::device::space_location(key),
+        tonk.registry.space_location(key),
         &did,
     )
     .await
@@ -6703,9 +6695,7 @@ async fn library_claims_after(
     library: &str,
     what: &str,
 ) -> Result<LibraryClaims, RepositoryError> {
-    use dialog_artifacts::{Changes, Instruction, Statement as _};
-    use dialog_query::{Parameters, Term};
-    use tonk_schema::transact::{ApplicationPlan, Planner as _, Statement};
+    use dialog_artifacts::{Changes, Instruction};
 
     let parse = |text| async move {
         super::library::parse(text)
@@ -6721,43 +6711,8 @@ async fn library_claims_after(
             (joined, first)
         }
     };
-    let analyzed = tonk_analyzer::analyzer::analyze_local(&syntax)
-        .map_err(|error| RepositoryError::Internal(format!("analyze {what}: {error}")))?;
-    let mut bindings = Parameters::new();
-    for (name, entity) in &analyzed.analysis.variables {
-        bindings.insert(
-            name.clone(),
-            Term::Constant(dialog_artifacts::Value::Entity(entity.clone())),
-        );
-    }
-
-    let transient = analyzed.analysis.transient_entities();
-    let mut desired = Changes::new();
-    let mut commands = Changes::new();
-    for planned in analyzed.analysis.statements_from(first) {
-        match planned.statement {
-            Statement::Assert(application) => {
-                let plan = application
-                    .plan(&bindings)
-                    .map_err(|error| RepositoryError::Internal(format!("plan {what}: {error}")))?;
-                let command = matches!(
-                    &plan,
-                    ApplicationPlan::Concept(concept)
-                        if transient.contains(&concept.statement.predicate.this())
-                );
-                if command {
-                    plan.assert(&mut commands);
-                } else {
-                    plan.assert(&mut desired);
-                }
-            }
-            Statement::Retract(_) => {
-                return Err(RepositoryError::Internal(format!(
-                    "{what} desired manifest contains a retraction"
-                )));
-            }
-        }
-    }
+    let (desired, commands) = tonk_evaluator::library::plan_install(&syntax, first)
+        .map_err(|error| RepositoryError::Internal(format!("{what}: {error}")))?;
 
     let claims = |changes: Changes| -> Vec<super::claim::RawClaim> {
         changes

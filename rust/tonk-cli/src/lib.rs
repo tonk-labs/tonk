@@ -60,6 +60,8 @@ pub mod inventory;
 pub mod invite;
 pub mod join;
 pub mod listing;
+/// Native execution of the canonical MCP tools against one authorized site.
+pub mod mcp_runtime;
 pub mod migrate;
 pub mod onboarding;
 pub mod output;
@@ -147,3 +149,7 @@ pub trait Coded: std::error::Error + Send + Sync + 'static {
     /// The exit code this failure should produce.
     fn exit_code(&self) -> ExitCode;
 }
+
+mod mcp_library;
+
+mod mcp_ui;

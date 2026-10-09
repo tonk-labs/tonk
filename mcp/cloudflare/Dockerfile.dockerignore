@@ -1,0 +1,14 @@
+**
+!Cargo.toml
+!Cargo.lock
+!rust
+!rust/**
+!mcp
+!mcp/*.mjs
+!mcp/tools.json
+!mcp/package.json
+!mcp/package-lock.json
+!mcp/ui
+!mcp/ui/**
+!mcp/cloudflare
+!mcp/cloudflare/entrypoint.sh

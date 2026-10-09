@@ -1,0 +1,63 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tonk space</title>
+<style>html,body{height:100%;margin:0;font:14px system-ui;color-scheme:light dark}body{display:flex;flex-direction:column}header{display:flex;gap:12px;align-items:center;padding:8px 12px;border-bottom:1px solid #8884}button,a{font:inherit;color:inherit}button{padding:7px 12px}#status{flex:1}iframe{flex:1;min-height:560px;border:0;width:100%}</style>
+<header><button id="back" disabled>Back</button><button id="refresh">Refresh</button><strong id="title">Tonk</strong><span id="status" role="status">Loading Tonk…</span><span id="mode">Read-only</span><button id="edit" hidden>Edit text</button></header>
+<iframe title="Tonk space" sandbox="allow-scripts allow-forms"></iframe>
+<script>
+(()=>{
+const frame=document.querySelector('iframe'),status=document.querySelector('#status');
+let id=0,route,pack,port,generation=0,history=[],batch=[],scheduled=false;
+let editing=null,saveQueue=Promise.resolve();
+const pending=new Map(),encoder=new TextEncoder();
+function rpc(method,params){return new Promise((resolve,reject)=>{const key=++id;const timer=setTimeout(()=>{pending.delete(key);reject(Error('Tonk request timed out.'));},65000);pending.set(key,{resolve,reject,timer});parent.postMessage({jsonrpc:'2.0',id:key,method,params},'*');});}
+function check(result){if(result?.isError)throw Error(result.content?.[0]?.text||'Tonk request failed.');return result;}
+const bytes=value=>Uint8Array.from(atob(value),c=>c.charCodeAt(0));
+function send(value){frame.contentWindow.postMessage(value,'*');}
+function query(body){return new Promise((resolve,reject)=>{batch.push({body,resolve,reject,generation});if(!scheduled){scheduled=true;setTimeout(flush,10);}});}
+async function flush(){scheduled=false;const group=batch.splice(0,32),active=generation,path=route.path;if(batch.length){scheduled=true;setTimeout(flush,10);}try{const r=check(await rpc('tools/call',{name:'tonk_ui_read',arguments:{path,queries:group.map(q=>q.body)}}));if(active!==generation)throw Error('Navigation replaced this request.');group.forEach((q,i)=>q.resolve(r._meta.rows[i]));}catch(e){group.forEach(q=>q.reject(e));status.textContent=e.message;}}
+async function navigate(path,push=true){await saveQueue.catch(()=>{});editing=null;document.querySelector('#mode').textContent='Read-only';const result=check(await rpc('tools/call',{name:'tonk_open_space',arguments:{path}}));if(push&&route)history.push(route.path);mount(result.structuredContent);}
+function mount(next){route=next;document.querySelector('#edit').hidden=!route.path.startsWith('/notebook/')||!!editing;document.querySelector('#title').textContent='Tonk';generation++;port?.close();port=null;for(const item of batch.splice(0))item.reject(Error('Navigation replaced this request.'));status.textContent='';document.querySelector('#back').disabled=!history.length;
+frame.src='https://tonk-mcp-test.tonk.workers.dev/space-guest.html?instance='+generation;
+}
+async function save(request){
+if(!editing)throw Error('Choose Edit text before changing this notebook.');
+const current=editing;
+const result=saveQueue.then(async()=>{
+if(current!==editing)throw Error('Editing session changed.');
+status.textContent='Saving…';document.querySelector('#refresh').disabled=true;
+try{const response=check(await rpc('tools/call',{name:'tonk_ui_edit_notebook',arguments:{entity:current.entity,request,expectedRevision:current.revision}}));current.revision=response._meta.saved.revision;status.textContent=response._meta.saved.sync?'Saved and synced':'Saved';return response._meta.saved;}
+catch(error){editing=null;send({type:'tonk-edit',enabled:false});document.querySelector('#mode').textContent='Save needs checking';throw error;}
+finally{document.querySelector('#refresh').disabled=false;}
+});saveQueue=result;return result;
+}
+async function guestRequest(message,currentPort,epoch){
+if(message.type==='transact'){const saved=await save(message.request);currentPort.postMessage({v:1,type:'transact-result',id:message.id,receipt:saved});return;}
+if(message.type==='navigate'){const base='https://tonk.foundation/space/'+route.subject;const url=new URL(message.href,base+route.path);const prefix='/space/'+route.subject;let path=(url.pathname===prefix||url.pathname.startsWith(prefix+'/'))?url.pathname.slice(prefix.length)||'/':url.pathname;if(url.origin!=='https://tonk.foundation'||url.hash||url.search)throw Error('Navigation outside this space is unavailable.');return navigate(path);}
+if(message.type==='reload')return navigate(route.path,false);
+if(message.type==='fetch'){
+const target=new URL(message.path,'https://tonk.foundation'), allowed=['/query','/api/repository/'+route.subject+'/branch/main/query'];
+if(message.method==='POST'&&target.origin==='https://tonk.foundation'&&target.pathname==='/api/repository/'+route.subject+'/branch/main/transact'){const saved=await save(JSON.parse(message.body));currentPort.postMessage({v:1,type:'fetch-result',id:message.id,status:200,statusText:'OK',headers:[['content-type','application/json']],body:encoder.encode(JSON.stringify(saved))});return;}
+if(message.method!=='POST'||!allowed.includes(target.pathname)||target.origin!=='https://tonk.foundation')throw Error('This embedded space is read-only; this operation is not enabled.');
+const rows=await query(JSON.parse(message.body));if(epoch!==generation)return;
+const headers=new Headers(message.headers),streaming=headers.get('accept')?.includes('text/event-stream');
+let body;
+if(streaming){body=new ReadableStream({start(controller){controller.enqueue(encoder.encode('data: '+JSON.stringify({kind:'snapshot',conclusions:rows})+'\n\n'));}});}else body=encoder.encode(JSON.stringify(rows));
+currentPort.postMessage({v:1,type:'fetch-result',id:message.id,status:200,statusText:'OK',headers:[['content-type',streaming?'text/event-stream':'application/json']],body},streaming?[body]:[]);return;}
+if(message.type==='query'){const rows=await query(message.body);currentPort.postMessage({v:1,type:'query-result',id:message.id,rows});return;}
+if(message.type==='title'){document.querySelector('#title').textContent=String(message.text||'Tonk').slice(0,200);return;}
+if(['analytics','unsubscribe'].includes(message.type))return;
+throw Error('The embedded space does not support this action ('+String(message.type).slice(0,40)+'). Open it in Tonk to continue.');}
+addEventListener('message',event=>{
+if(event.source===parent&&event.data?.jsonrpc==='2.0'){const m=event.data;if(pending.has(m.id)){const p=pending.get(m.id);pending.delete(m.id);clearTimeout(p.timer);m.error?p.reject(Error(m.error.message)):p.resolve(m.result);}else if(m.method==='ui/notifications/tool-result'&&m.params?.structuredContent?.model){ready.then(()=>mount(m.params.structuredContent));}return;}
+if(event.source!==frame.contentWindow||!pack||!route)return;const m=event.data;
+if(m?.type==='hello'&&m.v===1&&event.ports[0]){port?.close();port=event.ports[0];const current=port,epoch=generation;current.onmessage=e=>guestRequest(e.data,current,epoch).catch(error=>{if(e.data.type!=='fetch'||e.data.path?.endsWith('/transact'))status.textContent=error.message;if(e.data.id)current.postMessage({v:1,type:e.data.type+'-error',id:e.data.id,error:error.message});});current.postMessage({v:1,type:'ready',context:{readOnly:!editing,selectionReporting:false,origin:'https://tonk.foundation',path:'/space/'+route.subject+route.path,repo:route.subject,branch:'main',with:'main@'+route.subject,site:route.site,this:route.site,model:route.model}});}
+if(m?.__tonkRuntime==='runtime-ready'){send({type:'tonk-mount',site:route.site,model:route.model,subject:route.subject});send({type:'tonk-edit',enabled:!!editing});send({__tonkRuntime:'inject',glue:pack.glue,snippets:pack.snippets,wasm:bytes(pack.wasm),wa:bytes(pack.wa),css:pack.css,prose:pack.prose,table:[],rootClass:'wa-light'});}
+if(m?.__tonkRuntime==='need-prose')send({__tonkRuntime:'inject-prose',prose:pack.proseCore});
+if(m?.__tonkRuntime==='need-code')send({__tonkRuntime:'inject-code',code:pack.code});
+if(m?.__tonkRuntime==='error'||m?.__tonkRuntime==='warn')status.textContent='Tonk runtime: '+m.error;
+});
+document.querySelector('#edit').onclick=async()=>{try{const entity=decodeURIComponent(route.path.slice('/notebook/'.length));const result=check(await rpc('tools/call',{name:'tonk_ui_begin_edit',arguments:{entity}}));editing={entity,revision:result._meta.notebook.revision};saveQueue=Promise.resolve();document.querySelector('#mode').textContent='Editing existing text';mount(route);}catch(error){status.textContent=error.message;}};
+document.querySelector('#refresh').onclick=()=>route&&navigate(route.path,false).catch(e=>status.textContent=e.message);
+document.querySelector('#back').onclick=()=>history.length&&navigate(history.pop(),false).catch(e=>status.textContent=e.message);
+const ready=(async()=>{const response=await fetch('https://tonk-mcp-test.tonk.workers.dev/space-runtime.json',{credentials:'omit'});if(!response.ok)throw Error('Could not load Tonk runtime.');pack=await response.json();await rpc('ui/initialize',{appInfo:{name:'tonk-space',version:'0.1.0'},appCapabilities:{},protocolVersion:'2026-01-26'});parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/initialized',params:{}},'*');})();ready.catch(e=>status.textContent=e.message);
+})();
+</script></html>
