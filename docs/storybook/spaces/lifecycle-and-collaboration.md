@@ -156,6 +156,49 @@ This is a source-derived presentation decision for `SPACE-11`, `UI-04`,
 `WEB-04`, and `WEB-05`. The focused query, DOM-frame, and profile-library tests
 cover the authored contract; running-product browser evidence remains distinct.
 
+### Ticket links and public spaces decision
+
+An audience-open invite is a ticket link: the space's own address with the
+seed of a fresh key as its fragment, `/space/{did}#{seed}`. The inviter leaves
+the delegation chain in the space as that key's ticket, so the link carries no
+authority of its own. Opening it derives the key, claims the ticket from the
+space's access service, and joins as an `access=` link does. Taking the ticket
+back hides the grant from the next claim; revoking the delegation is what stops
+a recipient who already claimed.
+
+Publishing a space leaves a read-only ticket for a public principal every
+client can derive (seed `blake3("")`), and every account holds a powerline from
+it. Anyone who opens the space's bare address, `/space/{did}`, with no access of
+their own claims that ticket and reads the space as an observer: not a member,
+on no roster, holding no key. Their FABB sync disc is half filled, the same
+disc as a paused space (neither syncs its own changes), reads "sync: read-only,
+observing", and offers no share or agent link. Unpublishing takes the ticket
+back and revokes the delegation, so earlier observers stop reading too, and the
+next visitor meets the private wall.
+
+Publishing is offered in the FABB to whoever runs the space (founder or admin)
+and in the command palette as "make space public" / "make space private".
+
+> Technical note: the claim is a `/use/get/ticket/claim` invocation whose
+> subject is the ticket's holder (the key) and whose `space` argument names the
+> space that keeps it. The holder invokes it itself, needing no proof, or a
+> principal it delegated the claim to presents the chain. The access service
+> verifies it like any invocation and answers with the bytes at
+> `{space}/ticket/{subject}`, so a claim reaches only its subject's ticket. The
+> bare address may arrive percent-encoded: Cloudflare's asset handling
+> redirects `/space/did:key:…` to `/space/did%3Akey%3A…`, and both name the
+> same space.
+>
+> Opening a space's own address mounts its view before the space is on the
+> device. When the join installs it, the page is already at that address, so
+> a route change would re-mount nothing; the worker answers with a fresh load
+> in place of the history entry instead (which also keeps a ticket link's seed
+> out of the history). A join that finds the space already present, as a page
+> that opened its own new space does, changes nothing.
+
+This is the presentation decision for `COLLAB-01`, `COLLAB-03`, `COLLAB-06`,
+`COLLAB-07`, `WEB-16`, `WEB-17`, and `WEB-18`.
+
 ### FABB stack pointer-tolerance decision
 
 The 7px between two rows of a stack is presentation, not dead ground. Each row
@@ -406,9 +449,20 @@ URLs, DIDs, data, or argument values.
   `tonk render` alone does not prove route behavior.
 - Run accountless claim → account link → second-device pull as one restart-aware
   journey, not only lower-layer authority assertions.
+- Decide the local-write contract for an observer of a published space: today
+  its writes stay on the device and its sync disc is the only signal.
+- Surface a refused or failed publish; today it is only logged.
+- Offer "make space public/private" in the palette only to whoever runs the
+  space, and only the verb that applies.
+- Confirm on a deployment that a first visit to a published space and a ticket
+  link both render the space without a manual reload.
 
 Source audit pinned to Tonk commit `a3f8670b1`.
 Onboarding-account addendum pinned to Tonk commit `b564e83b1`.
 
 Duplication source addendum pinned to `bd852af81`; post-rebase browser evidence
 uses artifact `12b87892fca818d5` (2026-09-29).
+
+Ticket links and public spaces addendum pinned to the commit that adds it, on
+top of `3c83082`; running-product captures use a local debug artifact built
+from that tree (2026-10-09).

@@ -708,6 +708,56 @@ async fn it_runs_every_menu_act_from_the_palette() {
     }
 }
 
+/// "make space public" and "make space private" are palette verbs on the
+/// profile, each taking the space it is said of as its object: the same
+/// `space/publish` and `space/unpublish` the bar's actions dispatch. Which
+/// space fills the object is the parser's (see `tonk-intent`'s tests).
+#[dialog_common::test]
+async fn it_says_publishing_in_the_palette() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let branch = state.read().await.active_branch.clone();
+    let profile = format!("/api/repository/profile:tonk/branch/{branch}");
+    for library in [CORE, PROFILE] {
+        send(
+            &app,
+            "POST",
+            &format!("{profile}/evaluate"),
+            "application/yaml",
+            library.into(),
+        )
+        .await;
+    }
+    for said in [
+        "make space public",
+        "publish space",
+        "make space private",
+        "unpublish space",
+    ] {
+        let rows = send(
+            &app,
+            "POST",
+            &format!("{profile}/query"),
+            "application/json",
+            json!({
+                "predicate": "intent/suggest",
+                "terms": { "input": said, "now": 1.0 }
+            })
+            .to_string(),
+        )
+        .await;
+        let rows = rows.as_array().cloned().unwrap_or_default();
+        let top = rows
+            .first()
+            .unwrap_or_else(|| panic!("{said:?} is suggested: {rows:?}"));
+        assert_eq!(
+            field(top, "text").as_str(),
+            Some(format!("{said} (space)").as_str()),
+            "{rows:?}"
+        );
+        assert_eq!(field(top, "nouns"), r#"{"object":"space"}"#, "{rows:?}");
+    }
+}
+
 /// How `intent/suggest` scales with a noun's rows, store reads included.
 /// Run with `cargo test --release -p tonk-worker --lib -- --ignored
 /// --nocapture intent::it_scales`.

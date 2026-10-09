@@ -1220,6 +1220,49 @@ command!: &tonk/pause-sync
     time: pause-sync/time
     space: pause-sync/space
 
+# Publishing a space, from the bar or the palette: the worker's
+# `space/publish` delegates reads of the space to the public principal and
+# leaves the ticket a visitor to its bare address claims; `space/unpublish`
+# takes the ticket back and revokes the delegation. Only someone who runs
+# the space may do either; the worker refuses anyone else.
+attribute!: &publish/space
+  description: The space to make readable by anyone.
+  the: xyz.tonk.publish/space
+  as: entity
+  role: object
+
+attribute!: &publish/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.publish/time
+  as: float
+  role: now
+
+command!: &space/publish
+  description: Make a space readable by anyone who opens its address.
+  action: ["make space public", "publish space"]
+  with:
+    space: publish/space
+    time: publish/time
+
+attribute!: &unpublish/space
+  description: The space to make private again.
+  the: xyz.tonk.unpublish/space
+  as: entity
+  role: object
+
+attribute!: &unpublish/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.unpublish/time
+  as: float
+  role: now
+
+command!: &space/unpublish
+  description: Make a published space private again, and stop its readers reading.
+  action: ["make space private", "unpublish space"]
+  with:
+    space: unpublish/space
+    time: unpublish/time
+
 attribute!: &home/time
   description: The moment it was asked; makes each dispatch a distinct transient.
   the: xyz.tonk.command.home/time
@@ -3388,6 +3431,32 @@ view!:
         .space-unknown-home:hover {
           background:linear-gradient(var(--edge-wash),var(--edge-wash)), var(--edge-ink); }
         .space-unknown-home:active { scale:.96; }
+        /* The page mounts the join here: a ticket link (`/space/{did}#{seed}`)
+           redeems, and a bare address opens a published space. While it
+           runs (or once a ticket link fails) its status replaces the wall. The join's own surfaces, the
+           opening pulse and the failure wall, are styled as on `/join`. */
+        .space-unknown:has(.join-status) .space-unknown-wall { display:none; }
+        .space-unknown .join-opening { position:fixed; inset:0; z-index:3;
+          display:flex; align-items:center; justify-content:center;
+          color:var(--edge-ink); background:var(--edge-page); }
+        .space-unknown .join-opening-status { position:absolute; width:1px; height:1px;
+          margin:-1px; padding:0; overflow:hidden; clip:rect(0,0,0,0);
+          white-space:nowrap; border:0; }
+        .space-unknown .join-status:has(.edge-wall--closed) .join-opening { display:none; }
+        .space-unknown .edge-wall { width:min(576px, 100%); margin:0 auto;
+          display:flex; flex-direction:column; gap:7px; }
+        .space-unknown .edge-statement, .space-unknown .edge-narrator { min-height:36px;
+          margin:0; padding:10px 14px; background:var(--edge-card);
+          box-shadow:0 0 0 1px var(--edge-ring);
+          font-family:'IBM Plex Sans',system-ui,sans-serif; line-height:1.55; }
+        .space-unknown .edge-statement { color:var(--edge-ink); font-size:13.5px; }
+        .space-unknown .edge-narrator { color:var(--edge-soft); font-size:13px;
+          font-weight:400; }
+        .space-unknown .edge-run { display:flex; }
+        .space-unknown .ebtn { width:100%; min-height:44px; padding:8px 10px;
+          display:flex; align-items:flex-end; justify-content:flex-end;
+          background:var(--edge-ink); color:var(--edge-on); text-decoration:none;
+          text-transform:lowercase; }
         @media (max-width:680px) {
           .space-unknown { padding-top:20px; }
           .space-unknown-mast { width:98px; min-height:44px; margin-bottom:40px;
@@ -3470,14 +3539,31 @@ view!:
             <div slot="no-entity" hidden>
               <tab-title text="Open this space — Tonk"></tab-title>
               <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+              <!-- A ticket link carries its key's seed in the fragment,
+                   which only the page can read: mount the join with the
+                   page's location. With no ticket the join leaves this
+                   page alone; with one, it claims the space's ticket,
+                   joins, and navigates back here to the space. Here only,
+                   not in the older-profile `no-model` panel beside this
+                   one: both stay in the DOM, and each mount would join. -->
+              <page-mount on:join=tonk:join></page-mount>
+              <tonk-display class="join-status-slot" model="tonk:join/status">
+                <span slot="empty"></span>
+                <span slot="loading"></span>
+                <span slot="no-entity"></span>
+              </tonk-display>
+              <!-- What the join leaves when it found no access: the account
+                   holds none and the space keeps no public ticket. Hidden
+                   while the join is still looking (`.space-unknown:has(.join-status)`),
+                   so a public space never flashes it on the way in. -->
               <div class="space-unknown-wall">
-                <h1 class="space-unknown-statement">open this space</h1>
+                <h1 class="space-unknown-statement">this space is private</h1>
                 <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
                 <!-- The recovery control opens the top-page account ceremony. -->
                 <div class="space-unknown-run">
                   <space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></space-login>
                 </div>
-                <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
+                <p class="space-unknown-narrator">New to this space? Opening it takes an invite: ask someone in it to send you a link from <strong>share</strong>.</p>
                 <a class="space-unknown-back" href="/">go to home</a>
               </div>
             </div>
@@ -4470,9 +4556,12 @@ element!: &tab-title
 # data rather than reaching for a global. Inside a sealed guest the
 # location is the host's, relayed as `window.tonk.context`.
 #
-# It fires once the enclosing display is bound (`data-bound`), because
-# the binding that listens is installed with it, and again on every
-# `tonk:join-retry`.
+# It fires once an enclosing display is bound (`data-bound`), because
+# the binding that listens is installed with the display whose view
+# carries it, and again on every `tonk:join-retry`. That display need not
+# be the nearest one: a mount placed in a nested display's slot (the
+# absent-space panel, where a ticket link lands) is still bound by the
+# view around it.
 element!: &page-mount
   description: Dispatches the parsed current location as a bubbling `mount` event.
   method:
@@ -4498,7 +4587,7 @@ element!: &page-mount
         self.dispatchEvent(new CustomEvent('mount', { bubbles: true, detail: self.location() }));
       }
     ready: |
-      (self) => self.closest('tonk-display')?.hasAttribute('data-bound') === true
+      (self) => self.closest('tonk-display[data-bound]') !== null
     connected: |
       (self) => {
         if (!self.__retry) {
@@ -4513,11 +4602,12 @@ element!: &page-mount
         };
         fire();
         if (fired) return;
-        const display = self.closest('tonk-display');
-        if (!display) return;
         self.__bound?.disconnect();
         self.__bound = new MutationObserver(fire);
-        self.__bound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
+        for (let display = self.closest('tonk-display'); display;
+             display = display.parentElement?.closest('tonk-display')) {
+          self.__bound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
+        }
       }
     disconnected: |
       (self) => {
@@ -5924,6 +6014,24 @@ rule!:
   when:
     - assert: intent
       where: { this: ?this, command: tonk/pause-sync }
+    - assert: space
+      where: { this: ?space }
+
+rule!:
+  description: A space on this account is one "make space public" from the palette can name.
+  assert: publish/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: space/publish }
+    - assert: space
+      where: { this: ?space }
+
+rule!:
+  description: A space on this account is one "make space private" from the palette can name.
+  assert: unpublish/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: space/unpublish }
     - assert: space
       where: { this: ?space }
 

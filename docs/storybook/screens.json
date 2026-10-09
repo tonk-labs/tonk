@@ -190,6 +190,42 @@
       "source_paths": ["rust/tonk-ui/src/activate.html", "rust/tonk-ui/src/account.css", "rust/tonk-ui/src/activate.rs"]
     },
     {
+      "id": "WEB-16",
+      "surface": "browser",
+      "area": "Space",
+      "name": "Make space public",
+      "summary": "The owner's FABB menu on a private space offers \"make space public\" beside sharing; once public it offers \"make space private\" instead. Only whoever runs the space sees either.",
+      "artifact": "app/screens/web-16-make-space-public.png",
+      "capture": "running product",
+      "status": "captured",
+      "journey_ids": ["COLLAB-06"],
+      "source_paths": ["rust/tonk-fab/src/markup.rs", "rust/tonk-fab/src/bar.rs", "rust/tonk-fab/src/skin.rs", "rust/tonk-fab/src/publication.rs", "rust/tonk-worker/src/router/publication.rs"]
+    },
+    {
+      "id": "WEB-17",
+      "surface": "browser",
+      "area": "Space",
+      "name": "Observing a public space",
+      "summary": "A visitor with no invite opens a published space's address and reads it as an observer: the space renders without a reload, the sync disc is half filled (read-only), and no share or agent link is offered.",
+      "artifact": "app/screens/web-17-observing-public-space.png",
+      "capture": "running product",
+      "status": "captured",
+      "journey_ids": ["COLLAB-03", "COLLAB-07"],
+      "source_paths": ["rust/tonk-fab/src/markup.rs", "rust/tonk-fab/src/bar.rs", "rust/tonk-fab/src/skin.rs", "rust/tonk-fab/src/member_roster.rs", "rust/tonk-worker/src/router/join.rs"]
+    },
+    {
+      "id": "WEB-18",
+      "surface": "browser",
+      "area": "Space",
+      "name": "This space is private",
+      "summary": "Opening a space's address with no access of one's own, when the space keeps no public ticket (never published, or made private again), ends on the private wall rather than a failure.",
+      "artifact": "app/screens/web-18-space-is-private.png",
+      "capture": "running product",
+      "status": "captured",
+      "journey_ids": ["COLLAB-01", "COLLAB-07"],
+      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-worker/src/router/join.rs"]
+    },
+    {
       "id": "CLI-01",
       "surface": "cli",
       "area": "Discovery",

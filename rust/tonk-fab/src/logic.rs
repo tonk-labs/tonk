@@ -553,6 +553,48 @@ pub fn collapsed_claim_json(collapsed: bool) -> Value {
     })
 }
 
+/// Build a `TransactRequest` JSON body for `space/publish` (`publish`
+/// true) or `space/unpublish`. Routeless like `promote_claim_json`: the
+/// worker reads `space` off the command, and `time` makes each press a
+/// new transient.
+pub fn publication_claim_json(space: &str, publish: bool, time: f64) -> Value {
+    let (verb, description) = if publish {
+        ("publish", "Make a space readable by anyone.")
+    } else {
+        ("unpublish", "Make a published space private again.")
+    };
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": description,
+                        "with": {
+                            "space": { "the": format!("xyz.tonk.{verb}/space"), "cardinality": "one", "as": "Entity" },
+                            "time": { "the": format!("xyz.tonk.{verb}/time"), "cardinality": "one", "as": "Float" }
+                        }
+                    }
+                },
+                "parameters": { "space": space, "time": time }
+            }
+        }]
+    })
+}
+
+/// The subscribe body for whether a space is published: the invitations
+/// on its branch recorded with kind `public`. Any row means published.
+pub fn publication_query_body() -> String {
+    json!({
+        "predicate": { "with": { "kind": {
+            "the": "xyz.tonk.invitation-execution/kind", "as": "Text", "cardinality": "one"
+        } } },
+        "terms": { "this": { "?": { "name": "this" } }, "kind": "public" }
+    })
+    .to_string()
+}
+
 /// Build a `TransactRequest` JSON body for the `member/promote` command.
 ///
 /// Asserted once the page has minted the admin hop under the passkey:
@@ -1418,6 +1460,31 @@ pub fn repo_name_query_body(subject: &str) -> Result<String, String> {
 }
 
 #[cfg(test)]
+mod publication {
+    use super::*;
+
+    /// The worker decodes `space/publish` and `space/unpublish` from their
+    /// own attribute namespaces; a claim in the other's would publish a
+    /// space someone meant to make private.
+    #[test]
+    fn it_names_each_verb_in_its_own_namespace() {
+        let publish = publication_claim_json("did:key:z6Mk", true, 1.0).to_string();
+        assert!(publish.contains("xyz.tonk.publish/space"));
+        assert!(!publish.contains("xyz.tonk.unpublish"));
+        let unpublish = publication_claim_json("did:key:z6Mk", false, 1.0).to_string();
+        assert!(unpublish.contains("xyz.tonk.unpublish/space"));
+        assert!(unpublish.contains("xyz.tonk.unpublish/time"));
+    }
+
+    #[test]
+    fn it_reads_publication_from_the_public_invitation_kind() {
+        let body = publication_query_body();
+        assert!(body.contains("xyz.tonk.invitation-execution/kind"));
+        assert!(body.contains(r#""kind":"public""#));
+    }
+}
+
+#[cfg(test)]
 mod space_name {
     use super::*;
 
@@ -1638,6 +1705,19 @@ pub fn self_member_did_from_repository(info: &Value) -> Option<String> {
     })
 }
 
+/// Whether the viewer only observes the space: it has members, and none of
+/// them is this account. That is a reader of a published space, who
+/// opened it from its address with the public ticket rather than an
+/// invite. A space with no members yet (its roster still arriving) is not
+/// read as observed, so a member never sees "observing" while loading.
+pub fn observes_from_repository(info: &Value) -> bool {
+    let members = info
+        .get("members")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    !members.is_empty() && self_member_did_from_repository(info).is_none()
+}
+
 /// Whether a member holding `role` runs the space: founders and admins
 /// may promote (and expel) other members; the worker refuses everyone
 /// else, so the roster offers those controls only to them.
@@ -1663,6 +1743,19 @@ mod self_member_did {
             self_member_did_from_repository(&json!({ "members": [] })),
             None
         );
+    }
+
+    #[test]
+    fn it_observes_a_space_whose_members_do_not_include_the_viewer() {
+        assert!(observes_from_repository(&json!({ "members": [
+            { "did": "did:key:zFounder", "is_self": false }
+        ] })));
+        assert!(!observes_from_repository(&json!({ "members": [
+            { "did": "did:key:zFounder", "is_self": false },
+            { "did": "did:key:zAccount", "is_self": true }
+        ] })));
+        assert!(!observes_from_repository(&json!({ "members": [] })));
+        assert!(!observes_from_repository(&json!({})));
     }
 
     #[test]

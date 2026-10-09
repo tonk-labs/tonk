@@ -19,6 +19,7 @@ pub mod pending;
 pub mod prefix;
 mod provider;
 pub mod subscription;
+pub mod ticket;
 
 pub use descriptor::{AccountRepositoryDescriptorV1, DescriptorError};
 pub use provider::{AccountProviderError, AccountProviderRecord};

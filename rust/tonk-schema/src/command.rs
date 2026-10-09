@@ -825,6 +825,48 @@ impl Command for PromoteMember {
     type Output = ();
 }
 
+/// Make a space readable by anyone.
+///
+/// Delegates `/use/get` on the space to the public principal, records it
+/// as an invitation of kind `public`, and leaves the chain in the space as
+/// that principal's ticket, so the space's bare address opens it for
+/// whoever visits. Only someone holding `/` on the space may, since only
+/// they could take it back.
+///
+/// Routeless like `tonk:pause-sync`: the command names its `space`.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct PublishSpace {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The space to publish.
+    pub space: crate::domain::command::publish::Space,
+    /// The press's timestamp.
+    pub time: crate::domain::command::publish::Time,
+}
+
+impl Command for PublishSpace {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Make a published space private again: take its public ticket back so
+/// the next visitor finds none, and revoke the delegation so a reader who
+/// already claimed it stops reading.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct UnpublishSpace {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The space to unpublish.
+    pub space: crate::domain::command::unpublish::Space,
+    /// The press's timestamp.
+    pub time: crate::domain::command::unpublish::Time,
+}
+
+impl Command for UnpublishSpace {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Register this profile's account as a customer of the access service.
 ///
 /// A command rather than a request: the outcome is the `AccountCustomer`

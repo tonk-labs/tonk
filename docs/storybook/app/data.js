@@ -578,12 +578,12 @@ window.STORYBOOK_DATA = {
       "variants": "--dry-run, --no-sync, TONK_NO_SYNC, offline, conflict."
     },
     {
-      "evidence": "Broad invite/integration coverage.",
-      "gaps": "Shortcut timeout/malformed answer, lost push, stable URL privacy, concurrent revoke.",
+      "evidence": "Broad invite/integration coverage; worker and CLI tests mint ticket links and claim them back; whole real-browser share tests copy a ticket link from the FABB and from the sign-up ceremony.",
+      "gaps": "Shortcut timeout/malformed answer, lost push, stable URL privacy, concurrent revoke, a ticket write that lands after the link was handed out.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "COLLAB-01",
-      "title": "Mint an audience-open invite.",
-      "variants": "Zero/one/many remotes; shortening on/off/offline; upstream states."
+      "title": "Mint an audience-open invite: a ticket link, /space/{did}#{seed}, whose chain the space keeps as the link key's ticket.",
+      "variants": "Zero/one/many remotes; service keeps tickets or not (falls back to the access= link); explicit --base-url on or off the remote's origin; shortening on/off/offline; upstream states."
     },
     {
       "evidence": "Partial invite tests.",
@@ -598,8 +598,8 @@ window.STORYBOOK_DATA = {
       "gaps": "Process error matrix, crash between claim and registration, response loss, concurrent claim, browser-only invite-seed rotation after native login.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "COLLAB-03",
-      "title": "Join or claim an invite into a named space.",
-      "variants": "Fresh/existing name; remote/no remote; malformed/expired/revoked/already claimed; no passkey account."
+      "title": "Join or claim an invite into a named space, including opening a ticket link, which claims the link key's ticket with /use/get/ticket/claim before joining.",
+      "variants": "Fresh/existing name; remote/no remote; access= or ticket link; raw or percent-encoded DID; ticket taken back; malformed/expired/revoked/already claimed; no passkey account."
     },
     {
       "evidence": "Invite revocation integration and real-browser access cutoff.",
@@ -616,6 +616,22 @@ window.STORYBOOK_DATA = {
       "id": "COLLAB-05",
       "title": "Claim while accountless, later add an account, recover on another device.",
       "variants": "Provider-free root; customer activation states; second device."
+    },
+    {
+      "evidence": "Worker test publishes, reads the public ticket, unpublishes and finds it taken back and revoked; palette lowering tests; whole real-browser test publishes from the FABB and unpublishes from the palette.",
+      "gaps": "A refused or failed publish is only logged; the palette offers both verbs to everyone on every space; partial unpublish (ticket withdrawn, revocation lost); concurrent publish from two devices.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "COLLAB-06",
+      "title": "Make a space public, and private again, from the FABB or the command palette.",
+      "variants": "Founder/admin (offered) or member/reader (not offered); already public/private; account not hosting the space; service refuses; palette on the space's page or elsewhere (space named)."
+    },
+    {
+      "evidence": "Worker test: a fresh device claims the public ticket and replicates, a newcomer after unpublish gets Private, the earlier reader's pull is refused as Revoked. Access-service tests: the ticket's holder and its delegate claim it; any other principal is refused as InvalidAudience. Whole real-browser test: an encoded-address visitor sees the space itself rendered (not only the FABB) with the half-filled observer disc and no share link, without a reload; the next visitor after unpublish sees the private wall. The test fails on a build without the in-place reload, where the space view stayed on its loading state.",
+      "gaps": "Readers can still write locally (never synced); a deployment pass on the preview; offline first visit; a reader later invited as a member.",
+      "group": "Spaces: account directory, sync, and collaboration",
+      "id": "COLLAB-07",
+      "title": "Open a published space from its bare address as an observer, and meet the private wall once it is unpublished.",
+      "variants": "Fresh or returning visitor; no account or an account; raw or percent-encoded DID (a normalizing deployment redirects to the encoded form); already a member; space unpublished before or after the first visit."
     },
     {
       "evidence": "Strong authoring/process coverage.",
@@ -1153,6 +1169,65 @@ window.STORYBOOK_DATA = {
       ],
       "status": "captured",
       "summary": "Successful and failed activation settle explicitly without exposing service response bodies, routes, or HTTP details.",
+      "surface": "browser"
+    },
+    {
+      "area": "Space",
+      "artifact": "app/screens/web-16-make-space-public.png",
+      "capture": "running product",
+      "id": "WEB-16",
+      "journey_ids": [
+        "COLLAB-06"
+      ],
+      "name": "Make space public",
+      "source_paths": [
+        "rust/tonk-fab/src/markup.rs",
+        "rust/tonk-fab/src/bar.rs",
+        "rust/tonk-fab/src/skin.rs",
+        "rust/tonk-fab/src/publication.rs",
+        "rust/tonk-worker/src/router/publication.rs"
+      ],
+      "status": "captured",
+      "summary": "The owner's FABB menu on a private space offers \"make space public\" beside sharing; once public it offers \"make space private\" instead. Only whoever runs the space sees either.",
+      "surface": "browser"
+    },
+    {
+      "area": "Space",
+      "artifact": "app/screens/web-17-observing-public-space.png",
+      "capture": "running product",
+      "id": "WEB-17",
+      "journey_ids": [
+        "COLLAB-03",
+        "COLLAB-07"
+      ],
+      "name": "Observing a public space",
+      "source_paths": [
+        "rust/tonk-fab/src/markup.rs",
+        "rust/tonk-fab/src/bar.rs",
+        "rust/tonk-fab/src/skin.rs",
+        "rust/tonk-fab/src/member_roster.rs",
+        "rust/tonk-worker/src/router/join.rs"
+      ],
+      "status": "captured",
+      "summary": "A visitor with no invite opens a published space's address and reads it as an observer: the space renders without a reload, the sync disc is half filled (read-only), and no share or agent link is offered.",
+      "surface": "browser"
+    },
+    {
+      "area": "Space",
+      "artifact": "app/screens/web-18-space-is-private.png",
+      "capture": "running product",
+      "id": "WEB-18",
+      "journey_ids": [
+        "COLLAB-01",
+        "COLLAB-07"
+      ],
+      "name": "This space is private",
+      "source_paths": [
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-worker/src/router/join.rs"
+      ],
+      "status": "captured",
+      "summary": "Opening a space's address with no access of one's own, when the space keeps no public ticket (never published, or made private again), ends on the private wall rather than a failure.",
       "surface": "browser"
     },
     {
@@ -2202,6 +2277,22 @@ window.STORYBOOK_DATA = {
       "result": "Partial (component, 2026-09-22): FABB Wasm suites cover double-click, refusal routing, contained task ownership, responsive panels, and 12-member reset/update/retract. Real copied-link use, account completion, touch device, and Safari remain unrun."
     },
     {
+      "claim": "Only whoever runs a space is offered to publish it, and publishing from the FABB or the palette leaves a public ticket that unpublishing takes back and revokes (Ticket links and public spaces decision).",
+      "device": "browser + palette",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "COLLAB-06",
+      "priority": "P1",
+      "result": "Partial (local real-browser, 3c83082, 2026-10-09): it_opens_a_published_space_to_a_visitor_as_an_observer publishes from the FABB and unpublishes from the palette. The member/reader not-offered half and a refused publish are unrun."
+    },
+    {
+      "claim": "A visitor with no access opens a published space from its bare address as an observer, without a reload, and meets the private wall once it is unpublished (Ticket links and public spaces decision).",
+      "device": "fresh-browser + encoded address",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "COLLAB-07",
+      "priority": "P1",
+      "result": "Pass (local real-browser, 2026-10-09, on top of 3c83082 with the in-place reload): the stuck first load reported on the preview reproduced locally before the fix and passes after it. A deployment pass remains unrun from this environment."
+    },
+    {
       "claim": "Concept and all view kinds round-trip through list/show/render (Inventory).",
       "device": "cli",
       "file": "verification/cli-spaces-ui.md",
@@ -2397,8 +2488,8 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 14,
-    "pass": 2,
+    "other": 15,
+    "pass": 3,
     "unrun": 107
   },
   "visualCommit": "49a873a23"

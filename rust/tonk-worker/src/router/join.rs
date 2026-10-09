@@ -75,7 +75,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
-use tonk_invite::{Invite, InviteAudience};
+use tonk_invite::{Invite, InviteAudience, Ticket};
 use tonk_schema::{
     Invitation, InvitationExecution, InvitedVia, MemberName, MemberRole, Membership, Replica,
     RepositoryName, SeedKind, prelude::DidExt as _,
@@ -236,6 +236,10 @@ impl JoinFailure {
     pub(crate) fn claim_failed(detail: impl Into<String>) -> Self {
         Self::new(JoinFailureKind::ClaimFailed, detail)
     }
+
+    fn private(detail: impl Into<String>) -> Self {
+        Self::new(JoinFailureKind::Private, detail)
+    }
 }
 
 impl From<JoinFailure> for TonkWorkerError {
@@ -261,6 +265,7 @@ impl From<JoinFailure> for TonkWorkerError {
                 message,
             },
             JoinFailureKind::ClaimFailed => TonkWorkerError::Internal(message),
+            JoinFailureKind::Private => TonkWorkerError::Forbidden(message),
         }
     }
 }
@@ -277,13 +282,14 @@ mod failure_vocabulary {
     use super::{AuthorizeError, JoinFailure, JoinFailureKind};
     use crate::TonkWorkerError;
 
-    const KINDS: [JoinFailureKind; 6] = [
+    const KINDS: [JoinFailureKind; 7] = [
         JoinFailureKind::Malformed,
         JoinFailureKind::AudienceMismatch,
         JoinFailureKind::Revoked,
         JoinFailureKind::Unavailable,
         JoinFailureKind::Refused,
         JoinFailureKind::ClaimFailed,
+        JoinFailureKind::Private,
     ];
 
     #[dialog_common::test]
@@ -298,6 +304,7 @@ mod failure_vocabulary {
                 "Tonk could not reach this space. Try again.",
                 "This space's host declined the invite. Its owner needs to check the space's plan.",
                 "Tonk could not join this space.",
+                "This space is private. Ask someone in it for an invite link.",
             ],
         );
     }
@@ -314,6 +321,7 @@ mod failure_vocabulary {
                 "unavailable",
                 "refused",
                 "claim-failed",
+                "private",
             ],
         );
     }
@@ -547,6 +555,13 @@ pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutco
     // network-bound one (pull + validation + roster reads against the
     // remote), so a slow join in the field can be attributed to the
     // network or to local work without reproducing it.
+    // A space's bare address names no invite: it opens the space for
+    // whoever can read it.
+    if let Some(public) = Ticket::public_for_url(url)
+        .map_err(|error| JoinFailure::malformed(format!("space address did not parse: {error}")))?
+    {
+        return open_space(tonk, public).await;
+    }
     let started = web_time::Instant::now();
     let prepared = prepare_join(tonk, url).await?;
     let prepared_at = web_time::Instant::now();
@@ -557,6 +572,115 @@ pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutco
         prepared_at.elapsed().as_millis()
     );
     Ok(outcome)
+}
+
+/// Open a space this device holds no replica of from its bare address,
+/// `/space/{did}`: with access the account already holds, or else with
+/// the public ticket the space keeps if it is published.
+///
+/// The public ticket makes its redeemer a reader, not a member. It
+/// grants only `/use/get`, so nothing this does writes to the space: no
+/// roster claim, no retained hop, no custodied seed. The ticket is saved
+/// in the profile, where it proves through the account's powerline from
+/// the public principal, so the next open finds it here rather than
+/// claiming again.
+///
+/// [`JoinFailure::private`] when the space keeps no public ticket and
+/// the account holds no access to it.
+async fn open_space(tonk: &TonkState, ticket: Ticket) -> Result<JoinOutcome, JoinFailure> {
+    let subject = ticket.subject().clone();
+    let key = subject.repo_key().to_owned();
+    let existing = find_replica_for_subject(tonk, &subject)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to look up the local replica: {error}"))
+        })?;
+    if existing {
+        return Ok(JoinOutcome {
+            key,
+            subject,
+            renewed: true,
+        });
+    }
+
+    let (account, device_grant) = crate::router::account::current_account(tonk)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to resolve the account: {error}"))
+        })?;
+    super::public_access::ensure_powerline(tonk, &account)
+        .await
+        .map_err(|error| JoinFailure::claim_failed(format!("public powerline: {error}")))?;
+    super::public_access::save(tonk, device_grant)
+        .await
+        .map_err(|error| JoinFailure::claim_failed(format!("device grant: {error}")))?;
+
+    if !super::public_access::can_read(tonk, &subject).await {
+        let chain = claim_public_ticket(&ticket).await?;
+        super::public_access::save(tonk, chain)
+            .await
+            .map_err(|error| JoinFailure::claim_failed(format!("public ticket: {error}")))?;
+    }
+
+    let remote_url = ticket.remote().to_string();
+    let repository = mount_replica(tonk, &subject, Some(&remote_url), None)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to prepare the local replica: {error}"))
+        })?;
+    let branch = repository
+        .branch(DEFAULT_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to open the content branch: {error}"))
+        })?;
+    pull_upstream(&branch, &tonk.operator).await?;
+    validate_content(&branch, &tonk.operator, &subject).await?;
+
+    tonk.reactor
+        .refresh_branch(subject.repo_key(), DEFAULT_BRANCH, &tonk.operator)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to adopt the opened branch: {error}"))
+        })?;
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    record_initialized_replica_in_profile(tonk, &subject)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to index the replica: {error}"))
+        })?;
+    log!("join: opened subject {subject} (key {key}) to read");
+    Ok(JoinOutcome {
+        key,
+        subject,
+        renewed: false,
+    })
+}
+
+/// Claim the ticket a space keeps for the public principal, signed as
+/// that principal, or [`JoinFailure::private`] when it keeps none.
+async fn claim_public_ticket(ticket: &Ticket) -> Result<DelegationChain, JoinFailure> {
+    let holder = ticket
+        .holder()
+        .await
+        .map_err(|error| JoinFailure::claim_failed(format!("public key: {error}")))?;
+    let holder_did = dialog_varsig::Principal::did(&holder);
+    let fetched =
+        tonk_account::ticket::claim(ticket.remote(), holder, &holder_did, None, ticket.subject())
+            .await
+            .map_err(|error| match error {
+                tonk_account::ticket::ClaimError::Refused(reason) => {
+                    classify_authorization(&reason)
+                }
+                _ => JoinFailure::unavailable("the space's public ticket could not be fetched"),
+            })?
+            .ok_or_else(|| JoinFailure::private("the space keeps no public ticket"))?;
+    ticket
+        .accept(&fetched)
+        .await
+        .map_err(|error| JoinFailure::malformed(format!("public ticket: {error}")))
 }
 
 /// Run the ordinary join pipeline for a browser-approved local-space link.
@@ -600,9 +724,45 @@ async fn prepare_join(tonk: &TonkState, url: &str) -> Result<PreparedJoin, JoinF
 }
 
 async fn parse_invite(url: &str) -> Result<Invite, JoinFailure> {
+    if let Some(ticket) = Ticket::parse_url(url)
+        .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))?
+    {
+        return claim_ticket(ticket).await;
+    }
     Invite::parse_url(url)
         .await
         .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))
+}
+
+/// Fetch the ticket a ticket link's space keeps for the link's key, and
+/// read it as the open invite it is. From here a ticket link joins the
+/// way an `access=` link does.
+async fn claim_ticket(ticket: Ticket) -> Result<Invite, JoinFailure> {
+    let holder = ticket
+        .holder()
+        .await
+        .map_err(|error| JoinFailure::malformed(format!("ticket key: {error}")))?;
+    let holder_did = dialog_varsig::Principal::did(&holder);
+    let fetched =
+        tonk_account::ticket::claim(ticket.remote(), holder, &holder_did, None, ticket.subject())
+            .await
+            .map_err(|error| match error {
+                tonk_account::ticket::ClaimError::Refused(reason) => {
+                    classify_authorization(&reason)
+                }
+                _ => JoinFailure::unavailable("the space's ticket could not be fetched"),
+            })?;
+    // The space no longer keeps a ticket for this link's key: it was
+    // taken back, which withdraws the link as far as a newcomer goes.
+    let Some(fetched) = fetched else {
+        return Err(JoinFailure::revoked(
+            "the space no longer holds this link's ticket",
+        ));
+    };
+    ticket
+        .redeem(&fetched)
+        .await
+        .map_err(|error| JoinFailure::malformed(format!("ticket did not redeem: {error}")))
 }
 
 async fn prepare_parsed_join(
@@ -1428,8 +1588,13 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
         }
         // There is no paste-link page: invite links open directly in the
         // browser. Return bare /join visits home before requesting custody.
-        if !carries_invite(&command.url.0) {
-            crate::router::navigate::notify_navigate(self.client(), "/");
+        // A space's own page mounts the join too, where this device holds
+        // no replica of it: a ticket link opens where it points, and the
+        // bare address opens the space for whoever can read it.
+        if !carries_invite(&command.url.0) && !is_bare_space_address(&command.url.0) {
+            if !is_space_address(&command.url.0) {
+                crate::router::navigate::notify_navigate(self.client(), "/");
+            }
             return;
         }
         run_join(self, command).await;
@@ -1500,19 +1665,42 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
     tonk_invite::shortcut::resolve_location(short_url, location).map_err(|error| error.to_string())
 }
 
-/// Whether a `/join` URL carries an invite at all.
+/// Whether a URL carries an invite at all.
 ///
-/// The delegation chain rides in `access`, so its presence is what
-/// separates "redeem this" from a bare /join visit that returns home.
-/// Deliberately a query test and not a parse: a malformed or truncated
-/// invite IS an attempt and must still fail loudly with its reason,
-/// rather than being silently treated as an empty visit.
+/// On `/join` the delegation chain rides in `access`, so its presence is
+/// what separates "redeem this" from a bare /join visit that returns
+/// home. Deliberately a query test and not a parse: a malformed or
+/// truncated invite IS an attempt and must still fail loudly with its
+/// reason, rather than being silently treated as an empty visit.
+///
+/// A ticket link is a space's address with a seed for a fragment (see
+/// [`Ticket`]); the same address without one is just the space.
 fn carries_invite(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|parsed| {
         parsed
             .query_pairs()
             .any(|(key, value)| key == "access" && !value.is_empty())
-    })
+    }) || matches!(Ticket::parse_url(url), Ok(Some(_)))
+}
+
+/// Whether a URL is a space's own page, `/space/...`: where a join is
+/// mounted to pick up a ticket link, and where finding none is no
+/// reason to leave.
+fn is_space_address(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| parsed.path().starts_with("/space/"))
+}
+
+/// Whether a URL is a space's address with no ticket beside it: a visit,
+/// which opens the space if it is readable and otherwise leaves the page
+/// to say it is private.
+fn is_bare_space_address(url: &str) -> bool {
+    matches!(Ticket::public_for_url(url), Ok(Some(_)))
+}
+
+/// Whether `url` is a space's own address, bare or as a ticket link: the
+/// page a join from it runs on is already that space's page.
+fn opens_in_place(url: &str) -> bool {
+    matches!(Ticket::parse_url(url), Ok(Some(_))) || is_bare_space_address(url)
 }
 
 /// Drop this join's own overlay facts, and only those (scoped clear).
@@ -1626,12 +1814,34 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
                     },
                 );
             }
-            crate::router::navigate::notify_navigate(env.client(), &href);
+            // A space's own address (bare, or a ticket link) is already
+            // the page the join ran on. When the join installed the space,
+            // its view mounted while the space was absent, and a route
+            // change to where the page already is re-mounts nothing: the
+            // view stayed on its loading state until a manual reload. Load
+            // the space afresh instead, in place of the entry, which also
+            // keeps a ticket link's seed out of the history. A space that
+            // was already here (a page that opened its own space a moment
+            // before the directory listed it) needs no reload.
+            if opens_in_place(&url) && !outcome.renewed {
+                crate::router::navigate::notify_replace(env.client(), &href);
+            } else {
+                crate::router::navigate::notify_navigate(env.client(), &href);
+            }
             log!(
                 "join: succeeded (subject {}, key {})",
                 outcome.subject,
                 outcome.key
             );
+        }
+        // A visit to a space's address carried no link that could have
+        // expired, so it shows no failure: the page it is on already
+        // says the space is private and how to get in.
+        Err(failure) if is_bare_space_address(&url) => {
+            clear_join_overlay(&session, &status_entity);
+            tonk.reactor.schedule_poll(Arc::clone(&session.state));
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            log!("join: the space did not open ({})", failure.kind().as_str());
         }
         Err(failure) => {
             // Failure: mark failed + record the fixed copy and its kind,
@@ -1749,6 +1959,61 @@ mod invite_presence_tests {
             "https://tonk.space/join?remote=https%3A%2F%2Fs"
         ));
         assert!(!carries_invite("not a url"));
+    }
+
+    /// A ticket link is the space's address with a key seed for its
+    /// fragment; the same address without one is the space, which a
+    /// visitor stays on rather than being sent home.
+    #[test]
+    fn it_reads_a_ticket_link_as_an_invite_and_the_bare_space_as_a_visit() {
+        use super::{is_bare_space_address, is_space_address};
+        let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let seed = bs58::encode([6u8; 32]).into_string();
+
+        assert!(carries_invite(&format!(
+            "https://tonk.space/space/{space}#{seed}"
+        )));
+        assert!(!carries_invite(&format!(
+            "https://tonk.space/space/{space}"
+        )));
+        assert!(is_space_address(&format!(
+            "https://tonk.space/space/{space}"
+        )));
+        assert!(!is_space_address("https://tonk.space/join"));
+
+        assert!(is_bare_space_address(&format!(
+            "https://tonk.space/space/{space}"
+        )));
+        assert!(!is_bare_space_address(&format!(
+            "https://tonk.space/space/{space}#{seed}"
+        )));
+        assert!(!is_bare_space_address(&format!(
+            "https://tonk.space/space/{space}/inspector"
+        )));
+    }
+
+    /// A join from a space's own address, bare or as a ticket link, raw or
+    /// percent-encoded, runs on that space's page, so its success reloads
+    /// the page in place; a join from anywhere else navigates to the space.
+    #[test]
+    fn it_reloads_in_place_after_a_join_from_the_spaces_own_address() {
+        use super::opens_in_place;
+        let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let encoded = space.replace(':', "%3A");
+        let seed = bs58::encode([6u8; 32]).into_string();
+
+        for address in [
+            format!("https://tonk.space/space/{space}"),
+            format!("https://tonk.space/space/{encoded}"),
+            format!("https://tonk.space/space/{space}#{seed}"),
+            format!("https://tonk.space/space/{encoded}#{seed}"),
+        ] {
+            assert!(opens_in_place(&address), "{address}");
+        }
+        assert!(!opens_in_place("https://tonk.space/join?access=abc"));
+        assert!(!opens_in_place(&format!(
+            "https://tonk.space/space/{space}/inspector"
+        )));
     }
 }
 

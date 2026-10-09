@@ -69,6 +69,8 @@ pub(crate) mod custody;
 pub(crate) mod rotation;
 
 mod join;
+pub(crate) mod public_access;
+mod publication;
 pub use join::{JoinRequest, JoinResponse};
 mod local_space_link;
 
@@ -1539,8 +1541,12 @@ pub mod tests {
         // Dispatch runs post-commit; poll the `tonk:invitation` join keyed
         // by the repo subject — `access`/`remote` from the durable
         // authorization, `code` (the seed) and `link` (the assembled URL)
-        // from the session overlay.
-        for _ in 0..50 {
+        // from the session overlay. Bounded by time, not by a count of
+        // yields: an open invite first tries to leave its ticket at the
+        // remote, and how long an unreachable one takes to fail (this
+        // fixture's is) varies run to run.
+        let deadline = js_sys::Date::now() + 30_000.0;
+        while js_sys::Date::now() < deadline {
             let q = serde_json::json!({
                 "terms": {
                     "this": subject,

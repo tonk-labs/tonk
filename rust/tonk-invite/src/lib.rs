@@ -35,6 +35,17 @@
 //!   redelegating from the embedded ephemeral key. Absence marks it as
 //!   **audience-scoped** — only the chain's recorded audience DID can claim.
 //!
+//! ## Ticket links
+//!
+//! ```text
+//! <origin>/space/<space-did>#<base58-seed>
+//! ```
+//!
+//! An audience-open invite whose chain waits in the space, kept there as
+//! the seed's key's ticket, rather than riding in the URL. The redeemer
+//! claims it from the access service at the link's origin; see
+//! [`ticket`].
+//!
 //! The open/scoped distinction is the *audience* axis. The *subject* axis is
 //! always scoped to a specific repo — orthogonal and non-negotiable.
 //!
@@ -43,7 +54,11 @@
 
 pub mod connection;
 pub mod local_space_link;
+pub mod public;
 pub mod shortcut;
+pub mod ticket;
+
+pub use ticket::Ticket;
 
 use anyhow::{Context, Result};
 use dialog_credentials::{Ed25519Signer, Signer};
@@ -174,7 +189,7 @@ pub fn base_url_for_remote(endpoint: &str) -> Result<String> {
 
 /// Length in bytes of the Ed25519 seed embedded in the URL fragment for
 /// audience-open invites.
-const SEED_LEN: usize = 32;
+pub(crate) const SEED_LEN: usize = 32;
 
 /// Ed25519 seed for the ephemeral key in an audience-open invite.
 pub type EphemeralSeed = [u8; SEED_LEN];

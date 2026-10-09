@@ -245,6 +245,18 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
     if let Ok(Some(home)) = root.query_selector("[data-action=home]") {
         listeners.push(shadow::on_click(&home, || tonk_host::navigate_to("/")));
     }
+    for (action, publish) in [("publish", true), ("unpublish", false)] {
+        if let Ok(Some(button)) = root.query_selector(&format!("[data-action={action}]")) {
+            let host = this.clone();
+            let shared = state.clone();
+            listeners.push(shadow::on_click(&button, move || {
+                if let Some(space) = host.get_attribute("space").filter(|s| !s.is_empty()) {
+                    crate::publication::dispatch(&space, publish);
+                }
+                close(&host, &shared);
+            }));
+        }
+    }
     if let Ok(Some(condition)) = root.query_selector("[data-action=condition]") {
         let host = this.clone();
         listeners.push(shadow::on_click(&condition, move || {
@@ -1074,8 +1086,13 @@ pub(crate) fn update(this: &HtmlElement) {
 
     let state = state_of(this);
     let signed_out = this.has_attribute("data-account-required");
+    // A reader of a published space syncs nothing of its own: its disc is
+    // half filled, whatever else is true of the bar.
+    let observer = this.has_attribute("data-observer");
     if let Ok(Some(disc)) = root.query_selector(".fab .disc") {
-        let rendered = if signed_out {
+        let rendered = if observer {
+            "observing"
+        } else if signed_out {
             "offline"
         } else {
             state.as_str()
@@ -1094,7 +1111,9 @@ pub(crate) fn update(this: &HtmlElement) {
         // shapes for eight states, so `revoked` and `conflict` both render a
         // hollow ring — announcing them as merely "offline" would make the
         // difference unreachable to anyone not looking at the pixel.
-        let reported = if signed_out {
+        let reported = if observer {
+            "read-only, observing".to_string()
+        } else if signed_out {
             "signed out".to_string()
         } else {
             this.get_attribute("data-sync-status")
