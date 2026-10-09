@@ -149,6 +149,12 @@ the most important gaps, not the only variants required.
 | `UI-04` | Open a space home, explicit rendered route, or `/inspector`. | Blank/configured home; missing view/entity; local/remote; unauthorized; named-space/profile inspector. | Rendering/portal coverage, inspector renderer tests, some E2E paths, and structural coverage for the actionable Tonk edge wall on an absent-space route. | Top-level real-browser route matrix, configured-upstream probe, and interactive behavior beyond headless render. |
 | `UI-05` | Recover from service-worker or deployment failure; inspect `/doctor` and copy an agent debug bundle. | Missing env, wrong origins/DIDs, worker exception, stale cache, no controller, unavailable clipboard. | Deployment test, build checks, Doctor Node contracts and isolated Chrome fixtures; see [Doctor diagnostics](ui/routing-and-runtime.md#doctor-diagnostics). | Full installed-worker update/unregister preservation, real account APIs, Safari and hosted recovery. |
 
+## Hosted ChatGPT integration
+
+| ID | Journey | State variants | Evidence | Remaining coverage |
+| --- | --- | --- | --- | --- |
+| `MCP-01` | Connect an account, select a space, build an app and use it in the embedded Tonk frontend. | Unconnected; pending approval; registered/account ready (`I4`); selected space; saved locally; published; expired session. | Development acceptance reported by the user on 2026-10-09; native and MCP tests. See [verification](verification/cli-spaces-ui.md#hosted-chatgpt-integration). | Automated browser end-to-end, long idle, expiry, multi-tab, revocation and interrupted publication; not fully covered. |
+
 ## Coverage conclusion
 
 The suite is large, but the distribution explains the reported hot-path bugs:

@@ -357,6 +357,9 @@ Remaining work before general availability:
   can still leave unused local replica directories until container replacement.
 - Multi-user capacity and operational diagnostics. This is a single-container
   development deployment, not a production service configuration.
+- Tonk Town generated catalog is currently behind this monorepo catalog;
+  its synchronization check failed during PR preparation and needs a companion
+  desktop update. No desktop files are changed in this PR.
 - Main-website passkey progress and latency are separate from this connector.
   The unfinished approval-page change is not included in this integration PR.
 
