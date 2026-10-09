@@ -45,13 +45,13 @@ async fn report_to(tonk: &TonkState, entity: &str, ceremony: &str, state: &str, 
 
 // Keep approval progress separate from earlier requests and other tabs. The
 // settings element derives the same entity from the unencoded request fields.
-fn authorization_entity(authorization: &tonk_worker_api::DeviceAuthorization) -> String {
+pub(super) fn authorization_entity(authorization: &tonk_worker_api::DeviceAuthorization) -> String {
     let request = serde_json::to_vec(&[&authorization.audience, &authorization.callback])
         .expect("strings serialize as JSON");
     format!("urn:tonk:approval:{}", bs58::encode(request).into_string())
 }
 
-async fn report_authorization(
+pub(super) async fn report_authorization(
     tonk: &TonkState,
     authorization: &tonk_worker_api::DeviceAuthorization,
     state: &str,

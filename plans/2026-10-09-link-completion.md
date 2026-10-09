@@ -60,3 +60,22 @@ The user verified faster linking on the PR #1078 preview, then found that creati
 Implemented the route preservation in both capture and completion. The Wasm DOM regression failed before the fix because the dialog had no saved return path, then passed after it. It opens account setup on a Desktop link, completes from `/account`, verifies the exact restored query (including callback state and expected account), and checks that the next normal setup has no stale continuation. All 23 register-dialog browser/Wasm tests pass. Destination tests also cover web callbacks, local-space links, incomplete requests, fragments and external destinations. Formatting and whitespace checks pass. Full passkey signup, desktop callback delivery and refreshed preview deployment remain unverified.
 
 Command: `nix develop --accept-flake-config . -c cargo test -p tonk-ui --lib --target wasm32-unknown-unknown register_dialog -- --nocapture`.
+
+## PR review: retain terminal approval status on deadline
+
+Review found that cancelling the complete approval at its deadline also cancelled the ceremony's FAILED publication. The reply surfaced a short-lived error card, but the request's overlay row stayed WORKING and a remounted panel showed "Approving the connection…" after the worker had stopped.
+
+The completion wrapper now distinguishes a deadline from an operation refusal, drops unfinished work first, then publishes FAILED to that request's existing entity. Failure publication has a separate five-second bound (120 seconds of operation plus at most five seconds of cleanup), including the state lock, so unavailable storage or a blocked lock cannot strand the terminal reply. Publication remains best effort when that bound expires; the timeout reply still completes and the worker logs the unavailable status update. Other requests and ordinary terminal results are unchanged.
+
+Regression coverage seeds two real request-scoped overlay rows, expires one operation, and checks its failure/detail while preserving the other request's WORKING row. A separate held-state-lock regression checks that cleanup cannot block the reply.
+
+Validation: the new real-overlay regression failed against the original deadline behavior with `left: "working", right: "failed"`. After the fix, all four worker Wasm deadline tests passed (0.50 seconds), including cancellation before late success and preservation of terminal results/refusals. The focused approval-progress/channel Node tests passed (12/12); Rust formatting and whitespace checks passed. The parent review also ran the complete Node UI suite before this worker-only follow-up (186/186). Full Desktop/ChatGPT sign-in remains outside these tests.
+
+Commands:
+
+```sh
+nix develop --accept-flake-config . -c cargo test -p tonk-worker --lib --target wasm32-unknown-unknown deadline_tests -- --nocapture
+node --test rust/tonk-ui/tests/approval-progress.test.mjs rust/tonk-ui/tests/custody-channel.test.mjs
+nix develop --accept-flake-config . -c cargo fmt --all --check
+git diff --check
+```
