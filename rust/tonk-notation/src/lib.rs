@@ -21,7 +21,7 @@ pub mod types;
 
 pub use diagnostics::{NOTATION_LANGUAGE_ID, SERVER_INFO, ServerInfo, document_diagnostics};
 pub use include::{Load, expand};
-pub use parse::{INLINE_LOCATION, Parsed, is_reference_name, parse, parse_at};
+pub use parse::{INLINE_LOCATION, Parsed, is_reference_name, parse, parse_at, spell_uri};
 pub use syntax::{
     Anchor, Application, Effectful, Expression, Field, FieldValue, HeadName, Include, IncludeForm,
     Predicate, Premise, Scalar, Spanned, Syntax,

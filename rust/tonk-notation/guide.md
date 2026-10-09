@@ -76,8 +76,18 @@ URIs come in several schemes:
 - `did:key:…` — content-addressed entities (DIDs).
 - `xyz.tonk.person/name`, `dialog.meta/name`, etc. — attribute
   URIs in `domain/name` form.
+- `:keyword` — the bare-scheme URI `keyword:`. YAML reads a
+  trailing `:` as the start of a mapping, so `keyword:` can't be
+  written as a value; the notation puts the colon in front
+  instead. Output spells these entities the same way.
 
 All of these are direct references and require no resolution.
+
+```yaml tonk=parse
+link!:
+  this: :keyword
+  target: :tonk
+```
 
 ## A worked example
 
@@ -248,6 +258,7 @@ value can take four forms:
 | `?var`              | Logic variable — bind/unify across expressions          |
 | `name` (bare)       | Resolve through the name table to a target entity       |
 | `did:key:…`         | Entity URI directly (no resolution)                     |
+| `:keyword`          | The bare-scheme entity URI `keyword:`                   |
 | `{ ... }` (mapping) | Entity is content-addressed from the mapping content    |
 
 The mapping form lets you control entity derivation
@@ -282,6 +293,7 @@ distinguished lexically:
 | `_`                             | Blank — query: match any value; assertion: retract field   |
 | `person-name` (bare lowercase)  | Symbol — resolves through the name table to a target entity |
 | `id:foo`, `db:foo`, `did:key:…` | URI — direct entity reference, no resolution               |
+| `:foo`                          | Keyword — the bare-scheme URI `foo:`, no resolution        |
 | `xyz.tonk/foo`                  | Attribute URI — direct, no resolution                      |
 
 The distinction between a bare symbol and a URI is

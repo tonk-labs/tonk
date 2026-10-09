@@ -12,6 +12,8 @@
 //!
 //! [analyze]: https://github.com/dialog-db/tonk-workers/tree/main/rust/tonk-schema/src/interpret.rs
 
+use std::borrow::Cow;
+
 use base64::Engine as _;
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 use saphyr::{MarkedYaml, Scalar as SaphyrScalar, ScanError, YamlData, YamlLoader};
@@ -857,7 +859,9 @@ fn parse_head(
 ///   a name a URI; only a `:` (or a dotted domain before the `/`)
 ///   does, so concept names may contain `/`.
 fn classify_head_name(name: &str) -> HeadName {
-    if name.contains(':') || is_attribute_identifier(name) {
+    if let Some(uri) = keyword_uri(name) {
+        HeadName::Uri(uri)
+    } else if name.contains(':') || is_attribute_identifier(name) {
         HeadName::Uri(name.to_owned())
     } else if name.contains('.') {
         HeadName::Claim(name.to_owned())
@@ -1171,6 +1175,9 @@ pub fn classify_plain_value(text: &str) -> FieldValue {
     if let Some(rest) = text.strip_prefix('?') {
         return FieldValue::Variable(rest.to_owned());
     }
+    if let Some(uri) = keyword_uri(text) {
+        return FieldValue::Uri(uri);
+    }
     if looks_like_uri(text) {
         return FieldValue::Uri(text.to_owned());
     }
@@ -1198,6 +1205,31 @@ pub fn classify_plain_value(text: &str) -> FieldValue {
 /// written, not later where it is used.
 pub fn is_reference_name(name: &str) -> bool {
     matches!(classify_plain_value(name), FieldValue::Symbol(_))
+}
+
+/// Read the keyword spelling `:keyword` as the URI `keyword:`.
+///
+/// A URI that is a bare scheme (`keyword:`) can't be written as a
+/// plain YAML scalar: a trailing `:` makes YAML read a mapping key.
+/// The notation spells it with the colon in front instead, so
+/// `:keyword` means the entity `keyword:`. Only a bare scheme after
+/// the colon qualifies; anything else (`:Foo`, `:a:b`, `:`) stays
+/// what it was.
+fn keyword_uri(text: &str) -> Option<String> {
+    let scheme = text.strip_prefix(':')?;
+    is_uri_scheme(scheme).then(|| format!("{scheme}:"))
+}
+
+/// Spell `uri` as notation source: the inverse of the `:keyword`
+/// reading. A bare-scheme URI (`keyword:`) comes back as `:keyword`,
+/// which YAML reads as a plain scalar; every other URI is returned
+/// as written. Use it wherever an entity is emitted into a notation
+/// document.
+pub fn spell_uri(uri: &str) -> Cow<'_, str> {
+    match uri.strip_suffix(':') {
+        Some(scheme) if is_uri_scheme(scheme) => Cow::Owned(format!(":{scheme}")),
+        _ => Cow::Borrowed(uri),
+    }
 }
 
 /// Does `text` look like a notation URI?
@@ -1945,6 +1977,63 @@ name!:
         assert!(matches!(&this.value, FieldValue::Uri(u) if u == "id:alice"));
         let entity = a.fields.iter().find(|f| f.name == "entity").unwrap();
         assert!(matches!(&entity.value, FieldValue::Uri(u) if u == "did:key:zHjKf"));
+    }
+
+    #[dialog_common::test]
+    fn it_reads_a_keyword_as_a_bare_scheme_uri() {
+        let syntax = parse_clean(
+            r#"
+link!:
+  this:   :keyword
+  target: :tonk
+  label:  ":quoted"
+  other:  :Upper
+"#,
+        );
+        let Expression::Claim(Effectful { inner: a, .. }) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let value = |name: &str| &a.fields.iter().find(|f| f.name == name).unwrap().value;
+        assert!(matches!(value("this"), FieldValue::Uri(u) if u == "keyword:"));
+        assert!(matches!(value("target"), FieldValue::Uri(u) if u == "tonk:"));
+        // Quoting keeps a keyword-shaped string a string, and a
+        // colon before something that is not a scheme is not a
+        // keyword.
+        assert!(matches!(
+            value("label"),
+            FieldValue::Literal(Scalar::String(s)) if s == ":quoted"
+        ));
+        assert!(matches!(
+            value("other"),
+            FieldValue::Literal(Scalar::String(s)) if s == ":Upper"
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_reads_a_keyword_head_as_a_bare_scheme_uri() {
+        let syntax = parse_clean(
+            r#"
+:keyword!:
+  description: "x"
+"#,
+        );
+        let Expression::Claim(Effectful { inner: a, .. }) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert!(matches!(&a.predicate.name, HeadName::Uri(u) if u == "keyword:"));
+    }
+
+    #[dialog_common::test]
+    fn it_spells_a_bare_scheme_uri_as_a_keyword() {
+        assert_eq!(spell_uri("keyword:"), ":keyword");
+        assert_eq!(spell_uri("did:key:zHjKf"), "did:key:zHjKf");
+        assert_eq!(spell_uri("id:alice"), "id:alice");
+        assert_eq!(spell_uri("Weird:"), "Weird:");
+        // The spelling reads back as the URI it came from.
+        assert!(matches!(
+            classify_plain_value(&spell_uri("keyword:")),
+            FieldValue::Uri(u) if u == "keyword:"
+        ));
     }
 
     #[dialog_common::test]

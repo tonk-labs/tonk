@@ -21,6 +21,7 @@ use anyhow::{Context, Result};
 use dialog_repository::Revision;
 use serde::{Deserialize, Serialize};
 use tonk_evaluator::evaluate::{CommitSummary, QueryMatchBlock, QueryResult};
+use tonk_notation::spell_uri;
 
 /// JSON wire shape returned by both tonk and the worker's
 /// `/evaluate` route. Tonk owns its own copy so the JSON
@@ -158,7 +159,7 @@ fn render_matches(blocks: &[QueryMatchBlock]) -> String {
 /// re-submittable notation document.
 fn render_one(out: &mut String, label: &str, result: &QueryResult) {
     let _ = writeln!(out, "{label}:");
-    let _ = writeln!(out, "  this: {this}", this = result.this);
+    let _ = writeln!(out, "  this: {this}", this = spell_uri(&result.this));
     for (field, value) in &result.fields {
         if field.ends_with("/key") {
             continue;

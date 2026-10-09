@@ -6,6 +6,7 @@
 //! `tonk eval`, not a second write path.
 
 use dialog_query::{ConceptDescriptor, Type};
+use tonk_notation::spell_uri;
 
 /// Error rendering a raw CLI value or building a notation document
 /// against a concept's descriptor.
@@ -79,7 +80,7 @@ pub fn build_query(
     }
     let mut doc = format!(
         "{concept}:\n  this: {}\n",
-        entity.unwrap_or("?__tonk_entity")
+        entity.map_or("?__tonk_entity".into(), spell_uri)
     );
     for (index, (field, _)) in descriptor.with().iter().enumerate() {
         let value = constraints
@@ -125,7 +126,7 @@ pub fn render_value(ty: Option<Type>, raw: &str) -> Result<String, DataError> {
             raw.parse::<bool>().map_err(|_| bad("boolean"))?;
             Ok(raw.to_string())
         }
-        Some(Type::Entity) | Some(Type::Symbol) => Ok(raw.to_string()),
+        Some(Type::Entity) | Some(Type::Symbol) => Ok(spell_uri(raw).into_owned()),
         _ => Ok(quote_string(raw)), // String/Bytes/Record/None → quoted text
     }
 }
@@ -206,6 +207,7 @@ pub fn build_supersede(
     fields: &[(String, String)],
 ) -> Result<String, DataError> {
     let body = render_pairs(descriptor, concept, fields)?.join("\n");
+    let entity = spell_uri(entity);
     Ok(format!("{concept}!:\n  this: {entity}\n{body}\n"))
 }
 
@@ -217,6 +219,7 @@ pub fn build_match(
     fields: &[(String, String)],
 ) -> Result<String, DataError> {
     let body = render_pairs(descriptor, concept, fields)?.join("\n");
+    let entity = spell_uri(entity);
     Ok(format!("{concept}:\n  this: {entity}\n{body}\n"))
 }
 
@@ -225,6 +228,7 @@ pub fn build_match(
 /// itself an assertion — a claim invalidating an old one — not a
 /// deletion.
 pub fn build_retract(concept: &str, entity: &str, field: Option<&str>) -> String {
+    let entity = spell_uri(entity);
     match field {
         Some(f) => format!("{concept}!:\n  this: {entity}\n  {f}: _\n"),
         None => format!("{concept}!:\n  this: {entity}\n  ..: _\n"),
@@ -278,6 +282,12 @@ mod tests {
         assert_eq!(
             render_value(Some(Type::Entity), "did:key:z6Mk").unwrap(),
             "did:key:z6Mk"
+        );
+        // A bare-scheme URI is spelled as a keyword, the only form
+        // YAML reads as a value.
+        assert_eq!(
+            render_value(Some(Type::Entity), "keyword:").unwrap(),
+            ":keyword"
         );
     }
     #[test]
