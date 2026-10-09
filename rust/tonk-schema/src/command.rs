@@ -527,6 +527,78 @@ impl Command for RecordInvite {
     type Output = ();
 }
 
+/// Keep, in a space, the record of an invitation the person's profile
+/// issued: the roster's invitation, and the delegation retained so the
+/// invitation can be found again and revoked.
+///
+/// [`RecordInvite`] is what the share control's own mint leaves, link and
+/// seed included. This is the rest of it: an invitation issued for someone
+/// else to carry (a named root, an agent), of which the space keeps only
+/// what the chain says. It fires on the space's own branch and records for
+/// that space only.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RetainInvite {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The delegation chain the invitation grants.
+    pub proof: crate::domain::command::current::retain_invite::Proof,
+    /// The `profile -> account` union edge, or empty.
+    pub union: crate::domain::command::current::retain_invite::Union,
+    /// Whether the invitation is open.
+    pub open: crate::domain::command::current::retain_invite::Open,
+}
+
+impl Command for RetainInvite {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Commit, in a space, a claim on it that the person's profile prepared.
+///
+/// Where each space is held by a worker on the space's own origin, joining
+/// one takes two workers. The profile's parses the invitation, extends its
+/// chain to the claiming account and keeps that authority. The space's
+/// worker, which is delegated to out of it, does what touches the space: it
+/// pulls it (the remote honouring the chain is the authorization check),
+/// validates what the pull brought, and commits the roster claim. This is
+/// how the first hands the second the claim. It fires on the space's own
+/// branch and claims for that space only; what came of it is said in a
+/// [`MembershipClaimed`] at this command's entity.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ClaimMembership {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The invitation's chain as issued.
+    pub invitation: crate::domain::command::current::claim_membership::Invitation,
+    /// The chain extended to the claiming account.
+    pub chain: crate::domain::command::current::claim_membership::Chain,
+    /// Whether the invitation is open.
+    pub open: crate::domain::command::current::claim_membership::Open,
+    /// The account the claim is for.
+    pub member: crate::domain::command::current::claim_membership::Member,
+    /// The name the member goes by.
+    pub name: crate::domain::command::current::claim_membership::Name,
+    /// Whether the remote has to honour the chain first.
+    pub authorize: crate::domain::command::current::claim_membership::Authorize,
+}
+
+impl Command for ClaimMembership {
+    type Input = Self;
+    type Output = ();
+}
+
+/// What came of a [`ClaimMembership`], at that command's entity: overlay
+/// only, in the space the claim was for.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MembershipClaimed {
+    /// The entity of the command that asked.
+    pub this: Entity,
+    /// `claimed`, or the kind of failure.
+    pub outcome: crate::domain::membership_claim::Outcome,
+    /// Operator-facing context for a failure.
+    pub detail: crate::domain::membership_claim::Detail,
+}
+
 /// Move a space's roster entry from one account to the account that took it
 /// over, in the space's own worker.
 ///

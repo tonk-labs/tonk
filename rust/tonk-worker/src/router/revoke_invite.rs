@@ -26,7 +26,7 @@ use tonk_schema::{Invitation, InvitationExecution};
 use tonk_worker_api::{InvitationKind, InvitationSummary};
 
 use super::AppState;
-use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url_with};
+use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url};
 use crate::{TonkState, TonkWorkerError};
 
 /// The scope an invite covers: using the space. Invites are minted at
@@ -170,6 +170,22 @@ pub async fn revoke(
         .parse()
         .map_err(|error| TonkWorkerError::Router(format!("invalid target CID: {error}")))?;
     let tonk = state.read().await;
+    // The invitation's record and its retained path are in the space, which
+    // a worker of its own holds: that worker resolves the target and has
+    // this one sign ([`revoke_for_space`]).
+    if tonk.spaces_elsewhere() {
+        drop(tonk);
+        let receipt = super::space_reach::ask(
+            &repo,
+            "POST",
+            &format!("/api/repository/{repo}/invites/{target}/revoke"),
+            Some(&serde_json::json!({})),
+        )
+        .await?;
+        return serde_json::from_value(receipt).map(Json).map_err(|error| {
+            TonkWorkerError::Internal(format!("the space's worker answered no receipt: {error}"))
+        });
+    }
     let session = tonk
         .reactor
         .repository(&repo)
@@ -198,8 +214,13 @@ pub async fn revoke(
     // of the envelope, while a UCAN CID is dag-cbor/sha2-256).
     let (path, invitation) = resolve_target(session.handle(), &tonk, &subject, &target).await?;
 
-    let receipt =
-        publish_revocation(&tonk, &repo, &repository, session.handle(), &path, &target).await?;
+    // A space's own worker holds the space and none of the person's
+    // authority over it: the person's profile signs.
+    let receipt = if tonk.registry.standing == crate::device::Standing::Site {
+        revoke_through_profile(&tonk, session.handle(), &subject, &path, &target).await?
+    } else {
+        publish_revocation(&tonk, &repo, &repository, session.handle(), &path, &target).await?
+    };
     retract_leaf(&tonk, session.handle(), &path).await;
     // The record is what `list` enumerates, so it goes with the hop it
     // described.
@@ -232,48 +253,53 @@ pub(super) async fn account_authority(
     subject: &Did,
 ) -> Result<DelegationChain, TonkWorkerError> {
     let root = super::identity::local_root(tonk).await?;
+    match proved_authority(tonk, branch, subject, &root.root_did).await {
+        Some(chain) => Ok(chain),
+        None => super::repository::space_root_prefix(tonk, subject).await,
+    }
+}
+
+/// The `/` chain from the space down to `account` that the chains retained
+/// on `branch` prove, if they prove one.
+async fn proved_authority(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    subject: &Did,
+    account: &Did,
+) -> Option<DelegationChain> {
     let full = Scope {
         subject: UcanSubject::Specific(subject.clone()),
         command: Command::parse("/").expect("the root command always parses"),
         parameters: Parameters::default(),
     };
-    match branch
+    let proof = branch
         .delegations()
-        .prove(root.root_did.clone(), full)
+        .prove(account.clone(), full)
         .perform(&tonk.operator)
         .await
-    {
-        Ok(proof) => {
-            let mut certificates = proof.proofs.into_iter();
-            match certificates.next() {
-                Some(first) => {
-                    let mut chain = DelegationChain::new(first.0);
-                    for certificate in certificates {
-                        chain = chain.push(certificate.0).map_err(|error| {
-                            TonkWorkerError::Internal(format!(
-                                "proved certificates do not chain: {error}"
-                            ))
-                        })?;
-                    }
-                    Ok(chain)
-                }
-                None => super::repository::space_root_prefix(tonk, subject).await,
+        .ok()?;
+    let mut certificates = proof.proofs.into_iter();
+    let mut chain = DelegationChain::new(certificates.next()?.0);
+    for certificate in certificates {
+        chain = match chain.push(certificate.0) {
+            Ok(chain) => chain,
+            Err(error) => {
+                log!("proved certificates do not chain: {error}");
+                return None;
             }
-        }
-        Err(_) => super::repository::space_root_prefix(tonk, subject).await,
+        };
     }
+    Some(chain)
 }
 
-/// This device's authority to revoke under the space: the account's chain
-/// with the root-to-device grant pushed on top, the pair every other
+/// This device's authority to act for the account on a space: the account's
+/// chain with the root-to-device grant pushed on top, the pair every other
 /// invocation on a space subject presents.
-async fn revoking_authority(
+async fn device_authority(
     tonk: &TonkState,
-    branch: &dialog_repository::Branch,
-    subject: &Did,
+    mut authority: DelegationChain,
 ) -> Result<DelegationChain, TonkWorkerError> {
     let root = super::identity::local_root(tonk).await?;
-    let mut authority = account_authority(tonk, branch, subject).await?;
     for delegation in root.delegation.proofs() {
         authority = authority.push(delegation.clone()).map_err(|error| {
             TonkWorkerError::Internal(format!(
@@ -282,6 +308,108 @@ async fn revoking_authority(
         })?;
     }
     Ok(authority)
+}
+
+/// What a space's own worker asks the person's profile to sign: the
+/// revocation of the grant `target`, which the path `path` (retained in the
+/// space) ends at.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct RevocationRequest {
+    /// The delegation path that reaches the grant, base58.
+    path: String,
+    /// The grant's CID.
+    target: String,
+    /// The `/` chain down to the account that the space's retained chains
+    /// prove, base58: an admin's. Absent where they prove none, and the
+    /// profile's own record of its authority stands in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authority: Option<String>,
+}
+
+fn encode_chain(chain: &DelegationChain) -> Result<String, TonkWorkerError> {
+    chain
+        .to_bytes()
+        .map(|bytes| bs58::encode(bytes).into_string())
+        .map_err(|error| TonkWorkerError::Internal(format!("a chain did not encode: {error}")))
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn decode_chain(what: &str, encoded: &str) -> Result<DelegationChain, TonkWorkerError> {
+    let bytes = bs58::decode(encoded)
+        .into_vec()
+        .map_err(|error| TonkWorkerError::Router(format!("{what} is not base58: {error}")))?;
+    DelegationChain::try_from(bytes.as_slice())
+        .map_err(|error| TonkWorkerError::Router(format!("{what} did not decode: {error}")))
+}
+
+/// Have the person's profile sign and publish the revocation of `target`,
+/// from the space's own worker, which holds the path that reaches it and
+/// none of the authority to revoke it.
+async fn revoke_through_profile(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    subject: &Did,
+    path: &DelegationChain,
+    target: &Cid,
+) -> Result<RevokeReceipt, TonkWorkerError> {
+    let authority = match super::account::acts_for(tonk).await? {
+        Some(account) => proved_authority(tonk, branch, subject, &account).await,
+        None => None,
+    };
+    let request = RevocationRequest {
+        path: encode_chain(path)?,
+        target: target.to_string(),
+        authority: authority.as_ref().map(encode_chain).transpose()?,
+    };
+    let answer = super::space_reach::ask_profile(&serde_json::json!({ "revoke": request })).await?;
+    serde_json::from_value(answer["receipt"].clone()).map_err(|error| {
+        TonkWorkerError::Internal(format!("the profile answered no receipt: {error}"))
+    })
+}
+
+/// Sign and publish the revocation a space's own worker asked for
+/// ([`revoke_through_profile`]), in the person's profile, which holds the
+/// authority. The path has to be for `subject`, the space whose worker
+/// asked, and end at the grant it names.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn revoke_for_space(
+    tonk: &TonkState,
+    subject: &Did,
+    request: RevocationRequest,
+) -> Result<RevokeReceipt, TonkWorkerError> {
+    let repository = super::space_directory::held(tonk, subject.as_str()).await?;
+    let path = decode_chain("the path", &request.path)?;
+    let target: Cid = request
+        .target
+        .parse()
+        .map_err(|error| TonkWorkerError::Router(format!("invalid target CID: {error}")))?;
+    if path.subject() != Some(subject) || leaf_cid(&path)? != target {
+        return Err(TonkWorkerError::Forbidden(format!(
+            "the path does not reach that grant on {subject}"
+        )));
+    }
+    let account = match &request.authority {
+        Some(authority) => {
+            let authority = decode_chain("the authority", authority)?;
+            if authority.subject() != Some(subject) {
+                return Err(TonkWorkerError::Forbidden(format!(
+                    "the authority is not over {subject}"
+                )));
+            }
+            authority
+        }
+        None => super::repository::space_root_prefix(tonk, subject).await?,
+    };
+    let authority = device_authority(tonk, account).await?;
+    publish_revocation_under(
+        tonk,
+        subject.as_str(),
+        &repository,
+        &authority,
+        &path,
+        &target,
+    )
+    .await
 }
 
 /// Mint the delegated revocation of `target` under this device's authority
@@ -302,18 +430,33 @@ pub(super) async fn publish_revocation<R>(
 where
     R: dialog_varsig::Principal + Clone,
 {
-    let artifact = {
-        let subject = repository.did();
-        let authority = revoking_authority(tonk, branch, &subject).await?;
-        tonk_identity::revocation::mint_delegated_revocation(
-            tonk.profile.credential().signer().clone(),
-            path,
-            target,
-            &authority,
-        )
-        .await
-        .map_err(|error| TonkWorkerError::Forbidden(format!("cannot revoke this grant: {error}")))?
-    };
+    let subject = repository.did();
+    let account = account_authority(tonk, branch, &subject).await?;
+    let authority = device_authority(tonk, account).await?;
+    publish_revocation_under(tonk, repo, repository, &authority, path, target).await
+}
+
+/// [`publish_revocation`], signed under `authority`: this device's chain
+/// from the space, however it was found.
+async fn publish_revocation_under<R>(
+    tonk: &TonkState,
+    repo: &str,
+    repository: &dialog_repository::Repository<R>,
+    authority: &DelegationChain,
+    path: &DelegationChain,
+    target: &Cid,
+) -> Result<RevokeReceipt, TonkWorkerError>
+where
+    R: dialog_varsig::Principal + Clone,
+{
+    let artifact = tonk_identity::revocation::mint_delegated_revocation(
+        tonk.profile.credential().signer().clone(),
+        path,
+        target,
+        authority,
+    )
+    .await
+    .map_err(|error| TonkWorkerError::Forbidden(format!("cannot revoke this grant: {error}")))?;
     tonk_identity::revocation::verify(&artifact)
         .await
         .map_err(|error| {
@@ -321,7 +464,7 @@ where
         })?;
     // The revocation belongs at the access service the space actually
     // syncs through, which is the remote `main` tracks.
-    let endpoint = match resolve_configured_remote_url_with(repository, &tonk.operator).await? {
+    let endpoint = match resolve_configured_remote_url(tonk, repository).await? {
         ConfiguredRemoteRequirement::Ready(remote) => remote.access_url,
         ConfiguredRemoteRequirement::Refused(reason) => {
             return Err(TonkWorkerError::Conflict(format!(
@@ -386,6 +529,21 @@ pub async fn list(
     Path(repo): Path<String>,
 ) -> Result<Json<Vec<InvitationSummary>>, TonkWorkerError> {
     let tonk = state.read().await;
+    // The invitations are recorded in the space, which a worker of its own
+    // holds and answers for.
+    if tonk.spaces_elsewhere() {
+        drop(tonk);
+        let listed = super::space_reach::ask(
+            &repo,
+            "GET",
+            &format!("/api/repository/{repo}/invites"),
+            None,
+        )
+        .await?;
+        return serde_json::from_value(listed).map(Json).map_err(|error| {
+            TonkWorkerError::Internal(format!("the space's worker listed no invitations: {error}"))
+        });
+    }
     let session = tonk
         .reactor
         .repository(&repo)

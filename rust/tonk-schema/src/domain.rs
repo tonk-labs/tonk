@@ -162,6 +162,29 @@ pub mod tonk_branch {
     pub struct Upstream(pub Entity);
 }
 
+/// What came of a claim on a space that the space's own worker was handed
+/// (`tonk/claim-membership`). Overlay-only, on the space's content branch,
+/// at the entity of the command that asked: the person's profile reads it
+/// there and nothing keeps it.
+pub mod membership_claim {
+    use super::Attribute;
+
+    /// `claimed`, or the kind of failure a join reports (`revoked`,
+    /// `unavailable`, `refused`, `malformed`, `audience-mismatch`,
+    /// `claim-failed`).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.membership-claim")]
+    #[cardinality(one)]
+    pub struct Outcome(pub String);
+
+    /// Operator-facing context for a failure. Empty for a claim that
+    /// landed. Never an upstream body.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.membership-claim")]
+    #[cardinality(one)]
+    pub struct Detail(pub String);
+}
+
 /// Attributes for the account-level space directory — one entry per
 /// space, shared by every device on the account.
 ///
@@ -1418,6 +1441,72 @@ pub mod command {
             #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
             #[domain("xyz.tonk.command.record-invite")]
             pub struct Seed(pub String);
+        }
+
+        /// `tonk/retain-invite` — a space's own worker keeps the record of
+        /// an invitation the person's profile issued to a named audience.
+        pub mod retain_invite {
+            use dialog_query::Attribute;
+
+            /// The base58 delegation chain the invitation grants.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.retain-invite")]
+            pub struct Proof(pub String);
+
+            /// The base58 `profile -> account` union edge retained beside
+            /// the chain, or empty when the profile has no account root.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.retain-invite")]
+            pub struct Union(pub String);
+
+            /// Whether the invitation is open to whoever redeems it.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.retain-invite")]
+            pub struct Open(pub bool);
+        }
+
+        /// `tonk/claim-membership` — a space's own worker commits a claim
+        /// on the space that the person's profile prepared.
+        pub mod claim_membership {
+            use super::super::super::Entity;
+            use dialog_query::Attribute;
+
+            /// The invitation's base58 delegation chain as it was issued,
+            /// before the claim extended it. The invitation's record is
+            /// derived from it.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.claim-membership")]
+            pub struct Invitation(pub String);
+
+            /// The base58 chain extended to the claiming account, retained
+            /// in the space so the hop that admits the member is provable
+            /// from it.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.claim-membership")]
+            pub struct Chain(pub String);
+
+            /// Whether the invitation is open to whoever redeems it.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.claim-membership")]
+            pub struct Open(pub bool);
+
+            /// The account the claim is for.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.claim-membership")]
+            pub struct Member(pub Entity);
+
+            /// The name the member goes by, written when the roster has
+            /// none for them.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.claim-membership")]
+            pub struct Name(pub String);
+
+            /// Whether the space's remote has to honour the chain before
+            /// anything is written: the space is pulled, and what the pull
+            /// brought is checked to be a space.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.claim-membership")]
+            pub struct Authorize(pub bool);
         }
 
         /// `tonk/move-membership` — a space's own worker moves a roster

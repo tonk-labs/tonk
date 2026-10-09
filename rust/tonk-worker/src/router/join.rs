@@ -476,13 +476,13 @@ pub async fn join(
     State(state): State<AppState>,
     Json(body): Json<JoinRequest>,
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
-    let tonk = state.write().await;
-    let outcome = join_invite(&tonk, &body.url).await?;
+    let outcome = join_invite(&state, &body.url).await?;
     log!(
         "POST /api/profile/join -> subject {} (key {})",
         outcome.subject,
         outcome.key
     );
+    let tonk = state.read().await;
     joined_response(&tonk, outcome).await
 }
 
@@ -491,11 +491,7 @@ async fn joined_response(
     tonk: &TonkState,
     outcome: JoinOutcome,
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
-    let repository = tonk
-        .profile
-        .space(outcome.key.as_str())
-        .load()
-        .perform(&tonk.operator)
+    let repository = super::repository::space_named(tonk, outcome.key.as_str())
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to load the joined replica: {error}"))
@@ -542,15 +538,18 @@ pub(crate) struct JoinOutcome {
 /// failed [`perform_join`] leaves behind — a hidden unindexed replica,
 /// unreferenced content-addressed blocks, an unused candidate chain —
 /// is invisible, resumable, and reclaimed by pruning.
-pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutcome, JoinFailure> {
+pub(crate) async fn join_invite(state: &AppState, url: &str) -> Result<JoinOutcome, JoinFailure> {
     // Per-phase wall clock, logged on success: the perform phase is the
     // network-bound one (pull + validation + roster reads against the
     // remote), so a slow join in the field can be attributed to the
     // network or to local work without reproducing it.
     let started = web_time::Instant::now();
-    let prepared = prepare_join(tonk, url).await?;
+    let prepared = {
+        let tonk = state.read().await;
+        prepare_join(&tonk, url).await?
+    };
     let prepared_at = web_time::Instant::now();
-    let outcome = perform_join(tonk, prepared).await?;
+    let outcome = perform(state, prepared).await?;
     log!(
         "join: prepared {}ms, performed {}ms",
         prepared_at.duration_since(started).as_millis(),
@@ -562,7 +561,7 @@ pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutco
 /// Run the ordinary join pipeline for a browser-approved local-space link.
 /// The wrapper keeps the join's private diagnostic type inside this module.
 pub(crate) async fn join_for_local_space_link(
-    tonk: &TonkState,
+    state: &AppState,
     url: &str,
     approved_subject: &Did,
 ) -> Result<JoinOutcome, TonkWorkerError> {
@@ -575,8 +574,31 @@ pub(crate) async fn join_for_local_space_link(
             "local-space link invite names another space".into(),
         ));
     }
-    let prepared = prepare_parsed_join(tonk, invite).await?;
-    perform_join(tonk, prepared).await.map_err(Into::into)
+    let prepared = {
+        let tonk = state.read().await;
+        prepare_parsed_join(&tonk, invite).await?
+    };
+    perform(state, prepared).await.map_err(Into::into)
+}
+
+/// Perform a prepared join with whichever worker holds the space: this one,
+/// on a host with one database ([`perform_join`]), or the space's own
+/// ([`perform_join_elsewhere`]).
+///
+/// Takes the state and not a guard over it: the space's own worker asks this
+/// one for its delegation while it is being asked to commit the claim, so
+/// nothing may be held across asking it.
+async fn perform(state: &AppState, prepared: PreparedJoin) -> Result<JoinOutcome, JoinFailure> {
+    {
+        // Alone with the state while it commits here: what else writes the
+        // space's branch (a sync, a command still running) would move the
+        // head under the claim.
+        let tonk = state.write().await;
+        if !tonk.spaces_elsewhere() {
+            return perform_join(&tonk, prepared).await;
+        }
+    }
+    perform_join_elsewhere(state, prepared).await
 }
 
 /// Replace a browser-approved local-space join's invite authority with its
@@ -728,59 +750,20 @@ async fn perform_join(
             })?;
     }
 
-    let branch = repository
-        .branch(DEFAULT_BRANCH)
-        .open()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to open the content branch: {error}"))
-        })?;
-
-    if prepared.needs_remote_authorization() {
-        pull_upstream(&branch, &tonk.operator).await?;
-        validate_content(&branch, &tonk.operator, &prepared.subject).await?;
-    }
-
-    // Every claim, including a renewal, lands its roster/provenance/name
-    // facts as an ordinary commit; the next sync tick pushes them.
-    let (changes, _already_claimed) = claim_changes(
+    let name = crate::router::profile_name::resolve_display_name(tonk).await;
+    commit_claim(
         tonk,
-        &branch,
-        &tonk.operator,
-        &prepared.invitation,
-        &prepared.invitation_execution,
-        &prepared.member,
-        &prepared.subject,
+        &repository,
+        Claim {
+            invitation: &prepared.invitation,
+            execution: &prepared.invitation_execution,
+            member: &prepared.member,
+            subject: &prepared.subject,
+            name: &name,
+            authorize: prepared.needs_remote_authorization(),
+        },
     )
     .await?;
-    if !changes.is_empty() {
-        branch
-            .transaction()
-            .assert(changes)
-            .commit()
-            .publish()
-            .perform(&tonk.operator)
-            .await
-            .map_err(|error| {
-                JoinFailure::claim_failed(format!("failed to commit the claim: {error}"))
-            })?;
-    }
-
-    // The reactor may hold a handle from an earlier attempt at this key;
-    // the pull and commit moved the head underneath it. Leaving a stale
-    // handle cached would wedge every later sync on this branch, so a
-    // failure here fails the join rather than being logged past.
-    tonk.reactor
-        .refresh_branch(prepared.subject.repo_key(), DEFAULT_BRANCH, &tonk.operator)
-        .await
-        .map_err(|error| {
-            JoinFailure::claim_failed(format!("failed to adopt the joined branch: {error}"))
-        })?;
-    // Deliver the fresh snapshot the refresh scheduled for any
-    // subscriptions the rebind carried over — a live view left waiting
-    // for the next commit waits forever on a branch nothing edits.
-    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     save_authority(tonk, &prepared.subject, prepared.chain.clone()).await?;
     retain_claim_authority(tonk, &prepared.key, &prepared.chain).await;
@@ -858,6 +841,479 @@ async fn perform_join(
         subject: prepared.subject,
         renewed: prepared.existing,
     })
+}
+
+/// A claim on a space, as the worker that holds the space commits it.
+struct Claim<'a> {
+    /// The invitation being claimed.
+    invitation: &'a Invitation,
+    /// Audience metadata recorded beside the invitation.
+    execution: &'a InvitationExecution,
+    /// The account the claim is for.
+    member: &'a Did,
+    /// The space.
+    subject: &'a Did,
+    /// The name the member goes by, written when the roster has none.
+    name: &'a str,
+    /// Whether the remote has to honour the candidate chain first: the
+    /// space is pulled, and what the pull brought is checked to be a space.
+    authorize: bool,
+}
+
+/// Commit `claim` on the content branch of `repository`, which this worker
+/// has mounted: pull and validate first when the claim has to be authorized,
+/// then land its roster facts as an ordinary commit, which the next sync
+/// pushes.
+async fn commit_claim(
+    tonk: &TonkState,
+    repository: &Repository<Credential>,
+    claim: Claim<'_>,
+) -> Result<(), JoinFailure> {
+    let branch = repository
+        .branch(DEFAULT_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to open the content branch: {error}"))
+        })?;
+
+    if claim.authorize {
+        pull_upstream(&branch, &tonk.operator).await?;
+        validate_content(&branch, &tonk.operator, claim.subject).await?;
+    }
+
+    // Every claim, including a renewal, lands its roster/provenance/name
+    // facts as an ordinary commit; the next sync tick pushes them.
+    let (changes, _already_claimed) = claim_changes(
+        &branch,
+        &tonk.operator,
+        claim.invitation,
+        claim.execution,
+        claim.member,
+        claim.subject,
+        claim.name,
+    )
+    .await?;
+    if !changes.is_empty() {
+        branch
+            .transaction()
+            .assert(changes)
+            .commit()
+            .publish()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| {
+                JoinFailure::claim_failed(format!("failed to commit the claim: {error}"))
+            })?;
+    }
+
+    // The reactor may hold a handle from an earlier attempt at this key;
+    // the pull and commit moved the head underneath it. Leaving a stale
+    // handle cached would wedge every later sync on this branch, so a
+    // failure here fails the join rather than being logged past.
+    tonk.reactor
+        .refresh_branch(claim.subject.repo_key(), DEFAULT_BRANCH, &tonk.operator)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("failed to adopt the joined branch: {error}"))
+        })?;
+    // Deliver the fresh snapshot the refresh scheduled for any
+    // subscriptions the rebind carried over — a live view left waiting
+    // for the next commit waits forever on a branch nothing edits.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    Ok(())
+}
+
+/// A claim as the person's profile hands it to the worker that holds the
+/// space: the invitation as it was issued, the chain that extends it to the
+/// claiming account, and what the roster is to say of them. What a
+/// [`ClaimMembership`] command carries.
+///
+/// [`ClaimMembership`]: tonk_schema::command::ClaimMembership
+struct MembershipClaim {
+    /// The invitation's chain as issued, before the claim extended it:
+    /// base58. The invitation's record is derived from it.
+    invitation: String,
+    /// The chain extended to the claiming account: base58. Retained in the
+    /// space, so the hop that admits this member is provable from it.
+    chain: String,
+    /// Whether the invitation is open to whoever redeems it.
+    open: bool,
+    /// The account the claim is for.
+    member: Did,
+    /// The name the member goes by.
+    name: String,
+    /// Whether the remote has to honour the chain before anything is
+    /// written (see [`PreparedJoin::needs_remote_authorization`]).
+    authorize: bool,
+}
+
+/// The outcome a claim that landed is reported with. A claim that did not
+/// is reported with the kind of its failure.
+const CLAIMED: &str = "claimed";
+
+fn decode_chain(what: &str, encoded: &str) -> Result<DelegationChain, JoinFailure> {
+    let bytes = bs58::decode(encoded)
+        .into_vec()
+        .map_err(|error| JoinFailure::malformed(format!("{what} is not base58: {error}")))?;
+    DelegationChain::try_from(bytes.as_slice())
+        .map_err(|error| JoinFailure::malformed(format!("{what} did not decode: {error}")))
+}
+
+fn encode_chain(what: &str, chain: &DelegationChain) -> Result<String, JoinFailure> {
+    chain
+        .to_bytes()
+        .map(|bytes| bs58::encode(bytes).into_string())
+        .map_err(|error| JoinFailure::claim_failed(format!("{what} did not encode: {error}")))
+}
+
+/// Run the [`ClaimMembership`] command: commit, in the space this worker
+/// holds, the claim the person's profile prepared, and say what came of it
+/// where that profile is watching, in the session overlay at the command's
+/// entity.
+///
+/// [`ClaimMembership`]: tonk_schema::command::ClaimMembership
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::ClaimMembership>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::ClaimMembership) {
+        use tonk_schema::command::MembershipClaimed;
+        use tonk_schema::domain::membership_claim::{Detail, Outcome};
+
+        let origin = self.origin();
+        let (repo, branch) = (origin.repo.clone(), origin.branch.clone());
+        let tonk = self.state().read().await;
+        let claimed = async {
+            let member = command.member.0.to_string().parse().map_err(|error| {
+                JoinFailure::malformed(format!("the claim names no account: {error:?}"))
+            })?;
+            take_claim(
+                &tonk,
+                &repo,
+                MembershipClaim {
+                    invitation: command.invitation.0.clone(),
+                    chain: command.chain.0.clone(),
+                    open: command.open.0,
+                    member,
+                    name: command.name.0.clone(),
+                    authorize: command.authorize.0,
+                },
+            )
+            .await
+        };
+        let (outcome, detail) = match claimed.await {
+            Ok(()) => (CLAIMED.to_owned(), String::new()),
+            Err(failure) => (failure.kind.as_str().to_owned(), failure.detail),
+        };
+        let session = match tonk
+            .reactor
+            .repository(&repo)
+            .branch(&branch)
+            .acquire(&tonk.operator)
+            .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                log!("ClaimMembership on '{repo}': nowhere to say '{outcome}': {error}");
+                return;
+            }
+        };
+        session.state.assert_overlay(MembershipClaimed {
+            this: command.this,
+            outcome: Outcome(outcome),
+            detail: Detail(detail),
+        });
+        tonk.reactor
+            .schedule_poll(std::sync::Arc::clone(&session.state));
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    }
+}
+
+/// Commit `claim` in the space `repo` names, which this worker holds, and
+/// retain the chain that admits the member.
+async fn take_claim(
+    tonk: &TonkState,
+    repo: &str,
+    claim: MembershipClaim,
+) -> Result<(), JoinFailure> {
+    let repository = tonk
+        .profile
+        .space(repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            JoinFailure::claim_failed(format!("this worker does not hold '{repo}': {error}"))
+        })?;
+    let subject = repository.did();
+    let issued = decode_chain("the invitation", &claim.invitation)?;
+    let chain = decode_chain("the claimed chain", &claim.chain)?;
+    if issued.subject() != Some(&subject) || chain.subject() != Some(&subject) {
+        return Err(JoinFailure::malformed(format!(
+            "the claim is not for {subject}"
+        )));
+    }
+    let invitation = Invitation::from_chain(&issued)
+        .ok_or_else(|| JoinFailure::malformed("the invitation names no space"))?;
+    let execution =
+        InvitationExecution::new(&invitation, if claim.open { "open" } else { "scoped" });
+    commit_claim(
+        tonk,
+        &repository,
+        Claim {
+            invitation: &invitation,
+            execution: &execution,
+            member: &claim.member,
+            subject: &subject,
+            name: &claim.name,
+            authorize: claim.authorize,
+        },
+    )
+    .await?;
+    retain_claim_authority(tonk, subject.repo_key(), &chain).await;
+    Ok(())
+}
+
+/// [`perform_join`] where each space has a worker of its own, which holds
+/// the space: this worker, the person's profile's, mounts nothing.
+///
+/// It keeps what is the profile's to keep: the candidate authority, saved
+/// first because the space's worker is delegated to out of it, and, once the
+/// claim has landed, the space's place among the person's spaces. The space
+/// itself is the other worker's: that worker mounts it, pulls it (the remote
+/// honouring the chain is the authorization check), validates what the pull
+/// brought and commits the roster claim ([`take_claim`]).
+///
+/// A join that fails leaves nothing a person can see, as before: the space is
+/// listed only after the claim lands, and a worker brought up for a space
+/// that was not joined is told to forget it.
+async fn perform_join_elsewhere(
+    state: &AppState,
+    prepared: PreparedJoin,
+) -> Result<JoinOutcome, JoinFailure> {
+    let configuration = invite_configuration(
+        &prepared.subject,
+        prepared.remote_url.as_deref(),
+        prepared.revocation_url.as_deref(),
+    )
+    .map_err(|error| JoinFailure::malformed(format!("invite names no usable remote: {error}")))?;
+    let claim = {
+        let tonk = state.read().await;
+        for grant in [&prepared.device_grant, &prepared.chain] {
+            tonk.profile
+                .access()
+                .save(UcanDelegation(grant.clone()))
+                .perform(&tonk.operator)
+                .await
+                .map_err(|error| {
+                    JoinFailure::claim_failed(format!(
+                        "failed to save the candidate authority: {error}"
+                    ))
+                })?;
+        }
+        // The space's worker asks where the space syncs before it can be
+        // asked anything, and the directory does not list a space being
+        // joined.
+        if prepared.installs_replica() {
+            super::space_directory::expect(&tonk, &prepared.subject, &configuration)
+                .await
+                .map_err(|error| {
+                    JoinFailure::claim_failed(format!(
+                        "failed to keep where the space syncs: {error}"
+                    ))
+                })?;
+        }
+        MembershipClaim {
+            invitation: encode_chain("the invitation", &prepared.invite.chain)?,
+            chain: encode_chain("the claimed chain", &prepared.chain)?,
+            open: matches!(prepared.invite.audience, InviteAudience::Open { .. }),
+            member: prepared.member.clone(),
+            name: crate::router::profile_name::resolve_display_name(&tonk).await,
+            authorize: prepared.needs_remote_authorization(),
+        }
+    };
+
+    let claimed = hand_claim(&prepared.key, &claim).await;
+
+    let tonk = state.read().await;
+    if let Err(failure) = claimed {
+        if prepared.installs_replica() {
+            super::space_directory::settle(&tonk, &prepared.subject).await;
+            drop(tonk);
+            super::space_reach::forget(&prepared.key).await;
+        }
+        return Err(failure);
+    }
+
+    save_authority(&tonk, &prepared.subject, prepared.chain.clone()).await?;
+    if prepared.installs_replica() {
+        record_initialized_replica_in_profile(&tonk, &prepared.subject)
+            .await
+            .map_err(|error| {
+                JoinFailure::claim_failed(format!("failed to index the replica: {error}"))
+            })?;
+    }
+    // See [`perform_join`]: the directory is how another of this account's
+    // devices recovers this claim, and here it is also where this worker
+    // reads where the space syncs.
+    let seeded_name = if prepared.installs_replica() {
+        prepared.invite.space_name.as_deref()
+    } else {
+        None
+    };
+    super::repository::record_space_mount(&tonk, &prepared.subject, &configuration, seeded_name)
+        .await;
+    if prepared.installs_replica() {
+        super::space_directory::settle(&tonk, &prepared.subject).await;
+    }
+    if let InviteAudience::Open { seed } = &prepared.invite.audience {
+        super::account_state::custody_seed(
+            &tonk,
+            prepared.invite.chain.audience(),
+            SeedKind::Invite,
+            Zeroizing::new(*seed),
+        )
+        .await;
+    }
+
+    log!(
+        "join: committed subject {} by its own worker (key {}, renewed {})",
+        prepared.subject,
+        prepared.key,
+        prepared.existing
+    );
+    Ok(JoinOutcome {
+        key: prepared.key,
+        subject: prepared.subject,
+        renewed: prepared.existing,
+    })
+}
+
+/// How long the worker that holds a space is given to say what came of a
+/// claim. It pulls the space first, and a space brought to this device for
+/// the first time is fetched whole.
+const CLAIM_ANSWER_WAIT: web_time::Duration = web_time::Duration::from_secs(180);
+
+/// Hand `claim` to the worker that holds the space `key`, and read what came
+/// of it.
+///
+/// The claim goes as a [`ClaimMembership`] command on the space's branch,
+/// and its outcome comes back as a fact at the command's entity: this
+/// subscribes to that fact before committing the command, and reads the
+/// first frame that carries it.
+///
+/// [`ClaimMembership`]: tonk_schema::command::ClaimMembership
+async fn hand_claim(key: &str, claim: &MembershipClaim) -> Result<(), JoinFailure> {
+    use dialog_query::ConceptQuery;
+    use futures_util::StreamExt as _;
+    use futures_util::future::{Either, select};
+    use ipld_core::ipld::Ipld;
+    use tonk_schema::command::MembershipClaimed;
+    use tonk_schema::query::Query as WireQuery;
+
+    let unreached = |error: &dyn std::fmt::Display| {
+        JoinFailure::unavailable(format!("the space's own worker was not reached: {error}"))
+    };
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce)
+        .map_err(|error| JoinFailure::claim_failed(format!("no entropy for the claim: {error}")))?;
+    let this = format!(
+        "tonk:membership-claim/{}",
+        bs58::encode(nonce).into_string()
+    );
+    let entity: Entity = this
+        .parse()
+        .map_err(|error| JoinFailure::claim_failed(format!("bad claim entity: {error}")))?;
+    let command = super::space_reach::command(
+        &[
+            (
+                "invitation",
+                "xyz.tonk.command.claim-membership/invitation",
+                "Text",
+            ),
+            ("chain", "xyz.tonk.command.claim-membership/chain", "Text"),
+            ("open", "xyz.tonk.command.claim-membership/open", "Boolean"),
+            (
+                "member",
+                "xyz.tonk.command.claim-membership/member",
+                "Entity",
+            ),
+            ("name", "xyz.tonk.command.claim-membership/name", "Text"),
+            (
+                "authorize",
+                "xyz.tonk.command.claim-membership/authorize",
+                "Boolean",
+            ),
+        ],
+        serde_json::json!({
+            "this": this,
+            "invitation": claim.invitation,
+            "chain": claim.chain,
+            "open": claim.open,
+            "member": claim.member.to_string(),
+            "name": claim.name,
+            "authorize": claim.authorize,
+        }),
+    )
+    .map_err(|error| JoinFailure::claim_failed(format!("the claim did not encode: {error}")))?;
+
+    let peer = super::space_reach::peer(key);
+    let outcome = ConceptQuery::from(Query::<MembershipClaimed> {
+        this: Term::from(entity),
+        outcome: Term::var("outcome"),
+        detail: Term::var("detail"),
+    });
+    let mut frames = peer
+        .content()
+        .subscribe(WireQuery::from(&outcome))
+        .perform(&peer)
+        .await
+        .map_err(|error| unreached(&error))?;
+    super::space_reach::run(peer, peer.content(), command)
+        .await
+        .map_err(|error| unreached(&error))?;
+
+    let answered = async {
+        while let Some(frame) = frames.next().await {
+            let rows = match frame.map_err(|error| unreached(&error))? {
+                crate::reactor::Frame::Snapshot { conclusions } => conclusions,
+                crate::reactor::Frame::Delta { asserted, .. } => asserted,
+            };
+            let Some(row) = rows.into_iter().next() else {
+                continue;
+            };
+            let text = |field: &str| match row.fields.get(field) {
+                Some(Ipld::String(text)) => text.clone(),
+                _ => String::new(),
+            };
+            let (outcome, detail) = (text("outcome"), text("detail"));
+            if outcome == CLAIMED {
+                return Ok(());
+            }
+            let kind = serde_json::from_value(serde_json::Value::String(outcome.clone())).map_err(
+                |_| {
+                    JoinFailure::claim_failed(format!(
+                        "the space's own worker said what is no outcome: {outcome}"
+                    ))
+                },
+            )?;
+            return Err(JoinFailure::new(kind, detail));
+        }
+        Err(JoinFailure::unavailable(
+            "the space's own worker stopped answering before the claim settled",
+        ))
+    };
+    let waited = crate::r#async::sleep(CLAIM_ANSWER_WAIT);
+    futures_util::pin_mut!(answered, waited);
+    match select(answered, waited).await {
+        Either::Left((answer, _)) => answer,
+        Either::Right(_) => Err(JoinFailure::unavailable(
+            "the space's own worker did not say what came of the claim in time",
+        )),
+    }
 }
 
 /// Retain the claimed chain into the space's content branch, so the hop
@@ -1108,13 +1564,13 @@ fn membership_has_name(names: &[MemberName], membership: &Membership) -> bool {
 /// part of the revision that gets installed, and a renewal's is a commit
 /// on the branch it already has.
 async fn claim_changes<Env: BranchEnv>(
-    tonk: &TonkState,
     branch: &Branch,
     env: &Env,
     invitation: &Invitation,
     invitation_execution: &InvitationExecution,
     member: &Did,
     subject: &Did,
+    name: &str,
 ) -> Result<(Changes, bool), JoinFailure> {
     let membership = Membership::new(member.clone(), subject.clone());
 
@@ -1194,8 +1650,7 @@ async fn claim_changes<Env: BranchEnv>(
     invitation_execution.clone().assert(&mut changes);
     membership.clone().assert(&mut changes);
     if !already_named {
-        let display_name = crate::router::profile_name::resolve_display_name(tonk).await;
-        MemberName::new(membership.this().clone(), display_name).assert(&mut changes);
+        MemberName::new(membership.this().clone(), name.to_owned()).assert(&mut changes);
     }
     if !already_roled {
         MemberRole::member(membership.this().clone()).assert(&mut changes);
@@ -1599,7 +2054,12 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
 
     // The same operation the HTTP join runs, so the content behind the
     // redirect is proven before the redirect fires.
-    match join_invite(&tonk, &url).await {
+    // Nothing is held across the join: where the space's own worker commits
+    // the claim, it asks this worker for its delegation meanwhile.
+    drop(tonk);
+    let joined = join_invite(env.state(), &url).await;
+    let tonk = env.state().read().await;
+    match joined {
         Ok(outcome) => {
             // Success means the replica is installed, verified, and
             // indexed — its `tonk/space` model is already present, so the
@@ -1801,10 +2261,25 @@ mod invite_name_tests {
     /// display name. Distinct tag bytes give distinct subjects and
     /// ephemerals, so tests never collide on a routing key.
     async fn named_invite_url(subject_tag: u8, ephemeral_tag: u8, name: &str) -> (String, String) {
-        let subject_signer = Ed25519Signer::import(&[subject_tag; 32]).await.unwrap();
+        seeded_invite_url([subject_tag; 32], [ephemeral_tag; 32], name).await
+    }
+
+    /// [`named_invite_url`] for a space no run of these tests has seen: a
+    /// native run keeps what it stores, and a test of what is NOT stored
+    /// for a space needs one nothing stored before.
+    async fn fresh_invite_url(name: &str) -> (String, String) {
+        seeded_invite_url(rand::random(), rand::random(), name).await
+    }
+
+    async fn seeded_invite_url(
+        subject_seed: [u8; 32],
+        ephemeral_seed: [u8; 32],
+        name: &str,
+    ) -> (String, String) {
+        let subject_signer = Ed25519Signer::import(&subject_seed).await.unwrap();
         let subject = subject_signer.did();
         let key = subject.repo_key().to_owned();
-        let ephemeral = Ed25519Signer::import(&[ephemeral_tag; 32]).await.unwrap();
+        let ephemeral = Ed25519Signer::import(&ephemeral_seed).await.unwrap();
         let delegation = DelegationBuilder::new()
             .issuer(dialog_credentials::Signer::from(subject_signer))
             .audience(&ephemeral.did())
@@ -1816,7 +2291,7 @@ mod invite_name_tests {
         let invite = Invite::new(
             DelegationChain::new(delegation),
             InviteAudience::Open {
-                seed: [ephemeral_tag; 32],
+                seed: ephemeral_seed,
             },
             None,
         )
@@ -1858,8 +2333,8 @@ mod invite_name_tests {
         let (invite, key) = named_invite_url(60, 61, "Unapproved space").await;
         let subject: Did = key.parse().unwrap();
         let approved = Ed25519Signer::generate().await.unwrap().did();
+        let result = join_for_local_space_link(&state, &invite, &approved).await;
         let tonk = state.read().await;
-        let result = join_for_local_space_link(&tonk, &invite, &approved).await;
         assert!(matches!(result, Err(TonkWorkerError::Forbidden(_))));
         assert!(!find_replica_for_subject(&tonk, &subject).await.unwrap());
         assert!(
@@ -1874,12 +2349,123 @@ mod invite_name_tests {
                 .await
                 .is_err()
         );
-        join_for_local_space_link(&tonk, &invite, &subject)
+        drop(tonk);
+        join_for_local_space_link(&state, &invite, &subject)
             .await
             .expect("the approved invitation still joins normally");
-        assert!(find_replica_for_subject(&tonk, &subject).await.unwrap());
-        drop(tonk);
+        assert!(
+            find_replica_for_subject(&*state.read().await, &subject)
+                .await
+                .unwrap()
+        );
         assert_eq!(directory_name(&state, &key).await, vec!["Unapproved space"]);
+    }
+
+    /// Stand in for the space's own worker, answering a claim with
+    /// `outcome`: the fact it would write, as the first frame of the
+    /// subscription the profile opens on it.
+    fn answer_claims_with(outcome: &'static str) {
+        crate::router::space_reach::stand_in::answer_with(move |(_, method, _)| {
+            Ok(if method == "SUBSCRIBE" {
+                let frame = serde_json::json!({
+                    "kind": "snapshot",
+                    "conclusions": [{
+                        "this": "tonk:membership-claim/stand-in",
+                        "fields": { "outcome": outcome, "detail": "" }
+                    }]
+                });
+                serde_json::Value::String(format!("data: {frame}\n\n"))
+            } else {
+                serde_json::json!({})
+            })
+        });
+    }
+
+    /// Where each space has a worker of its own, joining one mounts nothing
+    /// in the profile: the claim is handed to that worker as a command on
+    /// the space's branch, the outcome is read off a subscription opened
+    /// first, and the space is then listed from what the invitation said.
+    #[dialog_common::test]
+    async fn it_hands_a_claim_to_the_spaces_own_worker_and_mounts_nothing() {
+        let state = crate::router::command::tests::native::test_state().await;
+        state
+            .read()
+            .await
+            .site_origins
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (url, key) = fresh_invite_url("Held Elsewhere").await;
+        let subject: Did = key.parse().unwrap();
+
+        answer_claims_with("claimed");
+        let joined = join_invite(&state, &url).await;
+        let asked = crate::router::space_reach::stand_in::asked();
+
+        assert!(joined.is_ok(), "the join fails: {:?}", joined.err());
+        let branch = format!("/api/repository/{key}/branch/main");
+        assert_eq!(
+            asked
+                .iter()
+                .map(|(space, method, path)| (space.as_str(), method.as_str(), path.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    key.as_str(),
+                    "SUBSCRIBE",
+                    format!("{branch}/query").as_str()
+                ),
+                (key.as_str(), "POST", format!("{branch}/transact").as_str()),
+            ],
+            "the outcome is subscribed to before the claim is committed"
+        );
+        let tonk = state.read().await;
+        assert!(find_replica_for_subject(&tonk, &subject).await.unwrap());
+        assert!(
+            tonk.profile
+                .space(key.as_str())
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .is_err(),
+            "the profile mounts nothing for the space"
+        );
+        drop(tonk);
+        assert_eq!(directory_name(&state, &key).await, vec!["Held Elsewhere"]);
+    }
+
+    /// A claim the space's own worker refuses is a join that failed the way
+    /// that worker said, and leaves the space unlisted.
+    #[dialog_common::test]
+    async fn it_lists_nothing_when_the_spaces_own_worker_refuses_a_claim() {
+        let state = crate::router::command::tests::native::test_state().await;
+        state
+            .read()
+            .await
+            .site_origins
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (url, key) = fresh_invite_url("Refused").await;
+        let subject: Did = key.parse().unwrap();
+
+        answer_claims_with("revoked");
+        let joined = join_invite(&state, &url).await;
+        crate::router::space_reach::stand_in::asked();
+
+        let failure = joined.err().expect("the join is refused");
+        assert_eq!(failure.kind(), JoinFailureKind::Revoked);
+        let tonk = state.read().await;
+        assert!(!find_replica_for_subject(&tonk, &subject).await.unwrap());
+        assert!(
+            crate::router::space_directory::configuration(&tonk, &subject)
+                .await
+                .unwrap()
+                .is_none(),
+            "the space is no longer expected"
+        );
+        assert!(
+            crate::router::space_directory::held(&tonk, &key)
+                .await
+                .is_err(),
+            "the space is not the person's"
+        );
     }
 
     #[dialog_common::test]
@@ -1889,10 +2475,7 @@ mod invite_name_tests {
 
         // Fresh join: the space is labeled the moment it appears, from
         // the (possibly stale) mint-time name — not nameless until sync.
-        {
-            let tonk = state.read().await;
-            join_invite(&tonk, &url).await.expect("the join succeeds");
-        }
+        join_invite(&state, &url).await.expect("the join succeeds");
         assert_eq!(
             directory_name(&state, &key).await,
             vec!["Garden Plans".to_string()],
@@ -1905,12 +2488,9 @@ mod invite_name_tests {
         // the local record is at least as fresh as any link.
         let (renewal, renewal_key) = named_invite_url(0xA1, 0xA3, "Stale Old Label").await;
         assert_eq!(key, renewal_key, "same subject, same routing key");
-        {
-            let tonk = state.read().await;
-            join_invite(&tonk, &renewal)
-                .await
-                .expect("the renewal succeeds");
-        }
+        join_invite(&state, &renewal)
+            .await
+            .expect("the renewal succeeds");
         assert_eq!(
             directory_name(&state, &key).await,
             vec!["Garden Plans".to_string()],
@@ -2031,10 +2611,7 @@ mod invite_name_tests {
         .unwrap();
         let url = invite.to_url("https://tonk.network/join").unwrap();
 
-        {
-            let tonk = state.read().await;
-            join_invite(&tonk, &url).await.expect("the join succeeds");
-        }
+        join_invite(&state, &url).await.expect("the join succeeds");
         assert_eq!(
             directory_name(&state, &key).await,
             Vec::<String>::new(),
@@ -2691,13 +3268,12 @@ pub(crate) mod tests {
         let (invite, key) = handcrafted_invite_url(60, 61).await;
         let approved = Ed25519Signer::generate().await.unwrap().did();
         let before = snapshot(&state, &key).await;
-        let result =
-            super::join_for_local_space_link(&*state.read().await, &invite, &approved).await;
+        let result = super::join_for_local_space_link(&state, &invite, &approved).await;
         assert!(matches!(result, Err(crate::TonkWorkerError::Forbidden(_))));
         assert_eq!(snapshot(&state, &key).await, before);
 
         let subject = key.parse().unwrap();
-        super::join_for_local_space_link(&*state.read().await, &invite, &subject)
+        super::join_for_local_space_link(&state, &invite, &subject)
             .await
             .expect("the approved invitation still joins normally");
         assert_ne!(snapshot(&state, &key).await, before);

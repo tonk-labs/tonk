@@ -171,6 +171,14 @@ pub fn set_standing(standing: Standing) {
     let _ = STANDING.set(standing);
 }
 
+/// Whether spaces render on origins of their own, each with a worker that
+/// holds it. So wherever a site's script started this worker and said it is a
+/// person's: that script runs on the profile's origin, beside the spaces'.
+/// A host nothing told its standing (the CLI, a test) has one database.
+pub(crate) fn spaces_have_origins() -> bool {
+    STANDING.get() == Some(&Standing::Person)
+}
+
 impl Registry {
     /// The one this device actually uses.
     pub(crate) fn device() -> Self {

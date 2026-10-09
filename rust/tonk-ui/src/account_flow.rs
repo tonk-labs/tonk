@@ -6390,6 +6390,105 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// The spaces the profile's origin keeps a database for: every database
+    /// there named for a key that is not the profile's own.
+    async fn spaces_stored_with_the_profile(driver: &WebDriver) -> Result<Vec<String>> {
+        let identity = get_json(driver, "/api/identify").await?;
+        let profile = successful_body("identify the profile", &identity)["did"]
+            .as_str()
+            .context("the profile did not say who it is")?
+            .to_owned();
+        enter_profile(driver).await?;
+        let listed = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                indexedDB.databases()
+                    .then(databases => done(databases.map(database => database.name)))
+                    .catch(error => done({ error: String(error) }));
+                "#,
+                Vec::new(),
+            )
+            .await?;
+        driver.enter_default_frame().await?;
+        let names =
+            listed.json().as_array().cloned().with_context(|| {
+                format!("the profile's databases did not list: {}", listed.json())
+            })?;
+        Ok(names
+            .iter()
+            .filter_map(|name| name.as_str())
+            .filter(|name| name.starts_with("did:key:") && *name != profile)
+            .map(str::to_owned)
+            .collect())
+    }
+
+    /// A space is held by the worker of its own origin and nowhere else on
+    /// the device: the profile's origin keeps no database for a space it
+    /// made, nor for one it joined.
+    #[dialog_common::test]
+    async fn it_stores_no_space_with_the_profile(env: TestEnvironment) -> Result<()> {
+        let owner = driver_with_prf(&env).await?;
+        sign_up(&owner, &env, "owner@example.com").await?;
+        let key = create_space_awaiting_remote(&owner, "Held Once", true).await?;
+        let pushed = post_json(
+            &owner,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("push the space", &pushed);
+        let invited = post_json(
+            &owner,
+            &format!("/api/repository/{key}/invite"),
+            serde_json::json!({ "baseUrl": env.tonk_web.join("join")? }),
+        )
+        .await?;
+        let invite = successful_body("mint an invite", &invited)["url"]
+            .as_str()
+            .context("the invite has no URL")?
+            .to_owned();
+        assert_eq!(
+            spaces_stored_with_the_profile(&owner).await?,
+            Vec::<String>::new(),
+            "the profile that made a space stores none of it"
+        );
+
+        let member = driver_with_prf(&env).await?;
+        sign_up(&member, &env, "member@example.com").await?;
+        let joined = post_json(
+            &member,
+            "/api/profile/join",
+            serde_json::json!({ "url": invite }),
+        )
+        .await?;
+        successful_body("join the space", &joined);
+
+        // The space is on the member's device, in its own worker's hands.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            let info = get_json(&member, &format!("/api/repository/{key}")).await?;
+            let info = successful_body("read the joined space", &info);
+            if !info["branch"]["main"]["revision"].is_null() {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the joined space never arrived: {info}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert_eq!(
+            spaces_stored_with_the_profile(&member).await?,
+            Vec::<String>::new(),
+            "the profile that joined a space stores none of it"
+        );
+
+        owner.quit().await?;
+        member.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_backs_up_a_claimed_space_for_another_account_device(
         env: TestEnvironment,

@@ -73,6 +73,7 @@ pub(crate) mod rotation;
 
 mod join;
 /// Reaching a space's own worker from the person's profile.
+pub(crate) mod space_directory;
 pub(crate) mod space_reach;
 /// A space's own worker: the delegation it holds, and the space it mounts.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -86,7 +87,7 @@ mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
 pub(crate) mod agent_connections;
-mod revoke_invite;
+pub(crate) mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
 mod members;

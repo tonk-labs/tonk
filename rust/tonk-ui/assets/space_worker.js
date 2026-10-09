@@ -618,6 +618,14 @@ function bindSpacePort(port, { repo, branch }) {
                 port.postMessage({ id, invited: true });
                 return;
             }
+            // The space's worker was asked to revoke a grant on the space.
+            // It holds the path that reaches the grant; this profile holds
+            // the authority, and signs.
+            if (data.revoke) {
+                const receipt = await worker.revokeGrant(repo, JSON.stringify(data.revoke));
+                port.postMessage({ id, receipt: JSON.parse(receipt) });
+                return;
+            }
             // Where the space syncs and which account this profile acts
             // for, for the space's worker to compare with what it took up.
             if (data.terms === true) {
@@ -846,7 +854,8 @@ async function askSpaceWorker(key, request) {
 
 // The space a request is about, when that space's own worker answers it.
 function spaceOf(request) {
-    const match = SPACE_PATH.exec(new URL(request.url).pathname);
+    // A page may write the space's DID into the path escaped.
+    const match = SPACE_PATH.exec(new URL(request.url).pathname.replace(/%3A/gi, ":"));
     return match ? spaceKey(match[1]) : null;
 }
 
@@ -1083,16 +1092,16 @@ function siteWorker() {
         })
         .then(() => init({ module_or_path: workerWasm() }))
         // Named by the wasm it runs: the Rust worker tells a snapshot it
-        // wrote itself from one a worker of another build left it. A
-        // space's worker is told it is one: its profile has no account.
+        // wrote itself from one a worker of another build left it. It is
+        // told which kind of site it serves: a space's profile has no
+        // account, and a person's mounts no space, each being held by the
+        // worker of its own origin.
         .then(() => activate(WORKER_WASM_HASH, [], !PROFILE))
         .then(async worker => {
-            if (PROFILE) {
-                // A profile's spaces each have a worker of their own, which
-                // holds their content: this one creates a space's identity
-                // and leaves the rest to that worker.
-                await worker.setSiteOrigins(true);
-            } else {
+            // A profile's spaces each have a worker of their own, which
+            // holds them: a profile's worker was told it is one as it
+            // started, and has nothing to take up.
+            if (!PROFILE) {
                 const grant = await ensureGrant(worker);
                 // Who this worker acts for is kept, but where a view reads it
                 // (the session overlay) lasts only as long as the worker.

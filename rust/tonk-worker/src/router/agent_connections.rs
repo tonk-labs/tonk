@@ -253,11 +253,7 @@ pub(crate) async fn mint(
         ));
     }
     let root = super::identity::local_root(&tonk).await?;
-    let repository = tonk
-        .profile
-        .space(&repo)
-        .load()
-        .perform(&tonk.operator)
+    let repository = super::repository::space_named(&tonk, &repo)
         .await
         .map_err(failure)?;
     let subject = repository.did();
@@ -761,11 +757,7 @@ pub async fn revoke(
         .ok_or_else(|| {
             TonkWorkerError::NotFound("agent invitation not found in this account".into())
         })?;
-    let repository = tonk
-        .profile
-        .space(&group.repo)
-        .load()
-        .perform(&tonk.operator)
+    let repository = super::repository::space_named(&tonk, &group.repo)
         .await
         .map_err(failure)?;
     if repository.did().as_str() != group.subject {

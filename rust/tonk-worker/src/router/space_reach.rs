@@ -390,11 +390,14 @@ pub(crate) async fn forget(space: &str) {
 }
 
 /// Ask the person's profile, from a space's own worker, to do what only it
-/// can: mint an invite to this worker's space. The space's worker asks up
+/// can: mint an invite to this worker's space, or sign the revocation of a
+/// grant on it. Answers with what the profile said back. The space's worker asks up
 /// the port it was handed its delegation over, through the `tonkAskProfile`
 /// hook its script defines. Fails on a host with one database, which has no
 /// profile but its own.
-pub(crate) async fn ask_profile(request: &serde_json::Value) -> Result<(), TonkWorkerError> {
+pub(crate) async fn ask_profile(
+    request: &serde_json::Value,
+) -> Result<serde_json::Value, TonkWorkerError> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         use js_sys::{Function, Promise, Reflect};
@@ -415,10 +418,15 @@ pub(crate) async fn ask_profile(request: &serde_json::Value) -> Result<(), TonkW
             .ok()
             .and_then(|asked| asked.dyn_into().ok())
             .ok_or_else(|| unreachable("the hook did not answer with a promise".into()))?;
-        JsFuture::from(asked)
+        let answer = JsFuture::from(asked)
             .await
-            .map(|_| ())
-            .map_err(|error| unreachable(format!("{error:?}")))
+            .map_err(|error| unreachable(format!("{error:?}")))?;
+        // What the profile answered with, when it answered with anything.
+        Ok(js_sys::JSON::stringify(&answer)
+            .ok()
+            .and_then(|text| text.as_string())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or(serde_json::Value::Null))
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
