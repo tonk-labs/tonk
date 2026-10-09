@@ -658,6 +658,11 @@ fn first_registry_name_for_site<'a>(
 
 /// Record the registry entry matching an already-open site.
 pub(crate) async fn record_current(site: &TonkSite) -> Result<RecordOutcome> {
+    // Scoped tool replicas have authority over space content, not an account
+    // directory. Their data root also differs from the registered mount root.
+    if site.operator.is_scoped() {
+        return Ok(RecordOutcome::NoAccount);
+    }
     let store = &site.account_store;
     let registry = store.load()?;
     let candidates: Vec<_> = registry

@@ -146,6 +146,11 @@ pub(crate) fn build_assertion_application(
             // instances must derive from that same entity for the
             // notation and wire paths to converge.
             let predicate_entity = resolved.entity.clone();
+            if let Some(error) =
+                check_retraction_has_entity(concept_name, &this, assertion, analysis)
+            {
+                return Err(error);
+            }
             let name_range = anchor.map(|a| a.range).unwrap_or(head_range);
             let this_term = this_term_for_assertion(
                 &this,
@@ -174,15 +179,13 @@ pub(crate) fn build_assertion_application(
             // every `with:` field, the user is almost certainly
             // missing a query — they wanted to update an
             // existing entity but the analyzer has no way to
-            // know that. `..: _` is the explicit opt-in for
-            // "yes, I'm creating a partial," so it suppresses
-            // the check.
+            // know that. (A body retracting anything here was
+            // already refused by `check_retraction_has_entity`.)
             if let Some(error) = check_complete_when_unbound(
                 concept_name,
                 &this,
                 &descriptor,
                 &user_fields,
-                has_rest_retraction,
                 analysis,
                 head_range,
             ) {
@@ -501,9 +504,17 @@ pub(crate) fn build_assertion_application(
             // Claim heads don't yet support retraction
             // semantics — they have no schema to enumerate, so
             // `..: _` doesn't have a closed set of attributes
-            // to expand into. Field-level `_` is also not
-            // wired here (Stage 2.7+ extension).
-            //
+            // to expand into; refuse it rather than ignore it.
+            // Field-level `_` is also not wired here (Stage 2.7+
+            // extension).
+            if let Some(rest) = assertion.fields.iter().find(|f| f.name == "..") {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::RestRetractionOnDomain {
+                        domain: domain.clone(),
+                    },
+                    rest.name_range,
+                ));
+            }
             // Claim domains have no concept entity; the digest's
             // predicate slot uses an entity derived from the
             // domain string so two assertions in different
@@ -590,6 +601,45 @@ pub(crate) fn build_assertion_application(
             head_range,
         )),
     }
+}
+
+/// Refuse a retraction whose `this:` reaches no existing entity.
+///
+/// `field: _` and `..: _` retract from the entity `this:` selects.
+/// With `this:` omitted, or a `?var` that no query binds and no
+/// earlier expression minted, that entity is derived fresh from the
+/// body: it holds nothing to retract, and the expression would only
+/// assert its named fields onto a new, partial instance. The named
+/// fields of an assertion always set values, so they cannot double
+/// as a filter choosing what to retract; selecting is a query's job.
+fn check_retraction_has_entity(
+    concept_name: &str,
+    this: &ThisIntent,
+    assertion: &SyntaxApplication,
+    analysis: &Working,
+) -> Option<AnalyzeError> {
+    let retraction = assertion
+        .fields
+        .iter()
+        .find(|f| f.name != "this" && matches!(f.value, FieldValue::Blank))?;
+    let selector_form = match this {
+        ThisIntent::Uri(_) => return None,
+        ThisIntent::Derived => "`this:` is omitted".to_string(),
+        ThisIntent::Variable(name) => {
+            if analysis.variables.contains_key(name) || query_binds(analysis, name) {
+                return None;
+            }
+            format!("`?{name}` in `this:` isn't bound by any query")
+        }
+    };
+    Some(AnalyzeError::at(
+        AnalyzeErrorKind::RetractionWithoutEntity {
+            concept: concept_name.to_owned(),
+            retracted: format!("`{}: _`", retraction.name),
+            selector_form,
+        },
+        retraction.name_range,
+    ))
 }
 
 /// Derive the head's source-form intent — `(ThisIntent, name)`
@@ -929,26 +979,17 @@ fn scalar_to_value(scalar: &Scalar) -> Value {
 ///   with no preceding query binding for `name`
 /// - AND the user-set field set is a strict subset of the
 ///   concept's `with:` schema
-/// - AND the body has no `..: _` rest-marker (which is the
-///   explicit opt-in for partial assertions)
 ///
-/// Returns `None` otherwise (intentional update, intentional
-/// full assert, or explicit partial via `..: _`).
+/// Returns `None` otherwise (intentional update or intentional
+/// full assert).
 fn check_complete_when_unbound(
     concept_name: &str,
     this: &ThisIntent,
     descriptor: &dialog_query::ConceptDescriptor,
     user_fields: &BTreeMap<&str, (&FieldValue, lsp_types::Range)>,
-    has_rest_retraction: bool,
     analysis: &Working,
     range: lsp_types::Range,
 ) -> Option<AnalyzeError> {
-    // `..: _` is the user's explicit "I know what I'm doing
-    // about every other field" — never trip the check.
-    if has_rest_retraction {
-        return None;
-    }
-
     // Determine whether `this:` reaches an existing entity.
     // `Uri` always does (the user wrote a concrete URI). Any
     // other case where the entity is "fresh" or "unbound"

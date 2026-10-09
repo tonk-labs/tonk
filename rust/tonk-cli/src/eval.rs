@@ -1,11 +1,11 @@
-//! `tonk eval` — read a notation document, evaluate it against
-//! the local site, and render the response.
+//! `tonk eval` — read a notation document, or several as one commit,
+//! evaluate it against the local site, and render the response.
 
 use std::path::PathBuf;
 
 use thiserror::Error;
 use tokio::io::AsyncReadExt as _;
-use tonk_evaluator::evaluate::{EvaluateError, SyntaxEvaluateExt};
+use tonk_evaluator::evaluate::{CommitSummary, EvaluateError, SyntaxEvaluateExt};
 use tonk_notation::{INLINE_LOCATION, Load, Parsed, Syntax, Url, expand, parse_at};
 
 use crate::ExitCode;
@@ -165,36 +165,52 @@ pub async fn run_against_site(
     source: Source,
     options: Options,
 ) -> Result<Outcome, EvalError> {
-    run_with_revision(site, source, options, None).await
+    run_documents(site, vec![source], options).await
+}
+
+/// Evaluate `sources` in the order given into one transaction and one
+/// commit: a later document sees what an earlier one declared, and a
+/// rejected document leaves nothing committed. The response covers all
+/// of them; `--home` applies after the last.
+pub async fn run_documents(
+    site: &TonkSite,
+    sources: Vec<Source>,
+    options: Options,
+) -> Result<Outcome, EvalError> {
+    run_documents_with_revision(site, sources, options, None).await
 }
 
 /// Apply durable notation only at the exact revision previously previewed.
-/// The caller must serialize access to this site's cached branch handle. A
-/// failed publication is never retried against a different head.
+/// The caller serializes access to the site's branch handle. Never replay an
+/// uncertain publication against a different revision.
 pub async fn run_conditional(
     site: &TonkSite,
     document: String,
     expected_revision: Option<dialog_repository::Revision>,
 ) -> Result<Outcome, EvalError> {
-    run_with_revision(
+    run_documents_with_revision(
         site,
-        Source::Inline(document),
+        vec![Source::Inline(document)],
         Options::default(),
         Some(expected_revision),
     )
     .await
 }
 
-async fn run_with_revision(
+async fn run_documents_with_revision(
     site: &TonkSite,
-    source: Source,
+    sources: Vec<Source>,
     options: Options,
     expected_revision: Option<Option<dialog_repository::Revision>>,
 ) -> Result<Outcome, EvalError> {
-    let label = source.label();
-    let location = source.location()?;
-    let mut text = source.read().await?;
-    if let Some(model) = &options.home {
+    let several = sources.len() > 1;
+    let mut documents = Vec::new();
+    for source in sources {
+        documents.push((source.label(), source.location()?, source.read().await?));
+    }
+    if let Some(model) = &options.home
+        && let Some((_, _, text)) = documents.last_mut()
+    {
         text.push('\n');
         // Keep validation inside this same analyzed document: an empty query
         // binds no variables and writes nothing, but forces ordinary concept
@@ -204,57 +220,74 @@ async fn run_with_revision(
         text.push_str(":\n\n");
         text.push_str(&build_home_recipe(std::slice::from_ref(model)));
     }
-    let mut syntax = parse_or_diagnose(&label, location, &text)?;
-    let unexpanded = expand(&mut syntax, &Files).await;
-    if !unexpanded.is_empty() {
-        return Err(EvalError::Parse(format_diagnostics(&label, &unexpanded)));
-    }
 
     let session = site
         .branch()
         .await
         .map_err(|e| EvalError::Io(format!("acquire branch: {e}")))?;
     let branch = session.handle();
-
     let revision_before = branch.revision();
     if let Some(expected) = &expected_revision
         && expected != &revision_before
     {
-        return Err(EvalError::Commit(
-            "The space changed since preview. Nothing was applied by this request. Read and preview again."
-                .into(),
-        ));
-    }
-    let evaluated = syntax
-        .evaluate(branch.transaction())
-        .perform(&site.operator)
-        .await
-        .map_err(map_evaluate_error)?;
-    if expected_revision.is_some() && !evaluated.transients.is_empty() {
-        return Err(EvalError::Analyze(
-            "Conditional builds accept durable changes only; transient commands are unavailable."
-                .into(),
-        ));
+        return Err(EvalError::Commit("The space changed since preview. Nothing was applied by this request. Read and preview again.".into()));
     }
 
-    // Compute the post-evaluation match view by re-running the
-    // analyzer's queries against the txn overlay. The overlay
-    // reflects every applied write plus the induce pass, so this
-    // is the same answer a post-commit branch query would give —
-    // computed *before* commit so we don't need the branch after
-    // the txn is consumed.
-    let matches_after = evaluated
-        .matches_after(&site.operator)
-        .await
-        .map_err(map_evaluate_error)?;
+    let mut txn = branch.transaction();
+    let mut writes = false;
+    let mut matches_before = Vec::new();
+    let mut matches_after = Vec::new();
+    let mut commits = CommitSummary::default();
+    for (label, location, text) in documents {
+        // A parse error names its document at every diagnostic; the
+        // others need the name when there is more than one document.
+        let named = |error: EvalError| match error {
+            EvalError::Analyze(message) if several => {
+                EvalError::Analyze(format!("{label}: {message}"))
+            }
+            EvalError::Commit(message) if several => {
+                EvalError::Commit(format!("{label}: {message}"))
+            }
+            other => other,
+        };
+        let mut syntax = parse_or_diagnose(&label, location, &text)?;
+        let blobs = expand_includes(&label, &mut syntax).await?;
+        let mut evaluated = syntax
+            .evaluate(txn)
+            .perform(&site.operator)
+            .await
+            .map_err(|e| named(map_evaluate_error(e)))?;
+        if expected_revision.is_some() && !evaluated.transients.is_empty() {
+            return Err(EvalError::Analyze("Conditional builds accept durable changes only; transient commands are unavailable.".into()));
+        }
+        for blob in &blobs {
+            evaluated.txn = crate::blob::describe(evaluated.txn, blob);
+        }
+
+        // Compute the post-evaluation match view by re-running the
+        // analyzer's queries against the txn overlay. The overlay
+        // reflects every applied write plus the induce pass, so this
+        // is the same answer a post-commit branch query would give —
+        // computed *before* commit so we don't need the branch after
+        // the txn is consumed.
+        matches_after.extend(
+            evaluated
+                .matches_after(&site.operator)
+                .await
+                .map_err(|e| named(map_evaluate_error(e)))?,
+        );
+        writes |= evaluated.analysis.analysis.has_statements();
+        matches_before.extend(evaluated.matches);
+        commits.claims += evaluated.commits.claims;
+        commits.entities.extend(evaluated.commits.entities);
+        txn = evaluated.txn;
+    }
 
     // Commit only a mutating document that wasn't run as a dry
     // run. Pure-query docs and `--dry-run` short-circuit so we
     // don't pay for (or apply) a commit.
-    let (response, committed) = if !options.dry_run && evaluated.analysis.analysis.has_statements()
-    {
-        let revision_after = evaluated
-            .txn
+    let (response, committed) = if !options.dry_run && writes {
+        let revision_after = txn
             .commit()
             .publish()
             .perform(&site.operator)
@@ -268,9 +301,9 @@ async fn run_with_revision(
             EvaluateResponse {
                 revision_before,
                 revision_after: Some(revision_after),
-                matches_before: evaluated.matches,
+                matches_before,
                 matches_after,
-                commits: evaluated.commits,
+                commits,
             },
             true,
         )
@@ -280,14 +313,13 @@ async fn run_with_revision(
         // landed. Zero `claims` so the summary reflects what *did*
         // commit (nothing), not what *would* have — same contract
         // the worker's `transact=false` preview honors.
-        let mut commits = evaluated.commits;
         commits.claims = 0;
         (
             EvaluateResponse {
                 revision_before: revision_before.clone(),
                 revision_after: revision_before,
-                matches_before: evaluated.matches.clone(),
-                matches_after: evaluated.matches,
+                matches_before: matches_before.clone(),
+                matches_after: matches_before,
                 commits,
             },
             false,
@@ -302,6 +334,23 @@ async fn run_with_revision(
         response,
         committed,
     })
+}
+
+/// Replace every `!include` in `syntax` with what it names. Returns the
+/// `!include/asset` content, which the caller asserts on its transaction
+/// with [`crate::blob::describe`].
+async fn expand_includes(
+    label: &str,
+    syntax: &mut Syntax,
+) -> Result<Vec<crate::blob::Included>, EvalError> {
+    let files = Files {
+        blobs: std::sync::Mutex::default(),
+    };
+    let unexpanded = expand(syntax, &files).await;
+    if !unexpanded.is_empty() {
+        return Err(EvalError::Parse(format_diagnostics(label, &unexpanded)));
+    }
+    Ok(files.blobs.into_inner().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// Drive the parser and project diagnostics onto either a clean
@@ -335,7 +384,14 @@ fn format_diagnostics(source: &str, diagnostics: &[lsp_types::Diagnostic]) -> St
 /// filesystem, and the bundled standard library's includes from the
 /// binary. An include that names anything else is reported rather than
 /// fetched.
-struct Files;
+///
+/// `!include/asset` content is remembered in `blobs` rather than stored:
+/// the caller asserts each one on the document's transaction, so its
+/// bytes are stored by the commit that refers to them, and a dry run
+/// stores nothing.
+struct Files {
+    blobs: std::sync::Mutex<Vec<crate::blob::Included>>,
+}
 
 impl Load for Files {
     async fn load(&self, uri: &Url) -> Result<Vec<u8>, String> {
@@ -353,6 +409,17 @@ impl Load for Files {
                 "only `file:` resources can be included here, not `{scheme}:`"
             )),
         }
+    }
+
+    async fn store(&self, uri: &Url, bytes: Vec<u8>) -> Result<String, String> {
+        let path = std::path::PathBuf::from(uri.path());
+        let included = crate::blob::Included::new(&path, bytes).map_err(|e| e.to_string())?;
+        let reference = included.entity().to_string();
+        self.blobs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(included);
+        Ok(reference)
     }
 }
 

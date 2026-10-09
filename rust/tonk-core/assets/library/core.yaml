@@ -2173,8 +2173,15 @@ view!:
 # ============================================================
 
 # Extrinsic metadata for content-addressed blobs. The entity IS the
-# blob reference (`blob:<base58-hash>`); intrinsic metadata (size)
-# lives in the repository's blob index, not in facts.
+# content reference (`asset:<base58-hash>`; older ones read `blob:`);
+# its size is dialog's `dialog.asset/size` fact.
+#
+# These are the legacy attributes. Nothing in core writes them any
+# more: new assets are described with `asset` (below), and a rule makes
+# every asset a blob too, so views written against `blob` keep working
+# for old and new content alike. The concept stays as it was so that
+# blobs already recorded, and templates that write or restate it, need
+# no change.
 concept!: &blob
   this: tonk:blob
   description: A content-addressed binary blob (image, file, media)
@@ -2189,6 +2196,59 @@ concept!: &blob
       the: xyz.tonk.blob/name
       cardinality: one
       as: text
+
+# ============================================================
+# ASSET
+# ============================================================
+
+# What tonk records about an asset, alongside dialog's own
+# `dialog.asset/size`: its media type and file name. `tonk.dialog.*`
+# marks attributes that extend dialog's model, as `tonk.dialog.replica/*`
+# does; should dialog adopt them, migrating is a rename.
+#
+# Every writer in this release (`tonk blob add`, `!include/asset`, the
+# blob upload route) records an asset with these attributes. Blobs
+# written before, and templates that still write `xyz.tonk.blob/*`
+# themselves, keep the legacy attributes, so `blob` stays exactly as it
+# was and two rules join the vocabularies: every legacy blob is an
+# asset, and every asset is a blob. Nothing is rewritten, views written
+# against either concept see every asset, and a template that restates
+# `blob` restates what core still says.
+concept!: &asset
+  this: tonk:asset
+  description: A content-addressed asset (image, file, media) with its media type and name
+  with:
+    media-type:
+      description: Media type of the asset's content, such as image/png
+      the: tonk.dialog.asset/media-type
+      cardinality: one
+      as: text
+    name:
+      description: Human-readable file name
+      the: tonk.dialog.asset/name
+      cardinality: one
+      as: text
+
+rule!:
+  description: A blob recorded with the legacy attributes is an asset.
+  assert: asset
+  when:
+    - assert: blob
+      where: { this: ?this, content-type: ?media-type, name: ?name }
+
+rule!:
+  description: An asset is a blob, so views that render blobs render it.
+  assert: blob
+  when:
+    - assert: asset
+      where: { this: ?this, media-type: ?content-type, name: ?name }
+
+# An asset renders the way a blob does: by the rule above it is one.
+view!:
+  this: tonk:asset
+  show:
+    ui: |
+      <tonk-display entity={this} model=tonk:blob></tonk-display>
 
 # ============================================================
 # BLOB MEDIA VIEW
