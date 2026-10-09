@@ -132,6 +132,49 @@ let
       // attributes
     );
 
+  # A fully static Linux build, for binaries shipped outside Nix. A
+  # `buildCrate` binary names Nix's glibc as its ELF interpreter and
+  # library path, so on any other distribution the kernel cannot start it
+  # ("required file not found"). Linking statically against musl leaves no
+  # interpreter and no libc to find. Only x86_64 Linux ships.
+  muslTarget = "x86_64-unknown-linux-musl";
+  muslCc = pkgs.pkgsCross.musl64.stdenv.cc;
+  muslToolchain = rustToolchain.override { targets = [ muslTarget ]; };
+  muslCraneLib = (crane.mkLib pkgs).overrideToolchain (_: muslToolchain);
+  muslAttributes = commonAttributes // {
+    nativeBuildInputs = buildInputs ++ [
+      muslToolchain
+      muslCc
+    ];
+    # musl replaces every system library: nothing of the host's links in.
+    buildInputs = [ ];
+    CARGO_BUILD_TARGET = muslTarget;
+    CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCc}/bin/${muslCc.targetPrefix}cc";
+    # C code in dependencies (`ring`) is compiled for the target with the
+    # musl compiler; build scripts still run on the host.
+    CC_x86_64_unknown_linux_musl = "${muslCc}/bin/${muslCc.targetPrefix}cc";
+    AR_x86_64_unknown_linux_musl = "${muslCc}/bin/${muslCc.targetPrefix}ar";
+    HOST_CC = "${pkgs.stdenv.cc}/bin/cc";
+  };
+
+  buildStaticCrate =
+    attributes:
+    muslCraneLib.buildPackage (
+      muslAttributes
+      // {
+        version = "0.1.0";
+        cargoArtifacts = muslCraneLib.buildDepsOnly (
+          muslAttributes
+          // {
+            pname = "${attributes.pname}-static-deps";
+            cargoExtraArgs = attributes.cargoExtraArgs or "";
+          }
+        );
+      }
+      // attributes
+    );
+
   buildWasmCrate =
     attributes:
     craneLib.buildPackage (
@@ -253,6 +296,7 @@ in
 {
   inherit
     buildCrate
+    buildStaticCrate
     buildWasmCrate
     buildTrunkCrate
     buildTestArchive
