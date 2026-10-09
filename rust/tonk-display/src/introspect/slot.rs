@@ -280,9 +280,15 @@ pub struct Field {
 }
 
 impl Field {
-    /// How the panel spells the declaration: `Text one` / `Text many?`.
+    /// How the panel spells the declaration: `text one` / `text many?`,
+    /// the type by the anchor the notation writes it with.
     pub fn signature(&self) -> String {
-        let mut out = self.value_type.clone().unwrap_or_else(|| "?".to_owned());
+        let mut out = match self.value_type.as_deref() {
+            Some(wire) => tonk_notation::ValueType::from_wire(wire)
+                .map(|kind| kind.anchor().to_owned())
+                .unwrap_or_else(|| wire.to_owned()),
+            None => "?".to_owned(),
+        };
         if let Some(cardinality) = &self.cardinality {
             out.push(' ');
             out.push_str(cardinality);
@@ -341,7 +347,7 @@ pub fn declared_fields(descriptor_json: &str) -> Vec<Field> {
                 name: name.clone(),
                 attribute: text("the"),
                 value_type: text("as"),
-                cardinality: text("cardinality"),
+                cardinality: text("pick").or_else(|| text("cardinality")),
                 optional,
             });
         }

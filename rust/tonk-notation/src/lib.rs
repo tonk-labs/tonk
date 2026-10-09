@@ -17,6 +17,7 @@ pub mod diagnostics;
 pub mod include;
 pub mod parse;
 pub mod syntax;
+pub mod types;
 
 pub use diagnostics::{NOTATION_LANGUAGE_ID, SERVER_INFO, ServerInfo, document_diagnostics};
 pub use include::{Load, expand};
@@ -25,4 +26,5 @@ pub use syntax::{
     Anchor, Application, Effectful, Expression, Field, FieldValue, HeadName, Include, IncludeForm,
     Predicate, Premise, Scalar, Spanned, Syntax,
 };
+pub use types::ValueType;
 pub use url::Url;

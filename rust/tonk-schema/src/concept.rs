@@ -21,7 +21,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Preload, Speculation};
+use dialog_artifacts::{Entity, Preload, Relation as ArtifactsRelation, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
@@ -41,7 +41,7 @@ pub use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescr
 use crate::builtin::concept_registry;
 use crate::query_source::Source;
 use crate::rule_query::{AnonymousRuleQuery, rule_of_rule_descriptor};
-use dialog_query::attribute::Relation;
+use dialog_query::attribute::The;
 use tonk_core::meta::AnonymousAttribute;
 
 /// Domain prefix for required-field claims.
@@ -53,25 +53,23 @@ const OPTIONAL_DOMAIN: &str = "db.concept.optional";
 /// Build the claim relation that names a required field of a
 /// concept.
 ///
-/// The returned [`ArtifactsAttribute`] has the form
+/// The returned [`ArtifactsRelation`] has the form
 /// `db.concept.with/{field_name}`. Used as the `the` of an EAV
 /// claim `concept_entity --with(name)--> attribute_entity` to
 /// record that the concept has a required field named `name`
 /// pointing at the given attribute.
 ///
 /// Field names are passed through verbatim — dialog's lower-level
-/// [`ArtifactsAttribute`] only enforces a `domain/name` shape and a
+/// [`ArtifactsRelation`] only enforces a `domain/name` shape and a
 /// length cap, so any field name a YAML or JSON schema accepts is
 /// accepted here.
-pub fn with(
-    field_name: &str,
-) -> Result<ArtifactsAttribute, dialog_artifacts::DialogArtifactsError> {
+pub fn with(field_name: &str) -> Result<ArtifactsRelation, dialog_artifacts::DialogArtifactsError> {
     format!("{WITH_DOMAIN}/{field_name}").parse()
 }
 
 /// Build the marker relation that flags a concept field as optional.
 ///
-/// The returned [`ArtifactsAttribute`] has the form
+/// The returned [`ArtifactsRelation`] has the form
 /// `db.concept.optional/{field_name}`. Emitted as a boolean
 /// marker claim `concept_entity --optional(name)--> true` alongside
 /// the field's `db.concept.with/{name}` attribute link. Required
@@ -79,14 +77,14 @@ pub fn with(
 /// the pre-optionality encoding.
 pub fn optional(
     field_name: &str,
-) -> Result<ArtifactsAttribute, dialog_artifacts::DialogArtifactsError> {
+) -> Result<ArtifactsRelation, dialog_artifacts::DialogArtifactsError> {
     format!("{OPTIONAL_DOMAIN}/{field_name}").parse()
 }
 
 /// Recover the field name from a relation in the
 /// `db.concept.with` domain. Returns `None` if `the` is in any
 /// other domain.
-pub fn parse_with(the: &ArtifactsAttribute) -> Option<String> {
+pub fn parse_with(the: &ArtifactsRelation) -> Option<String> {
     let s = String::from(the);
     s.strip_prefix(WITH_DOMAIN)
         .and_then(|rest| rest.strip_prefix('/'))
@@ -96,7 +94,7 @@ pub fn parse_with(the: &ArtifactsAttribute) -> Option<String> {
 /// Recover the field name from a relation in the
 /// `db.concept.optional` domain. Returns `None` if `the` is in
 /// any other domain.
-pub fn parse_optional(the: &ArtifactsAttribute) -> Option<String> {
+pub fn parse_optional(the: &ArtifactsRelation) -> Option<String> {
     let s = String::from(the);
     s.strip_prefix(OPTIONAL_DOMAIN)
         .and_then(|rest| rest.strip_prefix('/'))
@@ -254,7 +252,7 @@ impl ConceptByEntity {
         // namespace in Rust.
         let raw_claims: Vec<dialog_query::Claim> = source
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::var("the")
+                Term::<dialog_query::attribute::Relation>::var("the")
                     .of(Term::from(self.entity.clone()))
                     .is(Term::<Entity>::var("attribute")),
             ))
@@ -268,7 +266,7 @@ impl ConceptByEntity {
         // query above never returns them.
         let optional_claims: Vec<dialog_query::Claim> = source
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::var("the")
+                Term::<dialog_query::attribute::Relation>::var("the")
                     .of(Term::from(self.entity.clone()))
                     .is(Term::<bool>::var("flag")),
             ))
@@ -281,14 +279,14 @@ impl ConceptByEntity {
         let optional_fields: BTreeSet<String> = optional_claims
             .iter()
             .filter_map(|claim| {
-                let the: ArtifactsAttribute = claim.the.clone().into();
+                let the: ArtifactsRelation = claim.the.clone().into();
                 parse_optional(&the)
             })
             .collect();
 
         let mut fields: Vec<(String, ConceptFieldDescriptor)> = Vec::new();
         for claim in raw_claims {
-            let the: ArtifactsAttribute = claim.the.into();
+            let the: ArtifactsRelation = claim.the.into();
             let Some(field_name) = parse_with(&the) else {
                 continue;
             };
@@ -365,8 +363,8 @@ impl AttributeByEntity {
             .select(Query::<AnonymousAttribute> {
                 this: Term::from(self.entity.clone()),
                 id: Term::var("id"),
-                r#type: Term::var("type"),
-                cardinality: Term::var("cardinality"),
+                r#as: Term::var("as"),
+                pick: Term::var("pick"),
                 description: Term::var("description"),
             })
             .perform(env)
@@ -379,12 +377,62 @@ impl AttributeByEntity {
         let Some(facts) = facts.into_iter().next() else {
             return Ok(None);
         };
-        let descriptor = build_attribute_descriptor(&facts).map_err(ConceptLookupError::query)?;
+        let policy = attribute_policy_facts(&self.entity, source, env).await?;
+        let descriptor =
+            build_attribute_descriptor(&facts, &policy).map_err(ConceptLookupError::query)?;
         Ok(Some(Attribute {
             entity: self.entity,
             descriptor,
         }))
     }
+}
+
+/// The optional facts of an attribute entity beside
+/// [`AnonymousAttribute`]: `db.attribute/among`, the values its `as:`
+/// lists, present only on an attribute that lists them.
+#[derive(Debug, Default)]
+struct AttributePolicyFacts {
+    among: Option<String>,
+}
+
+impl AttributePolicyFacts {
+    /// The policy facts among an attribute entity's text claims.
+    fn from_claims(claims: Vec<Claim>) -> Self {
+        let mut facts = Self::default();
+        for claim in claims {
+            let the: ArtifactsRelation = claim.the.into();
+            let Value::String(value) = claim.is else {
+                continue;
+            };
+            if the.as_str() == "db.attribute/among" {
+                facts.among = Some(value);
+            }
+        }
+        facts
+    }
+}
+
+/// Every text claim of `entity`: what the policy facts are read off.
+fn text_claims_of(entity: &Entity) -> dialog_query::AttributeQuery {
+    dialog_query::AttributeQuery::from(
+        Term::<dialog_query::attribute::Relation>::var("the")
+            .of(Term::from(entity.clone()))
+            .is(Term::<String>::var("value")),
+    )
+}
+
+async fn attribute_policy_facts<Env: QueryEnv>(
+    entity: &Entity,
+    source: &Source<'_>,
+    env: &Env,
+) -> Result<AttributePolicyFacts, ConceptLookupError> {
+    let claims: Vec<Claim> = source
+        .select(text_claims_of(entity))
+        .perform(env)
+        .try_vec()
+        .await
+        .map_err(|e| ConceptLookupError::query(format!("attribute policy query failed: {e:?}")))?;
+    Ok(AttributePolicyFacts::from_claims(claims))
 }
 
 /// Builder for looking up an attribute by its *selector id* — the
@@ -416,8 +464,8 @@ impl AttributeById {
             .select(Query::<AnonymousAttribute> {
                 this: Term::var("attribute"),
                 id: Term::from(Id(self.id)),
-                r#type: Term::var("type"),
-                cardinality: Term::var("cardinality"),
+                r#as: Term::var("as"),
+                pick: Term::var("pick"),
                 description: Term::var("description"),
             })
             .perform(env)
@@ -430,7 +478,9 @@ impl AttributeById {
         let Some(facts) = facts.into_iter().next() else {
             return Ok(None);
         };
-        let descriptor = build_attribute_descriptor(&facts).map_err(ConceptLookupError::query)?;
+        let policy = attribute_policy_facts(&facts.this, source, env).await?;
+        let descriptor =
+            build_attribute_descriptor(&facts, &policy).map_err(ConceptLookupError::query)?;
         Ok(Some(Attribute {
             entity: facts.this,
             descriptor,
@@ -470,16 +520,66 @@ impl AttributeByName {
     }
 }
 
+/// The facts an attribute entity carries for `descriptor`, under its
+/// identity: `db.attribute/id`, `db.attribute/as` when it has a type,
+/// `db.attribute/pick`, `db.attribute/among` when its `as:` lists
+/// values, and `db.meta/description`. What an `attribute!:`
+/// declaration writes, and what [`AttributeByEntity`] reads back.
+pub fn attribute_statements(
+    descriptor: &AttributeDescriptor,
+) -> Result<Vec<dialog_query::AttributeStatement>, String> {
+    use dialog_query::the;
+    let entity: Entity = descriptor
+        .to_uri()
+        .parse()
+        .map_err(|e| format!("attribute identity is no entity: {e}"))?;
+    let claim = |the: dialog_query::Relation, value: Value| dialog_query::AttributeStatement {
+        the,
+        of: entity.clone(),
+        is: value,
+        cause: None,
+        cardinality: None,
+        pick: Some(dialog_query::Pick::Last),
+    };
+    let mut statements = vec![claim(
+        the!("db.attribute/id"),
+        Value::String(descriptor.the().to_string()),
+    )];
+    if let Some(kind) = descriptor.content_type() {
+        let kind: Entity = kind
+            .uri()
+            .parse()
+            .map_err(|e| format!("type is no entity: {e}"))?;
+        statements.push(claim(the!("db.attribute/as"), Value::Entity(kind)));
+    }
+    statements.push(claim(
+        the!("db.attribute/pick"),
+        Value::String(descriptor.pick().name().to_owned()),
+    ));
+    if !descriptor.among().is_empty() {
+        let among = serde_json::to_string(descriptor.among()).map_err(|e| e.to_string())?;
+        statements.push(claim(the!("db.attribute/among"), Value::String(among)));
+    }
+    statements.push(claim(
+        the!("db.meta/description"),
+        Value::String(descriptor.description().to_owned()),
+    ));
+    Ok(statements)
+}
+
 /// Reconstruct an [`AttributeDescriptor`] from its
 /// [`AnonymousAttribute`]. Round-trips through serde — the same
 /// trick dialog itself uses, so we don't have to mirror the
 /// internal `Type` ↔ string mapping.
-fn build_attribute_descriptor(facts: &AnonymousAttribute) -> Result<AttributeDescriptor, String> {
+fn build_attribute_descriptor(
+    facts: &AnonymousAttribute,
+    policy: &AttributePolicyFacts,
+) -> Result<AttributeDescriptor, String> {
     let mut shape = serde_json::Map::new();
     // The stored id spells the relation: `domain/name` for an
     // attribute, `domain/[position]` or `domain/[symbol]` for a
     // keyed collection.
-    let relation: Relation = facts
+    let relation: The = facts
         .id
         .0
         .parse()
@@ -488,23 +588,28 @@ fn build_attribute_descriptor(facts: &AnonymousAttribute) -> Result<AttributeDes
         "the".to_owned(),
         serde_json::to_value(relation).map_err(|e| e.to_string())?,
     );
-    if !facts.r#type.0.is_empty() {
+    if let Some(kind) = &facts.r#as {
         shape.insert(
             "as".to_owned(),
-            serde_json::Value::String(facts.r#type.0.clone()),
+            serde_json::Value::String(kind.0.to_string()),
         );
     }
-    if !facts.cardinality.0.is_empty() {
-        shape.insert(
-            "cardinality".to_owned(),
-            serde_json::Value::String(facts.cardinality.0.clone()),
-        );
-    }
+    shape.insert(
+        "pick".to_owned(),
+        serde_json::Value::String(facts.pick.0.clone()),
+    );
     if !facts.description.0.is_empty() {
         shape.insert(
             "description".to_owned(),
             serde_json::Value::String(facts.description.0.clone()),
         );
+    }
+    // The listed values replace the type: dialog reads the type off
+    // the values.
+    if let Some(among) = policy.among.as_deref() {
+        let listed: serde_json::Value = serde_json::from_str(among)
+            .map_err(|e| format!("could not parse the ranked values of {:?}: {e}", facts.id.0))?;
+        shape.insert("as".to_owned(), listed);
     }
     serde_json::from_value(serde_json::Value::Object(shape))
         .map_err(|e| format!("could not reconstruct AttributeDescriptor: {e}"))
@@ -564,7 +669,14 @@ impl AnonymousConcept {
 
 impl Statement for AnonymousConcept {
     fn assert(self, update: &mut impl Update) {
-        emit_concept_facts(&self.this, &self.descriptor, update, Update::associate);
+        emit_concept_facts(
+            &self.this,
+            &self.descriptor,
+            update,
+            |update, the, of, is| {
+                Update::associate(update, the, of, is, dialog_artifacts::Pick::All)
+            },
+        );
     }
     fn retract(self, update: &mut impl Update) {
         emit_concept_facts(&self.this, &self.descriptor, update, Update::dissociate);
@@ -634,7 +746,7 @@ impl IsTransient {
     ) -> Result<bool, ConceptLookupError> {
         let claims: Vec<dialog_query::Claim> = source
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(meta_attr_typed(
+                Term::<dialog_query::attribute::Relation>::from(meta_attr_typed(
                     "dialog.concept",
                     "transient",
                 ))
@@ -652,9 +764,9 @@ impl IsTransient {
 }
 
 /// Same as [`meta_attr`] but returns the typed
-/// [`dialog_query::attribute::The`] form required by the query
-/// builder rather than the runtime [`ArtifactsAttribute`].
-fn meta_attr_typed(domain: &str, name: &str) -> dialog_query::attribute::The {
+/// [`dialog_query::attribute::Relation`] form required by the query
+/// builder rather than the runtime [`ArtifactsRelation`].
+fn meta_attr_typed(domain: &str, name: &str) -> dialog_query::attribute::Relation {
     format!("{domain}/{name}")
         .parse()
         .expect("dialog meta-attribute names should always be valid")
@@ -662,7 +774,14 @@ fn meta_attr_typed(domain: &str, name: &str) -> dialog_query::attribute::The {
 
 impl Statement for TransientConcept {
     fn assert(self, update: &mut impl Update) {
-        emit_concept_facts(&self.this, &self.descriptor, update, Update::associate);
+        emit_concept_facts(
+            &self.this,
+            &self.descriptor,
+            update,
+            |update, the, of, is| {
+                Update::associate(update, the, of, is, dialog_artifacts::Pick::All)
+            },
+        );
         dialog_repository::Transient(self.this).assert(update);
     }
 
@@ -1254,7 +1373,7 @@ where
     Env: Scope<'a>,
 {
     let with_claims: Vec<Claim> = dialog_query::AttributeQuery::from(
-        Term::<dialog_query::attribute::The>::var("the")
+        Term::<dialog_query::attribute::Relation>::var("the")
             .of(Term::from(entity.clone()))
             .is(Term::<Entity>::var("attribute")),
     )
@@ -1266,7 +1385,7 @@ where
     // Boolean-typed query is needed — the Entity-typed `with` query
     // above never returns them.
     let optional_claims: Vec<Claim> = dialog_query::AttributeQuery::from(
-        Term::<dialog_query::attribute::The>::var("the")
+        Term::<dialog_query::attribute::Relation>::var("the")
             .of(Term::from(entity.clone()))
             .is(Term::<bool>::var("flag")),
     )
@@ -1276,14 +1395,14 @@ where
     let optional_fields: BTreeSet<String> = optional_claims
         .iter()
         .filter_map(|claim| {
-            let the: ArtifactsAttribute = claim.the.clone().into();
+            let the: ArtifactsRelation = claim.the.clone().into();
             parse_optional(&the)
         })
         .collect();
 
     let mut fields: Vec<(String, ConceptFieldDescriptor)> = Vec::new();
     for claim in with_claims {
-        let the: ArtifactsAttribute = claim.the.into();
+        let the: ArtifactsRelation = claim.the.into();
         let Some(field_name) = parse_with(&the) else {
             continue;
         };
@@ -1293,8 +1412,8 @@ where
         let facts: Vec<AnonymousAttribute> = Query::<AnonymousAttribute> {
             this: Term::from(attribute_entity.clone()),
             id: Term::var("id"),
-            r#type: Term::var("type"),
-            cardinality: Term::var("cardinality"),
+            r#as: Term::var("as"),
+            pick: Term::var("pick"),
             description: Term::var("description"),
         }
         .perform(env)
@@ -1303,7 +1422,13 @@ where
         let Some(facts) = facts.into_iter().next() else {
             continue;
         };
-        let descriptor = build_attribute_descriptor(&facts).map_err(EvaluationError::Store)?;
+        let policy: Vec<Claim> = text_claims_of(&attribute_entity)
+            .perform(env)
+            .try_vec()
+            .await?;
+        let policy = AttributePolicyFacts::from_claims(policy);
+        let descriptor =
+            build_attribute_descriptor(&facts, &policy).map_err(EvaluationError::Store)?;
         let field = if optional_fields.contains(&field_name) {
             ConceptFieldDescriptor::optional(descriptor)
         } else {
@@ -1442,7 +1567,7 @@ pub async fn lookup_named_entity<'a, Env: QueryEnv>(
 /// per field, plus `db.meta/description` when the
 /// descriptor carries one. Shared between `assert` and
 /// `retract` so the two stay in lock-step.
-fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsAttribute, Entity, Value)>(
+fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsRelation, Entity, Value)>(
     entity: &Entity,
     descriptor: &ConceptDescriptor,
     update: &mut U,
@@ -1506,11 +1631,11 @@ fn concept_marker_entity() -> Entity {
         .expect("`db:concept` is a valid entity URI")
 }
 
-/// Build a runtime [`ArtifactsAttribute`] from a domain + local
+/// Build a runtime [`ArtifactsRelation`] from a domain + local
 /// name. Both halves are validated by dialog's own parser; we
 /// rely on the meta domains being well-formed so `expect` is
 /// safe.
-fn meta_attr(domain: &str, name: &str) -> ArtifactsAttribute {
+fn meta_attr(domain: &str, name: &str) -> ArtifactsRelation {
     format!("{domain}/{name}")
         .parse()
         .expect("dialog meta-attribute names should always be valid")
@@ -1551,7 +1676,7 @@ mod tests {
 
     #[dialog_common::test]
     fn parse_with_rejects_other_domains() {
-        let the: ArtifactsAttribute = "db.meta/name".parse().unwrap();
+        let the: ArtifactsRelation = "db.meta/name".parse().unwrap();
         assert_eq!(parse_with(&the), None);
         assert_eq!(parse_optional(&the), None);
     }
@@ -1624,7 +1749,7 @@ mod tests {
 
         assert!(
             instructions.iter().any(|inst| match inst {
-                Instruction::Assert(a) | Instruction::Replace(a) => {
+                Instruction::Assert(a, _) => {
                     a.the == transient_attr && a.of == this && matches!(&a.is, Value::Boolean(true))
                 }
                 _ => false,
@@ -1638,7 +1763,7 @@ mod tests {
         let concept_marker = concept_marker_entity();
         assert!(
             instructions.iter().any(|inst| match inst {
-                Instruction::Assert(a) | Instruction::Replace(a) => {
+                Instruction::Assert(a, _) => {
                     a.the == concept_marker_attr
                         && a.of == this
                         && matches!(&a.is, Value::Entity(e) if *e == concept_marker)
@@ -1671,7 +1796,7 @@ mod tests {
             .into_instructions()
             .into_iter()
             .any(|inst| match inst {
-                Instruction::Assert(a) => a.the == marker_attr && a.is == marker_value,
+                Instruction::Assert(a, _) => a.the == marker_attr && a.is == marker_value,
                 _ => false,
             });
         assert!(
@@ -1897,14 +2022,16 @@ mod tests {
                     .is(attr_descriptor.the().to_string()),
             )
             .assert(
-                dialog_query::the!("db.attribute/type")
+                dialog_query::the!("db.attribute/as")
                     .of(attr_entity.clone())
-                    .is("Text".to_string()),
+                    .is("text:"
+                        .parse::<dialog_artifacts::Entity>()
+                        .expect("a type entity")),
             )
             .assert(
-                dialog_query::the!("db.attribute/cardinality")
+                dialog_query::the!("db.attribute/pick")
                     .of(attr_entity.clone())
-                    .is("one".to_string()),
+                    .is("last".to_string()),
             )
             .assert(
                 dialog_query::the!("db.meta/description")
@@ -1988,28 +2115,11 @@ mod tests {
         // rehydrate the descriptors.
         let mut txn = branch.transaction();
         for (_, field) in descriptor.with().iter() {
-            let attr_entity: Entity = field.to_uri().parse()?;
-            txn = txn
-                .assert(
-                    the!("db.attribute/id")
-                        .of(attr_entity.clone())
-                        .is(field.the().to_string()),
-                )
-                .assert(
-                    the!("db.attribute/type")
-                        .of(attr_entity.clone())
-                        .is("Text".to_string()),
-                )
-                .assert(
-                    the!("db.attribute/cardinality")
-                        .of(attr_entity.clone())
-                        .is("one".to_string()),
-                )
-                .assert(
-                    the!("db.meta/description")
-                        .of(attr_entity)
-                        .is(String::new()),
-                );
+            for statement in
+                crate::concept::attribute_statements(field.descriptor()).expect("attribute facts")
+            {
+                txn = txn.assert(statement);
+            }
         }
         let concept = AnonymousConcept::new(descriptor.clone());
         let concept_entity = concept.this.clone();
@@ -2039,6 +2149,86 @@ mod tests {
             nickname.is_optional(),
             "optional field must rebuild as optional"
         );
+        Ok(())
+    }
+
+    /// An attribute's facts rebuild its descriptor as declared: a
+    /// ranked `as:` list reads as `top` among those values, a set
+    /// reads as `all`, and a plain attribute as `last`.
+    #[dialog_common::test]
+    async fn it_rebuilds_an_attributes_pick_from_the_branch() -> anyhow::Result<()> {
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
+
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let descriptor: ConceptDescriptor = serde_json::from_str(
+            r#"{
+                "with": {
+                    "status": { "the": "xyz.tonk.job/status", "as": ["case:suspended", "case:active"] },
+                    "tags": { "the": "xyz.tonk.job/tags", "as": "text:", "pick": "all" },
+                    "name": { "the": "xyz.tonk.job/name", "as": "text:" }
+                }
+            }"#,
+        )?;
+
+        let mut txn = branch.transaction();
+        for (_, field) in descriptor.with().iter() {
+            for statement in
+                crate::concept::attribute_statements(field.descriptor()).expect("attribute facts")
+            {
+                txn = txn.assert(statement);
+            }
+        }
+        let concept = AnonymousConcept::new(descriptor.clone());
+        let concept_entity = concept.this.clone();
+        txn.assert(concept)
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await?;
+
+        let resolved = Concept::by_entity(concept_entity)
+            .resolve(&Source::from(&branch), &operator)
+            .await?
+            .expect("concept resolves from branch");
+        let field = |name: &str| {
+            resolved
+                .descriptor
+                .with()
+                .iter()
+                .find(|(n, _)| *n == name)
+                .unwrap_or_else(|| panic!("{name} rebuilds"))
+                .1
+                .descriptor()
+                .clone()
+        };
+        let status = field("status");
+        assert_eq!(status.pick().name(), "top");
+        assert_eq!(
+            status.among(),
+            &[
+                Value::Entity("case:suspended".parse()?),
+                Value::Entity("case:active".parse()?)
+            ],
+            "the ranked values rebuild as the entities they name, best first"
+        );
+        let declared = descriptor
+            .with()
+            .iter()
+            .find(|(n, _)| *n == "status")
+            .expect("declared")
+            .1;
+        assert_eq!(
+            status.to_uri(),
+            declared.to_uri(),
+            "the rebuilt descriptor keeps the declared identity"
+        );
+        assert_eq!(field("tags").pick().name(), "all");
+        let name = field("name");
+        assert_eq!(name.pick().name(), "last");
+        assert!(name.among().is_empty());
         Ok(())
     }
 
@@ -2096,14 +2286,16 @@ mod tests {
                     .is(t_attr.the().to_string()),
             )
             .assert(
-                dialog_query::the!("db.attribute/type")
+                dialog_query::the!("db.attribute/as")
                     .of(t_attr_entity.clone())
-                    .is("Entity".to_string()),
+                    .is("entity:"
+                        .parse::<dialog_artifacts::Entity>()
+                        .expect("a type entity")),
             )
             .assert(
-                dialog_query::the!("db.attribute/cardinality")
+                dialog_query::the!("db.attribute/pick")
                     .of(t_attr_entity.clone())
-                    .is("one".to_string()),
+                    .is("last".to_string()),
             )
             .assert(
                 dialog_query::the!("db.meta/description")
@@ -2117,14 +2309,16 @@ mod tests {
                     .is(d_attr.the().to_string()),
             )
             .assert(
-                dialog_query::the!("db.attribute/type")
+                dialog_query::the!("db.attribute/as")
                     .of(d_attr_entity.clone())
-                    .is("Text".to_string()),
+                    .is("text:"
+                        .parse::<dialog_artifacts::Entity>()
+                        .expect("a type entity")),
             )
             .assert(
-                dialog_query::the!("db.attribute/cardinality")
+                dialog_query::the!("db.attribute/pick")
                     .of(d_attr_entity.clone())
-                    .is("one".to_string()),
+                    .is("last".to_string()),
             )
             .assert(
                 dialog_query::the!("db.meta/description")
@@ -2232,14 +2426,16 @@ mod tests {
                     .is(c_attr.the().to_string()),
             )
             .assert(
-                dialog_query::the!("db.attribute/type")
+                dialog_query::the!("db.attribute/as")
                     .of(c_attr_entity.clone())
-                    .is("Entity".to_string()),
+                    .is("entity:"
+                        .parse::<dialog_artifacts::Entity>()
+                        .expect("a type entity")),
             )
             .assert(
-                dialog_query::the!("db.attribute/cardinality")
+                dialog_query::the!("db.attribute/pick")
                     .of(c_attr_entity.clone())
-                    .is("one".to_string()),
+                    .is("last".to_string()),
             )
             .assert(
                 dialog_query::the!("db.meta/description")
@@ -2252,14 +2448,16 @@ mod tests {
                     .is(d_attr.the().to_string()),
             )
             .assert(
-                dialog_query::the!("db.attribute/type")
+                dialog_query::the!("db.attribute/as")
                     .of(d_attr_entity.clone())
-                    .is("Text".to_string()),
+                    .is("text:"
+                        .parse::<dialog_artifacts::Entity>()
+                        .expect("a type entity")),
             )
             .assert(
-                dialog_query::the!("db.attribute/cardinality")
+                dialog_query::the!("db.attribute/pick")
                     .of(d_attr_entity.clone())
-                    .is("one".to_string()),
+                    .is("last".to_string()),
             )
             .assert(
                 dialog_query::the!("db.meta/description")

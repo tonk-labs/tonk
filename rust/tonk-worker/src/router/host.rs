@@ -32,7 +32,7 @@ use ::axum::{
     response::{IntoResponse, Response},
 };
 use axum_wasm_macros::wasm_compat;
-use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Value};
+use dialog_artifacts::{ArtifactSelector, Entity, Relation, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -215,7 +215,7 @@ pub async fn guest(
         client_id,
     );
 
-    let attribute: Attribute = attribute_str.parse().map_err(|e| {
+    let attribute: Relation = attribute_str.parse().map_err(|e| {
         TonkWorkerError::Router(format!("Invalid attribute '{}': {}", attribute_str, e))
     })?;
     let entity: Entity = entity_str

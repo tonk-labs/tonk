@@ -8,7 +8,7 @@ use ::axum::{
     response::{IntoResponse, Response},
 };
 use axum_wasm_macros::wasm_compat;
-use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Value};
+use dialog_artifacts::{ArtifactSelector, Entity, Relation, Value};
 use dialog_effects::blob::BlobError;
 use dialog_repository::{Blob, CommitError, RepositoryExt as _};
 use futures_util::{StreamExt as _, stream};
@@ -148,7 +148,7 @@ async fn first_text(
     attribute: &str,
     entity: &Entity,
 ) -> Result<Option<String>, TonkWorkerError> {
-    let attribute: Attribute = attribute
+    let attribute: Relation = attribute
         .parse()
         .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
     let stream = branch
@@ -248,10 +248,10 @@ pub async fn upload(
     // mirroring `tonk blob add`. Committed through the reactor (like
     // `claim::assert_claim`), then drain the scheduled poll so subscribers
     // on this branch see the new facts.
-    let media_type_attr: Attribute = MEDIA_TYPE
+    let media_type_attr: Relation = MEDIA_TYPE
         .parse()
         .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
-    let name_attr: Attribute = NAME
+    let name_attr: Relation = NAME
         .parse()
         .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
 
@@ -280,13 +280,13 @@ pub async fn upload(
             the: media_type_attr,
             of: entity.clone(),
             is: Value::String(content_type.clone()),
-            unique: true,
+            policy: dialog_artifacts::Pick::Last,
         })
         .assert(RawClaim {
             the: name_attr,
             of: entity.clone(),
             is: Value::String(name.clone()),
-            unique: true,
+            policy: dialog_artifacts::Pick::Last,
         });
     tx.commit()
         .perform(&tonk.operator)

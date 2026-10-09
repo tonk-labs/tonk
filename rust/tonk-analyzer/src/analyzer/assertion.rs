@@ -17,7 +17,7 @@ use super::field::{
 };
 use super::scope::Scope;
 use crate::analyzer::Working;
-use dialog_query::attribute::Relation;
+use dialog_query::attribute::The;
 use tonk_core::claim::ValueMap;
 use tonk_core::meta::AnchorName;
 use tonk_schema::prelude::EntityExt;
@@ -244,7 +244,7 @@ pub(crate) fn build_assertion_application(
                             assert_entries.push((key, value));
                         }
                     }
-                    let key_operand = Relation::key_operand(field_name);
+                    let key_operand = The::key_operand(field_name);
                     match assert_entries.split_first() {
                         Some(((key, value), rest)) => {
                             assert_terms.insert(key_operand.clone(), key.clone());
@@ -466,7 +466,7 @@ pub(crate) fn build_assertion_application(
             for (field_name, key, value) in extra_asserts {
                 let mut t = Parameters::new();
                 t.insert("this".into(), this_term.clone());
-                t.insert(Relation::key_operand(&field_name), key);
+                t.insert(The::key_operand(&field_name), key);
                 t.insert(field_name, value);
                 asserts.push(Application::Concept {
                     query: ConceptQuery {
@@ -482,7 +482,7 @@ pub(crate) fn build_assertion_application(
             for (field_name, key) in extra_retracts {
                 let mut t = Parameters::new();
                 t.insert("this".into(), this_term.clone());
-                t.insert(Relation::key_operand(&field_name), key);
+                t.insert(The::key_operand(&field_name), key);
                 t.insert(field_name, Term::<dialog_query::Any>::blank());
                 retracts.push(Application::Concept {
                     query: ConceptQuery {
@@ -934,7 +934,7 @@ fn digest_into(
                 return Err(AnalyzeError::at(
                     AnalyzeErrorKind::UnsupportedFieldValue {
                         field: field.name.clone(),
-                        form: "a list (only a command's `action:` takes one)",
+                        form: "a list (only an attribute's `the:` or `as:` and a command's `action:` take one)",
                     },
                     field.value_range,
                 ));

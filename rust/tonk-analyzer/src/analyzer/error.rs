@@ -218,6 +218,18 @@ pub enum AnalyzeDiagnosticKind {
         /// The field where the variable appears.
         field: String,
     },
+    /// An anchor is declared under the name of a built-in type anchor
+    /// (`text`, `integer`, ...). Within the document the name means the
+    /// declaration, so `as: text` there no longer names the type.
+    #[error(
+        "`&{name}` shadows the built-in type `{name}` in this document — \
+         `{name}` here means this declaration, not the type; pick another name \
+         to keep using the type"
+    )]
+    ShadowsBuiltinType {
+        /// The anchor name.
+        name: String,
+    },
     /// A raw domain write's literal carries a different value type
     /// than a branch-declared attribute advertises. The write still
     /// commits — raw domains are open-ended — but typed readers (a
@@ -277,6 +289,7 @@ impl AnalyzeDiagnosticKind {
             Self::SingleOccurrenceVariableAssertionField { .. } => {
                 "E_SINGLE_OCCURRENCE_VARIABLE_ASSERTION_FIELD"
             }
+            Self::ShadowsBuiltinType { .. } => "W_SHADOWS_BUILTIN_TYPE",
             Self::DeclaredTypeDivergence { .. } => "W_DECLARED_TYPE_DIVERGENCE",
             Self::UnknownEmbed { .. } => "W_UNKNOWN_EMBED",
         }

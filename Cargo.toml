@@ -194,24 +194,24 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.2.0", version = "0.2.0" }
 
 [profile.dev]
 opt-level = 1

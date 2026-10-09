@@ -37,4 +37,11 @@ pub enum ReactorError {
     /// A push to upstream failed.
     #[error("push failed: {0}")]
     Push(#[from] PushError),
+    /// Moving what an earlier release stored to this release's shape
+    /// failed.
+    #[error("upgrade failed: {reason}")]
+    Upgrade {
+        /// Why the upgrade failed.
+        reason: String,
+    },
 }

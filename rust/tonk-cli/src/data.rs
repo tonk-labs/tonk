@@ -104,11 +104,11 @@ pub fn render_value(ty: Option<Type>, raw: &str) -> Result<String, DataError> {
     };
     match ty {
         Some(Type::UnsignedInt) => {
-            raw.parse::<u128>().map_err(|_| bad("UnsignedInteger"))?;
+            raw.parse::<u128>().map_err(|_| bad("natural"))?;
             Ok(raw.to_string())
         }
         Some(Type::SignedInt) => {
-            raw.parse::<i128>().map_err(|_| bad("SignedInteger"))?;
+            raw.parse::<i128>().map_err(|_| bad("integer"))?;
             // Spell the signedness: bare digits parse as unsigned, so
             // a non-negative signed value carries an explicit `+`.
             if raw.starts_with('+') || raw.starts_with('-') {
@@ -118,11 +118,11 @@ pub fn render_value(ty: Option<Type>, raw: &str) -> Result<String, DataError> {
             }
         }
         Some(Type::Float) => {
-            raw.parse::<f64>().map_err(|_| bad("Float"))?;
+            raw.parse::<f64>().map_err(|_| bad("float"))?;
             Ok(raw.to_string())
         }
         Some(Type::Boolean) => {
-            raw.parse::<bool>().map_err(|_| bad("Boolean"))?;
+            raw.parse::<bool>().map_err(|_| bad("boolean"))?;
             Ok(raw.to_string())
         }
         Some(Type::Entity) | Some(Type::Symbol) => Ok(raw.to_string()),

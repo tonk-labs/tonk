@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use dialog_artifacts::{Entity, Value};
-use dialog_query::{Term, Type, attribute::The as AttributeThe};
+use dialog_query::{Term, Type, attribute::The as AttributeRelation};
 use tonk_notation::{FieldValue, Scalar};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
@@ -180,7 +180,7 @@ pub(crate) fn field_value_to_term(
             return Err(AnalyzeError::at(
                 AnalyzeErrorKind::UnsupportedFieldValue {
                     field: field_name.into(),
-                    form: "a list (only a command's `action:` takes one)",
+                    form: "a list (only an attribute's `the:` or `as:` and a command's `action:` take one)",
                 },
                 range,
             ));
@@ -332,7 +332,7 @@ pub(crate) fn validate_claim_attribute(
     range: lsp_types::Range,
 ) -> Result<(), AnalyzeError> {
     let uri = format!("{domain}/{field}");
-    uri.parse::<AttributeThe>().map(|_| ()).map_err(|e| {
+    uri.parse::<AttributeRelation>().map(|_| ()).map_err(|e| {
         AnalyzeError::at(
             AnalyzeErrorKind::InvalidClaimAttribute {
                 domain: domain.to_owned(),

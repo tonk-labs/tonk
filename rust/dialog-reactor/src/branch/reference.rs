@@ -13,7 +13,7 @@ use dialog_artifacts::Exporter;
 use dialog_common::ConditionalSend;
 use dialog_repository::Importer;
 
-use crate::env::{BranchOpenProvider, LoadProvider};
+use crate::env::{BranchOpenProvider, CommitProvider, LoadProvider};
 use crate::error::ReactorError;
 use crate::export::Export;
 use crate::import::Import;
@@ -33,6 +33,27 @@ pub struct BranchReference<'a> {
     pub repository: RepositoryReference<'a>,
     /// Branch name within the repository.
     pub name: &'a str,
+}
+
+/// What [`BranchReference::upgrade_once`] moved.
+#[derive(Debug, Clone)]
+pub struct Upgraded {
+    /// The attribute and concept definitions written again.
+    pub definitions: tonk_schema::upgrade::DefinitionsUpgraded,
+    /// The rules re-installed.
+    pub rules: dialog_repository::RulesUpgraded,
+}
+
+/// Until when [`BranchReference::upgrade_once`] moves what an earlier
+/// release stored: 2026-12-09, in unix seconds.
+/// After it the upgrade is not attempted; remove the upgrade then.
+pub const RULE_UPGRADE_UNTIL: u64 = 1_796_774_400;
+
+/// Whether the rule upgrade window is still open.
+fn rule_upgrade_open() -> bool {
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .is_ok_and(|now| now.as_secs() < RULE_UPGRADE_UNTIL)
 }
 
 /// Move every subscription waiting on this branch out of the reactor's
@@ -103,6 +124,46 @@ impl<'a> BranchReference<'a> {
 
         adopt_waiting(self, &state, name);
         Ok(BranchSession { state })
+    }
+
+    /// Move what an earlier release stored to the shape this one reads,
+    /// once per branch while the reactor holds it open, and only until
+    /// [`RULE_UPGRADE_UNTIL`]: first the attribute and concept
+    /// definitions recorded the earlier way
+    /// ([`tonk_schema::upgrade::upgrade_definitions`]), then the rules
+    /// stored under an identity an earlier dialog release gave them
+    /// ([`Branch::upgrade_rules`]). A later call returns `None` without
+    /// reading anything, since both decode every definition and rule body
+    /// the branch holds. A failed upgrade is not retried until the branch
+    /// is opened again (the next worker or CLI start): a cause like an
+    /// unreachable remote would otherwise repeat on every read. Runs under
+    /// the branch's transactor lock, as a commit does, and schedules a
+    /// poll when it commits.
+    ///
+    /// [`Branch::upgrade_rules`]: dialog_repository::Branch::upgrade_rules
+    pub async fn upgrade_once<Env>(&self, env: &Env) -> Result<Option<Upgraded>, ReactorError>
+    where
+        Env: LoadProvider + BranchOpenProvider + CommitProvider,
+    {
+        if !rule_upgrade_open() {
+            return Ok(None);
+        }
+        let session = self.acquire(env).await?;
+        if !session.state.claim_rules_upgrade() {
+            return Ok(None);
+        }
+        let upgraded = {
+            let _transacting = session.state.transactor().lock().await;
+            let definitions = tonk_schema::upgrade::upgrade_definitions(&session.state.branch, env)
+                .await
+                .map_err(|reason| ReactorError::Upgrade { reason })?;
+            let rules = session.state.branch.upgrade_rules().perform(env).await?;
+            Upgraded { definitions, rules }
+        };
+        if !upgraded.definitions.is_empty() || upgraded.rules.revision.is_some() {
+            self.reactor().schedule_poll(Arc::clone(&session.state));
+        }
+        Ok(Some(upgraded))
     }
 
     /// The reactor that owns this branch's cache — so leaf effects can

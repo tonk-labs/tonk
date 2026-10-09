@@ -322,8 +322,8 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
     const QUERY: &str = r#"attribute:
   this:        ?a
   id:          ?the
-  type:        ?type
-  cardinality: ?card
+  as:          ?type
+  pick:        ?pick
   description: ?desc
 "#;
     let response = run_query(site, QUERY).await?;
@@ -339,8 +339,13 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
         out.push(AttributeInfo {
             name: names.get(&entity).cloned(),
             the: take_string(&row.fields, "id"),
-            type_name: take_string(&row.fields, "type"),
-            cardinality: take_string(&row.fields, "cardinality"),
+            type_name: {
+                let wire = take_string(&row.fields, "as");
+                tonk_notation::ValueType::from_wire(&wire)
+                    .map(|kind| kind.anchor().to_owned())
+                    .unwrap_or(wire)
+            },
+            cardinality: take_string(&row.fields, "pick"),
             description: take_string(&row.fields, "description"),
         });
     }
@@ -368,10 +373,10 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
 /// here so callers can ask "what's this entity's display name?"
 /// in one lookup.
 async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String>> {
-    let name_attr: dialog_artifacts::Attribute = "db.name/referent"
+    let name_attr: dialog_artifacts::Relation = "db.name/referent"
         .parse()
         .context("db.name/referent should be a valid attribute URI")?;
-    let the_term: attribute::The = name_attr.into();
+    let the_term: attribute::Relation = name_attr.into();
     let session = site.branch().await?;
     let claims: Vec<dialog_query::Claim> = session
         .handle()
@@ -461,13 +466,13 @@ async fn enumerate_concepts(site: &TonkSite) -> Result<Vec<ConceptInfo>> {
 /// Read optional descriptions once rather than adding a required description
 /// join (which would hide undescribed concepts) or a per-concept query.
 async fn descriptions_by_entity(site: &TonkSite) -> Result<HashMap<String, String>> {
-    let attribute: dialog_artifacts::Attribute = "db.meta/description".parse()?;
+    let attribute: dialog_artifacts::Relation = "db.meta/description".parse()?;
     let session = site.branch().await?;
     let claims: Vec<dialog_query::Claim> = session
         .handle()
         .query()
         .select(AttributeQuery::new(
-            Term::from(attribute::The::from(attribute)),
+            Term::from(attribute::Relation::from(attribute)),
             Term::<Entity>::var("of"),
             Term::<dialog_query::Any>::var("is"),
             Term::<attribute::Cause>::blank(),
@@ -554,8 +559,8 @@ fn render_attribute(out: &mut String, attr: &AttributeInfo) {
     if !attr.type_name.is_empty() {
         let _ = writeln!(out, "  as:          {}", attr.type_name);
     }
-    if !attr.cardinality.is_empty() {
-        let _ = writeln!(out, "  cardinality: {}", attr.cardinality);
+    if !attr.cardinality.is_empty() && attr.cardinality != "last" {
+        let _ = writeln!(out, "  pick:        {}", attr.cardinality);
     }
     out.push('\n');
 }
@@ -578,18 +583,24 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
             // Anonymous — emit the inline definition so the
             // re-submitted document carries enough information to
             // reconstruct the attribute. Uses `the:` URI plus the
-            // type and cardinality.
+            // type, or the values it lists, and the pick.
             None => {
                 let _ = writeln!(out, "    {field}:");
                 let _ = writeln!(out, "      the:         {uri}");
-                if let Some(t) = attr_descriptor.content_type() {
+                let among = attr_descriptor.descriptor().among();
+                if !among.is_empty() {
+                    let _ = writeln!(out, "      as:");
+                    for value in among {
+                        let _ = writeln!(out, "        - {}", value_to_notation(value));
+                    }
+                } else if let Some(t) = attr_descriptor.content_type() {
                     let _ = writeln!(out, "      as:          {}", type_to_notation(&t));
                 }
-                let card = match attr_descriptor.cardinality() {
-                    Cardinality::One => "one",
-                    Cardinality::Many => "many",
-                };
-                let _ = writeln!(out, "      cardinality: {card}");
+                let pick = attr_descriptor.descriptor().pick();
+                let implied = if among.is_empty() { "last" } else { "top" };
+                if pick.name() != implied {
+                    let _ = writeln!(out, "      pick:        {}", pick.name());
+                }
                 let desc = attr_descriptor.description();
                 if !desc.is_empty() {
                     let _ = writeln!(out, "      description: {}", quote_string(desc));
@@ -600,14 +611,22 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
     out.push('\n');
 }
 
-/// Map a dialog `Type` onto the string accepted by the analyzer
-/// in `as:` slots. The serde rename on `ValueDataType` already
-/// produces these strings; serializing through serde_json gives
-/// us a quoted form (`"\"Text\""`) so we trim the quotes.
+/// A listed value as the notation writes it: an entity as its URI, text
+/// quoted, anything else as dialog spells it.
+fn value_to_notation(value: &dialog_artifacts::Value) -> String {
+    match value {
+        dialog_artifacts::Value::Entity(entity) => entity.to_string(),
+        dialog_artifacts::Value::String(text) => quote_string(text),
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+/// Map a dialog `Type` onto the built-in type anchor the analyzer
+/// accepts in `as:` slots (`text`, `natural`, ...).
 pub(crate) fn type_to_notation(ty: &Type) -> String {
-    match serde_json::to_string(ty) {
-        Ok(s) => s.trim_matches('"').to_string(),
-        Err(_) => format!("{ty:?}"),
+    match tonk_notation::ValueType::from_wire(ty.uri()) {
+        Some(kind) => kind.anchor().to_string(),
+        None => format!("{ty:?}"),
     }
 }
 

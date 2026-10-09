@@ -48,7 +48,7 @@ Notes:
 
 ```bash
 tonk concept add <name> --attr <field>:<type>:<card> [--attr …] [--description <text>]
-                                    # types: text, entity, unsigned-integer, …; card: one|many
+                                    # types: text, entity, natural, integer, …; card: one|many
 tonk view add <concept> --template '<html>' | --template-file <path> [--kind detail|directory|label|title]
 tonk home <concept> [<concept> …]   # put concept directories on the space home
 ```

@@ -198,11 +198,11 @@ pub fn pivot_byte(key: &str, prev: Option<&str>, next: Option<&str>) -> Option<u
 pub fn format_value(value: &serde_json::Value, type_name: &str) -> String {
     use serde_json::Value as J;
     match type_name {
-        "Text" => match value {
+        "Text" | "text:" => match value {
             J::String(s) => format!("\"{s}\""),
             other => other.to_string(),
         },
-        "Float" => match value {
+        "Float" | "float:" => match value {
             J::Number(n) => {
                 let f = n.as_f64().unwrap_or(0.0);
                 if f.fract() == 0.0 {
@@ -213,7 +213,7 @@ pub fn format_value(value: &serde_json::Value, type_name: &str) -> String {
             }
             other => other.to_string(),
         },
-        "SignedInt" => match value {
+        "SignedInt" | "SignedInteger" | "integer:" => match value {
             J::Number(n) => {
                 let i = n.as_i64().unwrap_or(0);
                 if i >= 0 {
@@ -225,7 +225,7 @@ pub fn format_value(value: &serde_json::Value, type_name: &str) -> String {
             J::String(s) => s.clone(),
             other => other.to_string(),
         },
-        "Bytes" => match value {
+        "Bytes" | "bytes:" => match value {
             J::String(s) => s.clone(),
             J::Array(a) => a
                 .iter()

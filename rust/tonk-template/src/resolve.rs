@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 use indexmap::IndexMap;
 use serde_json::{Value, json};
+use tonk_notation::ValueType;
 use tonk_schema::query::Query;
 
 /// The facet a `<tonk-display>` with an `entity` renders when no
@@ -270,14 +271,18 @@ pub fn entity_query(descriptor_json: &str, entity: &str) -> Result<Query, serde_
     serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
 }
 
-/// Collect the `cardinality: one` field names from a concept's
-/// `descriptor_json` — its `with:` (required) and `maybe:` (optional) blocks.
+/// Collect the one-valued field names from a concept's `descriptor_json`
+/// — its `with:` (required) and `maybe:` (optional) blocks.
 ///
 /// These are the **scalar** fields: a single value per subject, not an
 /// iteration axis. The renderer's planner uses this set so a scalar field used
 /// in a template is a plain substitution rendered once, never an iteration root
 /// that clones its host zero times (and drops it) when the value is absent. A
 /// malformed descriptor yields an empty set — the value-driven default.
+///
+/// A field is one-valued unless it reads as a set: `select: all`, or the
+/// older spelling `cardinality: many`. A descriptor that spells neither
+/// reads under `last`, the default, so a plain field is scalar.
 pub fn scalar_field_names(descriptor_json: &str) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();
     let Ok(value) = serde_json::from_str::<Value>(descriptor_json) else {
@@ -288,12 +293,23 @@ pub fn scalar_field_names(descriptor_json: &str) -> std::collections::BTreeSet<S
             continue;
         };
         for (field, spec) in map {
-            if spec.get("cardinality").and_then(|c| c.as_str()) == Some("one") {
+            if is_scalar_field(spec) {
                 out.insert(field.clone());
             }
         }
     }
     out
+}
+
+/// Whether a field's spec reads one value per subject: not `pick:
+/// all`, and not `cardinality: many` (or the preview `select: all`)
+/// without a `pick` saying otherwise.
+fn is_scalar_field(spec: &Value) -> bool {
+    let text = |key: &str| spec.get(key).and_then(Value::as_str);
+    match text("pick").or(text("select")) {
+        Some(pick) => pick != "all",
+        None => text("cardinality") != Some("many"),
+    }
 }
 
 /// The descriptor of the built-in `view` concept.
@@ -661,17 +677,17 @@ fn coerce_filter_value(
     as_type: Option<&str>,
     raw: &str,
 ) -> Result<serde_json::Value, Phase2Error> {
-    let coerced = match as_type {
-        Some("UnsignedInteger") => raw.parse::<u64>().ok().map(|n| json!(n)),
-        Some("SignedInteger") => raw.parse::<i64>().ok().map(|n| json!(n)),
+    let coerced = match as_type.and_then(ValueType::from_wire) {
+        Some(ValueType::Natural) => raw.parse::<u64>().ok().map(|n| json!(n)),
+        Some(ValueType::Integer) => raw.parse::<i64>().ok().map(|n| json!(n)),
         // Reject non-finite floats too: `serde_json` can't represent
         // `inf`/`NaN` and would silently serialize them as `null`.
-        Some("Float") => raw
+        Some(ValueType::Float) => raw
             .parse::<f64>()
             .ok()
             .filter(|n| n.is_finite())
             .map(|n| json!(n)),
-        Some("Boolean") => match raw {
+        Some(ValueType::Boolean) => match raw {
             "true" => Some(json!(true)),
             "false" => Some(json!(false)),
             _ => None,
@@ -681,7 +697,7 @@ fn coerce_filter_value(
     };
     coerced.ok_or_else(|| Phase2Error::Filter {
         field: field.to_owned(),
-        as_type: as_type.unwrap_or("Text").to_owned(),
+        as_type: as_type.unwrap_or(ValueType::Text.uri()).to_owned(),
         value: raw.to_owned(),
     })
 }
@@ -766,6 +782,33 @@ mod tests {
         assert!(scalars.contains("id"), "required cardinality-one field");
         assert!(scalars.contains("rest"), "optional cardinality-one field");
         assert!(!scalars.contains("items"), "cardinality-many excluded");
+    }
+
+    /// The policy spelling: a field with no `cardinality` reads under
+    /// `last` and is scalar; `select: all` is the set; a ranked `as:`
+    /// list is `top`, one value.
+    #[dialog_common::test]
+    fn it_reads_a_field_without_cardinality_as_scalar_unless_it_selects_all() {
+        let descriptor = r#"{
+            "with": {
+                "id":     { "the": "xyz.tonk.site/id", "as": "Text" },
+                "items":  { "the": "x/items", "as": "Text", "select": "all" },
+                "status": { "the": "x/status", "as": ["case:active", "case:registered"] },
+                "newest": { "the": "x/newest", "as": "Text", "select": "last" }
+            },
+            "maybe": {
+                "rest":   { "the": "xyz.tonk.site/rest", "as": "Text" }
+            }
+        }"#;
+        let scalars = scalar_field_names(descriptor);
+        assert!(scalars.contains("id"), "the default policy is one value");
+        assert!(
+            scalars.contains("rest"),
+            "an optional field under the default policy"
+        );
+        assert!(scalars.contains("status"), "a ranked choice is one value");
+        assert!(scalars.contains("newest"), "`last` is one value");
+        assert!(!scalars.contains("items"), "`all` is the set");
     }
 
     #[dialog_common::test]

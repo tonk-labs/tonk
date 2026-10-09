@@ -35,7 +35,6 @@ concept!: &space
         space. The directory entry is asserted once per space and every
         device converges on it.
       the: xyz.tonk.space/subject
-      cardinality: one
       as: entity
   maybe:
     owner:
@@ -45,30 +44,34 @@ concept!: &space
         space this account hosts (removing it deletes the hosted copy)
         from one it was invited to (removing it leaves).
       the: xyz.tonk.space/owner
-      cardinality: one
       as: entity
     presence:
       description: >
         Where this space stands ON THIS DEVICE: case:remote when no
-        replica is held here, case:seeding while its content branch is
-        still being seeded, case:replicated once it is. A remote row
-        renders as a hollow space that replicates on first visit.
+        replica is held here, case:replicating while one is being
+        pulled, case:seeding while its content branch is still being
+        seeded, case:replicated once it is. A remote row renders as a
+        hollow space that replicates on first visit.
 
         Derived by the rules below from this device's replica rather
-        than stored, so it cannot drift from it. The remote case is a
-        negated premise (`unless: space/replica`) rather than an absent
-        fact, so every row carries a presence and a view can select on
-        it. The Hub card reflects this via [data-presence].
+        than stored, so it cannot drift from it. Every rule states a
+        case positively; the field reads the first listed case any
+        rule derives, so a replica that is seeding reads as seeding
+        although it is also a replica, and a space nothing else
+        speaks for reads as remote. The Hub card reflects this via
+        [data-presence].
       the: xyz.tonk.space/presence
-      cardinality: one
-      as: entity
+      as:
+        - case:seeding
+        - case:replicating
+        - case:replicated
+        - case:remote
     name:
       description: >
         The directory mirror of the space's display name — written at
         create and kept current by the rename command — so a device
         that has not replicated the space can still label its card.
       the: xyz.tonk.space/name
-      cardinality: one
       as: text
     description:
       description: >
@@ -76,7 +79,6 @@ concept!: &space
         description. The repository copy remains authoritative; this mirror
         keeps the Hub from mounting every space to render its cards.
       the: xyz.tonk.space/description
-      cardinality: one
       as: text
     provider:
       description: >
@@ -90,7 +92,6 @@ concept!: &space
         from every replica, so the record converges where per-device
         timestamps would not.
       the: xyz.tonk.space/provider
-      cardinality: one
       as: entity
     home-address:
       description: >
@@ -103,7 +104,6 @@ concept!: &space
         remote, and mounting a joined space. Absent for a local-only
         space.
       the: xyz.tonk.space/home-address
-      cardinality: one
       as: text
     founded-at:
       description: >
@@ -111,8 +111,7 @@ concept!: &space
         local-only space made here from a space joined through somebody
         else's invite; hosted ownership is still decided by `provider`.
       the: xyz.tonk.space/founded-at
-      cardinality: one
-      as: unsigned-integer
+      as: natural
 
 # The Add Space command. The Hub's named creation dialogs submit this shape.
 # The worker records the replica, seeds the repository, and navigates the
@@ -1033,7 +1032,6 @@ concept!: &profile/name
     name:
       description: The chosen display name (xyz.tonk.profile/display-name).
       the: xyz.tonk.profile/display-name
-      cardinality: one
       as: text
 
 # Rename the signed-in member (set their display name). Lives here as well as
@@ -1084,7 +1082,7 @@ command!: &account/resend-activation
     at:
       description: The click timestamp, so every resend is a distinct request.
       the: xyz.tonk.resend-activation/at
-      as: unsigned-integer
+      as: natural
 
 # Toggle auto-sync (pause ⇄ resume) for a space. Dispatched by the FAB's
 # `<ui-sync-status onpause=…>` cap on alt/option-click. Defined here on the
@@ -1137,7 +1135,6 @@ concept!: &replica/checking
     checking:
       description: The dispatched check's transient entity.
       the: xyz.tonk.replica/checking
-      cardinality: one
       as: entity
 
 # When the last check COMPLETED on this device. Separate from the
@@ -1151,7 +1148,6 @@ concept!: &replica/checked
     checked:
       description: The completing check's timestamp.
       the: xyz.tonk.replica/checked
-      cardinality: one
       as: float
 
 # Why the last check FAILED, asserted only on failure and retracted on
@@ -1166,7 +1162,6 @@ concept!: &replica/check-failure
     failure:
       description: What went wrong, as reported to the person.
       the: xyz.tonk.replica/check-failure
-      cardinality: one
       as: text
 
 # A seed that EXISTS and where its bytes came from — global, durable,
@@ -1188,7 +1183,6 @@ concept!: &seed/available
         hash alone, so the source rides alongside because a custom seed
         is a different URL at the same shape.
       the: xyz.tonk.seed/source
-      cardinality: one
       as: text
     replaces:
       description: >
@@ -1197,7 +1191,6 @@ concept!: &seed/available
         update to what you are running") rather than only by joining it
         against the space's install record.
       the: xyz.tonk.seed/replaces
-      cardinality: one
       as: entity
 
 attribute!: &pause-sync/time
@@ -1325,7 +1318,6 @@ concept!: &fab/dock
     dock:
       description: The fallback corner restored on the next page load.
       the: xyz.tonk.fab/dock
-      cardinality: one
       as: entity
 
 # ============================================================
@@ -1370,7 +1362,6 @@ concept!: &join/status
     status:
       description: The attempt state, either pending or failed.
       the: xyz.tonk.join/status
-      cardinality: one
       as: entity
 
 # The failure detail for a join, at the same `tonk:join/status` entity —
@@ -1384,14 +1375,12 @@ concept!: &join/failure
     reason:
       description: Human-readable failure message.
       the: xyz.tonk.join/reason
-      cardinality: one
       as: text
     kind:
       description: >
         The failure class: malformed, audience-mismatch, revoked,
         unavailable, refused, or claim-failed.
       the: xyz.tonk.join/kind
-      cardinality: one
       as: text
 
 # The /join view — a directory view for `tonk:join/status`, mounted by a
@@ -1462,22 +1451,18 @@ concept!: &site
     path:
       description: Currently active path on this site.
       the: xyz.tonk.site/path
-      cardinality: one
       as: text
     anchor:
       description: Currently active anchor (URL hash) on this site.
       the: xyz.tonk.site/anchor
-      cardinality: one
       as: text
     space:
       description: The space (repository name) on this site.
       the: xyz.tonk.site/space
-      cardinality: one
       as: text
     branch:
       description: The active branch name on this site (defaults to "main").
       the: xyz.tonk.site/branch
-      cardinality: one
       as: text
     branch-entity:
       description: >
@@ -1487,29 +1472,24 @@ concept!: &site
         its subject. The name beside it is a location token; this is
         the graph node.
       the: xyz.tonk.site/branch-entity
-      cardinality: one
       as: entity
     profile-branch:
       description: >
         The branch the profile is on, whichever repository this tab is
         on: what reaches the profile as `{profile-branch}@profile:tonk`.
       the: xyz.tonk.site/profile-branch
-      cardinality: one
       as: text
     replica:
       description: Currently active replica on this site.
       the: xyz.tonk.site/replica
-      cardinality: one
       as: entity
     route:
       description: Matched route of this site.
       the: xyz.tonk.site/route
-      cardinality: one
       as: entity
     concept:
       description: Matched route's concept (the model the shell mounts).
       the: xyz.tonk.site/concept
-      cardinality: one
       as: entity
   maybe:
     selection:
@@ -1578,12 +1558,10 @@ concept!: &route
     path:
       description: The axum/matchit path pattern.
       the: xyz.tonk.route/path
-      cardinality: one
       as: text
     concept:
       description: The route model to render when this path matches.
       the: xyz.tonk.route/concept
-      cardinality: one
       as: entity
 
 # What a seed version seeded, one attribute per component kind, on the
@@ -1604,7 +1582,6 @@ concept!: &seed/installed
         present on every seed rather than absent on the first, so the
         chain reads uniformly.
       the: xyz.tonk.seed/prior
-      cardinality: one
       as: entity
     version:
       description: >
@@ -1619,7 +1596,6 @@ concept!: &seed/installed
         its assertions into retractions, and applies them alongside the
         new library in one atomic commit.
       the: xyz.tonk.seed/version
-      cardinality: one
       as: text
 
 # The profile's only route for now: `/` renders the Hub.
@@ -1660,22 +1636,18 @@ concept!: &profile/row
     name:
       description: The branch's name — what a switch activates.
       the: xyz.tonk.roster/name
-      cardinality: one
       as: text
     label:
       description: The account name to show, as of this read.
       the: xyz.tonk.roster/label
-      cardinality: one
       as: text
     provider:
       description: The access service the account is attached to. Empty for a local workspace.
       the: xyz.tonk.roster/provider
-      cardinality: one
       as: text
     active:
       description: Whether this is the profile the browser is using now.
       the: xyz.tonk.roster/active
-      cardinality: one
       as: boolean
 
 # Switching reads the row's own handle off the clicked button, so a
@@ -1876,17 +1848,14 @@ concept!: &ceremony/status
     ceremony:
       description: Which ceremony this row describes.
       the: xyz.tonk.ceremony/ceremony
-      cardinality: one
       as: text
     state:
       description: Where it got to — pending-ceremony, working, done, failed, refused.
       the: xyz.tonk.ceremony/state
-      cardinality: one
       as: text
     detail:
       description: What refused or failed it, empty otherwise.
       the: xyz.tonk.ceremony/detail
-      cardinality: one
       as: text
 
 # ============================================================
@@ -1918,7 +1887,6 @@ concept!: &element
         their description are two different values. That is the right
         reading: the description is part of what the definition says.
       the: xyz.tonk.element/description
-      cardinality: one
       as: text
     method:
       description: |
@@ -1958,7 +1926,6 @@ concept!: &element
         edited method.
       the: xyz.tonk.element.method
       as: {[symbol]: text}
-      cardinality: one
     getter:
       description: |
         Property reads, keyed by property name, each `(self) => …`.
@@ -1980,7 +1947,6 @@ concept!: &element
         refused, the same as a method key.
       the: xyz.tonk.element.getter
       as: {[symbol]: text}
-      cardinality: one
     setter:
       description: |
         Property writes, keyed by property name, each
@@ -1993,7 +1959,6 @@ concept!: &element
         allowed.
       the: xyz.tonk.element.setter
       as: {[symbol]: text}
-      cardinality: one
     attribute:
       description: |
         Default values for the element's attributes, keyed by
@@ -2031,7 +1996,6 @@ concept!: &element
         schema one.
       the: xyz.tonk.element.attribute
       as: {[symbol]: text}
-      cardinality: one
 
 # The account menu's keyboard and focus behaviour, as branch data.
 #
@@ -2180,13 +2144,11 @@ concept!: &account/passkey
     created-on:
       description: The device or browser the passkey was made on.
       the: xyz.tonk.recovery/created-on
-      cardinality: one
       as: text
     created-at:
       description: When it was made, unix seconds.
       the: xyz.tonk.recovery/created-at
-      cardinality: one
-      as: unsigned-integer
+      as: natural
 
 # The settings page's account pane.
 #
@@ -2736,7 +2698,6 @@ concept!: &hub
     path:
       description: The active path, picked off the site.
       the: xyz.tonk.site/path
-      cardinality: one
       as: text
   maybe:
     profile-branch:
@@ -2962,7 +2923,6 @@ concept!: &join/route
     path:
       description: The active path, picked off the site.
       the: xyz.tonk.site/path
-      cardinality: one
       as: text
   maybe:
     profile-branch:
@@ -3087,17 +3047,14 @@ concept!: &inspector/route
     path:
       description: The active path, picked off the site.
       the: xyz.tonk.site/path
-      cardinality: one
       as: text
     repo:
       description: The repository location token, picked off the site entity.
       the: xyz.tonk.site/repo
-      cardinality: one
       as: text
     branch:
       description: The branch, picked off the site entity.
       the: xyz.tonk.site/branch
-      cardinality: one
       as: text
   maybe:
     profile-branch:
@@ -3134,17 +3091,14 @@ concept!: &diagnose/route
     path:
       description: The active path, picked off the site.
       the: xyz.tonk.site/path
-      cardinality: one
       as: text
     repo:
       description: The repository location token, picked off the site entity.
       the: xyz.tonk.site/repo
-      cardinality: one
       as: text
     branch:
       description: The branch, picked off the site entity.
       the: xyz.tonk.site/branch
-      cardinality: one
       as: text
   maybe:
     profile-branch:
@@ -3192,7 +3146,6 @@ concept!: &seed/route
     url:
       description: The URL of the definitions, captured from the path.
       the: xyz.tonk.site/url
-      cardinality: one
       as: text
   maybe:
     profile-branch:
@@ -3313,7 +3266,6 @@ concept!: &space-chrome
     id:
       description: The space repository id, picked off the site entity.
       the: xyz.tonk.site/id
-      cardinality: one
       as: text
     profile-branch:
       description: >
@@ -3321,13 +3273,11 @@ concept!: &space-chrome
         FAB and the access guidance talk to the profile, and the profile
         is on its account's branch, not on `main`.
       the: xyz.tonk.site/profile-branch
-      cardinality: one
       as: text
   maybe:
     rest:
       description: The sub-path within the space, picked off the site entity.
       the: xyz.tonk.site/rest
-      cardinality: one
       as: text
 
 view!:
@@ -3518,7 +3468,6 @@ concept!: &not-found
     path:
       description: The active path, picked off the site.
       the: xyz.tonk.site/path
-      cardinality: one
       as: text
   maybe:
     profile-branch:
@@ -3592,7 +3541,6 @@ concept!: &account/name
         (xyz.tonk.account/display-name). Distinct from
         `tonk:profile/name`, which is one device's own override.
       the: xyz.tonk.account/display-name
-      cardinality: one
       as: text
 
 # The account's registration with an access service.
@@ -3626,12 +3574,10 @@ concept!: &account/registered
     registered-at:
       description: When enrollment recorded the address, unix seconds.
       the: xyz.tonk.account/registered-at
-      cardinality: one
-      as: unsigned-integer
+      as: natural
     email:
       description: The address enrollment named.
       the: xyz.tonk.account/customer-email
-      cardinality: one
       as: text
     provider:
       description: >
@@ -3646,7 +3592,6 @@ concept!: &account/registered
         once the emailed link is opened, so a device learns it was
         activated from the sync it was already doing.
       the: xyz.tonk.account/provider-address
-      cardinality: one
       as: text
 
 # Activation. Its PRESENCE is what makes an account served; nothing has
@@ -3669,7 +3614,6 @@ concept!: &account/linking
     linking:
       description: Always true while the link runs; dropped when it settles.
       the: xyz.tonk.account/linking
-      cardinality: one
       as: boolean
 
 # Whether THIS DEVICE holds the account's authority on this branch.
@@ -3683,7 +3627,6 @@ concept!: &account/link
     account:
       description: The linked account's DID.
       the: xyz.tonk.link/account
-      cardinality: one
       as: entity
 
 # The hub bar's account cell: a hidden marker the bar keys on, and the
@@ -3706,8 +3649,7 @@ concept!: &account/active
         When the emailed link was opened and the service confirmed it,
         unix seconds.
       the: xyz.tonk.account/activated-at
-      cardinality: one
-      as: unsigned-integer
+      as: natural
 
 # Suspension: the service withdrew.
 concept!: &account/suspended
@@ -3720,12 +3662,10 @@ concept!: &account/suspended
         When the withdrawal took effect, unix seconds. A support
         conversation starts with when service stopped.
       the: xyz.tonk.account/suspended-at
-      cardinality: one
-      as: unsigned-integer
+      as: natural
     reason:
       description: Why the service withdrew, in words a person can act on.
       the: xyz.tonk.account/suspension-reason
-      cardinality: one
       as: text
 
 # The onboarding account: a real account this device minted for itself,
@@ -3756,8 +3696,7 @@ concept!: &account/onboarding
     minted-at:
       description: When this device minted the onboarding account, unix seconds.
       the: xyz.tonk.account/onboarding-minted-at
-      cardinality: one
-      as: unsigned-integer
+      as: natural
   maybe:
     custodian:
       description: >
@@ -3766,7 +3705,6 @@ concept!: &account/onboarding
         addresses it and no sealed message names it as recipient — this is
         the only record that it is what currently holds the account.
       the: xyz.tonk.account/onboarding-custodian
-      cardinality: one
       as: entity
     retired-at:
       description: >
@@ -3774,8 +3712,7 @@ concept!: &account/onboarding
         says this account is no longer the one in use — the row stays so
         the handover is visible rather than silently gone.
       the: xyz.tonk.account/onboarding-retired-at
-      cardinality: one
-      as: unsigned-integer
+      as: natural
 
 # The account's status, DERIVED from the facts above.
 #
@@ -3786,25 +3723,32 @@ concept!: &account/onboarding
 # the facts it summarises; deriving it means the summary cannot drift from
 # what actually happened.
 #
-# The four cases are mutually exclusive, and each rule below states the
-# whole condition rather than relying on rule order:
+# Each rule below states one case from the fact that proves it, and the
+# field reads the first listed case any rule derives, so the cases rank
+# rather than exclude one another:
 #
-#   case:onboarding  a locally custodied account, not yet registered
-#   case:registered  enrolled, and neither activated nor suspended
-#   case:active      activated and not suspended
 #   case:suspended   the service withdrew
+#   case:active      activated
+#   case:registered  enrolled
+#   case:retired     an onboarding account a real one replaced
+#   case:onboarding  a locally custodied account
 concept!: &account/status
   this: tonk:account/status
   description: The account's status, derived from its registration facts.
   with:
     status:
       description: >
-        `case:onboarding`, `case:registered`, `case:active`, or
-        `case:suspended` — an entity label rather than text, so a typo
-        cannot silently read as a different state.
+        `case:suspended`, `case:active`, `case:registered`,
+        `case:retired` or `case:onboarding` — an entity label rather
+        than text, so a typo cannot silently read as a different
+        state. The first listed case any rule derives is the status.
       the: xyz.tonk.account/status
-      cardinality: one
-      as: entity
+      as:
+        - case:suspended
+        - case:active
+        - case:registered
+        - case:retired
+        - case:onboarding
 
 view!:
   this: tonk:account/status
@@ -3825,13 +3769,12 @@ view!:
 #
 # The replica is resolved FORWARD from the session: a replica entity is
 # derived from `(profile, subject)`, so binding the space and the session's
-# profile determines the row. Both rules therefore bind `?replica` in
-# `when:`, which is what lets the second one negate over it — a negated
-# premise may not introduce bindings, its own entity included.
+# profile determines the row.
 #
-# There is no `remote` rule for that reason: remote is the ABSENCE of a
-# replica row, and negating it would have to introduce the very entity it
-# is testing for. Absence of `presence` carries that case instead.
+# A deductive rule states its case positively and never negates: the
+# `presence` field lists its cases best first, so `remote` is the
+# rule every space with a session satisfies, and any better-ranked case
+# a replica supports wins over it.
 #
 # Seeding is genuinely per-replica: only the device that CREATED a space
 # ever sees it mid-seed, since any other device holding it pulled content
@@ -3855,12 +3798,10 @@ concept!: &space/replica
     subject:
       description: The space this replica is a view of.
       the: xyz.tonk.replica/subject
-      cardinality: one
       as: entity
     profile:
       description: The device profile holding it.
       the: xyz.tonk.replica/profile
-      cardinality: one
       as: entity
 
 concept!: &space/replica-status
@@ -3870,7 +3811,6 @@ concept!: &space/replica-status
     status:
       description: '`tonk:blank` while seeding, `tonk:initialized` after.'
       the: xyz.tonk.replica/status
-      cardinality: one
       as: entity
 
 # A pull IN FLIGHT on this device, overlay-only. Asserted before the
@@ -3888,12 +3828,10 @@ concept!: &space/replicating
         to the directory row: during the pull that CREATES the replica
         there is no replica record to join through yet.
       the: xyz.tonk.replica/subject
-      cardinality: one
       as: entity
     replicating:
       description: Always true while a pull runs; retracted when it settles.
       the: xyz.tonk.space/replicating
-      cardinality: one
       as: boolean
 
 # A space with a providing account: `provider` is optional on `space`, so
@@ -3905,7 +3843,6 @@ concept!: &space/provided
     provider:
       description: The providing account's DID.
       the: xyz.tonk.space/provider
-      cardinality: one
       as: entity
 
 # A space the account on this branch provides. Removing such a space
@@ -3919,7 +3856,6 @@ concept!: &space/owned
     owner:
       description: The providing account, registered on this branch.
       the: xyz.tonk.space/owner
-      cardinality: one
       as: entity
 
 rule!:
@@ -3939,13 +3875,20 @@ concept!: &space/presence
   description: Where a space stands on this device.
   with:
     presence:
-      description: '`case:remote`, `case:replicating`, `case:seeding`, or `case:replicated`.'
+      description: >
+        `case:seeding`, `case:replicating`, `case:replicated` or
+        `case:remote`: the first listed case any rule derives.
       the: xyz.tonk.space/presence
-      cardinality: one
-      as: entity
+      as:
+        - case:seeding
+        - case:replicating
+        - case:replicated
+        - case:remote
 
+# Every space with a session is remote until a better-ranked case says
+# otherwise.
 rule!:
-  description: A space this device holds no replica of and is not pulling is remote
+  description: A space with a session is remote until a better-ranked case says otherwise
   assert: space/presence
   when:
     - assert: space
@@ -3959,14 +3902,6 @@ rule!:
       where:
         this: ?presence
         is: case:remote
-  unless:
-    - assert: space/replica
-      where:
-        subject: ?subject
-        profile: ?profile
-    - assert: space/replicating
-      where:
-        subject: ?subject
 
 # A pull in flight, whether an explicit `space/replicate` asked for it or
 # the lazy first-use path tripped it. Distinct from `case:seeding`: that
@@ -4017,8 +3952,10 @@ rule!:
         this: ?presence
         is: case:seeding
 
+# A replica is replicated; while it is still seeding, the seeding case
+# outranks this one.
 rule!:
-  description: A replica that is no longer seeding is replicated
+  description: A replica held on this device is replicated
   assert: space/presence
   when:
     - assert: space
@@ -4037,14 +3974,10 @@ rule!:
       where:
         this: ?presence
         is: case:replicated
-  unless:
-    - assert: space/replica-status
-      where:
-        this: ?replica
-        status: tonk:blank
 
+# ACCOUNT STATUS — one positive rule per case; the field ranks them.
 rule!:
-  description: A live onboarding account is interim
+  description: A locally custodied account is onboarding
   assert: account/status
   when:
     - assert: account/onboarding
@@ -4053,18 +3986,20 @@ rule!:
       where:
         this: ?status
         is: case:onboarding
-  unless:
-    - assert: account/registered
-      where: { this: ?this }
-    - assert: account/onboarding
-      where: { this: ?this, retired-at: _ }
-
-# Registered is the fallback: enrolled, and neither later fact has
-# arrived. Both are excluded, not just activation — a suspended account
-# still carries its registration, so testing activation alone would derive
-# two cases at once.
+# Retirement is the presence of `retired-at`: a positive fact, read by
+# binding it.
 rule!:
-  description: An account that is neither active nor suspended is registered
+  description: An onboarding account a real one replaced is retired
+  assert: account/status
+  when:
+    - assert: account/onboarding
+      where: { this: ?this, retired-at: ?retired }
+    - assert: ==
+      where:
+        this: ?status
+        is: case:retired
+rule!:
+  description: An enrolled account is registered
   assert: account/status
   when:
     - assert: account/registered
@@ -4074,15 +4009,8 @@ rule!:
       where:
         this: ?status
         is: case:registered
-  unless:
-    - assert: account/active
-      where: { this: ?this }
-    - assert: account/suspended
-      where: { this: ?this }
-
-# Activated and not withdrawn.
 rule!:
-  description: An activated account that is not suspended is active
+  description: An activated account is active
   assert: account/status
   when:
     - assert: account/active
@@ -4091,11 +4019,6 @@ rule!:
       where:
         this: ?status
         is: case:active
-  unless:
-    - assert: account/suspended
-      where: { this: ?this }
-
-# Suspension wins outright.
 rule!:
   description: A suspended account is suspended
   assert: account/status
@@ -4106,7 +4029,6 @@ rule!:
       where:
         this: ?status
         is: case:suspended
-
 # Where anything sealed for this account is addressed.
 #
 # A device that holds a space seed seals it to this address and publishes
@@ -4133,7 +4055,6 @@ concept!: &account/sealed-inbox
         Cardinality-one: sealed rows name their own recipient, so no
         history is needed here.
       the: xyz.tonk.account/sealed-inbox
-      cardinality: one
       as: entity
 
 # A passkey that can recover this account.
@@ -4164,17 +4085,14 @@ concept!: &recovery/passkey
         every assertion. What an assertion names to select this
         credential.
       the: xyz.tonk.recovery/credential-id
-      cardinality: one
       as: text
     created-at:
       description: Unix seconds at credential creation.
       the: xyz.tonk.recovery/created-at
-      cardinality: one
-      as: unsigned-integer
+      as: natural
     created-on:
       description: Browser and operating-system label, e.g. "Chrome on macOS".
       the: xyz.tonk.recovery/created-on
-      cardinality: one
       as: text
   maybe:
     name:
@@ -4185,7 +4103,6 @@ concept!: &recovery/passkey
         by. Absent for a credential created without one, which the
         ceremony names with an opaque random string instead.
       the: xyz.tonk.recovery/name
-      cardinality: one
       as: text
     display-name:
       description: >
@@ -4193,7 +4110,6 @@ concept!: &recovery/passkey
         `name`; kept separately because WebAuthn keeps them separately
         and an authenticator may show either.
       the: xyz.tonk.recovery/display-name
-      cardinality: one
       as: text
 
 # ── Device links ────────────────────────────────────────────────────
@@ -4241,14 +4157,12 @@ concept!: &account/device-link
         the act, so a re-issued grant with the same window still gets a
         new time.
       the: xyz.tonk.device/created-at
-      cardinality: one
-      as: unsigned-integer
+      as: natural
     title:
       description: >
         Human label, e.g. "Chrome on macOS". Kept here so a list renders
         offline rather than requiring a round trip.
       the: xyz.tonk.device/title
-      cardinality: one
       as: text
     reason:
       description: >
@@ -4261,7 +4175,6 @@ concept!: &account/device-link
         cannot be queried. The signed copy stays authoritative; this one
         lets a list filter without opening envelopes.
       the: xyz.tonk.device/reason
-      cardinality: one
       as: entity
 
 # ── Sealed messages ─────────────────────────────────────────────────
@@ -4290,12 +4203,10 @@ concept!: &secret/message
         passkey envelope, the custody DID that passkey derives: only a
         fresh assertion of that passkey opens it.
       the: xyz.tonk.secret/to
-      cardinality: one
       as: entity
     message:
       description: The sealed bytes.
       the: xyz.tonk.secret/message
-      cardinality: one
       as: bytes
   maybe:
     from:
@@ -4307,7 +4218,6 @@ concept!: &secret/message
         real — the seal itself binds recipient and subject as associated
         data, so this is description, never authority.
       the: xyz.tonk.secret/sender
-      cardinality: one
       as: entity
 
 # A principal whose ed25519 seed is held sealed, so it can be re-derived.
@@ -4327,7 +4237,6 @@ concept!: &secret/principal
         What this principal is: `tonk:space` for a space's signing key,
         `tonk:invite` for an invite principal's.
       the: xyz.tonk.secret/kind
-      cardinality: one
       as: entity
     seed:
       description: >
@@ -4335,7 +4244,6 @@ concept!: &secret/principal
         seed. Recovery reads it, opens it with the recipient's key, and
         re-derives the principal this entity names.
       the: xyz.tonk.secret/seed
-      cardinality: one
       as: entity
 
 # ── Delegations ─────────────────────────────────────────────────────
@@ -4362,12 +4270,10 @@ concept!: &ucan/delegation
     issuer:
       description: Who signed it.
       the: dialog.ucan/issuer
-      cardinality: one
       as: text
     audience:
       description: Who receives the authority.
       the: dialog.ucan/audience
-      cardinality: one
       as: text
     subject:
       description: >
@@ -4375,19 +4281,16 @@ concept!: &ucan/delegation
         carries the any-subject DID rather than being absent, which keeps
         the lookup a plain equality.
       the: dialog.ucan/subject
-      cardinality: one
       as: text
     command:
       description: The delegated command path, e.g. `/use/get`.
       the: dialog.ucan/command
-      cardinality: one
       as: text
   maybe:
     expiration:
       description: Unix seconds, absent when the delegation never expires.
       the: dialog.ucan/expiration
-      cardinality: one
-      as: unsigned-integer
+      as: natural
       # `dialog.ucan/notBefore` is deliberately not declared: the notation's
       # attribute parser rejects a camelCase last segment, and that is the
       # name dialog writes. A lower validity bound is therefore readable
@@ -4431,7 +4334,6 @@ concept!: &device/profile
         only fact about a profile that lives here rather than on the
         profile's own account branch.
       the: xyz.tonk.roster/name
-      cardinality: one
       as: text
 
 # ── Elements ────────────────────────────────────────────────────────

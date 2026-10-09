@@ -74,10 +74,7 @@ mod when_adding_a_concept {
         .await
         .unwrap_err();
         let msg = format!("{err}");
-        assert!(
-            msg.contains("UnsignedInteger") && msg.contains("Text"),
-            "{msg}"
-        );
+        assert!(msg.contains("natural") && msg.contains("text"), "{msg}");
         Ok(())
     }
 }

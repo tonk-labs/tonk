@@ -618,18 +618,15 @@ fn revision_badge(revision: Option<&Revision>) -> String {
     }
 }
 
-/// An attribute `Type` discriminant the way it is typed in notation.
+/// An attribute type, as stored, the way it is typed in notation: by
+/// its built-in anchor.
 fn type_name_to_notation(stored: &str) -> &str {
-    match stored {
-        "Text" => "text",
-        "UnsignedInteger" => "unsigned-integer",
-        "SignedInteger" => "signed-integer",
-        "Float" => "float",
-        "Boolean" => "boolean",
-        "Entity" => "entity",
-        "Bytes" => "bytes",
-        other => other,
-    }
+    dialog_artifacts::ValueDataType::named(stored)
+        .map(|kind| {
+            let uri = kind.uri();
+            &uri[..uri.len() - 1]
+        })
+        .unwrap_or(stored)
 }
 
 /// Rewrite every `as` value in a descriptor tree to its notation surface form.

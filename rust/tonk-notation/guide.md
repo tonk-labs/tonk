@@ -527,72 +527,69 @@ themselves cannot.
 
 ### `attribute`
 
-Defines an attribute by domain/name, value type, and
-cardinality. Although `attribute` is a built-in, its is a regular concept and
-can be described in the notation:
+Defines an attribute: a relation, by domain/name, qualified by a
+value type and a pick. Although `attribute` is a built-in, it is a
+regular concept and can be described in the notation:
 
 ```yaml tonk=illustrative-built-in-schema
-# The four attributes that make up the attribute concept.
+# The attributes that make up the attribute concept.
 
 attribute!:
   this: ?id
-  description: "The attribute selector in domain/name form"
-  the:         dialog.attribute/id
+  description: "The relation in domain/name form"
+  the:         db.attribute/id
   as:          text
-  cardinality: one
 
 attribute!:
   this: ?type
-  description: "The value-type discriminant (text, unsigned-integer, …)"
-  the:         dialog.attribute/type
-  as:          text
-  cardinality: one
+  description: "The value type, as the entity dialog names it (text:, natural:, …)"
+  the:         db.attribute/as
+  as:          entity
 
 attribute!:
-  this: ?cardinality
-  description: "Cardinality: one or many"
-  the:         dialog.attribute/cardinality
+  this: ?pick
+  description: "Which claims a read returns: last, all, top, max or min"
+  the:         db.attribute/pick
   as:          text
-  cardinality: one
 
 attribute!:
   this: ?description
   description: "Human-readable description"
-  the:         dialog.meta/description
+  the:         db.meta/description
   as:          text
-  cardinality: one
 
 # The attribute concept itself.
 
 concept!: &attribute
   description: "An attribute definition"
   with:
-    the:        ?id
-    as:          ?type
-    cardinality: ?cardinality
+    id:          ?id
+    pick:        ?pick
     description: ?description
+  maybe:
+    as:          ?type
 ```
 
-The body field shorthands users write (`the:`, `as:`,
-`cardinality:`, `description:`) map to the four attributes
-above through the concept's `with:` map.
+The body field shorthands users write (`the:`, `as:`, `pick:`,
+`description:`) map to these attributes through the concept's
+`with:` map. `as: text` names the built-in type anchor `text`,
+which stands for the type entity `text:`.
 
 `description` is required on every attribute, but it does not
 participate in the attribute entity's content-derivation —
-two attributes with identical `the:`, `as:`, and
-`cardinality:` but different `description:` claims resolve to
-the same entity. Changing the description of an existing
-attribute is a mutation on a stable entity, not the creation
-of a new one.
+two attributes with identical `the:`, `as:`, and `pick:` but
+different `description:` claims resolve to the same entity.
+Changing the description of an existing attribute is a
+mutation on a stable entity, not the creation of a new one.
 
 Because `attribute` is a regular concept, you can query it:
 
 ```yaml tonk=eval
-# Find every attribute whose cardinality is "many".
+# Find every attribute that reads a set.
 attribute:
-  this:        ?a
-  id:          ?selector
-  cardinality: "many"
+  this: ?a
+  id:   ?selector
+  pick: "all"
 ```
 
 Note: the schema definition above is illustrative. In an

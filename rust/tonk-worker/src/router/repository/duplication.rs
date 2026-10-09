@@ -95,7 +95,12 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
             blobs.push(artifact.of.clone());
         }
         if !is_metadata(artifact.the.as_str()) {
-            content.associate(artifact.the, artifact.of, artifact.is);
+            content.associate(
+                artifact.the,
+                artifact.of,
+                artifact.is,
+                dialog_artifacts::Pick::All,
+            );
         }
     }
     let store = NetworkedIndex::new(
@@ -255,7 +260,12 @@ mod tests {
                     Value::String("old grant".into()),
                 ),
             ] {
-                changes.associate(attribute.parse().unwrap(), entity.parse().unwrap(), value);
+                changes.associate(
+                    attribute.parse().unwrap(),
+                    entity.parse().unwrap(),
+                    value,
+                    dialog_artifacts::Pick::All,
+                );
             }
             tonk.reactor
                 .repository(&source)
@@ -271,6 +281,7 @@ mod tests {
                 "example/private".parse().unwrap(),
                 "id:other".parse().unwrap(),
                 Value::Boolean(true),
+                dialog_artifacts::Pick::All,
             );
             tonk.reactor
                 .repository(&source)
@@ -353,6 +364,7 @@ mod tests {
             "example/text".parse().unwrap(),
             "id:copy-only".parse::<Entity>().unwrap(),
             Value::String("Independent".into()),
+            dialog_artifacts::Pick::All,
         );
         tonk.reactor
             .repository(&destination)

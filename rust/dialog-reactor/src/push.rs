@@ -208,12 +208,15 @@ mod tests {
     ) -> anyhow::Result<usize> {
         let mut delta = ArchiveDelta::zero();
         let instructions = (offset..offset + count).map(|index| {
-            Instruction::Assert(Artifact {
-                the: "item/title".parse().unwrap(),
-                of: format!("item:{index}").parse().unwrap(),
-                is: Value::String(format!("Item {index}")),
-                cause: None,
-            })
+            Instruction::Assert(
+                Artifact {
+                    the: "item/title".parse().unwrap(),
+                    of: format!("item:{index}").parse().unwrap(),
+                    is: Value::String(format!("Item {index}")),
+                    cause: None,
+                },
+                dialog_artifacts::Pick::All,
+            )
         });
         tree.apply(remote, &mut delta, stream::iter(instructions))
             .await?;

@@ -182,11 +182,11 @@ tonk eval -c 'attribute!: &bug/dependency
   description: Allows you to associate dependency of this bug
   the: squash.bug/dependency
   as: entity
-  cardinality: many'
+  pick: all'
 ```
 
-Then assert it on a bug (cardinality `many` → assert the field repeatedly
-or with multiple entities), and query it via the domain:
+Then assert it on a bug (`pick: all` → assert the field repeatedly or with
+multiple entities), and query it via the domain:
 
 ```bash
 # Find bugs that declare a dependency.

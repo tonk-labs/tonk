@@ -31,7 +31,7 @@ call.
 attribute!: &count
   description: The counter's current value
   the: xyz.tonk.counter/count
-  as:  unsigned-integer
+  as:  natural
 
 concept!: &counter
   with:
@@ -147,7 +147,7 @@ Rules of the translation:
   (e.g. `<br>` for empty rich text) rather than `""`.
 - The `as:` type drives coercion: `text` → string, `entity` →
   string parsed as a URI (rejected if it has no `:`),
-  `unsigned-integer` / `signed-integer` / `float` → number,
+  `natural` / `integer` / `float` → number,
   `boolean` → the JS value must already be a boolean (e.g.
   `event.shiftKey`); a non-boolean fails to resolve rather than
   being coerced.

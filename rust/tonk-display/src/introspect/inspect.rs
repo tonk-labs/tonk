@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn a_declaration_spells_its_type_and_cardinality() {
-        assert_eq!(field("title", false).signature(), "Text one");
-        assert_eq!(field("cover", true).signature(), "Text one?");
+        assert_eq!(field("title", false).signature(), "text one");
+        assert_eq!(field("cover", true).signature(), "text one?");
     }
 }

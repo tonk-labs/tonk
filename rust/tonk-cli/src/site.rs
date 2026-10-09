@@ -384,25 +384,49 @@ impl TonkSite {
 
     /// Acquire the site's `main` branch, naming the remedy when the data
     /// predates this build's format.
+    ///
+    /// The first acquisition in a process also moves what an earlier
+    /// release stored to the shape this one reads
+    /// ([`BranchReference::upgrade_once`]): definitions recorded the
+    /// earlier way, and rules stored under an identity an earlier dialog
+    /// release gave them, which would otherwise be inert. A failed
+    /// upgrade is reported on stderr and the command proceeds.
+    ///
+    /// [`BranchReference::upgrade_once`]: dialog_reactor::BranchReference::upgrade_once
     pub async fn branch(&self) -> Result<BranchSession, ReactorError> {
-        self.reactor
-            .repository(REPO_NAME)
-            .branch(BRANCH_NAME)
-            .acquire(&self.operator)
-            .await
-            .map_err(|error| {
-                let text = error.to_string();
-                if tonk_account::is_legacy_format(&text) {
-                    // `reason` carries the remedy, so it travels with the
-                    // existing variant rather than needing a new one here.
-                    return ReactorError::BranchNotFound {
-                        repo: REPO_NAME.to_owned(),
-                        branch: BRANCH_NAME.to_owned(),
-                        reason: tonk_account::LEGACY_FORMAT_REMEDY.to_owned(),
-                    };
+        let branch = self.reactor.repository(REPO_NAME).branch(BRANCH_NAME);
+        let session = branch.acquire(&self.operator).await.map_err(|error| {
+            let text = error.to_string();
+            if tonk_account::is_legacy_format(&text) {
+                // `reason` carries the remedy, so it travels with the
+                // existing variant rather than needing a new one here.
+                return ReactorError::BranchNotFound {
+                    repo: REPO_NAME.to_owned(),
+                    branch: BRANCH_NAME.to_owned(),
+                    reason: tonk_account::LEGACY_FORMAT_REMEDY.to_owned(),
+                };
+            }
+            error
+        })?;
+        match branch.upgrade_once(&self.operator).await {
+            Ok(Some(upgraded)) => {
+                if !upgraded.definitions.is_empty() {
+                    eprintln!(
+                        "note: moved {} definition(s) to their current identity",
+                        upgraded.definitions.moves.len() + upgraded.definitions.rewritten.len()
+                    );
                 }
-                error
-            })
+                if !upgraded.rules.reinstalled.is_empty() {
+                    eprintln!(
+                        "note: re-installed {} rule(s) under their current identity",
+                        upgraded.rules.reinstalled.len()
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("warning: upgrade failed: {error}"),
+        }
+        Ok(session)
     }
 }
 
