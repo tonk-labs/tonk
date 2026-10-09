@@ -14,6 +14,14 @@ autotests = false
 name = "tonk"
 path = "src/bin/tonk.rs"
 
+[[bin]]
+name = "tonk-mcp-runtime"
+path = "src/bin/tonk-mcp-runtime.rs"
+
+[[test]]
+name = "mcp_runtime"
+path = "tests/mcp_runtime.rs"
+
 # `autotests = false` is set in [package] to keep
 # `tests/common.rs` from being built as its own empty test
 # binary; list the real test binaries here explicitly.
@@ -154,6 +162,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+base58 = { workspace = true }
 blake3 = { workspace = true }
 chrono = { workspace = true }
 flate2 = { workspace = true }
@@ -214,6 +223,8 @@ tonk-library = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-render = { workspace = true }
 tonk-schema = { workspace = true }
+tonk-router = { workspace = true }
+percent-encoding = "2.3.2"
 tonk-template = { workspace = true }
 tonk-worker-api = { workspace = true }
 unicode-width = { workspace = true }

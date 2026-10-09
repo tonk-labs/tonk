@@ -15,3 +15,6 @@
 //! carries no fixpoint of its own.
 
 pub mod evaluate;
+
+/// Library installation planning independent of the current branch.
+pub mod library;

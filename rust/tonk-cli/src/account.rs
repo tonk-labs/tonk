@@ -385,6 +385,14 @@ async fn account_from_callback(
     let grant_bytes = hex::decode(&authorization.delegation_hex)
         .context("authorization delegation is not hex")?;
     let chain = validate_account_grant(profile, &grant_bytes).await?;
+    // A freshly delivered callback establishes a new login. Historical signature
+    // validation is insufficient when its grant is expired or not yet valid.
+    dialog_ucan_core::delegation::chain::check_chain(
+        chain.proofs(),
+        chain.issuer(),
+        Some(dialog_ucan_core::time::Timestamp::now()),
+    )
+    .context("authorization is not valid at the current time")?;
     let account_did = chain.issuer().clone();
     let attachment_id = authorization.attachment_id.trim();
     if attachment_id.is_empty() {
@@ -567,6 +575,99 @@ async fn complete_staged_account(
     Ok(())
 }
 
+/// Public identity established by a browser authorization. Grant bytes and
+/// provider attachment credentials stay in the profile's canonical account state.
+#[derive(Debug, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptedAuthorization {
+    /// Account root that signed the accepted delegation.
+    pub root_did: String,
+    /// Isolated native profile to which the delegation was addressed.
+    pub device_did: String,
+}
+
+async fn validate_callback(
+    profile: &Peer<NativeSpace>,
+    bytes: &[u8],
+    expected: Option<&Did>,
+) -> Result<ActiveAccount> {
+    if bytes.len() > 128_000 {
+        bail!("authorization payload exceeds the limit");
+    }
+    let authorization: CallbackAuthorization =
+        serde_json::from_slice(bytes).context("authorization payload is not readable")?;
+    match expected {
+        Some(root) => account_from_expected_callback(profile, authorization, root).await,
+        None => account_from_callback(profile, authorization).await,
+    }
+}
+
+/// Accept a browser-delivered grant without binding a loopback listener or
+/// launching a browser. Uses the same validation and durable activation as CLI
+/// login, with an explicit profile store suitable for a hosted tenant.
+///
+/// The caller must bind delivery to its pending browser authorization (including
+/// CSRF protection) and serialize operations for this profile. This is not an
+/// HTTP authentication endpoint. It never replaces an existing account, performs
+/// remote sync, or creates a space. A lost reply must be resolved with
+/// [`resume_authorization_in`], not by replaying the grant. Account hydration is a separate
+/// [`sync_in`] operation after activation.
+pub async fn accept_authorization_in(
+    profile: &Peer<NativeSpace>,
+    store: &crate::space::SpaceStore,
+    bytes: &[u8],
+    expected: Option<&Did>,
+) -> Result<AcceptedAuthorization> {
+    let account = validate_callback(profile, bytes, expected).await?;
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    complete_staged_account(profile, &operator, store, &account).await?;
+    Ok(AcceptedAuthorization {
+        root_did: account.root_did,
+        device_did: profile.did().to_string(),
+    })
+}
+
+async fn resume_authorization_with_operator(
+    profile: &Peer<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace, dialog_peer::Session>,
+    store: &crate::space::SpaceStore,
+) -> Result<Option<ActiveAccount>> {
+    let state = crate::account_session::snapshot(profile, operator, store).await?;
+    if let Some(account) = state.active {
+        recorded_account_grant(profile, &account).await?;
+        return Ok(Some(account));
+    }
+    match state.pending_login {
+        Some(crate::account_session::PendingLogin::Activating { account }) => {
+            complete_staged_account(profile, operator, store, &account).await?;
+            Ok(Some(account))
+        }
+        Some(crate::account_session::PendingLogin::Waiting { .. }) => bail!(
+            "an older account login is pending but cannot be resumed; run `tonk account logout` and try again"
+        ),
+        None => Ok(None),
+    }
+}
+
+/// Recover an interrupted activation from its exact durable generation, without
+/// opening a browser, accepting another grant, or contacting the network. Returns
+/// the established identity or `None` when no grant was staged. Call this after a
+/// lost activation reply and on hosted process startup, under the tenant's lock.
+pub async fn resume_authorization_in(
+    profile: &Peer<NativeSpace>,
+    store: &crate::space::SpaceStore,
+) -> Result<Option<AcceptedAuthorization>> {
+    let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
+    Ok(
+        resume_authorization_with_operator(profile, &operator, store)
+            .await?
+            .map(|account| AcceptedAuthorization {
+                root_did: account.root_did,
+                device_did: profile.did().to_string(),
+            }),
+    )
+}
+
 /// Hydrate and converge authority after the canonical account is already active.
 /// Failure here never reopens the browser ceremony.
 async fn hydrate_activated_account(
@@ -662,12 +763,7 @@ async fn link_via_callback(
         }
     };
     observer.checkpoint(Stage::DelegationValidate);
-    let authorization: CallbackAuthorization =
-        serde_json::from_slice(&bytes).context("authorization payload is not readable")?;
-    let account = match expected {
-        Some((root, _)) => account_from_expected_callback(profile, authorization, root).await?,
-        None => account_from_callback(profile, authorization).await?,
-    };
+    let account = validate_callback(profile, &bytes, expected.map(|(root, _)| root)).await?;
     observer.checkpoint(Stage::ActivationStage);
     match expected.and_then(|(_, previous)| previous) {
         Some(previous) => {
@@ -1910,6 +2006,39 @@ mod tests {
                     | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
             ),
             "recovery must not announce a new browser handoff"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn hosted_activation_recovers_the_exact_staged_generation_without_browser_or_sync() {
+        let (fixture, profile, operator) = RecoveryFixture::new().await;
+        let guard = crate::account_session::stage_activation(
+            &profile,
+            &operator,
+            &fixture.store,
+            fixture.account.clone(),
+        )
+        .await
+        .unwrap();
+        drop(guard);
+        drop(operator);
+        drop(profile);
+
+        let (profile, _) = fixture.reopen().await;
+        let recovered = resume_authorization_in(&profile, &fixture.store)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.root_did, fixture.account.root_did);
+        assert_eq!(
+            active_in(&profile, &fixture.store).await.unwrap(),
+            Some(fixture.account)
+        );
+        assert_eq!(
+            resume_authorization_in(&profile, &fixture.store)
+                .await
+                .unwrap(),
+            Some(recovered)
         );
     }
 

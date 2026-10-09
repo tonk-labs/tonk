@@ -165,6 +165,32 @@ pub async fn run_against_site(
     source: Source,
     options: Options,
 ) -> Result<Outcome, EvalError> {
+    run_with_revision(site, source, options, None).await
+}
+
+/// Apply durable notation only at the exact revision previously previewed.
+/// The caller must serialize access to this site's cached branch handle. A
+/// failed publication is never retried against a different head.
+pub async fn run_conditional(
+    site: &TonkSite,
+    document: String,
+    expected_revision: Option<dialog_repository::Revision>,
+) -> Result<Outcome, EvalError> {
+    run_with_revision(
+        site,
+        Source::Inline(document),
+        Options::default(),
+        Some(expected_revision),
+    )
+    .await
+}
+
+async fn run_with_revision(
+    site: &TonkSite,
+    source: Source,
+    options: Options,
+    expected_revision: Option<Option<dialog_repository::Revision>>,
+) -> Result<Outcome, EvalError> {
     let label = source.label();
     let location = source.location()?;
     let mut text = source.read().await?;
@@ -191,11 +217,25 @@ pub async fn run_against_site(
     let branch = session.handle();
 
     let revision_before = branch.revision();
+    if let Some(expected) = &expected_revision
+        && expected != &revision_before
+    {
+        return Err(EvalError::Commit(
+            "The space changed since preview. Nothing was applied by this request. Read and preview again."
+                .into(),
+        ));
+    }
     let evaluated = syntax
         .evaluate(branch.transaction())
         .perform(&site.operator)
         .await
         .map_err(map_evaluate_error)?;
+    if expected_revision.is_some() && !evaluated.transients.is_empty() {
+        return Err(EvalError::Analyze(
+            "Conditional builds accept durable changes only; transient commands are unavailable."
+                .into(),
+        ));
+    }
 
     // Compute the post-evaluation match view by re-running the
     // analyzer's queries against the txn overlay. The overlay
