@@ -740,6 +740,7 @@ pub(crate) mod tests {
                 commands: crate::router::command_providers(),
                 clients: Default::default(),
                 seed_upgrades: Default::default(),
+                copies_in_flight: Default::default(),
                 account_keys: Default::default(),
                 profile_library: Default::default(),
                 registry: crate::device::Registry {
@@ -864,7 +865,7 @@ pub(crate) mod tests {
 
         /// Serve `files` (path → body) over plain HTTP/1.1 on a loopback
         /// port, answering anything else 404, and return the base URL.
-        fn serve(files: &'static [(&'static str, &'static str)]) -> String {
+        pub(crate) fn serve(files: &'static [(&'static str, &'static str)]) -> String {
             use std::io::{BufRead as _, BufReader, Write as _};
 
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

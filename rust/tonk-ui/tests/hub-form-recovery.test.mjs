@@ -27,17 +27,19 @@ function fixture(kind) {
     closest: () => form,
     querySelector: selector => selector.includes('error') ? error : submit,
   });
+  const dialog = attributes({ close() {} });
   const self = attributes({
     isConnected: true,
-    querySelector: selector => selector.includes('error') ? error : selector.includes('dialog') ? { close() {} } : form,
+    querySelector: selector => selector.includes('error') ? error : selector.includes('dialog') ? dialog : form,
     querySelectorAll: () => [submit],
   });
   let pending;
   self.create = form => { pending = method('space-create', 'create')(self, form); };
+  self.landing = href => method('space-create', 'landing')(self, href);
   self.profileNameSave = (form, name) => { pending = method('account-settings', 'profile-name-save')(self, form, name); };
   const event = { target: form, prevented: false, stopped: false,
     preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; } };
-  return { self, form, name, error, submit, event, pending: () => pending,
+  return { self, form, name, error, submit, dialog, event, pending: () => pending,
     run: () => method(kind === 'create' ? 'space-create' : 'account-settings', kind === 'create' ? 'validate' : 'profile-name-submit')(self, event) };
 }
 function bridge(outcome, { reject = false, ended = false } = {}) {
@@ -64,12 +66,12 @@ function bridge(outcome, { reject = false, ended = false } = {}) {
       if (reject) throw new Error('Transport failed');
     },
     navigate() {},
-  } };
+  }, addEventListener() {}, removeEventListener() {} };
   return { calls: () => calls, cancelled: () => cancelled, sent: () => sent };
 }
 
-test('Discover submits a remote catalog reference and preserves retry after refusal', async () => {
-  const { self, form, error, submit, run, pending } = fixture('create');
+test('Discover submits a remote catalog reference and preserves retry after refusal', async (t) => {
+  const { self, form, error, submit, dialog, run, pending } = fixture('create');
   form.elements.template = { value: 'https://example.com/catalog.json#demo' };
   const failed = bridge({ status: 'failed', detail: 'Template could not be read' });
   window.tonk.context = { origin: 'https://tonk.example' };
@@ -80,14 +82,22 @@ test('Discover submits a remote catalog reference and preserves retry after refu
   assert.equal(form.elements.name.value, 'Ada');
   assert.equal(submit.disabled, false);
   assert.equal(self.hasAttribute('busy'), false);
+  assert.equal(dialog.hasAttribute('busy'), false, 'the dialog stroke stops with the work');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const success = bridge({ status: 'created', detail: '/space/new-copy' });
   window.tonk.context = { origin: 'https://tonk.example' };
   let destination;
   window.tonk.navigate = path => { destination = path; };
   run();
+  assert.equal(dialog.hasAttribute('busy'), true, 'the dialog stroke is the loading bar');
   run();
   await pending();
   assert.equal(success.calls(), 1, 'a pending copy ignores a second submit');
+  // The worker moves the page (`open`); the form waits busy to be moved.
+  assert.equal(destination, undefined, 'the form does not navigate on its own');
+  assert.equal(self.hasAttribute('busy'), true);
+  // Still here after the grace period: the move was lost, so it moves itself.
+  t.mock.timers.tick(2000);
   assert.equal(destination, '/space/new-copy');
 });
 
