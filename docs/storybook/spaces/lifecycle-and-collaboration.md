@@ -170,8 +170,8 @@ Publishing a space leaves a read-only ticket for a public principal every
 client can derive (seed `blake3("")`), and every account holds a powerline from
 it. Anyone who opens the space's bare address, `/space/{did}`, with no access of
 their own claims that ticket and reads the space as an observer: not a member,
-on no roster, holding no key. Their FABB sync disc is half filled (split
-vertically, where the paused disc is split diagonally), reads "sync: read-only,
+on no roster, holding no key. Their FABB sync disc is half filled, the same
+disc as a paused space (neither syncs its own changes), reads "sync: read-only,
 observing", and offers no share or agent link. Unpublishing takes the ticket
 back and revokes the delegation, so earlier observers stop reading too, and the
 next visitor meets the private wall.
