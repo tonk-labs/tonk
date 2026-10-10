@@ -134,7 +134,7 @@ pub(crate) mod tests {
     }
 
     /// The last of what the profile's worker logged, for a failure report.
-    async fn worker_log(driver: &WebDriver) -> String {
+    pub(crate) async fn worker_log(driver: &WebDriver) -> String {
         let health = worker_health(driver).await.unwrap_or(Value::Null);
         health["body"]["log"]
             .as_array()

@@ -4626,7 +4626,31 @@ pub(crate) mod tests {
         enter_hub(&owner)
             .await
             .context("old-writer scenario: mount owner Hub")?;
-        wait_for_text_containing(&owner, "body", "no spaces yet").await?;
+        if let Err(error) = wait_for_text_containing(&owner, "body", "no spaces yet").await {
+            // Which library the profile's origin serves, and what its
+            // worker did, tell a Hub rendered from another generation's
+            // library apart from one that never took the historical one.
+            let served = owner
+                .execute_async(
+                    r#"
+                    const done = arguments[arguments.length - 1];
+                    fetch("/library/profile.yaml", { cache: "no-store" })
+                        .then((response) => response.text())
+                        .then((text) => done(text.includes("no spaces yet")))
+                        .catch((error) => done(String(error)));
+                    "#,
+                    Vec::new(),
+                )
+                .await
+                .map(|value| value.json().clone())
+                .unwrap_or(serde_json::Value::Null);
+            let log = crate::service_worker_upgrade::tests::worker_log(&owner).await;
+            return Err(error.context(format!(
+                "the profile's origin serves the historical library: {served}
+profile worker log:
+{log}"
+            )));
+        }
         wait_for_text_containing(&owner, "body", SPACE).await?;
         owner.enter_default_frame().await?;
 
