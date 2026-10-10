@@ -207,6 +207,14 @@ function site({
 const page = { mode: "navigate" };
 const HELLO = { "/hello.html": { body: "<p>hello</p>", headers: { "content-type": "text/html" } } };
 
+test("a shell the worker left out is taken when it asks", async () => {
+  const { worker, message } = site();
+  let claimed = 0;
+  worker.clients.claim = async () => void (claimed += 1);
+  message({ type: "claim" });
+  assert.equal(claimed, 1);
+});
+
 test("a frame loading an address gets the shell, whatever the address routes to", async () => {
   const { answer, asked } = site({ routes: HELLO });
 

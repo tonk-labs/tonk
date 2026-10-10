@@ -363,6 +363,12 @@ self.addEventListener("message", event => {
         event.waitUntil(flushSession());
         return;
     }
+    // A shell that loaded just after this worker took its documents asks to
+    // be taken too.
+    if (type === "claim") {
+        event.waitUntil(self.clients.claim());
+        return;
+    }
     // A shell that loaded inside a page of this origin asks to be replaced
     // by the content at its address: the next load of that address is
     // answered with the content, once.

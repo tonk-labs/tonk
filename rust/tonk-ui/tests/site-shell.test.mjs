@@ -28,11 +28,13 @@ const settle = async () => { for (let i = 0; i < 20; i++) await turn(); };
 // - `answers`: what a request for an address is answered with, as JSON.
 // - `marked`: whether the document carries the worker's mark, for a browser
 //   that does not say a worker served it.
+// - `active`: whether the origin's worker is running already, whoever it
+//   controls.
 function boot(
   name,
   {
     address = "/", controlled = true, served = true, framed = "site", content = [], store = new Map(),
-    answers = {}, marked = false,
+    answers = {}, marked = false, active = false,
   } = {},
 ) {
   const host = name === "profile" ? "profile.tonk.test" : "bspace.tonk.test";
@@ -68,6 +70,7 @@ function boot(
     addEventListener: (type, listener) => void (workerListeners[type] = listener),
     startMessages() {},
     getRegistration: async () => null,
+    ready: active ? Promise.resolve({ active: worker }) : new Promise(() => {}),
   };
   const location = {
     get href() { return at.href; },
@@ -234,6 +237,23 @@ for (const name of ["space", "profile"]) {
 
     assert.deepEqual(site.went, [["reload"]]);
     assert.deepEqual(site.ran, []);
+  });
+
+  test(`${name}: left out by a worker that is already running, it asks to be taken`, async () => {
+    const site = boot(name, { controlled: false, served: false, active: true });
+    await settle();
+    assert.deepEqual(site.toWorker.map((message) => message.type), ["claim"]);
+    assert.deepEqual(site.went, [], "it waits for the worker to take it");
+
+    site.workerListeners.controllerchange();
+    await settle();
+    assert.deepEqual(site.went, [["reload"]]);
+  });
+
+  test(`${name}: it asks nothing of a worker that is not running yet`, async () => {
+    const site = boot(name, { controlled: false, served: false });
+    await settle();
+    assert.deepEqual(site.toWorker, []);
   });
 
   test(`${name}: sent here to start a worker, it returns to the address asked for`, async () => {
