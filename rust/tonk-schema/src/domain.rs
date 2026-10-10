@@ -556,11 +556,13 @@ pub mod check {
 pub mod seed {
     use super::{Attribute, Entity};
 
-    /// Where this seed was fetched from.
+    /// Where this seed was fetched from, as a full URL: the source a space
+    /// follows, read again to learn whether it is current. Installs from
+    /// before recorded a bare path, which each deployment read as its own
+    /// copy.
     ///
     /// The entity is the content hash alone, so two devices installing
-    /// the same bytes converge; the source rides alongside because a
-    /// custom seed is a different URL at the same shape.
+    /// the same bytes converge; the source rides alongside.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
     #[cardinality(one)]
@@ -1529,6 +1531,44 @@ pub mod command {
             #[derive(Attribute, Clone, PartialEq, PartialOrd)]
             #[domain("xyz.tonk.command.check-update")]
             pub struct Time(pub f64);
+        }
+
+        /// `tonk/update-seed` — bring a space up to the seed it follows.
+        pub mod update_seed {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so updating twice re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.update-seed")]
+            pub struct Time(pub f64);
+
+            /// The space to update, as its subject `did:key`.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.update-seed")]
+            pub struct Space(pub Entity);
+        }
+
+        /// `tonk/migrate-seed` — move a space onto the seed at another
+        /// source.
+        pub mod migrate_seed {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so migrating twice re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.migrate-seed")]
+            pub struct Time(pub f64);
+
+            /// The space to move, as its subject `did:key`.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.migrate-seed")]
+            pub struct Space(pub Entity);
+
+            /// The full URL of the seed the space is to follow.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.migrate-seed")]
+            pub struct Source(pub String);
         }
 
         /// `intent/interpret` — what was typed in the command palette.

@@ -416,6 +416,52 @@ impl Command for CheckUpdate {
     type Output = ();
 }
 
+/// Bring a space up to the seed it follows.
+///
+/// What [`CheckUpdate`] finds waiting, installed: the space's recorded seed
+/// source is fetched again and, where its bytes have changed, the installed
+/// library is replaced with them. A worker does this on its own the first
+/// time it mounts a space; the command is how it is asked for.
+///
+/// Carries `space` for the same reason [`CheckUpdate`] does.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct UpdateSeed {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The moment it was asked, so a repeat update re-fires.
+    pub time: crate::domain::command::current::update_seed::Time,
+    /// The space to update, read in place of the dispatch origin.
+    pub space: crate::domain::command::current::update_seed::Space,
+}
+
+impl Command for UpdateSeed {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Move a space onto the seed served at another source.
+///
+/// A space follows the source its seed was installed from, and
+/// [`UpdateSeed`] never leaves it. This is the deliberate move: the
+/// installed library is replaced with the one at `source`, which the space
+/// follows from then on, on every device.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct MigrateSeed {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The moment it was asked, so a repeat move re-fires.
+    pub time: crate::domain::command::current::migrate_seed::Time,
+    /// The space to move, read in place of the dispatch origin.
+    pub space: crate::domain::command::current::migrate_seed::Space,
+    /// The full URL of the seed to follow.
+    pub source: crate::domain::command::current::migrate_seed::Source,
+}
+
+impl Command for MigrateSeed {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Pull a space this account has but this device does not.
 ///
 /// Replication was only ever implicit: the first data-plane request

@@ -1831,9 +1831,12 @@ concept!: &seed/available
   with:
     source:
       description: >
-        Where these bytes were fetched from. The entity is the content
-        hash alone, so the source rides alongside because a custom seed
-        is a different URL at the same shape.
+        Where these bytes were fetched from, as a full URL: the source a
+        space follows, read again to learn whether it is current. A full
+        URL names the same bytes from every deployment; installs from
+        before recorded a bare path, which each deployment read as its
+        own copy. The entity is the content hash alone, so the source
+        rides alongside.
       the: xyz.tonk.seed/source
       cardinality: one
       as: text

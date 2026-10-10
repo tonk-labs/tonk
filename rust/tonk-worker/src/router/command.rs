@@ -259,6 +259,8 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::ReplicateSpace>()
         .command::<tonk_schema::command::ForgetInvite>()
         .command::<tonk_schema::command::CheckUpdate>()
+        .command::<tonk_schema::command::UpdateSeed>()
+        .command::<tonk_schema::command::MigrateSeed>()
 }
 
 /// A space branch's vocabulary — see [`CommandProviders`] for why each
@@ -284,6 +286,10 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // pulled onto a device that does not have it yet, because the
         // request would have to arrive on the branch it is asking for.
         .command::<tonk_schema::command::CheckUpdate>()
+        // A space may likewise bring ITS OWN seed up to date, or move
+        // itself onto another one.
+        .command::<tonk_schema::command::UpdateSeed>()
+        .command::<tonk_schema::command::MigrateSeed>()
         .command::<super::repository::AgentHandoffRequest>()
         // A space installs a library component into itself; the profile
         // has no components to install.
@@ -982,6 +988,123 @@ pub(crate) mod tests {
                 dispatch(&state, CommandOrigin::default(), changes).await;
                 assert_eq!(space_subjects(&state).await.len(), expected);
             }
+        }
+
+        /// The seed a space runs and the source it follows, read from the
+        /// install record on its content branch.
+        async fn running_seed(state: &AppState, subject: &dialog_varsig::Did) -> (String, String) {
+            let tonk = state.read().await;
+            let session = tonk
+                .reactor
+                .repository(subject.repo_key())
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .unwrap();
+            let installs: Vec<tonk_schema::SeedInstall> = session
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::SeedInstall> {
+                    this: Term::var("this"),
+                    prior: Term::var("prior"),
+                    version: Term::var("version"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            assert_eq!(installs.len(), 1, "a space records one running seed");
+            let seed = installs[0].this.clone();
+            let available: Vec<tonk_schema::SeedAvailable> = session
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::SeedAvailable> {
+                    this: Term::from(seed.clone()),
+                    source: Term::var("source"),
+                    replaces: Term::var("replaces"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            assert_eq!(available.len(), 1, "a seed records one source");
+            (seed.to_string(), available[0].source.0.clone())
+        }
+
+        /// The shipped library with one more attribute: another seed.
+        fn library_with(probe: &str) -> String {
+            format!(
+                r#"{}
+attribute!: &probe/{probe}
+  description: "A probe."
+  the: xyz.example.probe/{probe}
+  as: text
+"#,
+                include_str!("../../../tonk-core/assets/library/core.yaml")
+            )
+        }
+
+        fn seed_of(library: &str) -> String {
+            format!("seed:{}", blake3::hash(library.as_bytes()).to_hex())
+        }
+
+        /// `tonk/migrate-seed` moves a space onto the seed at the source it
+        /// names, and `tonk/update-seed` then follows that source: the two
+        /// commands are the only things that replace a space's library once
+        /// a worker has mounted it.
+        #[dialog_common::test]
+        async fn it_migrates_a_space_and_then_updates_it_from_its_new_source() {
+            const SOURCE: &str = "https://commands.tonk.test/library/core.yaml";
+            let state = test_state().await;
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                create_space_transient("Garden"),
+            )
+            .await;
+            let subject = space_subjects(&state).await.remove(0);
+            let (created, _) = running_seed(&state, &subject).await;
+
+            let theirs = library_with("theirs");
+            crate::router::repository::serve(SOURCE, &theirs);
+            let mut migrate = Changes::new();
+            let command = "cmd:migrate".parse::<Entity>().unwrap();
+            the!("xyz.tonk.command.migrate-seed/time")
+                .of(command.clone())
+                .is(1.0)
+                .assert(&mut migrate);
+            the!("xyz.tonk.command.migrate-seed/space")
+                .of(command.clone())
+                .is(subject.this())
+                .assert(&mut migrate);
+            the!("xyz.tonk.command.migrate-seed/source")
+                .of(command)
+                .is(SOURCE.to_owned())
+                .assert(&mut migrate);
+            dispatch(&state, CommandOrigin::default(), migrate).await;
+
+            let (seed, source) = running_seed(&state, &subject).await;
+            assert_ne!(seed, created, "the migration replaces the seed");
+            assert_eq!(seed, seed_of(&theirs));
+            assert_eq!(source, SOURCE, "the space follows the new source");
+
+            let next = library_with("next");
+            crate::router::repository::serve(SOURCE, &next);
+            let mut update = Changes::new();
+            let command = "cmd:update".parse::<Entity>().unwrap();
+            the!("xyz.tonk.command.update-seed/time")
+                .of(command.clone())
+                .is(2.0)
+                .assert(&mut update);
+            the!("xyz.tonk.command.update-seed/space")
+                .of(command)
+                .is(subject.this())
+                .assert(&mut update);
+            dispatch(&state, CommandOrigin::default(), update).await;
+
+            let (seed, source) = running_seed(&state, &subject).await;
+            assert_eq!(seed, seed_of(&next), "the update installs the new bytes");
+            assert_eq!(source, SOURCE, "from the source it already follows");
         }
 
         /// A seeded `space/create` evaluates the document at the seed URL
