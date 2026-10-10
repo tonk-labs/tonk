@@ -4806,11 +4806,17 @@ impl dialog_capability::Provider<tonk_schema::command::CheckUpdate> for crate::r
             log!("CheckUpdate: '{key}' is not a space DID");
             return;
         };
-        let tonk = self.state().read().await;
         // The command's own entity marks the check in flight, so a
         // marker stranded by a crashed worker names the check that left
         // it rather than being an anonymous flag.
         let check = command.this.clone();
+        // The seed a space runs is recorded in the space, which a worker of
+        // its own holds: that worker is asked, with nothing held meanwhile.
+        if self.from_profile() && self.state().read().await.spaces_elsewhere() {
+            check_seed_update_elsewhere(self.state(), &subject, check).await;
+            return;
+        }
+        let tonk = self.state().read().await;
         if let Err(error) = check_seed_update(&tonk, &subject, check).await {
             log!("CheckUpdate '{subject}': {error}");
         }
@@ -4903,6 +4909,132 @@ pub(crate) async fn check_seed_update(
     }
     stamp_checked(tonk, replica).await;
     Ok(())
+}
+
+/// [`check_seed_update`] for a space its own worker holds: this worker, the
+/// person's profile's, keeps the check's state on its own record of the
+/// space as before, and reads the installed seed and records a waiting one
+/// by asking the worker that holds the space.
+async fn check_seed_update_elsewhere(
+    state: &AppState,
+    subject: &Did,
+    check: dialog_artifacts::Entity,
+) {
+    let replica = {
+        let tonk = state.read().await;
+        let replica = Replica::new(tonk.profile.did(), subject.clone())
+            .this()
+            .clone();
+        stamp_checking(&tonk, replica.clone(), check.clone()).await;
+        replica
+    };
+
+    let peer = space_reach::peer(subject.repo_key());
+    let outcome = match seed_check_elsewhere(peer).await {
+        Ok(Some(found)) => announce_seed_elsewhere(peer, &found).await,
+        Ok(None) => Ok(()),
+        Err(error) => Err(error),
+    };
+
+    let tonk = state.read().await;
+    clear_checking(&tonk, replica.clone(), check).await;
+    if let Err(error) = &outcome {
+        log!("update check '{subject}': {error}");
+    }
+    stamp_check_failure(
+        &tonk,
+        replica.clone(),
+        outcome.as_ref().err().map(String::as_str),
+    )
+    .await;
+    stamp_checked(&tonk, replica).await;
+}
+
+/// [`run_seed_check`], asking the worker that holds the space what it runs.
+async fn seed_check_elsewhere(
+    peer: space_reach::SpacePeer<'_>,
+) -> Result<Option<FoundSeed>, String> {
+    use dialog_query::ConceptQuery;
+    use ipld_core::ipld::Ipld;
+    use tonk_schema::query::Query as WireQuery;
+
+    let unread = |e: crate::reactor::PeerError| format!("could not read the seed record: {e}");
+    let ask = async |query: ConceptQuery| {
+        peer.content()
+            .query(WireQuery::from(&query))
+            .perform(&peer)
+            .await
+            .map_err(unread)
+    };
+    // Records a release from before wrote come first, as where the space
+    // is mounted (see [`read_installed_seed_in`]).
+    let legacy = ask(ConceptQuery::from(Query::<tonk_schema::SeedInstalled> {
+        this: Term::var("this"),
+        prior: Term::var("prior"),
+        version: Term::var("version"),
+    }))
+    .await?;
+    let complete = ask(ConceptQuery::from(Query::<tonk_schema::SeedInstall> {
+        this: Term::var("this"),
+        prior: Term::var("prior"),
+        version: Term::var("version"),
+    }))
+    .await?;
+    for record in legacy.into_iter().chain(complete) {
+        let seed: dialog_artifacts::Entity = record
+            .this
+            .parse()
+            .map_err(|e| format!("seed {} is not an entity: {e}", record.this))?;
+        let available = ask(ConceptQuery::from(Query::<tonk_schema::SeedAvailable> {
+            this: Term::from(seed.clone()),
+            source: Term::var("source"),
+            replaces: Term::var("replaces"),
+        }))
+        .await?;
+        let Some(Ipld::String(source)) = available
+            .first()
+            .and_then(|row| row.fields.get("source").cloned())
+        else {
+            return Err(format!("seed {seed} records no source"));
+        };
+        if lineage(&source) != "main" {
+            continue;
+        }
+        let library = fetch_standard_library(&source)
+            .await
+            .map_err(|e| format!("could not fetch {source}: {e}"))?;
+        let fetched = seed_version(&library);
+        return Ok((fetched != seed.to_string()).then_some(FoundSeed {
+            seed: fetched,
+            source,
+            replaces: seed,
+        }));
+    }
+    Ok(None)
+}
+
+/// [`publish_available_seed`], through the worker that holds the space.
+async fn announce_seed_elsewhere(
+    peer: space_reach::SpacePeer<'_>,
+    found: &FoundSeed,
+) -> Result<(), String> {
+    let announced = async {
+        let fact = space_reach::fact(
+            &[
+                ("source", "xyz.tonk.seed/source", "Text"),
+                ("replaces", "xyz.tonk.seed/replaces", "Entity"),
+            ],
+            serde_json::json!({
+                "this": found.seed,
+                "source": found.source,
+                "replaces": found.replaces.to_string(),
+            }),
+        )?;
+        space_reach::run(peer, peer.content(), fact).await
+    };
+    announced
+        .await
+        .map_err(|e| format!("could not record the waiting seed: {e}"))
 }
 
 /// A seed the check found waiting, and the installed one it supersedes.
@@ -5043,7 +5175,7 @@ async fn stamp_checked(tonk: &TonkState, replica: dialog_artifacts::Entity) {
         .transaction()
         .assert(tonk_schema::ReplicaChecked {
             this: replica,
-            checked: tonk_schema::domain::check::Checked(js_sys::Date::now()),
+            checked: tonk_schema::domain::check::Checked(super::sync::now_millis()),
         });
     commit_replica_stamp(tonk, transaction).await;
 }
@@ -14529,6 +14661,108 @@ mod seed_tests {
                 | dialog_artifacts::Instruction::Retract(artifact) => artifact.the.to_string(),
             })
             .collect()
+    }
+
+    /// Where a worker of its own holds the space, the profile's check asks
+    /// that worker what the space runs, records a waiting seed through it,
+    /// and keeps the check's own state on its record of the space.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_checks_a_space_its_own_worker_holds_through_that_worker() {
+        use crate::router::space_reach::stand_in;
+        use dialog_query::{Output as _, Query, Term};
+
+        let state = crate::router::command::tests::native::test_state().await;
+        state
+            .read()
+            .await
+            .site_origins
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let subject: dialog_varsig::Did =
+            "did:key:z6Mki8Mf2Trp2qmXqNoSihfVi9sEg8Z4aSCSnyUfadj4jB1E"
+                .parse()
+                .unwrap();
+        // The space runs a seed older than the library this build ships.
+        stand_in::answer_bodies_with(|(_, _, path), body| {
+            let body = body.map(ToString::to_string).unwrap_or_default();
+            Ok(if !path.ends_with("/query") {
+                serde_json::json!({})
+            } else if body.contains("seed/install-version") {
+                serde_json::json!([{ "this": "seed:old", "fields": {} }])
+            } else if body.contains("seed/source") {
+                serde_json::json!([{
+                    "this": "seed:old",
+                    "fields": { "source": "/library/core.yaml", "replaces": "seed:none" }
+                }])
+            } else {
+                serde_json::json!([])
+            })
+        });
+
+        super::check_seed_update_elsewhere(&state, &subject, "check:one".parse().unwrap()).await;
+        let asked = stand_in::asked();
+
+        let branch = format!("/api/repository/{subject}/branch/main");
+        assert_eq!(
+            asked
+                .iter()
+                .map(|(_, method, path)| format!("{method} {path}"))
+                .collect::<Vec<_>>(),
+            [
+                format!("POST {branch}/query"),
+                format!("POST {branch}/query"),
+                format!("POST {branch}/query"),
+                format!("POST {branch}/transact"),
+            ],
+            "it reads the seed records, then records the waiting seed"
+        );
+        let tonk = state.read().await;
+        let replica = tonk_schema::Replica::new(tonk.profile.did(), subject)
+            .this()
+            .clone();
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let failures: Vec<tonk_schema::ReplicaCheckFailure> = main
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::ReplicaCheckFailure> {
+                this: Term::from(replica.clone()),
+                failure: Term::var("failure"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        let running: Vec<tonk_schema::ReplicaChecking> = main
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::ReplicaChecking> {
+                this: Term::from(replica.clone()),
+                checking: Term::var("checking"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        let settled: Vec<tonk_schema::ReplicaChecked> = main
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::ReplicaChecked> {
+                this: Term::from(replica),
+                checked: Term::var("checked"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert!(failures.is_empty(), "the check did not fail");
+        assert!(running.is_empty(), "the check is no longer in flight");
+        assert_eq!(settled.len(), 1, "the check is recorded as made");
     }
 
     /// A seed's identity is the hash of its bytes, so two devices

@@ -286,23 +286,42 @@ pub(crate) fn command(
     fields: &[(&str, &str, &str)],
     parameters: serde_json::Value,
 ) -> Result<SourceClaim, TonkWorkerError> {
+    claim("transient", fields, parameters)
+}
+
+/// A fact as a claim: one durable concept with `fields` (each a name, its
+/// attribute, and its type, every one of cardinality one) applied to
+/// `parameters`, which name the entity as `this`.
+pub(crate) fn fact(
+    fields: &[(&str, &str, &str)],
+    parameters: serde_json::Value,
+) -> Result<SourceClaim, TonkWorkerError> {
+    claim("durable", fields, parameters)
+}
+
+fn claim(
+    kind: &str,
+    fields: &[(&str, &str, &str)],
+    parameters: serde_json::Value,
+) -> Result<SourceClaim, TonkWorkerError> {
     let with: serde_json::Map<String, serde_json::Value> = fields
         .iter()
         .map(|(name, the, as_)| {
-            (
-                (*name).to_owned(),
-                serde_json::json!({ "the": the, "as": as_ }),
-            )
+            let mut field = serde_json::json!({ "the": the, "as": as_ });
+            if kind == "durable" {
+                field["cardinality"] = "one".into();
+            }
+            ((*name).to_owned(), field)
         })
         .collect();
     serde_json::from_value(serde_json::json!({
         "op": "assert",
         "application": {
-            "predicate": { "kind": "transient", "concept": { "with": with } },
+            "predicate": { "kind": kind, "concept": { "with": with } },
             "parameters": parameters
         }
     }))
-    .map_err(|error| TonkWorkerError::Internal(format!("the command is not a claim: {error}")))
+    .map_err(|error| TonkWorkerError::Internal(format!("not a claim: {error}")))
 }
 
 /// Have a space's own worker run a command: commit `claim` on `branch` of
@@ -447,7 +466,9 @@ pub(crate) mod stand_in {
 
     /// What a space's worker was asked: the space, the method, the path.
     pub(crate) type Asked = (String, String, String);
-    type Answer = Box<dyn Fn(&Asked) -> Result<serde_json::Value, TonkWorkerError>>;
+    type Answer = Box<
+        dyn Fn(&Asked, Option<&serde_json::Value>) -> Result<serde_json::Value, TonkWorkerError>,
+    >;
 
     thread_local! {
         static WORKERS: RefCell<Option<(Answer, Vec<Asked>)>> = const { RefCell::new(None) };
@@ -457,6 +478,18 @@ pub(crate) mod stand_in {
     /// until [`asked`] takes the stand-in away.
     pub(crate) fn answer_with(
         answer: impl Fn(&Asked) -> Result<serde_json::Value, TonkWorkerError> + 'static,
+    ) {
+        answer_bodies_with(move |asked, _| answer(asked));
+    }
+
+    /// [`answer_with`], for an answer that depends on what was sent: a
+    /// query's body says which rows are asked for.
+    pub(crate) fn answer_bodies_with(
+        answer: impl Fn(
+            &Asked,
+            Option<&serde_json::Value>,
+        ) -> Result<serde_json::Value, TonkWorkerError>
+        + 'static,
     ) {
         WORKERS.set(Some((Box::new(answer), Vec::new())));
     }
@@ -470,12 +503,12 @@ pub(crate) mod stand_in {
         space: &str,
         method: &str,
         path: &str,
-        _body: Option<&serde_json::Value>,
+        body: Option<&serde_json::Value>,
     ) -> Option<Result<serde_json::Value, TonkWorkerError>> {
         WORKERS.with_borrow_mut(|workers| {
             let (answer, asked) = workers.as_mut()?;
             let ask = (space.to_owned(), method.to_owned(), path.to_owned());
-            let answered = answer(&ask);
+            let answered = answer(&ask, body);
             asked.push(ask);
             Some(answered)
         })
