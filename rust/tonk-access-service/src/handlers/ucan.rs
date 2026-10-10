@@ -349,20 +349,47 @@ fn record_invocation(
     env: &Env,
     ctx: &Context,
 ) {
+    if let Some(write) = metering(body_bytes, outcome, reason, bytes, env) {
+        ctx.wait_until(write);
+    }
+}
+
+/// The write that meters the invocation `body_bytes` carries, to run
+/// after the answer is sent: under a request's `Context`, or a Durable
+/// Object's state for a frame of a socket. `None` when there is nothing
+/// to record.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn metering(
+    body_bytes: &[u8],
+    outcome: &'static str,
+    reason: Option<String>,
+    bytes: u64,
+    env: &Env,
+) -> Option<impl std::future::Future<Output = ()> + 'static> {
     use crate::store::ingest::{D1Ingest, IngestStore};
 
     let now = Date::now().as_millis() / 1_000;
-    let Some(record) = crate::metering::collect(body_bytes, outcome, reason, bytes, now) else {
-        return;
-    };
+    let record = crate::metering::collect(body_bytes, outcome, reason, bytes, now)?;
     match env.d1("INGEST") {
-        Ok(database) => ctx.wait_until(async move {
+        Ok(database) => Some(async move {
             if let Err(err) = D1Ingest::new(database).record(&record).await {
                 console_error!("metering write failed: {err}");
             }
         }),
-        Err(err) => console_error!("metering skipped, no INGEST binding: {err}"),
+        Err(err) => {
+            console_error!("metering skipped, no INGEST binding: {err}");
+            None
+        }
     }
+}
+
+/// Screen the subject of the invocation `body_bytes` carries, as a
+/// request is screened before it is served: a socket's frame is too.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn screen(body_bytes: &[u8], env: &Env) -> std::result::Result<(), Refusal> {
+    screen_provisioning(body_bytes, env)
+        .await
+        .map_err(|failure| failure.refusal)
 }
 
 /// Authorize the container and answer the signed permit, together
@@ -463,6 +490,9 @@ async fn perform(
     screen_provisioning(container_bytes, env).await?;
     let screened = Date::now().as_millis();
     let described = crate::describe::describe(verified.chain());
+    // A cell write is reported to its space's watches once it lands.
+    let written = crate::socket::cell_written(verified.chain())
+        .map(|(space, cell)| (verified.subject().to_string(), space, cell));
 
     // A write's bytes are the body, metered as declared; the layer
     // reads them as they arrive.
@@ -483,6 +513,11 @@ async fn perform(
         Answer::Performed(answer) => answer,
     };
     let stored = Date::now().as_millis();
+    if let Some((subject, space, cell)) = written
+        && (200..300).contains(&answer.status)
+    {
+        ctx.wait_until(crate::live::changed(env.clone(), subject, space, cell));
+    }
     let cache = access.provider().outcome();
     let fills = access.provider().take_fills();
     if !fills.is_empty() {
@@ -839,7 +874,7 @@ thread_local! {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn shared_resolver() -> std::sync::Arc<dialog_remote_ucan_s3::DefaultResolver> {
+pub(crate) fn shared_resolver() -> std::sync::Arc<dialog_remote_ucan_s3::DefaultResolver> {
     RESOLVER.with(|cached| {
         cached
             .get_or_init(|| {

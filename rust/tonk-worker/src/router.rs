@@ -99,6 +99,8 @@ pub(crate) mod remotes;
 
 mod sync;
 pub use dialog_repository::Revision;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) use sync::watch_open_repos;
 pub use sync::{
     SyncQueue, SyncResponse, SyncStatusResponse, branches_to_sync, drain_sync, sync_repository,
 };

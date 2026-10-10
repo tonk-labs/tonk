@@ -170,6 +170,9 @@ fn issuer_proof_failure(error: dialog_capability::access::AuthorizeError) -> Ton
         AuthorizeError::UnavailableProof { .. }
         | AuthorizeError::Unavailable { .. }
         | AuthorizeError::Malformed { .. }
+        // Not a decision about the authority: a fresh invocation would do.
+        | AuthorizeError::Stale { .. }
+        | AuthorizeError::Replayed { .. }
         | AuthorizeError::Declined {
             recourse: Recourse::Retry,
             ..

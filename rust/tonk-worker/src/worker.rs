@@ -2364,6 +2364,30 @@ impl TonkServiceWorker {
         let running = self.sync_loop.clone();
         let state = self.state.clone();
         let scheduler = self.sync_scheduler.clone();
+        // What a watch does when its upstream moves: a drain through the
+        // same gate as a tick, so it never overlaps one and honors the
+        // cooldown and the hidden-tab interval. A drain the gate refuses
+        // is not lost: the moved repo waits for the next tick's.
+        let drain: std::rc::Rc<dyn Fn()> = {
+            let state = state.clone();
+            let scheduler = scheduler.clone();
+            std::rc::Rc::new(move || {
+                let state = state.clone();
+                let scheduler = scheduler.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if scheduler.stopped() || scheduler.blocked(js_sys::Date::now()) {
+                        return;
+                    }
+                    scheduler.set_visible(any_client_visible().await);
+                    if !scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
+                        return;
+                    }
+                    scheduler.begin_drain();
+                    crate::router::drain_sync(&state).await;
+                    scheduler.end_drain(js_sys::Date::now());
+                });
+            })
+        };
         wasm_bindgen_futures::spawn_local(async move {
             loop {
                 let _ = crate::sleep(web_time::Duration::from_millis(SYNC_LOOP_MS)).await;
@@ -2388,6 +2412,10 @@ impl TonkServiceWorker {
                     log!("sync loop parked: every open space is paused");
                     break;
                 }
+                // Open spaces whose upstream can be followed are watched,
+                // and leave the sweep below; one whose watch ended is
+                // watched again here.
+                crate::router::watch_open_repos(&state, drain.clone()).await;
                 // Through the SAME gate as the per-fetch drain: a loop tick used
                 // to call `drain_sync` directly, so it could start a second
                 // drain on top of one already running (they only consulted

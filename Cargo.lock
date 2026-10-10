@@ -959,7 +959,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -997,7 +997,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "async-trait",
  "base58",
@@ -1023,7 +1023,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1052,7 +1052,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1078,7 +1078,7 @@ dependencies = [
 [[package]]
 name = "dialog-csv"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "async-trait",
  "base58",
@@ -1093,7 +1093,7 @@ dependencies = [
 [[package]]
 name = "dialog-did-web"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "async-trait",
  "base58",
@@ -1116,7 +1116,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "async-trait",
  "base58",
@@ -1131,7 +1131,7 @@ dependencies = [
 [[package]]
 name = "dialog-identity"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1149,7 +1149,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "blake3",
  "convert_case",
@@ -1161,7 +1161,7 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1177,7 +1177,7 @@ dependencies = [
 [[package]]
 name = "dialog-peer"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1187,6 +1187,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-did-web",
  "dialog-effects",
  "dialog-identity",
  "dialog-network",
@@ -1216,7 +1217,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1281,7 +1282,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-fs"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1298,7 +1299,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1337,7 +1338,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1351,22 +1352,29 @@ dependencies = [
  "dialog-remote-ucan-s3",
  "dialog-ucan-core",
  "dialog-varsig",
+ "futures",
  "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "js-sys",
  "reqwest 0.12.28",
  "serde",
+ "serde_bytes",
  "serde_ipld_dagcbor",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1404,7 +1412,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1414,6 +1422,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-did-web",
  "dialog-effects",
  "dialog-identity",
  "dialog-network",
@@ -1447,7 +1456,7 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1479,7 +1488,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1522,7 +1531,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "async-trait",
  "base58",
@@ -1543,7 +1552,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "base64",
  "dialog-varsig",
@@ -1571,7 +1580,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-10-03#120fba8b6490c31b2ae1523e6add5b800f9b989e"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#81d5229096ed87a2d4cbebd15bd89c010ba180b4"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",
@@ -2256,7 +2265,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -3605,7 +3614,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams 0.4.2",
  "web-sys",
- "webpki-roots",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -3867,7 +3876,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
- "sha1",
+ "sha1 0.11.0-rc.5",
  "sha2 0.11.0-rc.5",
  "smallvec",
  "std-next",
@@ -4132,6 +4141,17 @@ dependencies = [
  "ryu",
  "serde",
  "unsafe-libyaml",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.10.7",
 ]
 
 [[package]]
@@ -4597,6 +4617,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-tungstenite"
+version = "0.26.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a9daff607c6d2bf6c16fd681ccb7eecc83e4e2cdc1ca067ffaadfca5de7f084"
+dependencies = [
+ "futures-util",
+ "log",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tungstenite",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4658,6 +4694,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tonk-account",
  "tonk-email",
  "tonk-identity",
@@ -4665,6 +4702,7 @@ dependencies = [
  "tonk-worker-api",
  "url",
  "urlencoding",
+ "wasm-bindgen",
  "worker",
  "worker-macros",
 ]
@@ -5583,6 +5621,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "tungstenite"
+version = "0.26.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4793cb5e56680ecbb1d843515b23b6de9a75eb04b66643e256a396d43be33c13"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
+ "sha1 0.10.7",
+ "thiserror 2.0.18",
+ "utf-8",
+]
+
+[[package]]
 name = "typed-path"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5664,6 +5721,12 @@ name = "urlencoding"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
+
+[[package]]
+name = "utf-8"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
 
 [[package]]
 name = "utf8_iter"
@@ -5921,6 +5984,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d46a5a140e6f7afeccd8eae97eff335163939eac8b929834875168b29b3d267"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]

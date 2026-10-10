@@ -256,7 +256,7 @@
             '';
           };
           "dev:web" = {
-            description = "Start a dev server with a local access service (set UCAN_ENDPOINT to proxy /ucan/ to a remote instead)";
+            description = "Start a dev server with a local access service and its sockets (set UCAN_ENDPOINT to proxy /ucan/ to a remote instead)";
             command = ''
               # Resolve the /ucan/ sync backend. By default, spin up a local,
               # blob-aware access service: the native `tonk-access-local` helper
@@ -384,9 +384,47 @@
               else
                 echo "dev:web: no local access service, so /@ is unproxied; invite links stay long"
               fi
-              trap 'kill "$GUIDE_PID" "$ACCESS_PID" 2>/dev/null; pkill -f "mdbook serve ./guide" 2>/dev/null; rm -f "$TRUNK_CONFIG_GENERATED" "$TRUNK_HTML_GENERATED"' EXIT INT TERM
+              # Caddy holds the page's port and trunk serves behind it. A
+              # space's socket is an upgrade of `GET /ucan/` asking for
+              # dialog's subprotocol, and trunk's WebSocket proxy neither
+              # shares a path with its HTTP one nor negotiates a
+              # subprotocol, so a browser would drop the handshake. Caddy
+              # passes the upgrade through untouched to wherever /ucan/
+              # goes, and everything else to trunk, whose own proxies are
+              # unchanged.
+              PAGE_PORT="''${TRUNK_SERVE_PORT:-8080}"
+              TRUNK_PORT="''${DEV_WEB_TRUNK_PORT:-$((PAGE_PORT + 1))}"
+              SOCKET_ORIGIN="$(printf '%s' "$ENDPOINT" | sed -E 's|^(https?://[^/]+).*|\1|')"
+              SOCKET_PATH="''${ENDPOINT#"$SOCKET_ORIGIN"}"
+              CADDY_CONFIG_GENERATED="$(mktemp)"
+              printf '%s\n' \
+                '{' \
+                '  admin off' \
+                '  auto_https off' \
+                '  persist_config off' \
+                '}' \
+                ":$PAGE_PORT {" \
+                '  @socket {' \
+                '    path /ucan/' \
+                '    header Upgrade websocket' \
+                '  }' \
+                '  handle @socket {' \
+                "    rewrite * ''${SOCKET_PATH:-/}" \
+                "    reverse_proxy $SOCKET_ORIGIN {" \
+                '      header_up Host {upstream_hostport}' \
+                '    }' \
+                '  }' \
+                '  handle {' \
+                "    reverse_proxy 127.0.0.1:$TRUNK_PORT" \
+                '  }' \
+                '}' >"$CADDY_CONFIG_GENERATED"
+              ${pkgs.caddy}/bin/caddy run --adapter caddyfile --config "$CADDY_CONFIG_GENERATED" &
+              CADDY_PID=$!
+              echo "dev:web: serving on http://localhost:$PAGE_PORT (trunk behind it on $TRUNK_PORT; /ucan/ sockets to $SOCKET_ORIGIN)"
 
-              trunk serve "$TRUNK_HTML_GENERATED" --html-output index.html --config "$TRUNK_CONFIG_GENERATED" --proxy-backend "$ENDPOINT"
+              trap 'kill "$GUIDE_PID" "$ACCESS_PID" "$CADDY_PID" 2>/dev/null; pkill -f "mdbook serve ./guide" 2>/dev/null; rm -f "$TRUNK_CONFIG_GENERATED" "$TRUNK_HTML_GENERATED" "$CADDY_CONFIG_GENERATED"' EXIT INT TERM
+
+              trunk serve "$TRUNK_HTML_GENERATED" --html-output index.html --config "$TRUNK_CONFIG_GENERATED" --proxy-backend "$ENDPOINT" --address 127.0.0.1 --port "$TRUNK_PORT"
             '';
           };
           "lint" = {
