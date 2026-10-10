@@ -4678,9 +4678,16 @@ pub(crate) mod tests {
         old_writer
             .add_cookie(Cookie::new("tonk-test-generation", "a"))
             .await?;
+        // The profile's origin is framed by the app's, so a cookie there
+        // is a third party's: one set from outside is not sent with what
+        // the frame and its worker ask for. Set from inside the frame and
+        // partitioned to the page that frames it, it is.
         enter_profile(&old_writer).await?;
         old_writer
-            .add_cookie(Cookie::new("tonk-test-generation", "a"))
+            .execute(
+                r#"document.cookie = "tonk-test-generation=a; Path=/; Secure; SameSite=None; Partitioned";"#,
+                Vec::new(),
+            )
             .await?;
         old_writer.enter_default_frame().await?;
         raise_cluster_from_hub(&old_writer, &env).await?;
