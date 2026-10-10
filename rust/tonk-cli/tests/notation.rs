@@ -31,6 +31,34 @@ mod when_evaluating_a_document {
     }
 
     #[dialog_common::test]
+    async fn it_names_a_type_by_its_keyword() -> Result<()> {
+        // `:text` is the type's entity `text:` itself, so it reads
+        // the same as the built-in anchor `text`.
+        let test = common::TestSite::new().await?;
+        test.eval_inline(
+            r#"
+attribute!: &task-note
+  description: "a note on a task"
+  the:         xyz.tonk.task/note
+  as:          :text
+"#,
+        )
+        .await?;
+        let query = test
+            .eval_inline("attribute:\n  this: ?a\n  id: \"xyz.tonk.task/note\"\n  as: ?as\n")
+            .await?;
+        let types: Vec<_> = query
+            .response
+            .matches_after
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .filter_map(|result| result.fields.get("as").cloned())
+            .collect();
+        assert_eq!(types, [serde_json::json!("text:")]);
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_seeds_the_standard_library_view_concept_on_init() -> Result<()> {
         // A freshly initialised site carries the tonk standard
         // library — the same `core.yaml` the tonk-ui service worker
