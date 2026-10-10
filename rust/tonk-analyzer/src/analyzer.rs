@@ -1279,7 +1279,7 @@ concept!: &job
 
         let syntax = must_parse(
             "\
-issue/title: &all
+issue/title!: &all
   this: issue:one
   is: \"shadowing\"
 attribute!: &tags
