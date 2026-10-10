@@ -6,6 +6,14 @@ description: 'Validate a pushed v* tag, derive its version and channel, and stam
 # release, and the tag must point at a commit already on `main`, so nothing
 # ships that did not land through review.
 #
+# A stable tag must also point at a commit carrying one of its own release
+# candidates (`v0.7.0` needs a `v0.7.0-*` tag on the same commit), so a
+# release is always a candidate that ran on staging.
+#
+# On the `staging` branch there is no pushed tag. The release is the
+# highest release candidate tag on the branch's head, which
+# `promote-staging` in `publish.yml` put there.
+#
 # Stamping rewrites `[workspace.package] version` and the matching
 # workspace entries in `Cargo.lock` in the working tree. Nix builds a
 # dirty git tree from the working copy of tracked files, so the build
@@ -34,17 +42,25 @@ runs:
       id: resolve
       shell: bash
       env:
+        REF: ${{ github.ref }}
         REF_TYPE: ${{ github.ref_type }}
         REF_NAME: ${{ github.ref_name }}
       run: |
         set -euo pipefail
 
-        if [[ "$REF_TYPE" != tag ]]; then
-          echo "::error::releases run from a v* tag, not the $REF_TYPE $REF_NAME"
+        if [[ "$REF" == refs/heads/staging ]]; then
+          tag="$(git tag --points-at HEAD --list 'v*-*' | sort -V | tail -n 1)"
+          if [[ -z "$tag" ]]; then
+            echo "::error::staging is at $(git rev-parse HEAD), which carries no release candidate tag; cut one with a v*-rc.* tag"
+            exit 1
+          fi
+        elif [[ "$REF_TYPE" == tag ]]; then
+          tag="$REF_NAME"
+        else
+          echo "::error::releases run from a v* tag or the staging branch, not the $REF_TYPE $REF_NAME"
           exit 1
         fi
 
-        tag="$REF_NAME"
         if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
           echo "::error::$tag is not a release tag; use v<major>.<minor>.<patch>[-<prerelease>]"
           exit 1
@@ -62,6 +78,10 @@ runs:
           channel=staging
           prerelease=true
         else
+          if [[ -z "$(git tag --points-at "$commit" --list "$tag-*")" ]]; then
+            echo "::error::$tag points at $commit, which carries no $tag-* release candidate; tag staging, or cut a candidate first"
+            exit 1
+          fi
           channel=stable
           prerelease=false
         fi

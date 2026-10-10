@@ -7,12 +7,16 @@ on:
   # uses the trusted base-branch workflow rather than checking out PR code.
   pull_request_target:
     types: [closed]
-  # `main` deploys dev on tonk.foundation. A `v*` tag is a release: a
-  # prerelease tag (`v0.7.0-rc.1`) deploys staging and a final tag (`v0.7.0`)
-  # deploys production. `release.yml` explains how to cut one.
+  # `main` deploys dev on tonk.foundation and `staging` deploys staging. A
+  # `v*` tag is a release: a prerelease tag (`v0.7.0-rc.1`) moves `staging`
+  # to its commit, and a final tag (`v0.7.0`), cut from `staging`, deploys
+  # production. `release.yml` explains how to cut one.
   push:
-    branches: [main]
+    branches: [main, staging]
     tags: ['v*']
+  # A push made with the workflow token starts no workflow, so promoting a
+  # release candidate dispatches the `staging` deployment explicitly.
+  workflow_dispatch:
 
 # Two runs of one pull request would race for the same preview aliases and D1
 # database. Superseding the in-flight run is the wanted outcome: the newer
@@ -21,12 +25,17 @@ on:
 # are keyed by number because a merged `closed` event uses the target branch as
 # `github.ref` and must not cancel that branch's push deployment.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.ref || format('pr-{0}', github.event.pull_request.number) }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request && format('pr-{0}', github.event.pull_request.number) || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # A release candidate deploys nothing itself: `promote-staging` moves the
+  # `staging` branch to it, and the branch deploys.
   deploy:
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    if: >-
+      (github.event_name == 'push' && !(github.ref_type == 'tag' && contains(github.ref_name, '-')))
+      || github.event_name == 'pull_request'
+      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/staging')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -36,13 +45,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # A release compares its tag against `main`.
-          fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
+          # A release compares its tag against `main`, and `staging` finds
+          # the release candidate tag on its commit.
+          fetch-depth: ${{ (github.ref_type == 'tag' || github.ref == 'refs/heads/staging') && 0 || 1 }}
 
-      # Validates the tag, picks the environment from it, and stamps the
-      # tag's version into the workspace before anything builds.
+      # Validates the tag (on `staging`, the release candidate tag at its
+      # head), picks the environment from it, and stamps the tag's version
+      # into the workspace before anything builds.
       - name: Resolve the release
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || github.ref == 'refs/heads/staging'
         id: release
         uses: ./.github/actions/resolve-release
 
@@ -330,6 +341,59 @@ jobs:
             ```
 
             </details>
+
+  # A release candidate tag moves `staging` to its commit and dispatches the
+  # staging deployment from the branch. A final release is then cut by
+  # tagging `staging`, so production always ships a commit staging ran.
+  promote-staging:
+    if: github.event_name == 'push' && github.ref_type == 'tag' && contains(github.ref_name, '-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    # Candidates promote one at a time, so the version comparison below sees
+    # where the previous promotion left `staging`.
+    concurrency:
+      group: promote-staging
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve the release
+        id: release
+        uses: ./.github/actions/resolve-release
+      # Runs of two quickly pushed candidates can start in either order. The
+      # older one must not move `staging` back, so a candidate only replaces
+      # one with a lower version. Rolling back means cutting a new candidate
+      # on the older commit.
+      - name: Move staging to the candidate
+        id: move
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          current=""
+          if git fetch --no-tags origin refs/heads/staging:refs/remotes/origin/staging; then
+            current="$(git tag --points-at origin/staging --list 'v*-*' | sed 's/^v//' | sort -V | tail -n 1)"
+          fi
+          if [ -n "$current" ] && [ "$current" != "$VERSION" ] \
+            && [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -n 1)" = "$current" ]; then
+            echo "::warning::staging is at v$current, newer than $TAG; leaving it there"
+            echo "moved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git push --force origin "$commit:refs/heads/staging"
+          echo "moved=true" >> "$GITHUB_OUTPUT"
+          echo "staging -> $TAG at $commit"
+      - name: Deploy staging from the branch
+        if: steps.move.outputs.moved == 'true'
+        run: gh workflow run publish.yml --ref staging
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
 
   cleanup-preview-databases:
     if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
