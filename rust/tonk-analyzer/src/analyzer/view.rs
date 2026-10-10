@@ -1308,7 +1308,7 @@ concept!: &counter/model
       description: How many.
       the: xyz.tonk.counter/count
       as: signed-integer
-      cardinality: one
+      cardinality: :one
 
 command!: &counter/increment
   description: Add one.
@@ -1453,7 +1453,7 @@ concept!: &counter/model
       description: How many.
       the: xyz.tonk.counter/count
       as: signed-integer
-      cardinality: one
+      cardinality: :one
 
 command!: &counter/+1
   description: Add one.
@@ -1599,7 +1599,7 @@ view!: &counter/view
 attribute!: &demo/blob
   the: xyz.tonk.demo/blob
   as: record
-  cardinality: one
+  cardinality: :one
   description: A compiled artifact.
 "#;
         lower(source).expect("`as: record` is a declarable value type");

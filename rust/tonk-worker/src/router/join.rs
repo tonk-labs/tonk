@@ -3263,7 +3263,7 @@ pub(crate) mod tests {
     subject:
       the: xyz.tonk.replica/subject
       as: entity
-      cardinality: one
+      cardinality: :one
       description: The space this canvas belongs to
 
 name!:

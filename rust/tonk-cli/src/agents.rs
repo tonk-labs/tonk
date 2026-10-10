@@ -31,7 +31,7 @@ const SCHEMA_DOCUMENT: &str = r#"attribute!: &tonk/agents-markdown
     Markdown working context for agents using this repository.
     Keep durable concepts, workflows, decisions, and recurring pitfalls here;
     omit credentials, invite links, transient status, and one-off completions.
-  cardinality: one
+  cardinality: :one
   as: text
 
 concept!: &tonk/agents

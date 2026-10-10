@@ -31,6 +31,34 @@ mod when_evaluating_a_document {
     }
 
     #[dialog_common::test]
+    async fn it_names_a_type_by_its_keyword() -> Result<()> {
+        // `:text` is the type's entity `text:` itself, so it reads
+        // the same as the built-in anchor `text`.
+        let test = common::TestSite::new().await?;
+        test.eval_inline(
+            r#"
+attribute!: &task-note
+  description: "a note on a task"
+  the:         xyz.tonk.task/note
+  as:          :text
+"#,
+        )
+        .await?;
+        let query = test
+            .eval_inline("attribute:\n  this: ?a\n  id: \"xyz.tonk.task/note\"\n  as: ?as\n")
+            .await?;
+        let types: Vec<_> = query
+            .response
+            .matches_after
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .filter_map(|result| result.fields.get("as").cloned())
+            .collect();
+        assert_eq!(types, [serde_json::json!("text:")]);
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_seeds_the_standard_library_view_concept_on_init() -> Result<()> {
         // A freshly initialised site carries the tonk standard
         // library — the same `core.yaml` the tonk-ui service worker
@@ -362,6 +390,67 @@ task!: &ax
 
         let resubmitted = test.eval_inline(matches_section).await?;
         assert!(!resubmitted.response.matches_after.is_empty());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_round_trips_a_keyword_entity() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+
+        // `:keyword` names the entity `keyword:`, which YAML can't
+        // spell as a value.
+        test.eval_inline(
+            r#"
+task!:
+  this:  :keyword
+  title: "Keyword task"
+  done:  false
+"#,
+        )
+        .await?;
+
+        let outcome = test
+            .eval_inline_with(
+                "task:\n  this: ?t\n  title: \"Keyword task\"\n",
+                eval::Options {
+                    format: Format::Notation,
+                    quiet: false,
+                    dry_run: false,
+                    home: None,
+                },
+            )
+            .await?;
+        let results: Vec<_> = outcome
+            .response
+            .matches_after
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .collect();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].this, "keyword:");
+
+        // The rendered output spells it back as `:keyword`, so the
+        // matches section is still valid notation naming the same
+        // entity.
+        let (_, matches_section) = outcome
+            .stdout
+            .split_once("---\n")
+            .expect("expected a matches section");
+        assert!(
+            matches_section.contains("this: :keyword\n"),
+            "{matches_section}"
+        );
+        let resubmitted = test.eval_inline(matches_section).await?;
+        let this: Vec<_> = resubmitted
+            .response
+            .matches_after
+            .iter()
+            .flat_map(|block| block.results.iter())
+            .map(|result| result.this.as_str())
+            .collect();
+        assert_eq!(this, ["keyword:"]);
         Ok(())
     }
 }

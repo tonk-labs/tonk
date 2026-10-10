@@ -76,8 +76,18 @@ URIs come in several schemes:
 - `did:key:…` — content-addressed entities (DIDs).
 - `xyz.tonk.person/name`, `dialog.meta/name`, etc. — attribute
   URIs in `domain/name` form.
+- `:keyword` — the bare-scheme URI `keyword:`. YAML reads a
+  trailing `:` as the start of a mapping, so `keyword:` can't be
+  written as a value; the notation puts the colon in front
+  instead. Output spells these entities the same way.
 
 All of these are direct references and require no resolution.
+
+```yaml tonk=parse
+link!:
+  this: :keyword
+  target: :tonk
+```
 
 ## A worked example
 
@@ -88,7 +98,7 @@ attribute!: &person-name
   description: The person's name
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
 
 concept!: &person
   description: A person
@@ -139,6 +149,27 @@ parsed as a symbol but is meant to be a string MUST be quoted.
 `name: alice` is a symbol (resolves through the name table);
 `name: "alice"` is a literal string. The quotes are
 load-bearing.
+
+A bare symbol is always a **reference**: it resolves to an
+anchor declared in the document, a name published on the
+branch, or a built-in name (the types `text`, `integer`,
+`natural`, …), and a symbol that resolves to nothing fails
+the document. It never falls back to its own text. A field
+whose value is a fixed word rather than an entity takes a
+**keyword**, the word with a colon in front:
+
+```yaml tonk=parse
+attribute!: &task-tags
+  description: "Tags on a task"
+  the:         xyz.tonk.task/tags
+  as:          text
+  pick:        :all
+```
+
+`pick:` (`:last`, `:all`, `:top`, `:max`, `:min`), the older
+`cardinality:` (`:one`, `:many`) and a command field's `role:`
+(`:object`, `:goal`, …) take keywords. A bare `pick: all`
+is refused: `all` would be a reference to an anchor.
 
 ## Heads in detail
 
@@ -248,6 +279,7 @@ value can take four forms:
 | `?var`              | Logic variable — bind/unify across expressions          |
 | `name` (bare)       | Resolve through the name table to a target entity       |
 | `did:key:…`         | Entity URI directly (no resolution)                     |
+| `:keyword`          | The bare-scheme entity URI `keyword:`                   |
 | `{ ... }` (mapping) | Entity is content-addressed from the mapping content    |
 
 The mapping form lets you control entity derivation
@@ -282,6 +314,7 @@ distinguished lexically:
 | `_`                             | Blank — query: match any value; assertion: retract field   |
 | `person-name` (bare lowercase)  | Symbol — resolves through the name table to a target entity |
 | `id:foo`, `db:foo`, `did:key:…` | URI — direct entity reference, no resolution               |
+| `:foo`                          | Keyword — the bare-scheme URI `foo:`, no resolution        |
 | `xyz.tonk/foo`                  | Attribute URI — direct, no resolution                      |
 
 The distinction between a bare symbol and a URI is
@@ -424,7 +457,7 @@ attribute!: &person-name
   description: "The person's name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
 ```
 
 is equivalent to:
@@ -435,7 +468,7 @@ attribute!:
   description: "The person's name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
 
 name!:
   this:   id:person-name
@@ -454,7 +487,7 @@ attribute!: &person-name
   description: "The person's name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
 
 # Additional names for the same entity:
 name!:
@@ -646,7 +679,7 @@ attribute!:
   description: "The entity identified by the name"
   the:         dialog.meta/name
   as:          entity
-  cardinality: one
+  cardinality: :one
 
 concept!: &name
   description: "A mutable name for an entity"

@@ -9540,7 +9540,7 @@ concept!: &space
     subject:
       description: The repository subject.
       the: xyz.tonk.space/subject
-      cardinality: one
+      cardinality: :one
       as: entity
 
 view!:
@@ -9556,12 +9556,12 @@ concept!: &route
     path:
       description: The path pattern.
       the: xyz.tonk.route/path
-      cardinality: one
+      cardinality: :one
       as: text
     concept:
       description: The model rendered for the path.
       the: xyz.tonk.route/concept
-      cardinality: one
+      cardinality: :one
       as: entity
 
 route!: &obsolete-profile-library
@@ -14253,7 +14253,7 @@ concept!: &plot
       description: "What is planted."
       the: xyz.example.plot/label
       as: text
-      cardinality: one
+      cardinality: :one
 
 concept!: &space-home
   this: space:home
@@ -14611,7 +14611,7 @@ name!:
         );
         for field in fields {
             text.push_str(&format!(
-                "    {field}:\n      description: \"{field}\"\n      the: probe.thing/{field}\n      as: text\n      cardinality: one\n"
+                "    {field}:\n      description: \"{field}\"\n      the: probe.thing/{field}\n      as: text\n      cardinality: :one\n"
             ));
         }
         text
