@@ -1400,7 +1400,7 @@ pub(crate) mod tests {
         driver.switch_to_window(confirm).await?;
         goto(driver, &link).await?;
         enter_guest(driver).await?;
-        element(driver, "#activate-accept").await?.click().await?;
+        click(driver, "#activate-accept").await?;
         // Displayed, not merely present: the done panel is in the DOM
         // from page load, only hidden, so a presence wait returns while
         // the activation POST is still in flight — and closing the tab
@@ -1470,7 +1470,7 @@ pub(crate) mod tests {
         driver.switch_to_window(activation).await?;
         goto(&driver, &activation_link(&env, email).await?).await?;
         enter_guest(&driver).await?;
-        element(&driver, "#activate-accept").await?.click().await?;
+        click(&driver, "#activate-accept").await?;
         wait_for_displayed(&driver, "#activate-done").await?;
         assert!(driver.find_all(By::Css("#tonk-register")).await?.is_empty());
         assert_eq!(
@@ -1521,7 +1521,7 @@ pub(crate) mod tests {
         )
         .await?;
         enter_guest(&other).await?;
-        element(&other, "#activate-accept").await?.click().await?;
+        click(&other, "#activate-accept").await?;
         wait_for_displayed(&other, "#activate-done").await?;
         assert!(other.find_all(By::Css("#tonk-register")).await?.is_empty());
         let summary = account_summary(&other).await?;
@@ -1702,7 +1702,7 @@ pub(crate) mod tests {
         let account = driver.current_url().await?;
         goto(driver, &link).await?;
         enter_guest(driver).await?;
-        element(driver, "#activate-accept").await?.click().await?;
+        click(driver, "#activate-accept").await?;
         // Displayed, not merely present: the done panel is in the DOM
         // from page load, only hidden, so a presence wait returns while
         // the activation POST is still in flight — and navigating away
