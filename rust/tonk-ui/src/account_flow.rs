@@ -301,6 +301,9 @@ pub(crate) mod tests {
                     accountMode: account?.getAttribute("data-mode") || null,
                     accountBusy: account?.getAttribute("aria-busy") || null,
                     accountError: (error?.textContent || "").slice(0, 500) || null,
+                    document: `${location.protocol}//${location.hostname.split(".")[0].slice(0, 12)}`,
+                    shellStage: document.querySelector("#tonk-stage")?.textContent || null,
+                    workerServedShell: !!document.querySelector('meta[name="tonk-shell"]'),
                 };
                 "##,
                 vec![],
@@ -308,6 +311,61 @@ pub(crate) mod tests {
             .await
             .map(|value| value.json().clone())
             .unwrap_or_else(|_| serde_json::json!({ "webdriverError": "diagnostic query failed" }))
+    }
+
+    /// What the app's page says about the frame it shows a site in, and
+    /// what that frame's origin has registered. Read from the top page, for
+    /// a timeout's report: it leaves the driver there.
+    async fn frame_diagnostic_state(driver: &WebDriver) -> serde_json::Value {
+        let _ = driver.enter_default_frame().await;
+        let entered = match driver.find(By::Css("tonk-site > iframe")).await {
+            Ok(frame) => frame.enter_frame().await.is_ok(),
+            Err(_) => false,
+        };
+        let worker = driver
+            .execute_async(
+                r##"
+                const done = arguments[arguments.length - 1];
+                (async () => {
+                    const state = (worker) => worker ? worker.state : null;
+                    const registration = await navigator.serviceWorker.getRegistration();
+                    done({
+                        registered: !!registration,
+                        installing: state(registration?.installing),
+                        waiting: state(registration?.waiting),
+                        active: state(registration?.active),
+                        reloaded: !!sessionStorage.getItem("tonk-space-shell-reload"),
+                        recovered: !!sessionStorage.getItem("tonk-space-worker-recovery"),
+                    });
+                })().catch((error) => done({ error: String(error) }));
+                "##,
+                Vec::new(),
+            )
+            .await
+            .map(|value| value.json().clone())
+            .unwrap_or_else(|error| serde_json::json!({ "webdriverError": error.to_string() }));
+        let _ = driver.enter_default_frame().await;
+        let page = driver
+            .execute(
+                r##"
+                const site = document.querySelector("tonk-site");
+                const frame = site?.querySelector("iframe");
+                const source = frame?.getAttribute("src") || "";
+                return {
+                    site: !!site,
+                    frame: !!frame,
+                    source: source ? source.split("//")[0] + "//" + (source.split("//")[1] || "").split(".")[0].slice(0, 12) : null,
+                    srcdoc: !!frame?.hasAttribute("srcdoc"),
+                    siteText: (site?.textContent || "").trim().slice(0, 160),
+                    controlled: !!navigator.serviceWorker?.controller,
+                };
+                "##,
+                Vec::new(),
+            )
+            .await
+            .map(|value| value.json().clone())
+            .unwrap_or_else(|error| serde_json::json!({ "webdriverError": error.to_string() }));
+        serde_json::json!({ "entered": entered, "worker": worker, "page": page })
     }
 
     async fn element(driver: &WebDriver, selector: &str) -> Result<WebElement> {
@@ -324,8 +382,11 @@ pub(crate) mod tests {
                 Err(error) => {
                     if retryable_find_error(error.as_inner()) {
                         let state = page_diagnostic_state(driver).await;
+                        let frame = frame_diagnostic_state(driver).await;
                         return Err(error).with_context(|| {
-                            format!("timed out waiting for `{selector}`; page={state}")
+                            format!(
+                                "timed out waiting for `{selector}`; page={state}; frame={frame}"
+                            )
                         });
                     }
                     return Err(error).with_context(|| format!("failed to find `{selector}`"));
@@ -647,10 +708,10 @@ pub(crate) mod tests {
             if matches!(entered, Ok(true)) {
                 return Ok(());
             }
-            anyhow::ensure!(
-                tokio::time::Instant::now() < deadline,
-                "the profile's frame never came up: {entered:?}"
-            );
+            if tokio::time::Instant::now() >= deadline {
+                let frame = frame_diagnostic_state(driver).await;
+                anyhow::bail!("the profile's frame never came up: {entered:?}; frame={frame}");
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
