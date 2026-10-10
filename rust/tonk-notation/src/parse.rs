@@ -1547,7 +1547,7 @@ mod tests {
     #[dialog_common::test]
     fn it_parses_a_bracketed_key_kind() {
         let syntax = parse_clean(
-            "concept!: &x\n  with:\n    block:\n      the: xyz.test\n      as: {[position]: entity}\n",
+            "concept!: &x\n  with:\n    block:\n      the: \"xyz.test\"\n      as: {[position]: entity}\n",
         );
         let text = format!("{syntax:?}");
         assert!(
@@ -1693,7 +1693,7 @@ attribute!: &person-name
   description: "name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
 "#,
         );
         let Expression::Claim(Effectful { anchor, inner: _a }) = &syntax.expressions[0] else {
@@ -2043,7 +2043,7 @@ link!:
 attribute!: &person-name
   the: xyz.tonk.person/name
   as: text
-  cardinality: one
+  cardinality: :one
   description: "name"
 "#,
         );
@@ -3250,7 +3250,7 @@ page!:
         let syntax = parse_clean(
             r#"attribute!: &status
   description: "where it stands"
-  the: job/status
+  the: "job/status"
   as:
     - case:suspended
     - case:active
@@ -3270,7 +3270,7 @@ page!:
 
         let parsed = parse(
             r#"attribute!: &status
-  the: job/status
+  the: "job/status"
   as:
     - case: nested
 "#,

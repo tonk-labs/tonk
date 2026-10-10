@@ -1818,25 +1818,25 @@ mod tests {
     name:
       the: xyz.tonk.env/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
     age:
       the: xyz.tonk.env/age
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "age"
 
 attribute!: &person-name
   description: The person's name
   the: xyz.tonk.person/name
   as: text
-  cardinality: one
+  cardinality: :one
 
 attribute!: &person-age
   description: The person's age
   the: xyz.tonk.person/age
   as: unsigned-integer
-  cardinality: one
+  cardinality: :one
 
 concept!: &person
   description: "A person"

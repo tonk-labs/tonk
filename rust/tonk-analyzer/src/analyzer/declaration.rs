@@ -104,9 +104,11 @@ pub(crate) fn parse_attribute_fields(
         // Per-field value-shape requirements:
         //
         // - `as` names a type by its built-in anchor (`text`), or by
-        //   the entity dialog names it by in a quoted string
-        //   (`"text:"`). Lowers to that entity.
-        // - `cardinality` and `pick` take a keyword.
+        //   the entity dialog names it by (`:text`, or the quoted
+        //   `"text:"`). Lowers to that entity.
+        // - `cardinality`, `pick` and `role` take a keyword
+        //   (`pick: :all`); a bare symbol there is a reference and is
+        //   refused.
         // - `the` accepts a URI (`xyz.tonk/foo`) or a literal
         //   string holding the same shape.
         // - `description` requires a quoted string literal —
@@ -186,12 +188,12 @@ pub(crate) fn parse_attribute_fields(
             // default, and `many` is `pick: all`. Accepted so existing
             // documents lower; a `pick:` beside it wins.
             "cardinality" => {
-                let value_str = stringify_simple_value(field)?;
+                let value_str = keyword_of(field, "many")?;
                 let normalized = normalize_cardinality_name(&value_str).ok_or_else(|| {
                     AnalyzeErrorKind::InvalidAttributeBody {
                         reason: format!(
                             "unknown cardinality {value_str:?} — \
-                             expected `one` or `many`; prefer `pick: last` or `pick: all`"
+                             expected `:one` or `:many`; prefer `pick: :last` or `pick: :all`"
                         ),
                     }
                 })?;
@@ -228,7 +230,7 @@ pub(crate) fn parse_attribute_fields(
             // to `reduce` in queries. Dialog checks the pick against the
             // attribute when the concept is built.
             "pick" => {
-                let value_str = stringify_simple_value(field)?;
+                let value_str = keyword_of(field, "all")?;
                 let pick = value_str.trim().to_ascii_lowercase();
                 const PICKS: [&str; 5] = ["last", "all", "top", "max", "min"];
                 if !PICKS.contains(&pick.as_str()) {
@@ -253,7 +255,7 @@ pub(crate) fn parse_attribute_fields(
                 shape.insert("description".into(), serde_json::Value::String(value_str));
             }
             "role" => {
-                let value_str = stringify_simple_value(field)?;
+                let value_str = keyword_of(field, "object")?;
                 if !ROLES.contains(&value_str.as_str()) {
                     return Err(AnalyzeErrorKind::InvalidAttributeBody {
                         reason: format!(
@@ -1157,7 +1159,10 @@ fn attribute_type(
         AnalyzeErrorKind::InvalidAttributeBody {
             reason: format!(
                 "unknown attribute type {:?} — expected one of: {}",
-                stringify_simple_value(field).unwrap_or_default(),
+                match &field.value {
+                    FieldValue::Symbol(name) => name.clone(),
+                    _ => stringify_simple_value(field).unwrap_or_default(),
+                },
                 expected()
             ),
         }
@@ -1177,17 +1182,28 @@ fn normalize_cardinality_name(name: &str) -> Option<&'static str> {
     }
 }
 
-/// Coerce a "simple" attribute-body field into a string. Used
-/// for `the:`, `as:`, `cardinality:` — slots whose value is a
-/// short typed token (URI / type name / cardinality keyword).
-/// Symbols, URIs, and literals all flow through; variables,
-/// blanks, and nested mappings are rejected.
+/// Coerce a "simple" declaration field into a string. Used for
+/// `the:`, a quoted `as:` and `action:` — slots whose value is a URI
+/// or a literal. Bare symbols (references), variables, blanks, and
+/// nested mappings are rejected.
 fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, AnalyzeError> {
     Ok(match &field.value {
         FieldValue::Literal(Scalar::String(s)) => s.clone(),
         FieldValue::Literal(other) => scalar_to_string(other)?,
         FieldValue::Uri(s) => s.clone(),
-        FieldValue::Symbol(s) => s.clone(),
+        // A bare symbol is a reference to an anchor, never text: a
+        // relation is written as a URI (`xyz.tonk.task/title`) and a
+        // name as a quoted string.
+        FieldValue::Symbol(s) => {
+            return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                reason: format!(
+                    "`{field}: {s}` reads `{s}` as a reference to an anchor; \
+                     write a URI or a quoted string (`{field}: \"{s}\"`)",
+                    field = field.name
+                ),
+            }
+            .into());
+        }
         FieldValue::Include(include) => {
             return Err(
                 super::field::unexpanded_include(include, None).with_range(field.value_range)
@@ -1211,6 +1227,39 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
             .into());
         }
     })
+}
+
+/// The keyword a keyword-valued field holds: `pick: :all` is `all`.
+///
+/// A bare symbol is a reference to an anchor, and a pick, a
+/// cardinality or a role is not something an anchor names, so a
+/// bare `all` is refused with the keyword spelling to write instead.
+/// `example` is the keyword the message suggests when the value is
+/// not even symbol-shaped.
+fn keyword_of(field: &tonk_notation::Field, example: &str) -> Result<String, AnalyzeError> {
+    let name = &field.name;
+    match &field.value {
+        FieldValue::Uri(uri) => match uri.strip_suffix(':') {
+            Some(keyword) if !keyword.is_empty() && !keyword.contains(':') => {
+                Ok(keyword.to_owned())
+            }
+            _ => Err(AnalyzeErrorKind::InvalidAttributeBody {
+                reason: format!("`{name}:` takes a keyword such as `:{example}`, not {uri:?}"),
+            }
+            .into()),
+        },
+        FieldValue::Symbol(symbol) => Err(AnalyzeErrorKind::InvalidAttributeBody {
+            reason: format!(
+                "`{name}: {symbol}` reads `{symbol}` as a reference to an anchor; \
+                 write the keyword `{name}: :{symbol}`"
+            ),
+        }
+        .into()),
+        _ => Err(AnalyzeErrorKind::InvalidAttributeBody {
+            reason: format!("`{name}:` takes a keyword such as `:{example}`"),
+        }
+        .into()),
+    }
 }
 
 /// Coerce a `description:` field into its string content. Only

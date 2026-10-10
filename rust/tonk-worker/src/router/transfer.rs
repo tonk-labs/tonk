@@ -335,7 +335,7 @@ mod tests {
     /// the real one a client takes.
     async fn seed(state: &AppState, repo: &str) {
         let (app, _lsp) = api_router_from_state(state.clone());
-        let doc = "attribute!: &probe-name\n  description: A name\n  the: xyz.tonk.probe/name\n  as: text\n  cardinality: one\n";
+        let doc = "attribute!: &probe-name\n  description: A name\n  the: xyz.tonk.probe/name\n  as: text\n  cardinality: :one\n";
         let response = app
             .oneshot(
                 Request::builder()

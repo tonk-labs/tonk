@@ -39,7 +39,7 @@ async fn it_seeds_installs_a_rule_and_fires_it_on_a_command() -> Result<()> {
     tag:
       the: live.check/ping-tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 concept!: &pong
@@ -47,7 +47,7 @@ concept!: &pong
     tag:
       the: live.check/pong-tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 "#,
     )
@@ -113,7 +113,7 @@ async fn it_selects_rows_with_range_predicates() -> Result<()> {
     count:
       the: live.check/counter-count
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "count"
 
 concept!: &alert
@@ -121,7 +121,7 @@ concept!: &alert
     count:
       the: live.check/alert-count
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "count"
 "#,
     )
@@ -184,7 +184,7 @@ async fn it_answers_a_top_level_resolver_query() -> Result<()> {
     tag:
       the: live.check/marker-tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 "#,
     )

@@ -826,7 +826,7 @@ attribute!: &expel-member/member
   description: The DID of the member to remove.
   the: xyz.tonk.command.expel-member/member
   as: entity
-  role: object
+  role: :object
 
 command!: &member/expel
   description: Remove a member from this space.
@@ -1333,7 +1333,7 @@ concept!: &element
         every attribute; `attributeChangedCallback`'s list is read once
         when the tag is registered and so could never grow with an
         edited method.
-      the: xyz.tonk.element.method
+      the: "xyz.tonk.element.method"
       as: {[symbol]: text}
     getter:
       description: |
@@ -1354,7 +1354,7 @@ concept!: &element
 
         A key that would shadow a member every element already has is
         refused, the same as a method key.
-      the: xyz.tonk.element.getter
+      the: "xyz.tonk.element.getter"
       as: {[symbol]: text}
     setter:
       description: |
@@ -1366,7 +1366,7 @@ concept!: &element
         alone makes it write-only — which is a real shape (a sink that
         takes a value and renders it) rather than a mistake, so it is
         allowed.
-      the: xyz.tonk.element.setter
+      the: "xyz.tonk.element.setter"
       as: {[symbol]: text}
     attribute:
       description: |
@@ -1403,7 +1403,7 @@ concept!: &element
         Fixing it properly means teaching the query layer to widen an
         empty collection, which is a dialog-query change rather than a
         schema one.
-      the: xyz.tonk.element.attribute
+      the: "xyz.tonk.element.attribute"
       as: {[symbol]: text}
 
 # The older shape: one anonymous JS module that calls
@@ -1474,7 +1474,7 @@ concept!: &db/session:
           Active branch(es) in this session. Can be multiple when overlays are used.
       the: dialog.session/branch
       as: entity
-      pick: all
+      pick: :all
 
 concept!: &db/branch:
   this: concept:branch
@@ -1660,7 +1660,7 @@ concept!: &site
         `site/select`. Absent when nothing is selected. A session fact like the
         rest of the site: it goes with the tab.
       the: xyz.tonk.site/selection
-      cardinality: one
+      cardinality: :one
       as: text
 
 
@@ -2136,12 +2136,12 @@ concept!: &asset
     media-type:
       description: Media type of the asset's content, such as image/png
       the: tonk.dialog.asset/media-type
-      cardinality: one
+      cardinality: :one
       as: text
     name:
       description: Human-readable file name
       the: tonk.dialog.asset/name
-      cardinality: one
+      cardinality: :one
       as: text
 
 rule!:
@@ -2612,7 +2612,7 @@ concept!: &intent/action
     name:
       description: A word or phrase the command answers to.
       the: tonk.dialog.intent.action/name
-      cardinality: many
+      cardinality: :many
       as: text
 
 # The command palette's interpretation of what was typed, as session facts.
@@ -2651,23 +2651,23 @@ concept!: &intent/expression
     input:
       description: What is typed.
       the: tonk.dialog.intent.expression/input
-      cardinality: one
+      cardinality: :one
       as: text
     site:
       description: The tab's site, where the palette was opened.
       the: tonk.dialog.intent.expression/site
-      cardinality: one
+      cardinality: :one
       as: entity
     time:
       description: When the line was last interpreted.
       the: tonk.dialog.intent.expression/time
-      cardinality: one
+      cardinality: :one
       as: float
   maybe:
     selection:
       description: The text selected in the tab's page, when there was some.
       the: tonk.dialog.intent.expression/selection
-      cardinality: one
+      cardinality: :one
       as: text
 
 concept!: &intent
@@ -2676,12 +2676,12 @@ concept!: &intent
     expression:
       description: The expression it was read from.
       the: tonk.dialog.intent/expression
-      cardinality: one
+      cardinality: :one
       as: entity
     command:
       description: The command it would run.
       the: tonk.dialog.intent/command
-      cardinality: one
+      cardinality: :one
       as: entity
 
 # A member as the account `member/expel` wants. A roster row is the
@@ -2695,7 +2695,7 @@ concept!: &member/account
     name:
       description: The display name the member uses in this space.
       the: xyz.tonk.member.account/name
-      cardinality: one
+      cardinality: :one
       as: text
 
 rule!:
@@ -2723,7 +2723,7 @@ concept!: &library/component
     name:
       description: The component's name, the file it is in without `.yaml`.
       the: xyz.tonk.library.component/name
-      cardinality: one
+      cardinality: :one
       as: text
 
 view!:
@@ -2756,13 +2756,13 @@ attribute!: &install-component/component
   description: Which component to install, `tonk:library/<name>`.
   the: xyz.tonk.command.install-component/component
   as: entity
-  role: object
+  role: :object
 
 attribute!: &install-component/time
   description: The moment it was asked; makes each dispatch a distinct transient.
   the: xyz.tonk.command.install-component/time
   as: float
-  role: now
+  role: :now
 
 command!: &library/install
   description: Install a library component into this space, or update it.

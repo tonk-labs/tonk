@@ -667,7 +667,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         .revision()
         .unwrap()
         .tree;
-    let document = "attribute!: &after-revoke\n  description: Offline edit after revocation\n  the: test.connection/offline-after-revoke\n  as: text\n  cardinality: one\n";
+    let document = "attribute!: &after-revoke\n  description: Offline edit after revocation\n  the: test.connection/offline-after-revoke\n  as: text\n  cardinality: :one\n";
     let mut command = cli(&home, &project);
     command.args(["--space", "agent", "eval", "-c", document, "--no-sync"]);
     let output = run(command).await?;

@@ -98,7 +98,7 @@ attribute!: &person-name
   description: The person's name
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
 
 concept!: &person
   description: A person
@@ -149,6 +149,27 @@ parsed as a symbol but is meant to be a string MUST be quoted.
 `name: alice` is a symbol (resolves through the name table);
 `name: "alice"` is a literal string. The quotes are
 load-bearing.
+
+A bare symbol is always a **reference**: it resolves to an
+anchor declared in the document, a name published on the
+branch, or a built-in name (the types `text`, `integer`,
+`natural`, …), and a symbol that resolves to nothing fails
+the document. It never falls back to its own text. A field
+whose value is a fixed word rather than an entity takes a
+**keyword**, the word with a colon in front:
+
+```yaml tonk=parse
+attribute!: &task-tags
+  description: "Tags on a task"
+  the:         xyz.tonk.task/tags
+  as:          text
+  pick:        :all
+```
+
+`pick:` (`:last`, `:all`, `:top`, `:max`, `:min`), the older
+`cardinality:` (`:one`, `:many`) and a command field's `role:`
+(`:object`, `:goal`, …) take keywords. A bare `pick: all`
+is refused: `all` would be a reference to an anchor.
 
 ## Heads in detail
 
@@ -436,7 +457,7 @@ attribute!: &person-name
   description: "The person's name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
 ```
 
 is equivalent to:
@@ -447,7 +468,7 @@ attribute!:
   description: "The person's name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
 
 name!:
   this:   id:person-name
@@ -466,7 +487,7 @@ attribute!: &person-name
   description: "The person's name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
 
 # Additional names for the same entity:
 name!:
@@ -658,7 +679,7 @@ attribute!:
   description: "The entity identified by the name"
   the:         dialog.meta/name
   as:          entity
-  cardinality: one
+  cardinality: :one
 
 concept!: &name
   description: "A mutable name for an entity"

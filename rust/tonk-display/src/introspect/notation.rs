@@ -510,7 +510,7 @@ mod tests {
              content:\n      \
              the: io.gozala.prose/content\n      \
              as: Text\n      \
-             cardinality: one"
+             cardinality: :one"
         );
     }
 

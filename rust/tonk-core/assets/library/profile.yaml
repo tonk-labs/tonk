@@ -251,13 +251,13 @@ attribute!: &rename-space/name
   description: The new repository name.
   the: xyz.tonk.command.rename-repository/name
   as: text
-  role: goal
+  role: :goal
 
 attribute!: &rename-space/space
   description: The target space DID.
   the: xyz.tonk.rename-repository/space
   as: entity
-  role: object
+  role: :object
 
 command!: &tonk/rename-repository
   description: Rename a space from the profile Hub.
@@ -1197,13 +1197,13 @@ attribute!: &pause-sync/time
   description: The click's timestamp; makes each dispatch a distinct transient.
   the: xyz.tonk.command.pause-sync/time
   as: float
-  role: now
+  role: :now
 
 attribute!: &pause-sync/space
   description: The target space DID — the replica whose auto-sync is flipped.
   the: xyz.tonk.pause-sync/space
   as: entity
-  role: object
+  role: :object
 
 command!: &tonk/pause-sync
   this: tonk:pause-sync
@@ -1217,7 +1217,7 @@ attribute!: &home/time
   description: The moment it was asked; makes each dispatch a distinct transient.
   the: xyz.tonk.command.home/time
   as: float
-  role: now
+  role: :now
 
 command!: &tonk/home
   this: tonk:home
@@ -1232,7 +1232,7 @@ attribute!: &add-account/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.add-account/time
   as: float
-  role: now
+  role: :now
 
 command!: &account/add
   description: Start adding an account to this profile, from the bar.
@@ -1244,7 +1244,7 @@ attribute!: &share-link/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.share-link/time
   as: float
-  role: now
+  role: :now
 
 command!: &space/share-link
   description: Copy a link that invites someone into this space, from the bar.
@@ -1256,7 +1256,7 @@ attribute!: &view-members/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.view-members/time
   as: float
-  role: now
+  role: :now
 
 command!: &space/view-members
   description: Show who is in this space, in the bar.
@@ -1268,7 +1268,7 @@ attribute!: &connect-agent/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.connect-agent/time
   as: float
-  role: now
+  role: :now
 
 command!: &agent/connect
   description: Invite an agent to work in this space, from the bar.
@@ -1280,7 +1280,7 @@ attribute!: &connect-space/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.connect-space/time
   as: float
-  role: now
+  role: :now
 
 # The bar's condition: "connect this space" while it is local-only, "confirm
 # your email" while the account waits on it. The bar does nothing when it
@@ -1300,7 +1300,7 @@ attribute!: &inspect/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.inspect/time
   as: float
-  role: now
+  role: :now
 
 command!: &devtools/inspect
   description: Pick something on this page and look inside it.
@@ -1498,7 +1498,7 @@ concept!: &site
         `site/select`. Absent when nothing is selected. A session fact like the
         rest of the site: it goes with the tab.
       the: xyz.tonk.site/selection
-      cardinality: one
+      cardinality: :one
       as: text
 
 
@@ -1542,12 +1542,12 @@ concept!: &site/request
     request:
       description: The act — `account`, `share`, `members` or `agent`.
       the: xyz.tonk.site/request
-      cardinality: one
+      cardinality: :one
       as: text
     time:
       description: When it was asked, so the same act asked twice is two requests.
       the: xyz.tonk.site/request-time
-      cardinality: one
+      cardinality: :one
       as: float
 
 # The route table concept. Mirrors core.yaml's `&route`.
@@ -1924,7 +1924,7 @@ concept!: &element
         every attribute; `attributeChangedCallback`'s list is read once
         when the tag is registered and so could never grow with an
         edited method.
-      the: xyz.tonk.element.method
+      the: "xyz.tonk.element.method"
       as: {[symbol]: text}
     getter:
       description: |
@@ -1945,7 +1945,7 @@ concept!: &element
 
         A key that would shadow a member every element already has is
         refused, the same as a method key.
-      the: xyz.tonk.element.getter
+      the: "xyz.tonk.element.getter"
       as: {[symbol]: text}
     setter:
       description: |
@@ -1957,7 +1957,7 @@ concept!: &element
         alone makes it write-only — which is a real shape (a sink that
         takes a value and renders it) rather than a mistake, so it is
         allowed.
-      the: xyz.tonk.element.setter
+      the: "xyz.tonk.element.setter"
       as: {[symbol]: text}
     attribute:
       description: |
@@ -1994,7 +1994,7 @@ concept!: &element
         Fixing it properly means teaching the query layer to widen an
         empty collection, which is a dialog-query change rather than a
         schema one.
-      the: xyz.tonk.element.attribute
+      the: "xyz.tonk.element.attribute"
       as: {[symbol]: text}
 
 # The account menu's keyboard and focus behaviour, as branch data.
@@ -2705,7 +2705,7 @@ concept!: &hub
         The branch the profile is on, picked off the site entity: the
         latent bar's command line talks to the profile.
       the: xyz.tonk.site/profile-branch
-      cardinality: one
+      cardinality: :one
       as: text
 
 view!:
@@ -2930,7 +2930,7 @@ concept!: &join/route
         The branch the profile is on, picked off the site entity: the
         latent bar's command line talks to the profile.
       the: xyz.tonk.site/profile-branch
-      cardinality: one
+      cardinality: :one
       as: text
 
 view!:
@@ -3062,7 +3062,7 @@ concept!: &inspector/route
         The branch the profile is on, picked off the site entity: the
         latent bar's command line talks to the profile.
       the: xyz.tonk.site/profile-branch
-      cardinality: one
+      cardinality: :one
       as: text
 
 view!:
@@ -3106,7 +3106,7 @@ concept!: &diagnose/route
         The branch the profile is on, picked off the site entity: the
         latent bar's command line talks to the profile.
       the: xyz.tonk.site/profile-branch
-      cardinality: one
+      cardinality: :one
       as: text
 
 view!:
@@ -3153,7 +3153,7 @@ concept!: &seed/route
         The branch the profile is on, picked off the site entity: the
         latent bar's command line talks to the profile.
       the: xyz.tonk.site/profile-branch
-      cardinality: one
+      cardinality: :one
       as: text
 
 view!:
@@ -3213,7 +3213,7 @@ view!:
 # `<tonk-site>` defaults its absent `path` to `/`.
 #
 # The view keeps `<tonk-site path={rest}>` even when `rest` is absent because
-# `rest` is a `cardinality: one` (scalar) field: `<tonk-display>` stamps the
+# `rest` is a `cardinality: :one` (scalar) field: `<tonk-display>` stamps the
 # concept's scalar field names onto the `<tonk-view>` (`data-scalar-fields`), so
 # the planner renders them as plain substitutions rather than iteration axes that
 # would clone the host zero times — and drop it — when the value is empty.
@@ -3246,7 +3246,7 @@ concept!: &profile/repository
     name:
       description: The repository's display name.
       the: xyz.tonk.repo/name
-      cardinality: one
+      cardinality: :one
       as: text
 
 view!:
@@ -3475,7 +3475,7 @@ concept!: &not-found
         The branch the profile is on, picked off the site entity: the
         latent bar's command line talks to the profile.
       the: xyz.tonk.site/profile-branch
-      cardinality: one
+      cardinality: :one
       as: text
 
 view!:
@@ -5736,7 +5736,7 @@ concept!: &intent/action
     name:
       description: A word or phrase the command answers to.
       the: tonk.dialog.intent.action/name
-      cardinality: many
+      cardinality: :many
       as: text
 
 concept!: &intent/choice
@@ -5745,17 +5745,17 @@ concept!: &intent/choice
     command:
       description: The command that was run.
       the: tonk.dialog.intent.choice/command
-      cardinality: one
+      cardinality: :one
       as: entity
     input:
       description: The words typed for the verb; empty when it was suggested from a noun.
       the: tonk.dialog.intent.choice/input
-      cardinality: one
+      cardinality: :one
       as: text
     time:
       description: When it was run, so two runs are two choices.
       the: tonk.dialog.intent.choice/time
-      cardinality: one
+      cardinality: :one
       as: float
 
 # The command palette's interpretation of what was typed, as session facts.
@@ -5794,23 +5794,23 @@ concept!: &intent/expression
     input:
       description: What is typed.
       the: tonk.dialog.intent.expression/input
-      cardinality: one
+      cardinality: :one
       as: text
     site:
       description: The tab's site, where the palette was opened.
       the: tonk.dialog.intent.expression/site
-      cardinality: one
+      cardinality: :one
       as: entity
     time:
       description: When the line was last interpreted.
       the: tonk.dialog.intent.expression/time
-      cardinality: one
+      cardinality: :one
       as: float
   maybe:
     selection:
       description: The text selected in the tab's page, when there was some.
       the: tonk.dialog.intent.expression/selection
-      cardinality: one
+      cardinality: :one
       as: text
 
 concept!: &intent
@@ -5819,12 +5819,12 @@ concept!: &intent
     expression:
       description: The expression it was read from.
       the: tonk.dialog.intent/expression
-      cardinality: one
+      cardinality: :one
       as: entity
     command:
       description: The command it would run.
       the: tonk.dialog.intent/command
-      cardinality: one
+      cardinality: :one
       as: entity
 
 # The directory row IS the repository's own entity (its subject DID), which

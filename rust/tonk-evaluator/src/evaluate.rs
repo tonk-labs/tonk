@@ -1422,13 +1422,13 @@ mod tests {
   description: "an attr"
   the: io.foo/bar
   as: text
-  cardinality: one
+  cardinality: :one
 
 attribute!: &foo/title
   description: "title"
   the: io.foo/title
   as: text
-  cardinality: one
+  cardinality: :one
 "#,
             // Commit 2: reference foo/bar by NAME under `maybe:`.
             r#"concept!: &by-name
@@ -1489,14 +1489,14 @@ attribute!: &foo/title
     message:
       the: xyz.tonk.ping/message
       as: text
-      cardinality: one
+      cardinality: :one
       description: "message"
 
 attribute!: &note-body
   description: "body"
   the: xyz.tonk.note/body
   as: text
-  cardinality: one
+  cardinality: :one
 
 concept!: &note
   description: "A note"
@@ -1578,7 +1578,7 @@ concept!: &note
   description: "A many-valued entity edge"
   the: repro.demo/edge
   as: entity
-  cardinality: many
+  cardinality: :many
 "#,
             // Two domain-head writes against the same entity, in
             // separate commits.
@@ -1651,8 +1651,8 @@ concept!: &note
   with:
     card:
       description: "Cards by facet"
-      the: io.test.deck
-      cardinality: one
+      the: "io.test.deck"
+      cardinality: :one
       as: {[symbol]: text}
 "#,
             r#"deck!:
@@ -1750,8 +1750,8 @@ concept!: &note
   with:
     card:
       description: "Cards by facet"
-      the: io.test.deck
-      cardinality: one
+      the: "io.test.deck"
+      cardinality: :one
       as: {[symbol]: text}
 "#,
             // Two entries in ONE assertion.
@@ -2197,7 +2197,7 @@ concept!: &note
       as: text
     block:
       description: "The notebook's blocks, in document order"
-      the: xyz.test.notebook
+      the: "xyz.test.notebook"
       as: {[position]: entity}
 "#,
             r#"notebook!:
@@ -2291,7 +2291,7 @@ concept!: &note
       as: text
     block:
       description: "The notebook's blocks, in document order"
-      the: xyz.test.notebook
+      the: "xyz.test.notebook"
       as: {[position]: entity}
 "#,
             r#"notebook!:
@@ -2673,7 +2673,7 @@ name!:
     tag:
       the: io.gozala.ping/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 concept!: &pong
@@ -2681,7 +2681,7 @@ concept!: &pong
     tag:
       the: io.gozala.pong/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 rule!:
@@ -2824,7 +2824,7 @@ rule!:
     count:
       the: xyz.tonk.counter/count
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "count"
 
 concept!: &increment
@@ -2833,7 +2833,7 @@ concept!: &increment
     by:
       the: xyz.tonk.command/increment
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "by"
 
 rule!:
@@ -2967,7 +2967,7 @@ counter!: &counter-demo
     count:
       the: xyz.tonk.counter/count
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "count"
 
 concept!: &increment
@@ -2976,7 +2976,7 @@ concept!: &increment
     by:
       the: xyz.tonk.command/increment
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "by"
 
 rule!:
@@ -3099,7 +3099,7 @@ counter!: &counter-demo
     count:
       the: xyz.tonk.counter/count
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "count"
 
 concept!: &increment
@@ -3108,7 +3108,7 @@ concept!: &increment
     by:
       the: xyz.tonk.command/increment
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "by"
 
 rule!:
@@ -3220,7 +3220,7 @@ counter!: &counter-demo
     tag:
       the: io.gozala.ping/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 concept!: &pong
@@ -3228,7 +3228,7 @@ concept!: &pong
     tag:
       the: io.gozala.pong/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 "#;
         parse(concepts)
@@ -3299,7 +3299,7 @@ concept!: &pong
     tag:
       the: io.gozala.ping/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 concept!: &pong
@@ -3307,7 +3307,7 @@ concept!: &pong
     tag:
       the: io.gozala.pong/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 "#;
         parse(concepts)
@@ -3369,7 +3369,7 @@ concept!: &pong
     tag:
       the: io.gozala.ping/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 concept!: &pong
@@ -3377,7 +3377,7 @@ concept!: &pong
     tag:
       the: io.gozala.pong/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 "#;
         parse(concepts)
@@ -3647,25 +3647,25 @@ concept!: &pong
     name:
       the: xyz.tonk.env/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
     age:
       the: xyz.tonk.env/age
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "age"
 
 attribute!: &person-name
   description: The person's name
   the: xyz.tonk.person/name
   as: text
-  cardinality: one
+  cardinality: :one
 
 attribute!: &person-age
   description: The person's age
   the: xyz.tonk.person/age
   as: unsigned-integer
-  cardinality: one
+  cardinality: :one
 
 concept!: &person
   description: "A person"
@@ -3754,7 +3754,7 @@ concept!: &person
     tag:
       the: io.gozala.ping/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 concept!: &pong
@@ -3762,7 +3762,7 @@ concept!: &pong
     tag:
       the: io.gozala.pong/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 rule!:
@@ -3861,7 +3861,7 @@ rule!:
     tag:
       the: io.gozala.ping/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 concept!: &pong
@@ -3869,7 +3869,7 @@ concept!: &pong
     tag:
       the: io.gozala.pong/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 rule!:
@@ -3965,17 +3965,17 @@ concept!: &workspace
     name:
       the: xyz.tonk.workspace/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/active-sheet
@@ -3983,7 +3983,7 @@ concept!: &workspace/active-sheet
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
 
 concept!: &workspace/sheet-member
@@ -3991,7 +3991,7 @@ concept!: &workspace/sheet-member
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/activate-sheet
@@ -4179,12 +4179,12 @@ concept!: &workspace
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/active-sheet
@@ -4192,7 +4192,7 @@ concept!: &workspace/active-sheet
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
 
 concept!: &workspace/sheet-member
@@ -4200,7 +4200,7 @@ concept!: &workspace/sheet-member
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/close-sheet
@@ -4329,17 +4329,17 @@ concept!: &workspace
     name:
       the: xyz.tonk.workspace/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/sheet
@@ -4347,12 +4347,12 @@ concept!: &workspace/sheet
     title:
       the: xyz.tonk.artifact/title
       as: text
-      cardinality: one
+      cardinality: :one
       description: "title"
     order:
       the: xyz.tonk.sheet/order
       as: text
-      cardinality: one
+      cardinality: :one
       description: "order"
 
 concept!: &workspace/active-sheet
@@ -4360,7 +4360,7 @@ concept!: &workspace/active-sheet
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
 
 concept!: &workspace/sheet-member
@@ -4368,7 +4368,7 @@ concept!: &workspace/sheet-member
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/create-sheet
@@ -4562,17 +4562,17 @@ concept!: &workspace
     name:
       the: xyz.tonk.workspace/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/sheet
@@ -4580,22 +4580,22 @@ concept!: &workspace/sheet
     title:
       the: xyz.tonk.artifact/title
       as: text
-      cardinality: one
+      cardinality: :one
       description: "title"
     entity:
       the: xyz.tonk.artifact/entity
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "entity"
     model:
       the: xyz.tonk.artifact/model
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "model"
     order:
       the: xyz.tonk.sheet/order
       as: text
-      cardinality: one
+      cardinality: :one
       description: "order"
 
 concept!: &empty-artifact
@@ -4604,7 +4604,7 @@ concept!: &empty-artifact
     title:
       the: xyz.tonk.artifact/title
       as: text
-      cardinality: one
+      cardinality: :one
       description: "title"
 
 concept!: &workspace/create-sheet
@@ -4840,13 +4840,13 @@ workspace!:
     name:
       the: io.gozala.person/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
   maybe:
     nickname:
       the: io.gozala.person/nickname
       as: text
-      cardinality: one
+      cardinality: :one
       description: "nickname"
 "#;
         let parsed = parse(doc);
@@ -4955,13 +4955,13 @@ workspace!:
     name:
       the: io.gozala.person/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
   maybe:
     nickname:
       the: io.gozala.person/nickname
       as: text
-      cardinality: one
+      cardinality: :one
       description: "nickname"
 
 person!:

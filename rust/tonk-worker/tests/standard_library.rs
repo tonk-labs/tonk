@@ -1370,13 +1370,13 @@ command!: &bump
       description: The thing being bumped
       the: io.gozala.bump/subject
       as: entity
-      cardinality: one
+      cardinality: :one
   maybe:
     time:
       description: A per-event nonce
       the: io.gozala.bump/time
       as: float
-      cardinality: one
+      cardinality: :one
 "#;
     assert_library_lowers("a bare `event!:` document", "event.yaml", document).await;
 }
@@ -1484,7 +1484,7 @@ fn the_element_method_query_matches_the_library() {
          dictionary of text",
     );
     assert!(
-        declared.contains("cardinality: one"),
+        declared.contains("cardinality: :one"),
         "the library declares `method` at a cardinality the predicate \
          does not mirror",
     );
