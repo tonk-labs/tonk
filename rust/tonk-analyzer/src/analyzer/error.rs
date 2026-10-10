@@ -218,15 +218,16 @@ pub enum AnalyzeDiagnosticKind {
         /// The field where the variable appears.
         field: String,
     },
-    /// An anchor is declared under the name of a built-in type anchor
-    /// (`text`, `integer`, ...). Within the document the name means the
-    /// declaration, so `as: text` there no longer names the type.
+    /// An anchor is declared under the name of a built-in anchor: a
+    /// type (`text`, `integer`, ...) or a pick (`last`, `all`, ...).
+    /// Within the document the name means the declaration, so `as:
+    /// text` or `pick: all` there no longer names the built-in.
     #[error(
-        "`&{name}` shadows the built-in type `{name}` in this document — \
-         `{name}` here means this declaration, not the type; pick another name \
-         to keep using the type"
+        "`&{name}` shadows the built-in `{name}` in this document — \
+         `{name}` here means this declaration, not the built-in; choose another \
+         name to keep using the built-in"
     )]
-    ShadowsBuiltinType {
+    ShadowsBuiltin {
         /// The anchor name.
         name: String,
     },
@@ -289,7 +290,7 @@ impl AnalyzeDiagnosticKind {
             Self::SingleOccurrenceVariableAssertionField { .. } => {
                 "E_SINGLE_OCCURRENCE_VARIABLE_ASSERTION_FIELD"
             }
-            Self::ShadowsBuiltinType { .. } => "W_SHADOWS_BUILTIN_TYPE",
+            Self::ShadowsBuiltin { .. } => "W_SHADOWS_BUILTIN",
             Self::DeclaredTypeDivergence { .. } => "W_DECLARED_TYPE_DIVERGENCE",
             Self::UnknownEmbed { .. } => "W_UNKNOWN_EMBED",
         }

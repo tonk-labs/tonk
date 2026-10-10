@@ -552,10 +552,12 @@ pub fn attribute_statements(
             .map_err(|e| format!("type is no entity: {e}"))?;
         statements.push(claim(the!("db.attribute/as"), Value::Entity(kind)));
     }
-    statements.push(claim(
-        the!("db.attribute/pick"),
-        Value::String(descriptor.pick().name().to_owned()),
-    ));
+    let pick: Entity = descriptor
+        .pick()
+        .uri()
+        .parse()
+        .map_err(|e| format!("pick is no entity: {e}"))?;
+    statements.push(claim(the!("db.attribute/pick"), Value::Entity(pick)));
     if !descriptor.among().is_empty() {
         let among = serde_json::to_string(descriptor.among()).map_err(|e| e.to_string())?;
         statements.push(claim(the!("db.attribute/among"), Value::String(among)));
@@ -596,7 +598,7 @@ fn build_attribute_descriptor(
     }
     shape.insert(
         "pick".to_owned(),
-        serde_json::Value::String(facts.pick.0.clone()),
+        serde_json::Value::String(facts.pick.0.to_string()),
     );
     if !facts.description.0.is_empty() {
         shape.insert(
@@ -2031,7 +2033,9 @@ mod tests {
             .assert(
                 dialog_query::the!("db.attribute/pick")
                     .of(attr_entity.clone())
-                    .is("last".to_string()),
+                    .is("last:"
+                        .parse::<dialog_artifacts::Entity>()
+                        .expect("a pick entity")),
             )
             .assert(
                 dialog_query::the!("db.meta/description")
@@ -2167,7 +2171,7 @@ mod tests {
             r#"{
                 "with": {
                     "status": { "the": "xyz.tonk.job/status", "as": ["case:suspended", "case:active"] },
-                    "tags": { "the": "xyz.tonk.job/tags", "as": "text:", "pick": "all" },
+                    "tags": { "the": "xyz.tonk.job/tags", "as": "text:", "pick": "all:" },
                     "name": { "the": "xyz.tonk.job/name", "as": "text:" }
                 }
             }"#,
@@ -2295,7 +2299,9 @@ mod tests {
             .assert(
                 dialog_query::the!("db.attribute/pick")
                     .of(t_attr_entity.clone())
-                    .is("last".to_string()),
+                    .is("last:"
+                        .parse::<dialog_artifacts::Entity>()
+                        .expect("a pick entity")),
             )
             .assert(
                 dialog_query::the!("db.meta/description")
@@ -2318,7 +2324,9 @@ mod tests {
             .assert(
                 dialog_query::the!("db.attribute/pick")
                     .of(d_attr_entity.clone())
-                    .is("last".to_string()),
+                    .is("last:"
+                        .parse::<dialog_artifacts::Entity>()
+                        .expect("a pick entity")),
             )
             .assert(
                 dialog_query::the!("db.meta/description")
@@ -2435,7 +2443,9 @@ mod tests {
             .assert(
                 dialog_query::the!("db.attribute/pick")
                     .of(c_attr_entity.clone())
-                    .is("last".to_string()),
+                    .is("last:"
+                        .parse::<dialog_artifacts::Entity>()
+                        .expect("a pick entity")),
             )
             .assert(
                 dialog_query::the!("db.meta/description")
@@ -2457,7 +2467,9 @@ mod tests {
             .assert(
                 dialog_query::the!("db.attribute/pick")
                     .of(d_attr_entity.clone())
-                    .is("last".to_string()),
+                    .is("last:"
+                        .parse::<dialog_artifacts::Entity>()
+                        .expect("a pick entity")),
             )
             .assert(
                 dialog_query::the!("db.meta/description")

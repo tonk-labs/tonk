@@ -548,9 +548,9 @@ attribute!:
 
 attribute!:
   this: ?pick
-  description: "Which claims a read returns: last, all, top, max or min"
+  description: "Which claims a read returns, as the entity dialog names the pick (last:, all:, …)"
   the:         db.attribute/pick
-  as:          text
+  as:          entity
 
 attribute!:
   this: ?description
@@ -573,7 +573,9 @@ concept!: &attribute
 The body field shorthands users write (`the:`, `as:`, `pick:`,
 `description:`) map to these attributes through the concept's
 `with:` map. `as: text` names the built-in type anchor `text`,
-which stands for the type entity `text:`.
+which stands for the type entity `text:`, and `pick: all` names the
+built-in pick anchor `all`, which stands for the pick entity `all:`.
+The built-in picks are `last`, `all`, `top`, `max` and `min`.
 
 `description` is required on every attribute, but it does not
 participate in the attribute entity's content-derivation —
@@ -589,7 +591,7 @@ Because `attribute` is a regular concept, you can query it:
 attribute:
   this: ?a
   id:   ?selector
-  pick: "all"
+  pick: all
 ```
 
 Note: the schema definition above is illustrative. In an

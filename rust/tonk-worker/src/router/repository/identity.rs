@@ -244,8 +244,11 @@ fn attribute_descriptor(claims: &[(Relation, Value)]) -> Option<AttributeDescrip
     if let Some(Value::Entity(kind)) = fact("db.attribute/as") {
         shape.insert("as".to_owned(), serde_json::Value::String(kind.to_string()));
     }
-    if let Some(Value::String(pick)) = fact("db.attribute/pick") {
-        shape.insert("pick".to_owned(), serde_json::Value::String(pick.clone()));
+    if let Some(Value::Entity(pick)) = fact("db.attribute/pick") {
+        shape.insert(
+            "pick".to_owned(),
+            serde_json::Value::String(pick.to_string()),
+        );
     }
     serde_json::from_value(serde_json::Value::Object(shape)).ok()
 }

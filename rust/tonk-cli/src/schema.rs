@@ -345,7 +345,12 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
                     .map(|kind| kind.anchor().to_owned())
                     .unwrap_or(wire)
             },
-            cardinality: take_string(&row.fields, "pick"),
+            cardinality: {
+                let wire = take_string(&row.fields, "pick");
+                tonk_notation::Pick::from_wire(&wire)
+                    .map(|pick| pick.anchor().to_owned())
+                    .unwrap_or(wire)
+            },
             description: take_string(&row.fields, "description"),
         });
     }

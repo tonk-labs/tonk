@@ -307,7 +307,7 @@ pub fn scalar_field_names(descriptor_json: &str) -> std::collections::BTreeSet<S
 fn is_scalar_field(spec: &Value) -> bool {
     let text = |key: &str| spec.get(key).and_then(Value::as_str);
     match text("pick").or(text("select")) {
-        Some(pick) => pick != "all",
+        Some(pick) => tonk_notation::Pick::from_wire(pick) != Some(tonk_notation::Pick::All),
         None => text("cardinality") != Some("many"),
     }
 }

@@ -5,7 +5,8 @@
 //! dialog serialized it as (`db.attribute/type "Text"`) and its arity as
 //! `db.attribute/cardinality`. This release records the type as the
 //! entity dialog names it by (`db.attribute/as text:`) and which claims a
-//! read picks as `db.attribute/pick`, and hashes both into the
+//! read picks as the entity dialog names the pick by
+//! (`db.attribute/pick all:`), and hashes both into the
 //! attribute's identity, so every typed attribute's identity changed, and
 //! the identity of every concept over one.
 //!
@@ -466,7 +467,7 @@ mod tests {
         let descriptor: ConceptDescriptor = serde_json::from_value(serde_json::json!({
             "with": {
                 "title": { "the": "xyz.tonk.note/title", "as": "text:", "description": "A title" },
-                "tags": { "the": "xyz.tonk.note/tags", "as": "text:", "pick": "all" }
+                "tags": { "the": "xyz.tonk.note/tags", "as": "text:", "pick": "all:" }
             }
         }))?;
         let earlier_concept = concept_identity_v0(&descriptor);

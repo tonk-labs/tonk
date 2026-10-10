@@ -1,9 +1,9 @@
 //! Structural pre-pass over the syntax tree — independent of
 //! resolver, branch state, or the rest of the analyzer.
 //!
-//! Two checks. An anchor declared under a built-in type's name
-//! (`&text`) shadows the type within the document, which is warned
-//! about. And *single-occurrence variables*: a `?var`
+//! Two checks. An anchor declared under a built-in anchor's name, a
+//! type's (`&text`) or a pick's (`&all`), shadows the built-in within
+//! the document, which is warned about. And *single-occurrence variables*: a `?var`
 //! that appears exactly once in the document is almost always a
 //! mistake, because variables exist to create joins and a one-shot
 //! variable binds nothing useful. Context-aware diagnostics:
@@ -109,15 +109,15 @@ pub fn scan_variables(syntax: &Syntax) -> Vec<AnalyzeDiagnostic> {
         };
         out.push(diagnostic);
     }
-    // An anchor named like a built-in type shadows the type within the
-    // document.
+    // An anchor named like a built-in anchor, a type or a pick,
+    // shadows it within the document.
     for expression in &syntax.expressions {
         if let Expression::Claim(claim) = expression
             && let Some(anchor) = &claim.anchor
-            && tonk_notation::ValueType::from_anchor(&anchor.name).is_some()
+            && tonk_notation::builtin(&anchor.name).is_some()
         {
             out.push(AnalyzeDiagnostic::warning(
-                AnalyzeDiagnosticKind::ShadowsBuiltinType {
+                AnalyzeDiagnosticKind::ShadowsBuiltin {
                     name: anchor.name.clone(),
                 },
                 anchor.range,

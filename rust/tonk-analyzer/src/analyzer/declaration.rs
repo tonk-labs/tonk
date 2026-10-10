@@ -196,7 +196,10 @@ pub(crate) fn parse_attribute_fields(
                     }
                 })?;
                 if normalized == "many" && !shape.contains_key("pick") {
-                    shape.insert("pick".into(), serde_json::Value::String("all".into()));
+                    shape.insert(
+                        "pick".into(),
+                        serde_json::Value::String(tonk_notation::Pick::All.uri().into()),
+                    );
                 }
             }
             // `the:` names the relation, or lists relations best first:
@@ -228,19 +231,8 @@ pub(crate) fn parse_attribute_fields(
             // to `reduce` in queries. Dialog checks the pick against the
             // attribute when the concept is built.
             "pick" => {
-                let value_str = stringify_simple_value(field)?;
-                let pick = value_str.trim().to_ascii_lowercase();
-                const PICKS: [&str; 5] = ["last", "all", "top", "max", "min"];
-                if !PICKS.contains(&pick.as_str()) {
-                    return Err(AnalyzeErrorKind::InvalidAttributeBody {
-                        reason: format!(
-                            "unknown pick {value_str:?} — expected one of: {}",
-                            PICKS.join(", ")
-                        ),
-                    }
-                    .into());
-                }
-                shape.insert("pick".into(), serde_json::Value::String(pick));
+                let pick = attribute_pick(field, scope)?;
+                shape.insert("pick".into(), serde_json::Value::String(pick.uri().into()));
             }
             "select" => {
                 return Err(AnalyzeErrorKind::InvalidAttributeBody {
@@ -429,7 +421,26 @@ pub(crate) fn parse_concept_body(
             "transient" => {
                 transient = parse_transient_tag(field)?;
             }
+            // An action name is text the intent layer matches, so it is
+            // quoted: a bare word is a reference, and an action names
+            // no entity.
             "action" => {
+                let bare = match &field.value {
+                    FieldValue::Symbol(name) => Some(name),
+                    FieldValue::List(items) => items.iter().find_map(|item| match item {
+                        FieldValue::Symbol(name) => Some(name),
+                        _ => None,
+                    }),
+                    _ => None,
+                };
+                if let Some(name) = bare {
+                    return Err(AnalyzeErrorKind::InvalidConceptBody {
+                        reason: format!(
+                            "`action:` takes the command's name as text; quote it: `\"{name}\"`"
+                        ),
+                    }
+                    .into());
+                }
                 let names = match &field.value {
                     FieldValue::List(items) => items
                         .iter()
@@ -765,13 +776,12 @@ pub(crate) fn attribute_application(
         "description".into(),
         Term::Constant(Value::String(descriptor.description().to_owned())),
     );
-    // The pick the attribute reads under, as `pick:` spells it, and
-    // the values its `as:` lists as a JSON list, best first: a reader
-    // reconstructing the descriptor needs both.
-    terms.insert(
-        "pick".into(),
-        Term::Constant(Value::String(descriptor.pick().name().to_string())),
-    );
+    // The pick the attribute reads under, as the entity dialog names
+    // it (`all:`), and the values its `as:` lists as a JSON list, best
+    // first: a reader reconstructing the descriptor needs both.
+    if let Ok(pick) = descriptor.pick().uri().parse::<Entity>() {
+        terms.insert("pick".into(), Term::Constant(Value::Entity(pick)));
+    }
     if !descriptor.among().is_empty()
         && let Ok(among) = serde_json::to_string(descriptor.among())
     {
@@ -1040,7 +1050,7 @@ fn attribute_schema() -> ConceptDescriptor {
         "with": {
             "id":          { "the": "db.attribute/id",          "as": "text:" },
             "as":          { "the": "db.attribute/as",          "as": "entity:" },
-            "pick":        { "the": "db.attribute/pick",        "as": "text:" },
+            "pick":        { "the": "db.attribute/pick",        "as": "entity:" },
             "description": { "the": "db.meta/description",      "as": "text:" },
             "name":        { "the": "db.meta/name",             "as": "text:" },
             // The values an attribute's `as:` lists, a JSON list best
@@ -1137,7 +1147,7 @@ fn attribute_type(
     };
     let kind = match &field.value {
         FieldValue::Symbol(name) => {
-            if scope.shadowed_types.lock().contains(name) {
+            if scope.shadowed_builtins.lock().contains(name) {
                 return Err(AnalyzeErrorKind::InvalidAttributeBody {
                     reason: format!(
                         "`{name}` names this document's own anchor `&{name}`, \
@@ -1159,6 +1169,47 @@ fn attribute_type(
                 "unknown attribute type {:?} — expected one of: {}",
                 stringify_simple_value(field).unwrap_or_default(),
                 expected()
+            ),
+        }
+        .into()
+    })
+}
+
+/// The pick an attribute's `pick:` names: a built-in pick anchor
+/// (`last`, `all`, `top`, `max`, `min`), or, quoted, the entity dialog
+/// names the pick by (`"all:"`) or the plain name dialog 0.2 wrote
+/// (`"all"`). An anchor the document declares under a pick's name means
+/// the declaration, which is no pick.
+fn attribute_pick(
+    field: &tonk_notation::Field,
+    scope: &Scope,
+) -> Result<tonk_notation::Pick, AnalyzeError> {
+    use tonk_notation::Pick;
+    let pick = match &field.value {
+        FieldValue::Symbol(name) => {
+            if scope.shadowed_builtins.lock().contains(name) {
+                return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                    reason: format!(
+                        "`{name}` names this document's own anchor `&{name}`, \
+                         not the built-in pick; rename the anchor to use the pick"
+                    ),
+                }
+                .into());
+            }
+            Pick::from_anchor(name)
+        }
+        _ => Pick::from_wire(&stringify_simple_value(field)?),
+    };
+    pick.ok_or_else(|| {
+        AnalyzeErrorKind::InvalidAttributeBody {
+            reason: format!(
+                "unknown pick {:?} — expected one of: {}",
+                stringify_simple_value(field).unwrap_or_default(),
+                Pick::ALL
+                    .iter()
+                    .map(|pick| pick.anchor())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         }
         .into()

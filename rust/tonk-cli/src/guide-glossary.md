@@ -19,7 +19,9 @@ and within that document the name means its declaration.
 A **pick** says which of an entity's claims in the relation a read returns:
 `last` (the default) the newest, `all` every one, `top` the best ranked of the
 values listed in `as:` (a list implies `top`), `max` and `min` the greatest
-and least.
+and least. Like a type, each pick is a built-in anchor naming the entity
+dialog knows it by, `all:` for `all`, and a document anchor of the same name
+shadows it.
 
 An **assertion** adds a claim. Creating a new content-addressed instance is
 also called **minting**. Under any pick but `all`, a later assertion
@@ -36,6 +38,9 @@ Two consequences matter early:
 - Entity identity is content-addressed. Reasserting an identical body is a
   no-op; changing any field creates a new entity unless the old one is bound
   with `this:`.
-- Bare lowercase tokens are symbols resolved through the name table, and one
-  that names nothing is an error. Quote every string literal:
-  `name: "alice"`, not `name: alice`.
+- Bare lowercase tokens are symbols resolved through the name table or the
+  built-in anchors (types and picks), and one that names nothing is an error.
+  Quote every string literal: `name: "alice"`, not `name: alice`. The one
+  exception is `the:`, which spells a relation by its own name
+  (`the: person/name`); a relation is its name, not an entity a name refers
+  to.

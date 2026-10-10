@@ -1244,6 +1244,71 @@ concept!: &job
         );
     }
 
+    /// A pick is a built-in anchor, as a type is: `pick: all` names the
+    /// entity `all:`, which is what the attribute records, and the same
+    /// symbol names it in any other field. A pick may also be spelled as
+    /// its entity, quoted. A document that declares an anchor under a
+    /// pick's name is warned, and in it `pick:` refuses the name.
+    #[dialog_common::test]
+    async fn it_resolves_picks_as_built_in_anchors() {
+        let entity = |source: &str| -> Option<String> {
+            let syntax = must_parse(source);
+            let analysis = flat(super::analyze_local(&syntax).expect("lowers"));
+            let Statement::Assert(Application::Concept { query, .. }) =
+                &analysis.mutate.statements[0]
+            else {
+                panic!("expected Assert(Concept)");
+            };
+            match query.terms.get("pick") {
+                Some(Term::Constant(Value::Entity(entity))) => Some(entity.to_string()),
+                _ => None,
+            }
+        };
+        let declare = |pick: &str| {
+            format!(
+                "attribute!: &tags\n  the: x.y/tags\n  description: \"labels\"\n  as: text\n  pick: {pick}\n"
+            )
+        };
+        assert_eq!(entity(&declare("all")).as_deref(), Some("all:"));
+        assert_eq!(entity(&declare("max")).as_deref(), Some("max:"));
+        assert_eq!(
+            entity(&declare("\"all:\"")).as_deref(),
+            Some("all:"),
+            "a pick quoted as its entity"
+        );
+
+        let syntax = must_parse(
+            "\
+issue/title: &all
+  this: issue:one
+  is: \"shadowing\"
+attribute!: &tags
+  the: x.y/tags
+  description: \"labels\"
+  as: text
+  pick: all
+",
+        );
+        assert!(
+            super::scan_variables(&syntax)
+                .iter()
+                .any(|diagnostic| matches!(
+                    &diagnostic.kind,
+                    super::AnalyzeDiagnosticKind::ShadowsBuiltin { name } if name == "all"
+                )),
+            "an anchor named like a pick is warned"
+        );
+        let result = analyze_empty(&syntax).await;
+        assert!(
+            matches!(
+                result.as_ref().map_err(|error| &error.kind),
+                Err(AnalyzeErrorKind::InvalidAttributeBody { reason })
+                    if reason.contains("not the built-in pick")
+            ),
+            "a shadowed pick is no pick: {result:?}"
+        );
+    }
+
     /// An instance head's `&anchor` must be resolvable by a later
     /// field reference in the same document, under both the full
     /// (branch-backed) pipeline and the env-free local path.
@@ -1505,7 +1570,7 @@ attribute!: &name
             _ => None,
         };
         let status = terms_of(0);
-        assert_eq!(text(&status, "pick").as_deref(), Some("top"));
+        assert_eq!(entity(&status, "pick").as_deref(), Some("top:"));
         assert_eq!(entity(&status, "as").as_deref(), Some("entity:"));
         assert_eq!(
             text(&status, "among").as_deref(),
@@ -1513,11 +1578,11 @@ attribute!: &name
             "the ranked values ride as a JSON list, best first"
         );
         let tags = terms_of(1);
-        assert_eq!(text(&tags, "pick").as_deref(), Some("all"));
+        assert_eq!(entity(&tags, "pick").as_deref(), Some("all:"));
         assert_eq!(entity(&tags, "as").as_deref(), Some("text:"));
         assert!(text(&tags, "among").is_none(), "a set ranks nothing");
         let name = terms_of(2);
-        assert_eq!(text(&name, "pick").as_deref(), Some("last"));
+        assert_eq!(entity(&name, "pick").as_deref(), Some("last:"));
         assert!(text(&name, "among").is_none());
     }
 
@@ -1749,6 +1814,26 @@ attribute!: &rename/name
                 .unwrap(),
         );
         assert_eq!(entity(&plain), entity(&with_role));
+    }
+
+    /// An action name is text, so it is quoted: a bare word is a
+    /// reference, and `action:` refuses one rather than storing it as
+    /// text.
+    #[dialog_common::test]
+    async fn it_refuses_a_bare_action_name() {
+        for action in ["rename", "[\"rename\", retitle]"] {
+            let syntax = must_parse(&format!(
+                "command!: &notebook/retitle\n  description: \"Rename a notebook\"\n  action: {action}\n  with:\n    title:\n      description: \"The new title\"\n      the: xyz.tonk.notebook.retitle/title\n      as: text\n"
+            ));
+            let result = analyze_empty(&syntax).await;
+            assert!(
+                matches!(
+                    result.as_ref().map_err(|error| &error.kind),
+                    Err(AnalyzeErrorKind::InvalidConceptBody { reason }) if reason.contains("quote it")
+                ),
+                "a bare action name is refused: {result:?}"
+            );
+        }
     }
 
     /// Each of a command's `action:` names is asserted as a palette name,

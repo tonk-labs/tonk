@@ -175,11 +175,11 @@ pub mod attribute {
     pub struct As(pub Entity);
 
     /// Which of its relation's candidates an attribute entity reads —
-    /// `db.attribute/pick`: `"last"`, `"all"`, `"top"`, `"max"` or
-    /// `"min"`, as `pick:` spells it.
+    /// `db.attribute/pick`: the entity dialog names the pick by
+    /// (`last:`, `all:`, `top:`, `max:` or `min:`).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("db.attribute")]
-    pub struct Pick(pub String);
+    pub struct Pick(pub Entity);
 
     /// The values a `top` attribute ranks among, best first —
     /// `db.attribute/among`, a JSON list. Present only on a ranked
@@ -211,7 +211,7 @@ pub struct AnonymousAttribute {
     pub id: attribute::Id,
     /// The value type, absent when the attribute admits any.
     pub r#as: Option<attribute::As>,
-    /// `"last"`, `"all"`, `"top"`, `"max"` or `"min"`.
+    /// `last:`, `all:`, `top:`, `max:` or `min:`.
     pub pick: attribute::Pick,
     /// Human-readable description.
     pub description: Description,
