@@ -1042,14 +1042,14 @@
         "ACCT-C06",
         "ACCT-C15"
       ],
-      "name": "CLI authorization handoff",
+      "name": "Tonk connection approval",
       "source_paths": [
         "rust/tonk-core/assets/library/profile.yaml",
         "rust/tonk-ui/styles.css",
         "rust/tonk-cli/src/account.rs"
       ],
       "status": "captured",
-      "summary": "The browser names the waiting CLI device, or the page another deployment is signing in, and requires explicit passkey approval or cancellation.",
+      "summary": "The browser shows the Tonk connection name and granting account email, explains full-account access, and offers decline or passkey approval. Device IDs and callback destinations stay internal.",
       "surface": "browser"
     },
     {
@@ -1640,6 +1640,14 @@
       "id": "LIFE-23",
       "priority": "P2",
       "result": "—"
+    },
+    {
+      "claim": "Re-sign-in selects the current device grant (The simple case).",
+      "device": "returning-browser + restart",
+      "file": "verification/accounts.md",
+      "id": "LIFE-30",
+      "priority": "P1",
+      "result": "Focused regressions: it_replaces_obsolete_device_grants_and_repairs_a_repeat, it_repairs_obsolete_grants_when_following_an_existing_root, it_retracts_a_device_grant_added_after_the_branch_was_cached. Full journey remains unverified."
     },
     {
       "claim": "Linked browser approves a waiting CLI end to end (Simple case).",
@@ -2389,7 +2397,7 @@
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 13,
+    "other": 14,
     "pass": 2,
     "unrun": 107
   },

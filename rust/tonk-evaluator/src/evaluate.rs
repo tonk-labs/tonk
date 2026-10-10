@@ -96,6 +96,18 @@ pub struct QueryResult {
     pub this: String,
     /// Field name → bound value.
     pub fields: BTreeMap<String, serde_json::Value>,
+    /// `true` when this entity was asserted through a transient
+    /// concept (a command): it is returned here, but never written to
+    /// the branch, so re-reading it from the store finds nothing. A
+    /// renderer must draw it from `fields`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub transient: bool,
+}
+
+/// `skip_serializing_if` predicate: keep `transient` off the wire
+/// unless it is set, so existing consumers see an unchanged shape.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Commit-side summary.
@@ -931,6 +943,7 @@ fn render_match_blocks(
         return Vec::new();
     }
 
+    let transient = document.transient_entities();
     let mut blocks = Vec::with_capacity(user_queries.len() + document.synthesized.len());
 
     // User-written queries: each block draws from the joined
@@ -951,11 +964,9 @@ fn render_match_blocks(
                 .map(Vec::as_slice)
                 .unwrap_or(&[])
         };
-        blocks.push(render_block(
-            query.label.clone(),
-            &query.application,
-            source_frames,
-        ));
+        let mut block = render_block(query.label.clone(), &query.application, source_frames);
+        mark_transient(&mut block, &query.application, &transient);
+        blocks.push(block);
     }
 
     // Synthesized snapshot queries: each runs standalone (no
@@ -966,13 +977,33 @@ fn render_match_blocks(
             .get(i)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        blocks.push(render_block(
-            snapshot.label.clone(),
-            &snapshot.application,
-            source_frames,
-        ));
+        let mut block = render_block(snapshot.label.clone(), &snapshot.application, source_frames);
+        mark_transient(&mut block, &snapshot.application, &transient);
+        blocks.push(block);
     }
     blocks
+}
+
+/// Flag every result of a block whose concept is transient.
+///
+/// The document's transient set holds concept entities, the same set
+/// the dispatch step checks `predicate.this()` against. A result of
+/// such a concept is in the response but never reaches the branch, so
+/// a renderer that re-reads it finds nothing.
+fn mark_transient(
+    block: &mut QueryMatchBlock,
+    application: &Application,
+    transient: &std::collections::HashSet<Entity>,
+) {
+    let concept = match application {
+        Application::Concept { query, .. } => query.predicate.this(),
+        _ => return,
+    };
+    if transient.contains(&concept) {
+        for result in &mut block.results {
+            result.transient = true;
+        }
+    }
 }
 
 /// Build one [`QueryMatchBlock`] for `application` over
@@ -1206,7 +1237,11 @@ fn render_one_result(
         fields.insert(field_name.to_owned(), value);
     }
 
-    QueryResult { this, fields }
+    QueryResult {
+        this,
+        fields,
+        transient: false,
+    }
 }
 
 /// Render a resolver expression's rows.
@@ -1264,6 +1299,7 @@ fn render_resolver_block(
         results.push(QueryResult {
             this: String::new(),
             fields,
+            transient: false,
         });
     }
 
@@ -2332,6 +2368,90 @@ concept!: &note
 
         assert_eq!(counts[0], 0, "the retracted entry is gone");
         assert_eq!(counts[1], 1, "its neighbour is untouched");
+        Ok(())
+    }
+
+    /// `..: _` with `this:` omitted is refused, and nothing is written.
+    ///
+    /// Regression: the omitted `this:` used to derive a fresh entity
+    /// from the body, so `ticket!: {queue: "writer", ..: _}` asserted
+    /// `queue: "writer"` onto a new, otherwise empty ticket and
+    /// retracted nothing.
+    #[dialog_common::test]
+    async fn it_refuses_a_rest_retraction_without_this_and_writes_nothing() -> anyhow::Result<()> {
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let setup = [
+            r#"concept!: &ticket
+  description: "A ticket filed in a queue"
+  with:
+    title:
+      description: "The ticket's title"
+      the: xyz.test.ticket/title
+      as: text
+    queue:
+      description: "The queue the ticket sits in"
+      the: xyz.test.ticket/queue
+      as: text
+"#,
+            r#"ticket!:
+  this: id:t1
+  title: "First"
+  queue: "writer"
+"#,
+        ];
+        for doc in setup {
+            parse(doc)
+                .syntax
+                .expect("syntax")
+                .evaluate(branch.transaction())
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate failed for {doc:?}: {e}"))?
+                .commit()
+                .publish()
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
+        }
+
+        let refused = parse("ticket!:\n  queue: \"writer\"\n  ..: _\n")
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await;
+        assert!(
+            matches!(
+                &refused,
+                Err(EvaluateError::Analyze(err))
+                    if matches!(err.kind, analyzer::AnalyzeErrorKind::RetractionWithoutEntity { .. })
+            ),
+            "expected RetractionWithoutEntity, got {:?}",
+            refused.err()
+        );
+
+        let the: dialog_artifacts::Attribute = "xyz.test.ticket/queue".parse()?;
+        let queues: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::new(
+                Term::Constant(Value::Symbol(the)),
+                Term::<dialog_artifacts::Entity>::var("of"),
+                Term::<dialog_query::Any>::var("is"),
+                Term::blank(),
+                None,
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        let holders: Vec<String> = queues.iter().map(|c| c.of.to_string()).collect();
+        assert_eq!(
+            holders,
+            vec!["id:t1".to_string()],
+            "no fresh ticket was minted and the existing one is untouched"
+        );
         Ok(())
     }
 

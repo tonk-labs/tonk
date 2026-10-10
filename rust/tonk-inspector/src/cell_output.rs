@@ -152,7 +152,16 @@ fn render_card(result: &QueryResult, label: &str, with: &str) -> String {
         .map(str::trim)
         .filter(|name| !name.is_empty());
     let title = esc(named.unwrap_or_else(|| short_entity(&result.this)));
-    if let Some(model) = model_of(&result.fields).or_else(|| model_from_label(label)) {
+    // A transient result (a command) is in the response but was never
+    // written to the branch, so a `<tonk-display>` re-reading it would
+    // find no fields and report a missing attribute on a command that
+    // ran. It is drawn from the response's own fields instead.
+    let model = if result.transient {
+        None
+    } else {
+        model_of(&result.fields).or_else(|| model_from_label(label))
+    };
+    if let Some(model) = model {
         return format!(
             "<div class=\"nb-card nb-card--display\">\
                <div class=\"nb-card__title\">{title}</div>\
@@ -302,7 +311,39 @@ mod tests {
                 .iter()
                 .map(|(k, v)| ((*k).to_owned(), v.clone()))
                 .collect(),
+            transient: false,
         }
+    }
+
+    /// A command's entity is returned but never stored, so mounting a
+    /// `<tonk-display>` for it re-reads nothing and shows "Concept
+    /// mismatch: required attribute missing". It must be drawn from the
+    /// response fields instead, with the value the command carried.
+    #[dialog_common::test]
+    fn it_draws_a_transient_result_from_its_fields_not_the_store() {
+        let mut command = result(
+            "did:key:z6MkCommand",
+            &[("subject", json!("did:key:z6MkCounter"))],
+        );
+        command.transient = true;
+        let html = render_card(&command, "counter/+1", "main@id:repo");
+        assert!(
+            !html.contains("<tonk-display"),
+            "a transient result must not be re-read from the store: {html}"
+        );
+        assert!(
+            html.contains("subject") && html.contains("did:key:z6MkCounter"),
+            "the command's field is drawn from the response: {html}"
+        );
+    }
+
+    /// The counterpart: a persisted result still goes through its
+    /// concept's view, so skipping the display is not the new default.
+    #[dialog_common::test]
+    fn it_still_mounts_a_display_for_a_persisted_result() {
+        let counter = result("did:key:z6MkCounter", &[("count", json!("+0"))]);
+        let html = render_card(&counter, "counter/model", "main@id:repo");
+        assert!(html.contains("<tonk-display"), "persisted result: {html}");
     }
 
     #[dialog_common::test]

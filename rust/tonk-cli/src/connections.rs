@@ -57,6 +57,15 @@ pub fn validate_agent_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reject an installation identity that is not 128 bits of lowercase hex.
+pub fn validate_installation(installation: &str) -> Result<()> {
+    ensure!(
+        tonk_schema::agent_connection::valid_installation_id(installation),
+        "--installation must be 32 lowercase hex characters"
+    );
+    Ok(())
+}
+
 /// Durably choose setup metadata once. Retries cannot replace its name or identity.
 /// Older manifests need no migration; their first setup retry creates this sidecar.
 pub fn installation_receipt(
@@ -64,9 +73,28 @@ pub fn installation_receipt(
     grant: &str,
     name: Option<&str>,
 ) -> Result<InstallationReceipt> {
+    installation_receipt_as(root, grant, name, None)
+}
+
+/// [`installation_receipt`] with a caller-chosen installation identity
+/// instead of a random one.
+///
+/// For a setup that is recreated from scratch on every run, such as a CI
+/// job joining with the same invitation each time: a stable identity
+/// makes each run's receipt the same fact, so a run that changes nothing
+/// else commits nothing, rather than adding one installation per run.
+pub fn installation_receipt_as(
+    root: &Path,
+    grant: &str,
+    name: Option<&str>,
+    installation: Option<&str>,
+) -> Result<InstallationReceipt> {
     crate::handoff::scoped_connection_entity(grant)?;
     if let Some(name) = name {
         validate_agent_name(name)?;
+    }
+    if let Some(installation) = installation {
+        validate_installation(installation)?;
     }
     let _lock = import_lock(root)?;
     let file = format!("agent-installation-{grant}.json");
@@ -86,13 +114,21 @@ pub fn installation_receipt(
                     "this connection already has a saved --agent-name; resume without changing it"
                 );
             }
+            if let Some(installation) = installation {
+                ensure!(
+                    saved.installation == installation,
+                    "this connection already has a saved --installation; resume without changing it"
+                );
+            }
             Ok(saved)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let saved = InstallationReceipt {
                 version: 1,
                 grant: grant.into(),
-                installation: hex::encode(rand::random::<[u8; 16]>()),
+                installation: installation
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| hex::encode(rand::random::<[u8; 16]>())),
                 name: name
                     .map(str::to_owned)
                     .unwrap_or_else(crate::account::default_device_name),

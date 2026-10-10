@@ -536,6 +536,13 @@ pub(crate) async fn retract_device_delegation(
     let _transacting = branch.transactor().lock().await;
     let mut attempt = 0;
     loop {
+        // Retraction can return a successful no-op when a stale handle has
+        // never seen the grant. That produces no CAS conflict to retry.
+        branch
+            .handle()
+            .refresh(&state.operator)
+            .await
+            .map_err(|error| format!("refresh before retract: {error}"))?;
         match branch
             .handle()
             .delegations()
@@ -887,6 +894,50 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test_configure!(run_in_browser);
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    // Storybook LIFE-30: current device authority survives repeated sign-in.
+    async fn it_retracts_a_device_grant_added_after_the_branch_was_cached() {
+        use dialog_varsig::Principal as _;
+        let state = crate::router::tests::test_state_without_root().await;
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(&state.active_branch)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        let root = dialog_credentials::Ed25519Signer::import(&[73; 32])
+            .await
+            .unwrap();
+        let root_did = root.did();
+        let grant = tonk_identity::delegation::mint_device_delegation(root, &state.profile.did())
+            .await
+            .unwrap();
+        state
+            .profile
+            .access()
+            .save(UcanDelegation(grant.clone()))
+            .perform(&state.operator)
+            .await
+            .unwrap();
+        retract_device_delegation(&state, &branch, &grant)
+            .await
+            .unwrap();
+        branch.handle().refresh(&state.operator).await.unwrap();
+        let retained = branch
+            .handle()
+            .delegations()
+            .issued_by(root_did)
+            .perform(&state.operator)
+            .await
+            .unwrap();
+        assert!(
+            retained.is_empty(),
+            "a successful sign-out retraction must remove the grant from storage"
+        );
+    }
 
     /// Granting a device describes the link as facts, so a device list
     /// renders without asking the account service.

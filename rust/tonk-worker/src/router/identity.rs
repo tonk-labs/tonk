@@ -157,6 +157,7 @@ pub(crate) async fn follow_signed_in_account(state: &TonkState) -> Result<(), To
         return Ok(());
     }
     let root = local_root(state).await?;
+    reconcile_root_delegation(state, &root.delegation).await?;
     if state.profile.authority().await.ok().as_ref() == Some(&root.root_did) {
         return Ok(());
     }
@@ -299,6 +300,7 @@ pub(crate) async fn persist_root(
             record.encryption_key = existing.encryption_key.clone();
         }
         if existing == record {
+            reconcile_root_delegation(state, &chain).await?;
             return Ok(status(local_root(state).await?));
         }
         // Same root, different record — a re-minted grant or refreshed
@@ -338,8 +340,8 @@ pub(crate) async fn persist_root(
         }
     }
 
-    // Saving the new grant below leaves earlier access certificates in
-    // the profile store intact.
+    // Retain before persisting the canonical record. Cleanup follows the
+    // record write, so an interrupted cleanup retries with the new grant.
     state
         .profile
         .access()
@@ -370,6 +372,7 @@ pub(crate) async fn persist_root(
                 "failed to hand the profile's account over to the signed-in account: {error}"
             ))
         })?;
+    reconcile_root_delegation(state, &chain).await?;
 
     let encryption_key = record
         .encryption_key
@@ -385,6 +388,40 @@ pub(crate) async fn persist_root(
         passkey: record.passkey,
         encryption_key,
     }))
+}
+
+/// A fresh root record must also be the grant the local prover selects.
+/// Serialize with profile writes; a concurrent pull can still move the head,
+/// so retry that typed conflict with a refreshed view of retained grants.
+async fn reconcile_root_delegation(
+    state: &TonkState,
+    chain: &DelegationChain,
+) -> Result<(), TonkWorkerError> {
+    use dialog_repository::{CommitError, PublishError};
+    use tonk_account::delegations::{DeviceGrantError, reconcile_device_delegation};
+
+    let branch = state
+        .reactor
+        .profile_repository()
+        .branch(&state.active_branch)
+        .acquire(&state.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("open device grant branch: {error}")))?;
+    let _transacting = branch.transactor().lock().await;
+    for attempt in 0..=4 {
+        match reconcile_device_delegation(branch.handle(), chain, &state.operator).await {
+            Ok(()) => return Ok(()),
+            Err(DeviceGrantError::Commit(CommitError::Publish(
+                PublishError::VersionMismatch { .. },
+            ))) if attempt < 4 => continue,
+            Err(error) => {
+                return Err(TonkWorkerError::Internal(format!(
+                    "reconcile device grant: {error}"
+                )));
+            }
+        }
+    }
+    unreachable!("the last attempt returns its error")
 }
 
 /// Parse a ceremony-supplied recipient, refusing anything that is not
@@ -683,6 +720,41 @@ mod tests {
             status,
             RootStatus::Ready { root_did, .. } if root_did == grant.issuer().to_string()
         ));
+    }
+
+    #[dialog_common::test]
+    // Storybook LIFE-30: current device authority survives repeated sign-in.
+    async fn it_repairs_obsolete_grants_when_following_an_existing_root() {
+        let state = test_state_without_root().await;
+        let (request, current) = request_for(74, &state.profile.did()).await;
+        persist_root(&state, request).await.unwrap();
+        let (_, obsolete) = request_for(74, &state.profile.did()).await;
+        state
+            .profile
+            .access()
+            .save(UcanDelegation(obsolete.clone()))
+            .perform(&state.operator)
+            .await
+            .unwrap();
+        // Boot reaches this even when the peer already follows the recorded account.
+        follow_signed_in_account(&state).await.unwrap();
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(&state.active_branch)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        branch.handle().refresh(&state.operator).await.unwrap();
+        let grants = branch
+            .handle()
+            .delegations()
+            .issued_by(current.issuer().clone())
+            .perform(&state.operator)
+            .await
+            .unwrap();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].0.proof_cids(), current.proof_cids());
     }
 
     #[dialog_common::test]

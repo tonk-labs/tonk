@@ -9271,13 +9271,7 @@ pub(crate) mod tests {
         goto(&driver, url.as_str()).await?;
         enter_hub(&driver).await?;
         wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
-        assert_eq!(
-            element(&driver, "[data-link-account]")
-                .await?
-                .text()
-                .await?,
-            expected
-        );
+        wait_for_text(&driver, "[data-link-account]", EMAIL).await?;
         click(&driver, "[data-link-approve]").await?;
         enter_hub(&driver).await?;
         wait_for_text_containing(
@@ -9323,19 +9317,24 @@ pub(crate) mod tests {
             .append_pair("expectedAccount", &expected);
         goto(&driver, url.as_str()).await?;
 
-        // The settings page names the device that is waiting, so the
-        // user knows what they are approving.
+        // Show the granting account's email; protocol identifiers stay
+        // on the approval control rather than in the visible details.
         enter_hub(&driver).await?;
         wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
-        let shown = element(&driver, "[data-link-did]").await?.text().await?;
-        assert_eq!(shown, audience, "the page must name the waiting device");
-        assert_eq!(
-            element(&driver, "[data-link-account]")
+        assert!(
+            driver
+                .find_all(By::Css("[data-link-did]"))
                 .await?
-                .text()
-                .await?,
-            expected
+                .is_empty()
         );
+        assert_eq!(
+            element(&driver, "[data-link-approve]")
+                .await?
+                .attr("data-audience")
+                .await?,
+            Some(audience.to_owned())
+        );
+        wait_for_text(&driver, "[data-link-account]", EMAIL).await?;
 
         // The passkey is asked for on the approving click itself, so the
         // watch on what it allows goes in before that click.
@@ -9507,12 +9506,10 @@ pub(crate) mod tests {
         field.send_keys(home).await?;
         click(driver, "#tonk-register #tonk-register-action").await?;
 
-        // On the deployment holding the account, the approval names the
-        // page the grant would go to.
+        // The deployment holding the account presents the connection approval.
         await_url_containing(driver, &format!("{home}/settings/link?")).await?;
         enter_hub(driver).await?;
         wait_for_displayed(driver, "account-settings [data-pane=\"link\"]").await?;
-        wait_for_text(driver, "[data-link-return]", &here_origin).await?;
         // One step: the click asks for the passkey, with no screen between.
         click(driver, "[data-link-approve]").await?;
 
