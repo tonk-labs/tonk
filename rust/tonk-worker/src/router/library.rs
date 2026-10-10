@@ -103,8 +103,44 @@ pub(super) async fn parse(text: &str) -> Result<Syntax, TonkWorkerError> {
     let Some(root) = location() else {
         return parsed(tonk_notation::parse(text));
     };
-    let mut syntax = parsed(parse_at(root.clone(), text))?;
-    let unexpanded = expand(&mut syntax, &Library::new(root)).await;
+    expanded(root.clone(), text, &Library::new(root)).await
+}
+
+/// [`parse`] for a library fetched from `source`. A full URL locates the
+/// document on the deployment that serves it, so what it includes is read
+/// from beside it there, not from this worker's copy of the library. A bare
+/// path is this deployment's own library.
+pub(super) async fn parse_from(source: &str, text: &str) -> Result<Syntax, TonkWorkerError> {
+    let Some(root) = Url::parse(source).ok().and_then(|at| at.join("./").ok()) else {
+        return parse(text).await;
+    };
+    expanded(root.clone(), text, &Served { root }).await
+}
+
+/// Loads what a library document on another deployment includes, from the
+/// directory that document is served in and nowhere else.
+struct Served {
+    root: Url,
+}
+
+impl Load for Served {
+    async fn load(&self, uri: &Url) -> Result<Vec<u8>, String> {
+        if !within(&self.root, uri) {
+            return Err(format!(
+                "a library document can only include files from `{}`",
+                self.root
+            ));
+        }
+        super::repository::fetch_served_bytes(uri)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Parse `text` at `root` and inline what it includes through `loader`.
+async fn expanded(root: Url, text: &str, loader: &impl Load) -> Result<Syntax, TonkWorkerError> {
+    let mut syntax = parsed(parse_at(root, text))?;
+    let unexpanded = expand(&mut syntax, loader).await;
     if let Some(first) = unexpanded.first() {
         return Err(TonkWorkerError::Internal(format!(
             "library include failed at {}:{}: {}",
@@ -137,9 +173,20 @@ fn parsed(parsed: tonk_notation::Parsed) -> Result<Syntax, TonkWorkerError> {
 /// the list is what keeps an install to the library.
 pub(super) const COMPONENTS: [&str; 5] = ["issue", "meta", "notebook", "prose", "table"];
 
-/// Whether `source` is a component's library file (`/library/<name>.yaml`).
-pub(super) fn is_component_url(source: &str) -> bool {
+/// The path a seed source names, whichever deployment serves it: the path of
+/// a full URL, or the source itself where a release from before recorded
+/// only the path.
+pub(super) fn source_path(source: &str) -> &str {
     source
+        .split_once("://")
+        .and_then(|(_, rest)| rest.find('/').map(|at| &rest[at..]))
+        .unwrap_or(source)
+}
+
+/// Whether `source` is a component's library file (`/library/<name>.yaml`),
+/// on any deployment.
+pub(super) fn is_component_url(source: &str) -> bool {
+    source_path(source)
         .strip_prefix("/library/")
         .and_then(|file| file.strip_suffix(".yaml"))
         .is_some_and(|name| COMPONENTS.contains(&name))
@@ -190,6 +237,19 @@ mod tests {
 
     fn library() -> Library {
         Library::new(Url::parse("https://tonk.test/library/").unwrap())
+    }
+
+    #[dialog_common::test]
+    fn it_reads_a_source_path_whichever_deployment_serves_it() {
+        assert_eq!(source_path("/library/core.yaml"), "/library/core.yaml");
+        assert_eq!(
+            source_path("https://tonk.test/library/core.yaml"),
+            "/library/core.yaml"
+        );
+        assert!(is_component_url("/library/notebook.yaml"));
+        assert!(is_component_url("https://tonk.test/library/notebook.yaml"));
+        assert!(!is_component_url("https://tonk.test/library/core.yaml"));
+        assert!(!is_component_url("https://tonk.test/seeds/notebook.yaml"));
     }
 
     #[dialog_common::test]

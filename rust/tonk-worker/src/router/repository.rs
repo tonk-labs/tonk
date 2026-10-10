@@ -4052,10 +4052,13 @@ struct ProfileInstallation {
 /// Which install a source's record belongs to: a library component's own
 /// (its source), or the space's main seed (`core.yaml`, or a custom seed)
 /// for every other source. A space runs one main seed and any number of
-/// components, each recorded, upgraded and reverted on its own.
+/// components, each recorded, upgraded and reverted on its own. A component
+/// is the same install whichever deployment it was fetched from, so its
+/// lineage is the path alone.
 fn lineage(source: &str) -> &str {
-    if super::library::is_component_url(source) {
-        source
+    let path = super::library::source_path(source);
+    if super::library::is_component_url(path) {
+        path
     } else {
         "main"
     }
@@ -4269,6 +4272,93 @@ impl dialog_capability::Provider<tonk_schema::command::CheckUpdate> for crate::r
     }
 }
 
+/// Bring the space the command names up to the seed it follows.
+///
+/// The install [`CheckUpdate`] leaves to the person: the space's recorded
+/// source is fetched again and, where its bytes changed, replaces the
+/// installed library. The outcome is read where a check's is: the space's
+/// own install record moves when the update lands, and a failure is
+/// recorded on this device's replica.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::UpdateSeed> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::UpdateSeed) {
+        let key = command.space.0.to_string();
+        if !self.may_target_space(&key) {
+            log!("UpdateSeed '{key}': refused from another space's branch");
+            return;
+        }
+        let Ok(subject) = key.parse::<dialog_varsig::Did>() else {
+            log!("UpdateSeed: '{key}' is not a space DID");
+            return;
+        };
+        let tonk = self.state().read().await;
+        let outcome = upgrade_seed(&tonk, &key).await;
+        record_seed_outcome(&tonk, &subject, "UpdateSeed", outcome).await;
+    }
+}
+
+/// Move the space the command names onto the seed at the command's source.
+///
+/// The one way a space leaves the source it follows (see [`migrate_seed`]).
+/// The source must be a full `http(s)` URL: a path would mean a different
+/// library on every deployment that read it.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::MigrateSeed> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::MigrateSeed) {
+        let key = command.space.0.to_string();
+        if !self.may_target_space(&key) {
+            log!("MigrateSeed '{key}': refused from another space's branch");
+            return;
+        }
+        let Ok(subject) = key.parse::<dialog_varsig::Did>() else {
+            log!("MigrateSeed: '{key}' is not a space DID");
+            return;
+        };
+        let tonk = self.state().read().await;
+        let outcome = match Url::parse(&command.source.0) {
+            Ok(source) if matches!(source.scheme(), "http" | "https") => {
+                migrate_seed(&tonk, &key, &source).await
+            }
+            _ => Err(RepositoryError::Internal(format!(
+                "'{}' is not a full http(s) URL",
+                command.source.0
+            ))),
+        };
+        record_seed_outcome(&tonk, &subject, "MigrateSeed", outcome).await;
+    }
+}
+
+/// Record how an update or a move of `subject`'s seed ended, on this
+/// device's replica: a failure in words meant for the person, or a previous
+/// one cleared. Success needs no fact of its own, since the install record
+/// on the space's branch is the outcome.
+async fn record_seed_outcome(
+    tonk: &TonkState,
+    subject: &Did,
+    what: &str,
+    outcome: Result<bool, RepositoryError>,
+) {
+    let replica = Replica::new(tonk.profile.did(), subject.clone())
+        .this()
+        .clone();
+    match outcome {
+        Ok(true) => {
+            log!("{what} '{subject}': seed replaced");
+            stamp_check_failure(tonk, replica, None).await;
+        }
+        Ok(false) => {
+            log!("{what} '{subject}': already current");
+            stamp_check_failure(tonk, replica, None).await;
+        }
+        Err(error) => {
+            log!("{what} '{subject}': {error}");
+            stamp_check_failure(tonk, replica, Some(&error.to_string())).await;
+        }
+    }
+}
+
 /// Drop a space's invite row once its link has reached the clipboard.
 ///
 /// The row lives in profile main's overlay, and the url in it carries a
@@ -4393,7 +4483,7 @@ async fn run_seed_check(tonk: &TonkState, subject: &Did) -> Result<Option<FoundS
         return Ok(None);
     };
 
-    let library = fetch_standard_library(&current.source)
+    let library = fetch_seed_source(&current.source)
         .await
         .map_err(|e| format!("could not fetch {}: {e}", current.source))?;
 
@@ -4579,29 +4669,113 @@ async fn has_welcome_snapshot(tonk: &TonkState, key: &str) -> Result<bool, Repos
     Ok(stream.next().await.transpose().map_err(internal)?.is_some())
 }
 
-/// Bring a space's seed up to the one this worker ships, if it is behind,
-/// and put back what an earlier release's upgrade overwrote in it.
+/// Bring a space's seed up to what the source it follows serves, if it is
+/// behind, and put back what an earlier release's upgrade overwrote in it.
 ///
-/// A space on the shipped seed that no upgrade ever touched is left alone,
-/// which is the common case: this runs on every mount. See
+/// A space current with its source that no upgrade ever touched is left
+/// alone, which is the common case: this runs on every mount. See
 /// [`install_seed`] for what an upgrade writes and what it leaves alone.
 pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, RepositoryError> {
     let Some((key, session, current)) = installed_seed(tonk, key).await? else {
         return Ok(false);
     };
 
-    // Re-fetch the space's OWN source, not the shipped one. A space on a
-    // custom seed follows that seed; comparing against `core.yaml` would
-    // force it onto the built-in library on its next mount.
-    let library = fetch_standard_library(&current.source)
+    // Re-fetch the space's OWN source, not the shipped one. A space follows
+    // the seed it recorded, wherever that is served: comparing against this
+    // worker's `core.yaml` would move it onto this deployment's library on
+    // its next mount, and another deployment would move it back.
+    let library = fetch_seed_source(&current.source)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch '{}': {e}", current.source)))?;
     let upgraded = install_seed(tonk, &key, &session, current, library).await?;
     Ok(upgrade_components(tonk, &key, &session).await? | upgraded)
 }
 
-/// Bring every component space `key` installed up to its shipped version,
-/// each from its own source, as [`upgrade_seed`] does after the seed.
+/// Move a space onto the seed served at `source`, and have it follow that
+/// source from here on.
+///
+/// The deliberate counterpart of [`upgrade_seed`], which only ever follows
+/// the source a space already recorded: this is how a space changes which
+/// deployment's library, or which custom seed, it runs. The installed
+/// library is uninstalled and the one at `source` installed in its place,
+/// as an upgrade does. `Ok(false)` when the space already follows `source`
+/// and is current with it.
+pub(crate) async fn migrate_seed(
+    tonk: &TonkState,
+    key: &str,
+    source: &Url,
+) -> Result<bool, RepositoryError> {
+    if super::library::is_component_url(source.as_str()) {
+        return Err(RepositoryError::Internal(format!(
+            "'{source}' is a library component, not a seed"
+        )));
+    }
+    let Some((key, session, current)) = installed_seed(tonk, key).await? else {
+        return Err(RepositoryError::Internal(format!(
+            "'{key}' records no seed to replace"
+        )));
+    };
+    let library = fetch_seed_source(source.as_str())
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{source}': {e}")))?;
+    if current.seed.to_string() == seed_version(&library) {
+        return follow_source(tonk, &session, &current, source.as_str()).await;
+    }
+    install_seed_from(tonk, &key, &session, current, library, source.as_str()).await
+}
+
+/// Record `source` as where the installed seed `current` is fetched from,
+/// for a move to a source serving the very bytes the space already runs:
+/// there is nothing to reinstall, only a different place to follow.
+/// `Ok(false)` when it is the source already recorded.
+async fn follow_source(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+    current: &InstalledSeed,
+    source: &str,
+) -> Result<bool, RepositoryError> {
+    use dialog_query::{Output as _, Query, Term};
+
+    if current.source == source {
+        return Ok(false);
+    }
+    let failed = |e: String| RepositoryError::Internal(format!("record seed source: {e}"));
+    let _committing = session.transactor().lock().await;
+    let recorded: Vec<tonk_schema::SeedAvailable> = session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::SeedAvailable> {
+            this: Term::from(current.seed.clone()),
+            source: Term::var("source"),
+            replaces: Term::var("replaces"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| failed(format!("{e:?}")))?;
+    let mut transaction = session.handle().transaction();
+    for record in recorded {
+        let moved = tonk_schema::SeedAvailable {
+            source: tonk_schema::domain::seed::Source(source.to_owned()),
+            ..record.clone()
+        };
+        transaction = transaction.retract(record).assert(moved);
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| failed(e.to_string()))?
+        .publish()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| failed(e.to_string()))?;
+    session.poll(&tonk.operator).await;
+    Ok(true)
+}
+
+/// Bring every component space `key` installed up to what its own source
+/// serves, as [`upgrade_seed`] does after the seed.
 /// Whether any of them changed.
 async fn upgrade_components(
     tonk: &TonkState,
@@ -4616,7 +4790,7 @@ async fn upgrade_components(
         .collect();
     let mut upgraded = false;
     for component in components {
-        let library = fetch_library_document(&component.source)
+        let library = fetch_seed_source(&component.source)
             .await
             .map_err(|e| RepositoryError::Internal(format!("fetch '{}': {e}", component.source)))?;
         upgraded |= install_seed(tonk, key, session, component, library).await?;
@@ -4625,7 +4799,8 @@ async fn upgrade_components(
 }
 
 /// Install the library component at `source` into the branch `branch` of
-/// space `key`, or bring the installed one up to the shipped version. A
+/// space `key`, or bring the installed one up to what its own source
+/// serves. A
 /// component is an install of its own beside the space's main seed (see
 /// [`lineage`]): recorded, upgraded on mount and reverted like a seed, with
 /// any number installed at once. `Ok(false)` when it is installed and
@@ -4636,9 +4811,6 @@ pub(super) async fn install_component(
     branch: &str,
     source: &str,
 ) -> Result<bool, RepositoryError> {
-    let library = fetch_library_document(source)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("fetch '{source}': {e}")))?;
     let session = tonk
         .reactor
         .repository(key)
@@ -4649,6 +4821,12 @@ pub(super) async fn install_component(
     let current = read_installed_seed_in(tonk, &session, source)
         .await
         .map_err(|e| RepositoryError::Internal(format!("read seed record: {e}")))?;
+    // An installed component follows the source it recorded, as the seed
+    // does; only a first install reads this deployment's copy.
+    let from = current.as_ref().map_or(source, |current| &current.source);
+    let library = fetch_seed_source(from)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{from}': {e}")))?;
     match current {
         Some(current) => install_seed(tonk, key, &session, current, library).await,
         None => {
@@ -4746,11 +4924,32 @@ async fn install_seed(
     current: InstalledSeed,
     library: String,
 ) -> Result<bool, RepositoryError> {
+    let source = current.source.clone();
+    install_seed_from(tonk, key, session, current, library, &source).await
+}
+
+/// [`install_seed`] with `library` fetched from `source`, which the record
+/// then names: the source the space already follows, or the one it is being
+/// moved to (see [`migrate_seed`]).
+///
+/// A bare path, which releases before recorded, is recorded as this
+/// deployment's full URL from here on (see [`shipped_source`]): the space
+/// follows the deployment that last moved it, and every other one compares
+/// against those bytes instead of replacing them with its own.
+async fn install_seed_from(
+    tonk: &TonkState,
+    key: &str,
+    session: &crate::reactor::BranchSession,
+    current: InstalledSeed,
+    library: String,
+    source: &str,
+) -> Result<bool, RepositoryError> {
     let shipped = seed_version(&library);
     if current.seed.to_string() == shipped {
         return Ok(false);
     }
-    let install = install_claims_for(&current.source, &library).await?;
+    let install = install_claims_for(source, &library).await?;
+    let source = shipped_source(source);
     let subject = space_entity(key)?;
 
     // The writer lock the evaluate path takes, so another committer lines up
@@ -4775,7 +4974,6 @@ async fn install_seed(
     loop {
         let uninstall = uninstall_claims(tonk, session, &current, &subject).await?;
         let prior = current.seed.to_string();
-        let source = current.source.clone();
         let record = |installed: &dialog_artifacts::history::Version| {
             installed_seed_facts(&shipped, &source, &prior, installed)
         };
@@ -4833,6 +5031,7 @@ pub(super) async fn install_fresh_from(
     own: &[super::claim::RawClaim],
 ) -> Result<(), RepositoryError> {
     let install = install_claims_for(source, library).await?;
+    let source = &shipped_source(source);
     let seed = seed_version(library);
     let session = tonk
         .reactor
@@ -5043,7 +5242,7 @@ async fn uninstall_claims(
 /// ships it. Empty when it cannot be read (a seed whose source is offline):
 /// an upgrade of another library then protects less, and goes on.
 async fn declared_by(seed: &InstalledSeed) -> Vec<super::claim::RawClaim> {
-    let library = match fetch_library_document(&seed.source).await {
+    let library = match fetch_seed_source(&seed.source).await {
         Ok(library) => library,
         Err(error) => {
             log!(
@@ -5365,10 +5564,6 @@ pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWork
 /// HTTP cache sidestepped.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(super) async fn fetch_library_bytes(url: &str) -> Result<Vec<u8>, TonkWorkerError> {
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::{Request, RequestCache, RequestInit, Response};
-
     if let Some(bytes) = crate::cache::immutable_asset_bytes(url)
         .await
         .map_err(|e| {
@@ -5377,6 +5572,16 @@ pub(super) async fn fetch_library_bytes(url: &str) -> Result<Vec<u8>, TonkWorker
     {
         return Ok(bytes);
     }
+    fetch_network_bytes(url).await
+}
+
+/// Fetch `url` from the network with the HTTP cache sidestepped: a path on
+/// this worker's own deployment, or a full URL on any.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_network_bytes(url: &str) -> Result<Vec<u8>, TonkWorkerError> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::{Request, RequestCache, RequestInit, Response};
 
     let init = RequestInit::new();
     init.set_cache(RequestCache::NoStore);
@@ -5404,6 +5609,81 @@ pub(super) async fn fetch_library_bytes(url: &str) -> Result<Vec<u8>, TonkWorker
     .await
     .map_err(|e| TonkWorkerError::Internal(format!("library body: {e:?}")))?;
     Ok(js_sys::Uint8Array::new(&buffer).to_vec())
+}
+
+/// The source a library this deployment ships is recorded under: its full
+/// URL, so that another deployment following the seed fetches these bytes
+/// and not its own copy at the same path. A host that serves no origin (a
+/// native one) records the path, as releases before did everywhere.
+fn shipped_source(path: &str) -> String {
+    match worker_origin() {
+        Some(origin) if path.starts_with('/') => format!("{origin}{path}"),
+        _ => path.to_owned(),
+    }
+}
+
+/// Fetch the library a seed's recorded `source` names.
+///
+/// A full URL is read from the deployment that serves it, over the network
+/// and never from this worker's own retained copy: every deployment, and
+/// every worker version on one, following the seed then compares against
+/// the same bytes, so they agree on whether the space is current. A bare
+/// path is how releases before recorded a source, and names this
+/// deployment's own copy.
+async fn fetch_seed_source(source: &str) -> Result<String, TonkWorkerError> {
+    let Ok(url) = Url::parse(source) else {
+        return fetch_library_document(source).await;
+    };
+    String::from_utf8(fetch_served_bytes(&url).await?)
+        .map_err(|_| TonkWorkerError::Internal(format!("library {url} is not UTF-8 text")))
+}
+
+/// Read a library file from the deployment serving it at `url`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown", not(test)))]
+pub(super) async fn fetch_served_bytes(url: &Url) -> Result<Vec<u8>, TonkWorkerError> {
+    fetch_network_bytes(url.as_str()).await
+}
+
+#[cfg(all(not(all(target_arch = "wasm32", target_os = "unknown")), not(test)))]
+pub(super) async fn fetch_served_bytes(url: &Url) -> Result<Vec<u8>, TonkWorkerError> {
+    let failed = |error: reqwest::Error| TonkWorkerError::Internal(format!("fetch {url}: {error}"));
+    let response = reqwest::get(url.clone())
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(failed)?;
+    Ok(response.bytes().await.map_err(failed)?.to_vec())
+}
+
+/// Tests have no deployments to fetch from: a URL answers with what a test
+/// [`serve`]d there, or, on this harness's own origin, with the checked-in
+/// library the path names.
+#[cfg(test)]
+pub(super) async fn fetch_served_bytes(url: &Url) -> Result<Vec<u8>, TonkWorkerError> {
+    if let Some(served) = SERVED
+        .lock()
+        .expect("served libraries lock")
+        .get(url.as_str())
+    {
+        return Ok(served.clone().into_bytes());
+    }
+    if worker_origin().is_some_and(|origin| url.as_str().starts_with(&format!("{origin}/"))) {
+        return embedded_standard_library(url.path()).map(String::into_bytes);
+    }
+    Err(TonkWorkerError::Internal(format!("nothing serves {url}")))
+}
+
+/// What tests serve at full URLs, for [`fetch_served_bytes`].
+#[cfg(test)]
+static SERVED: std::sync::LazyLock<std::sync::Mutex<HashMap<String, String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Serve `library` at `url` for the rest of the test run.
+#[cfg(test)]
+pub(crate) fn serve(url: &str, library: &str) {
+    SERVED
+        .lock()
+        .expect("served libraries lock")
+        .insert(url.to_owned(), library.to_owned());
 }
 
 /// Wasm profile-library tests run in the pooled browser harness rather than the
@@ -6678,19 +6958,25 @@ struct LibraryClaims {
 /// transaction is committed whatever its concept. `what` names the library
 /// in errors.
 async fn library_claims(library: &str, what: &str) -> Result<LibraryClaims, RepositoryError> {
-    library_claims_after(None, library, what).await
+    library_claims_after(None, None, library, what).await
 }
 
 /// What installing `library`, fetched from `source`, asserts: a main seed on
 /// its own, a component after the core it relies on.
 async fn install_claims_for(source: &str, library: &str) -> Result<LibraryClaims, RepositoryError> {
     if !super::library::is_component_url(source) {
-        return library_claims(library, "space library").await;
+        return library_claims_after(Some(source), None, library, "space library").await;
     }
-    let core = fetch_library_document(STANDARD_LIBRARY_URL)
+    // The core served beside the component: a component fetched from another
+    // deployment relies on that deployment's core, not this worker's.
+    let core_source = Url::parse(source)
+        .ok()
+        .and_then(|at| at.join(STANDARD_LIBRARY_URL).ok())
+        .map_or_else(|| STANDARD_LIBRARY_URL.to_owned(), String::from);
+    let core = fetch_seed_source(&core_source)
         .await
-        .map_err(|e| RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}")))?;
-    library_claims_after(Some(&core), library, source).await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{core_source}': {e}")))?;
+    library_claims_after(Some(source), Some(&core), library, source).await
 }
 
 /// [`library_claims`] for a library that relies on `prelude`, as a component
@@ -6699,6 +6985,7 @@ async fn install_claims_for(source: &str, library: &str) -> Result<LibraryClaims
 /// own expressions are lowered. Still without a branch source, so what the
 /// branch already holds suppresses nothing.
 async fn library_claims_after(
+    source: Option<&str>,
     prelude: Option<&str>,
     library: &str,
     what: &str,
@@ -6707,10 +6994,14 @@ async fn library_claims_after(
     use dialog_query::{Parameters, Term};
     use tonk_schema::transact::{ApplicationPlan, Planner as _, Statement};
 
+    // Located where it was fetched from, so what it includes is read from
+    // beside it; a library with no source is this deployment's own.
     let parse = |text| async move {
-        super::library::parse(text)
-            .await
-            .map_err(|error| RepositoryError::Internal(format!("{what}: {error}")))
+        match source {
+            Some(source) => super::library::parse_from(source, text).await,
+            None => super::library::parse(text).await,
+        }
+        .map_err(|error| RepositoryError::Internal(format!("{what}: {error}")))
     };
     let (syntax, first) = match prelude {
         None => (parse(library).await?, 0),
@@ -15088,6 +15379,213 @@ name!:
             .expect("the seed records read")
     }
 
+    /// The library this worker ships with one more attribute, so it hashes
+    /// to a seed of its own: what another deployment, or a later release of
+    /// one, serves.
+    fn core_with(probe: &str) -> String {
+        format!(
+            r#"{CORE}
+attribute!: &probe/{probe}
+  description: "A probe."
+  the: xyz.example.probe/{probe}
+  as: text
+"#
+        )
+    }
+
+    /// A space whose seed was installed from `source`, serving `library`.
+    async fn space_following(tonk: &TonkState, source: &str, library: &str) -> String {
+        serve(source, library);
+        let (key, subject) = empty_space(tonk, "Garden").await;
+        let own = repository_name_claims(&subject, "Garden", None).expect("the name encodes");
+        install_fresh_from(tonk, &key, CONTENT_BRANCH, source, library, &own)
+            .await
+            .expect("the library installs");
+        key
+    }
+
+    /// A space follows the source its seed recorded, not the library of
+    /// whichever deployment mounts it: a worker that ships a different
+    /// `core.yaml` leaves it alone, and moves it only once the bytes at the
+    /// source change. Two deployments replacing each other's library on
+    /// every mount is what a bare path, resolved by each against itself,
+    /// came to.
+    #[dialog_common::test]
+    async fn it_follows_the_recorded_source_and_not_this_workers_library() {
+        const SOURCE: &str = "https://follows.tonk.test/library/core.yaml";
+        let tonk = test_state().await;
+        let theirs = core_with("theirs");
+        let key = space_following(&tonk, SOURCE, &theirs).await;
+        let installed = running(&tonk, &key).await;
+        assert_eq!(installed.source, SOURCE);
+        assert_ne!(installed.seed.to_string(), seed_version(CORE));
+
+        assert!(
+            !upgrade_seed(&tonk, &key).await.expect("the upgrade runs"),
+            "a space current with its source is left alone"
+        );
+        assert_eq!(running(&tonk, &key).await.seed, installed.seed);
+
+        let next = core_with("next");
+        serve(SOURCE, &next);
+        assert!(
+            upgrade_seed(&tonk, &key).await.expect("the upgrade runs"),
+            "new bytes at the source move the space"
+        );
+        let moved = running(&tonk, &key).await;
+        assert_eq!(moved.seed.to_string(), seed_version(&next));
+        assert_eq!(moved.source, SOURCE, "it follows the same source");
+        assert!(
+            !upgrade_seed(&tonk, &key).await.expect("the upgrade runs"),
+            "and is current with it again"
+        );
+    }
+
+    /// A deployment records the library it ships under its own full URL, so
+    /// that another deployment fetches these bytes and not its own copy, and
+    /// a worker on it finds the space current with that source.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_records_the_full_url_of_the_library_it_ships() {
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, "Garden").await;
+        let origin = worker_origin().expect("a service worker has an origin");
+
+        let installed = running(&tonk, &key).await;
+        assert_eq!(installed.source, format!("{origin}{STANDARD_LIBRARY_URL}"));
+        assert!(
+            !upgrade_seed(&tonk, &key).await.expect("the upgrade runs"),
+            "a space current with its own deployment is left alone"
+        );
+    }
+
+    /// A source nothing answers at leaves the space on the library it runs.
+    #[dialog_common::test]
+    async fn it_leaves_a_space_alone_when_its_source_is_unreachable() {
+        let tonk = test_state().await;
+        let (key, subject) = empty_space(&tonk, "Garden").await;
+        let own = repository_name_claims(&subject, "Garden", None).expect("the name encodes");
+        install_fresh_from(
+            &tonk,
+            &key,
+            CONTENT_BRANCH,
+            "https://gone.tonk.test/library/core.yaml",
+            CORE,
+            &own,
+        )
+        .await
+        .expect("the library installs");
+        let installed = running(&tonk, &key).await;
+
+        assert!(upgrade_seed(&tonk, &key).await.is_err());
+        assert_eq!(running(&tonk, &key).await.seed, installed.seed);
+    }
+
+    /// Migrating replaces the installed library with the one at the new
+    /// source and records that source, so the space follows it from then
+    /// on. A source serving the bytes the space already runs only changes
+    /// where it follows.
+    #[dialog_common::test]
+    async fn it_migrates_a_space_onto_another_source() {
+        const THERE: &str = "https://there.tonk.test/library/core.yaml";
+        const MIRROR: &str = "https://mirror.tonk.test/library/core.yaml";
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, "Garden").await;
+        let theirs = core_with("migrated");
+        serve(THERE, &theirs);
+        serve(MIRROR, &theirs);
+        let there = Url::parse(THERE).expect("a URL");
+        assert!(
+            migrate_seed(&tonk, &key, &there)
+                .await
+                .expect("the migration commits")
+        );
+        let moved = running(&tonk, &key).await;
+        assert_eq!(moved.source, THERE);
+        assert_eq!(moved.seed.to_string(), seed_version(&theirs));
+        assert!(
+            !migrate_seed(&tonk, &key, &there)
+                .await
+                .expect("the migration reads"),
+            "a space already following the source and current is left alone"
+        );
+        assert!(
+            !upgrade_seed(&tonk, &key).await.expect("the upgrade runs"),
+            "and following it finds nothing to do"
+        );
+
+        let mirror = Url::parse(MIRROR).expect("a URL");
+        assert!(
+            migrate_seed(&tonk, &key, &mirror)
+                .await
+                .expect("the source is recorded")
+        );
+        let mirrored = running(&tonk, &key).await;
+        assert_eq!(mirrored.source, MIRROR);
+        assert_eq!(
+            mirrored.seed, moved.seed,
+            "the same bytes are not reinstalled"
+        );
+        assert_eq!(mirrored.version, moved.version);
+    }
+
+    /// A component is not a seed: migrating onto one would leave the space
+    /// with no main library.
+    #[dialog_common::test]
+    async fn it_refuses_to_migrate_a_space_onto_a_component() {
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, "Garden").await;
+        let installed = running(&tonk, &key).await;
+        let component = Url::parse("https://there.tonk.test/library/notebook.yaml").expect("a URL");
+
+        assert!(migrate_seed(&tonk, &key, &component).await.is_err());
+        assert_eq!(running(&tonk, &key).await.seed, installed.seed);
+    }
+
+    /// An installed component follows the source it recorded too: asked to
+    /// install it again, a worker compares against that source's bytes and
+    /// not its own copy of the component.
+    #[dialog_common::test]
+    async fn it_follows_the_source_a_component_recorded() {
+        const THEIR_NOTEBOOK: &str = "https://components.tonk.test/library/notebook.yaml";
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, "Garden").await;
+        let theirs = format!(
+            r#"{}
+attribute!: &probe/component
+  description: "A probe."
+  the: xyz.example.probe/component
+  as: text
+"#,
+            fetch_library_document(NOTEBOOK_SOURCE)
+                .await
+                .expect("the notebook library reads")
+        );
+        serve(THEIR_NOTEBOOK, &theirs);
+        serve("https://components.tonk.test/library/core.yaml", CORE);
+        install_fresh_from(&tonk, &key, CONTENT_BRANCH, THEIR_NOTEBOOK, &theirs, &[])
+            .await
+            .expect("the component installs");
+        let installed = component(&tonk, &key, NOTEBOOK_SOURCE)
+            .await
+            .expect("the component is found by its path");
+        assert_eq!(installed.source, THEIR_NOTEBOOK);
+
+        assert!(
+            !install_component(&tonk, &key, CONTENT_BRANCH, NOTEBOOK_SOURCE)
+                .await
+                .expect("installing again reads"),
+            "a component current with its source is left alone"
+        );
+        assert_eq!(
+            component(&tonk, &key, NOTEBOOK_SOURCE)
+                .await
+                .expect("the component stays")
+                .seed,
+            installed.seed
+        );
+    }
+
     /// A component installs beside the space's seed, recorded as an install
     /// of its own: the seed's record stays, installing it again does
     /// nothing, and a mount finds both current.
@@ -15106,12 +15604,12 @@ name!:
         let notebook = component(&tonk, &key, NOTEBOOK_SOURCE)
             .await
             .expect("the component's install is recorded");
-        assert_eq!(notebook.source, NOTEBOOK_SOURCE);
+        assert_eq!(notebook.source, shipped_source(NOTEBOOK_SOURCE));
         assert!(notebook.complete);
 
         let still = running(&tonk, &key).await;
         assert_eq!(still.seed, seed.seed, "the seed's record stays");
-        assert_eq!(still.source, STANDARD_LIBRARY_URL);
+        assert_eq!(still.source, shipped_source(STANDARD_LIBRARY_URL));
 
         assert!(
             !install_component(&tonk, &key, CONTENT_BRANCH, NOTEBOOK_SOURCE)
