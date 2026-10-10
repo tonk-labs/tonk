@@ -25,7 +25,7 @@ const SPACE = "did:key:zSpace";
 // `incumbent` is whether another worker is the active one as this one starts.
 function site({
   host = "bspace.tonk.test", routes = {}, failing = false, holds = true, offline = false, incumbent = false,
-  lingers = false,
+  lingers = false, shell = "SHELL",
 } = {}) {
   // How often the worker asked the browser to look for a newer one.
   const looked = { count: 0 };
@@ -88,10 +88,11 @@ function site({
   };
   const network = async (request) => {
     const path = new URL(key(request), origin).pathname;
+    if (path === "/webawesome/icons/solid/house.svg") return new Response("<svg/>");
     if (path === "/.well-known/tonk") {
       return new Response(JSON.stringify({ sites: { app: "https://tonk.test", host: "tonk.test" } }));
     }
-    if (path === "/space.html" || path === "/profile.html") return new Response("SHELL");
+    if (path === "/space.html" || path === "/profile.html") return new Response(shell);
     if (path === "/worker_bg.wasm") return new Response(new Uint8Array([0, 97, 115, 109]));
     return new Response("from the server", { status: 404 });
   };
@@ -397,6 +398,7 @@ test("a space's worker says how it is to its own pages", async () => {
   const health = await (await answer("/api/health")).json();
 
   assert.equal(health.site, "space");
+  assert.equal(health.space, SPACE, "and which space it holds");
 });
 
 test("a page load has the worker look for a newer one, which the page may not ask for", async () => {
@@ -503,4 +505,55 @@ test("the Rust worker opens a subscription with a space's worker, and ends it by
   assert.equal(status, 200);
   assert.equal(new TextDecoder().decode(first.value), "data: 1\n\n");
   assert.ok(sent.some((said) => said.cancel === call), "the space's worker is told the subscription ended");
+});
+
+test("a page's icon is read from this origin, and kept for when there is no network", async () => {
+  const { answer, stores } = site();
+
+  const first = await answer("/webawesome/icons/solid/house.svg");
+  const kept = [...(stores.get("tonk-site-icons")?.keys() ?? [])];
+  const again = await answer("/webawesome/icons/solid/house.svg");
+
+  assert.equal(await first.text(), "<svg/>");
+  assert.deepEqual(kept, ["https://bspace.tonk.test/webawesome/icons/solid/house.svg"]);
+  assert.equal(await again.text(), "<svg/>", "the kept icon answers");
+});
+
+test("an icon the app does not ship is not kept", async () => {
+  const { answer, stores } = site();
+
+  const missing = await answer("/webawesome/icons/solid/no-such-icon.svg");
+
+  assert.equal(missing.status, 404);
+  assert.equal(stores.get("tonk-site-icons")?.size ?? 0, 0);
+});
+
+test("the worker fetches nothing from anyone else's origin", () => {
+  const elsewhere = [...SOURCE.matchAll(/["'`](https?:\/\/[^"'`$\s]+)/g)]
+    .map(([, url]) => new URL(url).hostname)
+    .filter((host) => !/^(localhost|127\.0\.0\.1)$/.test(host) && !host.endsWith(".test"));
+
+  assert.deepEqual(elsewhere, []);
+});
+
+test("the icons the app ships are of the release its Web Awesome asks for", async () => {
+  const { readdirSync, readFileSync, existsSync } = await import("node:fs");
+  const webawesome = new URL("../assets/webawesome/", import.meta.url);
+  const chunks = new URL("chunks/", webawesome);
+  const version = readdirSync(chunks)
+    .map((name) => /var FA_VERSION = "([^"]+)"/.exec(readFileSync(new URL(name, chunks), "utf8"))?.[1])
+    .find(Boolean);
+
+  assert.equal(readFileSync(new URL("icons/VERSION", webawesome), "utf8").trim(), version);
+  assert.ok(existsSync(new URL("icons/solid/house.svg", webawesome)));
+});
+
+test("the shell the worker serves is marked as the worker's, and the copy it keeps is not", async () => {
+  const { answer, stores } = site({ shell: "<html><head><script></script></head></html>" });
+
+  const served = await (await answer("/notes", page)).text();
+  const kept = await stores.get("tonk-space-shell").get("/space.html").clone().text();
+
+  assert.match(served, /<head>\s*<meta name="tonk-shell" content="worker" \/><script>/);
+  assert.doesNotMatch(kept, /tonk-shell/);
 });

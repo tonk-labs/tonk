@@ -6489,6 +6489,272 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// An owner with a synced space and a guest who joined it through an
+    /// open invite, both signed up: the browsers, the space's key, and the
+    /// account the roster knows the guest by.
+    async fn space_with_a_member(
+        env: &TestEnvironment,
+    ) -> Result<(WebDriver, WebDriver, String, String)> {
+        let owner = driver_with_prf(env).await?;
+        sign_up(&owner, env, "owner@example.com").await?;
+        let key = create_space_awaiting_remote(&owner, "Shared Roster", true).await?;
+        successful_body(
+            "push the space",
+            &post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+        let invited = post_json(
+            &owner,
+            &format!("/api/repository/{key}/invite"),
+            serde_json::json!({ "baseUrl": env.tonk_web.join("join")? }),
+        )
+        .await?;
+        let invite = successful_body("mint an invite", &invited)["url"]
+            .as_str()
+            .context("the invite has no URL")?
+            .to_owned();
+
+        let guest = driver_with_prf(env).await?;
+        sign_up(&guest, env, "guest@example.com").await?;
+        successful_body(
+            "join the space",
+            &post_json(
+                &guest,
+                "/api/profile/join",
+                serde_json::json!({ "url": invite }),
+            )
+            .await?,
+        );
+        successful_body(
+            "the guest pushes its claim",
+            &post_json(
+                &guest,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+
+        // The owner's roster lists the guest once the claim has synced.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        let member = loop {
+            let _ = post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/pull"),
+                serde_json::json!({}),
+            )
+            .await?;
+            let info = get_json(&owner, &format!("/api/repository/{key}")).await?;
+            let info = successful_body("read the space's roster", &info);
+            let joined = info["members"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|member| member["is_self"].as_bool() == Some(false))
+                .and_then(|member| member["did"].as_str())
+                .map(str::to_owned);
+            if let Some(member) = joined {
+                break member;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the guest never appeared on the owner's roster: {info}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        Ok((owner, guest, key, member))
+    }
+
+    /// The role the roster of `key` gives `member`, as `driver`'s device
+    /// has it.
+    async fn role_on_the_roster(
+        driver: &WebDriver,
+        key: &str,
+        member: &str,
+    ) -> Result<Vec<String>> {
+        let rows = post_json(
+            driver,
+            &format!("/api/repository/{key}/branch/main/query"),
+            serde_json::json!({
+                "predicate": { "with": {
+                    "member": { "the": "xyz.tonk.membership/member", "as": "Entity", "cardinality": "one" },
+                    "role": { "the": "xyz.tonk.membership/role", "as": "Entity", "cardinality": "one" }
+                } },
+                "terms": {
+                    "this": { "?": { "name": "this" } },
+                    "member": member,
+                    "role": { "?": { "name": "role" } }
+                }
+            }),
+        )
+        .await?;
+        Ok(successful_body("read the roster's roles", &rows)
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| row["fields"]["role"].as_str().map(str::to_owned))
+            .collect())
+    }
+
+    /// The bar promotes a member on the person's profile. Where the space
+    /// is held by a worker of its own, that worker admits them: the roster
+    /// it keeps says so.
+    #[dialog_common::test]
+    async fn it_promotes_a_member_of_a_space_its_own_worker_holds(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (owner, guest, key, member) = space_with_a_member(&env).await?;
+        assert_eq!(
+            role_on_the_roster(&owner, &key, &member).await?,
+            ["tonk:member"],
+            "the guest joined as a member"
+        );
+
+        // What the bar does: have the page mint the hop under the passkey,
+        // then commit the promotion on the profile's branch.
+        enter_profile(&owner).await?;
+        let minted = owner
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                window.tonk.delegate({ subject: arguments[0], command: "/", audience: arguments[1] })
+                    .then(chain => done({ chain }))
+                    .catch(error => done({ error: String(error) }));
+                "#,
+                vec![serde_json::json!(key), serde_json::json!(member)],
+            )
+            .await?;
+        owner.enter_default_frame().await?;
+        let chain = minted.json()["chain"]
+            .as_str()
+            .with_context(|| format!("the page minted no hop: {}", minted.json()))?
+            .to_owned();
+        let branch = active_branch(&owner).await?;
+        let promoted = post_json(
+            &owner,
+            &format!("/api/repository/profile:tonk/branch/{branch}/transact"),
+            serde_json::json!({ "claims": [{
+                "op": "assert",
+                "application": {
+                    "predicate": { "kind": "transient", "concept": { "with": {
+                        "member": { "the": "xyz.tonk.promote/member", "cardinality": "one", "as": "Entity" },
+                        "space": { "the": "xyz.tonk.promote/space", "cardinality": "one", "as": "Entity" },
+                        "chain": { "the": "xyz.tonk.promote/chain", "cardinality": "one", "as": "Text" }
+                    } } },
+                    "parameters": { "member": member, "space": key, "chain": chain }
+                }
+            }] }),
+        )
+        .await?;
+        successful_body("commit the promotion", &promoted);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let roles = role_on_the_roster(&owner, &key, &member).await?;
+            if roles == ["tonk:admin"] {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the guest was never admitted as admin: {roles:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        guest.quit().await?;
+        owner.quit().await?;
+        Ok(())
+    }
+
+    /// Removing a member fires in the space, and the space's own worker
+    /// has the person's profile sign the revocation: the member leaves the
+    /// roster and what they write afterwards does not reach the owner.
+    #[dialog_common::test]
+    async fn it_removes_a_member_of_a_space_its_own_worker_holds(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (owner, guest, key, member) = space_with_a_member(&env).await?;
+
+        let expelled = post_json(
+            &owner,
+            &format!("/api/repository/{key}/branch/main/transact"),
+            serde_json::json!({ "claims": [{
+                "op": "assert",
+                "application": {
+                    "predicate": { "kind": "transient", "concept": { "with": {
+                        "member": { "the": "xyz.tonk.command.expel-member/member", "as": "Entity" }
+                    } } },
+                    "parameters": { "member": member }
+                }
+            }] }),
+        )
+        .await?;
+        successful_body("commit the removal", &expelled);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let roles = role_on_the_roster(&owner, &key, &member).await?;
+            if roles.is_empty() {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the guest is still on the roster: {roles:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        // Asserted on content, as revoking an invitation is: only the
+        // owner's view tells a removed member's write from one that landed.
+        let wrote = post_yaml(
+            &guest,
+            &format!("/api/repository/{key}/branch/main/evaluate"),
+            r#"attribute!: &after-removal
+  the:         xyz.tonk.e2e/after-removal
+  as:          text
+  cardinality: one
+  description: removal e2e marker
+"#,
+        )
+        .await?;
+        assert_eq!(
+            wrote["status"].as_u64(),
+            Some(200),
+            "the guest still writes locally: {wrote}"
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let _ = post_json(
+                &guest,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?;
+            let _ = post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/pull"),
+                serde_json::json!({}),
+            )
+            .await?;
+            assert!(
+                !owner_sees(&owner, &key, "after-removal").await?,
+                "a removed member's write reached the owner"
+            );
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        guest.quit().await?;
+        owner.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_backs_up_a_claimed_space_for_another_account_device(
         env: TestEnvironment,

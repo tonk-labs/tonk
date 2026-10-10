@@ -138,10 +138,13 @@ const workerHealth = {
     startedAt: Date.now(),
 };
 
-function healthResponse() {
+async function healthResponse() {
     return new Response(
         JSON.stringify({
             site: PROFILE ? "profile" : "space",
+            // Which space a space's worker holds, once it holds one: a page
+            // of this origin opened on its own finds its way to the app by it.
+            space: PROFILE ? undefined : await heldSpace().catch(() => null),
             worker: workerHealth.state,
             workerWasm: workerHealth.workerWasm,
             error: workerHealth.error,
@@ -1622,8 +1625,15 @@ async function serveShell() {
     );
     headers.set("permissions-policy", NO_PASSKEYS);
     headers.set("x-content-type-options", "nosniff");
-    return new Response(response.body, { status: response.status, headers });
+    // Marked as this worker's: the shell renders the site only in a document
+    // that carries the policy above, and reads the mark to know it does.
+    const shell = (await response.text()).replace("<head>", `<head>\n        ${SHELL_MARK}`);
+    headers.delete("content-length");
+    return new Response(shell, { status: response.status, headers });
 }
+
+// What the shell this worker serves carries and the server's copy does not.
+const SHELL_MARK = '<meta name="tonk-shell" content="worker" />';
 
 // Read an asset from the space's own database, through the same route a
 // page's `/api/.../blob/...` read takes.
@@ -1789,6 +1799,31 @@ function pageMayAsk(request, path) {
 
 const missing = () => new Response("not found", { status: 404 });
 
+// ---- Icons ---------------------------------------------------------------
+//
+// `<wa-icon name="…">` reads an icon as an SVG file. The app ships the icons
+// it has (see `scripts/vendor-icons.sh`) and every page reads them from its
+// own origin: nothing is fetched from anyone else's. An icon is small and
+// asked for one at a time, when something first shows it, so the worker keeps
+// each one it has served: a site opened with no network still has the icons
+// it showed before.
+const ICON_PATH = /^\/webawesome\/icons\/[a-z0-9-]+\/[a-z0-9-]+\.svg$/;
+const ICON_CACHE = "tonk-site-icons";
+
+async function serveIcon(request) {
+    const cache = await caches.open(ICON_CACHE);
+    const kept = await cache.match(request.url);
+    if (kept) return kept;
+    let fetched;
+    try {
+        fetched = await fetch(request.url);
+    } catch (error) {
+        return new Response(String(error?.message ?? error), { status: 502 });
+    }
+    if (fetched.ok) await cache.put(request.url, fetched.clone());
+    return fetched;
+}
+
 self.addEventListener("fetch", event => {
     const url = new URL(event.request.url);
     if (url.origin !== self.location.origin) return;
@@ -1811,6 +1846,10 @@ self.addEventListener("fetch", event => {
                 return new Response(String(error.message), { status: 502 });
             }),
         );
+        return;
+    }
+    if (ICON_PATH.test(url.pathname) && event.request.method === "GET") {
+        event.respondWith(serveIcon(event.request));
         return;
     }
     // Answered from this script, never the Rust worker: health has to be

@@ -321,6 +321,7 @@ How it hangs together:
 - **What touches a space's storage is done by the space's worker, and the profile still signs.** Joining: the profile parses the invitation, extends its chain to the account and saves that authority, then commits a `ClaimMembership` command on the space's branch. The space's worker, delegated to out of that authority, pulls the space (the remote honouring the chain is the authorization check), validates what came, commits the roster claim and retains the chain, and says what came of it in a fact at the command's entity, which the profile is subscribed to. The space is listed only once the claim has landed, and a worker brought up for a join that failed is told to forget itself. An invitation issued by a route is recorded by a `RetainInvite` command the same way. Listing invitations is answered by the space's worker; revoking one has that worker find the grant and its path and ask the profile, up the port, to sign and publish the revocation.
 - **The profile reaches a space's worker as a peer.** The reactor names a branch another peer holds as it names one mounted here, and its leaf effects (query, subscribe, transact) are requests to that peer (`dialog-reactor/src/peer.rs`). The connection is the port to the space's worker. Requests are not signed yet: that worker answers because of who holds the port.
 - **The update check asks the space's worker.** A check fired on the profile reads the seed the space runs with queries to the space's worker, fetches the source itself, and records a waiting seed with a transaction there. Whether this device has checked, and why a check failed, stays on the profile's own record of the space.
+- **A site's address opened on its own goes to the app.** A profile's address is the app's, path for path. A space's is `/space/{id}` there, which its worker names once it holds the space; where it holds none, or no app is named, the page says what the address is and links to the app.
 - **A copy from before goes.** A profile that held a space before spaces had origins, or kept its emptied storage under an earlier version of this branch, removes that storage once the space's worker says it holds the space: what the copy has that the remote lacks is pushed first, where it syncs is recorded in the directory if it is not there, and the database is deleted.
 - **Who is looking is a fact in the space.** Each worker says, in a space branch's session overlay, which account its session acts for, and the roster marks that member as you.
 - **Sessions survive a stopped worker.** Each worker saves what its site stamps were made from and restores them before serving.
@@ -343,7 +344,7 @@ Corrections to the design above:
 - **The first load has no CSP.** The shell comes from the server before any worker exists. The server has to send a policy on the shell, but that policy must allow `worker-src 'self'`, or the shell could not register its worker.
 - **Storage is partitioned by the site of the page around a frame.** A site on another registrable domain than the app (staging: `tonk.spot` under `staging.tonk.xyz`; development: `*.localhost`) keeps its storage per framing site. Production and previews are same-site and are not partitioned.
 - **A key the browser will not export can still be handed to another origin** by `postMessage`, which is what makes the one-time move possible without touching custody.
-- **Web Awesome fetches its icons from `ka-f.fontawesome.com`.** `connect-src` blocks that, so those icons are missing. The icon set has to be served from our own origin.
+- **Icons are the app's own.** Web Awesome fetches an icon from Font Awesome's host by default, which a site's policy blocks and which nothing the app shows should depend on. The free icon set is vendored under `assets/webawesome/icons` (`scripts/vendor-icons.sh`, the release the vendored Web Awesome asks for), a site's page reads icons from its own origin, and its worker keeps the ones it has served.
 
 What a space's code can and cannot reach:
 
@@ -362,7 +363,8 @@ Not done:
 - **`GET /api/repository/{space}`** is answered by the space's worker, asked by the profile's for a space the person has; the directory's record stands in when that worker cannot be reached.
 - **An origin per profile.** Every profile on a device shares `profile.{host}`. The roster of profiles and the active one would have to live with the app, and signing in to another account would have to carry the ceremony's result to another origin's worker.
 - **The server does not yet answer a site's hostname with the shell and its policy.**
-- Firefox and Safari. Pre-warming origins for offline creation.
+- **Firefox** boots the app, creates a space and renders it on its own origin (checked by hand against the dev server, over WebDriver BiDi). It does not say a worker answered a frame's navigation, so the worker marks the shell it serves. No automated run covers it.
+- Safari. Pre-warming origins for offline creation.
 
 Known and not from this work:
 
