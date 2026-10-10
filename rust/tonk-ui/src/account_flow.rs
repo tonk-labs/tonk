@@ -4588,6 +4588,36 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Wait for the Hub the historical profile library renders. Where it
+    /// does not come, say which library the profile's origin serves and
+    /// what its worker did: that tells a Hub rendered from another
+    /// generation's library apart from one that never took the historical
+    /// one.
+    #[cfg(feature = "integration-tests")]
+    async fn await_historical_hub(driver: &WebDriver) -> Result<()> {
+        let Err(error) = wait_for_text_containing(driver, "body", "no spaces yet").await else {
+            return Ok(());
+        };
+        let served = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                fetch("/library/profile.yaml", { cache: "no-store" })
+                    .then((response) => response.text())
+                    .then((text) => done(text.includes("no spaces yet")))
+                    .catch((error) => done(String(error)));
+                "#,
+                Vec::new(),
+            )
+            .await
+            .map(|value| value.json().clone())
+            .unwrap_or(serde_json::Value::Null);
+        let log = crate::service_worker_upgrade::tests::worker_log(driver).await;
+        Err(error.context(format!(
+            "the profile's origin serves the historical library: {served}\nprofile worker log:\n{log}"
+        )))
+    }
+
     #[cfg(feature = "integration-tests")]
     #[dialog_common::test]
     async fn profile_library_repairs_claims_from_an_old_account_writer(
@@ -4626,31 +4656,7 @@ pub(crate) mod tests {
         enter_hub(&owner)
             .await
             .context("old-writer scenario: mount owner Hub")?;
-        if let Err(error) = wait_for_text_containing(&owner, "body", "no spaces yet").await {
-            // Which library the profile's origin serves, and what its
-            // worker did, tell a Hub rendered from another generation's
-            // library apart from one that never took the historical one.
-            let served = owner
-                .execute_async(
-                    r#"
-                    const done = arguments[arguments.length - 1];
-                    fetch("/library/profile.yaml", { cache: "no-store" })
-                        .then((response) => response.text())
-                        .then((text) => done(text.includes("no spaces yet")))
-                        .catch((error) => done(String(error)));
-                    "#,
-                    Vec::new(),
-                )
-                .await
-                .map(|value| value.json().clone())
-                .unwrap_or(serde_json::Value::Null);
-            let log = crate::service_worker_upgrade::tests::worker_log(&owner).await;
-            return Err(error.context(format!(
-                "the profile's origin serves the historical library: {served}
-profile worker log:
-{log}"
-            )));
-        }
+        await_historical_hub(&owner).await?;
         wait_for_text_containing(&owner, "body", SPACE).await?;
         owner.enter_default_frame().await?;
 
@@ -4712,7 +4718,7 @@ profile worker log:
         enter_hub(&old_writer)
             .await
             .context("old-writer scenario: mount historical writer Hub after current deployment")?;
-        wait_for_text_containing(&old_writer, "body", "no spaces yet").await?;
+        await_historical_hub(&old_writer).await?;
         wait_for_text_containing(&old_writer, "body", SPACE).await?;
         old_writer.enter_default_frame().await?;
         successful_body(
