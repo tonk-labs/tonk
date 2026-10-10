@@ -1474,7 +1474,7 @@ fn the_element_method_query_matches_the_library() {
     // would pass through exactly the drift it exists to catch.
     let domain = tonk_template::resolve::ELEMENT_METHOD_DOMAIN;
     assert!(
-        declared.contains(&format!("the: {domain}")),
+        declared.contains(&format!("the: \"{domain}\"")),
         "the wire predicate's domain ({domain}) is not what the library \
          declares for `element.method`",
     );

@@ -301,9 +301,17 @@ fn write_property(document: &mut Document, field: &str, key: &str, value: &serde
     let text = match value {
         serde_json::Value::String(text) => {
             if key == "the" {
-                Span::new(Token::Entity, text.clone())
-            } else if key == "cardinality" || key == "as" {
-                Span::new(Token::Number, text.clone())
+                // A relation is a URI; a collection's domain is not, and
+                // a bare word would read as a reference, so it is quoted.
+                match tonk_notation::parse::classify_plain_value(text) {
+                    tonk_notation::FieldValue::Uri(_) => Span::new(Token::Entity, text.clone()),
+                    _ => Span::new(Token::Entity, format!("{text:?}")),
+                }
+            } else if matches!(key, "cardinality" | "pick" | "role") {
+                // A fixed word, not a reference: spelled as a keyword.
+                Span::new(Token::Number, format!(":{text}"))
+            } else if key == "as" {
+                Span::new(Token::Number, tonk_notation::spell_uri(text).into_owned())
             } else {
                 Span::new(Token::Value, text.clone())
             }
