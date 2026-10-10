@@ -299,6 +299,16 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // What the person's profile hands a space's own worker when a
         // signed-in account takes over the one its roster entry is under.
         .command::<tonk_schema::command::MoveMembership>()
+        // What the person's profile hands a space's own worker when the
+        // bar promotes one of the space's members.
+        .command::<tonk_schema::command::AdmitMember>()
+        // What the person's profile hands a space's own worker to keep of
+        // an invitation it issued for someone else to carry.
+        .command::<tonk_schema::command::RetainInvite>()
+        // What the person's profile hands a space's own worker to commit
+        // when the person joins the space. It claims for the origin and
+        // names no other space.
+        .command::<tonk_schema::command::ClaimMembership>()
         // A space installs a library component into itself; the profile
         // has no components to install.
         .command::<tonk_schema::command::InstallComponent>()

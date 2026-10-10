@@ -55,6 +55,7 @@ mod account_journey;
 mod ceremony;
 pub(crate) mod customer;
 mod email_status;
+mod link_timing;
 /// The panel that adds an account to this profile, stage by stage.
 pub(crate) mod registration;
 mod sign_in_via;
@@ -73,6 +74,7 @@ pub(crate) mod rotation;
 
 mod join;
 /// Reaching a space's own worker from the person's profile.
+pub(crate) mod space_directory;
 pub(crate) mod space_reach;
 /// A space's own worker: the delegation it holds, and the space it mounts.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -86,7 +88,7 @@ mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
 pub(crate) mod agent_connections;
-mod revoke_invite;
+pub(crate) mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
 mod members;
@@ -447,6 +449,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/branch/{branch}/evaluate",
             post(evaluate::evaluate),
         )
+        .route(
+            "/api/repository/{repo}/branch/{branch}/evaluate/conditional",
+            post(evaluate::evaluate_conditional),
+        )
         // CSV export / import — stream the branch's artifacts out as
         // `text/csv`, or commit a CSV body's rows as assertions. See
         // `router/transfer.rs`.
@@ -489,8 +495,9 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // Content-addressed blob bytes: GET serves an entity's bytes; POST
         // ingests a new blob into the branch store and returns its ref.
         // `<tonk-display>` points `<img src>` at the GET form for
-        // `tonk:blob` models; `Content-Type` there comes from the blob's
-        // `xyz.tonk.blob/content-type` fact, which POST asserts.
+        // `tonk:blob` models; `Content-Type` there comes from the asset's
+        // `tonk.dialog.asset/media-type` fact, which POST asserts, or the
+        // legacy `xyz.tonk.blob/content-type` one older blobs carry.
         // The upload body is buffered whole in the service worker (no
         // streaming yet), so the limit is a deliberate ceiling rather than
         // axum's 2 MiB default — which real image files routinely exceed.

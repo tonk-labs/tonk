@@ -424,10 +424,11 @@ pub struct TonkState {
     /// Spaces whose seed this worker instance already checked against the
     /// shipped bundle. See [`crate::router::adopt::SeedUpgrades`].
     pub(crate) seed_upgrades: crate::router::adopt::SeedUpgrades,
-    /// Whether this deployment renders each space on an origin of its own,
-    /// where the space's own worker holds its content. This worker then
-    /// creates a space's identity and leaves its content to that worker
-    /// (see `router::repository::SpaceSeed`).
+    /// Whether each space renders on an origin of its own, where the
+    /// space's own worker holds it. This worker, the person's profile's, then
+    /// creates a space's identity and mounts nothing of it (see
+    /// `router::space_directory`). So for a person's worker started by a
+    /// site's script (see [`crate::device::spaces_have_origins`]).
     pub site_origins: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Routing keys the hidden account repository answers to, resolved lazily.
     /// Consulted by the middleware that keeps that repository off the generic
@@ -1843,7 +1844,11 @@ pub(crate) async fn boot_state_with_profile_library(
         sync_queue: Default::default(),
         clients: Default::default(),
         seed_upgrades: Default::default(),
-        site_origins: Default::default(),
+        // Known before anything runs, the chores of starting included: they
+        // would mount spaces that are another worker's to hold.
+        site_origins: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            crate::device::spaces_have_origins(),
+        )),
         account_keys: Default::default(),
         profile_library,
         registry,
@@ -2267,6 +2272,48 @@ impl TonkServiceWorker {
         })
     }
 
+    /// The person's account's authority over `space`, as this profile has
+    /// it on record, for the space's own worker to compose onto. Resolves
+    /// to the chain, base58.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "spaceAuthority")]
+    pub fn space_authority(&self, space: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            let authority = crate::router::revoke_invite::authority_for_space(&tonk, &space)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(JsValue::from_str(&authority))
+        })
+    }
+
+    /// Sign and publish the revocation of a grant on `space` that its own
+    /// worker asked for: `request` is what that worker sent, as JSON.
+    /// Resolves to the access service's receipt, as JSON.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "revokeGrant")]
+    pub fn revoke_grant(&self, space: String, request: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let request = serde_json::from_str(&request)
+                .map_err(|e| JsError::new(&format!("revocation request: {e}")))?;
+            let tonk = state.read().await;
+            let receipt = crate::router::revoke_invite::revoke_for_space(&tonk, &space, request)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            let receipt = serde_json::to_string(&receipt)
+                .map_err(|e| JsError::new(&format!("revocation receipt: {e}")))?;
+            Ok(JsValue::from_str(&receipt))
+        })
+    }
+
     /// Where `space` syncs and which account this profile acts for, as its
     /// own worker last has to have taken them up. Resolves to
     /// `{ remote, account, name }`, the remote `null` for a space that only exists
@@ -2420,23 +2467,6 @@ impl TonkServiceWorker {
                 .await
                 .map_err(|e| JsError::new(&e.to_string()))?;
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-            Ok(JsValue::UNDEFINED)
-        })
-    }
-
-    /// Say whether this deployment renders each space on an origin of its
-    /// own. Where it does, this worker creates a space's identity and leaves
-    /// its content to the worker of the space's origin.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[wasm_bindgen(js_name = "setSiteOrigins")]
-    pub fn set_site_origins(&self, on: bool) -> Promise {
-        let state = self.state.clone();
-        future_to_promise(async move {
-            state
-                .read()
-                .await
-                .site_origins
-                .store(on, std::sync::atomic::Ordering::Relaxed);
             Ok(JsValue::UNDEFINED)
         })
     }

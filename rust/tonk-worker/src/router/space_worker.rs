@@ -37,7 +37,7 @@ use url::Url;
 
 use super::account::{act_for, acts_for, member_did};
 use super::adopt::ensure_space_mounted;
-use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url_with};
+use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url};
 use super::join::mount_replica;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use super::profile_name::project_member_name;
@@ -166,21 +166,7 @@ impl Terms {
 
 /// The [`Terms`] the person's profile holds for `space` now.
 pub(crate) async fn terms(tonk: &TonkState, space: &Did) -> Result<Terms, TonkWorkerError> {
-    // A space of the person's account that this device has not opened yet
-    // is listed in the account's directory with where it syncs. Opening it
-    // starts here: its own worker asks for a delegation, and this profile
-    // takes it up from the directory the way a first query of it does.
-    if let Err(error) = ensure_space_mounted(tonk, space.repo_key()).await {
-        log!("space {space} was not taken up from the directory: {error}");
-    }
-    let repository = tonk
-        .profile
-        .space(space.as_str())
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::NotFound(format!("space {space}: {e}")))?;
-    let remote = match resolve_configured_remote_url_with(&repository, &tonk.operator).await? {
+    let remote = match where_it_syncs(tonk, space).await? {
         ConfiguredRemoteRequirement::Ready(remote) => Some(remote.access_url.to_string()),
         ConfiguredRemoteRequirement::Refused(_) => None,
     };
@@ -191,6 +177,35 @@ pub(crate) async fn terms(tonk: &TonkState, space: &Did) -> Result<Terms, TonkWo
         account,
         name,
     })
+}
+
+/// Where `space` syncs, as the person's profile has it.
+///
+/// Where each space has a worker of its own, the profile mounts nothing of a
+/// space: the account's directory lists every space the person has with
+/// where it syncs, one made here, one joined, and one of the account's that
+/// this device has not opened yet. A host with one database reads it from
+/// the space it has mounted, mounting it from the directory first if it has
+/// not.
+async fn where_it_syncs(
+    tonk: &TonkState,
+    space: &Did,
+) -> Result<ConfiguredRemoteRequirement, TonkWorkerError> {
+    if tonk.spaces_elsewhere() {
+        let repository = super::space_directory::held(tonk, space.as_str()).await?;
+        return resolve_configured_remote_url(tonk, &repository).await;
+    }
+    if let Err(error) = ensure_space_mounted(tonk, space.repo_key()).await {
+        log!("space {space} was not taken up from the directory: {error}");
+    }
+    let repository = tonk
+        .profile
+        .space(space.as_str())
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(format!("space {space}: {e}")))?;
+    resolve_configured_remote_url(tonk, &repository).await
 }
 
 /// Check that `chain` is what it has to be to be taken up for `space` by this
@@ -332,13 +347,9 @@ pub(crate) async fn snapshot(
     tonk: &TonkState,
     space: &Did,
 ) -> Result<Option<Snapshot>, TonkWorkerError> {
-    let repository = tonk
-        .profile
-        .space(space.as_str())
-        .load()
-        .perform(&tonk.operator)
+    let repository = super::repository::held_copy(tonk, space.as_str())
         .await
-        .map_err(|e| TonkWorkerError::NotFound(format!("space {space}: {e}")))?;
+        .ok_or_else(|| TonkWorkerError::NotFound(format!("no copy of {space} is held here")))?;
     let branch = repository
         .branch("main")
         .open()

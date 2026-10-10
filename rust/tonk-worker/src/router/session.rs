@@ -410,6 +410,12 @@ async fn stamp_site_on(tonk: &crate::worker::TonkState, client: ClientId, stamp:
     let Ok(entity): Result<dialog_artifacts::Entity, _> = site.parse() else {
         return;
     };
+    // A site on a space's branch is stamped by the worker that holds the
+    // space. Where that is a worker of the space's own, this one has no
+    // branch of it to stamp.
+    if !profile && tonk.spaces_elsewhere() {
+        return;
+    }
 
     // The profile lives outside the named-repo namespace, so it is acquired
     // through `profile_repository()`, not `repository(name)`. The `repo` string

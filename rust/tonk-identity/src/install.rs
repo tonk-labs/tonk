@@ -16,9 +16,7 @@
 //! a guest to that check, and every page effect (navigate, set title,
 //! open) would silently stop working.
 
-use std::cell::Cell;
-use std::rc::Rc;
-
+use crate::handoff::wait_for_custody_reply;
 use js_sys::{Object, Promise, Reflect, Uint8Array};
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
@@ -26,6 +24,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
 const CUSTODY_HANDOFF_TIMEOUT_MS: i32 = 30_000;
+#[cfg(test)]
 const CUSTODY_HANDOFF_TIMEOUT: &str =
     "the service worker did not answer the custody handoff in time";
 
@@ -177,6 +176,14 @@ async fn mediate_pair(
 
     let message = Object::new();
     Reflect::set(&message, &"type".into(), &"custody".into())?;
+    // Old pages understand terminal replies only. Negotiate progress rather
+    // than letting a newer worker accidentally resolve an older page early.
+    let approval = Reflect::get(&request, &"kind".into())
+        .ok()
+        .and_then(|value| value.as_string())
+        .as_deref()
+        == Some("authorize-device");
+    Reflect::set(&message, &"progress".into(), &JsValue::from_bool(approval))?;
     Reflect::set(
         &message,
         &"credentialId".into(),
@@ -221,81 +228,6 @@ async fn mediate_pair(
         CUSTODY_HANDOFF_TIMEOUT_MS,
     ))
     .await
-}
-
-/// Wait for the one custody reply, or reject when a browser silently
-/// drops the service-worker message.
-///
-/// The timeout starts only after `postMessage` succeeds. Either branch
-/// removes `onmessage`; a reply also cancels the pending timer.
-fn wait_for_custody_reply(port: web_sys::MessagePort, timeout_ms: i32) -> Promise {
-    let window = web_sys::window().expect("custody handoff is window-only");
-    Promise::new(&mut |resolve, reject| {
-        let settled = Rc::new(Cell::new(false));
-        let timer_id = Rc::new(Cell::new(None));
-
-        let reply_port = port.clone();
-        let reply_window = window.clone();
-        let reply_settled = settled.clone();
-        let reply_timer_id = timer_id.clone();
-        let reply_resolve = resolve.clone();
-        let reply_reject = reject.clone();
-        let on_message = Closure::once_into_js(move |event: web_sys::MessageEvent| {
-            if reply_settled.replace(true) {
-                return;
-            }
-            if let Some(timer_id) = reply_timer_id.take() {
-                reply_window.clear_timeout_with_handle(timer_id);
-            }
-            reply_port.set_onmessage(None);
-
-            let data = event.data();
-            match Reflect::get(&data, &"error".into())
-                .ok()
-                .and_then(|error| error.as_string())
-            {
-                Some(error) => {
-                    // An `Error`, not a bare string: the worker says WHY
-                    // the service refused in a `code` beside the message.
-                    let failure = js_sys::Error::new(&error);
-                    if let Some(code) = Reflect::get(&data, &"code".into())
-                        .ok()
-                        .and_then(|code| code.as_string())
-                    {
-                        let _ = Reflect::set(failure.as_ref(), &"code".into(), &code.into());
-                    }
-                    let _ = reply_reject.call1(&JsValue::NULL, failure.as_ref());
-                }
-                None => {
-                    let _ = reply_resolve.call1(&JsValue::NULL, &data);
-                }
-            }
-        });
-        port.set_onmessage(Some(on_message.unchecked_ref()));
-
-        let timeout_port = port.clone();
-        let timeout_settled = settled.clone();
-        let timeout_reject = reject.clone();
-        let on_timeout = Closure::once_into_js(move || {
-            if timeout_settled.replace(true) {
-                return;
-            }
-            timeout_port.set_onmessage(None);
-            let failure = js_sys::Error::new(CUSTODY_HANDOFF_TIMEOUT);
-            let _ = timeout_reject.call1(&JsValue::NULL, failure.as_ref());
-        });
-        match window.set_timeout_with_callback_and_timeout_and_arguments_0(
-            on_timeout.unchecked_ref(),
-            timeout_ms,
-        ) {
-            Ok(id) => timer_id.set(Some(id)),
-            Err(error) => {
-                settled.set(true);
-                port.set_onmessage(None);
-                let _ = reject.call1(&JsValue::NULL, &error);
-            }
-        }
-    })
 }
 
 /// Install `window.tonkIdentity` on the page. Idempotent; a no-op
@@ -377,6 +309,48 @@ mod tests {
             .as_string()
             .unwrap();
         assert_eq!(message, CUSTODY_HANDOFF_TIMEOUT);
+        assert!(channel.port1().onmessage().is_none());
+    }
+
+    async fn delay(ms: i32) {
+        let promise = Promise::new(&mut |resolve, _| {
+            web_sys::window()
+                .unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+                .unwrap();
+        });
+        wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+    }
+
+    #[dialog_common::test]
+    async fn it_waits_for_slow_work_while_the_worker_remains_responsive() {
+        let channel = web_sys::MessageChannel::new().unwrap();
+        let reply = wait_for_custody_reply(channel.port1(), 100);
+        let worker = channel.port2();
+        let progress = Object::new();
+        Reflect::set(&progress, &"pending".into(), &JsValue::TRUE).unwrap();
+        worker.post_message(&progress).unwrap();
+        let completing = future_to_promise(async move {
+            // Longer than the original deadline, with live worker progress.
+            for _ in 0..8 {
+                delay(25).await;
+                worker.post_message(&progress).unwrap();
+            }
+            let result = Object::new();
+            Reflect::set(&result, &"ok".into(), &JsValue::from_str("completed")).unwrap();
+            worker.post_message(&result).unwrap();
+            Ok(JsValue::UNDEFINED)
+        });
+        let result = wasm_bindgen_futures::JsFuture::from(reply).await;
+        wasm_bindgen_futures::JsFuture::from(completing)
+            .await
+            .unwrap();
+        let result = result.expect("responsive work must retain its completion listener");
+        assert_eq!(
+            Reflect::get(&result, &"ok".into()).unwrap().as_string(),
+            Some("completed".into()),
+            "progress is not completion"
+        );
         assert!(channel.port1().onmessage().is_none());
     }
 }

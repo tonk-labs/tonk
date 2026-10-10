@@ -200,7 +200,15 @@ pub(crate) async fn carry_from(tonk: &TonkState, signed_out: &str) {
     let mut failures = Vec::new();
     for (subject, principal) in held {
         let carried = if principal.kind == SeedKind::Space.held() {
-            carry_space(tonk, signed_out, root_did, &onboarding, &subject).await
+            carry_space(
+                tonk,
+                &workspace,
+                signed_out,
+                root_did,
+                &onboarding,
+                &subject,
+            )
+            .await
         } else if principal.kind == SeedKind::Invite.held() {
             carry_membership(
                 tonk,
@@ -246,6 +254,7 @@ pub(crate) async fn carry_from(tonk: &TonkState, signed_out: &str) {
 /// from the chain the handover left.
 async fn carry_space(
     tonk: &TonkState,
+    workspace: &crate::worker::DefaultProfile,
     branch: &str,
     root: &Did,
     onboarding: &Did,
@@ -253,6 +262,11 @@ async fn carry_space(
 ) -> Result<(), String> {
     carry_custody(tonk, branch, space).await?;
     super::repository::carry_replica_rows(tonk, branch, space)
+        .await
+        .map_err(|error| error.to_string())?;
+    // A space made there and not opened since has yet to be filled by its
+    // own worker, from the seed the workspace kept for it.
+    super::repository::carry_pending_seed(tonk, workspace, space)
         .await
         .map_err(|error| error.to_string())?;
     settle_space(tonk, root, onboarding, space)
@@ -692,13 +706,9 @@ async fn migrate_membership_rows(
                 "previous": onboarding.to_string(),
                 "account": root.to_string()
             }),
-        );
-        return super::space_reach::run(
-            space.repo_key(),
-            super::space_reach::Surface::Space,
-            &claim,
-        )
-        .await;
+        )?;
+        let peer = super::space_reach::peer(space.repo_key());
+        return super::space_reach::run(peer, peer.content(), claim).await;
     }
     move_membership_rows(tonk, space, onboarding, root).await
 }

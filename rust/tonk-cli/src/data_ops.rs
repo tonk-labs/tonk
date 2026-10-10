@@ -14,6 +14,7 @@ use crate::schema;
 use crate::site::TonkSite;
 
 pub mod flags;
+mod receipt;
 
 /// How a write verb commits and reports.
 ///
@@ -275,10 +276,20 @@ async fn run_read(
 /// reads are queries in dialog. Rendered as notation by default,
 /// or as JSON when `json` is `true`.
 pub async fn query(site: &TonkSite, concept: &str, json: bool) -> Result<String, DataOpError> {
+    query_filtered(site, concept, json, &[]).await
+}
+
+/// Query instances matching every typed equality filter.
+pub async fn query_filtered(
+    site: &TonkSite,
+    concept: &str,
+    json: bool,
+    filters: &[String],
+) -> Result<String, DataOpError> {
     let info = require_concept(site, concept).await?;
     run_read(
         site,
-        query_doc(&info.descriptor, concept, None),
+        crate::data::build_query(&info.descriptor, concept, None, filters)?,
         concept,
         json,
     )
@@ -379,67 +390,40 @@ pub async fn assert_op(
         Err(e) => return Err(DataOpError::Flags(e)),
     };
     let (pairs, write) = (parsed.pairs, parsed.write);
-    match entity {
-        None => {
-            let doc = build_assert(&info.descriptor, concept, &pairs)?;
-            if write.notation {
-                return Ok(doc);
-            }
-            let outcome =
-                auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
-            Ok(format!(
-                "{}\n{}",
-                write.summarize(format_args!("asserted {concept}")),
-                outcome.stdout
-            ))
+    let doc = if let Some(entity) = entity {
+        if !instance_exists(site, &info.descriptor, concept, entity).await? {
+            return Err(DataOpError::NoInstance {
+                concept: concept.into(),
+                entity: entity.into(),
+            });
         }
-        Some(entity) => {
-            if !instance_exists(site, &info.descriptor, concept, entity).await? {
-                return Err(DataOpError::NoInstance {
-                    concept: concept.to_string(),
-                    entity: entity.to_string(),
-                });
-            }
-            if pairs.is_empty() {
-                return Err(DataOpError::NoFields);
-            }
-            let doc = build_supersede(&info.descriptor, concept, entity, &pairs)?;
-            if write.notation {
-                return Ok(doc);
-            }
-            let outcome =
-                auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
-            let before = outcome
-                .response
-                .revision_before
-                .as_ref()
-                .map(|revision| revision.tree.to_string())
-                .unwrap_or_else(|| "none".to_string());
-            let after = outcome
-                .response
-                .revision_after
-                .as_ref()
-                .map(|revision| revision.tree.to_string())
-                .unwrap_or_else(|| "none".to_string());
-            let mut rendered = format!(
-                "{}\nclaims: {}\nrevision: {before} -> {after}\n",
-                write.summarize(format_args!("updated {entity}")),
-                outcome.response.commits.claims
-            );
-            match get(site, concept, entity, false).await {
-                Ok(current) => {
-                    rendered.push_str("current state:\n");
-                    rendered.push_str(&current);
-                }
-                Err(error) => {
-                    rendered.push_str(&format!(
-                        "the read-back failed: {error}\nverify: tonk show {concept} {entity}\n"
-                    ));
-                }
-            }
-            Ok(rendered)
+        if pairs.is_empty() {
+            return Err(DataOpError::NoFields);
         }
+        build_supersede(&info.descriptor, concept, entity, &pairs)?
+    } else {
+        build_assert(&info.descriptor, concept, &pairs)?
+    };
+    if write.notation {
+        return Ok(doc);
     }
+    let (outcome, sync) =
+        auto_sync::run_eval_with_report(site, Source::Inline(doc), write.eval(), write.sync())
+            .await?;
+    receipt::render(
+        site,
+        receipt::Request {
+            descriptor: &info.descriptor,
+            concept,
+            entity,
+            pairs: &pairs,
+            write,
+            json: parsed.json,
+        },
+        outcome,
+        sync,
+    )
+    .await
 }
 
 /// Retract one field, or the whole instance, from `entity`. A

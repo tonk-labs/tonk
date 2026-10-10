@@ -110,7 +110,9 @@
         };
         link("/guest/"+manifest.waCss);
         if (manifest.css) link("/"+manifest.css);
-        await import("/guest/"+manifest.waJs);
+        // Icons are the ones the app ships, read from this origin: the
+        // page reaches no other, and nothing is fetched from a third party.
+        (await import("/guest/"+manifest.waJs)).setIconPath("/webawesome/icons");
         var mod=await import("/guest/"+manifest.js);
         await mod.default({ module_or_path: "/guest/"+manifest.wasm });
         mod.start();

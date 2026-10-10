@@ -25,9 +25,17 @@ const settle = async () => { for (let i = 0; i < 20; i++) await turn(); };
 //   page of this origin) or `"alone"` (not framed).
 // - `content`: the addresses a request finds content at.
 // - `store`: the frame's session storage, which outlives a load.
+// - `answers`: what a request for an address is answered with, as JSON.
+// - `marked`: whether the document carries the worker's mark, for a browser
+//   that does not say a worker served it.
+// - `active`: whether the origin's worker is running already, whoever it
+//   controls.
 function boot(
   name,
-  { address = "/", controlled = true, served = true, framed = "site", content = [], store = new Map() } = {},
+  {
+    address = "/", controlled = true, served = true, framed = "site", content = [], store = new Map(),
+    answers = {}, marked = false, active = false,
+  } = {},
 ) {
   const host = name === "profile" ? "profile.tonk.test" : "bspace.tonk.test";
   const origin = `https://${host}`;
@@ -62,6 +70,7 @@ function boot(
     addEventListener: (type, listener) => void (workerListeners[type] = listener),
     startMessages() {},
     getRegistration: async () => null,
+    ready: active ? Promise.resolve({ active: worker }) : new Promise(() => {}),
   };
   const location = {
     get href() { return at.href; },
@@ -105,6 +114,8 @@ function boot(
     createElement: element,
     getElementById: (id) => body.children.find((child) => child.id === id) ?? null,
     addEventListener: (type, listener) => void (listeners[`document:${type}`] = listener),
+    // The mark the worker puts in the shell it serves.
+    querySelector: (selector) => (marked && selector.includes("tonk-shell") ? {} : null),
     visibilityState: "visible",
   };
   const outside = {
@@ -131,6 +142,7 @@ function boot(
     fetch: async (url, init = {}) => {
       requests.push([init.method ?? "GET", url]);
       if (url === "/guest/manifest.json") return new Response(JSON.stringify(MANIFEST));
+      if (url in answers) return new Response(JSON.stringify(answers[url]));
       return new Response(null, { status: content.includes(url) ? 200 : 404 });
     },
     MessageChannel: Channel,
@@ -227,6 +239,23 @@ for (const name of ["space", "profile"]) {
     assert.deepEqual(site.ran, []);
   });
 
+  test(`${name}: left out by a worker that is already running, it asks to be taken`, async () => {
+    const site = boot(name, { controlled: false, served: false, active: true });
+    await settle();
+    assert.deepEqual(site.toWorker.map((message) => message.type), ["claim"]);
+    assert.deepEqual(site.went, [], "it waits for the worker to take it");
+
+    site.workerListeners.controllerchange();
+    await settle();
+    assert.deepEqual(site.went, [["reload"]]);
+  });
+
+  test(`${name}: it asks nothing of a worker that is not running yet`, async () => {
+    const site = boot(name, { controlled: false, served: false });
+    await settle();
+    assert.deepEqual(site.toWorker, []);
+  });
+
   test(`${name}: sent here to start a worker, it returns to the address asked for`, async () => {
     const site = boot(name, {
       address: `/${name}.html#boot=${encodeURIComponent("/notes?x=1#frag")}`,
@@ -282,6 +311,57 @@ for (const name of ["space", "profile"]) {
 
     assert.deepEqual(site.ran, []);
     assert.equal(site.container.registered.length, 0);
+  });
+}
+
+for (const name of ["space", "profile"]) {
+  test(`${name}: a shell the worker marked renders where the browser does not say a worker served it`, async () => {
+    const site = boot(name, { served: false, marked: true, address: "/notes" });
+    await settle();
+
+    assert.deepEqual(site.went, [], "it does not load again");
+    assert.match(site.body.innerHTML, /<tonk-display entity='site:abc' model='tonk:site'>/);
+  });
+}
+
+const SITES = { "/.well-known/tonk": { sites: { app: "https://tonk.test", host: "tonk.test" } } };
+
+test("a profile's address opened on its own goes to the same address of the app", async () => {
+  const site = boot("profile", { framed: "alone", address: "/settings?tab=account#keys", answers: SITES });
+  await settle();
+
+  assert.deepEqual(site.went, [["replace", "https://tonk.test/settings?tab=account#keys"]]);
+});
+
+test("a space's address opened on its own goes to that space in the app, once its worker holds it", async () => {
+  const held = { ...SITES, "/api/health": { site: "space", space: "did:key:zSpace" } };
+  const site = boot("space", { framed: "alone", address: "/notes?x=1", answers: held });
+  await settle();
+
+  assert.deepEqual(site.went, [["replace", "https://tonk.test/space/did:key:zSpace/notes?x=1"]]);
+
+  const root = boot("space", { framed: "alone", answers: held });
+  await settle();
+  assert.deepEqual(root.went, [["replace", "https://tonk.test/space/did:key:zSpace"]]);
+});
+
+test("a space's address whose worker holds no space leaves a way to the app", async () => {
+  const site = boot("space", { framed: "alone", answers: { ...SITES, "/api/health": { site: "space", space: null } } });
+  await settle();
+
+  assert.deepEqual(site.went, []);
+  assert.match(site.body.textContent, /serves a Tonk site/);
+  assert.equal(site.body.children[0]?.href, "https://tonk.test");
+});
+
+for (const name of ["space", "profile"]) {
+  test(`${name}: where no app is named, it says what the address is and goes nowhere`, async () => {
+    const site = boot(name, { framed: "alone" });
+    await settle();
+
+    assert.deepEqual(site.went, []);
+    assert.match(site.body.textContent, /serves a Tonk site/);
+    assert.equal(site.body.children[0]?.href, undefined);
   });
 }
 

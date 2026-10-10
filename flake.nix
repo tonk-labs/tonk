@@ -154,6 +154,7 @@
 
         inherit (rustHelpers)
           buildCrate
+          buildStaticCrate
           buildWasmCrate
           buildTrunkCrate
           buildTestArchive
@@ -590,7 +591,9 @@
             cp ${self.packages.${system}.tests-web-release}/*.tar.zst $out/
           '';
 
-          tonk-cli = buildCrate {
+          # Static on x86_64 Linux: the release binary has to start on any
+          # distribution, not only where Nix's glibc is installed.
+          tonk-cli = (if system == "x86_64-linux" then buildStaticCrate else buildCrate) {
             pname = "tonk-cli";
             cargoExtraArgs = "--package tonk-cli";
             TONK_POSTHOG_KEY = posthogKey;

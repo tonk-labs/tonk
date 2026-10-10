@@ -29,6 +29,17 @@ pub(crate) fn build_query_application(
     // is always `None` here.
     let (this, _name) = derive_head_intent(&query.fields, None, scope)?;
     let head_range = query.predicate.range;
+    // `..: _` retracts; a query has nothing to retract. Skipping it
+    // as a meta-key would leave a mistyped deletion (`head:` for
+    // `head!:`) silently reading instead of failing.
+    if let Some(rest) = query.fields.iter().find(|f| f.name == "..") {
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::RestRetractionInQuery {
+                head: query.predicate.source.clone(),
+            },
+            rest.name_range,
+        ));
+    }
     match &query.predicate.name {
         HeadName::Concept(concept_name) => {
             // A `tree/*` resolver reads the store's own structure, so it

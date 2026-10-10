@@ -834,3 +834,258 @@ mod when_printing_notation_for_a_write {
         Ok(())
     }
 }
+
+mod when_filtering_queries {
+    use super::*;
+    use tonk_cli::data_ops::query_filtered;
+
+    #[dialog_common::test]
+    async fn typed_filters_match_all_constraints_without_mutating_or_hiding_fields() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        test.eval_inline("task!: &a\n  title: \"Launch=ready\"\n  done: false\ntask!: &b\n  title: \"Launch=ready\"\n  done: true\ntask!: &c\n  title: \"Other\"\n  done: false\n").await?;
+        let before = test.tree_root().await?;
+        let rows: serde_json::Value = serde_json::from_str(
+            &query_filtered(
+                &test.site,
+                "task",
+                true,
+                &["title=Launch=ready".into(), "done=false".into()],
+            )
+            .await?,
+        )?;
+        assert_eq!(rows.as_array().unwrap().len(), 1);
+        assert_eq!(rows[0]["title"], "Launch=ready");
+        assert_eq!(rows[0]["done"], false);
+        assert!(rows[0]["this"].as_str().unwrap().starts_with("did:"));
+        let ambiguous: serde_json::Value = serde_json::from_str(
+            &query_filtered(&test.site, "task", true, &["title=Launch=ready".into()]).await?,
+        )?;
+        assert_eq!(ambiguous.as_array().unwrap().len(), 2);
+        let empty = query_filtered(&test.site, "task", true, &["title=missing".into()]).await?;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&empty)?,
+            serde_json::json!([])
+        );
+        assert_eq!(before, test.tree_root().await?);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn invalid_filters_fail_and_text_is_quoted_as_data() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        let before = test.tree_root().await?;
+        for filters in [
+            vec!["done=maybe".into()],
+            vec!["unknown=x".into()],
+            vec!["title".into()],
+            vec!["done=true".into(), "done=false".into()],
+        ] {
+            assert!(
+                query_filtered(&test.site, "task", true, &filters)
+                    .await
+                    .is_err()
+            );
+        }
+        let text = "quoted \" value\n task!: {title: \"injected\", done: true}";
+        let result = query_filtered(&test.site, "task", true, &[format!("title={text}")]).await?;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&result)?,
+            serde_json::json!([])
+        );
+        assert_eq!(before, test.tree_root().await?);
+        Ok(())
+    }
+}
+
+mod when_reporting_assert_verification {
+    use super::*;
+
+    #[dialog_common::test]
+    async fn json_receipts_distinguish_commits_verification_and_dry_runs() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        let created: serde_json::Value = serde_json::from_str(
+            &tonk_cli::data_ops::assert_op(
+                &test.site,
+                "task",
+                None,
+                &[
+                    "--title".into(),
+                    "Receipt task".into(),
+                    "--done".into(),
+                    "false".into(),
+                    "--json".into(),
+                ],
+            )
+            .await?,
+        )?;
+        assert_eq!(created["schemaVersion"], "tonk.assert.v1");
+        assert_eq!(created["committed"], true);
+        assert_eq!(created["verification"]["status"], "verified");
+        assert_eq!(created["sync"]["push"], "no-upstream");
+        let entity = created["entity"].as_str().expect("canonical entity");
+        let before = test.tree_root().await?;
+        let dry: serde_json::Value = serde_json::from_str(
+            &tonk_cli::data_ops::assert_op(
+                &test.site,
+                "task",
+                Some(entity),
+                &[
+                    "--done".into(),
+                    "true".into(),
+                    "--dry-run".into(),
+                    "--json".into(),
+                ],
+            )
+            .await?,
+        )?;
+        assert_eq!(dry["committed"], false);
+        assert_eq!(dry["dryRun"], true);
+        assert_eq!(dry["verification"]["status"], "not-run");
+        assert_eq!(dry["sync"]["push"], "not-committed");
+        assert_eq!(before, test.tree_root().await?);
+        let updated: serde_json::Value = serde_json::from_str(
+            &tonk_cli::data_ops::assert_op(
+                &test.site,
+                "task",
+                Some(entity),
+                &[
+                    "--done".into(),
+                    "true".into(),
+                    "--no-sync".into(),
+                    "--json".into(),
+                ],
+            )
+            .await?,
+        )?;
+        assert_eq!(updated["verification"]["status"], "verified");
+        assert_eq!(updated["verification"]["scope"], "local");
+        assert_eq!(updated["verification"]["rows"][0]["done"], true);
+        assert_eq!(updated["verification"]["rows"][0]["title"], "Receipt task");
+        assert_eq!(updated["sync"]["push"], "disabled");
+        let repeated: serde_json::Value = serde_json::from_str(
+            &tonk_cli::data_ops::assert_op(
+                &test.site,
+                "task",
+                Some(entity),
+                &["--done".into(), "true".into(), "--json".into()],
+            )
+            .await?,
+        )?;
+        assert_eq!(repeated["entity"], updated["entity"]);
+        assert_eq!(
+            repeated["verification"]["rows"],
+            updated["verification"]["rows"]
+        );
+        assert_eq!(repeated["verification"]["status"], "verified");
+        Ok(())
+    }
+}
+
+#[dialog_common::test]
+async fn many_value_filters_select_a_value_and_receipts_preserve_the_other_values() -> Result<()> {
+    let test = TestSite::new().await?;
+    test.eval_inline(NOTE_ATTRIBUTE_DECL).await?;
+    test.eval_inline(NOTE_CONCEPT_DECL).await?;
+    test.eval_inline("note!: &n\n  body: \"Keep both tags\"\n  tag: \"first\"\n")
+        .await?;
+    let receipt: serde_json::Value = serde_json::from_str(
+        &tonk_cli::data_ops::assert_op(
+            &test.site,
+            "note",
+            Some("n"),
+            &["--tag".into(), "second".into(), "--json".into()],
+        )
+        .await?,
+    )?;
+    assert_eq!(receipt["verification"]["status"], "verified");
+    assert_eq!(receipt["verification"]["rows"].as_array().unwrap().len(), 2);
+    let filtered: serde_json::Value = serde_json::from_str(
+        &tonk_cli::data_ops::query_filtered(&test.site, "note", true, &["tag=second".into()])
+            .await?,
+    )?;
+    assert_eq!(filtered.as_array().unwrap().len(), 1);
+    assert_eq!(filtered[0]["tag"], "second");
+    assert_eq!(filtered[0]["body"], "Keep both tags");
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn failed_push_is_distinct_from_a_verified_local_commit() -> Result<()> {
+    let test = TestSite::new().await?;
+    test.eval_inline(ATTRIBUTE_DECL).await?;
+    test.eval_inline(CONCEPT_DECL).await?;
+    tonk_cli::remote::add(&test.site, "offline", "http://127.0.0.1:9/ucan/", None).await?;
+    tonk_cli::remote::set_upstream(&test.site, "offline").await?;
+    let receipt: serde_json::Value = serde_json::from_str(
+        &tonk_cli::data_ops::assert_op(
+            &test.site,
+            "task",
+            None,
+            &[
+                "--title".into(),
+                "Local success".into(),
+                "--done".into(),
+                "false".into(),
+                "--json".into(),
+            ],
+        )
+        .await?,
+    )?;
+    assert_eq!(receipt["committed"], true);
+    assert_eq!(receipt["verification"]["status"], "verified");
+    assert_eq!(receipt["sync"]["push"], "failed");
+    assert!(receipt["sync"]["pushError"].as_str().is_some());
+    assert!(
+        tonk_cli::data_ops::query(&test.site, "task", false)
+            .await?
+            .contains("Local success")
+    );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn json_schema_fields_keep_their_meaning_and_receipt_notation_conflicts() -> Result<()> {
+    let test = TestSite::new().await?;
+    tonk_cli::data_ops::concept_add(
+        &test.site,
+        "document",
+        &["json:text:one".into()],
+        None,
+        Default::default(),
+    )
+    .await?;
+    let out = tonk_cli::data_ops::assert_op(
+        &test.site,
+        "document",
+        None,
+        &["--json".into(), "payload".into()],
+    )
+    .await?;
+    assert!(out.contains("json: \"payload\""), "{out}");
+    assert!(!out.contains("tonk.assert.v1"), "{out}");
+    test.eval_inline(ATTRIBUTE_DECL).await?;
+    test.eval_inline(CONCEPT_DECL).await?;
+    let error = tonk_cli::data_ops::assert_op(
+        &test.site,
+        "task",
+        None,
+        &[
+            "--title".into(),
+            "x".into(),
+            "--done".into(),
+            "false".into(),
+            "--json".into(),
+            "--notation".into(),
+        ],
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("cannot be used with"), "{error}");
+    Ok(())
+}

@@ -301,6 +301,9 @@ pub(crate) mod tests {
                     accountMode: account?.getAttribute("data-mode") || null,
                     accountBusy: account?.getAttribute("aria-busy") || null,
                     accountError: (error?.textContent || "").slice(0, 500) || null,
+                    document: `${location.protocol}//${location.hostname.split(".")[0].slice(0, 12)}`,
+                    shellStage: document.querySelector("#tonk-stage")?.textContent || null,
+                    workerServedShell: !!document.querySelector('meta[name="tonk-shell"]'),
                 };
                 "##,
                 vec![],
@@ -308,6 +311,61 @@ pub(crate) mod tests {
             .await
             .map(|value| value.json().clone())
             .unwrap_or_else(|_| serde_json::json!({ "webdriverError": "diagnostic query failed" }))
+    }
+
+    /// What the app's page says about the frame it shows a site in, and
+    /// what that frame's origin has registered. Read from the top page, for
+    /// a timeout's report: it leaves the driver there.
+    async fn frame_diagnostic_state(driver: &WebDriver) -> serde_json::Value {
+        let _ = driver.enter_default_frame().await;
+        let entered = match driver.find(By::Css("tonk-site > iframe")).await {
+            Ok(frame) => frame.enter_frame().await.is_ok(),
+            Err(_) => false,
+        };
+        let worker = driver
+            .execute_async(
+                r##"
+                const done = arguments[arguments.length - 1];
+                (async () => {
+                    const state = (worker) => worker ? worker.state : null;
+                    const registration = await navigator.serviceWorker.getRegistration();
+                    done({
+                        registered: !!registration,
+                        installing: state(registration?.installing),
+                        waiting: state(registration?.waiting),
+                        active: state(registration?.active),
+                        reloaded: !!sessionStorage.getItem("tonk-space-shell-reload"),
+                        recovered: !!sessionStorage.getItem("tonk-space-worker-recovery"),
+                    });
+                })().catch((error) => done({ error: String(error) }));
+                "##,
+                Vec::new(),
+            )
+            .await
+            .map(|value| value.json().clone())
+            .unwrap_or_else(|error| serde_json::json!({ "webdriverError": error.to_string() }));
+        let _ = driver.enter_default_frame().await;
+        let page = driver
+            .execute(
+                r##"
+                const site = document.querySelector("tonk-site");
+                const frame = site?.querySelector("iframe");
+                const source = frame?.getAttribute("src") || "";
+                return {
+                    site: !!site,
+                    frame: !!frame,
+                    source: source ? source.split("//")[0] + "//" + (source.split("//")[1] || "").split(".")[0].slice(0, 12) : null,
+                    srcdoc: !!frame?.hasAttribute("srcdoc"),
+                    siteText: (site?.textContent || "").trim().slice(0, 160),
+                    controlled: !!navigator.serviceWorker?.controller,
+                };
+                "##,
+                Vec::new(),
+            )
+            .await
+            .map(|value| value.json().clone())
+            .unwrap_or_else(|error| serde_json::json!({ "webdriverError": error.to_string() }));
+        serde_json::json!({ "entered": entered, "worker": worker, "page": page })
     }
 
     async fn element(driver: &WebDriver, selector: &str) -> Result<WebElement> {
@@ -324,8 +382,11 @@ pub(crate) mod tests {
                 Err(error) => {
                     if retryable_find_error(error.as_inner()) {
                         let state = page_diagnostic_state(driver).await;
+                        let frame = frame_diagnostic_state(driver).await;
                         return Err(error).with_context(|| {
-                            format!("timed out waiting for `{selector}`; page={state}")
+                            format!(
+                                "timed out waiting for `{selector}`; page={state}; frame={frame}"
+                            )
                         });
                     }
                     return Err(error).with_context(|| format!("failed to find `{selector}`"));
@@ -647,10 +708,10 @@ pub(crate) mod tests {
             if matches!(entered, Ok(true)) {
                 return Ok(());
             }
-            anyhow::ensure!(
-                tokio::time::Instant::now() < deadline,
-                "the profile's frame never came up: {entered:?}"
-            );
+            if tokio::time::Instant::now() >= deadline {
+                let frame = frame_diagnostic_state(driver).await;
+                anyhow::bail!("the profile's frame never came up: {entered:?}; frame={frame}");
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -1339,7 +1400,7 @@ pub(crate) mod tests {
         driver.switch_to_window(confirm).await?;
         goto(driver, &link).await?;
         enter_guest(driver).await?;
-        element(driver, "#activate-accept").await?.click().await?;
+        click(driver, "#activate-accept").await?;
         // Displayed, not merely present: the done panel is in the DOM
         // from page load, only hidden, so a presence wait returns while
         // the activation POST is still in flight — and closing the tab
@@ -1409,7 +1470,7 @@ pub(crate) mod tests {
         driver.switch_to_window(activation).await?;
         goto(&driver, &activation_link(&env, email).await?).await?;
         enter_guest(&driver).await?;
-        element(&driver, "#activate-accept").await?.click().await?;
+        click(&driver, "#activate-accept").await?;
         wait_for_displayed(&driver, "#activate-done").await?;
         assert!(driver.find_all(By::Css("#tonk-register")).await?.is_empty());
         assert_eq!(
@@ -1460,7 +1521,7 @@ pub(crate) mod tests {
         )
         .await?;
         enter_guest(&other).await?;
-        element(&other, "#activate-accept").await?.click().await?;
+        click(&other, "#activate-accept").await?;
         wait_for_displayed(&other, "#activate-done").await?;
         assert!(other.find_all(By::Css("#tonk-register")).await?.is_empty());
         let summary = account_summary(&other).await?;
@@ -1641,7 +1702,7 @@ pub(crate) mod tests {
         let account = driver.current_url().await?;
         goto(driver, &link).await?;
         enter_guest(driver).await?;
-        element(driver, "#activate-accept").await?.click().await?;
+        click(driver, "#activate-accept").await?;
         // Displayed, not merely present: the done panel is in the DOM
         // from page load, only hidden, so a presence wait returns while
         // the activation POST is still in flight — and navigating away
@@ -4527,6 +4588,36 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Wait for the Hub the historical profile library renders. Where it
+    /// does not come, say which library the profile's origin serves and
+    /// what its worker did: that tells a Hub rendered from another
+    /// generation's library apart from one that never took the historical
+    /// one.
+    #[cfg(feature = "integration-tests")]
+    async fn await_historical_hub(driver: &WebDriver) -> Result<()> {
+        let Err(error) = wait_for_text_containing(driver, "body", "no spaces yet").await else {
+            return Ok(());
+        };
+        let served = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                fetch("/library/profile.yaml", { cache: "no-store" })
+                    .then((response) => response.text())
+                    .then((text) => done(text.includes("no spaces yet")))
+                    .catch((error) => done(String(error)));
+                "#,
+                Vec::new(),
+            )
+            .await
+            .map(|value| value.json().clone())
+            .unwrap_or(serde_json::Value::Null);
+        let log = crate::service_worker_upgrade::tests::worker_log(driver).await;
+        Err(error.context(format!(
+            "the profile's origin serves the historical library: {served}\nprofile worker log:\n{log}"
+        )))
+    }
+
     #[cfg(feature = "integration-tests")]
     #[dialog_common::test]
     async fn profile_library_repairs_claims_from_an_old_account_writer(
@@ -4565,7 +4656,7 @@ pub(crate) mod tests {
         enter_hub(&owner)
             .await
             .context("old-writer scenario: mount owner Hub")?;
-        wait_for_text_containing(&owner, "body", "no spaces yet").await?;
+        await_historical_hub(&owner).await?;
         wait_for_text_containing(&owner, "body", SPACE).await?;
         owner.enter_default_frame().await?;
 
@@ -4587,9 +4678,16 @@ pub(crate) mod tests {
         old_writer
             .add_cookie(Cookie::new("tonk-test-generation", "a"))
             .await?;
+        // The profile's origin is framed by the app's, so a cookie there
+        // is a third party's: one set from outside is not sent with what
+        // the frame and its worker ask for. Set from inside the frame and
+        // partitioned to the page that frames it, it is.
         enter_profile(&old_writer).await?;
         old_writer
-            .add_cookie(Cookie::new("tonk-test-generation", "a"))
+            .execute(
+                r#"document.cookie = "tonk-test-generation=a; Path=/; Secure; SameSite=None; Partitioned";"#,
+                Vec::new(),
+            )
             .await?;
         old_writer.enter_default_frame().await?;
         raise_cluster_from_hub(&old_writer, &env).await?;
@@ -4627,7 +4725,7 @@ pub(crate) mod tests {
         enter_hub(&old_writer)
             .await
             .context("old-writer scenario: mount historical writer Hub after current deployment")?;
-        wait_for_text_containing(&old_writer, "body", "no spaces yet").await?;
+        await_historical_hub(&old_writer).await?;
         wait_for_text_containing(&old_writer, "body", SPACE).await?;
         old_writer.enter_default_frame().await?;
         successful_body(
@@ -6387,6 +6485,371 @@ pub(crate) mod tests {
         }
 
         driver.quit().await?;
+        Ok(())
+    }
+
+    /// The spaces the profile's origin keeps a database for: every database
+    /// there named for a key that is not the profile's own.
+    async fn spaces_stored_with_the_profile(driver: &WebDriver) -> Result<Vec<String>> {
+        let identity = get_json(driver, "/api/identify").await?;
+        let profile = successful_body("identify the profile", &identity)["did"]
+            .as_str()
+            .context("the profile did not say who it is")?
+            .to_owned();
+        enter_profile(driver).await?;
+        let listed = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                indexedDB.databases()
+                    .then(databases => done(databases.map(database => database.name)))
+                    .catch(error => done({ error: String(error) }));
+                "#,
+                Vec::new(),
+            )
+            .await?;
+        driver.enter_default_frame().await?;
+        let names =
+            listed.json().as_array().cloned().with_context(|| {
+                format!("the profile's databases did not list: {}", listed.json())
+            })?;
+        Ok(names
+            .iter()
+            .filter_map(|name| name.as_str())
+            .filter(|name| name.starts_with("did:key:") && *name != profile)
+            .map(str::to_owned)
+            .collect())
+    }
+
+    /// A space is held by the worker of its own origin and nowhere else on
+    /// the device: the profile's origin keeps no database for a space it
+    /// made, nor for one it joined.
+    #[dialog_common::test]
+    async fn it_stores_no_space_with_the_profile(env: TestEnvironment) -> Result<()> {
+        let owner = driver_with_prf(&env).await?;
+        sign_up(&owner, &env, "owner@example.com").await?;
+        let key = create_space_awaiting_remote(&owner, "Held Once", true).await?;
+        let pushed = post_json(
+            &owner,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("push the space", &pushed);
+        let invited = post_json(
+            &owner,
+            &format!("/api/repository/{key}/invite"),
+            serde_json::json!({ "baseUrl": env.tonk_web.join("join")? }),
+        )
+        .await?;
+        let invite = successful_body("mint an invite", &invited)["url"]
+            .as_str()
+            .context("the invite has no URL")?
+            .to_owned();
+        assert_eq!(
+            spaces_stored_with_the_profile(&owner).await?,
+            Vec::<String>::new(),
+            "the profile that made a space stores none of it"
+        );
+
+        let member = driver_with_prf(&env).await?;
+        sign_up(&member, &env, "member@example.com").await?;
+        let joined = post_json(
+            &member,
+            "/api/profile/join",
+            serde_json::json!({ "url": invite }),
+        )
+        .await?;
+        successful_body("join the space", &joined);
+
+        // The space is on the member's device, in its own worker's hands.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            let info = get_json(&member, &format!("/api/repository/{key}")).await?;
+            let info = successful_body("read the joined space", &info);
+            if !info["branch"]["main"]["revision"].is_null() {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the joined space never arrived: {info}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert_eq!(
+            spaces_stored_with_the_profile(&member).await?,
+            Vec::<String>::new(),
+            "the profile that joined a space stores none of it"
+        );
+
+        owner.quit().await?;
+        member.quit().await?;
+        Ok(())
+    }
+
+    /// An owner with a synced space and a guest who joined it through an
+    /// open invite, both signed up: the browsers, the space's key, and the
+    /// account the roster knows the guest by.
+    async fn space_with_a_member(
+        env: &TestEnvironment,
+    ) -> Result<(WebDriver, WebDriver, String, String)> {
+        let owner = driver_with_prf(env).await?;
+        sign_up(&owner, env, "owner@example.com").await?;
+        let key = create_space_awaiting_remote(&owner, "Shared Roster", true).await?;
+        successful_body(
+            "push the space",
+            &post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+        let invited = post_json(
+            &owner,
+            &format!("/api/repository/{key}/invite"),
+            serde_json::json!({ "baseUrl": env.tonk_web.join("join")? }),
+        )
+        .await?;
+        let invite = successful_body("mint an invite", &invited)["url"]
+            .as_str()
+            .context("the invite has no URL")?
+            .to_owned();
+
+        let guest = driver_with_prf(env).await?;
+        sign_up(&guest, env, "guest@example.com").await?;
+        successful_body(
+            "join the space",
+            &post_json(
+                &guest,
+                "/api/profile/join",
+                serde_json::json!({ "url": invite }),
+            )
+            .await?,
+        );
+        successful_body(
+            "the guest pushes its claim",
+            &post_json(
+                &guest,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+
+        // The owner's roster lists the guest once the claim has synced.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        let member = loop {
+            let _ = post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/pull"),
+                serde_json::json!({}),
+            )
+            .await?;
+            let info = get_json(&owner, &format!("/api/repository/{key}")).await?;
+            let info = successful_body("read the space's roster", &info);
+            let joined = info["members"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|member| member["is_self"].as_bool() == Some(false))
+                .and_then(|member| member["did"].as_str())
+                .map(str::to_owned);
+            if let Some(member) = joined {
+                break member;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the guest never appeared on the owner's roster: {info}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        Ok((owner, guest, key, member))
+    }
+
+    /// The role the roster of `key` gives `member`, as `driver`'s device
+    /// has it.
+    async fn role_on_the_roster(
+        driver: &WebDriver,
+        key: &str,
+        member: &str,
+    ) -> Result<Vec<String>> {
+        let rows = post_json(
+            driver,
+            &format!("/api/repository/{key}/branch/main/query"),
+            serde_json::json!({
+                "predicate": { "with": {
+                    "member": { "the": "xyz.tonk.membership/member", "as": "Entity", "cardinality": "one" },
+                    "role": { "the": "xyz.tonk.membership/role", "as": "Entity", "cardinality": "one" }
+                } },
+                "terms": {
+                    "this": { "?": { "name": "this" } },
+                    "member": member,
+                    "role": { "?": { "name": "role" } }
+                }
+            }),
+        )
+        .await?;
+        Ok(successful_body("read the roster's roles", &rows)
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| row["fields"]["role"].as_str().map(str::to_owned))
+            .collect())
+    }
+
+    /// The bar promotes a member on the person's profile. Where the space
+    /// is held by a worker of its own, that worker admits them: the roster
+    /// it keeps says so.
+    #[dialog_common::test]
+    async fn it_promotes_a_member_of_a_space_its_own_worker_holds(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (owner, guest, key, member) = space_with_a_member(&env).await?;
+        assert_eq!(
+            role_on_the_roster(&owner, &key, &member).await?,
+            ["tonk:member"],
+            "the guest joined as a member"
+        );
+
+        // What the bar does: have the page mint the hop under the passkey,
+        // then commit the promotion on the profile's branch.
+        enter_profile(&owner).await?;
+        let minted = owner
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                window.tonk.delegate({ subject: arguments[0], command: "/", audience: arguments[1] })
+                    .then(chain => done({ chain }))
+                    .catch(error => done({ error: String(error) }));
+                "#,
+                vec![serde_json::json!(key), serde_json::json!(member)],
+            )
+            .await?;
+        owner.enter_default_frame().await?;
+        let chain = minted.json()["chain"]
+            .as_str()
+            .with_context(|| format!("the page minted no hop: {}", minted.json()))?
+            .to_owned();
+        let branch = active_branch(&owner).await?;
+        let promoted = post_json(
+            &owner,
+            &format!("/api/repository/profile:tonk/branch/{branch}/transact"),
+            serde_json::json!({ "claims": [{
+                "op": "assert",
+                "application": {
+                    "predicate": { "kind": "transient", "concept": { "with": {
+                        "member": { "the": "xyz.tonk.promote/member", "cardinality": "one", "as": "Entity" },
+                        "space": { "the": "xyz.tonk.promote/space", "cardinality": "one", "as": "Entity" },
+                        "chain": { "the": "xyz.tonk.promote/chain", "cardinality": "one", "as": "Text" }
+                    } } },
+                    "parameters": { "member": member, "space": key, "chain": chain }
+                }
+            }] }),
+        )
+        .await?;
+        successful_body("commit the promotion", &promoted);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let roles = role_on_the_roster(&owner, &key, &member).await?;
+            if roles == ["tonk:admin"] {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the guest was never admitted as admin: {roles:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        guest.quit().await?;
+        owner.quit().await?;
+        Ok(())
+    }
+
+    /// Removing a member fires in the space, and the space's own worker
+    /// has the person's profile sign the revocation: the member leaves the
+    /// roster and what they write afterwards does not reach the owner.
+    #[dialog_common::test]
+    async fn it_removes_a_member_of_a_space_its_own_worker_holds(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (owner, guest, key, member) = space_with_a_member(&env).await?;
+
+        let expelled = post_json(
+            &owner,
+            &format!("/api/repository/{key}/branch/main/transact"),
+            serde_json::json!({ "claims": [{
+                "op": "assert",
+                "application": {
+                    "predicate": { "kind": "transient", "concept": { "with": {
+                        "member": { "the": "xyz.tonk.command.expel-member/member", "as": "Entity" }
+                    } } },
+                    "parameters": { "member": member }
+                }
+            }] }),
+        )
+        .await?;
+        successful_body("commit the removal", &expelled);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let roles = role_on_the_roster(&owner, &key, &member).await?;
+            if roles.is_empty() {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the guest is still on the roster: {roles:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        // Asserted on content, as revoking an invitation is: only the
+        // owner's view tells a removed member's write from one that landed.
+        let wrote = post_yaml(
+            &guest,
+            &format!("/api/repository/{key}/branch/main/evaluate"),
+            r#"attribute!: &after-removal
+  the:         xyz.tonk.e2e/after-removal
+  as:          text
+  cardinality: one
+  description: removal e2e marker
+"#,
+        )
+        .await?;
+        assert_eq!(
+            wrote["status"].as_u64(),
+            Some(200),
+            "the guest still writes locally: {wrote}"
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let _ = post_json(
+                &guest,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?;
+            let _ = post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/pull"),
+                serde_json::json!({}),
+            )
+            .await?;
+            assert!(
+                !owner_sees(&owner, &key, "after-removal").await?,
+                "a removed member's write reached the owner"
+            );
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        guest.quit().await?;
+        owner.quit().await?;
         Ok(())
     }
 
@@ -8906,13 +9369,7 @@ pub(crate) mod tests {
         goto(&driver, url.as_str()).await?;
         enter_hub(&driver).await?;
         wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
-        assert_eq!(
-            element(&driver, "[data-link-account]")
-                .await?
-                .text()
-                .await?,
-            expected
-        );
+        wait_for_text(&driver, "[data-link-account]", EMAIL).await?;
         click(&driver, "[data-link-approve]").await?;
         enter_hub(&driver).await?;
         wait_for_text_containing(
@@ -8958,19 +9415,24 @@ pub(crate) mod tests {
             .append_pair("expectedAccount", &expected);
         goto(&driver, url.as_str()).await?;
 
-        // The settings page names the device that is waiting, so the
-        // user knows what they are approving.
+        // Show the granting account's email; protocol identifiers stay
+        // on the approval control rather than in the visible details.
         enter_hub(&driver).await?;
         wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
-        let shown = element(&driver, "[data-link-did]").await?.text().await?;
-        assert_eq!(shown, audience, "the page must name the waiting device");
-        assert_eq!(
-            element(&driver, "[data-link-account]")
+        assert!(
+            driver
+                .find_all(By::Css("[data-link-did]"))
                 .await?
-                .text()
-                .await?,
-            expected
+                .is_empty()
         );
+        assert_eq!(
+            element(&driver, "[data-link-approve]")
+                .await?
+                .attr("data-audience")
+                .await?,
+            Some(audience.to_owned())
+        );
+        wait_for_text(&driver, "[data-link-account]", EMAIL).await?;
 
         // The passkey is asked for on the approving click itself, so the
         // watch on what it allows goes in before that click.
@@ -9142,12 +9604,10 @@ pub(crate) mod tests {
         field.send_keys(home).await?;
         click(driver, "#tonk-register #tonk-register-action").await?;
 
-        // On the deployment holding the account, the approval names the
-        // page the grant would go to.
+        // The deployment holding the account presents the connection approval.
         await_url_containing(driver, &format!("{home}/settings/link?")).await?;
         enter_hub(driver).await?;
         wait_for_displayed(driver, "account-settings [data-pane=\"link\"]").await?;
-        wait_for_text(driver, "[data-link-return]", &here_origin).await?;
         // One step: the click asks for the passkey, with no screen between.
         click(driver, "[data-link-approve]").await?;
 

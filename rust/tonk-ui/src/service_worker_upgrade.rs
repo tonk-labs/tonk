@@ -134,7 +134,7 @@ pub(crate) mod tests {
     }
 
     /// The last of what the profile's worker logged, for a failure report.
-    async fn worker_log(driver: &WebDriver) -> String {
+    pub(crate) async fn worker_log(driver: &WebDriver) -> String {
         let health = worker_health(driver).await.unwrap_or(Value::Null);
         health["body"]["log"]
             .as_array()
@@ -1447,7 +1447,6 @@ pub(crate) mod tests {
         wait_for_complete_generation(&driver, &generation_a, None, None).await?;
         let query = tonk_worker::helpers::named_concept_wire_query();
 
-        promote_second_generation(&env)?;
         let started = in_site(
             &driver,
             r#"
@@ -1494,6 +1493,10 @@ pub(crate) mod tests {
             started["ok"] == true,
             "failed to start the busy site: {started}"
         );
+        // Deployed only now that the site watches its registration: a site's
+        // worker looks for its successor on its own, and one found before
+        // the watch is in place is never recorded.
+        promote_second_generation(&env)?;
         update_site_worker(&driver).await?;
 
         let read_states = r#"
