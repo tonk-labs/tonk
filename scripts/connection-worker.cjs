@@ -206,6 +206,10 @@ export default {fetch(req,env,ctx) {
     const indexFailure=await worker.dispatchFetch('http://localhost/ucan/',{method:'POST',headers:{'Content-Type':'application/cbor','x-test-index-failure':'1'},body:new Uint8Array(fixture.claim)});
     assert.equal(indexFailure.status,503,'claim index errors fail closed as unavailable');
     await indexFailure.arrayBuffer();
+    // Revocation accepts registered consumers even without a serving provider.
+    // Keep this holder unprovisioned: claim admission screens only the space.
+    await db.prepare('INSERT INTO subscription(consumer,provider,registered_at) VALUES(?,NULL,1)')
+      .bind(fixture.claimRevoker).run();
     await post(fixture.claimRevocation,200,true);
     const claimKvKey=`revoked/${fixture.claimTarget}/${fixture.claimRevoker}`;
     const claimStrongKey=`__tonk/revocations/${fixture.claimTarget}/${fixture.claimRevoker}`;
