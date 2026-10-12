@@ -65,6 +65,10 @@ pub(super) async fn report_authorization(
         detail,
     )
     .await;
+    // Custody replies run outside the command dispatcher. An overlay write
+    // only schedules a poll, so publish progress now rather than waiting for
+    // another request or a visibility-triggered sync to drain that queue.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
 /// Ask the page for the passkey, reporting the ask and its failure. On
@@ -390,6 +394,50 @@ async fn authorize_device_inner(
 mod authorization_tests {
     use super::decode_authorization;
     use dialog_artifacts::{Artifact, Value};
+
+    // WEB-10: progress from the custody message path must reach the page
+    // without a later HTTP request, sync heartbeat, or visibility event.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn approval_reports_reach_subscribers_without_a_dispatcher_turn() {
+        use dialog_query::{ConceptQuery, Query};
+        use tonk_schema::{CeremonyStatus, ceremony_state};
+
+        let tonk = crate::router::tests::test_state().await;
+        let request = tonk_worker_api::DeviceAuthorization {
+            audience: "did:key:test".into(),
+            callback: "http://127.0.0.1:1234/".into(),
+            name: "test connection".into(),
+            expected_account: None,
+        };
+        let mut subscription = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .subscribe(ConceptQuery::from(Query::<CeremonyStatus>::default()))
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        while subscription.receiver.try_recv().is_ok() {}
+        for state in [
+            ceremony_state::PENDING_CEREMONY,
+            ceremony_state::WORKING,
+            ceremony_state::DONE,
+            ceremony_state::FAILED,
+        ] {
+            super::report_authorization(&tonk, &request, state, "").await;
+            let frame = subscription
+                .receiver
+                .try_recv()
+                .expect("a ceremony report must broadcast before returning");
+            let frame = String::from_utf8_lossy(&frame);
+            assert!(frame.contains(state), "missing {state}: {frame}");
+            assert!(
+                frame.contains(&super::authorization_entity(&request)),
+                "{frame}"
+            );
+        }
+    }
 
     #[test]
     fn approval_progress_is_scoped_to_the_request() {

@@ -2853,7 +2853,9 @@ view!:
                   <span hidden data-via-return on:finish-sign-in-via=tonk:finish-sign-in-via></span>
                 </div>
                 <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
-                <tonk-display model="state:ceremony" entity="state:ceremony" view="settings"></tonk-display>
+                <tonk-display model="state:ceremony" entity="state:ceremony" view="settings">
+                  <span slot="no-entity" hidden></span>
+                </tonk-display>
                 <div data-custody-seat aria-hidden="true"></div>
               </div>
               <tonk-dialog data-sign-out-dialog heading="confirm sign out">
