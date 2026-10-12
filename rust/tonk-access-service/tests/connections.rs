@@ -715,10 +715,87 @@ async fn connection_worker_standard_revocation_survives_persisted_kv_restart() -
             bad_args,
         )
         .await;
+        // A holder may delegate ticket discovery independently of space access.
+        // The holder itself deliberately has no provisioning row.
+        let claim_proof = DelegationChain::new(
+            DelegationBuilder::new()
+                .issuer(Signer::from(holder.clone()))
+                .audience(&operator.did())
+                .subject(Subject::Specific(holder.did()))
+                .command(
+                    tonk_account::ticket::CLAIM
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                )
+                .expiration(expiry())
+                .try_build()
+                .await?,
+        );
+        let sibling_claim_proof = DelegationChain::new(
+            DelegationBuilder::new()
+                .issuer(Signer::from(holder.clone()))
+                .audience(&sibling_key.did())
+                .subject(Subject::Specific(holder.did()))
+                .command(
+                    tonk_account::ticket::CLAIM
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                )
+                .expiration(expiry())
+                .try_build()
+                .await?,
+        );
+        let claim_args =
+            BTreeMap::from([("space".into(), Promised::String(space.did().to_string()))]);
+        let claim_command = tonk_account::ticket::CLAIM
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        let claim = request(
+            &claim_proof,
+            &operator,
+            holder.did().as_str(),
+            &holder.did(),
+            claim_command.clone(),
+            claim_args.clone(),
+        )
+        .await;
+        let sibling_claim = request(
+            &sibling_claim_proof,
+            &sibling_key,
+            holder.did().as_str(),
+            &holder.did(),
+            claim_command.clone(),
+            claim_args.clone(),
+        )
+        .await;
+        let self_claim = InvocationChain::new(
+            InvocationBuilder::new()
+                .issuer(Signer::from(holder.clone()))
+                .audience(&holder.did())
+                .subject(&holder.did())
+                .command(claim_command)
+                .arguments(claim_args)
+                .expiration(expiry())
+                .try_build()
+                .await?,
+            HashMap::new(),
+        )
+        .to_bytes()?;
+        let claim_target = claim_proof.proof_cids().last().unwrap();
+        let claim_revocation = tonk_identity::revocation::mint_root_revocation(
+            holder.clone(),
+            &claim_proof,
+            claim_target,
+        )
+        .await?;
         std::fs::write(
             &fixture,
             serde_json::to_vec(&serde_json::json!({
                 "subject": space.did().to_string(), "revoker": verified.subject.to_string(), "target": target.to_string(), "targetBytes": target.to_bytes(), "invocations": invocations,
+                "claim": claim, "selfClaim": self_claim, "siblingClaim": sibling_claim, "claimRevocation": claim_revocation, "claimTarget": claim_target.to_string(), "claimRevoker": holder.did().to_string(), "ticketKey": format!("{}/ticket/{}", space.did(), holder.did()),
                 "revocation": revocation, "sibling": request(&sibling, &sibling_key, service.did().as_str(), &space.did(), command("get", "archive/block"), arguments("archive/block")).await,
                 "objectKey": object_key, "content": CONTENT, "writes":writes,"delete":delete,"ranges":ranges,"secondContent":second_content.as_slice(),"secondBlock":second_block,"secondKey":second_key,"large":large_invocation,"headerlessCell":headerless_cell,"empty":empty,"badEmpty":bad_empty,
             }))?,

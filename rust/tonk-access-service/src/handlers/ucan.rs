@@ -236,7 +236,7 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
 /// space, not the holder, is screened, since that is what is served.
 #[cfg(target_arch = "wasm32")]
 async fn serve_claim(body_bytes: &[u8], env: &Env) -> Result<Response> {
-    use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
+    use crate::revocation::{checker::IndexedRevocations, index::r2::R2RevocationIndex};
 
     let container = match dialog_ucan_core::Container::from_bytes(body_bytes) {
         Ok(container) => container,
@@ -247,8 +247,8 @@ async fn serve_claim(body_bytes: &[u8], env: &Env) -> Result<Response> {
             .to_response();
         }
     };
-    let revocations = match env.kv("REVOCATIONS_KV") {
-        Ok(store) => IndexedRevocations(KvRevocationIndex::new(store)),
+    let revocations = match R2RevocationIndex::from_env(env) {
+        Ok(index) => IndexedRevocations(index),
         Err(_) => return unavailable().to_response(),
     };
     let claim = match dialog_remote_ucan_s3::verify_invocation(

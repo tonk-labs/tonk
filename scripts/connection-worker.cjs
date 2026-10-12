@@ -18,6 +18,13 @@ export default {fetch(req,env,ctx) {
    req=new Request(req);req.headers.delete('Content-Length');
  }
  if(req.headers.get('x-test-no-length') && req.headers.has('Content-Length')) throw new Error('fixture unexpectedly supplied Content-Length');
+ if(req.headers.get('x-test-index-failure')) {
+  const bucket=env.BUCKET;
+  env={...env,BUCKET:new Proxy(bucket,{get(target,name) {
+   if(name==='head' || name==='list') return ()=>Promise.reject(new Error('injected revocation index failure'));
+   const value=Reflect.get(target,name);return typeof value==='function'?value.bind(target):value;
+  }})};
+ }
  if(req.headers.get('x-test-storage-failure')) {
   const bucket=env.BUCKET;
   env={...env,BUCKET:new Proxy(bucket,{get(target,name) {
@@ -191,6 +198,25 @@ export default {fetch(req,env,ctx) {
         child.on('error',reject);child.on('exit',code=>code===0?resolve():reject(new Error('actual old CLI upgrade probe failed: '+code)));
       });
     }
+    // Mutable ticket discovery stays on CBOR, outside object response caching.
+    await bucket.put(fixture.ticketKey, content);
+    for (const claim of [fixture.claim,fixture.selfClaim,fixture.siblingClaim]) {
+      assert.deepEqual(Buffer.from(await post(claim,200,true)),content);
+    }
+    const indexFailure=await worker.dispatchFetch('http://localhost/ucan/',{method:'POST',headers:{'Content-Type':'application/cbor','x-test-index-failure':'1'},body:new Uint8Array(fixture.claim)});
+    assert.equal(indexFailure.status,503,'claim index errors fail closed as unavailable');
+    await indexFailure.arrayBuffer();
+    await post(fixture.claimRevocation,200,true);
+    const claimKvKey=`revoked/${fixture.claimTarget}/${fixture.claimRevoker}`;
+    const claimStrongKey=`__tonk/revocations/${fixture.claimTarget}/${fixture.claimRevoker}`;
+    assert.ok(await bucket.head(claimStrongKey));
+    await (await worker.getKVNamespace('REVOCATIONS_KV')).delete(claimKvKey);
+    async function checkClaims() {
+      const denied=JSON.parse(Buffer.from(await post(fixture.claim,403,true)).toString());
+      assert.equal(denied.kind,'Revoked');
+      for (const claim of [fixture.selfClaim,fixture.siblingClaim]) assert.deepEqual(Buffer.from(await post(claim,200,true)),content);
+    }
+    await checkClaims();
     console.log('Worker direct execution: transfer, invalid payload preservation, range, CAS, DELETE, 33MiB stream, metering and legacy upgrade gate passed');
     // This hits the actual authenticated revoke handler and the R2/KV mirrored index.
     const receipt = JSON.parse(Buffer.from(await post(fixture.revocation, 200)).toString());
@@ -221,6 +247,11 @@ export default {fetch(req,env,ctx) {
     assert.equal(await (await worker.getKVNamespace('REVOCATIONS_KV')).get(key), '');
     assert.ok(await (await worker.getR2Bucket('BUCKET')).head(strongKey), 'R2 revocation must survive restart');
     await checkRevokedPermits();
+    await checkClaims();
+    assert.equal(await (await worker.getKVNamespace('REVOCATIONS_KV')).get(claimKvKey),null);
+    await (await worker.getR2Bucket('BUCKET')).delete(fixture.ticketKey);
+    await post(fixture.selfClaim,404,true);
+    await post(fixture.siblingClaim,404,true);
     const replay = JSON.parse(Buffer.from(await post(fixture.revocation, 200)).toString());
     assert.equal(replay.recorded, false, 'restart must not forget a recorded revocation');
     console.log('connection worker: standard revocation enforced before and after persisted R2/KV/D1 restart; sibling preserved');

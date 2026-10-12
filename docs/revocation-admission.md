@@ -32,7 +32,13 @@ Legacy CBOR data redemption returns HTTP426 with `Rejection::Unclassified` and
 an actionable `detail`; `code: UpgradeRequired` provides an additional machine
 label. This existing rejection shape is intentional: released old clients cannot
 parse a newly invented rejection variant. Registration, deletion, purge and
-revocation CBOR dispatch before this gate and remain supported.
+revocation and ticket-claim CBOR dispatch before this gate and remain supported.
+
+Ticket claims verify their original chain against the same strong R2 revocation
+index. Provisioning applies to the space storing the ticket, not its holder.
+Ticket reads bypass the immutable object cache. Withdrawing a ticket removes
+future discovery; revoking its grant separately denies already fetched authority.
+Public-space unpublishing retains both actions.
 
 Missing version metadata is normal and accepted for direct requests. Legacy
 requests are rejected even if they claim a new version. No version header grants
