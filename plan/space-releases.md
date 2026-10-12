@@ -75,14 +75,14 @@ self.release = {
   // Bring the release up. Called once for each start of the worker.
   async start({ wasm, host, handover }) {
     return {
-      // A request from a page of this origin. Answer it, or return nothing
-      // and the bootloader lets it go to the network.
-      async fetch(request, client) {},
-      // A message from a page of this origin.
-      async message(data, ports, client) {},
-      // A message from the host around the space.
-      async receive(data, ports) {},
-      // The worker is about to be replaced. Return what the next one needs.
+      // A request from a page of this origin. Answer through
+      // `host.respond`, or return false and it goes to the network.
+      async fetch(request, { id, client }) {},
+      // A message on a port, from a page or from the host around the space.
+      async receive(port, data, ports) {},
+      // A port closed, or a response's reader went away.
+      async closed(id) {},
+      // The release is about to be replaced. Return what the next one needs.
       async stop() {},
     };
   },
@@ -103,10 +103,13 @@ in. It is what stays the same when the deployment is upgraded.
 host = {
   v: 1,
   pin, src,                       // what this worker was started for
-  // Pages of this origin.
-  clients: { list(), post(client, data, ports), broadcast(data) },
-  // The host around the space: the app that frames it, and the profile.
-  send(data, ports),              // answers arrive at `receive`
+  // Ports. A release holds a port's id, never the port.
+  ports: { parent, clients() },   // the host around the space; pages here
+  send(port, data, ports),        // `ports` are ids too
+  // Responses. A release holds a request's id, never the stream.
+  respond(id, { status, headers }),
+  write(id, chunk),
+  end(id),
   // Keep the worker alive until this settles.
   keep(promise),
   // Say the space's pin has changed; the bootloader arranges the switch.
@@ -114,12 +117,36 @@ host = {
 };
 ```
 
+A release is handed ids, not the things themselves. The bootloader holds
+every `MessagePort` and every open response, and a release names them by id:
+it sends on a port id, and it answers a request by writing to the request's
+id, which the bootloader pipes into the response it gave the page. So what is
+open belongs to the bootloader and outlives the release that was using it.
+`handover` carries the ids a release had in use, and its successor carries
+on with them: for a subscription, by asking its query again and writing a
+fresh snapshot to the same id.
+
+How much survives a change of pin depends on whether the bootloader does:
+
+- In `v: 1` a new release is JavaScript, which only a new worker can load,
+  so the bootloader is replaced along with the release. Its ports can cross
+  to its successor, since a worker may post to the next worker of its
+  registration and ports transfer. Its open responses cannot: a browser does
+  not activate the next worker while this one still has a response open, so
+  they are ended and the page's client reopens them.
+- In `v: 2` a release is wasm, which a running worker can load, so the
+  bootloader stays and both ports and responses stay open across the switch.
+
+The ids are the same contract in both. Nothing a release does changes when
+the bootloader learns to stay.
+
 The bootloader keeps for itself everything about being a service worker: the
 listeners, `install` and `activate`, claiming pages, replacing itself, and
 keeping the worker alive while a call is answered. It fetches and checks the
 release's files on install. It answers what is the host's own, the shell
-page and `/_release/`, and passes every other request to `fetch`. What a
-release returns from `stop` it hands to the next one as `handover`.
+page and `/_release/`, and passes every other request to `fetch`. It holds
+the ports and the open responses. What a release returns from `stop` it
+hands to the next one as `handover`.
 
 A release in `v: 1` still uses the browser directly for storage, the network
 and keys. It does not use the worker's own globals (`clients`,
