@@ -21,7 +21,7 @@ use dialog_ucan::UcanDelegation;
 use dialog_varsig::{Did, Principal};
 use thiserror::Error;
 use tonk_invite::shortcut::{ShortcutRequest, is_shortcut, resolve_location};
-use tonk_invite::{Invite, InviteAudience};
+use tonk_invite::{Invite, InviteAudience, Ticket};
 use tonk_schema::prelude::DidExt;
 use tonk_schema::{Invitation, InvitationExecution, InvitedVia, MemberRole, Membership, SeedKind};
 use url::Url;
@@ -356,9 +356,26 @@ async fn mint_for(
         .map_err(|e| InviteError::Io(format!("failed to assemble invite: {e}")))?
         .with_revocation_url(relay);
 
-    let url = invite
-        .to_url(base_url.unwrap_or(DEFAULT_BASE_URL))
-        .map_err(|e| InviteError::Io(format!("failed to serialize invite URL: {e}")))?;
+    // An open invite with a remote leaves its grant in the space as the
+    // ephemeral key's ticket, and the link names only the space and the
+    // key's seed, on the host serving the space, where the recipient
+    // claims it. Everything else — a scoped invite, a local-only space, an
+    // open one whose ticket the space did not keep, or one asked for on a
+    // base off the remote's origin (a ticket is claimed from the origin
+    // its link is on, which has to be the host keeping it) — carries the
+    // chain in `access=`, which redeems the same way.
+    let ticket_link = match (&invite.audience, &invite.remote_url) {
+        (InviteAudience::Open { seed }, Some(remote)) if on_origin_of(base_url, remote) => {
+            issue_ticket(site, remote, &invite.chain, *seed).await
+        }
+        _ => None,
+    };
+    let url = match ticket_link {
+        Some(link) => link,
+        None => invite
+            .to_url(base_url.unwrap_or(DEFAULT_BASE_URL))
+            .map_err(|e| InviteError::Io(format!("failed to serialize invite URL: {e}")))?,
+    };
     let url = tonk_analytics::launch::space_referral_url(&url, site.repository.did().repo_key())
         .map_err(|e| InviteError::Io(format!("failed to add invite referral attribution: {e}")))?;
 
@@ -373,6 +390,46 @@ async fn mint_for(
         subject: site.repository.did(),
         audience,
     })
+}
+
+/// Whether a link built on `base` lands on `remote`'s origin: no base,
+/// or one on the same origin.
+fn on_origin_of(base: Option<&str>, remote: &Url) -> bool {
+    base.is_none_or(|base| Url::parse(base).is_ok_and(|base| base.origin() == remote.origin()))
+}
+
+/// Leave an open invite's `chain` in its space, at the service at
+/// `remote`, as the ticket of the key `seed` derives, and answer the
+/// ticket link that redeems it: `{origin}/space/{did}#{seed}`.
+///
+/// `None`, with a warning, when the service did not keep the ticket: the
+/// caller then hands out the `access=` link, which redeems the same way.
+async fn issue_ticket(
+    site: &TonkSite,
+    remote: &Url,
+    chain: &dialog_ucan_core::DelegationChain,
+    seed: [u8; 32],
+) -> Option<String> {
+    let subject = chain.subject()?.clone();
+    if let Err(error) = tonk_account::ticket::issue(
+        dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(remote.as_str())),
+        chain,
+        &site.operator,
+    )
+    .await
+    {
+        eprintln!(
+            "warning: the space did not keep the invite's ticket; sharing the full link: {error}"
+        );
+        return None;
+    }
+    match Ticket::new(subject, seed, remote).and_then(|ticket| ticket.to_url()) {
+        Ok(link) => Some(link),
+        Err(error) => {
+            eprintln!("warning: the ticket link did not assemble; sharing the full link: {error}");
+            None
+        }
+    }
 }
 
 /// Record a previously minted invitation after its recovery state is durable.
@@ -944,7 +1001,38 @@ pub async fn resolve_url(invite_url: &str) -> Result<String, InviteError> {
 }
 
 async fn parse_invite_url(invite_url: &str) -> Result<Invite, InviteError> {
+    if let Some(ticket) = Ticket::parse_url(invite_url)
+        .map_err(|error| InviteError::InvalidInvite(error.to_string()))?
+    {
+        return claim_ticket(ticket).await;
+    }
     Invite::parse_url(invite_url)
+        .await
+        .map_err(|error| InviteError::InvalidInvite(error.to_string()))
+}
+
+/// Fetch the ticket a ticket link's space keeps for the link's key, and
+/// read it as the open invite it is. A claim only reads, so validating a
+/// ticket link this way changes nothing.
+async fn claim_ticket(ticket: Ticket) -> Result<Invite, InviteError> {
+    let holder = ticket
+        .holder()
+        .await
+        .map_err(|error| InviteError::InvalidInvite(error.to_string()))?;
+    let holder_did = dialog_varsig::Principal::did(&holder);
+    let fetched =
+        tonk_account::ticket::claim(ticket.remote(), holder, &holder_did, None, ticket.subject())
+            .await
+            .map_err(|error| {
+                InviteError::Io(format!("failed to claim the space's ticket: {error}"))
+            })?
+            .ok_or_else(|| {
+                InviteError::InvalidInvite(
+                    "the space no longer holds this link's ticket".to_owned(),
+                )
+            })?;
+    ticket
+        .redeem(&fetched)
         .await
         .map_err(|error| InviteError::InvalidInvite(error.to_string()))
 }

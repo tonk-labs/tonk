@@ -161,6 +161,17 @@ button,a{ min-height:48px; font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Na
 :host([data-account-required]) #agent-panel .agent-status,
 :host([data-account-required]) #agent-panel .panel-copytext{ display:none; }
 :host([data-unknown-space]) .share{ display:none; }
+/* publishing: one of the two shows, from what the space records (see
+   `<ui-space-publication>`); neither without a space or an account, nor to
+   anyone who does not run the space (`data-manages`, from the roster) */
+/* observing: a reader of a published space, not a member (`data-observer`,
+   from the roster). The sync disc says so, half filled; the bar leaves out
+   the links a reader cannot mint. */
+:host([data-observer]) .share,:host([data-observer]) .agent{ display:none; }
+:host([data-published]) .publish,:host(:not([data-published])) .unpublish,
+:host([data-unknown-space]) .publish,:host([data-unknown-space]) .unpublish,
+:host([data-account-required]) .publish,:host([data-account-required]) .unpublish,
+:host(:not([data-manages])) .publish,:host(:not([data-manages])) .unpublish{ display:none; }
 :host([alert]) .disc.st{ animation:fabb-blink var(--_blink) var(--_ease) infinite; }
 :host([alert]) .share{ animation:fabb-wash var(--_blink) var(--_ease) infinite; }
 :host([alert]) .share:hover{ animation:none; }
@@ -236,6 +247,8 @@ pub const BAR_HTML: &str = r#"<div class="w">
       <button class="action login" data-action="account" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3h6v18h-6M3 12h12m-5-5 5 5-5 5"/></svg><span>add an account</span></button>
       <button class="action condition" data-action="condition" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4h.01"/></svg><span></span></button>
       <button class="action share" data-cell="share" data-panel="share" aria-controls="share-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="5" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8 11 8-5M8 13l8 5"/></svg><span>copy share link</span></button>
+      <button class="action publish" data-action="publish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><span>make space public</span></button>
+      <button class="action unpublish" data-action="unpublish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg><span>make space private</span></button>
       <button class="action members" data-panel="members" aria-controls="members-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="10" r="2.5"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><path d="M7 21v-2a5 5 0 0 1 10 0v2M2 14v-2a3 3 0 0 1 3-3M22 14v-2a3 3 0 0 0-3-3"/></svg><span>view members</span></button>
       <button class="action agent" data-panel="agent" aria-controls="agent-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9.5V6.5"/><circle cx="12" cy="4" r="2.5"/><rect x="1.5" y="9.5" width="21" height="13" rx="4"/><circle cx="8" cy="16" r="1.5"/><circle cx="16" cy="16" r="1.5"/></svg><span>copy agent link</span></button>
       <button class="action home" data-action="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 20V4m-5 5 5-5 5 5M8 16q0 5 5 5h7"/></svg><span>go to tonk home</span></button>
@@ -283,6 +296,7 @@ pub const STACK_GAP_PX: i32 = 7;
 /// library.
 pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></ui-sync-status>
 <ui-space-name headless space="{space}"></ui-space-name>
+<ui-space-publication headless space="{space}"></ui-space-publication>
 <tonk-share headless space="{space}"></tonk-share>
 <tonk-tool-connection headless space="{space}"></tonk-tool-connection>
 <tonk-agent-panel headless space="{space}" with="main@{space}"></tonk-agent-panel>
@@ -308,6 +322,7 @@ tonk-fab .rename-mark{ display:inline-block; width:6px; height:12px; background:
 /* the headless subscribers render nothing; they are unslotted, but say so */
 tonk-fab > ui-sync-status[headless],
 tonk-fab > ui-space-name[headless],
+tonk-fab > ui-space-publication[headless],
 tonk-fab > tonk-share[headless],
 tonk-fab > tonk-tool-connection[headless],
 tonk-fab > tonk-agent-panel[headless],
@@ -416,6 +431,7 @@ pub const SPACE_BINDINGS: &[(&str, &str, &str)] = &[
     // The sync disc's contract is `branch@repo`, not a bare DID.
     ("ui-sync-status", "with", "main@"),
     ("ui-space-name", "space", ""),
+    ("ui-space-publication", "space", ""),
     ("tonk-share", "space", ""),
     ("tonk-tool-connection", "space", ""),
     ("tonk-agent-panel", "space", ""),
@@ -721,6 +737,39 @@ mod tests {
         assert!(REFUSAL_DIALOGS_HTML.contains("slot=\"actions\" solid data-tool-copy-prompt"));
     }
 
+    /// A reader of a published space is offered no share or agent link,
+    /// which a reader cannot mint; its sync disc says it observes (see
+    /// `skin`).
+    #[test]
+    fn it_leaves_out_what_an_observer_cannot_mint() {
+        assert!(!BAR_HTML.contains("observing"));
+        assert!(BAR_CSS.contains(
+            ":host([data-observer]) .share,:host([data-observer]) .agent{ display:none; }"
+        ));
+    }
+
+    /// The bar offers exactly one of "make space public" and "make space
+    /// private", from the `data-published` stamp, and neither where there
+    /// is no space or no account to publish with.
+    #[test]
+    fn it_offers_one_publication_action_at_a_time() {
+        assert!(BAR_HTML.contains(r#"data-action="publish""#));
+        assert!(BAR_HTML.contains(r#"data-action="unpublish""#));
+        for rule in [
+            ":host([data-published]) .publish",
+            ":host(:not([data-published])) .unpublish",
+            ":host([data-unknown-space]) .publish",
+            ":host([data-account-required]) .unpublish",
+            ":host(:not([data-manages])) .publish",
+        ] {
+            assert!(BAR_CSS.contains(rule), "missing `{rule}`");
+        }
+        assert!(
+            stacks_html("did:key:z6Mk")
+                .contains(r#"<ui-space-publication headless space="did:key:z6Mk">"#)
+        );
+    }
+
     #[test]
     fn it_leaves_remote_selection_to_the_worker() {
         let html = stacks_html("did:key:z6Mk");
@@ -731,12 +780,12 @@ mod tests {
 
     #[test]
     fn it_draws_its_marks_as_geometry() {
-        assert_eq!(BAR_HTML.matches("<svg").count(), 7);
+        assert_eq!(BAR_HTML.matches("<svg").count(), 9);
         assert_eq!(
             BAR_HTML
                 .matches(r#"stroke-linejoin="round" aria-hidden="true""#)
                 .count(),
-            7
+            9
         );
         assert!(BAR_HTML.contains("stroke=\"currentColor\""));
         assert!(BAR_HTML.contains(r#"<rect x="1.5" y="9.5" width="21" height="13" rx="4"/>"#));

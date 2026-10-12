@@ -361,6 +361,12 @@ pub(crate) async fn grant_device(state: &TonkState) -> Result<DelegationChain, T
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to save the onboarding grant: {error}"))
         })?;
+    // A new account holds the public principal's powerline from the
+    // start. Best-effort: opening a public space mints it if this did not.
+    if let Err(error) = crate::router::public_access::ensure_powerline(state, chain.issuer()).await
+    {
+        log!("public powerline was not minted at onboarding: {error}");
+    }
     Ok(chain)
 }
 
