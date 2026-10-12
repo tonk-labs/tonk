@@ -2,7 +2,7 @@
 //!
 //! `POST /ucan/` with the original UCAN in Authorization performs the operation
 //! after verifying its chain, expiry, revocation and provisioning. Legacy CBOR
-//! requests receive a POST descriptor carrying that same signed invocation.
+//! data requests receive an actionable upgrade-required rejection.
 //! `/object/*` remains a typed 401 retirement endpoint for old bearer URLs.
 //! Registration, revocation, hosted-space deletion and shortcuts keep their
 //! existing routes. See [`operation`] for request-local storage metadata.

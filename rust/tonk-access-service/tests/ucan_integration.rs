@@ -105,7 +105,7 @@ async fn it_pushes_and_pulls_via_ucan(env: AccessServiceAddress) -> anyhow::Resu
     .await?;
     assert!(
         ingest["invocations"].as_u64().unwrap_or(0) > 0,
-        "presigned operations must be recorded: {ingest}"
+        "executed operations must be recorded: {ingest}"
     );
 
     Ok(())
@@ -390,7 +390,7 @@ async fn it_caches_the_ucan_preflight(env: AccessServiceAddress) -> anyhow::Resu
     Ok(())
 }
 
-/// A refused presign answers with the reason itself, not prose.
+/// A refused invocation answers with the reason itself, not prose.
 ///
 /// The chain walk knows exactly which question failed, and the worker
 /// has always answered with that. The native server rendered every
@@ -452,8 +452,10 @@ async fn it_answers_a_refusal_with_its_typed_reason(
 
     let response = reqwest::Client::new()
         .post(env.ucan_endpoint())
-        .header("Content-Type", "application/cbor")
-        .body(container)
+        .header(
+            "Authorization",
+            dialog_remote_ucan::credential(Container::from_bytes(&container)?)?,
+        )
         .send()
         .await?;
 
@@ -533,7 +535,7 @@ async fn it_cuts_off_a_holder_whose_grant_was_revoked(
             );
             arguments.insert(
                 "digest".to_string(),
-                // Any well-formed digest: the presign is refused for the
+                // Any well-formed digest: the invocation is refused for the
                 // authority, not for what it points at.
                 dialog_ucan_core::promise::Promised::Bytes(vec![7u8; 32]),
             );
@@ -562,18 +564,12 @@ async fn it_cuts_off_a_holder_whose_grant_was_revoked(
     };
 
     let client = reqwest::Client::new();
-    let post = |body: Vec<u8>| {
-        client
-            .post(env.ucan_endpoint())
-            .header("Content-Type", "application/cbor")
-            .body(body)
-            .send()
-    };
+    let post = |body: Vec<u8>| storage_or_control(&client, env.ucan_endpoint(), body).send();
 
     // The positive control: the grant works before it is withdrawn.
     let before = post(presented(&chain).await).await?;
     assert!(
-        before.status().is_success(),
+        before.status().as_u16() == 404,
         "the guest must reach storage before revocation, got {}: {}",
         before.status(),
         before.text().await.unwrap_or_default()
@@ -618,7 +614,7 @@ async fn it_cuts_off_a_holder_whose_grant_was_revoked(
 ///
 /// Worth asserting here rather than only in the account service, whose
 /// device list is a projection: it records that a device was revoked but
-/// is never consulted when a presign is authorized. Only the artifact
+/// is never consulted when an invocation is authorized. Only the artifact
 /// reaching this index withdraws anything, so a revocation that stops at
 /// the device list leaves the revoked device fully able to read and write.
 #[dialog_common::test]
@@ -683,17 +679,11 @@ async fn it_cuts_off_a_device_that_revoked_its_own_grant(
     };
 
     let client = reqwest::Client::new();
-    let post = |body: Vec<u8>| {
-        client
-            .post(env.ucan_endpoint())
-            .header("Content-Type", "application/cbor")
-            .body(body)
-            .send()
-    };
+    let post = |body: Vec<u8>| storage_or_control(&client, env.ucan_endpoint(), body).send();
 
     let before = post(presented().await).await?;
     assert!(
-        before.status().is_success(),
+        before.status().as_u16() == 404,
         "the device must reach storage before revoking itself, got {}: {}",
         before.status(),
         before.text().await.unwrap_or_default()
@@ -814,21 +804,15 @@ async fn it_denies_a_revoked_device_at_every_service_it_reaches(
     };
 
     let client = reqwest::Client::new();
-    let post = |endpoint: String, body: Vec<u8>| {
-        client
-            .post(endpoint)
-            .header("Content-Type", "application/cbor")
-            .body(body)
-            .send()
-    };
+    let post = |endpoint: String, body: Vec<u8>| storage_or_control(&client, endpoint, body).send();
 
     // Both serve the device to begin with, or a later refusal proves
     // nothing about revocation.
     for endpoint in [env.ucan_endpoint(), second.ucan_endpoint()] {
         let response = post(endpoint.clone(), presented().await).await?;
         assert!(
-            response.status().is_success(),
-            "{endpoint} must serve the device before revocation, got {}: {}",
+            response.status().as_u16() == 404,
+            "{endpoint} must reach missing-object storage before revocation, got {}: {}",
             response.status(),
             response.text().await.unwrap_or_default()
         );
@@ -884,7 +868,7 @@ async fn it_stops_serving_an_account_once_it_is_purged(
     let root = Ed25519Signer::generate().await.expect("account key");
     env.activate_customer(&root, "purged@example.com").await?;
 
-    let presign = || {
+    let invocation = || {
         let root = root.clone();
         async move {
             let mut arguments = std::collections::BTreeMap::new();
@@ -919,17 +903,11 @@ async fn it_stops_serving_an_account_once_it_is_purged(
         }
     };
     let client = reqwest::Client::new();
-    let post = |body: Vec<u8>| {
-        client
-            .post(env.ucan_endpoint())
-            .header("Content-Type", "application/cbor")
-            .body(body)
-            .send()
-    };
+    let post = |body: Vec<u8>| storage_or_control(&client, env.ucan_endpoint(), body).send();
 
-    let before = post(presign().await).await?;
+    let before = post(invocation().await).await?;
     assert!(
-        before.status().is_success(),
+        before.status().as_u16() == 404,
         "the account must be served before the purge, got {}: {}",
         before.status(),
         before.text().await.unwrap_or_default()
@@ -943,7 +921,7 @@ async fn it_stops_serving_an_account_once_it_is_purged(
         purged.text().await.unwrap_or_default()
     );
 
-    let after = post(presign().await).await?;
+    let after = post(invocation().await).await?;
     assert_eq!(
         after.status().as_u16(),
         403,
@@ -958,4 +936,28 @@ async fn it_stops_serving_an_account_once_it_is_purged(
         "a repeat purge is still a deleted account"
     );
     Ok(())
+}
+
+fn storage_or_control(
+    client: &reqwest::Client,
+    endpoint: String,
+    body: Vec<u8>,
+) -> reqwest::RequestBuilder {
+    let request = client.post(endpoint);
+    if tonk_access_service::revoke::is_revocation(&body)
+        || tonk_access_service::deletion::is_purge(&body)
+        || tonk_access_service::deletion::is_deletion(&body)
+    {
+        request
+            .header("Content-Type", "application/cbor")
+            .body(body)
+    } else {
+        request.header(
+            "Authorization",
+            dialog_remote_ucan::credential(
+                dialog_ucan_core::Container::from_bytes(&body).expect("fixture container"),
+            )
+            .expect("fixture credential"),
+        )
+    }
 }

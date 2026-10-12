@@ -1,8 +1,8 @@
 //! Execute the original UCAN at the resource boundary.
 //!
 //! Authorization-header requests perform their verified operation immediately.
-//! Legacy CBOR requests receive a transport descriptor carrying that same UCAN;
-//! its second request verifies the full chain again. No service authority or
+//! Legacy CBOR data requests receive actionable upgrade guidance;
+//! every supported data request verifies the full chain at execution. No service authority or
 //! expiry is minted. Registration/revocation/deletion commands retain their routes.
 
 use crate::error::Refusal;
@@ -154,7 +154,7 @@ fn credential(req: &Request) -> Option<String> {
 }
 
 /// POST /ucan/ executes a direct invocation or returns the original-request
-/// descriptor for legacy clients, recording usage under `ctx.wait_until`.
+/// upgrade-required rejection for legacy data clients, recording execution usage.
 pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     if let Some(credential) = credential(&req) {
         return serve_invocation(req, &credential, env, ctx)
@@ -187,7 +187,7 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
     }
 
     // Registration commands ride the same endpoint; anything else falls
-    // through to the presign path untouched. Registration is not
+    // through to the data execution path untouched. Registration is not
     // metered: those invocations are once-per-account ceremonies, not
     // billable operations.
     #[cfg(target_arch = "wasm32")]
@@ -203,7 +203,7 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
             .map(with_cors_headers);
     }
     // Revocation writes to the index rather than reading it, so it is
-    // answered here rather than on the presign path that consults it.
+    // answered here rather than on the data execution path that consults it.
     #[cfg(target_arch = "wasm32")]
     if crate::revoke::is_revocation(&body_bytes) {
         return crate::handlers::revoke::handle(&body_bytes, &env)
@@ -217,19 +217,16 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
             .map(with_cors_headers);
     }
 
-    // A ticket claim carries no proof, so it never reaches the chain walk:
-    // it is answered here, with the ticket itself.
+    // Ticket claims remain supported, including claims delegated by a holder.
     #[cfg(target_arch = "wasm32")]
     if tonk_account::ticket::is_claim(&body_bytes) {
         return serve_claim(&body_bytes, &env).await.map(with_cors_headers);
     }
 
-    let origin = match origin(&req) {
-        Ok(origin) => origin,
-        Err(refusal) => return Ok(with_cors_headers(refusal.to_response()?)),
-    };
-    let served = presign(&body_bytes, &origin, &env).await;
-    answer(served, &body_bytes, &env, &ctx).map(with_cors_headers)
+    // Control-plane CBOR commands above remain supported. Data operations
+    // must carry original UCAN authority at execution, never redeem a permit.
+    Response::from_json(&crate::operation::upgrade_required())
+        .map(|r| with_cors_headers(r.with_status(426)))
 }
 
 /// Answer a `/use/get/ticket/claim` with the ticket the space it names
@@ -283,8 +280,7 @@ async fn serve_claim(body_bytes: &[u8], env: &Env) -> Result<Response> {
 }
 
 /// Serve an invocation that arrived in `Authorization`: verify it and
-/// perform it in this request when this runtime has the bucket, else
-/// answer with a permit for it.
+/// perform it in this request.
 async fn serve_invocation(
     mut req: Request,
     credential: &str,
@@ -312,15 +308,6 @@ async fn serve_invocation(
     };
     let served = perform(container, &container_bytes, &mut req, &env, &ctx).await;
     answer(served, &container_bytes, &env, &ctx)
-}
-
-/// Permits are redeemed where they were issued: the origin the client
-/// reached this service at is the one its `/object/` URLs name, so a
-/// preview alias and a custom domain each answer for themselves.
-fn origin(req: &Request) -> std::result::Result<String, Refusal> {
-    req.url()
-        .map(|url| url.origin().ascii_serialization())
-        .map_err(|error| Refusal::unclassified(format!("request url: {error}")))
 }
 
 /// The response for how an invocation was served, its record queued
@@ -404,7 +391,7 @@ struct Stages {
 
 /// Verify the invocation's chain, its revocations and the subject's
 /// provisioning, and read the operation it authorizes: the same three
-/// steps whether the answer is a permit or the operation's outcome.
+/// steps for the operation's outcome.
 async fn authorize(
     body_bytes: &[u8],
     env: &Env,
@@ -461,15 +448,6 @@ async fn perform(
     let url = req
         .url()
         .map_err(|e| PresignFailure::authorization(Refusal::unclassified(e.to_string())))?;
-    let range = req.headers().get("range").ok().flatten();
-    if !operation.compatibility_matches(url.query(), range.as_deref(), &verified) {
-        return Ok((
-            Response::from_json(&crate::operation::reauthorization())
-                .map_err(|e| PresignFailure::authorization(Refusal::unclassified(e.to_string())))?
-                .with_status(401),
-            0,
-        ));
-    }
     let bucket = env
         .bucket("BUCKET")
         .map_err(|_| PresignFailure::authorization(unavailable()))?;
@@ -556,50 +534,9 @@ async fn perform(
     Ok((response.with_headers(headers), bytes))
 }
 
-async fn presign(
-    body_bytes: &[u8],
-    origin: &str,
-    env: &Env,
-) -> std::result::Result<(Response, u64), PresignFailure> {
-    let (verified, stages) = authorize(body_bytes, env).await?;
-    Operation::from_verified(&verified).map_err(|detail| {
-        PresignFailure::authorization(AuthorizeError::Malformed { detail }.into())
-    })?;
-    let started = stages.started;
-    let authorized = stages.authorized;
-    let screened = stages.screened;
-    let bytes = 0; // Descriptor issuance transfers no object bytes.
-    let container = dialog_ucan_core::Container::from_bytes(body_bytes)
-        .map_err(|e| PresignFailure::authorization(Refusal::unclassified(e.to_string())))?;
-    let permit = crate::operation::descriptor(&container, origin, &verified)
-        .map_err(|e| PresignFailure::authorization(Refusal::unclassified(e)))?;
-    let cbor_bytes = serde_ipld_dagcbor::to_vec(&permit)
-        .map_err(|e| Refusal::unclassified(format!("failed to serialize response: {e}")))
-        .map_err(PresignFailure::authorization)?;
-    Response::from_bytes(cbor_bytes)
-        .map(|r| {
-            let headers = Headers::new();
-            let _ = headers.set("Content-Type", "application/cbor");
-            // Where the redeem's time went: the chain verify with its
-            // revocation lookups, the servability screen, and the whole.
-            let _ = headers.set(
-                "Server-Timing",
-                &format!(
-                    "authorize;dur={}, screen;dur={}, total;dur={}",
-                    authorized.saturating_sub(started),
-                    screened.saturating_sub(authorized),
-                    Date::now().as_millis().saturating_sub(started)
-                ),
-            );
-            (r.with_headers(headers), bytes)
-        })
-        .map_err(|e| Refusal::unclassified(format!("response error: {e}")))
-        .map_err(PresignFailure::authorization)
-}
-
 /// Screen the subject against the provisioning gate: a space is served
 /// only while an active customer pays for it. Registration commands
-/// never reach here — `serve` answers them before the presign path —
+/// never reach here — `serve` answers them before the data execution path —
 /// so enrolling and activating stay possible while the gate denies the
 /// data plane.
 ///
@@ -715,7 +652,7 @@ pub(crate) fn servability_kv(env: &Env) -> Option<worker::kv::KvStore> {
 
 /// Derive `subject`'s verdict from control D1 and remember it in the
 /// isolate cache and KV. The single write path for cached verdicts:
-/// the presign path calls it on a cache miss, the registration and
+/// the data execution path calls it on a cache miss, the registration and
 /// deletion handlers after a state change, so a change propagates as
 /// itself rather than waiting out a stale entry's validity.
 #[cfg(target_arch = "wasm32")]

@@ -137,55 +137,23 @@ impl Operation {
             None => format!("bytes={}-", r.offset),
         })
     }
-    /// Only the compatibility transport uses Range headers. An old client's
-    /// GET cache ignores Range; 401 makes it redeem the current signed request.
-    pub fn compatibility_matches(
-        &self,
-        query: Option<&str>,
-        range: Option<&str>,
-        verified: &Verified,
-    ) -> bool {
-        let identities: Vec<_> = url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
-            .filter(|(k, _)| k == "invocation")
-            .map(|(_, v)| v.into_owned())
-            .collect();
-        if identities.is_empty() {
-            return true;
-        }
-        identities.len() == 1
-            && identities[0] == verified.chain().invocation.to_cid().to_string()
-            && (self.method != Method::Get || self.range_header().as_deref() == range)
-    }
 }
 
-/// An old client's Permit is only a representation of the original request.
-/// Full invocation identity isolates URL-keyed read flights; it never authorizes.
-pub fn descriptor(
-    container: &dialog_ucan_core::Container,
-    origin: &str,
-    verified: &Verified,
-) -> Result<dialog_remote_s3::Permit, String> {
-    let mut url = url::Url::parse(origin).map_err(|e| e.to_string())?;
-    url.set_path("/ucan/");
-    url.set_query(None);
-    url.query_pairs_mut().append_pair(
-        "invocation",
-        &verified.chain().invocation.to_cid().to_string(),
-    );
-    let credential =
-        dialog_remote_ucan::credential(container.clone()).map_err(|e| e.to_string())?;
-    Ok(dialog_remote_s3::Permit {
-        url,
-        method: "POST".into(),
-        headers: vec![
-            ("Authorization".into(), credential),
-            ("Accept".into(), "application/octet-stream".into()),
-        ],
+/// A wire shape released legacy CLIs can render without --verbose.
+/// Protocol support, not this advisory version, decides storage admission.
+pub fn upgrade_required() -> serde_json::Value {
+    serde_json::json!({
+        "kind":"Unclassified",
+        "detail":"This client uses an obsolete Tonk storage protocol. macOS arm64: npm install -g @tonk/cli@0.6.17 ; then run tonk --version, check PATH, and retry. Linux: a portable direct-UCAN CLI release is required; npm 0.6.17 still has the Nix-loader defect and is not a working upgrade. Release status: https://github.com/tonk-labs/tonk/pull/1085 . Do not use the frozen @stable alias. Browser users should reload the current Tonk app.",
+        "code":"UpgradeRequired",
+        "requiredProtocol":"ucan-direct-v1",
+        "recommendedMacosArm64CliVersion":"0.6.17",
+        "linuxUpgradeStatus":"portable-release-required"
     })
 }
 
 pub fn reauthorization() -> serde_json::Value {
-    serde_json::json!({"kind":"ReauthorizationRequired","detail":"redeem the original UCAN again"})
+    serde_json::json!({"kind":"ReauthorizationRequired","detail":"This object URL is retired. Retry with a current direct-UCAN client; legacy redemption explains platform-specific upgrade requirements."})
 }
 
 impl Operation {

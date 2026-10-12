@@ -42,38 +42,35 @@ impl Fixture {
         })
     }
     async fn post(&self, bytes: Vec<u8>) -> anyhow::Result<reqwest::Response> {
-        Ok(self
-            .client
-            .post(self.env.ucan_endpoint())
-            .header("Content-Type", "application/cbor")
-            .body(bytes)
-            .send()
-            .await?)
+        if tonk_access_service::revoke::is_revocation(&bytes)
+            || tonk_access_service::deletion::is_deletion(&bytes)
+            || tonk_access_service::deletion::is_purge(&bytes)
+        {
+            return Ok(self
+                .client
+                .post(self.env.ucan_endpoint())
+                .header("Content-Type", "application/cbor")
+                .body(bytes)
+                .send()
+                .await?);
+        }
+        let request = self.permit(bytes).await?;
+        Ok(self.send_permit(&request).send().await?)
     }
+    // A local request representation, never a server-issued credential.
     async fn permit(&self, bytes: Vec<u8>) -> anyhow::Result<Permit> {
-        let response = self.post(bytes).await?;
-        let status = response.status();
-        let body = response.bytes().await?;
-        anyhow::ensure!(
-            status.is_success(),
-            "{status}: {}",
-            String::from_utf8_lossy(&body)
-        );
-        let permit: Permit = serde_ipld_dagcbor::from_slice(&body)?;
-        assert_eq!(permit.method, "POST");
-        assert!(
-            permit
-                .url
-                .query_pairs()
-                .any(|(name, _)| name == "invocation")
-        );
-        assert!(
-            permit
-                .headers
-                .iter()
-                .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
-        );
-        Ok(permit)
+        let container = dialog_ucan_core::Container::from_bytes(&bytes)?;
+        Ok(Permit {
+            url: self.env.ucan_endpoint().parse()?,
+            method: "POST".into(),
+            headers: vec![
+                (
+                    "Authorization".into(),
+                    dialog_remote_ucan::credential(container)?,
+                ),
+                ("Accept".into(), "application/octet-stream".into()),
+            ],
+        })
     }
     fn send_permit(&self, permit: &Permit) -> reqwest::RequestBuilder {
         let mut request = self
@@ -791,30 +788,6 @@ async fn connection_member_issuer_and_same_account_device_revoke_six_leaves() ->
         }
         groups.push((recipient, chains));
     }
-    for (_, chains) in &groups {
-        for chain in chains {
-            let holder = &groups
-                .iter()
-                .find(|(_, candidate)| candidate[0].audience() == chain.audience())
-                .unwrap()
-                .0;
-            let cmd = chain.proofs().last().unwrap().command().0.clone();
-            let resource = format!("{}/{}", cmd[2], cmd[3]);
-            fixture
-                .permit(
-                    request(
-                        chain,
-                        holder,
-                        &fixture.env.service_did,
-                        &owner.did(),
-                        cmd,
-                        arguments(&resource),
-                    )
-                    .await,
-                )
-                .await?;
-        }
-    }
     let bad = tonk_identity::revocation::mint_delegated_revocation_with_witness(
         other_browser.clone(),
         &groups[0].1[0],
@@ -885,7 +858,15 @@ async fn connection_member_issuer_and_same_account_device_revoke_six_leaves() ->
             if index < 2 {
                 assert_eq!(response.status().as_u16(), 403);
             } else {
-                assert!(response.status().is_success());
+                // An admitted operation may find no object or fail its CAS.
+                // These storage outcomes prove the independent chain reached
+                // storage; authorization failures must not be accepted here.
+                assert!(
+                    [200, 204, 404, 412].contains(&response.status().as_u16()),
+                    "{}: {}",
+                    response.status(),
+                    response.text().await?
+                );
             }
         }
     }
@@ -951,7 +932,7 @@ async fn connection_member_issuer_and_same_account_device_revoke_six_leaves() ->
 }
 
 /// Exercise the six independently revocable read/write leaves, including a
-/// mutable branch head, a new body/digest, direct UCAN and permit fallback.
+/// mutable branch head, a new body/digest, direct UCAN execution.
 #[tokio::test]
 async fn removal_denies_stale_and_fresh_writes_without_revoking_other_leaves() -> anyhow::Result<()>
 {
@@ -1120,8 +1101,7 @@ async fn describe(
         .await
 }
 #[tokio::test]
-async fn descriptors_preserve_digests_ranges_empty_bodies_cas_and_distinct_urls()
--> anyhow::Result<()> {
+async fn direct_requests_preserve_digests_ranges_empty_bodies_and_cas() -> anyhow::Result<()> {
     let fixture = Fixture::new().await?;
     let owner = Ed25519Signer::generate().await?;
     let holder = Ed25519Signer::generate().await?;
@@ -1204,9 +1184,9 @@ async fn descriptors_preserve_digests_ranges_empty_bodies_cas_and_distinct_urls(
                     .send()
                     .await?
                     .status(),
-                401
+                200
             );
-            assert_eq!(fixture.send_permit(&range).send().await?.status(), 401);
+            assert_eq!(fixture.send_permit(&range).send().await?.status(), 206);
             assert_eq!(
                 fixture
                     .send_permit(&range)
@@ -1218,7 +1198,7 @@ async fn descriptors_preserve_digests_ranges_empty_bodies_cas_and_distinct_urls(
                     .as_ref(),
                 &CONTENT[2..7]
             );
-            assert_ne!(get.url, range.url);
+            assert_eq!(get.url, range.url); // Signed arguments, never the URL, select the object/range.
         }
     }
     let empty = describe(
@@ -1349,7 +1329,7 @@ async fn descriptors_preserve_digests_ranges_empty_bodies_cas_and_distinct_urls(
 }
 
 #[tokio::test]
-async fn descriptor_does_not_extend_an_ancestor_expiry() -> anyhow::Result<()> {
+async fn original_request_cannot_extend_an_ancestor_expiry() -> anyhow::Result<()> {
     let fixture = Fixture::new().await?;
     let owner = Ed25519Signer::generate().await?;
     let holder = Ed25519Signer::generate().await?;

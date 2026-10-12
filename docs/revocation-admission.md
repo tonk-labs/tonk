@@ -25,35 +25,56 @@ Lookups fail closed on infrastructure errors, without calling them revocations.
 The pinned verifier's per-link candidate scope is retained; unrelated proof
 material does not become an authority dependency.
 
-## Transport compatibility
+## Supported protocol and CLI upgrade gate
 
-Modern Authorization-header requests execute directly. Legacy CBOR redeems
-return the existing Permit-shaped transport description: POST `/ucan/`, the
-**original** signed invocation in Authorization, and its full invocation CID in
-the query. The query only separates old clients' URL-keyed read flights; it never
-authorizes. Each execution verifies the chain again, so timely redemption cannot
-extend ancestor expiry or evade subsequent removal. Unsupported or malformed
-operations never fall back to bearer authority.
+Data operations require the original UCAN in Authorization (`ucan-direct-v1`).
+Legacy CBOR data redemption returns HTTP426 with `Rejection::Unclassified` and
+an actionable `detail`; `code: UpgradeRequired` provides an additional machine
+label. This existing rejection shape is intentional: released old clients cannot
+parse a newly invented rejection variant. Registration, deletion, purge and
+revocation CBOR dispatch before this gate and remain supported.
 
-Old `/object/*` URLs return typed 401 `ReauthorizationRequired`, including GET,
-PUT and DELETE. Cached legacy reads invalidate and redeem once. In-flight older
-writes/deletes are not automatically retried and may surface one operation
-failure across cutover; callers must retry according to the operation's CAS
-semantics. This cutover was explicitly approved; no deployment is authorized.
+Missing version metadata is normal and accepted for direct requests. Legacy
+requests are rejected even if they claim a new version. No version header grants
+authority: every direct request still verifies its original chain and signed
+arguments. Signed range selects returned bytes; unsigned HTTP Range cannot change
+it. There are no issued descriptors, cached-permit range retries, invocation-ID
+query adapters, or independent bearer authority.
 
-Legacy read caches omit Range. A descriptor executes only its signed range.
-A mismatched requested Range, including absent versus present, returns 401 so a
-cached read redeems the current invocation. An old client's **concurrent cold
-reads of different ranges of the same blob** can share one redeem while neither
-is marked cached: the mismatching read is safely rejected and is not retried by
-that old provider. The standalone v0.6.15 probe documents this case, alongside
-sequential cached-range recovery and concurrent distinct-object reads. The failure
-is `Authorization(UnavailableProof { link: "blob read failed: 401 Unauthorized" })`;
-an explicit retry on the same client recovered the exact requested range in both
-fixture variants. Earlier
-or external clients are not covered by running that probe. v0.6.16/17 and current
-clients default to Direct; explicit legacy transport remains subject to its
-cache behavior. Do not promise transparent recovery for all old reads.
+Authentic npm v0.6.15 `tonk pull` and `tonk push` print the 426 detail without
+`--verbose` and exit4. The probe uses a disposable container, not a user's profile.
+The unchanged Linux binary needs the container's explicit loader because its
+published Nix interpreter is unavailable; that workaround tests error rendering,
+not installation portability. An unconfigured `account sync` is not evidence of
+linked-account error rendering. The production Worker fixture can invoke the real
+CLI using `TONK_RELEASED_CLI_FIXTURES`; see `scripts/cli-upgrade-probe.cjs`. The test wrapper never modifies the executable.
+
+Supported admission is defined by the direct protocol, not semver ordering.
+The earliest stable CLI verified to send this protocol is0.6.16;0.6.15 sends
+obsolete CBOR redemption. Both0.6.16 and0.6.17 were exercised as real binaries.
+The recommended **macOS arm64** CLI is the verified npm `@tonk/cli@0.6.17` artifact;
+run `tonk --version` and check PATH afterwards. npm `stable` remains intentionally
+frozen at0.6.11 and must not be recommended. `tonk update` is not a universal route:
+npm/Nix-managed installations use their own package manager.
+
+**Deployment prerequisite: publish a portable Linux CLI release first.** npm
+0.6.17 uses direct UCAN but still embeds the unavailable Nix loader. The later
+immutable `tonk-kdp1zi8hiz1j` release predates the musl fix too. The current tested
+candidate is #1085 commit `06c18e3c3ae87db19bfc8eab27bceb0acebcf103`, including
+musl commit `c68f2886d0` and Debian/Alpine artifact gates. A release owner must choose
+a new version newer than0.6.17 from an approved commit containing these changes,
+run both published tarball and ordinary npm-install smoke gates, publish through
+the normal release process, then replace the Linux-pending guidance with that
+verified release/install target before deploying this Worker. No release or
+deployment is part of this PR task. Until then the error explicitly says Linux
+has no verified ordinary npm upgrade; it never recommends the broken017 binary.
+
+Old `/object/*` remains typed401 rather than404. Cached old GETs can invalidate
+and reach the readable426 gate. Already-held old PUT/DELETE URLs may expose only
+an HTTP failure because those clients discard response bodies; retrying a normal
+CLI push/pull reaches the upgrade gate. This limitation cannot be repaired inside
+an already released binary. Removed grants remain denied; no compatibility
+fallback restores bearer execution.
 
 ## Streaming, cache and response semantics
 
@@ -71,7 +92,7 @@ a separately designed limit or spooling solution; not all uploads use bounded
 memory. The historical 32MiB check only inspected optional Content-Length and
 never bounded this headerless path. Known-length and signed-size uploads use the
 streaming validator without a new 32MiB cap. Metering records the actual collected
-length only on successful storage, and descriptor issuance records no transfer.
+length only on successful storage. Rejected obsolete requests transfer no objects.
 
 Platform/R2 limits still apply. The native test helper shares the validator;
 its local S3 reads and uploads remain buffered and do not prove Worker memory use.
@@ -86,19 +107,18 @@ As before, bypass skips lookup but still fills. Memory cells are never cached.
 Ranges, ETags, missing404, CAS412 and POST/Authorization CORS remain supported.
 Conditional DELETE retains the existing R2 HEAD-then-DELETE limitation: it is not
 an atomic compare-and-delete. Upload bytes are recorded at successful execution,
-not descriptor issuance; rejected payloads and infrastructure failures are not
+only after storage; rejected payloads and infrastructure failures are not
 successful uploads.
 
 ## Validation and rollout limits
 
-`tests/connections.rs` covers fresh/direct and original-descriptor execution,
+`tests/connections.rs` covers direct execution and obsolete-protocol rejection,
 partial removal, descendant/copy authority, independent chains, unsupported
 escalation, expiry, payload validation, ranges, empty uploads and CAS.
 `upload.rs` tests truncation, extra data, read errors, both digests, zero bodies
 and final-byte retention. `scripts/test-connection-worker.sh` exercises the actual
 production Wasm against disposable Miniflare R2/KV/D1, including absent KV mirrors,
-restart, storage failure, metering and a 33MiB upload. The optional standalone
-legacy probe runs pinned v0.6.15 client code, not a rewritten client emulator.
+restart, storage failure, metering and a 33MiB upload. The optional CLI probe runs the authentic published v0.6.15 executable.
 
 These tests do not establish live multi-location Cloudflare behavior. Release
 validation still needs warmed legacy KV misses across locations, storage-write

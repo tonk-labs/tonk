@@ -91,7 +91,6 @@ struct RegistrationState {
     /// Where those permits are redeemed: this server's own address.
     /// Not `origin`, which is the page origin a dev proxy fronts, and
     /// which does not forward `/object/`.
-    endpoint: String,
     /// The backing S3 store `/object/` performs against, with the
     /// credential the worker's R2 binding stands in for.
     objects: ObjectStore,
@@ -228,7 +227,6 @@ impl AccessServer {
             purger,
             revocations,
             authorizer: authorizer.clone(),
-            endpoint: endpoint.clone(),
             objects,
         });
 
@@ -920,167 +918,16 @@ async fn handle_request(
         return Ok(cors_response(serve_claim(&registration, &body_bytes).await));
     }
 
-    let outcome = verify_native(&body_bytes, &registration)
-        .await
-        .map_err(dialog_remote_s3::S3Error::Authorization);
-    // Test visibility: one line per permit request, so a CI job log
-    // shows whether a publish or resolve ever arrived and how it fared
-    // — the service worker's own console never reaches those logs.
-    {
-        let command = dialog_ucan_core::InvocationChain::try_from(body_bytes.as_ref())
-            .map(|chain| chain.command().0.join("/"))
-            .unwrap_or_else(|_| "?".into());
-        let subject =
-            crate::provisioning::container_subject(&body_bytes).unwrap_or_else(|| "?".into());
-        // The permit URL names the object the redeem is for (e.g.
-        // `{subject}/index/{hash}`), which is what a replication trace
-        // needs: without it every block fetch logs as the same command
-        // and over-fetching is invisible.
-        let object = match &outcome {
-            Ok(verified) => Operation::from_verified(verified)
-                .map(|op| format!("{} {}", op.method.as_str(), op.key))
-                .unwrap_or_default(),
-            Err(_) => "-".into(),
-        };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|t| t.as_millis())
-            .unwrap_or(0);
-        println!(
-            "ACCESS_UCAN t={now} command=/{command} subject={subject} authorized={} object={object}",
-            outcome.is_ok()
-        );
-    }
-    if outcome.is_ok()
-        && let Some(subject) = crate::deletion::subject(&body_bytes)
-    {
-        use crate::store::Store;
-        match registration.store.consumer(subject.as_str()).await {
-            Ok(Some(consumer)) if consumer.deleted_at.is_some() => {
-                return Ok(cors_response(
-                    Response::builder()
-                        .status(StatusCode::FORBIDDEN)
-                        .body(Full::new(Bytes::from(
-                            "Authorization failed: hosted space is deleting or deleted",
-                        )))
-                        .unwrap(),
-                ));
-            }
-            Err(error) => {
-                return Ok(cors_response(
-                    Response::builder()
-                        .status(StatusCode::SERVICE_UNAVAILABLE)
-                        .body(Full::new(Bytes::from(format!(
-                            "consumer deletion state unavailable: {error}"
-                        ))))
-                        .unwrap(),
-                ));
-            }
-            _ => {}
-        }
-    }
-    // The provisioning gate, mirroring the worker: a subject is served
-    // only while an active customer pays for it. Registration commands
-    // returned above, so enrolling and activating stay possible while
-    // this denies the data plane.
-    if outcome.is_ok() {
-        match crate::provisioning::container_subject(&body_bytes) {
-            Some(subject) => {
-                match crate::provisioning::screen(&registration.store, &subject, unix_now()).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(reason)) => {
-                        println!("ACCESS_UCAN_REFUSED subject={subject} reason={reason:?}");
-                        return Ok(cors_response(authorize_error_response(
-                            StatusCode::FORBIDDEN,
-                            &reason,
-                        )));
-                    }
-                    Err(error) => {
-                        // Fails closed, but as our own unavailability rather
-                        // than a denial billed to the customer.
-                        eprintln!("presign refused, control store unreachable: {error}");
-                        return Ok(cors_response(authorize_error_response(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            &unavailable_provisioning(),
-                        )));
-                    }
-                }
-            }
-            None => {
-                return Ok(cors_response(authorize_error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    &unavailable_provisioning(),
-                )));
-            }
-        }
-    }
-    // Metering mirrors the worker: permits and attributable denials are
-    // recorded, infra failures and unparseable containers are not.
-    let metered = match &outcome {
-        Ok(_) => Some(("ok", None, 0)),
-        Err(dialog_remote_s3::S3Error::Authorization(reason)) => {
-            Some(("denied", Some(format!("{reason:?}")), 0))
-        }
-        Err(_) => None,
-    };
-    if let Some((label, reason, bytes)) = metered
-        && let Some(record) =
-            crate::metering::collect(&body_bytes, label, reason, bytes, unix_now())
-        && let Err(error) = registration.ingest.record(&record).await
-    {
-        eprintln!("metering write failed: {error}");
-    }
-    match outcome {
-        Ok(verified) => {
-            let container =
-                dialog_ucan_core::Container::from_bytes(&body_bytes).expect("verified container");
-            let permit =
-                match crate::operation::descriptor(&container, &registration.endpoint, &verified) {
-                    Ok(permit) => permit,
-                    Err(detail) => {
-                        return Ok(cors_response(authorize_error_response(
-                            StatusCode::BAD_REQUEST,
-                            &dialog_capability::access::AuthorizeError::Malformed { detail },
-                        )));
-                    }
-                };
-            // Serialize the permit as CBOR
-            match serde_ipld_dagcbor::to_vec(&permit) {
-                Ok(cbor_bytes) => Ok(cors_response(
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header(CONTENT_TYPE, "application/cbor")
-                        .body(Full::new(Bytes::from(cbor_bytes)))
-                        .unwrap(),
-                )),
-                Err(e) => Ok(cors_response(
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Full::new(Bytes::from(format!(
-                            "Failed to encode response: {}",
-                            e
-                        ))))
-                        .unwrap(),
-                )),
-            }
-        }
-        // The refusal travels as itself. Rendering it into prose here
-        // would undo the point of the authorizer naming what failed: a
-        // client parsing the body could no longer tell an expired proof
-        // from a revoked one, and every denial through this server
-        // would arrive unclassified.
-        Err(dialog_remote_s3::S3Error::Authorization(reason)) => Ok(cors_response(
-            authorize_error_response(authorize_status(&reason), &reason),
-        )),
-        Err(other) => Ok(cors_response(
-            Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .body(Full::new(Bytes::from(format!(
-                    "Authorization failed: {other}"
-                ))))
-                .unwrap(),
-        )),
-    }
+    Ok(cors_response(
+        Response::builder()
+            .status(StatusCode::UPGRADE_REQUIRED)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(
+                serde_json::to_vec(&crate::operation::upgrade_required())
+                    .expect("upgrade response serializes"),
+            )))
+            .unwrap(),
+    ))
 }
 
 /// The status an authorization refusal answers with.
@@ -1902,13 +1749,6 @@ async fn serve_direct(
         Err(e) => return authorize_error_response(authorize_status(&e), &e),
     };
     let op = Operation::from_verified(&verified).expect("verified operation");
-    let range = req
-        .headers()
-        .get(hyper::header::RANGE)
-        .and_then(|v| v.to_str().ok());
-    if !op.compatibility_matches(req.uri().query(), range, &verified) {
-        return reauthorization_response();
-    }
     match crate::provisioning::screen(
         &registration.store,
         &verified.chain().subject().to_string(),
