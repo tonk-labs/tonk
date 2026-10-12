@@ -113,3 +113,27 @@ test('an approval without a ceremony row has a quiet absence fallback', () => {
   assert.ok(display, 'settings contains its ceremony display');
   assert.match(display[1], /<span slot="no-entity" hidden><\/span>/);
 });
+
+test('passkey preflight is never displayed as completed enrollment', () => {
+  const { self, row, line } = fixture();
+  self.request = null;
+  self.refresh();
+  row.dataset = {
+    of: 'state:ceremony', ceremony: 'add-passkey', ceremonyState: 'prepared',
+    ceremonyDetail: "Account checked. The additional passkey isn't confirmed yet.",
+  };
+  self.describe();
+  assert.equal(line.textContent, row.dataset.ceremonyDetail);
+  assert.notEqual(line.textContent, 'Done.');
+  assert.equal(self.getAttribute('data-ceremony-state'), 'prepared');
+  // Cancellation leaves an accurate preflight result, not a success or spinner.
+  self.describe();
+  assert.equal(line.textContent, row.dataset.ceremonyDetail);
+  row.dataset.ceremonyState = 'failed';
+  row.dataset.ceremonyDetail = 'Account changed; start again.';
+  self.describe();
+  assert.equal(line.textContent, 'Adding the passkey did not finish: Account changed; start again.');
+  row.dataset.ceremonyState = 'done';
+  self.describe();
+  assert.equal(line.textContent, 'Done.');
+});

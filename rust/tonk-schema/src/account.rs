@@ -623,6 +623,8 @@ pub mod ceremony_state {
     pub const REFUSED: &str = "refused";
     /// The page has been asked for the passkey.
     pub const PENDING_CEREMONY: &str = "pending-ceremony";
+    /// A preflight passed; the page has not confirmed completion of the action.
+    pub const PREPARED: &str = "prepared";
     /// The passkey answered; the worker is doing the work.
     pub const WORKING: &str = "working";
     /// Done. `detail` carries what comes next, when anything does.

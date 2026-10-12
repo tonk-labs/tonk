@@ -76,25 +76,83 @@ async fn create_passkey(input: JsValue) -> Result<JsValue, JsValue> {
     mediate(credential, request).await
 }
 
-/// `addPasskey({ name?, displayName?, request })` → `{ credentialId }`.
+/// `addPasskey({ credentialId?, name?, displayName?, request })` → `{ createPasskey, cancelPasskey }`.
 ///
-/// Two ceremonies in one call: assert the passkey that already holds
-/// the account, then create the one being added. Both pairs of PRF
-/// outputs go to the worker, which is the only place the account secret
-/// is opened and re-sealed.
-async fn add_passkey(input: JsValue) -> Result<JsValue, JsValue> {
-    let holder = crate::passkey::evaluate_custody_passkey(None)
-        .await
-        .map_err(js_error)?;
-    let holder = holder.into_evaluated().await.map_err(js_error)?;
-    let name = optional_string_property(&input, "name");
-    let display_name = optional_string_property(&input, "displayName");
-    let added = crate::passkey::create_custody_passkey(name.as_deref(), display_name.as_deref())
-        .await
-        .map_err(js_error)?;
-    let added = added.into_evaluated().await.map_err(js_error)?;
-    let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
-    mediate_pair(added, Some(holder), request).await
+/// Verify the holder and its service custody before offering creation. The
+/// returned one-shot continuation must be called on a fresh user gesture:
+/// a network preflight can outlive the original click's activation.
+fn add_passkey(input: JsValue) -> Promise {
+    let credential_id = match credential_id_property(&input) {
+        Ok(id) => id,
+        Err(error) => return Promise::reject(&error),
+    };
+    let assertion = match crate::passkey::begin_evaluate_custody_passkey(credential_id.as_deref()) {
+        Ok(assertion) => assertion,
+        Err(error) => return Promise::reject(&js_error(error)),
+    };
+    future_to_promise(async move {
+        let holder = assertion.finish().await.map_err(js_error)?;
+        let holder = holder.into_evaluated().await.map_err(js_error)?;
+        let request = Reflect::get(&input, &"request".into())?;
+        let preflight = mediate_pair(&holder, None, request.clone(), true).await;
+        creation_after_preflight(preflight, move || {
+            let name = optional_string_property(&input, "name");
+            let display_name = optional_string_property(&input, "displayName");
+            let creation = match crate::passkey::begin_create_custody_passkey(
+                name.as_deref(),
+                display_name.as_deref(),
+            ) {
+                Ok(creation) => creation,
+                Err(error) => return Promise::reject(&js_error(error)),
+            };
+            future_to_promise(async move {
+                let added = creation.finish().await.map_err(js_error)?;
+                // From this point a credential exists even if evaluation or enrollment fails.
+                // Never silently run creation again as a retry.
+                let result = async {
+                    let added = added.into_evaluated().await.map_err(js_error)?;
+                    mediate_pair(&added, Some(&holder), request, false).await
+                }
+                .await;
+                result.map_err(|_| {
+                    let error = js_sys::Error::new(
+                        "The new passkey was created, but its enrollment could not be confirmed.",
+                    );
+                    error.set_name("PasskeyEnrollmentIncomplete");
+                    error.into()
+                })
+            })
+        })
+    })
+}
+
+fn creation_after_preflight(
+    preflight: Result<JsValue, JsValue>,
+    create: impl FnOnce() -> Promise + 'static,
+) -> Result<JsValue, JsValue> {
+    preflight?;
+    // Explicitly dispose the captured PRF material on cancellation. A never-called
+    // once_into_js closure leaks its captures, so dropping only its JS handle is
+    // not sufficient for a cancelled ceremony.
+    let pending = std::rc::Rc::new(std::cell::RefCell::new(Some(create)));
+    let creating = pending.clone();
+    let create = Closure::<dyn FnMut() -> Promise>::new(move || {
+        let Some(create) = creating.borrow_mut().take() else {
+            return Promise::reject(&js_sys::Error::new(
+                "This passkey request has ended. Start again.",
+            ));
+        };
+        create()
+    })
+    .into_js_value();
+    let cancel = Closure::<dyn FnMut()>::new(move || {
+        pending.borrow_mut().take();
+    })
+    .into_js_value();
+    let result = Object::new();
+    Reflect::set(&result, &"createPasskey".into(), &create)?;
+    Reflect::set(&result, &"cancelPasskey".into(), &cancel)?;
+    Ok(result.into())
 }
 
 /// `usePasskey({ credentialId? })` → `{ credentialId }`.
@@ -146,16 +204,17 @@ async fn mediate(
     credential: crate::passkey::EvaluatedCustodyCredential,
     request: JsValue,
 ) -> Result<JsValue, JsValue> {
-    mediate_pair(credential, None, request).await
+    mediate_pair(&credential, None, request, false).await
 }
 
 /// [`mediate`], optionally carrying a second custodian: the passkey
 /// that already holds the account, for work that must open it before
 /// sealing under the first.
 async fn mediate_pair(
-    credential: crate::passkey::EvaluatedCustodyCredential,
-    holder: Option<crate::passkey::EvaluatedCustodyCredential>,
+    credential: &crate::passkey::EvaluatedCustodyCredential,
+    holder: Option<&crate::passkey::EvaluatedCustodyCredential>,
     request: JsValue,
+    preflight: bool,
 ) -> Result<JsValue, JsValue> {
     let channel = web_sys::MessageChannel::new()?;
     let key = Uint8Array::from(&credential.evaluation.key[..]);
@@ -163,6 +222,11 @@ async fn mediate_pair(
 
     let message = Object::new();
     Reflect::set(&message, &"type".into(), &"custody".into())?;
+    Reflect::set(
+        &message,
+        &"preflight".into(),
+        &JsValue::from_bool(preflight),
+    )?;
     // Old pages understand terminal replies only. Negotiate progress rather
     // than letting a newer worker accidentally resolve an older page early.
     let approval = Reflect::get(&request, &"kind".into())
@@ -387,9 +451,7 @@ pub fn install() {
     );
     use_passkey.forget();
 
-    let add_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
-        future_to_promise(add_passkey(input))
-    });
+    let add_passkey = Closure::<dyn FnMut(JsValue) -> Promise>::new(add_passkey);
     let _ = Reflect::set(
         &identity,
         &"addPasskey".into(),
@@ -406,6 +468,100 @@ mod tests {
     use js_sys::Reflect;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    async fn passkey_creation_requires_successful_preflight_and_an_explicit_click() {
+        use std::{cell::Cell, rc::Rc};
+        let creates = Rc::new(Cell::new(0));
+        for error in [
+            "awaiting activation",
+            "wrong holder",
+            "profile changed",
+            "offline",
+            "cancelled",
+        ] {
+            let count = creates.clone();
+            let result = creation_after_preflight(Err(JsValue::from_str(error)), move || {
+                count.set(count.get() + 1);
+                Promise::resolve(&JsValue::UNDEFINED)
+            });
+            assert!(result.is_err());
+            assert_eq!(creates.get(), 0, "{error} must not create a credential");
+        }
+        let count = creates.clone();
+        let prepared = creation_after_preflight(Ok(JsValue::UNDEFINED), move || {
+            count.set(count.get() + 1);
+            Promise::resolve(&JsValue::UNDEFINED)
+        })
+        .unwrap();
+        assert_eq!(
+            creates.get(),
+            0,
+            "preflight must not consume user activation or create"
+        );
+        let create = Reflect::get(&prepared, &"createPasskey".into())
+            .unwrap()
+            .dyn_into::<js_sys::Function>()
+            .unwrap();
+        let promise = create
+            .call0(&JsValue::NULL)
+            .unwrap()
+            .dyn_into::<Promise>()
+            .unwrap();
+        wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+        assert_eq!(creates.get(), 1);
+        let repeated = create
+            .call0(&JsValue::NULL)
+            .unwrap()
+            .dyn_into::<Promise>()
+            .unwrap();
+        assert!(
+            wasm_bindgen_futures::JsFuture::from(repeated)
+                .await
+                .is_err(),
+            "a repeated click cannot mint another passkey"
+        );
+        assert_eq!(creates.get(), 1);
+    }
+
+    #[dialog_common::test]
+    async fn cancelling_prepared_addition_drops_captured_material_immediately() {
+        use std::{cell::Cell, rc::Rc};
+        struct Secret(Rc<Cell<bool>>);
+        impl Drop for Secret {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let dropped = Rc::new(Cell::new(false));
+        let secret = Secret(dropped.clone());
+        let prepared = creation_after_preflight(Ok(JsValue::UNDEFINED), move || {
+            drop(secret);
+            Promise::resolve(&JsValue::UNDEFINED)
+        })
+        .unwrap();
+        assert!(!dropped.get());
+        let cancel = Reflect::get(&prepared, &"cancelPasskey".into())
+            .unwrap()
+            .dyn_into::<js_sys::Function>()
+            .unwrap();
+        cancel.call0(&JsValue::NULL).unwrap();
+        assert!(
+            dropped.get(),
+            "cancel must clear PRF captures without waiting for JS GC"
+        );
+        cancel.call0(&JsValue::NULL).unwrap();
+        let create = Reflect::get(&prepared, &"createPasskey".into())
+            .unwrap()
+            .dyn_into::<js_sys::Function>()
+            .unwrap();
+        let promise = create
+            .call0(&JsValue::NULL)
+            .unwrap()
+            .dyn_into::<Promise>()
+            .unwrap();
+        assert!(wasm_bindgen_futures::JsFuture::from(promise).await.is_err());
+    }
 
     #[dialog_common::test]
     fn it_installs_ceremony_functions_on_window_tonk_identity() {
