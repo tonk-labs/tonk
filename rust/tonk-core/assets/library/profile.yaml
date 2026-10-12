@@ -5234,7 +5234,7 @@ element!: &account-settings
           self.connectionsRender(self.agentConnections);
           const count = group.targets.filter((target) => target.acknowledged).length;
           self.connectionsStatus(count === group.targets.length
-            ? 'Removal confirmed. Enforcement may take time; downloaded data remains.'
+            ? 'Removal confirmed. Requests already in progress may finish; downloaded data remains.'
             : `Removal incomplete: ${count} of ${group.targets.length} permissions. Retry to finish.`);
           const status = self.querySelector('[data-connections-status]');
           if (status) { status.tabIndex = -1; status.focus(); }

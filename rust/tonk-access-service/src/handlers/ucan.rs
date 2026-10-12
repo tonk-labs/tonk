@@ -438,24 +438,27 @@ struct Stages {
 async fn authorize(
     body_bytes: &[u8],
     env: &Env,
-) -> std::result::Result<(dialog_remote_s3::Permit, Stages), PresignFailure> {
+) -> std::result::Result<
+    (
+        dialog_remote_s3::Permit,
+        Stages,
+        Vec<crate::revocation::checker::Check>,
+    ),
+    PresignFailure,
+> {
     let started = Date::now().as_millis();
     let authorizer = create_authorizer(env).map_err(PresignFailure::authorization)?;
 
-    // Revocation is checked inside the chain walk rather than after it,
-    // so every proof is measured against the principals entitled to
-    // revoke that particular link. The index is bound per request: it
-    // wraps a KV handle taken from this request's `Env`, which is not
-    // ours to keep, unlike the deployment config the authorizer caches.
     #[cfg(target_arch = "wasm32")]
-    let authorizer = {
-        use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
-
-        let store = env
-            .kv("REVOCATIONS_KV")
+    let (authorizer, checks) = {
+        use crate::revocation::{checker::RecordingRevocations, index::r2::R2RevocationIndex};
+        let index = R2RevocationIndex::from_env(env)
             .map_err(|_| PresignFailure::authorization(unavailable()))?;
-        authorizer.with_revocations(IndexedRevocations(KvRevocationIndex::new(store)))
+        let (recorder, checks) = RecordingRevocations::new(index);
+        (authorizer.with_revocations(recorder), checks)
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    let checks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
     let authorized_request = authorizer
         .authorize(body_bytes)
@@ -475,6 +478,14 @@ async fn authorize(
             authorized,
             screened,
         },
+        checks
+            .lock()
+            .map_err(|_| {
+                PresignFailure::authorization(Refusal::unclassified(
+                    "revocation recorder unavailable",
+                ))
+            })?
+            .clone(),
     ))
 }
 
@@ -496,22 +507,21 @@ async fn perform(
     ctx: &Context,
 ) -> std::result::Result<Option<(Response, u64)>, PresignFailure> {
     use crate::cached::{Cached, worker::WorkerCache};
-    use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
+    use crate::revocation::{checker::IndexedRevocations, index::r2::R2RevocationIndex};
     use dialog_remote_ucan::{Access, Answer, Content, Payload};
 
     let started = Date::now().as_millis();
     let bucket = env.bucket("BUCKET").map_err(|e| {
         PresignFailure::authorization(Refusal::unclassified(format!("Missing BUCKET: {e}")))
     })?;
-    let revocations = env
-        .kv("REVOCATIONS_KV")
+    let revocations = R2RevocationIndex::from_env(env)
         .map_err(|_| PresignFailure::authorization(unavailable()))?;
     // Content-addressed objects are served from the data center's cache
     // when it holds them, and every one read or written fills it.
     let objects = Cached::new(crate::objects::Objects::new(bucket), WorkerCache::default())
         .with_mode(cache_mode(req));
     let access = Access::with_shared_resolver(objects, shared_resolver())
-        .with_revocations(IndexedRevocations(KvRevocationIndex::new(revocations)));
+        .with_revocations(IndexedRevocations(revocations));
 
     let verified = access.verify(container).await.map_err(|refusal| {
         PresignFailure::authorization(Refusal::Authorization(refusal.reason().clone()))
@@ -664,7 +674,7 @@ async fn presign(
     origin: &str,
     env: &Env,
 ) -> std::result::Result<(Response, u64), PresignFailure> {
-    let (authorized_request, stages) = authorize(body_bytes, env).await?;
+    let (authorized_request, stages, revocations) = authorize(body_bytes, env).await?;
     let started = stages.started;
     let authorized = stages.authorized;
     let screened = stages.screened;
@@ -684,7 +694,10 @@ async fn presign(
     // service's own `/object/` path.
     let expires = Date::now().as_millis() / 1_000 + PERMIT_TTL;
     let permit = Claims::lift(&authorized_request, authorizer_address(), expires)
-        .and_then(|claims| permit_key.issue(origin, &claims))
+        .and_then(|mut claims| {
+            claims.revocations = Some(revocations);
+            permit_key.issue(origin, &claims)
+        })
         .map_err(Refusal::unclassified)
         .map_err(PresignFailure::authorization)?;
 

@@ -59,6 +59,70 @@ where
     }
 }
 
+/// A signed dependency of an object permit. Candidate principals come from
+/// the verifier's per-link walk, never from a flat set of all chain issuers.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Check {
+    pub target: String,
+    pub by: BTreeSet<String>,
+}
+
+/// Capture exactly the revocation questions asked while authorizing a permit.
+/// Each authorization gets its own recorder, including concurrent requests.
+pub struct RecordingRevocations<I> {
+    index: I,
+    checks: std::sync::Arc<std::sync::Mutex<Vec<Check>>>,
+}
+
+impl<I> RecordingRevocations<I> {
+    pub fn new(index: I) -> (Self, std::sync::Arc<std::sync::Mutex<Vec<Check>>>) {
+        let checks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            Self {
+                index,
+                checks: checks.clone(),
+            },
+            checks,
+        )
+    }
+}
+
+impl<I: RevocationIndex + dialog_common::ConditionalSync> RevocationChecker
+    for RecordingRevocations<I>
+{
+    type Error = IndexError;
+
+    async fn query(
+        &self,
+        selector: RevocationSelector<'_>,
+    ) -> Result<Option<RevocationMatch>, Self::Error> {
+        let check = Check {
+            target: selector.delegation.to_string(),
+            by: selector.by.iter().map(ToString::to_string).collect(),
+        };
+        let result = IndexedRevocations(&self.index).query(selector).await?;
+        self.checks
+            .lock()
+            .map_err(|_| IndexError("revocation recorder lock poisoned".into()))?
+            .push(check);
+        Ok(result)
+    }
+}
+
+/// Recheck the signed dependencies at object admission. Index errors fail
+/// closed and remain infrastructure errors rather than false revocation facts.
+pub async fn revoked<I: RevocationIndex + dialog_common::ConditionalSync>(
+    index: &I,
+    checks: &[Check],
+) -> Result<bool, IndexError> {
+    for check in checks {
+        if index.revoked_by_any(&check.target, &check.by).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;

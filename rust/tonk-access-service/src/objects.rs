@@ -56,6 +56,7 @@ fn claims(method: Method, key: String, body: Option<&[u8]>, precondition: Precon
         expires: 0,
         sha256: body.map(|body| Sha256::digest(body).to_vec()),
         precondition,
+        revocations: None,
     }
 }
 

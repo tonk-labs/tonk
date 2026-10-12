@@ -38,6 +38,7 @@ fn claims(method: Method, key: &str) -> Claims {
         expires: now() + PERMIT_TTL,
         sha256: None,
         precondition: Precondition::None,
+        revocations: Some(Vec::new()),
     }
 }
 
@@ -261,4 +262,34 @@ async fn it_refuses_a_permit_beyond_what_it_names(env: AccessServiceAddress) {
 
     let read = present(issue(&env, &claims(Method::Get, &theirs)), None).await;
     assert_eq!(read.bytes().await.unwrap().as_ref(), b"their bytes");
+}
+
+#[dialog_common::test]
+async fn legacy_permits_are_refused_before_read_write_or_delete(env: AccessServiceAddress) {
+    let key = object("legacy");
+    let body = b"retained bytes".to_vec();
+    assert!(
+        present(issue(&env, &write(&key, &body)), Some(body.clone()))
+            .await
+            .status()
+            .is_success()
+    );
+    for method in [Method::Get, Method::Put, Method::Delete] {
+        let old = Claims {
+            revocations: None,
+            ..claims(method, &key)
+        };
+        let response = present(
+            issue(&env, &old),
+            (method == Method::Put).then(|| b"replacement".to_vec()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap()["kind"],
+            "ReauthorizationRequired"
+        );
+    }
+    let read = present(issue(&env, &claims(Method::Get, &key)), None).await;
+    assert_eq!(read.bytes().await.unwrap().as_ref(), body.as_slice());
 }

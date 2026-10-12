@@ -212,14 +212,12 @@ async fn handle_inner(
         .and_then(|value| value.to_string().parse().ok())
         .unwrap_or(DEFAULT_EMAIL_TOKEN_TTL);
 
-    // Bound per request, like the presign path's: the index wraps a KV
-    // handle taken from this request's `Env`, which is not ours to keep.
+    // Bound per request, like the presign path's: R2 is authoritative and
+    // KV preserves legacy facts. Neither handle belongs in isolate state.
     let revocations = {
-        use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
-        let kv = env
-            .kv("REVOCATIONS_KV")
-            .map_err(|err| internal(format!("REVOCATIONS_KV: {err}")))?;
-        IndexedRevocations(KvRevocationIndex::new(kv))
+        use crate::revocation::{checker::IndexedRevocations, index::r2::R2RevocationIndex};
+        let index = R2RevocationIndex::from_env(env).map_err(|err| internal(err.to_string()))?;
+        IndexedRevocations(index)
     };
 
     // The same authorizer the presign path runs. Enrollment redeems the

@@ -78,7 +78,7 @@ struct RegistrationState {
     origin: String,
     purger: crate::deletion::NativeSpacePurger,
     /// Revocations recorded by `/ucan/revoke`. In memory, as the
-    /// worker's KV namespace is. Shared with the authorizer, which
+    /// worker's authoritative R2 index is durable. Shared with the authorizer, which
     /// reads it back while verifying every presented chain.
     revocations: Arc<crate::revocation::index::MemoryRevocationIndex>,
     /// Redeems the enrollment's recovery invocation for a presigned
@@ -925,7 +925,9 @@ async fn handle_request(
     }
 
     // Authorize the UCAN container using UcanAuthorizer
-    let authorizer = authorizer.read().await;
+    let (recorder, checks) =
+        crate::revocation::checker::RecordingRevocations::new(registration.revocations.clone());
+    let authorizer = authorizer.read().await.clone().with_revocations(recorder);
     let outcome = authorizer.authorize(&body_bytes).await;
     // Test visibility: one line per permit request, so a CI job log
     // shows whether a publish or resolve ever arrived and how it fared
@@ -1066,7 +1068,13 @@ async fn handle_request(
                 &registration.objects.address,
                 unix_now() + PERMIT_TTL,
             )
-            .and_then(|claims| {
+            .and_then(|mut claims| {
+                claims.revocations = Some(
+                    checks
+                        .lock()
+                        .map_err(|_| "revocation recorder lock poisoned".to_string())?
+                        .clone(),
+                );
                 registration
                     .permit_key
                     .issue(&registration.endpoint, &claims)
@@ -1469,6 +1477,12 @@ async fn serve_object(
             );
         }
     };
+
+    match claims.check_revocations(&registration.revocations).await {
+        Ok(Ok(())) => {}
+        Ok(Err(refusal)) => return json(StatusCode::from_u16(refusal.status()).unwrap(), refusal),
+        Err(error) => return unavailable(error.to_string()),
+    }
 
     let range = req
         .headers()

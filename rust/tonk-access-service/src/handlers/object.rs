@@ -215,6 +215,15 @@ async fn perform(
         .map_err(|error| Failure::Unavailable(format!("request url: {error}")))?;
     let now = started / 1_000;
     let claims = key.verify(method, url.path(), url.query(), now)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let index = crate::revocation::index::r2::R2RevocationIndex::from_env(&ctx.env)
+            .map_err(|error| Failure::Unavailable(error.to_string()))?;
+        claims
+            .check_revocations(&index)
+            .await
+            .map_err(|error| Failure::Unavailable(error.to_string()))??;
+    }
     let verified = Date::now().as_millis();
 
     let bucket = ctx

@@ -1,4 +1,4 @@
-// Execute the production Wasm worker against disposable Miniflare D1 and KV.
+// Execute the production Wasm worker against disposable Miniflare D1, KV, and R2.
 // Local persistence evidence only: Miniflare does not model global KV caching.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -18,6 +18,7 @@ async function main() {
     ],
     compatibilityDate: '2026-01-01', compatibilityFlags: ['nodejs_compat'],
     kvNamespaces: ['REVOCATIONS_KV'],
+    r2Buckets: ['BUCKET'],
     d1Databases: ['CONTROL'],
     bindings: {
       R2_ACCOUNT_ID: 'local-fixture', R2_BUCKET_NAME: 'connections',
@@ -48,7 +49,7 @@ async function main() {
       .bind(fixture.subject, fixture.subject).run();
     for (const invocation of fixture.invocations) await post(invocation, 200);
     await post(fixture.sibling, 200);
-    // This hits the actual authenticated revoke handler and KvRevocationIndex.
+    // This hits the actual authenticated revoke handler and the R2/KV mirrored index.
     const receipt = JSON.parse(Buffer.from(await post(fixture.revocation, 200)).toString());
     assert.equal(receipt.recorded, true);
     assert.deepEqual(receipt.revoked, fixture.targetBytes);
@@ -61,14 +62,17 @@ async function main() {
     const kv = await worker.getKVNamespace('REVOCATIONS_KV');
     const key = `revoked/${fixture.target}/${fixture.revoker}`;
     assert.equal(await kv.get(key), '', 'empty values must remain present revocations');
+    const strongKey = `__tonk/revocations/${fixture.target}/${fixture.revoker}`;
+    assert.ok(await (await worker.getR2Bucket('BUCKET')).head(strongKey), 'R2 fact must precede acknowledgement');
     await worker.dispose();
     worker = new Miniflare(options);
     for (const invocation of fixture.invocations) await post(invocation, 403);
     await post(fixture.sibling, 200);
     assert.equal(await (await worker.getKVNamespace('REVOCATIONS_KV')).get(key), '');
+    assert.ok(await (await worker.getR2Bucket('BUCKET')).head(strongKey), 'R2 revocation must survive restart');
     const replay = JSON.parse(Buffer.from(await post(fixture.revocation, 200)).toString());
     assert.equal(replay.recorded, false, 'restart must not forget a recorded revocation');
-    console.log('connection worker: standard revocation enforced before and after persisted KV/D1 restart; sibling preserved');
+    console.log('connection worker: standard revocation enforced before and after persisted R2/KV/D1 restart; sibling preserved');
   } finally { await worker.dispose(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

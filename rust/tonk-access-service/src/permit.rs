@@ -13,8 +13,8 @@
 //! signed by the service. Whoever presents the URL gets exactly the
 //! operation the chain walk admitted: the method, the key, a checksum a
 //! write must match, a precondition a write or delete must satisfy, and
-//! an expiry. Nothing about the request is read from anywhere else, so
-//! holding a permit for one object is worth nothing against another,
+//! an expiry. Signed per-link revocation dependencies are checked again
+//! at redemption. Holding a permit for one object is worth nothing against another,
 //! and a permit for a read is worth nothing as a write.
 //!
 //! The signature is an HMAC under a key derived from the service seed.
@@ -44,6 +44,13 @@ pub const PATH_PREFIX: &str = "/object/";
 /// presign carried; the client reuses a read permit for five minutes
 /// of it, well clear of the edge.
 pub const PERMIT_TTL: u64 = 3600;
+
+/// Workers rejects request URLs above 16 KiB. Never issue an unusable URL.
+pub const MAX_PERMIT_URL_BYTES: usize = 16 * 1024;
+
+fn reserved(key: &str) -> bool {
+    key.starts_with("__tonk/")
+}
 
 /// The query parameter carrying the encoded [`Claims`].
 const PERMIT_PARAM: &str = "permit";
@@ -93,6 +100,9 @@ impl PermitKey {
     /// origin as the client reached it, so the bytes come from the same
     /// place the authorization did.
     pub fn issue(&self, origin: &str, claims: &Claims) -> Result<Permit, String> {
+        if reserved(&claims.key) {
+            return Err("object permits cannot address the service namespace".into());
+        }
         let encoded = serde_ipld_dagcbor::to_vec(claims)
             .map_err(|err| format!("permit claims did not encode: {err}"))?;
         let mut mac = self.mac();
@@ -112,6 +122,11 @@ impl PermitKey {
             .append_pair(PERMIT_PARAM, &URL_SAFE_NO_PAD.encode(&encoded))
             .append_pair(SIGNATURE_PARAM, &URL_SAFE_NO_PAD.encode(signature));
 
+        if url.as_str().len() > MAX_PERMIT_URL_BYTES {
+            return Err(
+                "object permit exceeds the 16 KiB URL limit; use direct UCAN access".into(),
+            );
+        }
         Ok(Permit {
             url,
             method: claims.method.as_str().to_string(),
@@ -145,6 +160,11 @@ impl PermitKey {
             serde_ipld_dagcbor::from_slice(&encoded).map_err(|err| PermitRefusal::Malformed {
                 detail: format!("permit claims did not decode: {err}"),
             })?;
+        if reserved(&claims.key) {
+            return Err(PermitRefusal::Mismatch {
+                detail: "service namespace is not an object capability".into(),
+            });
+        }
         if now >= claims.expires {
             return Err(PermitRefusal::Expired {
                 expires: claims.expires,
@@ -275,9 +295,30 @@ pub struct Claims {
     pub sha256: Option<Vec<u8>>,
     /// The condition a write or delete must satisfy.
     pub precondition: Precondition,
+    /// Per-link revocation dependencies captured during authorization.
+    /// Absent on legacy permits, which must be reauthorized, not trusted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocations: Option<Vec<crate::revocation::checker::Check>>,
 }
 
 impl Claims {
+    /// Check current authority after verifying the signature and before any
+    /// object I/O. Legacy URLs receive 401 so existing clients redeem again.
+    pub async fn check_revocations<
+        I: crate::revocation::index::RevocationIndex + dialog_common::ConditionalSync,
+    >(
+        &self,
+        index: &I,
+    ) -> Result<Result<(), PermitRefusal>, crate::revocation::index::IndexError> {
+        let Some(checks) = &self.revocations else {
+            return Ok(Err(PermitRefusal::ReauthorizationRequired));
+        };
+        if crate::revocation::checker::revoked(index, checks).await? {
+            return Ok(Err(PermitRefusal::Revoked));
+        }
+        Ok(Ok(()))
+    }
+
     /// Lift the claims out of the request the authorizer described.
     ///
     /// The authorizer answers a verified invocation with a permit
@@ -301,6 +342,9 @@ impl Claims {
         .ok_or_else(|| format!("the authorized path `{path}` is not an object in the bucket"))?
         .to_string();
 
+        if reserved(&key) {
+            return Err("object permits cannot address the service namespace".into());
+        }
         let mut sha256 = None;
         let mut precondition = Precondition::None;
         for (name, value) in &permit.headers {
@@ -331,6 +375,7 @@ impl Claims {
             expires,
             sha256,
             precondition,
+            revocations: None,
         })
     }
 }
@@ -348,6 +393,10 @@ pub enum PermitRefusal {
     Malformed { detail: String },
     /// The signature is not this service's.
     InvalidSignature,
+    /// This legacy permit lacks the dependencies needed for online checks.
+    ReauthorizationRequired,
+    /// A grant this permit depends on was withdrawn.
+    Revoked,
     /// The permit has lapsed.
     Expired { expires: u64, at: u64 },
     /// The request is not the one the permit was issued for.
@@ -359,7 +408,8 @@ impl PermitRefusal {
     pub fn status(&self) -> u16 {
         match self {
             Self::Malformed { .. } => 400,
-            Self::InvalidSignature | Self::Expired { .. } => 401,
+            Self::InvalidSignature | Self::Expired { .. } | Self::ReauthorizationRequired => 401,
+            Self::Revoked => 403,
             Self::Mismatch { .. } => 403,
         }
     }
@@ -368,6 +418,10 @@ impl PermitRefusal {
 impl std::fmt::Display for PermitRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ReauthorizationRequired => {
+                f.write_str("redeem the invocation for a revocation-aware permit")
+            }
+            Self::Revoked => f.write_str("the permit authority was revoked"),
             Self::Malformed { detail } => write!(f, "malformed permit: {detail}"),
             Self::InvalidSignature => f.write_str("the permit is not signed by this service"),
             Self::Expired { expires, at } => {
@@ -396,7 +450,153 @@ mod tests {
             expires: 1_000,
             sha256: None,
             precondition: Precondition::None,
+            revocations: Some(Vec::new()),
         }
+    }
+
+    #[dialog_common::test]
+    fn reserved_namespace_and_oversized_permits_are_never_issued() {
+        let service = Claims {
+            key: "__tonk/revocations/grant/owner".into(),
+            ..claims()
+        };
+        assert!(key().issue(ORIGIN, &service).is_err());
+        let descriptor = Permit {
+            url: "https://spaces.s3.example/__tonk/revocations/grant/owner"
+                .parse()
+                .unwrap(),
+            method: "PUT".into(),
+            headers: vec![],
+        };
+        assert!(Claims::lift(&descriptor, &address(false), 77).is_err());
+        let huge = Claims {
+            revocations: Some(vec![crate::revocation::checker::Check {
+                target: "x".repeat(MAX_PERMIT_URL_BYTES),
+                by: Default::default(),
+            }]),
+            ..claims()
+        };
+        assert!(key().issue(ORIGIN, &huge).is_err());
+    }
+
+    #[dialog_common::test]
+    fn representative_chain_permits_fit_and_deep_chains_fail_explicitly() {
+        use crate::revocation::checker::Check;
+        let checks = |depth: usize| {
+            (0..depth)
+                .map(|n| Check {
+                    target: format!("bafyre{:054}", n),
+                    by: (0..=n + 1).map(|i| format!("did:key:z{:048}", i)).collect(),
+                })
+                .collect()
+        };
+        for depth in [2, 3, 8] {
+            let claims = Claims {
+                revocations: Some(checks(depth)),
+                ..claims()
+            };
+            let permit = key().issue(ORIGIN, &claims).unwrap();
+            println!(
+                "{depth}-link synthetic permit URL bytes: {}",
+                permit.url.as_str().len()
+            );
+            assert!(permit.url.as_str().len() <= MAX_PERMIT_URL_BYTES);
+        }
+        let deep = Claims {
+            revocations: Some(checks(32)),
+            ..claims()
+        };
+        assert!(
+            key()
+                .issue(ORIGIN, &deep)
+                .unwrap_err()
+                .contains("URL limit")
+        );
+    }
+
+    #[dialog_common::test]
+    async fn legacy_permits_require_reauthorization_for_every_method() {
+        let index = crate::revocation::index::MemoryRevocationIndex::default();
+        for method in [Method::Get, Method::Put, Method::Delete] {
+            let old = Claims {
+                method,
+                revocations: None,
+                ..claims()
+            };
+            let permit = key().issue(ORIGIN, &old).unwrap();
+            let verified = present(&key(), &permit, 0).unwrap();
+            assert_eq!(
+                verified.check_revocations(&index).await.unwrap(),
+                Err(PermitRefusal::ReauthorizationRequired)
+            );
+            assert_eq!(PermitRefusal::ReauthorizationRequired.status(), 401);
+        }
+    }
+
+    #[dialog_common::test]
+    async fn permits_recheck_each_scoped_dependency_including_unchecksummed_writes() {
+        use crate::revocation::{
+            checker::Check,
+            index::{MemoryRevocationIndex, RevocationIndex},
+        };
+        use std::collections::BTreeSet;
+        let index = MemoryRevocationIndex::default();
+        let checks = vec![
+            Check {
+                target: "ancestor".into(),
+                by: BTreeSet::from(["owner".into()]),
+            },
+            Check {
+                target: "leaf".into(),
+                by: BTreeSet::from(["owner".into(), "holder".into()]),
+            },
+        ];
+        let permit = Claims {
+            method: Method::Put,
+            sha256: None,
+            revocations: Some(checks),
+            ..claims()
+        };
+        assert_eq!(permit.check_revocations(&index).await.unwrap(), Ok(()));
+        index.record("ancestor", "holder").await.unwrap();
+        index.record("unrelated", "owner").await.unwrap();
+        assert_eq!(
+            permit.check_revocations(&index).await.unwrap(),
+            Ok(()),
+            "unrelated facts must not withdraw authority"
+        );
+        index.record("ancestor", "owner").await.unwrap();
+        assert_eq!(
+            permit.check_revocations(&index).await.unwrap(),
+            Err(PermitRefusal::Revoked)
+        );
+    }
+
+    #[dialog_common::test]
+    async fn index_unavailability_never_authorizes_a_permit() {
+        use crate::revocation::{
+            checker::Check,
+            index::{IndexError, RevocationIndex},
+        };
+        use std::collections::BTreeSet;
+        struct Broken;
+        #[async_trait::async_trait]
+        impl RevocationIndex for Broken {
+            async fn record(&self, _: &str, _: &str) -> Result<bool, IndexError> {
+                unreachable!()
+            }
+            async fn subjects(&self, _: &str) -> Result<BTreeSet<String>, IndexError> {
+                Err(IndexError("unavailable".into()))
+            }
+        }
+        let permit = Claims {
+            revocations: Some(vec![Check {
+                target: "grant".into(),
+                by: BTreeSet::from(["owner".into()]),
+            }]),
+            ..claims()
+        };
+        assert!(permit.check_revocations(&Broken).await.is_err());
     }
 
     /// Present `permit` back to `key` the way the handler does: the
@@ -572,6 +772,7 @@ mod tests {
                 expires: 77,
                 sha256: None,
                 precondition: Precondition::None,
+                revocations: None,
             }
         );
     }

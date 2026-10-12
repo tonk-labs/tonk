@@ -29,6 +29,9 @@
 
 #[cfg(target_arch = "wasm32")]
 pub mod kv;
+pub mod mirrored;
+#[cfg(target_arch = "wasm32")]
+pub mod r2;
 
 use std::collections::BTreeSet;
 

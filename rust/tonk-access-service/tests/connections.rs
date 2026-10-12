@@ -102,7 +102,10 @@ fn command(operation: &str, resource: &str) -> Vec<String> {
         .collect()
 }
 fn arguments(resource: &str) -> BTreeMap<String, Promised> {
-    let checksum = dialog_common::Hasher::Sha256.checksum(CONTENT);
+    arguments_for(resource, CONTENT)
+}
+fn arguments_for(resource: &str, content: &[u8]) -> BTreeMap<String, Promised> {
+    let checksum = dialog_common::Hasher::Sha256.checksum(content);
     let checksum =
         serde_ipld_dagcbor::from_slice(&serde_ipld_dagcbor::to_vec(&checksum).unwrap()).unwrap();
     let mut args = BTreeMap::from([("checksum".into(), checksum)]);
@@ -115,12 +118,12 @@ fn arguments(resource: &str) -> BTreeMap<String, Promised> {
         "archive/block" | "archive/blob" => {
             args.insert(
                 "digest".into(),
-                Promised::Bytes(blake3::hash(CONTENT).as_bytes().to_vec()),
+                Promised::Bytes(blake3::hash(content).as_bytes().to_vec()),
             );
             if resource == "archive/block" {
                 args.insert("catalog".into(), Promised::String("index".into()));
             } else {
-                args.insert("size".into(), Promised::Integer(CONTENT.len() as i128));
+                args.insert("size".into(), Promised::Integer(content.len() as i128));
                 args.insert("chunks".into(), Promised::List(vec![]));
                 args.insert("range".into(), Promised::Null);
             }
@@ -333,6 +336,9 @@ async fn connection_standard_revocation_denies_bearer_copies_and_rotated_descend
                 .await?,
         )
         .await?;
+    let pending_write = fixture
+        .permit(make(write.clone(), first.clone()).await)
+        .await?;
     let holders = [
         (&read, &first),
         (&read, &second),
@@ -375,7 +381,10 @@ async fn connection_standard_revocation_denies_bearer_copies_and_rotated_descend
             chain.proof_cids().last().unwrap(),
         )
         .await?;
-        fixture.post(revocation).await?.error_for_status()?;
+        fixture.post(revocation.clone()).await?.error_for_status()?;
+        let replay = fixture.post(revocation).await?.error_for_status()?;
+        let receipt: tonk_account::customer::RevokeReceipt = replay.json().await?;
+        assert!(!receipt.recorded, "repeated removal remains idempotent");
     }
     // The HTTP acknowledgement is our barrier; no fixture state or sleep.
     for (chain, holder) in holders
@@ -405,8 +414,21 @@ async fn connection_standard_revocation_denies_bearer_copies_and_rotated_descend
             CONTENT
         );
     }
-    // Acknowledged revocation stops new permits, not an already issued URL.
-    assert_eq!(fixture.transfer(&issued[0]).await?, CONTENT);
+    // All preissued read permits, including copied bearers and descendants,
+    // and the matching-body write permit lose authority at object admission.
+    issued.push(pending_write);
+    for permit in issued {
+        let mut request = fixture.client.request(permit.method.parse()?, permit.url);
+        if permit.method == "PUT" {
+            request = request.body(CONTENT);
+        }
+        let response = request.send().await?;
+        assert_eq!(response.status().as_u16(), 403);
+        assert_eq!(
+            response.json::<serde_json::Value>().await?["kind"],
+            "Revoked"
+        );
+    }
     Ok(())
 }
 
@@ -802,5 +824,145 @@ async fn connection_member_issuer_and_same_account_device_revoke_six_leaves() ->
     )
     .await?;
     fixture.post(own).await?.error_for_status()?;
+    Ok(())
+}
+
+/// Exercise the six independently revocable read/write leaves, including a
+/// mutable branch head, a new body/digest, direct UCAN and permit fallback.
+#[tokio::test]
+async fn removal_denies_stale_and_fresh_writes_without_revoking_other_leaves() -> anyhow::Result<()>
+{
+    let fixture = Fixture::new().await?;
+    let owner = Ed25519Signer::generate().await?;
+    let agent = Ed25519Signer::generate().await?;
+    fixture.env.provision_subject(owner.did().as_str()).await?;
+    for resource in ["archive/block", "archive/blob", "memory/cell"] {
+        let write = grant(&owner, &agent, "put", resource, expiry()).await;
+        let read = grant(&owner, &agent, "get", resource, expiry()).await;
+        let make = |chain: DelegationChain, body: &'static [u8]| {
+            let owner = owner.did();
+            let agent = agent.clone();
+            let service = fixture.env.service_did.clone();
+            async move {
+                let cmd = chain.proofs().last().unwrap().command().0.clone();
+                request(
+                    &chain,
+                    &agent,
+                    &service,
+                    &owner,
+                    cmd,
+                    arguments_for(resource, body),
+                )
+                .await
+            }
+        };
+        let put = fixture.permit(make(write.clone(), CONTENT).await).await?;
+        fixture.transfer(&put).await?;
+        let get = fixture.permit(make(read.clone(), CONTENT).await).await?;
+        assert_eq!(fixture.transfer(&get).await?, CONTENT);
+        let revoked = tonk_identity::revocation::mint_root_revocation(
+            owner.clone(),
+            &write,
+            write.proof_cids().last().unwrap(),
+        )
+        .await?;
+        fixture.post(revoked).await?.error_for_status()?;
+        assert_eq!(
+            fixture
+                .client
+                .put(put.url)
+                .body(CONTENT)
+                .send()
+                .await?
+                .status()
+                .as_u16(),
+            403
+        );
+        assert_eq!(
+            fixture.transfer(&get).await?,
+            CONTENT,
+            "partial removal does not revoke the read leaf"
+        );
+        let new = make(write.clone(), b"brand-new post-removal content").await;
+        assert_eq!(fixture.post(new.clone()).await?.status().as_u16(), 403);
+        let credential =
+            dialog_remote_ucan::credential(dialog_ucan_core::Container::from_bytes(&new)?)?;
+        let direct = fixture
+            .client
+            .post(fixture.env.ucan_endpoint())
+            .header("Authorization", credential)
+            .body("brand-new post-removal content")
+            .send()
+            .await?;
+        assert_eq!(direct.status().as_u16(), 403);
+        assert_eq!(
+            fixture.transfer(&get).await?,
+            CONTENT,
+            "denied writes leave the object unchanged"
+        );
+        let revoked = tonk_identity::revocation::mint_root_revocation(
+            owner.clone(),
+            &read,
+            read.proof_cids().last().unwrap(),
+        )
+        .await?;
+        fixture.post(revoked).await?.error_for_status()?;
+        assert_eq!(
+            fixture.client.get(get.url).send().await?.status().as_u16(),
+            403
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unreferenced_alternative_proofs_do_not_become_permit_dependencies() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await?;
+    let owner = Ed25519Signer::generate().await?;
+    let agent = Ed25519Signer::generate().await?;
+    fixture.env.provision_subject(owner.did().as_str()).await?;
+    let used = grant(&owner, &agent, "put", "archive/block", expiry()).await;
+    let unused = grant(&owner, &agent, "get", "memory/cell", expiry()).await;
+    let invocation = request(
+        &used,
+        &agent,
+        &fixture.env.service_did,
+        &owner.did(),
+        command("put", "archive/block"),
+        arguments("archive/block"),
+    )
+    .await;
+    let mut tokens = dialog_ucan_core::Container::from_bytes(&invocation)?.into_tokens();
+    for (_, proof) in unused.export() {
+        tokens.push(serde_ipld_dagcbor::to_vec(proof.as_ref())?);
+    }
+    let container = dialog_ucan_core::Container::new(tokens).to_bytes()?;
+    let permit = fixture.permit(container.clone()).await?;
+    let key = tonk_access_service::permit::PermitKey::derive(&fixture.env.service_seed).unwrap();
+    let claims = key
+        .verify(
+            tonk_access_service::permit::Method::Put,
+            permit.url.path(),
+            permit.url.query(),
+            Timestamp::now().to_unix(),
+        )
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let dependencies = claims.revocations.unwrap();
+    assert_eq!(dependencies.len(), used.proof_cids().len());
+    assert!(dependencies.iter().all(|check| {
+        used.proof_cids()
+            .iter()
+            .any(|cid| cid.to_string() == check.target)
+    }));
+    println!("two-link permit URL bytes: {}", permit.url.as_str().len());
+    let revocation = tonk_identity::revocation::mint_root_revocation(
+        owner,
+        &unused,
+        unused.proof_cids().last().unwrap(),
+    )
+    .await?;
+    fixture.post(revocation).await?.error_for_status()?;
+    fixture.transfer(&permit).await?;
+    fixture.transfer(&fixture.permit(container).await?).await?;
     Ok(())
 }
