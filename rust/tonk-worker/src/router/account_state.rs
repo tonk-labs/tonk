@@ -570,7 +570,13 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
         }
         Err(error) => return Err(TonkWorkerError::Internal(error.to_string())),
     }
-    Ok(())
+    // First contact can adopt the remote tree, including an obsolete grant
+    // for this device that persist_root already removed locally. Restore the
+    // canonical local grant before marking this base trusted or using it to
+    // authorize convergence and publication. This also covers a lost genesis
+    // race, where the winning account becomes our first trusted base.
+    let root = super::identity::local_root(tonk).await?;
+    super::identity::reconcile_root_delegation(tonk, &root.delegation).await
 }
 
 /// Reconcile profile main against the account upstream: pull, project,
@@ -2376,6 +2382,137 @@ pub(crate) mod tests {
             adopt_account_access(&state).await,
             "the second account's authority is adopted on {landing}",
         );
+    }
+
+    /// A remote account may still contain a revoked grant for this device.
+    /// Hydration must preserve the replacement selected by persist_root, and
+    /// the device must read and publish through the real service without a restart.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_keeps_the_current_device_grant_after_account_hydration() {
+        for already_hydrated in [false, true] {
+            let (home, service, root, remote) = ready_account_state(None).await;
+            let (_, swept) = ensure_account_state_swept(&home).await;
+            swept.unwrap();
+            let device = device_on(&root, &remote, None).await;
+            let old = super::super::identity::local_root(&device)
+                .await
+                .unwrap()
+                .delegation;
+            crate::onboarding::describe_device_link(&home, &old, "diagnostic device".into())
+                .await
+                .unwrap();
+            push_account_main(&home).await.unwrap();
+            if already_hydrated {
+                let (_, swept) = ensure_account_state_swept(&device).await;
+                swept.unwrap();
+            }
+            let artifact = tonk_identity::revocation::mint_root_revocation(
+                root.clone(),
+                &old,
+                &old.proof_cids()[0],
+            )
+            .await
+            .unwrap();
+            let response = reqwest::Client::new()
+                .post(service.address.ucan_endpoint())
+                .header(reqwest::header::CONTENT_TYPE, "application/cbor")
+                .body(artifact)
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+            link_device(&device, &root, &remote, None).await;
+            let current = super::super::identity::local_root(&device)
+                .await
+                .unwrap()
+                .delegation;
+            assert_ne!(old.proof_cids(), current.proof_cids());
+            let before = device
+                .reactor
+                .profile_repository()
+                .branch(&device.active_branch)
+                .acquire(&device.operator)
+                .await
+                .unwrap();
+            let held = before
+                .handle()
+                .delegations()
+                .issued_to(device.profile.did())
+                .perform(&device.operator)
+                .await
+                .unwrap();
+            assert!(
+                !held
+                    .iter()
+                    .any(|grant| grant.0.proof_cids() == old.proof_cids()),
+                "root installation must remove the old grant before hydration"
+            );
+            drop(before);
+            // The approving browser retains both grants: its cleanup only
+            // reconciles its OWN canonical device grant.
+            crate::onboarding::describe_device_link(&home, &current, "diagnostic device".into())
+                .await
+                .unwrap();
+            let (_, swept) = ensure_account_state_swept(&home).await;
+            swept.unwrap();
+            let (_, swept) = ensure_account_state_swept(&device).await;
+            swept.unwrap();
+            let branch = device
+                .reactor
+                .profile_repository()
+                .branch(&device.active_branch)
+                .acquire(&device.operator)
+                .await
+                .unwrap();
+            let held = branch
+                .handle()
+                .delegations()
+                .issued_to(device.profile.did())
+                .perform(&device.operator)
+                .await
+                .unwrap();
+            assert!(
+                held.iter()
+                    .any(|grant| grant.0.proof_cids() == current.proof_cids())
+            );
+            assert!(
+                !held
+                    .iter()
+                    .any(|grant| grant.0.proof_cids() == old.proof_cids()),
+                "hydration restored the revoked grant (already_hydrated={already_hydrated})"
+            );
+            drop(branch);
+
+            // Exercise both directions through the access service with the
+            // refreshed prover, without restarting or repairing the device.
+            rename_display_name(&device, "Published with the replacement grant")
+                .await
+                .unwrap();
+            push_account_main(&device).await.unwrap();
+            let (_, swept) = ensure_account_state_swept(&home).await;
+            swept.unwrap();
+            assert_eq!(
+                super::super::account_devices::account_display_name(&home)
+                    .await
+                    .as_deref(),
+                Some("Published with the replacement grant")
+            );
+            rename_display_name(&home, "Read with the replacement grant")
+                .await
+                .unwrap();
+            push_account_main(&home).await.unwrap();
+            let (_, swept) = ensure_account_state_swept(&device).await;
+            swept.unwrap();
+            assert_eq!(
+                super::super::account_devices::account_display_name(&device)
+                    .await
+                    .as_deref(),
+                Some("Read with the replacement grant")
+            );
+            service.stop().await.unwrap();
+        }
     }
 
     /// A device that signs out and back in keeps pulling its account.
