@@ -35,6 +35,24 @@ async function main() {
     assert.equal(response.status, status, `HTTP ${response.status}: ${Buffer.from(body).toString()}`);
     return body;
   }
+  async function redeem(permit, status) {
+    const headers = new Headers(permit.headers);
+    if (permit.method === 'PUT') headers.set('Content-Length', '7');
+    const response = await worker.dispatchFetch(permit.url, {
+      method: permit.method, headers,
+      ...(permit.method === 'PUT' ? { body: 'changed' } : {}),
+    });
+    const body = await response.text();
+    assert.equal(response.status, status, `${permit.method}: HTTP ${response.status}: ${body}`);
+    return body;
+  }
+  async function checkRevokedPermits() {
+    for (const permit of fixture.objectPermits) await redeem(permit, 403);
+    assert.equal(await redeem(fixture.siblingPermit, 200), 'original');
+    const bucket = await worker.getR2Bucket('BUCKET');
+    assert.equal(await (await bucket.get(fixture.objectKey)).text(), 'original',
+      'rejected PUT/DELETE must not alter the object');
+  }
   try {
     const db = await worker.getD1Database('CONTROL');
     const migrations = path.join(root, 'rust/tonk-access-service/migrations');
@@ -49,6 +67,14 @@ async function main() {
       .bind(fixture.subject, fixture.subject).run();
     for (const invocation of fixture.invocations) await post(invocation, 200);
     await post(fixture.sibling, 200);
+    const bucket = await worker.getR2Bucket('BUCKET');
+    for (const permit of fixture.objectPermits) {
+      await bucket.put(fixture.objectKey, 'original');
+      await redeem(permit, permit.method === 'DELETE' ? 204 : 200);
+    }
+    await bucket.put(fixture.objectKey, 'original');
+    for (const permit of fixture.legacyPermits) await redeem(permit, 401);
+    assert.equal(await redeem(fixture.siblingPermit, 200), 'original');
     // This hits the actual authenticated revoke handler and the R2/KV mirrored index.
     const receipt = JSON.parse(Buffer.from(await post(fixture.revocation, 200)).toString());
     assert.equal(receipt.recorded, true);
@@ -68,6 +94,7 @@ async function main() {
     // Worker must still reject from R2, not merely observe Miniflare's fresh KV.
     await kv.delete(key);
     for (const invocation of fixture.invocations) await post(invocation, 403);
+    await checkRevokedPermits();
     await post(fixture.sibling, 200);
     await kv.put(key, '');
     await worker.dispose();
@@ -76,6 +103,7 @@ async function main() {
     await post(fixture.sibling, 200);
     assert.equal(await (await worker.getKVNamespace('REVOCATIONS_KV')).get(key), '');
     assert.ok(await (await worker.getR2Bucket('BUCKET')).head(strongKey), 'R2 revocation must survive restart');
+    await checkRevokedPermits();
     const replay = JSON.parse(Buffer.from(await post(fixture.revocation, 200)).toString());
     assert.equal(replay.recorded, false, 'restart must not forget a recorded revocation');
     console.log('connection worker: standard revocation enforced before and after persisted R2/KV/D1 restart; sibling preserved');

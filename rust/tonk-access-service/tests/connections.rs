@@ -596,11 +596,54 @@ async fn connection_worker_standard_revocation_survives_persisted_kv_restart() -
         );
         let state = tempfile::tempdir()?;
         let fixture = state.path().join("fixture.json");
+        // Mint signed fixture URLs under the disposable service seed, as the
+        // native object adapter tests do. These exercise the production Worker
+        // redemption boundary independently of invocation/permit serialization.
+        use tonk_access_service::permit::{Method, PermitKey, Precondition};
+        use tonk_access_service::revocation::checker::Check;
+        let object_key = format!("{}/worker-permit/item", space.did());
+        let signing_key = PermitKey::derive(&"5d".repeat(32)).unwrap();
+        let issue = |method, revocations| {
+            signing_key
+                .issue(
+                    "http://localhost",
+                    &Claims {
+                        method,
+                        key: object_key.clone(),
+                        expires: Timestamp::now().to_unix() + PERMIT_TTL,
+                        sha256: None,
+                        precondition: Precondition::None,
+                        revocations,
+                    },
+                )
+                .unwrap()
+        };
+        let checks = vec![Check {
+            target: target.to_string(),
+            by: [verified.subject.to_string()].into_iter().collect(),
+        }];
+        let object_permits: Vec<_> = [Method::Get, Method::Put, Method::Delete]
+            .into_iter()
+            .map(|method| issue(method, Some(checks.clone())))
+            .collect();
+        let legacy_permits: Vec<_> = [Method::Get, Method::Put, Method::Delete]
+            .into_iter()
+            .map(|method| issue(method, None))
+            .collect();
+        let sibling_permit = issue(
+            Method::Get,
+            Some(vec![Check {
+                target: sibling.proof_cids().last().unwrap().to_string(),
+                by: [browser.did().to_string()].into_iter().collect(),
+            }]),
+        );
         std::fs::write(
             &fixture,
             serde_json::to_vec(&serde_json::json!({
                 "subject": space.did().to_string(), "revoker": verified.subject.to_string(), "target": target.to_string(), "targetBytes": target.to_bytes(), "invocations": invocations,
                 "revocation": revocation, "sibling": request(&sibling, &sibling_key, service.did().as_str(), &space.did(), command("get", "archive/block"), arguments("archive/block")).await,
+                "objectKey": object_key, "objectPermits": object_permits,
+                "legacyPermits": legacy_permits, "siblingPermit": sibling_permit,
             }))?,
         )?;
         let result = std::process::Command::new("node")
