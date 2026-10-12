@@ -78,28 +78,55 @@ lives, and where it grows.
 
 A service worker cannot load JavaScript after it starts, so the bootloader
 names the release in an `import` the server writes into it. The shell
-registers `/boot.js?edition=<edition>`, and the server answers with the
-bootloader importing `/_release/<edition>/worker.js`. A change of pin is a
+registers `/boot.js?release=<release>`, and the server answers with the
+bootloader importing `/_release/<release>/worker.js`. A change of pin is a
 change of that address, which the browser treats as a new worker.
+
+## What a release is named by
+
+`<release>` is a content identifier of `worker.js`: a CIDv1 with the raw
+codec and the SHA-256 of the file's bytes, written in base32, such as
+`bafkreiglelbablybxkvvmqskikqor5sae6caidgrcwihc7bjdqinwq55j4`.
+
+`worker.js` carries the SHA-256 of its wasm and of each other file of the
+release, so that one identifier fixes all of them. SHA-256, because the
+bootloader checks the wasm before any wasm runs, and it is the hash a browser
+computes natively. A CID, because it says which hash it is, and the name
+then outlives a change of hash function.
 
 ## The boot cell
 
-A cell in the space, `boot/loader`, replicated with it:
+A memory cell in the space, `boot/loader`, replicated with it. Its content is
+a DAG-CBOR map:
 
-```yaml
-v: 1
-src: https://tonk.network/releases/<edition>/worker.js
-edition: <sha256 of worker.js>
-latest: https://tonk.network/releases/stable/worker.js
+```
+{
+  "v": 1,
+  "src": "https://tonk.network/releases/bafkrei…55j4/worker.js",
+  "latest": "https://tonk.network/releases/stable/worker.js",
+  "release": 42(h'0001551220 cb22c200…db43bd4f')
+}
 ```
 
-- `v` is the host version above.
-- `src` is where this release's `worker.js` is, at an address that never
-  changes. A host that does not hold the edition yet fetches it from there,
-  however old it is.
-- `edition` is the pin, and what the fetched script is checked against.
-- `latest` is the line of releases the space watches. It is where to ask
-  whether there is a newer one, and it never moves the pin.
+- `v`, an unsigned integer: the host version above.
+- `src`, a text string: where this release's `worker.js` is, at an address
+  that never changes. A host that does not hold the release yet fetches it
+  from there, however old it is.
+- `release`, a link (CBOR tag 42): the pin, and what the fetched script is
+  checked against.
+- `latest`, a text string, optional: the line of releases the space watches.
+  It is asked whether there is a newer release and never moves the pin. A
+  space with none is not told of updates.
+
+The keys are in DAG-CBOR's order (by length, then bytes), so the content of a
+given pin is the same bytes on every device. The example above is 213 bytes:
+
+```
+a4 61 76 01
+   63 73 72 63  78 63 "https://tonk.network/releases/bafkrei…55j4/worker.js"
+   66 6c 61 74 65 73 74  78 2e "https://tonk.network/releases/stable/worker.js"
+   67 72 65 6c 65 61 73 65  d8 2a 58 25 00 01 55 12 20 <32 bytes of SHA-256>
+```
 
 A worker cannot read its own boot cell before it exists, so the pin is also
 kept where the shell page can read it without Dialog: a boot record in the
@@ -108,30 +135,36 @@ changes. On a device that holds nothing yet, the pin arrives with the
 delegation from the host: the delegation, the space, its remote, and the
 boot cell's content.
 
+The cell is not part of a branch, so moving the pin and installing the
+library definitions that go with a release are two writes. The definitions
+go first: a release's definitions only add to the ones before, so the worker
+still pinned runs with them until the cell moves.
+
 ## Where releases live
 
-One append-only store for dev, staging and stable, and a second for pull
+One store for dev, staging and stable, and a second for pull
 request previews that is emptied when the pull request closes.
 
 ```
 releases/
-  <edition>/worker.js
-  <edition>/worker_bg.wasm
-  <edition>/guest/…
-  <edition>/library/…
-  stable/worker.js     redirects to the current <edition>/worker.js
+  <release>/worker.js
+  <release>/worker_bg.wasm
+  <release>/guest/…
+  <release>/library/…
+  stable/worker.js     redirects to the current <release>/worker.js
   staging/worker.js
   dev/worker.js
 ```
 
-An edition is a content hash, so the lines cannot collide, and a release
+A release is named by its content, so the lines cannot collide, and a release
 promoted from one line to the next is not uploaded twice. A space pinned on
 one deployment can turn up on another (signing in through another deployment
 already exists), and with one store any deployment can serve it. A release
-is under 20 MB.
+is under 20 MB. Releases that were only on the dev line expire: see
+[Decided](#decided).
 
-A line is one address that redirects to the edition current on it. The
-edition's `worker.js` is served with its hash as its `ETag`.
+A line is one address that redirects to the release current on it. A
+release's `worker.js` is served with its identifier as its `ETag`.
 
 ## Serving a release
 
@@ -140,45 +173,63 @@ control. It cannot come from another origin or from the space's own storage.
 So every origin of a deployment serves the store at a fixed path:
 
 ```
-GET /_release/<edition>/<file>
+GET /_release/<release>/<file>
 ```
 
 The access worker answers from the store and marks the response immutable.
-The bootloader imports `/_release/<edition>/worker.js`, and everything that
-module asks for is beside it. Every edition ever published stays there.
+The bootloader imports `/_release/<release>/worker.js`, and everything that
+module asks for is beside it. Every release ever published stays there.
 
-Where the host does not hold an edition, it fetches it from the cell's
-`src`, checks `worker.js` against `edition`, and keeps it in its own store
-before serving it. Only the stores of our own deployments are accepted as
-`src` at first.
+Where the host does not hold a release, it fetches it from the cell's
+`src`, checks `worker.js` against `release`, and keeps it in its own store
+before serving it. `src` may name any store: see [Decided](#decided).
 
 ## Publishing
 
 1. Build. Bundle the glue and the release's own JavaScript into `worker.js`,
    with the hashes of its wasm and other files written into it. Its hash is
-   the edition.
-2. Upload `<edition>/` (nothing to do if it is there).
+   the release.
+2. Upload `<release>/` (nothing to do if it is there).
 3. Deploy the host.
-4. Point the line at the edition. Pointing it back is a rollback.
+4. Point the line at the release. Pointing it back is a rollback.
 
 Local development and the browser tests serve the same paths out of `dist`.
-The tests' two generations become two editions.
+The tests' two generations become two releases.
 
 ## Finding and taking an update
 
-- Asking `latest` with `If-None-Match: "<edition>"` answers either that
-  nothing changed or with the script current on that line, whose `ETag` is
-  the newer edition. The host asks for the spaces it shows and tells the owner. A space
-  opened on its own asks for itself, at most daily, and records what it found
-  where its own views can show it.
-- Taking the update is one commit on the space by its owner: the cell's
-  `edition` moves, and the library definitions that match are installed with
-  it. Members' devices follow when they pull.
-- A device that sees a new pin registers the bootloader for that edition and
-  switches when idle. The session overlay is handed over as it is today, and the
-  page's subscription client reopens what it had, so nothing on screen drops.
-  Where the new worker does not come up, the device stays on the one it has
-  and says so.
+A line of releases is one address, such as
+`https://tonk.network/releases/stable/worker.js`, that redirects to the
+`worker.js` of the release current on it.
+
+To learn whether there is a newer one, ask `latest` with the pin as the
+condition:
+
+```
+GET https://tonk.network/releases/stable/worker.js
+If-None-Match: "bafkrei…55j4"
+```
+
+- `304 Not Modified`: the pin is the current release.
+- `200`: the body is the current `worker.js`. Its SHA-256 gives the new
+  release's identifier, and the address the redirect ended at is its `src`.
+  Nothing about the newer release is taken on trust: its name is computed
+  from what was fetched.
+
+The host asks once for each distinct `latest` among the spaces it shows, when
+the Hub opens and at most daily, and tells the owner of each space behind. A
+space opened on its own asks for itself and records what it found where its
+own views can show it.
+
+Taking the update is the owner's act: the definitions of the new release are
+committed, then the cell is published with the new `src` and `release`.
+Members' devices follow when they pull.
+
+A device that sees a new pin registers the bootloader for that release and
+switches when idle. The session overlay is handed over as it is today, and
+the page's subscription client reopens what it had, so nothing on screen
+drops. Where the new worker does not come up, the device stays on the one it
+has and says so.
 
 ## Keeping the promise
 
@@ -186,19 +237,25 @@ The tests' two generations become two editions.
   in the repository. That file is the contract.
 - A space says which port version it speaks when it connects, and the host
   answers within it.
-- A few old editions are kept as fixtures. The browser suite runs with each
+- A few old releases are kept as fixtures. The browser suite runs with each
   against the current host, and a host change that breaks one fails the build.
 
 ## A space that exists already
 
-It has no boot cell. The host treats it as pinned to the edition current
+It has no boot cell. The host treats it as pinned to the release current
 when this ships and writes that cell the next time its owner opens it.
 
-## Open
+## Decided
 
-- Whether the host may refuse an edition with a known hole. It would not move
-  the pin, but the space would not run until its owner upgrades.
-- Whether dev editions are kept for good. Expiry breaks a dev space that never
-  upgraded.
-- Whether `src` may name a store that is not ours, and what the host checks
-  before it serves one.
+- **The host does not refuse a release.** Where one is known to have a hole,
+  the host tells the owner and offers the upgrade. Refusing to run it stays
+  possible as a last resort and is not built first.
+- **Dev releases expire.** Releases on the stable and staging lines are kept
+  for good. One that was only ever on the dev line is dropped some time
+  after the line moved past it (90 days, to start with). A dev space still
+  pinned to a dropped release runs wherever a device has it cached; where
+  none does, the host offers its owner the release current on the line.
+- **`src` may name any store.** The host fetches over HTTPS, refuses a file
+  over a size limit, checks `worker.js` against `release` and every other
+  file against the hashes `worker.js` carries, and keeps its own copy before
+  serving it.
