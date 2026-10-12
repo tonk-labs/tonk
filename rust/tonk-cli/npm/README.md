@@ -98,41 +98,56 @@ The versions committed in the `package.json`s are placeholders. CI
 stamps the release tag's version into all three at publish time, and
 nothing else reads them.
 
-## Linux portability gate
+## CLI artifact smoke gates
 
-`cli-linux-smoke.yml` runs after the CLI build on pull requests and before
-both GitHub and npm publication. It tests the uploaded Linux binary in
-clean Debian and Alpine containers without a Nix store. The gate requires:
+`cli-smoke.yml` runs after PR builds and gates both GitHub and npm
+publication. It tests the exact downloaded artifacts for every currently
+shipped platform; it does not add support for new platforms.
 
-- x86_64 ELF with no interpreter, shared-library dependency or Nix runtime path
-- Direct `--version` and `--help` startup
-- Offline installation of locally packed Linux and wrapper npm packages,
-  byte-for-byte binary preservation, and launch through `npm exec`
-- Native CA loading: a local HTTPS fixture must fail without its trusted CA
-  and succeed with it. The fixture deliberately rejects the update at
-  manifest validation, before any download or binary replacement
+| Artifact | Runtime | Additional checks |
+| --- | --- | --- |
+| Linux x86_64 | Clean Debian and Alpine containers, no Nix store | Static x86_64 ELF, no interpreter or shared-library dependencies |
+| macOS arm64 | Fresh native macOS runner, no Nix installation | arm64 Mach-O executable, system libraries only, no Nix load commands, valid signature |
 
-Run the guard's regression tests on an x86_64 Linux host with Python,
-C compiler, binutils and npm:
+Both platforms check direct `--version`/`--help`, packed npm platform
+OS/CPU selectors, the wrapper's exact optional dependency version, offline
+installation, byte-for-byte binary preservation, and launcher version/help.
+The disposable packages are stamped to the artifact version, matching release
+packaging. A local HTTPS fixture rejects an untrusted certificate and reaches
+manifest validation with the trusted CA supplied via `SSL_CERT_FILE`.
+The fixture deliberately rejects the wrong update channel before any download
+or replacement. It does not modify the macOS keychain or host CA store.
+
+PR macOS artifacts use the Nix build's ad-hoc signature. They do not need
+Developer ID credentials or Apple notarization. Release callers additionally
+require the resolved tag version, a Developer ID Application signature, and
+Apple notarization on the downloaded bytes. The existing signing action still
+signs/notarizes before upload; these checks do not create credentials or submit
+new artifacts for notarization.
+
+From the repository root, run the guard regressions on Linux x86_64 or macOS
+arm64 with Python, a C compiler, npm, and native inspection tools:
 
 ```sh
-python3 scripts/tests/test-linux-cli.py
+python3 scripts/tests/test-cli.py
 ```
 
-Run the artifact smoke check inside a clean non-Nix Linux container with
-Python, binutils, OpenSSL, CA certificates and npm, mounting the checkout
-and binary read-only:
+Run the real artifact smoke check on its native platform:
 
 ```sh
-python3 scripts/check-linux-cli.py /path/to/tonk
+# In a clean Debian/Alpine container with Python, binutils, OpenSSL and npm:
+python3 scripts/check-cli.py /path/to/tonk --platform linux-x64
+# On macOS arm64 with Python, OpenSSL, npm and Apple command-line tools:
+python3 scripts/check-cli.py /path/to/tonk --platform darwin-arm64
 ```
 
-These commands are from the repository root. The workflow provides the
-complete Debian/Alpine container invocations. No package is published and
-no public TLS service or Tonk account is needed for these checks.
+The reusable workflow provides the complete runtime setup. No package is
+published and no Tonk account is used by these checks. Release-only Apple
+notarization verification may contact Apple; the TLS fixture uses only loopback.
 
 After an authorized release, also download and checksum-verify the exact
-GitHub archive, extract it and repeat the artifact check on both systems.
-Verify a fresh `npx @tonk/cli@<released-version> --version` and the intended
-`latest` or `next` alias independently: the pre-publication offline test
-cannot prove registry propagation or dist-tag correctness.
+GitHub archives and repeat the corresponding artifact checks. Verify a fresh
+`npx @tonk/cli@<released-version> --version` and the intended `latest` or `next`
+alias independently: offline tests cannot prove registry propagation or
+dist-tag correctness. Windows, Linux arm64 and macOS x86_64 are not currently
+shipped and therefore are not added to this gate.

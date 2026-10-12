@@ -44,6 +44,6 @@ jobs:
           name: ${{ matrix.artifact-name }}
           path: artifacts/tonk
 
-  linux-portability:
+  artifact-smoke:
     needs: ['build-cli']
-    uses: ./.github/workflows/cli-linux-smoke.yml
+    uses: ./.github/workflows/cli-smoke.yml
