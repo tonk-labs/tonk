@@ -598,14 +598,11 @@ mod tests {
         )
         .unwrap();
 
-        for (as_type, the) in [
-            ("float:64", "dom.event/time-stamp"),
-            ("natural:64", "dom.event/time"),
-        ] {
+        for as_type in ["float:64", "natural:64"] {
             let descriptor = descriptor(&format!(
                 r#"{{
                     "with": {{
-                        "time": {{ "the": "{the}", "as": "{as_type}", "cardinality": "one" }}
+                        "time": {{ "the": "dom.event/time", "as": "{as_type}", "cardinality": "one" }}
                     }}
                 }}"#
             ));
