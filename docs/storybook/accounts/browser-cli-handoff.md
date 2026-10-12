@@ -11,12 +11,20 @@ validation and delivery behavior is unchanged. Details stack on narrow screens.
 Approval progress belongs to the current audience and callback. Opening a fresh
 link must not display an earlier request's "Approved" message or failure. A
 remounted panel can resume its own progress; changing requests clears the old
-status. This changes progress reporting only, not the authority grant or delivery.
+status. Before approval starts, the request has no ceremony row; the display
+renders nothing for that expected absence rather than a concept-mismatch error.
+Once the passkey is supplied, progress must advance to approving without needing
+a later request, sync heartbeat, or page-focus event. This changes progress
+reporting only, not the authority grant or delivery.
 
 The focused `rust/tonk-ui/tests/approval-progress.test.mjs` suite exercises stale
 rows, fast terminal outcomes, request changes, remounts, and other ceremonies.
 The worker's `approval_progress_is_scoped_to_the_request` test shares its entity
-encoding vector. Live passkey approval and callback delivery remain separate
+encoding vector. The browser-worker regression
+`approval_reports_reach_subscribers_without_a_dispatcher_turn` reproduces a
+missing broadcast before the fix and verifies pending, working, done, and failed
+updates reach an existing subscriber directly. The UI suite also checks the
+expected-absence slot. Live passkey approval and callback delivery remain separate
 browser verification requirements; these tests do not prove their completion.
 
 The refreshed WEB-10 capture is a production-source fixture with sample account
