@@ -676,9 +676,14 @@ fn install_method_shims() {
         "payload, opts",
         "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
     );
+    let notice_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkNotice === 'function') this.__tonkNotice(payload, opts);",
+    );
     let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
     let _ = Reflect::set(&proto, &"update".into(), &update_fn);
     let _ = Reflect::set(&proto, &"error".into(), &error_fn);
+    let _ = Reflect::set(&proto, &"notice".into(), &notice_fn);
 }
 
 /// Per-instance: write closures to `__tonkReset` / `__tonkUpdate`
@@ -713,6 +718,27 @@ fn install_method_delegates(host: &Element, state: &Rc<RefCell<Inner>>) {
         }));
     let _ = Reflect::set(host, &"__tonkError".into(), error.as_ref());
     error.forget();
+
+    let host_for_notice = host.clone();
+    let notice: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, opts| {
+            on_notice(&host_for_notice, payload, opts);
+        }));
+    let _ = Reflect::set(host, &"__tonkNotice".into(), notice.as_ref());
+    notice.forget();
+}
+
+/// `notice({ control }, { tag })` — a control frame about the stream
+/// rather than its rows. `upgrading` says the worker is moving the branch
+/// to this release's storage format before it answers: the display shows
+/// so until the rows arrive, in place of a bare loading state.
+fn on_notice(host: &Element, payload: JsValue, _opts: JsValue) {
+    let control = Reflect::get(&payload, &"control".into())
+        .ok()
+        .and_then(|v| v.as_string());
+    if control.as_deref() == Some("upgrading") {
+        state::set_upgrading(host);
+    }
 }
 
 /// `reset(conclusions, { tag })` — first / full-snapshot frame.
@@ -943,11 +969,18 @@ fn on_error(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, _opts:
     // one: it is what separates a retryable hiccup from a settled
     // answer, and rebuilding the detail from `message` alone would
     // discard it and read every failure as `offline`.
+    let kind = Reflect::get(&payload, &"kind".into())
+        .ok()
+        .and_then(|v| v.as_string());
     let err = match Reflect::get(&payload, &"status".into())
         .ok()
         .and_then(|v| v.as_f64())
     {
         Some(status) => ErrorDetail::http(status as u16, message),
+        // The worker could not move the branch to this release's storage
+        // format: a settled answer about this process, not a transport
+        // hiccup, so it is loud and names itself.
+        None if kind.as_deref() == Some("upgrade") => ErrorDetail::new(ErrorKind::Upgrade, message),
         None => ErrorDetail::new(ErrorKind::Network, message),
     };
     if loud_state(&err) == State::Offline {

@@ -174,6 +174,10 @@ impl Commit<'_> {
         let name = self.branch.name.to_owned();
         let origin = self.origin;
         let cached = self.branch.acquire(env).await?;
+        // A tree laid out the way an earlier release wrote is read, never
+        // written into: move it first, once per branch per process. A
+        // no-op after the first commit or read that ran it.
+        self.branch.migrate_once(env).await?;
 
         // Serialize every commit on this branch through the per-branch
         // transactor lock — so concurrent writers (the transact route AND the

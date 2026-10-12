@@ -84,8 +84,11 @@ pub async fn query(
             tonk_common::log!("on-demand mount of '{}' failed: {error}", path.repo);
         }
     }
-    let branch = tonk.reactor.repository(&path.repo).branch(&path.branch);
-    query_on_branch(&tonk, branch, headers, request, client).await
+    let target = QueryTarget::Space {
+        repo: path.repo.clone(),
+        branch: path.branch.clone(),
+    };
+    query_on_branch(&state, &tonk, target, headers, request, client).await
 }
 
 /// [`query`] for the profile's own repository, which [`query`] hands a
@@ -102,8 +105,10 @@ async fn query_profile(
 ) -> Result<Response, TonkWorkerError> {
     let client = request_client(&request);
     let tonk = state.read().await;
-    let branch = tonk.reactor.profile_repository().branch(&path.branch);
-    query_on_branch(&tonk, branch, headers, request, client).await
+    let target = QueryTarget::Profile {
+        branch: path.branch.clone(),
+    };
+    query_on_branch(&state, &tonk, target, headers, request, client).await
 }
 
 /// The requesting SW client's id, when the fetch handler stamped one.
@@ -119,18 +124,25 @@ fn request_client(request: &Request) -> Option<String> {
 }
 
 /// Move what an earlier release stored on `branch` to the shape this one
-/// reads, the first time this worker reads the branch (see
-/// [`crate::reactor::BranchReference::upgrade_once`], which stops after
-/// its cutoff date): attribute and concept definitions recorded the
+/// reads and writes, the first time this worker opens the branch (see
+/// [`crate::reactor::BranchReference::migrate_once`]): the storage rewrite
+/// under the number band, attribute and concept definitions recorded the
 /// earlier way, and rules stored under an identity an earlier dialog
-/// release gave them, which no read finds and no commit fires until then.
-/// A failure is logged and the read proceeds.
-async fn upgrade_rules_while_migrating(
+/// release gave them. What moved is logged; a failure is logged and
+/// returned, so a stream can tell its page, and the read proceeds on what
+/// the earlier release left.
+async fn migrate_while_opening(
     tonk: &crate::worker::TonkState,
     branch: crate::reactor::BranchReference<'_>,
-) {
-    match branch.upgrade_once(&tonk.operator).await {
+) -> Result<(), ReactorError> {
+    match branch.migrate_once(&tonk.operator).await {
         Ok(Some(upgraded)) => {
+            if upgraded.storage.is_some() {
+                tonk_common::log!(
+                    "rewrote the storage of '{}' under one number band",
+                    branch.repository.name()
+                );
+            }
             if !upgraded.definitions.is_empty() {
                 tonk_common::log!(
                     "moved {} definition(s) on '{}' to their current identity",
@@ -152,26 +164,126 @@ async fn upgrade_rules_while_migrating(
                     branch.repository.name()
                 );
             }
+            Ok(())
         }
-        Ok(None) => {}
-        Err(error) if is_absence(&error) => {}
+        Ok(None) => Ok(()),
+        Err(error) if is_absence(&error) => Ok(()),
         Err(error) => {
-            tonk_common::log!("upgrade on '{}' failed: {error}", branch.repository.name())
+            tonk_common::log!("upgrade on '{}' failed: {error}", branch.repository.name());
+            Err(error)
         }
     }
+}
+
+/// The control frame a stream opens with while its branch is being moved
+/// to this release's storage format. The host hands it to the page as a
+/// notice; the rows follow when the move is done.
+const UPGRADING_FRAME: &[u8] = br#"{"control":"upgrading"}"#;
+
+/// Where a query's branch lives, by name, so a stream that outlives the
+/// request that opened it finds the branch again.
+#[derive(Clone)]
+enum QueryTarget {
+    /// A space, by repository name.
+    Space { repo: String, branch: String },
+    /// The profile's own repository.
+    Profile { branch: String },
+}
+
+impl QueryTarget {
+    fn branch<'a>(
+        &'a self,
+        tonk: &'a crate::worker::TonkState,
+    ) -> crate::reactor::BranchReference<'a> {
+        match self {
+            QueryTarget::Space { repo, branch } => tonk.reactor.repository(repo).branch(branch),
+            QueryTarget::Profile { branch } => tonk.reactor.profile_repository().branch(branch),
+        }
+    }
+}
+
+/// Run `future` detached from the request: on the service worker as a
+/// local task, natively on the runtime.
+fn spawn_detached<F>(future: F)
+where
+    F: std::future::Future<Output = ()> + dialog_common::ConditionalSend + 'static,
+{
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_futures::spawn_local(future);
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    drop(tokio::spawn(future));
+}
+
+/// The stream a page gets when the branch it subscribes to is about to be
+/// moved to this release's storage format: it opens with
+/// [`UPGRADING_FRAME`] at once, so the page says an upgrade is taking
+/// place rather than loading; the move runs detached from this request;
+/// then the subscription opens and its frames follow on the same stream.
+/// A failed move sends `{"control":"upgrade-failed","reason":…}` and the
+/// subscription still opens, on what the earlier release left.
+fn upgrading_response(
+    state: AppState,
+    target: QueryTarget,
+    query: dialog_query::ConceptQuery,
+    level: u32,
+    client: Option<String>,
+) -> Response {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+    let _ = sender.send(Bytes::from_static(UPGRADING_FRAME));
+    spawn_detached(async move {
+        // The guard is held for the move and the subscribe only: the
+        // frames are forwarded below without it, as a stream the request
+        // returned directly would be.
+        let subscribed = {
+            let tonk = state.read().await;
+            let branch = target.branch(&tonk);
+            if let Err(error) = migrate_while_opening(&tonk, branch).await {
+                let failed = serde_json::json!({
+                    "control": "upgrade-failed",
+                    "reason": error.to_string(),
+                });
+                let _ = sender.send(Bytes::from(failed.to_string()));
+            }
+            let mut subscribe = branch.subscribe(query.clone()).level(level);
+            if let Some(client) = client.clone() {
+                subscribe = subscribe.client(client);
+            }
+            match subscribe.perform(&tonk.operator).await {
+                Ok(subscriber) => Ok(subscriber.receiver),
+                Err(error) if is_absence(&error) => {
+                    let _ = sender.send(Bytes::from_static(b"[]"));
+                    Err(())
+                }
+                Err(error) => {
+                    tonk_common::log!("subscribe after upgrade failed: {error}");
+                    Err(())
+                }
+            }
+        };
+        let Ok(mut frames) = subscribed else {
+            return;
+        };
+        while let Some(frame) = frames.recv().await {
+            if sender.send(frame).is_err() {
+                break;
+            }
+        }
+    });
+    sse_response(receiver)
 }
 
 /// Shared body for [`query`] and [`query_profile`]. Takes a
 /// [`crate::reactor::BranchReference`] so the URL extraction is the
 /// only difference between the two routes.
 async fn query_on_branch<'a>(
+    state: &AppState,
     tonk: &'a crate::worker::TonkState,
-    branch: crate::reactor::BranchReference<'a>,
+    target: QueryTarget,
     headers: HeaderMap,
     request: Request,
     client: Option<String>,
 ) -> Result<Response, TonkWorkerError> {
-    upgrade_rules_while_migrating(tonk, branch).await;
+    let branch = target.branch(tonk);
     let UrlQuery(params) = UrlQuery::<QueryParams>::try_from_uri(request.uri())
         .map_err(|e| TonkWorkerError::Router(format!("invalid query parameters: {e}")))?;
     let bytes = request
@@ -227,6 +339,24 @@ async fn query_on_branch<'a>(
             };
             return Ok(retry_later(snapshot));
         }
+
+        // A branch an earlier release wrote is moved to this release's
+        // format before it is read. The page hears so first: the stream
+        // opens with a notice, and the rows follow the move.
+        if branch
+            .migration_pending(&tonk.operator)
+            .await
+            .unwrap_or(false)
+        {
+            return Ok(upgrading_response(
+                state.clone(),
+                target,
+                query,
+                params.level,
+                client,
+            ));
+        }
+        let _ = migrate_while_opening(tonk, branch).await;
 
         let mut subscribe = branch.subscribe(query.clone()).level(params.level);
         if let Some(client) = client.clone() {
@@ -284,6 +414,7 @@ async fn query_on_branch<'a>(
 
         Ok(sse_response(subscriber.receiver))
     } else {
+        let _ = migrate_while_opening(tonk, branch).await;
         // An absent repo/branch answers with the EMPTY SET, not a 404 —
         // "nothing matched" is a result, and it is the same result a
         // present-but-empty branch gives. See [`is_absence`].
@@ -430,8 +561,9 @@ mod tests {
 
     /// A rule an earlier dialog release stored under an entity that is not
     /// its identity is inert: no read finds it and no commit fires it. The
-    /// first read of a branch moves it under its identity; a second read
-    /// finds the branch upgraded and reads no rule bodies.
+    /// first read of a branch laid out the way that release wrote moves
+    /// the storage to the band and the rule under its identity; a second
+    /// read finds the branch migrated and reads nothing.
     ///
     /// Native only: it needs a whole worker state, which the native test
     /// fixture builds. The upgrade itself is target-agnostic dialog code,
@@ -475,8 +607,34 @@ mod tests {
             .perform(&tonk.operator)
             .await
             .expect("the earlier release's rule is stored");
+        // Laid out the way the earlier release wrote, which is what gates
+        // the migration.
+        let handle = branch
+            .acquire(&tonk.operator)
+            .await
+            .expect("the branch opens")
+            .handle()
+            .clone();
+        handle
+            .rekey_storage(0)
+            .perform(&tonk.operator)
+            .await
+            .expect("the branch is laid out the earlier way");
+        assert!(
+            branch
+                .migration_pending(&tonk.operator)
+                .await
+                .expect("the layout is read"),
+            "a branch the earlier release laid out needs migrating"
+        );
 
-        upgrade_rules_while_migrating(&tonk, branch).await;
+        let _ = migrate_while_opening(&tonk, branch).await;
+        assert!(
+            !branch
+                .migration_pending(&tonk.operator)
+                .await
+                .expect("the layout is read")
+        );
 
         let session = branch
             .acquire(&tonk.operator)
@@ -509,7 +667,7 @@ mod tests {
             "and no longer under the earlier entity"
         );
         assert!(
-            matches!(branch.upgrade_once(&tonk.operator).await, Ok(None)),
+            matches!(branch.migrate_once(&tonk.operator).await, Ok(None)),
             "a second read does not upgrade again"
         );
     }

@@ -386,13 +386,15 @@ impl TonkSite {
     /// predates this build's format.
     ///
     /// The first acquisition in a process also moves what an earlier
-    /// release stored to the shape this one reads
-    /// ([`BranchReference::upgrade_once`]): definitions recorded the
-    /// earlier way, and rules stored under an identity an earlier dialog
-    /// release gave them, which would otherwise be inert. A failed
-    /// upgrade is reported on stderr and the command proceeds.
+    /// release stored to the shape this one reads and writes
+    /// ([`BranchReference::migrate_once`]): the storage rewrite under the
+    /// number band, definitions recorded the earlier way, and rules stored
+    /// under an identity an earlier dialog release gave them, which would
+    /// otherwise be inert. The move is announced on stderr before it runs
+    /// and summed up after; a failed one is reported and the command
+    /// proceeds on what the earlier release left.
     ///
-    /// [`BranchReference::upgrade_once`]: dialog_reactor::BranchReference::upgrade_once
+    /// [`BranchReference::migrate_once`]: dialog_reactor::BranchReference::migrate_once
     pub async fn branch(&self) -> Result<BranchSession, ReactorError> {
         let branch = self.reactor.repository(REPO_NAME).branch(BRANCH_NAME);
         let session = branch.acquire(&self.operator).await.map_err(|error| {
@@ -408,8 +410,18 @@ impl TonkSite {
             }
             error
         })?;
-        match branch.upgrade_once(&self.operator).await {
+        if branch
+            .migration_pending(&self.operator)
+            .await
+            .unwrap_or(false)
+        {
+            eprintln!("note: moving this space to this release's storage format…");
+        }
+        match branch.migrate_once(&self.operator).await {
             Ok(Some(upgraded)) => {
+                if upgraded.storage.is_some() {
+                    eprintln!("note: rewrote the space's storage under one number band");
+                }
                 if !upgraded.definitions.is_empty() {
                     eprintln!(
                         "note: moved {} definition(s) to their current identity",

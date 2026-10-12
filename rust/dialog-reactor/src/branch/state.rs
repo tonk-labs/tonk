@@ -46,11 +46,16 @@ pub struct BranchState {
     /// block — a transaction. Per branch, so commits to different branches
     /// proceed in parallel.
     transactor: tokio::sync::Mutex<()>,
-    /// Whether [`BranchReference::upgrade_once`] has run on this
-    /// branch since it was opened.
+    /// Whether [`BranchReference::migrate_once`] has run this branch's one
+    /// migration since it was opened (to completion or to a failure). A
+    /// call that found nothing to move does not set it.
     ///
-    /// [`BranchReference::upgrade_once`]: crate::BranchReference::upgrade_once
-    rules_upgraded: std::sync::atomic::AtomicBool,
+    /// [`BranchReference::migrate_once`]: crate::BranchReference::migrate_once
+    migration_claimed: std::sync::atomic::AtomicBool,
+    /// Whether that migration is running now: claimed, found needed, and
+    /// not yet finished. A page asking whether to show an upgrade notice
+    /// reads it.
+    migrating: std::sync::atomic::AtomicBool,
 }
 
 impl BranchState {
@@ -60,16 +65,32 @@ impl BranchState {
             branch,
             subscriptions: Mutex::new(IndexMap::new()),
             transactor: tokio::sync::Mutex::new(()),
-            rules_upgraded: std::sync::atomic::AtomicBool::new(false),
+            migration_claimed: std::sync::atomic::AtomicBool::new(false),
+            migrating: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
-    /// Claim the one rule upgrade this branch runs while open: `true`
-    /// the first time, `false` after.
-    pub(crate) fn claim_rules_upgrade(&self) -> bool {
-        !self
-            .rules_upgraded
-            .swap(true, std::sync::atomic::Ordering::AcqRel)
+    /// Mark the one migration this branch runs while open as run.
+    pub(crate) fn claim_migration(&self) {
+        self.migration_claimed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the migration has run, to completion or to a failure.
+    pub(crate) fn migration_claimed(&self) -> bool {
+        self.migration_claimed
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Mark the migration as running, or as finished.
+    pub(crate) fn set_migrating(&self, running: bool) {
+        self.migrating
+            .store(running, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the migration is running now.
+    pub fn is_migrating(&self) -> bool {
+        self.migrating.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The per-branch transaction lock. A transaction takes it

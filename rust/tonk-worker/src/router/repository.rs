@@ -4590,6 +4590,18 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
     let Some((key, session, current)) = installed_seed(tonk, key).await? else {
         return Ok(false);
     };
+    // The install commits below write into the branch directly; a branch
+    // an earlier release wrote is moved to this release's format first,
+    // once per process, as every read and commit through the reactor does.
+    if let Err(error) = tonk
+        .reactor
+        .repository(&key)
+        .branch(CONTENT_BRANCH)
+        .migrate_once(&tonk.operator)
+        .await
+    {
+        log!("seed upgrade: migrating '{key}' failed: {error}");
+    }
 
     // Re-fetch the space's OWN source, not the shipped one. A space on a
     // custom seed follows that seed; comparing against `core.yaml` would

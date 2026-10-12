@@ -4661,6 +4661,75 @@ employee:
         assert_eq!(levels, vec![3]);
     }
 
+    /// A subscription to a branch laid out the way an earlier release wrote
+    /// opens with the `upgrading` control frame, before anything else, so
+    /// the page can say an upgrade is taking place; the rows follow once
+    /// the branch is moved to this release's format, and a later request
+    /// finds nothing left to move.
+    #[dialog_common::test]
+    async fn a_subscription_to_a_branch_an_earlier_release_wrote_opens_with_the_upgrading_frame() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+        let repo = "test-upgrading-frame";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        // Lay the branch out the way the earlier release wrote it.
+        {
+            let guard = app_state.read().await;
+            let branch = guard.reactor.repository(repo).branch("main");
+            let handle = branch
+                .acquire(&guard.operator)
+                .await
+                .expect("acquire")
+                .handle()
+                .clone();
+            handle
+                .rekey_storage(0)
+                .perform(&guard.operator)
+                .await
+                .expect("the branch is laid out the earlier way");
+            assert!(
+                branch
+                    .migration_pending(&guard.operator)
+                    .await
+                    .expect("the layout is read"),
+                "the branch needs migrating"
+            );
+        }
+
+        let mut body =
+            open_subscription_with_query(&app, repo, "main", named_concept_wire_query()).await;
+        let first = body.next_event().await.expect("a first frame");
+        assert_eq!(
+            first,
+            serde_json::json!({ "control": "upgrading" }),
+            "the stream opens with the upgrading notice"
+        );
+        let snapshot = read_sse_frame(&mut body).await;
+        let rows = snapshot["conclusions"]
+            .as_array()
+            .expect("a snapshot follows the notice");
+        assert_eq!(rows.len(), 1, "the rows follow the move: {snapshot}");
+
+        let guard = app_state.read().await;
+        assert!(
+            !guard
+                .reactor
+                .repository(repo)
+                .branch("main")
+                .migration_pending(&guard.operator)
+                .await
+                .expect("the layout is read"),
+            "the branch is migrated"
+        );
+    }
+
     /// One-shot `/query` projects every term named in the
     /// query's `terms` map into [`Conclusion::fields`]. The
     /// `Name` view binds `this` (the `id:<n>` name entity) and

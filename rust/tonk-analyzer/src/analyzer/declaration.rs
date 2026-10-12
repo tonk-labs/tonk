@@ -1187,7 +1187,6 @@ fn attribute_type(field: &tonk_notation::Field, scope: &Scope) -> Result<String,
     })
 }
 
-
 /// Validate a user-facing cardinality name. Dialog's serde
 /// format uses lowercase (`one`, `many`); historically
 /// PascalCase was accepted too — preserve that for back-compat
