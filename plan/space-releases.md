@@ -53,46 +53,63 @@ moved to `v: 2` by anything but its own upgrade.
 Two pieces of JavaScript run in a space's worker, and they have different
 owners.
 
-**The bootloader is the host's.** It is the script the shell registers. It
-adds the worker's `install`, `activate`, `fetch` and `message` listeners,
-loads the release the space pins, checks the wasm against its hash, and
-hands each event to the release. It is small and it is the same for every
-space.
+**The bootloader is the host's.** It is the script the shell registers, one
+fixed file that is the same for every space. It adds the worker's `install`,
+`activate`, `fetch` and `message` listeners, loads the release the space
+pins, checks the wasm against its hash, and hands each event to the release.
 
 **`worker.js` is the release's.** It is the glue generated for the release's
 wasm, with whatever JavaScript that build needs around it, bundled into one
-module. It names its wasm, by path beside itself and by hash, and exports
-one function the bootloader calls:
+classic script. It describes its release and gives the bootloader one
+function to call:
 
 ```js
-export const wasm = { path: "./worker_bg.wasm", sha256: "…" };
-export function start({ wasm, host }) {
-  return { install, activate, fetch, message };
-}
+self.release = {
+  manifest: {
+    v: 1,
+    version: "0.7.0",
+    port: 2,
+    wasm: { path: "./worker_bg.wasm", sha256: "…" },
+    files: { "guest/guest.js": "…", "library/core.yaml": "…" },
+  },
+  start({ wasm, host }) {
+    return { install, activate, fetch, message };
+  },
+};
 ```
 
-That export is the whole of the `v: 1` contract between the two: the
-bootloader gives the release its wasm and a `host` object, and the release
-gives back the handlers events go to. `host` is where the host's stable API
-lives, and where it grows.
+That is the whole of the `v: 1` contract between the two: the bootloader
+gives the release its wasm and a `host` object, and the release gives back
+the handlers events go to. `host` is where the host's stable API lives, and
+where it grows. `manifest` holds whatever is to be known about the release:
+the host version it needs, its own version, the port protocol it speaks, and
+the hash of every other file.
 
-A service worker cannot load JavaScript after it starts, so the bootloader
-names the release in an `import` the server writes into it. The shell
-registers `/boot.js?release=<release>`, and the server answers with the
-bootloader importing `/_release/<release>/worker.js`. A change of pin is a
-change of that address, which the browser treats as a new worker.
+A service worker cannot load JavaScript once it is running, but a classic one
+may name what it imports as it starts. The shell registers the bootloader
+with the pin in its address, `/boot.js?pin=<pin>`, and the bootloader reads
+it from its own address and imports that release:
+
+```js
+const pin = new URL(self.location).searchParams.get("pin");
+importScripts(mirror(pin));
+```
+
+A change of pin is a change of the bootloader's address, which the browser
+treats as a new worker. A script loaded this way cannot ask what address it
+came from, and does not need to: the bootloader knows the pin it imported.
 
 ## What a release is named by
 
-`<release>` is a content identifier of `worker.js`: a CIDv1 with the raw
-codec and the SHA-256 of the file's bytes, written in base32, such as
-`bafkreiglelbablybxkvvmqskikqor5sae6caidgrcwihc7bjdqinwq55j4`.
+A release is named by a content identifier of its `worker.js`: a CIDv1 with
+the raw codec and the SHA-256 of the file's bytes, in base32, such as
+`bafkreiglelbablybxkvvmqskikqor5sae6caidgrcwihc7bjdqinwq55j4`. A store keeps
+a release in a directory of that name.
 
 `worker.js` carries the SHA-256 of its wasm and of each other file of the
 release, so that one identifier fixes all of them. SHA-256, because the
 bootloader checks the wasm before any wasm runs, and it is the hash a browser
-computes natively. A CID, because it says which hash it is, and the name
-then outlives a change of hash function.
+computes natively. A CID, because it says which hash it is.
 
 ## The boot cell
 
@@ -102,30 +119,29 @@ a DAG-CBOR map:
 ```
 {
   "v": 1,
-  "src": "https://tonk.network/releases/bafkrei…55j4/worker.js",
-  "latest": "https://tonk.network/releases/stable/worker.js",
-  "release": 42(h'0001551220 cb22c200…db43bd4f')
+  "pin": "https://tonk.network/releases/bafkrei…55j4/worker.js",
+  "src": "https://tonk.network/releases/stable/worker.js"
 }
 ```
 
 - `v`, an unsigned integer: the host version above.
-- `src`, a text string: where this release's `worker.js` is, at an address
-  that never changes. A host that does not hold the release yet fetches it
-  from there, however old it is.
-- `release`, a link (CBOR tag 42): the pin, and what the fetched script is
-  checked against.
-- `latest`, a text string, optional: the line of releases the space watches.
-  It is asked whether there is a newer release and never moves the pin. A
-  space with none is not told of updates.
+- `src`, a text string: the line of releases the space took its release
+  from. It redirects to whichever release is current on it.
+- `pin`, a text string: what `src` redirected to when the space last took a
+  release. It is the address of one release's `worker.js`, it never changes,
+  and it is what the space runs.
+
+A pin's address ends in `<release>/worker.js`, the directory being the
+identifier above. That is how what is fetched from a pin is checked: the
+file's hash has to be the one its address names.
 
 The keys are in DAG-CBOR's order (by length, then bytes), so the content of a
-given pin is the same bytes on every device. The example above is 213 bytes:
+given pin is the same bytes on every device:
 
 ```
-a4 61 76 01
-   63 73 72 63  78 63 "https://tonk.network/releases/bafkrei…55j4/worker.js"
-   66 6c 61 74 65 73 74  78 2e "https://tonk.network/releases/stable/worker.js"
-   67 72 65 6c 65 61 73 65  d8 2a 58 25 00 01 55 12 20 <32 bytes of SHA-256>
+a3 61 76 01
+   63 "pin"  78 63 "https://tonk.network/releases/bafkrei…55j4/worker.js"
+   63 "src"  78 2e "https://tonk.network/releases/stable/worker.js"
 ```
 
 A worker cannot read its own boot cell before it exists, so the pin is also
@@ -163,26 +179,24 @@ already exists), and with one store any deployment can serve it. A release
 is under 20 MB. Releases that were only on the dev line expire: see
 [Decided](#decided).
 
-A line is one address that redirects to the release current on it. A
-release's `worker.js` is served with its identifier as its `ETag`.
+A line is one address that redirects to the release current on it.
 
 ## Serving a release
 
-A browser fetches a worker script from the network, from the origin it will
-control. It cannot come from another origin or from the space's own storage.
-So every origin of a deployment serves the store at a fixed path:
+Every origin of a deployment serves releases at a fixed path of its own:
 
 ```
-GET /_release/<release>/<file>
+GET /_release/<release>/<file>?from=<pin>
 ```
 
-The access worker answers from the store and marks the response immutable.
-The bootloader imports `/_release/<release>/worker.js`, and everything that
-module asks for is beside it. Every release ever published stays there.
+This is the `mirror(pin)` the bootloader imports. The access worker answers
+from its store. Where it does not hold the release, it fetches it from the
+pin, checks `worker.js` against the identifier in the pin's address, and
+keeps its own copy before answering. So a release is checked before a
+browser runs it, whatever store it came from, and one a deployment has
+served once it can serve again, however old it is. Responses are immutable.
 
-Where the host does not hold a release, it fetches it from the cell's
-`src`, checks `worker.js` against `release`, and keeps it in its own store
-before serving it. `src` may name any store: see [Decided](#decided).
+The underscore keeps the path out of the way of a space's own routes.
 
 ## Publishing
 
@@ -202,34 +216,30 @@ A line of releases is one address, such as
 `https://tonk.network/releases/stable/worker.js`, that redirects to the
 `worker.js` of the release current on it.
 
-To learn whether there is a newer one, ask `latest` with the pin as the
-condition:
+To learn whether there is a newer one, ask `src` and see where it leads:
 
+```js
+const response = await fetch(src, { method: "HEAD" });
+const current = response.url; // where the redirect ended
 ```
-GET https://tonk.network/releases/stable/worker.js
-If-None-Match: "bafkrei…55j4"
-```
 
-- `304 Not Modified`: the pin is the current release.
-- `200`: the body is the current `worker.js`. Its SHA-256 gives the new
-  release's identifier, and the address the redirect ended at is its `src`.
-  Nothing about the newer release is taken on trust: its name is computed
-  from what was fetched.
+Where `current` is not the space's `pin`, the line has moved, and `current`
+is the pin the space would take.
 
-The host asks once for each distinct `latest` among the spaces it shows, when
+The host asks once for each distinct `src` among the spaces it shows, when
 the Hub opens and at most daily, and tells the owner of each space behind. A
 space opened on its own asks for itself and records what it found where its
 own views can show it.
 
 Taking the update is the owner's act: the definitions of the new release are
-committed, then the cell is published with the new `src` and `release`.
-Members' devices follow when they pull.
+committed, then the cell is published with the new `pin`. Members' devices
+follow when they pull.
 
-A device that sees a new pin registers the bootloader for that release and
-switches when idle. The session overlay is handed over as it is today, and
-the page's subscription client reopens what it had, so nothing on screen
-drops. Where the new worker does not come up, the device stays on the one it
-has and says so.
+A device that sees a new pin registers the bootloader for it and switches
+when idle. The session overlay is handed over as it is today, and the page's
+subscription client reopens what it had, so nothing on screen drops. Where
+the new worker does not come up, the device stays on the one it has and says
+so.
 
 ## Keeping the promise
 
@@ -255,7 +265,7 @@ when this ships and writes that cell the next time its owner opens it.
   after the line moved past it (90 days, to start with). A dev space still
   pinned to a dropped release runs wherever a device has it cached; where
   none does, the host offers its owner the release current on the line.
-- **`src` may name any store.** The host fetches over HTTPS, refuses a file
-  over a size limit, checks `worker.js` against `release` and every other
-  file against the hashes `worker.js` carries, and keeps its own copy before
-  serving it.
+- **A pin may name any store.** The host fetches over HTTPS, refuses a file
+  over a size limit, checks `worker.js` against the identifier in the pin's
+  address and every other file against the hashes `worker.js` carries, and
+  keeps its own copy before serving it.
