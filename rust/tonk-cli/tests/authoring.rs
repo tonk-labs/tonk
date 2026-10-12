@@ -869,7 +869,7 @@ mod when_defining_an_element {
     async fn it_refuses_a_body_that_only_blanks_its_collections() -> Result<()> {
         let test = TestSite::new().await?;
         test.eval_inline(
-            "concept!: &thing\n  description: \"A thing\"\n  with:\n    bit:\n      description: \"Bits\"\n      the: xyz.probe.thing.bit\n      as: {[symbol]: text}\n      cardinality: one\n",
+            "concept!: &thing\n  description: \"A thing\"\n  with:\n    bit:\n      description: \"Bits\"\n      the: \"xyz.probe.thing.bit\"\n      as: {[symbol]: text}\n      cardinality: :one\n",
         )
         .await?;
 

@@ -559,7 +559,8 @@ fn render_field_value(value: &Value) -> String {
                 // The wire spelling of a SignedInteger (`+41`, `-7`).
                 ("tonk-cm-number", s.clone())
             } else if looks_like_uri(s) {
-                ("tonk-cm-entity", s.clone())
+                // Spelled as notation, so `keyword:` reads `:keyword`.
+                ("tonk-cm-entity", tonk_notation::spell_uri(s).into_owned())
             } else {
                 ("tonk-cm-string", s.clone())
             }

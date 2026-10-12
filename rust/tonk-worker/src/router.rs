@@ -2623,14 +2623,14 @@ pub mod tests {
         let body = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -2682,7 +2682,7 @@ concept!: &person
         let body = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 "#;
 
@@ -2763,7 +2763,7 @@ concept!: &person
         let first = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 "#;
         let response = app
@@ -2786,7 +2786,7 @@ concept!: &person
         let second = r#"attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -2839,7 +2839,7 @@ concept!: &person
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 concept!: &person
@@ -2935,7 +2935,7 @@ person!: &alice
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 concept!: &person
@@ -3041,13 +3041,13 @@ person!: &alice
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -3213,13 +3213,13 @@ person!:
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -3282,7 +3282,7 @@ person!: &alice
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 concept!: &person
@@ -3338,13 +3338,13 @@ concept!: &person
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -3399,13 +3399,13 @@ concept!: &person
         let setup = r#"attribute!: &tagged-name
   the:         io.gozala.tagged/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: Name of the tagged item
 
 attribute!: &tagged-tag
   the:         io.gozala.tagged/tag
   as:          text
-  cardinality: many
+  cardinality: :many
   description: Tags applied to the item
 
 concept!: &tagged
@@ -3459,13 +3459,13 @@ tagged!: &dave
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -3519,7 +3519,7 @@ person!: &erin
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 concept!: &person
@@ -3575,13 +3575,13 @@ person!:
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &employee-id
   the:         io.gozala.employee/id
   as:          text
-  cardinality: one
+  cardinality: :one
   description: Employee identifier
 
 concept!: &person
@@ -3681,7 +3681,7 @@ employee:
             r#"attribute!: &{name}
   the:         {the}
   as:          text
-  cardinality: one
+  cardinality: :one
   description: A test attribute
 "#
         );
@@ -4887,7 +4887,7 @@ employee:
         let body = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: "name"
 "#;
 
@@ -5001,13 +5001,13 @@ employee:
         let seed = r#"attribute!: &person-name
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: "name"
 
 attribute!: &person-age
   the:         xyz.tonk.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: "age"
 
 concept!: &person
@@ -5082,13 +5082,13 @@ concept!: &person
         let seed = r#"attribute!: &person-name
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: "name"
 
 attribute!: &person-age
   the:         xyz.tonk.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: "age"
 
 concept!: &person

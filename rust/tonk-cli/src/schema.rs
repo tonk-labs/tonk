@@ -565,7 +565,7 @@ fn render_attribute(out: &mut String, attr: &AttributeInfo) {
         let _ = writeln!(out, "  as:          {}", attr.type_name);
     }
     if !attr.cardinality.is_empty() && attr.cardinality != "last" {
-        let _ = writeln!(out, "  pick:        {}", attr.cardinality);
+        let _ = writeln!(out, "  pick:        :{}", attr.cardinality);
     }
     out.push('\n');
 }
@@ -604,7 +604,7 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
                 let pick = attr_descriptor.descriptor().pick();
                 let implied = if among.is_empty() { "last" } else { "top" };
                 if pick.name() != implied {
-                    let _ = writeln!(out, "      pick:        {}", pick.name());
+                    let _ = writeln!(out, "      pick:        :{}", pick.name());
                 }
                 let desc = attr_descriptor.description();
                 if !desc.is_empty() {

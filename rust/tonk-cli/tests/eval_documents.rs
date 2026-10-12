@@ -22,13 +22,13 @@ attribute!: &page-title
   description: "page title"
   the:         xyz.example.page/title
   as:          text
-  cardinality: one
+  cardinality: :one
 
 attribute!: &page-hero
   description: "page hero image"
   the:         xyz.example.page/hero
   as:          entity
-  cardinality: one
+  cardinality: :one
 
 concept!: &page
   description: "a page"

@@ -414,7 +414,7 @@ mod when_a_remote_accepts_but_never_answers {
   description: "deadline proof"
   the: xyz.tonk.test/deadline-proof
   as: text
-  cardinality: one
+  cardinality: :one
 "#;
         let mut child = tonk_cmd(state.path(), &["eval", "--quiet", "-c", declaration])
             .env("TONK_REMOTE_TIMEOUT_SECONDS", "2")

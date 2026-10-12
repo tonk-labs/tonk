@@ -3491,7 +3491,7 @@ pub(crate) mod tests {
             "    path:\n",
             "      description: The active path, picked off the site.\n",
             "      the: xyz.tonk.site/path\n",
-            "      cardinality: one\n",
+            "      cardinality: :one\n",
             "      as: text\n",
             "\n",
             "view!:\n",
@@ -7837,7 +7837,7 @@ pub(crate) mod tests {
                 .get("account")
                 .is_none_or(serde_json::Value::is_null)
         );
-        let document = "attribute!: &agent-built\n  description: Built after browser shutdown\n  the: test.agent/built\n  as: text\n  cardinality: one\n";
+        let document = "attribute!: &agent-built\n  description: Built after browser shutdown\n  the: test.agent/built\n  as: text\n  cardinality: :one\n";
         let built = run_cli(
             &env,
             &profile,
@@ -7922,7 +7922,7 @@ pub(crate) mod tests {
         // held is a matter of the space's size, not of the bearer.
         let retained = run_cli(&env, &profile, &[
             "--space".into(), "ordinary-agent".into(), "eval".into(), "-c".into(),
-            "attribute!: &agent-built\n  description: Retained offline work\n  the: test.agent/built\n  as: text\n  cardinality: one\n".into(),
+            "attribute!: &agent-built\n  description: Retained offline work\n  the: test.agent/built\n  as: text\n  cardinality: :one\n".into(),
             "--no-sync".into(),
         ]).await?;
         assert!(retained.status.success(), "{}", retained.stderr);
@@ -8384,7 +8384,7 @@ pub(crate) mod tests {
                 .get("account")
                 .is_none_or(serde_json::Value::is_null)
         );
-        let schema = "attribute!: &agent-title\n  description: Agent note title\n  the: test.agent/title\n  as: text\n  cardinality: one\nconcept!: &agent-note\n  description: Agent authored note\n  with:\n    title: agent-title\nattribute!: &agent-html\n  description: Agent page body\n  the: text/html\n  as: text\n  cardinality: many\nconcept!: &agent-page\n  description: Agent authored page\n  with:\n    body: agent-html\n";
+        let schema = "attribute!: &agent-title\n  description: Agent note title\n  the: test.agent/title\n  as: text\n  cardinality: :one\nconcept!: &agent-note\n  description: Agent authored note\n  with:\n    title: agent-title\nattribute!: &agent-html\n  description: Agent page body\n  the: \"text/html\"\n  as: text\n  cardinality: :many\nconcept!: &agent-page\n  description: Agent authored page\n  with:\n    body: agent-html\n";
         for document in [
             schema,
             "agent-note!: &agent-note-one\n  title: Built with scoped authority\nagent-page!: &agent-page-one\n  body: '<h1>Scoped browser build</h1>'\n",
@@ -8638,7 +8638,7 @@ pub(crate) mod tests {
         let marker = r#"attribute!: &local-space-link-proof
   the:         xyz.tonk.e2e/local-space-link-proof
   as:          text
-  cardinality: one
+  cardinality: :one
   description: local space link e2e marker
 "#;
         let wrote = run_cli(

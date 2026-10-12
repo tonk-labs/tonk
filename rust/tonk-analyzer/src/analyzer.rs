@@ -1213,7 +1213,7 @@ concept!: &job
       description: \"where it stands\"
       the: x.y/status
       as: entity
-      pick: newest
+      pick: :newest
 ",
         );
         let result = super::analyze_local(&syntax);
@@ -1234,7 +1234,7 @@ concept!: &job
       description: \"where it stands\"
       the: x.y/status
       as: entity
-      pick: top
+      pick: :top
 ",
         );
         let result = super::analyze_local(&syntax);
@@ -1244,11 +1244,10 @@ concept!: &job
         );
     }
 
-    /// A pick is a built-in anchor, as a type is: `pick: all` names the
-    /// entity `all:`, which is what the attribute records, and the same
-    /// symbol names it in any other field. A pick may also be spelled as
-    /// its entity, quoted. A document that declares an anchor under a
-    /// pick's name is warned, and in it `pick:` refuses the name.
+    /// A pick is a keyword: `pick: :all` names the entity `all:`, which
+    /// is what the attribute records. A bare `pick: all` reads `all` as a
+    /// reference and is refused with the keyword spelling, and so is a
+    /// pick quoted as its entity.
     #[dialog_common::test]
     async fn it_resolves_picks_as_built_in_anchors() {
         let entity = |source: &str| -> Option<String> {
@@ -1269,44 +1268,19 @@ concept!: &job
                 "attribute!: &tags\n  the: x.y/tags\n  description: \"labels\"\n  as: text\n  pick: {pick}\n"
             )
         };
-        assert_eq!(entity(&declare("all")).as_deref(), Some("all:"));
-        assert_eq!(entity(&declare("max")).as_deref(), Some("max:"));
-        assert_eq!(
-            entity(&declare("\"all:\"")).as_deref(),
-            Some("all:"),
-            "a pick quoted as its entity"
-        );
-
-        let syntax = must_parse(
-            "\
-issue/title!: &all
-  this: issue:one
-  is: \"shadowing\"
-attribute!: &tags
-  the: x.y/tags
-  description: \"labels\"
-  as: text
-  pick: all
-",
-        );
-        assert!(
-            super::scan_variables(&syntax)
-                .iter()
-                .any(|diagnostic| matches!(
-                    &diagnostic.kind,
-                    super::AnalyzeDiagnosticKind::ShadowsBuiltin { name } if name == "all"
-                )),
-            "an anchor named like a pick is warned"
-        );
-        let result = analyze_empty(&syntax).await;
-        assert!(
-            matches!(
-                result.as_ref().map_err(|error| &error.kind),
-                Err(AnalyzeErrorKind::InvalidAttributeBody { reason })
-                    if reason.contains("not the built-in pick")
-            ),
-            "a shadowed pick is no pick: {result:?}"
-        );
+        assert_eq!(entity(&declare(":all")).as_deref(), Some("all:"));
+        assert_eq!(entity(&declare(":max")).as_deref(), Some("max:"));
+        for spelling in ["all", "\"all:\""] {
+            let syntax = must_parse(&declare(spelling));
+            let error = super::analyze_local(&syntax).expect_err("refused");
+            assert!(
+                matches!(
+                    &error.kind,
+                    AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains(":all")
+                ),
+                "{spelling} is refused with the keyword spelling: {error:?}"
+            );
+        }
     }
 
     /// An instance head's `&anchor` must be resolvable by a later
@@ -1322,7 +1296,7 @@ concept!: &thing
     source:
       description: \"src\"
       the: x.y/source
-      cardinality: one
+      cardinality: :one
       as: text
 
 thing!: &my-thing
@@ -1334,7 +1308,7 @@ concept!: &holder
     target:
       description: \"e\"
       the: x.y/target
-      cardinality: one
+      cardinality: :one
       as: entity
 
 holder!: &my-holder
@@ -1365,7 +1339,7 @@ concept!: &thing
     source:
       description: \"src\"
       the: x.y/source
-      cardinality: one
+      cardinality: :one
       as: text
 
 thing!: &my-thing
@@ -1378,7 +1352,7 @@ concept!: &holder
     target:
       description: \"e\"
       the: x.y/target
-      cardinality: one
+      cardinality: :one
       as: entity
 
 holder!: &my-holder
@@ -1511,7 +1485,7 @@ holder!: &my-holder
 attribute!: &person-name
   the:         io.gozala.person/name
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "Person's name"
 "#,
         );
@@ -1545,7 +1519,7 @@ attribute!: &tags
   the: x.y/tags
   description: "labels"
   as: text
-  pick: all
+  pick: :all
 attribute!: &name
   the: x.y/name
   description: "a name"
@@ -1621,12 +1595,12 @@ demo/stuff!:
 attribute!: &person-name
   the:         io.gozala.person/name
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "Person's name"
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          UnsignedInteger
-  cardinality: one
+  cardinality: :one
   description: "Person's age"
 concept!: &person
   description: "Person concept"
@@ -1656,7 +1630,7 @@ concept!: &person
 attribute!: &issue/title
   the:         io.gozala.issue/title
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "Issue title"
 concept!: &issue
   description: "Work item"
@@ -1688,12 +1662,12 @@ concept!: &person
       description: "Name of the person"
       the:         xyz.tonk.person/name
       as:          Text
-      cardinality: one
+      cardinality: :one
     age:
       description: "Age of the person"
       the:         xyz.tonk.person/age
       as:          UnsignedInteger
-      cardinality: one
+      cardinality: :one
 "#,
         );
         let analysis = flat(analyze_empty(&syntax).await.unwrap());
@@ -1743,7 +1717,7 @@ command!: &notebook/retitle
       description: "The new title"
       the:         xyz.tonk.notebook.retitle/title
       as:          Text
-      role:        goal
+      role:        :goal
 "#,
         );
         let analysis = flat(analyze_empty(&syntax).await.unwrap());
@@ -1772,7 +1746,7 @@ attribute!: &rename/name
   description: "The new name"
   the:         xyz.tonk.rename/name
   as:          Text
-  role:        goal
+  role:        :goal
 "#,
         );
         let analysis = flat(analyze_empty(&syntax).await.unwrap());
@@ -1809,7 +1783,7 @@ attribute!: &rename/name
         };
         let plain = flat(analyze_empty(&declare("")).await.unwrap());
         let with_role = flat(
-            analyze_empty(&declare("  role:        goal\n"))
+            analyze_empty(&declare("  role:        :goal\n"))
                 .await
                 .unwrap(),
         );
@@ -1918,13 +1892,78 @@ attribute!: &rename/name
   description: "The new name"
   the:         xyz.tonk.rename/name
   as:          Text
-  role:        gaol
+  role:        :gaol
 "#,
         );
         let err = analyze_empty(&syntax).await.unwrap_err();
         assert!(
-            matches!(&err.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("gaol")),
+            matches!(&err.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("unknown role \"gaol\"")),
             "expected InvalidAttributeBody naming the role, got {err:?}"
+        );
+    }
+
+    /// A bare symbol is a reference to an anchor, so a keyword-valued
+    /// field refuses one and names the keyword to write instead.
+    #[dialog_common::test]
+    async fn it_refuses_a_bare_symbol_where_a_keyword_belongs() {
+        for (field, word) in [("pick", "all"), ("cardinality", "many"), ("role", "goal")] {
+            let syntax = must_parse(&format!(
+                r#"
+attribute!: &rename/name
+  description: "The new name"
+  the:         xyz.tonk.rename/name
+  as:          text
+  {field}: {word}
+"#
+            ));
+            let err = analyze_empty(&syntax).await.unwrap_err();
+            let expected = format!("`{field}: :{word}`");
+            assert!(
+                matches!(&err.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains(&expected)),
+                "expected {field}: {word} refused with the keyword spelling, got {err:?}"
+            );
+        }
+    }
+
+    /// The keyword spelling of a pick lowers to the same pick the
+    /// earlier bare spelling did.
+    #[dialog_common::test]
+    async fn it_reads_a_pick_keyword() {
+        let syntax = must_parse(
+            r#"
+attribute!: &task/tags
+  description: "Tags"
+  the:         xyz.tonk.task/tags
+  as:          text
+  pick:        :all
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
+        else {
+            panic!("expected the attribute");
+        };
+        assert!(matches!(
+            query.terms.get("pick"),
+            Some(Term::Constant(Value::Entity(pick))) if pick.to_string() == "all:"
+        ));
+    }
+
+    /// A relation named by a bare symbol is a reference, not text.
+    #[dialog_common::test]
+    async fn it_refuses_a_bare_symbol_as_a_relation() {
+        let syntax = must_parse(
+            r#"
+attribute!: &job/status
+  description: "Status"
+  the:         job/status
+  as:          text
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(&err.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("reference to an anchor")),
+            "expected the bare relation refused, got {err:?}"
         );
     }
 
@@ -2037,7 +2076,7 @@ concept!: &person
 attribute!: &person-nick
   the:         xyz.tonk.person/nickname
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "Nickname"
 concept!: &person
   with:
@@ -2131,7 +2170,7 @@ concept!: &person
       description: "Name of the person"
       the:         xyz.tonk.person/name
       as:          Text
-      cardinality: one
+      cardinality: :one
 concept!: &view
   description: "A view"
   with:
@@ -2139,7 +2178,7 @@ concept!: &view
       description: "Source concept"
       the:         db.view/source
       as:          Entity
-      cardinality: one
+      cardinality: :one
 view!: &title
   source: person
 "#,
@@ -2173,7 +2212,7 @@ view!: &title
 attribute!: &foo
   the:         x.y/foo
   as:          Text
-  cardinality: one
+  cardinality: :one
 "#,
         );
         let err = analyze_empty(&syntax).await.unwrap_err();
@@ -2195,7 +2234,7 @@ attribute!:
   this:        ?person-name
   the:         io.gozala.person/name
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "Person's name"
 "#,
         );
@@ -2228,7 +2267,7 @@ attribute!:
 attribute!: &person-name
   the:         io.gozala.person/name
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "Person's name"
 "#,
         );
@@ -2260,7 +2299,7 @@ attribute!: &person-name
 attribute!: &a
   the:         x.y/a
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "A"
 concept!: &a
   with:
@@ -2290,7 +2329,7 @@ concept!: &{reserved}
     tag:
       the: x.y/tag
       as: Text
-      cardinality: one
+      cardinality: :one
       description: "T"
 "#
             ));
@@ -2314,13 +2353,13 @@ concept!: &{reserved}
 attribute!: &foo
   the:         x.y/a
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "A"
 attribute!:
   this:        ?foo
   the:         x.y/b
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "B"
 "#,
         );
@@ -3104,7 +3143,7 @@ concept!: &foo
       description: "y"
       the: x.y/bar
       as: Text
-      cardinality: one
+      cardinality: :one
 "#,
         );
         let analysis = flat(analyze_empty(&syntax).await.unwrap());
@@ -3490,7 +3529,7 @@ concept!: &my-thing
       description: "the label"
       the:         x.y/label
       as:          Text
-      cardinality: one
+      cardinality: :one
 my-thing!:
   this: my-thing
   label: "hi"
@@ -3526,7 +3565,7 @@ person!: &foo
 attribute!: &foo
   the:         x.y/foo
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "F"
 "#,
         );
@@ -3733,7 +3772,7 @@ attribute!:
   this: ?person-name
   the:         x.y/name
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: "x"
 concept!:
   this: ?person
@@ -3772,12 +3811,12 @@ concept!: &view
       description: "Concept this view renders"
       the:         xyz.tonk.view/model
       as:          Entity
-      cardinality: one
+      cardinality: :one
     display:
       description: "HTML template"
       the:         xyz.tonk.view/display
       as:          Text
-      cardinality: one
+      cardinality: :one
 view!:
   model: tonk:view
   display: "x"
@@ -4133,12 +4172,12 @@ concept!: &person
       description: "Name"
       the:         x.y/name
       as:          Text
-      cardinality: one
+      cardinality: :one
     age:
       description: "Age"
       the:         x.y/age
       as:          UnsignedInteger
-      cardinality: one
+      cardinality: :one
 "#,
         );
         let analysis = flat(analyze_empty(&syntax).await.unwrap());
@@ -4181,7 +4220,7 @@ concept!: &person
 attribute!: &age
   the:         x.y/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: "Person's age"
 "#,
         );
@@ -4202,7 +4241,7 @@ attribute!: &age
             "bytes",
         ] {
             let src = format!(
-                "attribute!: &foo\n  the:         x.y/foo\n  as:          {ty}\n  cardinality: one\n  description: \"x\"\n"
+                "attribute!: &foo\n  the:         x.y/foo\n  as:          {ty}\n  cardinality: :one\n  description: \"x\"\n"
             );
             let syntax = must_parse(&src);
             analyze_empty(&syntax)
@@ -4220,7 +4259,7 @@ attribute!: &age
 attribute!: &age
   the:         x.y/age
   as:          UnsignedInteger
-  cardinality: one
+  cardinality: :one
   description: "x"
 "#,
         );
@@ -4236,7 +4275,7 @@ attribute!: &age
 attribute!: &age
   the:         x.y/age
   as:          quaternion
-  cardinality: one
+  cardinality: :one
   description: "x"
 "#,
         );
@@ -4412,7 +4451,7 @@ person!:
 attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 "#,
         );
@@ -4431,7 +4470,7 @@ concept!: &person
       description: Name of the person
       the:         x.y/name
       as:          text
-      cardinality: one
+      cardinality: :one
 "#,
         );
         analyze_empty(&syntax).await.unwrap();
@@ -4449,7 +4488,7 @@ concept!: &person
 attribute!: &foo
   the:         x.y/foo
   as:          text
-  cardinality: one
+  cardinality: :one
   description: recipe
 "#,
         );
@@ -4476,7 +4515,7 @@ concept!: &thing
       description: A short title
       the:         x.y/title
       as:          text
-      cardinality: one
+      cardinality: :one
 "#,
         );
         let err = analyze_empty(&syntax).await.unwrap_err();
@@ -4498,7 +4537,7 @@ concept!: &thing
 attribute!: &foo
   the:         x.y/foo
   as:          text
-  cardinality: one
+  cardinality: :one
   description: "recipe"
 "#,
         );
@@ -5135,7 +5174,7 @@ concept!: &thing
       description: "Label of the thing"
       the:         xyz.tonk.thing/label
       as:          Text
-      cardinality: one
+      cardinality: :one
 person!:
   this: did:key:zPersonAlice
   name: "Alice"
@@ -5239,14 +5278,14 @@ concept!: &ping
       description: "Tag"
       the:         io.gozala.ping/tag
       as:          Text
-      cardinality: one
+      cardinality: :one
 concept!: &pong
   with:
     tag:
       description: "Tag"
       the:         io.gozala.pong/tag
       as:          Text
-      cardinality: one
+      cardinality: :one
 ping!:
   this: did:key:zPingSubject
   tag:  "hi"
@@ -5420,14 +5459,14 @@ concept!: &ping
       description: "Tag"
       the:         io.gozala.ping/tag
       as:          Text
-      cardinality: one
+      cardinality: :one
 concept!: &pong
   with:
     tag:
       description: "Tag"
       the:         io.gozala.pong/tag
       as:          Text
-      cardinality: one
+      cardinality: :one
 ping!:
   this: did:key:zPingSubject
   tag:  "hi"
@@ -5460,7 +5499,7 @@ command!: &ping
       description: "Tag"
       the:         io.gozala.ping/tag
       as:          Text
-      cardinality: one
+      cardinality: :one
 ping!:
   this: did:key:zPingSubject
   tag:  "hi"
@@ -5475,7 +5514,7 @@ concept!: &ping
       description: "Tag"
       the:         io.gozala.ping/tag
       as:          Text
-      cardinality: one
+      cardinality: :one
 ping!:
   this: did:key:zPingSubject
   tag:  "hi"
@@ -5595,7 +5634,7 @@ person:
 attribute!:
   the: io.gozala.person/nickname
   as: text
-  cardinality: one
+  cardinality: :one
   description: "Optional short name"
 "#,
         );

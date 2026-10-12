@@ -46,13 +46,13 @@ concept!: &notebook
       as: text
     block:
       description: The notebook's blocks, in document order.
-      the: xyz.tonk.notebook
+      the: "xyz.tonk.notebook"
       # Per ENTRY, and explicit: an omitted cardinality defaults to
       # `one`, which marks the field SCALAR for the renderer — the
       # template then substitutes `{block}` once instead of iterating
       # the entries, so the order rows never render and every block
       # reads as unplaced.
-      pick: all
+      pick: :all
       as: {[position]: entity}
 
 # The title alone, so a create or a rename writes one field rather than
@@ -74,7 +74,7 @@ concept!: &notebook/blocks
   with:
     block:
       description: The notebook's blocks, in document order.
-      the: xyz.tonk.notebook
+      the: "xyz.tonk.notebook"
       as: {[position]: entity}
 
 # Where a block sits, whatever the source of that position.
@@ -395,7 +395,7 @@ attribute!: &notebook/retitle-subject
   description: The notebook entity.
   the: xyz.tonk.notebook.retitle/subject
   as: entity
-  role: object
+  role: :object
 
 command!: &notebook/retitle
   description: Set a notebook's title from its leading heading.
@@ -406,7 +406,7 @@ command!: &notebook/retitle
       description: The heading text, without its `#` markers.
       the: xyz.tonk.notebook.retitle/title
       as: text
-      role: goal
+      role: :goal
 
 # Said from the command palette on a notebook's page, "rename to Plans"
 # renames that notebook: the notebook the page shows is derived onto the

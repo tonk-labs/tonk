@@ -53,7 +53,7 @@ async fn connection_outer_layout_prevents_old_cli_ambient_authority_fallback() -
     let site = tonk_cli::connections::open_bound(&outer, &binding, store.clone()).await?;
     assert_eq!(site.profile.did(), recipient.did());
     tonk_cli::eval::run_against_site(&site,
-        tonk_cli::eval::Source::Inline("attribute!: &retained\n  description: Retained offline data\n  the: example.retained/value\n  as: text\n  cardinality: one\n".into()),
+        tonk_cli::eval::Source::Inline("attribute!: &retained\n  description: Retained offline data\n  the: example.retained/value\n  as: text\n  cardinality: :one\n".into()),
         tonk_cli::eval::Options::default()).await?;
     let before = site.branch().await?.handle().revision().unwrap().tree;
     assert!(!outer.join("main").exists());

@@ -19,7 +19,7 @@ const PERSON_CONCEPT: &str = r#"attribute!: &person-name
   description: "person name"
   the: xyz.tonk.person/name
   as: text
-  cardinality: one
+  cardinality: :one
 
 concept!: &person
   description: "a person"

@@ -1307,8 +1307,8 @@ view!: &counter/view
     async fn it_resolves_a_self_contained_document_without_touching_the_resolver() {
         let syntax = must_parse(
             "concept!: &point\n  description: \"a point\"\n  with:\n    \
-             x:\n      description: \"x coord\"\n      the: demo/x\n      \
-             cardinality: one\n      as: signed-integer\npoint!: &origin\n  x: 0\n",
+             x:\n      description: \"x coord\"\n      the: \"demo/x\"\n      \
+             cardinality: :one\n      as: signed-integer\npoint!: &origin\n  x: 0\n",
         );
         let scope = Scope::new();
         let graph = push(&syntax).expect("push");

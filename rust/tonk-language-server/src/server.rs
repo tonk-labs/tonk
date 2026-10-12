@@ -1495,7 +1495,7 @@ mod tests {
                     "uri": "tonk-buffer:///test",
                     "languageId": "carry-asserted",
                     "version": 1,
-                    "text": "attribute!:\n  the: io.gozala.person/name\n  as: text\n  cardinality: one\n  description: \"The person's full name\"\n"
+                    "text": "attribute!:\n  the: io.gozala.person/name\n  as: text\n  cardinality: :one\n  description: \"The person's full name\"\n"
                 }
             }
         });
@@ -2111,7 +2111,7 @@ mod tests {
         // First expression introduces ?alice and the &maintainer
         // anchor. Second expression's body is being typed —
         // cursor sits right after `?` on its `this:` line.
-        let text = "person:\n  this: ?alice\n  name: \"Alice\"\n\nattribute!: &maintainer\n  the: x.y/role\n  as: text\n  cardinality: one\n  description: ok\n\nperson!:\n  this: ?";
+        let text = "person:\n  this: ?alice\n  name: \"Alice\"\n\nattribute!: &maintainer\n  the: x.y/role\n  as: text\n  cardinality: :one\n  description: ok\n\nperson!:\n  this: ?";
         run(
             &mut server,
             &json!({

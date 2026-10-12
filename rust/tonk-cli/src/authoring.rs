@@ -228,7 +228,7 @@ pub fn build_concept_decl(name: &str, description: Option<&str>, attrs: &[AttrSp
         let _ = writeln!(out, "  as:          {type_name}");
         // `many` reads every value; `one` is the default pick, `last`.
         if cardinality == "many" {
-            let _ = writeln!(out, "  pick:        all");
+            let _ = writeln!(out, "  pick:        :all");
         }
         out.push('\n');
     }

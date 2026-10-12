@@ -332,13 +332,13 @@ attribute!: &task-title
   description: "task title"
   the:         xyz.tonk.task/title
   as:          text
-  cardinality: one
+  cardinality: :one
 
 attribute!: &task-done
   description: "task done flag"
   the:         xyz.tonk.task/done
   as:          boolean
-  cardinality: one
+  cardinality: :one
 "#;
 
 /// Notation declaration of a `task` concept referencing the
@@ -358,13 +358,13 @@ attribute!: &note-body
   description: "note body"
   the:         xyz.tonk.note/body
   as:          text
-  cardinality: one
+  cardinality: :one
 
 attribute!: &note-tag
   description: "a tag on a note"
   the:         xyz.tonk.note/tag
   as:          text
-  cardinality: many
+  cardinality: :many
 "#;
 
 /// A `note` concept referencing the attributes above — one required
@@ -395,7 +395,7 @@ attribute!: &html-body
   description: "HTML body of a tonk-authored view"
   the:         "text/html"
   as:          text
-  cardinality: many
+  cardinality: :many
 
 concept!: &page
   description: "An HTML page, served via the host route"

@@ -28,13 +28,13 @@ attribute!: &rename-repository/subject
   description: The repository being renamed.
   the: xyz.tonk.rename-repository/subject
   as: entity
-  role: object
+  role: :object
 
 attribute!: &rename-repository/name
   description: The new name.
   the: xyz.tonk.rename-repository/name
   as: text
-  role: goal
+  role: :goal
 
 intent/action!:
   this: tonk/rename-repository
@@ -202,7 +202,7 @@ command!: &test/retitle
       description: "The new title"
       the: io.test.retitle/title
       as: text
-      role: goal
+      role: :goal
 
 intent/action!:
   this: test/retitle
