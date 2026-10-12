@@ -162,11 +162,10 @@ async fn put(
         )
     };
     let stored = store::put(bucket, operation, value).await;
-    if let Some(progress) = progress {
-        if let crate::upload::Verdict::Invalid(detail) = &*progress.lock().expect("upload progress")
-        {
-            return Err(Failure::Invalid(detail.clone()));
-        }
+    if let Some(progress) = progress
+        && let crate::upload::Verdict::Invalid(detail) = &*progress.lock().expect("upload progress")
+    {
+        return Err(Failure::Invalid(detail.clone()));
     }
     match stored {
         Ok(Some(etag)) => {

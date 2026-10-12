@@ -111,10 +111,9 @@ impl Operation {
             offset,
             length: Some(length),
         }) = range
+            && (length == 0 || offset.checked_add(length).is_none())
         {
-            if length == 0 || offset.checked_add(length).is_none() {
-                return Err("invalid signed byte range".into());
-            }
+            return Err("invalid signed byte range".into());
         }
         Ok(Self {
             method: request.method.parse()?,

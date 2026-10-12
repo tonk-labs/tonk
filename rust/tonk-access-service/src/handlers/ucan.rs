@@ -500,14 +500,14 @@ async fn perform(
         // A separate R2 stream avoids teeing an unbounded slow-client queue or
         // collecting the upload/read in Rust memory. No partial responses cache.
         ctx.wait_until(async move {
-            if let Ok(response) = super::object::get(&bucket, &key, None).await {
-                if response.status_code() == 200 {
-                    let headers = response.headers().clone();
-                    let _ = headers.set("Cache-Control", "public, max-age=31536000, immutable");
-                    let _ = Cache::default()
-                        .put(cache_url, response.with_headers(headers))
-                        .await;
-                }
+            if let Ok(response) = super::object::get(&bucket, &key, None).await
+                && response.status_code() == 200
+            {
+                let headers = response.headers().clone();
+                let _ = headers.set("Cache-Control", "public, max-age=31536000, immutable");
+                let _ = Cache::default()
+                    .put(cache_url, response.with_headers(headers))
+                    .await;
             }
         });
     }

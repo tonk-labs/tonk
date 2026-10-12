@@ -300,10 +300,6 @@ fn request_host(req: &Request<Incoming>) -> String {
 /// The largest `/ucan/` body the harness accepts, matching the worker's default.
 const MAX_BODY_BYTES: u64 = 64 * 1024;
 
-/// The largest body a request carrying its invocation in
-/// `Authorization` may have: the bytes a write stores, bounded as the
-/// worker bounds them.
-
 /// `413`, naming the limit so a caller can act on it.
 fn too_large_response(limit: u64) -> Response<http_body_util::Full<bytes::Bytes>> {
     Response::builder()
@@ -1209,41 +1205,41 @@ async fn serve_object(
     };
     // Match the Worker R2 adapter's existing HEAD-then-DELETE semantics.
     // The local S3 fixture ignores conditional DELETE headers.
-    if method == ObjectMethod::Delete {
-        if let Precondition::IfMatch(expected) = &claims.precondition {
-            let head = dialog_remote_s3::request::S3Request {
-                method: "HEAD".into(),
-                path: claims.key.clone(),
-                ..Default::default()
-            }
-            .attest(registration.objects.credential.clone())
-            .redeem(&registration.objects.address)
-            .await;
-            let head = match head {
-                Ok(head) => reqwest::RequestBuilder::from(head).send().await,
-                Err(error) => return unavailable(format!("head {}: {error}", claims.key)),
-            };
-            let head = match head {
-                Ok(head) => head,
-                Err(error) => return unavailable(error.to_string()),
-            };
-            if head.status().as_u16() == 404
-                || (head.status().is_success()
-                    && head
-                        .headers()
-                        .get("etag")
-                        .and_then(|v| v.to_str().ok())
-                        .map(|v| v.trim_matches('"'))
-                        != Some(expected.trim_matches('"')))
-            {
-                return Response::builder()
-                    .status(StatusCode::PRECONDITION_FAILED)
-                    .body(Full::new(Bytes::new()))
-                    .unwrap();
-            }
-            if !head.status().is_success() {
-                return unavailable(format!("head {}: {}", claims.key, head.status()));
-            }
+    if method == ObjectMethod::Delete
+        && let Precondition::IfMatch(expected) = &claims.precondition
+    {
+        let head = dialog_remote_s3::request::S3Request {
+            method: "HEAD".into(),
+            path: claims.key.clone(),
+            ..Default::default()
+        }
+        .attest(registration.objects.credential.clone())
+        .redeem(&registration.objects.address)
+        .await;
+        let head = match head {
+            Ok(head) => reqwest::RequestBuilder::from(head).send().await,
+            Err(error) => return unavailable(format!("head {}: {error}", claims.key)),
+        };
+        let head = match head {
+            Ok(head) => head,
+            Err(error) => return unavailable(error.to_string()),
+        };
+        if head.status().as_u16() == 404
+            || (head.status().is_success()
+                && head
+                    .headers()
+                    .get("etag")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.trim_matches('"'))
+                    != Some(expected.trim_matches('"')))
+        {
+            return Response::builder()
+                .status(StatusCode::PRECONDITION_FAILED)
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+        }
+        if !head.status().is_success() {
+            return unavailable(format!("head {}: {}", claims.key, head.status()));
         }
     }
     let permit = match request
@@ -1315,14 +1311,13 @@ async fn serve_object(
         }
     }
     let sent = upstream.send().await;
-    if let Some(progress) = verdict {
-        if let crate::upload::Verdict::Invalid(detail) = &*progress.lock().expect("upload progress")
-        {
-            return json(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({"kind":"InvalidPayload","detail":detail}),
-            );
-        }
+    if let Some(progress) = verdict
+        && let crate::upload::Verdict::Invalid(detail) = &*progress.lock().expect("upload progress")
+    {
+        return json(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({"kind":"InvalidPayload","detail":detail}),
+        );
     }
     let answer = match sent {
         Ok(answer) => answer,
@@ -1751,7 +1746,7 @@ async fn serve_direct(
     let op = Operation::from_verified(&verified).expect("verified operation");
     match crate::provisioning::screen(
         &registration.store,
-        &verified.chain().subject().to_string(),
+        verified.chain().subject().as_ref(),
         unix_now(),
     )
     .await
@@ -1775,13 +1770,11 @@ async fn serve_direct(
     } else {
         None
     };
-    if let Some((label, reason, bytes)) = outcome {
-        if let Some(record) = crate::metering::collect(&container, label, reason, bytes, unix_now())
-        {
-            if let Err(error) = registration.ingest.record(&record).await {
-                eprintln!("metering: {error}");
-            }
-        }
+    if let Some((label, reason, bytes)) = outcome
+        && let Some(record) = crate::metering::collect(&container, label, reason, bytes, unix_now())
+        && let Err(error) = registration.ingest.record(&record).await
+    {
+        eprintln!("metering: {error}");
     }
     for (name, value) in described {
         if let Ok(value) = HeaderValue::from_str(&value) {
