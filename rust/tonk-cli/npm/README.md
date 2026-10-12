@@ -97,3 +97,42 @@ tmp=$(mktemp -d) && npm --prefix "$tmp" install ./tonk-cli-darwin-arm64-*.tgz ./
 The versions committed in the `package.json`s are placeholders. CI
 stamps the release tag's version into all three at publish time, and
 nothing else reads them.
+
+## Linux portability gate
+
+`cli-linux-smoke.yml` runs after the CLI build on pull requests and before
+both GitHub and npm publication. It tests the uploaded Linux binary in
+clean Debian and Alpine containers without a Nix store. The gate requires:
+
+- x86_64 ELF with no interpreter, shared-library dependency or Nix runtime path
+- Direct `--version` and `--help` startup
+- Offline installation of locally packed Linux and wrapper npm packages,
+  byte-for-byte binary preservation, and launch through `npm exec`
+- Native CA loading: a local HTTPS fixture must fail without its trusted CA
+  and succeed with it. The fixture deliberately rejects the update at
+  manifest validation, before any download or binary replacement
+
+Run the guard's regression tests on an x86_64 Linux host with Python,
+C compiler, binutils and npm:
+
+```sh
+python3 scripts/tests/test-linux-cli.py
+```
+
+Run the artifact smoke check inside a clean non-Nix Linux container with
+Python, binutils, OpenSSL, CA certificates and npm, mounting the checkout
+and binary read-only:
+
+```sh
+python3 scripts/check-linux-cli.py /path/to/tonk
+```
+
+These commands are from the repository root. The workflow provides the
+complete Debian/Alpine container invocations. No package is published and
+no public TLS service or Tonk account is needed for these checks.
+
+After an authorized release, also download and checksum-verify the exact
+GitHub archive, extract it and repeat the artifact check on both systems.
+Verify a fresh `npx @tonk/cli@<released-version> --version` and the intended
+`latest` or `next` alias independently: the pre-publication offline test
+cannot prove registry propagation or dist-tag correctness.

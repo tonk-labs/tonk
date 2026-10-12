@@ -90,9 +90,13 @@ jobs:
           name: ${{ matrix.artifact-name }}
           path: artifacts/tonk
 
+  linux-portability:
+    needs: ['build-cli']
+    uses: ./.github/workflows/cli-linux-smoke.yml
+
   publish:
     name: 'Publish GitHub release'
-    needs: ['resolve', 'build-cli']
+    needs: ['resolve', 'build-cli', 'linux-portability']
     runs-on: ubuntu-latest
     permissions:
       contents: write

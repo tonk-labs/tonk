@@ -1,0 +1,37 @@
+name: 'Linux CLI portability'
+
+on:
+  workflow_call:
+
+jobs:
+  smoke:
+    name: 'Smoke Linux CLI (${{ matrix.image }})'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['node:24-bookworm-slim', 'node:24-alpine']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the portability guard
+        run: python3 scripts/tests/test-linux-cli.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-linux-x86_64
+          path: artifacts
+      # Keep Nix entirely outside the runtime. Test precisely the uploaded bytes
+      # and the npm wrapper/package layout, on both glibc and musl distributions.
+      - name: Test without a Nix store
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/source:ro" "$IMAGE" sh -ec '
+            if command -v apk >/dev/null; then
+              apk add --no-cache python3 binutils openssl ca-certificates
+            else
+              apt-get update
+              apt-get install -y --no-install-recommends python3 binutils openssl ca-certificates
+            fi
+            python3 /source/scripts/check-linux-cli.py /source/artifacts/tonk
+          '
