@@ -677,7 +677,9 @@ fn coerce_filter_value(
     as_type: Option<&str>,
     raw: &str,
 ) -> Result<serde_json::Value, Phase2Error> {
-    let coerced = match as_type.and_then(ValueType::from_wire) {
+    // A sized number type (`natural:64`) parses as the numbers it
+    // stores.
+    let coerced = match as_type.and_then(tonk_notation::type_storage) {
         Some(ValueType::Natural) => raw.parse::<u64>().ok().map(|n| json!(n)),
         Some(ValueType::Integer) => raw.parse::<i64>().ok().map(|n| json!(n)),
         // Reject non-finite floats too: `serde_json` can't represent

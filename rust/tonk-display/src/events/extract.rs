@@ -286,6 +286,12 @@ pub(super) fn read_path_and_coerce(
 /// populated from a DOM event provided the JS path produces a
 /// shape that fits.
 pub(super) fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
+    // A sized number type (`float:64`) takes the shape of the numbers
+    // it stores; `number` takes any. Anything else is matched as
+    // spelled, legacy names included.
+    let as_type = tonk_notation::type_storage(as_type)
+        .map(tonk_notation::ValueType::uri)
+        .unwrap_or(as_type);
     match as_type {
         "text:" | "Text" | "String" | "text" | "string" => value.as_string().map(Value::String),
         "entity:" | "Entity" | "entity" => {
@@ -574,6 +580,46 @@ mod tests {
         // the integer value. Compare as f64 since the coerced number is
         // built via `Number::from_f64`.
         assert_eq!(params["time"].as_f64(), Some(1_780_982_815_290.0));
+    }
+
+    /// A field declared with a sized number type (`as: float:64`, what
+    /// a command's `time` declares since the library spells the widths
+    /// its Rust fields have) coerces a numeric event property. Regression
+    /// for sign-out: with no arm for `float:64` the binding fell through,
+    /// the command never fired, and the page never reloaded.
+    #[dialog_common::test]
+    fn it_coerces_a_sized_number_typed_field() {
+        let event = synthetic_event(&[]);
+        let event_js: &JsValue = event.as_ref();
+        Reflect::set(
+            event_js,
+            &JsValue::from_str("time"),
+            &JsValue::from_f64(1_780_982_815_290.0),
+        )
+        .unwrap();
+
+        for (as_type, the) in [
+            ("float:64", "dom.event/time-stamp"),
+            ("natural:64", "dom.event/time"),
+        ] {
+            let descriptor = descriptor(&format!(
+                r#"{{
+                    "with": {{
+                        "time": {{ "the": "{the}", "as": "{as_type}", "cardinality": "one" }}
+                    }}
+                }}"#
+            ));
+            let binding = binding_element(&[]);
+            let body = build_transact_body(&descriptor, "noop", &event, &binding)
+                .expect("build_transact_body")
+                .body;
+            let params = &body["claims"][0]["application"]["parameters"];
+            assert_eq!(
+                params["time"].as_f64(),
+                Some(1_780_982_815_290.0),
+                "a field declared {as_type} resolves"
+            );
+        }
     }
 
     #[dialog_common::test]

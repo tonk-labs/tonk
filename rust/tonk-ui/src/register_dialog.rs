@@ -1282,7 +1282,7 @@ fn account_query_body() -> String {
     serde_json::json!({
         "predicate": { "with": {
             "activated_at": {
-                "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
+                "the": "xyz.tonk.account/activated-at", "as": "natural:64",
                 "cardinality": "one"
             }
         } },

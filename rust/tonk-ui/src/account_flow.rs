@@ -4497,7 +4497,7 @@ pub(crate) mod tests {
                 "predicate": { "with": {
                     "activated_at": {
                         "the": "xyz.tonk.account/activated-at",
-                        "as": "UnsignedInteger", "cardinality": "one"
+                        "as": "natural:64", "cardinality": "one"
                     }
                 } },
                 "terms": {
@@ -6251,7 +6251,7 @@ pub(crate) mod tests {
                 },
                 "created_at": {
                     "the": "xyz.tonk.recovery/created-at",
-                    "as": "UnsignedInteger", "cardinality": "one"
+                    "as": "natural:64", "cardinality": "one"
                 }
             } },
             "terms": {

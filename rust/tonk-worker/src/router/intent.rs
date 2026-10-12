@@ -286,7 +286,7 @@ fn select(site: &str, text: &str, time: f64) -> String {
                         "with": {
                             "site": { "the": "xyz.tonk.command.site-select/site", "as": "Entity" },
                             "text": { "the": "xyz.tonk.command.site-select/text", "as": "Text" },
-                            "time": { "the": "xyz.tonk.command.site-select/time", "as": "Float" }
+                            "time": { "the": "xyz.tonk.command.site-select/time", "as": "float:64" }
                         }
                     }
                 },
@@ -424,7 +424,7 @@ fn interpret(expression: &str, input: &str, site: &str, time: f64) -> String {
                             "expression": { "the": "tonk.dialog.intent.interpret/expression", "as": "Entity" },
                             "input": { "the": "tonk.dialog.intent.interpret/input", "as": "Text" },
                             "site": { "the": "tonk.dialog.intent.interpret/site", "as": "Entity" },
-                            "time": { "the": "tonk.dialog.intent.interpret/time", "as": "Float" }
+                            "time": { "the": "tonk.dialog.intent.interpret/time", "as": "float:64" }
                         }
                     }
                 },

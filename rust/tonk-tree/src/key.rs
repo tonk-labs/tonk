@@ -197,6 +197,20 @@ pub fn pivot_byte(key: &str, prev: Option<&str>, next: Option<&str>) -> Option<u
 /// its dialog `ValueDataType` name.
 pub fn format_value(value: &serde_json::Value, type_name: &str) -> String {
     use serde_json::Value as J;
+    // A sized number type (`natural:64`, `float:32`) formats as the
+    // numbers it stores.
+    let type_name = match type_name.split_once(':') {
+        Some((kind @ ("natural" | "integer" | "float"), width))
+            if !width.is_empty() && width.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            match kind {
+                "natural" => "natural:",
+                "integer" => "integer:",
+                _ => "float:",
+            }
+        }
+        _ => type_name,
+    };
     match type_name {
         "Text" | "text:" => match value {
             J::String(s) => format!("\"{s}\""),

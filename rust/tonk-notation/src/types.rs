@@ -156,6 +156,20 @@ pub fn type_anchor(uri: &str) -> &str {
     uri.strip_suffix(':').unwrap_or(uri)
 }
 
+/// The kind of value a type stores, from any spelling [`type_uri`]
+/// accepts: a sized number type stores its kind's numbers (`natural:64`
+/// stores naturals), and `number`, which holds every number, reads as
+/// a float here, every JavaScript number being one. `None` for a
+/// spelling that names no type.
+pub fn type_storage(spelling: &str) -> Option<ValueType> {
+    let uri = type_uri(spelling)?;
+    if uri == "number:" {
+        return Some(ValueType::Float);
+    }
+    let kind = uri.split_once(':').map_or(uri.as_str(), |(kind, _)| kind);
+    ValueType::from_anchor(kind)
+}
+
 #[cfg(test)]
 mod sized_tests {
     use super::*;
@@ -173,6 +187,17 @@ mod sized_tests {
         assert_eq!(type_uri("float:8"), None);
         assert_eq!(type_uri("natural:7"), None);
         assert_eq!(type_uri("text:8"), None);
+    }
+
+    #[dialog_common::test]
+    fn it_names_what_a_type_stores() {
+        assert_eq!(type_storage("natural:64"), Some(ValueType::Natural));
+        assert_eq!(type_storage("integer:8"), Some(ValueType::Integer));
+        assert_eq!(type_storage("float:32"), Some(ValueType::Float));
+        assert_eq!(type_storage("number"), Some(ValueType::Float));
+        assert_eq!(type_storage("Text"), Some(ValueType::Text));
+        assert_eq!(type_storage("entity"), Some(ValueType::Entity));
+        assert_eq!(type_storage("natural:7"), None);
     }
 
     #[dialog_common::test]

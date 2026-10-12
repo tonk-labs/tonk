@@ -2356,7 +2356,7 @@ pub fn account_customer_query_body() -> String {
     json!({
         "predicate": { "with": {
             "registered_at": {
-                "the": "xyz.tonk.account/registered-at", "as": "UnsignedInteger",
+                "the": "xyz.tonk.account/registered-at", "as": "natural:64",
                 "cardinality": "one"
             },
             "email": {
@@ -2393,7 +2393,7 @@ pub fn account_active_query_body() -> String {
     json!({
         "predicate": { "with": {
             ACTIVATION_FIELD: {
-                "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
+                "the": "xyz.tonk.account/activated-at", "as": "natural:64",
                 "cardinality": "one"
             }
         } },
@@ -2681,7 +2681,16 @@ mod share_state_blocked {
 /// Asserting a body *contains* an attribute URI does not catch this — the
 /// body is well-formed JSON either way. Only the variant name matters.
 #[cfg(test)]
-const WIRE_TYPES: [&str; 6] = ["Text", "Entity", "Float", "Integer", "Bytes", "Boolean"];
+const WIRE_TYPES: [&str; 8] = [
+    "Text",
+    "Entity",
+    "Float",
+    "Integer",
+    "Bytes",
+    "Boolean",
+    "float:64",
+    "natural:64",
+];
 
 #[cfg(test)]
 mod wire_types {
