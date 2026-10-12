@@ -60,8 +60,8 @@ pins, checks the wasm against its hash, and hands each event to the release.
 
 **`worker.js` is the release's.** It is the glue generated for the release's
 wasm, with whatever JavaScript that build needs around it, bundled into one
-classic script. It describes its release and gives the bootloader one
-function to call:
+classic script. It adds no listener and takes hold of nothing in the worker.
+It describes its release and exposes methods, and the bootloader calls them:
 
 ```js
 self.release = {
@@ -72,18 +72,62 @@ self.release = {
     wasm: { path: "./worker_bg.wasm", sha256: "…" },
     files: { "guest/guest.js": "…", "library/core.yaml": "…" },
   },
-  start({ wasm, host }) {
-    return { install, activate, fetch, message };
+  // Bring the release up. Called once for each start of the worker.
+  async start({ wasm, host, handover }) {
+    return {
+      // A request from a page of this origin. Answer it, or return nothing
+      // and the bootloader lets it go to the network.
+      async fetch(request, client) {},
+      // A message from a page of this origin.
+      async message(data, ports, client) {},
+      // A message from the host around the space.
+      async receive(data, ports) {},
+      // The worker is about to be replaced. Return what the next one needs.
+      async stop() {},
+    };
   },
 };
 ```
 
-That is the whole of the `v: 1` contract between the two: the bootloader
-gives the release its wasm and a `host` object, and the release gives back
-the handlers events go to. `host` is where the host's stable API lives, and
-where it grows. `manifest` holds whatever is to be known about the release:
-the host version it needs, its own version, the port protocol it speaks, and
-the hash of every other file.
+`manifest` holds whatever is to be known about the release: the host version
+it needs, its own version, the port protocol it speaks, and the hash of
+every other file.
+
+### The host
+
+`host` is the bootloader speaking for the deployment: the one object a
+release is given, and the whole of what it may ask of the worker it runs
+in. It is what stays the same when the deployment is upgraded.
+
+```js
+host = {
+  v: 1,
+  pin, src,                       // what this worker was started for
+  // Pages of this origin.
+  clients: { list(), post(client, data, ports), broadcast(data) },
+  // The host around the space: the app that frames it, and the profile.
+  send(data, ports),              // answers arrive at `receive`
+  // Keep the worker alive until this settles.
+  keep(promise),
+  // Say the space's pin has changed; the bootloader arranges the switch.
+  repin(pin),
+};
+```
+
+The bootloader keeps for itself everything about being a service worker: the
+listeners, `install` and `activate`, claiming pages, replacing itself, and
+keeping the worker alive while a call is answered. It fetches and checks the
+release's files on install. It answers what is the host's own, the shell
+page and `/_release/`, and passes every other request to `fetch`. What a
+release returns from `stop` it hands to the next one as `handover`.
+
+A release in `v: 1` still uses the browser directly for storage, the network
+and keys. It does not use the worker's own globals (`clients`,
+`registration`, `skipWaiting`, the events); those are the bootloader's, and
+`host` is how a release reaches them.
+
+The methods above and `host` are the whole of the `v: 1` contract. Either
+side may gain a method. Neither loses one or changes what one means.
 
 A service worker cannot load JavaScript once it is running, but a classic one
 may name what it imports as it starts. The shell registers the bootloader
