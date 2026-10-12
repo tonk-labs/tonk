@@ -386,7 +386,7 @@ pub(crate) async fn persist_root(
 /// A fresh root record must also be the grant the local prover selects.
 /// Serialize with profile writes; a concurrent pull can still move the head,
 /// so retry that typed conflict with a refreshed view of retained grants.
-async fn reconcile_root_delegation(
+pub(super) async fn reconcile_root_delegation(
     state: &TonkState,
     chain: &DelegationChain,
 ) -> Result<(), TonkWorkerError> {
