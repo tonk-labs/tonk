@@ -318,9 +318,15 @@
         />
 
         <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
-        <!-- Served on every space origin: its shell and its worker. -->
+        <!-- Served on every space origin: its shell, and its worker, which
+             is the bootloader. `release.js` is what the publisher bundles
+             into the release the bootloader loads. `space_worker.js` is
+             where a site's worker was registered before, and retires one
+             still registered there. -->
         <link data-trunk rel="copy-file" href="./assets/space.html" />
         <link data-trunk rel="copy-file" href="./assets/profile.html" />
+        <link data-trunk rel="copy-file" href="./assets/boot.js" />
+        <link data-trunk rel="copy-file" href="./assets/release.js" />
         <link data-trunk rel="copy-file" href="./assets/space_worker.js" />
         <!-- What a site's shell runs before the element runtime: the bridge
              to the page around it, the loader of that runtime, and the

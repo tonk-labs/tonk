@@ -186,9 +186,8 @@
                         throw new Error("the site's worker is out of date and could not be replaced");
                     }
                     say("installing its worker");
-                    await container.register("/space_worker.js", {
+                    await container.register("/boot.js", {
                         scope: "/",
-                        type: "module",
                         updateViaCache: "none",
                     });
                     if (container.controller) return;

@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-// The worker is a module that imports the Rust worker's bindings. Here the
-// bindings are stand-ins, handed in, so the script runs as it ships.
-const SOURCE = readFileSync(join(HERE, "..", "assets", "space_worker.js"), "utf8").replace(
+// The release is a module that imports the Rust worker's bindings. Here the
+// bindings are stand-ins, handed in, so the script runs as it is bundled.
+const SOURCE = readFileSync(join(HERE, "..", "assets", "release.js"), "utf8").replace(
   /^import init, \{ activate \} from "\.\/worker\.js";$/m,
   "const { init, activate } = __rust;",
 );
@@ -72,7 +72,7 @@ function site({
   const told = [];
   const pages = [{ id: "frame", url: `${origin}/`, postMessage: (message) => void told.push(message) }];
   const self = {
-    location: new URL("/space_worker.js", origin),
+    location: new URL("/boot.js", origin),
     addEventListener: (type, listener) => void (listeners[type] = listener),
     skipWaiting: async () => {},
     clients: { claim: async () => {}, matchAll: async () => pages },
@@ -93,7 +93,7 @@ function site({
       return new Response(JSON.stringify({ sites: { app: "https://tonk.test", host: "tonk.test" } }));
     }
     if (path === "/space.html" || path === "/profile.html") return new Response(shell);
-    if (path === "/worker_bg.wasm") return new Response(new Uint8Array([0, 97, 115, 109]));
+    if (path === "/_release/test/worker_bg.wasm") return new Response(new Uint8Array([0, 97, 115, 109]));
     return new Response("from the server", { status: 404 });
   };
   const context = vm.createContext({
@@ -121,6 +121,10 @@ function site({
     },
   });
   vm.runInContext(SOURCE, context);
+  // The release adds no listener of its own: the bootloader asks it for its
+  // handlers, as here, and passes each of the worker's events to one.
+  assert.deepEqual(Object.keys(listeners), [], "the release took hold of the worker's events");
+  Object.assign(listeners, self.release.start({ base: `${origin}/_release/test/worker.js` }));
 
   // The space this origin holds, as a worker that has taken its delegation
   // keeps it: the site is here already, with nothing to ask its host for.

@@ -78,6 +78,27 @@ hash_file_full() {
     printf '%s\n' "$HASH"
 }
 
+# The content identifier of a file: a CIDv1 with the raw codec and the
+# file's SHA-256, in base32. It is what names a release.
+cid_of_file() {
+    printf '01551220%s' "$(hash_file_full "$1")" | awk '
+        BEGIN { hex = "0123456789abcdef"; alphabet = "abcdefghijklmnopqrstuvwxyz234567" }
+        {
+            bits = 0; held = 0; out = "b"
+            for (i = 1; i <= length($0); i++) {
+                held = held * 16 + index(hex, substr($0, i, 1)) - 1
+                bits += 4
+                while (bits >= 5) {
+                    bits -= 5
+                    out = out substr(alphabet, int(held / 2 ^ bits) + 1, 1)
+                    held = held % 2 ^ bits
+                }
+            }
+            if (bits > 0) out = out substr(alphabet, held * 2 ^ (5 - bits) + 1, 1)
+            print out
+        }'
+}
+
 if ! mkdir "$LOCK" 2>/dev/null; then
     echo "stamp-service-worker: another stamp is publishing $DIST" >&2
     exit 1
@@ -132,7 +153,7 @@ cleanup() {
     rm -f "$ASSET_LIST_UNSORTED" "$ASSET_LIST" "$ASSET_GRAPH" "$PAGE_GRAPH"
     rm -f "$ASSET_FILES_UNSORTED" "$ASSET_FILES"
     rm -f "$NORMALIZED_INDEX" "$CANONICAL_INDEX" "$NORMALIZED_SW" "$BUILD_INPUT"
-    rm -f "$LOCK/space-worker"
+    rm -f "$LOCK/space-worker" "$LOCK/release.js" "$LOCK/boot"
     if [ "$RESTORE_FAILED" -eq 0 ]; then
         rm -f "$SW_BACKUP" "$INDEX_BACKUP" "$VERSION_BACKUP" "$MANIFEST_BACKUP"
         rmdir "$LOCK" 2>/dev/null
@@ -160,10 +181,10 @@ if [ "$(grep -c '<meta name="tonk-page-build" content="' "$INDEX")" -ne 1 ]; the
     exit 1
 fi
 
-# A site origin's worker runs the same worker Wasm and pins it by this hash.
+# A site origin's release runs the same worker Wasm and pins it by this hash.
 # Stamped before the resource graph is hashed, so the build identity covers
 # the stamped file; restamping writes the same line.
-SPACE_SW="$DIST/space_worker.js"
+SPACE_SW="$DIST/release.js"
 if [ -f "$SPACE_SW" ]; then
     grep -q '^const WORKER_WASM_HASH = ' "$SPACE_SW" || {
         echo "stamp-service-worker: $SPACE_SW has no WORKER_WASM_HASH declaration" >&2
@@ -178,6 +199,59 @@ if [ -f "$SPACE_SW" ]; then
         exit 1
     }
     mv -f "$SPACE_SW_TMP" "$SPACE_SW"
+fi
+
+# A site origin's worker is the bootloader, which loads a release: the site
+# worker's script bundled with the bindings of the wasm it runs, named by the
+# content identifier of that one file, with the wasm beside it. The
+# bootloader is stamped with the release built here, so a site that pins none
+# runs this one. Bundled from inside the dist, so that what the bundle says
+# of where its parts came from does not depend on where the dist is.
+BOOT="$DIST/boot.js"
+if [ -f "$SPACE_SW" ] && [ -f "$BOOT" ]; then
+    grep -q '^const CURRENT_RELEASE = ' "$BOOT" || {
+        echo "stamp-service-worker: $BOOT has no CURRENT_RELEASE declaration" >&2
+        exit 1
+    }
+    ESBUILD=${ESBUILD_BIN:-esbuild}
+    command -v "$ESBUILD" >/dev/null 2>&1 || {
+        echo "stamp-service-worker: esbuild is required to bundle a release" >&2
+        exit 1
+    }
+    RELEASE_TMP="$LOCK/release.js"
+    (cd "$DIST" && "$ESBUILD" release.js --bundle --format=iife --log-level=error \
+        --outfile=.tonk-stamp.lock/release.js) || {
+        echo "stamp-service-worker: bundling the release failed" >&2
+        exit 1
+    }
+    RELEASE=$(cid_of_file "$RELEASE_TMP")
+    case "$RELEASE" in
+        bafkrei*[!a-z2-7]* | "")
+            echo "stamp-service-worker: malformed release '$RELEASE'" >&2
+            exit 1
+            ;;
+        bafkrei*) ;;
+        *)
+            echo "stamp-service-worker: malformed release '$RELEASE'" >&2
+            exit 1
+            ;;
+    esac
+    if [ "${#RELEASE}" -ne 59 ]; then
+        echo "stamp-service-worker: malformed release '$RELEASE'" >&2
+        exit 1
+    fi
+    rm -rf "$DIST/_release"
+    mkdir -p "$DIST/_release/$RELEASE"
+    mv -f "$RELEASE_TMP" "$DIST/_release/$RELEASE/worker.js"
+    cp "$WORKER_WASM" "$DIST/_release/$RELEASE/worker_bg.wasm"
+    BOOT_TMP="$LOCK/boot"
+    sed -e "s|^const CURRENT_RELEASE = .*|const CURRENT_RELEASE = \"/_release/$RELEASE/worker.js\";|" \
+        "$BOOT" > "$BOOT_TMP"
+    grep -q "^const CURRENT_RELEASE = \"/_release/$RELEASE/worker.js\";$" "$BOOT_TMP" || {
+        echo "stamp-service-worker: bootloader CURRENT_RELEASE verification failed" >&2
+        exit 1
+    }
+    mv -f "$BOOT_TMP" "$BOOT"
 fi
 
 # The publisher owns the resource-graph interface. Enumerate every browser
@@ -200,6 +274,11 @@ while IFS= read -r FILE; do
         # icon set is bumped, each read on its own when something shows it.
         # They are no part of what a page needs to load.
         webawesome/icons/*)
+            continue
+            ;;
+        # A release: what a site's worker loads and no page does. The
+        # bootloader is stamped with it, and that is in the graph.
+        _release/*)
             continue
             ;;
     esac
@@ -264,7 +343,7 @@ ASSET_GRAPH_HASH=$(hash_file "$ASSET_GRAPH")
 # guest code, so an open document can keep running while its sites load again
 # under the new worker.
 grep -v -e '^/guest/' -e '^/tonk-code/' -e '^/tonk-prose/' -e '^/tonk-table/' -e '^/library/' \
-    -e '^/space_worker\.js|' -e '^/space\.html|' -e '^/profile\.html|' \
+    -e '^/space_worker\.js|' -e '^/release\.js|' -e '^/boot\.js|' -e '^/space\.html|' -e '^/profile\.html|' \
     "$ASSET_GRAPH" > "$PAGE_GRAPH" || true
 PAGE_BUILD=$(hash_file "$PAGE_GRAPH")
 # Include the outer service-worker policy without hashing generated identities

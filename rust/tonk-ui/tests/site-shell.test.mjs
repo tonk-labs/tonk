@@ -227,7 +227,8 @@ for (const name of ["space", "profile"]) {
     const site = boot(name, { controlled: false, served: false });
     await settle();
     assert.equal(site.container.registered.length, 1);
-    assert.equal(site.container.registered[0][0], "/space_worker.js");
+    assert.equal(site.container.registered[0][0], "/boot.js");
+    assert.equal(site.container.registered[0][1].type, undefined, "the bootloader is a classic script");
     assert.deepEqual(site.said, ["installing its worker", "waiting for its worker"]);
     assert.deepEqual(site.ran, [], "nothing of the site runs before its worker serves the shell");
 
