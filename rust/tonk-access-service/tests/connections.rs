@@ -777,6 +777,7 @@ async fn connection_worker_standard_revocation_survives_persisted_kv_restart() -
                 .audience(&holder.did())
                 .subject(&holder.did())
                 .command(claim_command)
+                .proofs(vec![])
                 .arguments(claim_args)
                 .expiration(expiry())
                 .try_build()
