@@ -64,6 +64,12 @@ async function main() {
     assert.equal(await kv.get(key), '', 'empty values must remain present revocations');
     const strongKey = `__tonk/revocations/${fixture.target}/${fixture.revoker}`;
     assert.ok(await (await worker.getR2Bucket('BUCKET')).head(strongKey), 'R2 fact must precede acknowledgement');
+    // Model an absent legacy mirror in this disposable fixture: the actual
+    // Worker must still reject from R2, not merely observe Miniflare's fresh KV.
+    await kv.delete(key);
+    for (const invocation of fixture.invocations) await post(invocation, 403);
+    await post(fixture.sibling, 200);
+    await kv.put(key, '');
     await worker.dispose();
     worker = new Miniflare(options);
     for (const invocation of fixture.invocations) await post(invocation, 403);
