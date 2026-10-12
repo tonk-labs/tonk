@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 import ssl
 import subprocess
+import tarfile
 import tempfile
 import threading
 
@@ -34,6 +35,20 @@ def check_static(binary):
         raise RuntimeError("Linux release has a Nix runtime search path")
 
 
+def check_packed_dependencies(platform_archive, wrapper_archive):
+    def manifest(archive):
+        with tarfile.open(archive) as package:
+            return json.load(package.extractfile("package/package.json"))
+    platform = manifest(platform_archive)
+    wrapper = manifest(wrapper_archive)
+    name = "@tonk/cli-linux-x64"
+    if platform.get("name") != name:
+        raise RuntimeError(f"expected packed platform package {name}")
+    version = platform.get("version")
+    if not version or wrapper.get("optionalDependencies", {}).get(name) != version:
+        raise RuntimeError("packed wrapper must declare the exact Linux optional dependency version")
+
+
 def check_npm(binary, root, temp, env, version):
     packages = temp / "packages"
     shutil.copytree(root / "rust/tonk-cli/npm", packages)
@@ -45,6 +60,9 @@ def check_npm(binary, root, temp, env, version):
     for name in ("linux-x64", "cli"):
         result = json.loads(run("npm", "pack", "--json", "--ignore-scripts", cwd=packages / name, env=env))
         archives.append(str(packages / name / result[0]["filename"]))
+    # Explicitly installing both archives below must not mask broken published
+    # metadata: wrapper-only registry installs discover the binary through this.
+    check_packed_dependencies(*archives)
     install = temp / "install"
     install.mkdir()
     (install / "package.json").write_text('{"name":"tonk-release-smoke","version":"1.0.0","private":true}')
