@@ -47,3 +47,35 @@ async fn it_returns_not_found_without_deployment_config() -> anyhow::Result<()> 
     service.stop().await?;
     Ok(())
 }
+
+/// The Discover default is its own document beside `/.well-known/tonk`,
+/// answered whether or not a catalog is configured.
+#[dialog_common::test]
+async fn it_serves_the_discover_catalog_beside_the_deployment_config() -> anyhow::Result<()> {
+    use tonk_worker_api::DiscoverConfig;
+
+    let catalog = "http://localhost:8777/catalog.json";
+    for (setting, expected) in [
+        (Some(catalog), Some(catalog)),
+        (None, None),
+        // Not https and not loopback: advertised as no default at all.
+        (Some("http://example.com/catalog.json"), None),
+    ] {
+        let service = access_service(AccessServiceSettings {
+            template_catalog: setting.map(str::to_owned),
+            ..Default::default()
+        })
+        .await?;
+        let actual: DiscoverConfig = reqwest::get(format!(
+            "{}/.well-known/tonk/discover",
+            service.address.access_service_url
+        ))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+        assert_eq!(actual.catalog.as_deref(), expected, "setting {setting:?}");
+        service.stop().await?;
+    }
+    Ok(())
+}

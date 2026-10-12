@@ -33,7 +33,7 @@
 //! template text is still scanned as a fallback. Keyed by `(view, name)`, so
 //! two views embedding the same style share one node and a re-mount
 //! re-uses it rather than stacking duplicates — the same
-//! marker-and-skip shape [`crate::component`] uses for module scripts.
+//! marker-and-skip shape [`crate::element_source::execute`] uses for module scripts.
 //!
 //! The content is injected as a `<style>` rather than minted as a blob
 //! URL a `<link>` points at. Not because a blob could not work — a

@@ -1,5 +1,10 @@
 // Runs the test access service standalone for local development/benchmarking.
 
+/// The catalog production lists, so a dev stack shows what users see
+/// unless `TEMPLATE_CATALOG_URL` says otherwise.
+#[cfg(not(target_arch = "wasm32"))]
+const DEFAULT_TEMPLATE_CATALOG: &str = "https://goblinoats.github.io/honky-tonks/catalog.json";
+
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -11,8 +16,15 @@ async fn main() -> anyhow::Result<()> {
     // dead-ends. The identity is filled in by the server itself.
     let deployment = Some(DeploymentConfig::default());
 
+    // The Discover tab's default catalog, as `TEMPLATE_CATALOG_URL` sets
+    // it on a deployment. Point it at a locally served catalog to test
+    // one (`TEMPLATE_CATALOG_URL=http://localhost:8777/catalog.json`).
+    let template_catalog = std::env::var("TEMPLATE_CATALOG_URL")
+        .unwrap_or_else(|_| DEFAULT_TEMPLATE_CATALOG.to_owned());
+
     let service = access_service(AccessServiceSettings {
         deployment,
+        template_catalog: Some(template_catalog),
         // Behind a dev proxy the activation links must open on the page
         // origin, not this server's own port.
         public_origin: std::env::var("ACCESS_PUBLIC_ORIGIN").ok(),

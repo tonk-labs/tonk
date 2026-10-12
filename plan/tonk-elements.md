@@ -267,6 +267,10 @@ needs checking before either is planned. Phase 2 at the earliest.
 4. **Pluggable renderer** — `draw()`-implementing elements as view facets.
 5. **Live swap**, if it earns its complexity.
 
-`component` stays as a deprecated alias through at least phase 2 so
-existing branches keep rendering; the directory-mount path is orthogonal
-to the autoloader and can coexist.
+`component` stayed as a deprecated alias through phase 2 so existing
+branches kept rendering. It has since been removed: the concept, its
+directory view and the `<tonk-component>` loader are gone, the standard
+library's own inline modules became elements, and `tonk element` lists
+elements only. A branch still carrying `component` rows keeps the facts
+but nothing loads them; re-author each module as an element (see
+`tonk help views`, "A hand-written module becomes one `define`").

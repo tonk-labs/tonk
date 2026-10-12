@@ -5,15 +5,11 @@
 //! own reading CLI flags and handing the result to
 //! `eval::run_against_site`.
 //!
-//! `build_home_recipe` in particular reproduces a verified shape.
-//! The root concept's
-//! one `with:` field must map to `the: dialog.replica/subject` /
-//! `as: entity` — the only attribute guaranteed already-asserted on
-//! the entity the space-home route renders — and the inline
-//! attribute under `with:` must carry its own `description:` (a hard
-//! analyzer requirement, independent of the concept's own
-//! description). Deviating from the recipe reproduces the "blank
-//! canvas" or "Concept mismatch" failures documented there.
+//! `build_home_recipe` in particular reproduces the canonical
+//! home-route shape documented next to core.yaml's seeded routes: a
+//! space's home is its own `/` route, pinned to `id:space/home-route`,
+//! whose concept picks `replica`/`repo`/`branch` off the tab's site
+//! entity and whose view nests the home's model(s).
 
 use std::fmt::Write as _;
 
@@ -691,13 +687,32 @@ fn validate_attribute_name(name: &str) -> Result<(), AuthoringError> {
     Ok(())
 }
 
-/// Build the space-home recipe: the origin-keyed root concept, its
-/// view (one `<tonk-display model=X />` per model — wrapped in a
-/// `<section>` with an `<h2>` heading when there are 2+ models, a
-/// bare tag when there's exactly one), and the `name!:` repoint of
-/// `id:tonk/space` onto it.
+/// The URI of the space's home-route concept: what `/` renders once a
+/// home is set. Not `space:home` — older spaces carry a `space:home`
+/// concept with different fields, and re-declaring a pinned URI with
+/// another shape merges the fields and never resolves.
+pub const SPACE_HOME_ROUTE_CONCEPT: &str = "space:home-route";
+
+/// The entity the space's `/` route is pinned to. Pinned, re-routing `/`
+/// supersedes the previous home route instead of adding a second `/`
+/// route that would tie with it.
+pub const SPACE_HOME_ROUTE: &str = "id:space/home-route";
+
+/// Build the space-home recipe: the space's own `/` route. A route the
+/// space writes outranks the library's default `/` route
+/// (`tonk:workspace/shell`), so this is all a home takes:
 ///
-/// See the module documentation for why each piece is load-bearing.
+/// - a route concept (`space:home-route`) that picks `replica`, `repo`
+///   and `branch` off the tab's site entity,
+/// - its `ui` view, nesting one `<tonk-display with="{branch}@{repo}"
+///   model=X />` per model (wrapped in a `<section>` with an `<h2>`
+///   heading when there are 2+ models, a bare tag when there's exactly
+///   one),
+/// - and the `route!` itself, pinned to [`SPACE_HOME_ROUTE`] so
+///   repointing the home supersedes rather than adds a second `/`.
+///
+/// Every inline field under `with:` carries its own `description:` (a
+/// hard analyzer requirement).
 pub fn build_home_recipe(models: &[String]) -> String {
     let mut out = String::new();
 
@@ -706,43 +721,60 @@ pub fn build_home_recipe(models: &[String]) -> String {
     // the same const the filter reads, not a second copy of the
     // literal.
     let _ = writeln!(out, "concept!: &{SPACE_HOME_CONCEPT}");
-    out.push_str("  this: space:home\n");
+    let _ = writeln!(out, "  this: {SPACE_HOME_ROUTE_CONCEPT}");
     let _ = writeln!(
         out,
         "  description: {}",
-        quote_string("The space home page, keyed by the repository's own subject DID.")
+        quote_string("The space's home page: what `/` renders.")
     );
     out.push_str("  with:\n");
-    out.push_str("    subject:\n");
-    let _ = writeln!(
-        out,
-        "      description: {}",
-        quote_string("The repository's subject DID.")
-    );
-    out.push_str("      the: dialog.replica/subject\n");
-    out.push_str("      as: entity\n");
+    for (field, attr, ty, what) in [
+        (
+            "replica",
+            "xyz.tonk.site/replica",
+            "entity",
+            "The tab's active replica, picked off the site entity.",
+        ),
+        (
+            "repo",
+            "xyz.tonk.site/repo",
+            "text",
+            "The space repository, picked off the site entity.",
+        ),
+        (
+            "branch",
+            "xyz.tonk.site/branch",
+            "text",
+            "The space branch, picked off the site entity.",
+        ),
+    ] {
+        let _ = writeln!(out, "    {field}:");
+        let _ = writeln!(out, "      description: {}", quote_string(what));
+        let _ = writeln!(out, "      the: {attr}");
+        let _ = writeln!(out, "      as: {ty}");
+        out.push_str("      cardinality: one\n");
+    }
     out.push('\n');
 
     out.push_str("view!:\n");
-    out.push_str("  this: space:home\n");
+    let _ = writeln!(out, "  this: {SPACE_HOME_ROUTE_CONCEPT}");
     out.push_str("  show:\n");
     out.push_str("    ui: |\n");
     let multi = models.len() >= 2;
     for m in models {
+        let display = format!("<tonk-display with=\"{{branch}}@{{repo}}\" model={m} />");
         if multi {
-            let _ = writeln!(
-                out,
-                "      <section><h2>{m}</h2><tonk-display model={m} /></section>"
-            );
+            let _ = writeln!(out, "      <section><h2>{m}</h2>{display}</section>");
         } else {
-            let _ = writeln!(out, "      <tonk-display model={m} />");
+            let _ = writeln!(out, "      {display}");
         }
     }
     out.push('\n');
 
-    out.push_str("name!:\n");
-    out.push_str("  this: id:tonk/space\n");
-    out.push_str("  entity: space:home\n");
+    out.push_str("route!:\n");
+    let _ = writeln!(out, "  this: {SPACE_HOME_ROUTE}");
+    out.push_str("  path: \"/\"\n");
+    let _ = writeln!(out, "  concept: {SPACE_HOME_ROUTE_CONCEPT}");
 
     out
 }
@@ -1173,15 +1205,35 @@ mod tests {
     }
 
     #[test]
-    fn it_builds_the_home_recipe_per_the_verified_shape() {
+    fn it_builds_the_home_recipe_as_the_spaces_root_route() {
+        let doc = build_home_recipe(&["todo".into()]);
+        assert!(doc.contains("concept!: &space-home\n  this: space:home-route\n"));
+        for attr in [
+            "the: xyz.tonk.site/replica",
+            "the: xyz.tonk.site/repo",
+            "the: xyz.tonk.site/branch",
+        ] {
+            assert!(doc.contains(attr), "missing {attr}:\n{doc}");
+        }
+        assert!(doc.contains("view!:\n  this: space:home-route\n  show:\n    ui: |"));
+        assert!(doc.contains("      <tonk-display with=\"{branch}@{repo}\" model=todo />\n"));
+        assert!(doc.contains(
+            "route!:\n  this: id:space/home-route\n  path: \"/\"\n  concept: space:home-route\n"
+        ));
+        assert!(!doc.contains("tonk/space"), "the alias is gone:\n{doc}");
+        assert!(!doc.contains("name!"), "no name binding:\n{doc}");
+        assert!(!doc.contains("dialog.replica/subject"));
+    }
+
+    #[test]
+    fn it_wraps_each_model_of_a_multi_model_home_in_a_section() {
         let doc = build_home_recipe(&["habit".into(), "entry".into()]);
-        assert!(doc.contains("concept!: &space-home"));
-        assert!(doc.contains("this: space:home"));
-        assert!(doc.contains("the: dialog.replica/subject"));
-        assert!(doc.contains("view!:\n  this: space:home\n  show:\n    ui: |"));
-        assert!(doc.contains("<tonk-display model=habit />"));
-        assert!(doc.contains("<tonk-display model=entry />"));
-        assert!(doc.contains("this: id:tonk/space"));
-        assert!(doc.contains("entity: space:home"));
+        assert!(doc.contains(
+            "<section><h2>habit</h2><tonk-display with=\"{branch}@{repo}\" model=habit /></section>"
+        ));
+        assert!(doc.contains(
+            "<section><h2>entry</h2><tonk-display with=\"{branch}@{repo}\" model=entry /></section>"
+        ));
+        assert_eq!(doc.matches("route!:").count(), 1);
     }
 }

@@ -131,12 +131,7 @@ pub(super) async fn prepare_template(reference: &str, core: &Syntax) -> Result<S
         if hex::encode(Sha256::digest(&bytes)) != file.sha256.to_ascii_lowercase() {
             return Err("Template files changed since the catalog was published. Try again after its update completes.".into());
         }
-        let mut text = String::from_utf8(bytes).map_err(|_| "Template source is not UTF-8")?;
-        // These community exports repeat core's component anchor. Retain the
-        // entity and descriptor, letting core own the name during analysis.
-        if matches!(slug.as_str(), "kanoodel" | "welcome") {
-            text = text.replace("concept!: &component\n", "concept!:\n");
-        }
+        let text = String::from_utf8(bytes).map_err(|_| "Template source is not UTF-8")?;
         let syntax = parse_source(source_url, &text).await?;
         match &mut result {
             Some(combined) => combined.expressions.extend(syntax.expressions),
@@ -144,38 +139,96 @@ pub(super) async fn prepare_template(reference: &str, core: &Syntax) -> Result<S
         }
     }
     let mut syntax = result.ok_or("Template has no required source files")?;
-    // Starter space already defines its home. Other catalog entries rely on
-    // the installer's --home option; supply the same home recipe here.
-    if slug != "starter-space" {
-        let home = format!(
-            r#"concept!: &space-home
-  this: space:home
-  description: The space home page.
+    complete_home(&mut syntax, &template.entrypoint, &url).await?;
+    check(core, &syntax).map_err(|e| format!("Template does not fit a new space: {e}"))?;
+    Ok(syntax)
+}
+
+/// The entity a space's home route is pinned to. Re-routing `/` re-asserts
+/// it and supersedes, where a route derived from its body would add a second
+/// `/` row that ties with the first.
+pub(super) const HOME_ROUTE: &str = "id:space/home-route";
+
+/// The canonical home-route recipe (core.yaml, "A space's HOME is its own
+/// `/` route"): the `space:home-route` concept picking the tab's replica,
+/// repository and branch off the site entity, its view rendering `display`
+/// (one line of markup), and the `/` route pinned to [`HOME_ROUTE`]. The
+/// `&space-home` anchor is the name agents look the home up by.
+pub(super) fn home_route_recipe(display: &str) -> String {
+    format!(
+        r#"concept!: &space-home
+  this: space:home-route
+  description: "The space's home page: what `/` renders."
   with:
-    subject:
-      description: The repository's subject DID.
-      the: dialog.replica/subject
+    replica:
+      description: "The tab's active replica, picked off the site entity."
+      the: xyz.tonk.site/replica
       as: entity
+      cardinality: one
+    repo:
+      description: "The space repository, picked off the site entity."
+      the: xyz.tonk.site/repo
+      as: text
+      cardinality: one
+    branch:
+      description: "The space branch, picked off the site entity."
+      the: xyz.tonk.site/branch
+      as: text
       cardinality: one
 
 view!:
-  this: space:home
+  this: space:home-route
   show:
     ui: |
-      <tonk-display model={} />
+      {display}
 
-name!:
-  this: id:tonk/space
-  entity: space:home
-"#,
-            template.entrypoint
-        );
-        syntax
-            .expressions
-            .extend(parse_source(url.clone(), &home).await?.expressions);
+route!:
+  this: {HOME_ROUTE}
+  path: "/"
+  concept: space:home-route
+"#
+    )
+}
+
+/// Give a template a home. One that routes `/` brings its own; one that
+/// does not (catalog entries from before templates routed their home) gets
+/// the home recipe for its `entrypoint`, the route `tonk space home` writes.
+async fn complete_home(syntax: &mut Syntax, entrypoint: &str, base: &Url) -> Result<(), String> {
+    if routes_home(syntax) {
+        return Ok(());
     }
-    check(core, &syntax).map_err(|e| format!("Template does not fit a new space: {e}"))?;
-    Ok(syntax)
+    let home = home_route_recipe(&format!(
+        "<tonk-display with=\"{{branch}}@{{repo}}\" model={entrypoint} />"
+    ));
+    syntax
+        .expressions
+        .extend(parse_source(base.clone(), &home).await?.expressions);
+    Ok(())
+}
+
+/// Whether `syntax` writes a route for `/`.
+fn routes_home(syntax: &Syntax) -> bool {
+    syntax
+        .expressions
+        .iter()
+        .any(|expression| match expression {
+            tonk_notation::Expression::Claim(claim) => is_home_route(&claim.inner),
+            tonk_notation::Expression::Query(_) => false,
+        })
+}
+
+/// Whether `claim` is a route (`route!`, or its `xyz.tonk.route!` attribute
+/// form) whose `path` is "/".
+fn is_home_route(claim: &tonk_notation::Application) -> bool {
+    use tonk_notation::{FieldValue, Scalar};
+
+    matches!(
+        claim.predicate.source.as_str(),
+        "route" | "tonk:route" | "xyz.tonk.route"
+    ) && claim.fields.iter().any(|field| {
+        field.name == "path"
+            && matches!(&field.value, FieldValue::Literal(Scalar::String(path)) if path == "/")
+    })
 }
 
 /// Whether a seed may be fetched from `url` at all.
@@ -332,6 +385,112 @@ mod tests {
             super::prepare_template(&format!("{url}#{slug}"), &core)
                 .await
                 .unwrap_or_else(|error| panic!("{slug}: {error}"));
+        }
+    }
+}
+
+/// What the catalog installer adds for a template's home.
+#[cfg(test)]
+mod home_tests {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
+
+    use super::{HOME_ROUTE, Syntax, Url, check, complete_home, is_home_route, parse_source};
+
+    const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+
+    /// A template's model, without a home of its own.
+    const MODEL: &str = include_str!("../../tests/fixtures/discover/model.yaml");
+
+    fn base() -> Url {
+        Url::parse("https://catalog.example/templates/demo/app.yaml").unwrap()
+    }
+
+    async fn template(text: &str) -> Syntax {
+        parse_source(base(), text)
+            .await
+            .expect("the template parses")
+    }
+
+    /// The `/` routes `syntax` writes, as `(this, concept)` source text.
+    fn home_routes(syntax: &Syntax) -> Vec<(String, String)> {
+        use tonk_notation::{Expression, FieldValue, Scalar};
+
+        let text = |value: &FieldValue| match value {
+            FieldValue::Literal(Scalar::String(text)) => text.clone(),
+            other => format!("{other:?}"),
+        };
+        syntax
+            .expressions
+            .iter()
+            .filter_map(|expression| match expression {
+                Expression::Claim(claim) => Some(&claim.inner),
+                Expression::Query(_) => None,
+            })
+            .filter(|claim| is_home_route(claim))
+            .map(|claim| {
+                let field = |name: &str| {
+                    claim
+                        .fields
+                        .iter()
+                        .find(|field| field.name == name)
+                        .map(|field| text(&field.value))
+                        .unwrap_or_default()
+                };
+                (field("this"), field("concept"))
+            })
+            .collect()
+    }
+
+    async fn fits(syntax: &Syntax) {
+        let core = crate::router::library::parse(CORE)
+            .await
+            .expect("core parses");
+        check(&core, syntax).expect("the template fits a new space");
+    }
+
+    #[dialog_common::test]
+    async fn a_template_without_a_home_gets_the_home_route_for_its_entrypoint() {
+        let mut syntax = template(MODEL).await;
+        assert!(home_routes(&syntax).is_empty());
+
+        complete_home(&mut syntax, "remote-demo", &base())
+            .await
+            .expect("the home completes");
+
+        let routes = home_routes(&syntax);
+        assert_eq!(routes.len(), 1, "one `/` route: {routes:?}");
+        assert!(routes[0].0.contains(HOME_ROUTE), "{routes:?}");
+        assert!(routes[0].1.contains("space:home-route"), "{routes:?}");
+        let markup = format!("{:?}", syntax.expressions);
+        assert!(
+            markup.contains(r#"<tonk-display with=\"{branch}@{repo}\" model=remote-demo />"#),
+            "the home renders the entrypoint"
+        );
+        assert!(
+            !markup.contains("id:tonk/space"),
+            "the installer writes a route, never the alias"
+        );
+        fits(&syntax).await;
+    }
+
+    #[dialog_common::test]
+    async fn a_template_that_routes_its_home_gets_nothing_added() {
+        for route in [
+            "route!:\n  this: id:space/home-route\n  path: \"/\"\n  concept: test:remote-demo\n",
+            "xyz.tonk.route!:\n  this: id:space/home-route\n  concept: test:remote-demo\n  path: \"/\"\n",
+        ] {
+            let mut syntax = template(&format!("{MODEL}\n{route}")).await;
+            let before = syntax.expressions.len();
+
+            complete_home(&mut syntax, "remote-demo", &base())
+                .await
+                .expect("the home completes");
+
+            assert_eq!(syntax.expressions.len(), before, "nothing is added");
+            assert_eq!(home_routes(&syntax).len(), 1);
+            assert!(!format!("{:?}", syntax.expressions).contains("space:home-route"));
+            fits(&syntax).await;
         }
     }
 }

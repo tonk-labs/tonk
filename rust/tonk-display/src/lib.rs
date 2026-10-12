@@ -52,8 +52,6 @@ mod notation_tokens;
 #[cfg(any(target_arch = "wasm32", test))]
 mod blob_url;
 #[cfg(target_arch = "wasm32")]
-mod component;
-#[cfg(target_arch = "wasm32")]
 mod element;
 // The generated-JS half of the author-element runtime. Pure
 // string assembly over folded facts, so its tests run natively;
@@ -98,8 +96,9 @@ mod view;
 /// `<tonk-view>` (the dumb single-template renderer driven by
 /// `<tonk-display>` or any other consumer), `<tonk-notation>`
 /// (syntax-highlighted dialog-yaml notation renderer used as the
-/// carousel's trailing inspection slide), and `<tonk-component>`
-/// (the realm-level loader for author-defined web components).
+/// carousel's trailing inspection slide). Author-defined custom
+/// elements are not registered here: the element registry resolves
+/// each `element!` by tag the first time a view renders it.
 /// Idempotent.
 #[cfg(target_arch = "wasm32")]
 pub fn register() {
@@ -113,6 +112,5 @@ pub fn register() {
     element::register();
     fallback::register();
     font::register();
-    component::register();
     upload::register();
 }

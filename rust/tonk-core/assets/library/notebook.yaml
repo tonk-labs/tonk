@@ -133,17 +133,15 @@ concept!: &block/chain
 # ---------------------------------------------------------------------------
 # NOT the space shell.
 #
-# This library used to re-point `id:tonk/space` — the cardinality-one alias
-# core.yaml resolves to `tonk:blank` — at a notebook model, so installing the
-# notebook silently REPLACED the space home for the whole branch. Core's space
-# route renders through that alias (`<tonk-display entity={replica}
-# model=tonk/space>`), so the two libraries fought over one slot and whichever
-# landed last won.
+# A space's home is its own `/` route. A library that adds a feature must
+# not seize the home page to do it: an earlier version of this library
+# pointed the space home at a notebook model, so installing the notebook
+# silently REPLACED the home for the whole branch, and the two libraries
+# fought over one slot.
 #
-# A library that adds a feature must not seize the home page to do it. The
-# notebook is reached through its own `/notebook` routes below; the space home
-# stays whatever the space chose. An author who does want a notebook as their
-# landing page re-points the alias themselves, which is what that slot is for.
+# The notebook is reached through its own `/notebook` routes below; `/`
+# stays whatever the space routed. An author who does want a notebook as
+# their landing page routes `/` at it themselves.
 # ---------------------------------------------------------------------------
 
 # ONE notebook. The element reads two hidden row sets: the notebook's own

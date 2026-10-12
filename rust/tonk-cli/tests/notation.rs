@@ -682,13 +682,7 @@ mod eval_home {
     }
 
     async fn render_home(test: &common::TestSite) -> Result<String> {
-        let replica = tonk_cli::data_ops::query(&test.site, "tonk/replica", false).await?;
-        let entity = replica
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("this: ").map(str::to_owned))
-            .expect("a fresh site has a replica entity");
-        let route = tonk_cli::render::RenderRoute::parse(&format!("{entity}@tonk/space"))?;
-        Ok(tonk_cli::render::render(&test.site, &route).await?)
+        test.render_root().await
     }
 
     #[dialog_common::test]

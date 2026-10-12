@@ -820,7 +820,11 @@ mod when_printing_notation_for_a_write {
         assert_eq!(revision(&test).await?, before);
 
         let home = tonk_cli::data_ops::home(&test.site, &["habit".into()], notation()).await?;
-        assert!(home.contains("tonk/space"), "{home}");
+        assert!(
+            home.contains("route!:\n  this: id:space/home-route\n  path: \"/\"\n"),
+            "{home}"
+        );
+        assert!(!home.contains("tonk/space"), "{home}");
         assert_eq!(revision(&test).await?, before);
 
         test.eval_inline("habit!: &reading\n  name: \"Read\"\n")

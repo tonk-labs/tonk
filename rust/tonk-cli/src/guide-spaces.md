@@ -10,6 +10,10 @@ directory binding created by `tonk space use <name>`. There is no global
 fallback. In automation, pin the space per process or bind a dedicated working
 directory once.
 
+A space opens at its home page: its own `/` route, which `tonk space home
+<concept>` writes (a fresh space shows the library's blank canvas there).
+Other pages are routes too; see `tonk help views`.
+
 `tonk space` lists registered spaces and marks the active one. `tonk space
 use <name>` binds the current directory and its descendants. `tonk space
 unbind` removes an exact binding; run it from the bound directory or pass its

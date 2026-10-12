@@ -19,6 +19,7 @@ mod analytics;
 mod claim;
 mod conclusion;
 mod deployment;
+mod discover;
 mod evaluate;
 mod identify;
 mod identity;
@@ -40,6 +41,7 @@ pub use analytics::{ANALYTICS_MESSAGE, AnalyticsEvent, AnalyticsMessage};
 pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};
 pub use deployment::DeploymentConfig;
+pub use discover::{CatalogRefusal, DiscoverConfig, admit_catalog_url};
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
 pub use identity::{

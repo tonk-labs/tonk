@@ -86,6 +86,11 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
     router
         // Browser deployment configuration must run before static assets.
         .get_async("/.well-known/tonk", handlers::config::handle)
+        // The Discover tab's default catalog, from `TEMPLATE_CATALOG_URL`.
+        .get_async(
+            "/.well-known/tonk/discover",
+            handlers::config::handle_discover,
+        )
         // The service's DID document: its ed25519 key under the host's
         // did:web name.
         .get_async(

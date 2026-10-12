@@ -365,32 +365,32 @@ check('rewriting the same value fires nothing', await page.evaluate(async () => 
   return afterReplay === 1 && globalThis.hits === 1;
 }));
 
-// 14. A legacy `component` module and a table-driven `element` share
-// the realm. The old shape calls `customElements.define` itself; the
-// new one goes through the table. Neither knows about the other, which
-// is exactly why a branch can carry both without migrating.
-check('a legacy module and a table-driven element coexist', await page.evaluate(() => {
-  // What `<tonk-component>` injects for a `component` row.
+// 14. A class some other script registered with `customElements.define`
+// and a table-driven `element` share the realm. Neither knows about the
+// other: the runtime's table is per-tag, so a direct registration --
+// third-party code, a library loaded by an element's own method -- is
+// simply another tag.
+check('a directly registered class and a table-driven element coexist', await page.evaluate(() => {
   const script = document.createElement('script');
-  script.textContent = `customElements.get('legacy-widget') || customElements.define('legacy-widget',
-    class extends HTMLElement { connectedCallback() { this.textContent = 'legacy'; } });`;
+  script.textContent = `customElements.get('foreign-widget') || customElements.define('foreign-widget',
+    class extends HTMLElement { connectedCallback() { this.textContent = 'foreign'; } });`;
   document.head.append(script);
 
   defineTonkElement('modern-widget', { connected: (self) => { self.textContent = 'modern'; } });
 
-  const legacy = document.createElement('legacy-widget');
+  const foreign = document.createElement('foreign-widget');
   const modern = document.createElement('modern-widget');
-  document.body.append(legacy, modern);
-  return legacy.textContent === 'legacy' && modern.textContent === 'modern';
+  document.body.append(foreign, modern);
+  return foreign.textContent === 'foreign' && modern.textContent === 'modern';
 }));
 
-// 15. Editing the modern one still live-swaps with a legacy element
-// present — the table is per-tag, so the legacy registration is
-// untouched.
-check('editing an element leaves a legacy neighbour alone', await page.evaluate(() => {
+// 15. Editing the table-driven one still live-swaps with a directly
+// registered element present -- the table is per-tag, so the foreign
+// registration is untouched.
+check('editing an element leaves a directly registered neighbour alone', await page.evaluate(() => {
   defineTonkElement('modern-widget', { connected: (self) => { self.textContent = 'modern v2'; } });
   return document.querySelector('modern-widget').textContent === 'modern v2'
-      && document.querySelector('legacy-widget').textContent === 'legacy';
+      && document.querySelector('foreign-widget').textContent === 'foreign';
 }));
 
 // --- on-demand resolution -------------------------------------------

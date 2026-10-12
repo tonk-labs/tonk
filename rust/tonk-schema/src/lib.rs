@@ -123,6 +123,9 @@ pub use site::{
 mod identity;
 pub use identity::{ProfileIdentity, ProfileName};
 
+mod discover;
+pub use discover::{CatalogReceipt, DiscoverCatalog};
+
 mod recovery;
 mod roster;
 pub use recovery::RecoveryPasskey;

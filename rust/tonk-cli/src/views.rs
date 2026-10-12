@@ -296,9 +296,9 @@ async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String
             continue;
         };
         if let Value::Entity(target) = claim.is {
-            // The relation is many-to-one — `space:home`, for one,
-            // answers to both `space-home` and the `tonk/space` alias —
-            // so inverting it has to pick. Take the lexicographically
+            // The relation is many-to-one — one entity can answer to
+            // an anchor and to a bookmark name besides — so inverting
+            // it has to pick. Take the lexicographically
             // first, which at least makes the listing reproducible
             // instead of leaving it to claim order.
             match out.entry(target) {

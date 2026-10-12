@@ -26,7 +26,7 @@
       budget();
       if (node.nodeType === Node.TEXT_NODE) return snapshot.createTextNode(node.textContent.slice(0, 4000).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ''));
       if (node.nodeType !== Node.ELEMENT_NODE) return snapshot.createTextNode('');
-      if (node.matches('script, style, link, template, [hidden], tonk-component, iframe, video, audio, input, textarea, select, [contenteditable]')) {
+      if (node.matches('script, style, link, template, [hidden], iframe, video, audio, input, textarea, select, [contenteditable]')) {
         return snapshot.createTextNode('');
       }
       if (node instanceof HTMLCanvasElement) {

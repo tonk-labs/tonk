@@ -9,7 +9,9 @@ Catalog updates at the same URL and slug retain the same ID; URL or slug changes
 start a new identity. No raw catalog URL, template title, space name, or content is
 sent. To label reports, hash public references from the Discover catalog using
 `tonk_analytics::anonymize` and maintain that mapping in the report. For example,
-with a downloaded catalog (the URL must match `catalog-url` in `profile.yaml`):
+with a downloaded catalog (the URL must be the one the template was copied from: the
+deployment's `TEMPLATE_CATALOG_URL` in `wrangler.toml`, served at
+`/.well-known/tonk/discover`, or a catalog the account owner added in Discover):
 
 ```python
 import hashlib
