@@ -1,0 +1,81 @@
+name: 'CLI artifact smoke tests'
+
+on:
+  workflow_call:
+    inputs:
+      release-signed:
+        type: boolean
+        default: false
+      expected-version:
+        type: string
+        default: ''
+
+jobs:
+  linux:
+    name: 'Smoke Linux CLI (${{ matrix.image }})'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['node:24-bookworm-slim', 'node:24-alpine']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the portability guard
+        run: python3 scripts/tests/test-cli.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-linux-x86_64
+          path: artifacts
+      # Keep Nix entirely outside the runtime. Test precisely the uploaded bytes
+      # and the npm wrapper/package layout, on both glibc and musl distributions.
+      - name: Test without a Nix store
+        env:
+          IMAGE: ${{ matrix.image }}
+          EXPECTED_VERSION: ${{ inputs.expected-version }}
+        run: |
+          docker run --rm -e EXPECTED_VERSION -v "$GITHUB_WORKSPACE:/source:ro" "$IMAGE" sh -ec '
+            if command -v apk >/dev/null; then
+              apk add --no-cache python3 binutils openssl ca-certificates
+            else
+              apt-get update
+              apt-get install -y --no-install-recommends python3 binutils openssl ca-certificates
+            fi
+            python3 /source/scripts/check-cli.py /source/artifacts/tonk --platform linux-x64 --expected-version "$EXPECTED_VERSION"
+          '
+
+  macos:
+    name: 'Smoke macOS arm64 CLI'
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Use OpenSSL 3 for the local TLS fixture
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          brew list --versions openssl@3 >/dev/null || brew install openssl@3
+          echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
+      - name: Test the artifact guard
+        run: python3 scripts/tests/test-cli.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-macos-arm64
+          path: artifacts
+      # A fresh native runner, without installing Nix. PR builds are ad-hoc
+      # signed; only release callers request Developer ID/notarization checks.
+      - name: Test downloaded macOS artifact and npm launcher
+        env:
+          RELEASE_SIGNED: ${{ inputs.release-signed }}
+          EXPECTED_VERSION: ${{ inputs.expected-version }}
+        run: |
+          args=()
+          if [[ "$RELEASE_SIGNED" == "true" ]]; then args+=(--release-signed); fi
+          python3 scripts/check-cli.py artifacts/tonk --platform darwin-arm64 \
+            --expected-version "$EXPECTED_VERSION" "${args[@]}"
