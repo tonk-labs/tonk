@@ -54,6 +54,7 @@ mod account_deletion;
 mod ceremony;
 pub(crate) mod customer;
 mod email_status;
+mod link_timing;
 mod sign_in_via;
 
 pub(crate) mod account_state;

@@ -559,7 +559,7 @@ fn open_host(guest_restore: Option<Box<dyn FnOnce()>>, html: &str) -> Option<Ele
     let _ = host.set_attribute("aria-labelledby", "tonk-register-head");
     let _ = host.set_attribute("aria-describedby", "tonk-register-status");
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if let Some(path) = current_local_space_link_path() {
+    if let Some(path) = current_link_path() {
         let _ = host.set_attribute(RETURN_PATH, &path);
     }
     host.set_inner_html(html);
@@ -3056,12 +3056,12 @@ fn finish_account_navigation(host: &Element) {
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 fn account_completion_destination(saved: Option<&str>) -> &str {
     saved
-        .filter(|value| value.starts_with("/space/") || is_local_space_link_destination(value))
+        .filter(|value| value.starts_with("/space/") || is_link_destination(value))
         .unwrap_or("/")
 }
 
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-fn is_local_space_link_destination(value: &str) -> bool {
+fn is_link_destination(value: &str) -> bool {
     let Ok(url) = url::Url::parse(&format!("https://tonk.local{value}")) else {
         return false;
     };
@@ -3070,16 +3070,24 @@ fn is_local_space_link_destination(value: &str) -> bool {
         && url.origin().ascii_serialization() == "https://tonk.local"
         && url.path() == "/settings/link"
         && url.fragment().is_none()
-        && url
-            .query_pairs()
-            .any(|(key, value)| key == "intent" && value == "local-space-link")
-        && url
-            .query_pairs()
-            .any(|(key, value)| key == "request" && !value.is_empty())
+        && {
+            let parameter = |name: &str| {
+                url.query_pairs()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| value)
+            };
+            let local_space = parameter("intent").as_deref() == Some("local-space-link")
+                && parameter("request").is_some_and(|value| !value.is_empty());
+            // Return to the approval page, never directly to its callback.
+            // The existing approval flow validates the request and asks for consent.
+            let device = parameter("audience").is_some_and(|value| !value.is_empty())
+                && parameter("callback").is_some_and(|value| !value.is_empty());
+            local_space || device
+        }
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn current_local_space_link_path() -> Option<String> {
+fn current_link_path() -> Option<String> {
     let location = web_sys::window()?.location();
     let candidate = format!(
         "{}{}{}",
@@ -3087,7 +3095,7 @@ fn current_local_space_link_path() -> Option<String> {
         location.search().ok()?,
         location.hash().ok()?
     );
-    is_local_space_link_destination(&candidate).then_some(candidate)
+    is_link_destination(&candidate).then_some(candidate)
 }
 
 /// Return to the surface the ceremony replaced.
@@ -3442,8 +3450,48 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn account_creation_returns_to_the_pending_device_link() {
+        let window = web_sys::window().unwrap();
+        let history = window.history().unwrap();
+        let original = window.location().href().unwrap();
+        let target = "/settings/link?audience=did%3Akey%3Atest&callback=http%3A%2F%2F127.0.0.1%3A54321%2Fcallback%3Fstate%3Dbound-state&name=Tonk%20Desktop&expectedAccount=did%3Akey%3Aaccount";
+        history
+            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(target))
+            .unwrap();
+        let host = super::open_host(None, "").unwrap();
+        assert_eq!(
+            host.get_attribute(super::RETURN_PATH).as_deref(),
+            Some(target)
+        );
+        // Completion must use the saved route, even if the ceremony changed it.
+        history
+            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/account"))
+            .unwrap();
+        super::finish_account_navigation(&host);
+        assert_eq!(
+            format!(
+                "{}{}",
+                window.location().pathname().unwrap(),
+                window.location().search().unwrap()
+            ),
+            target
+        );
+        assert!(!host.is_connected());
+        history
+            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"))
+            .unwrap();
+        let normal = super::open_host(None, "").unwrap();
+        assert!(!normal.has_attribute(super::RETURN_PATH));
+        super::close();
+        history
+            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original))
+            .unwrap();
+    }
+
     #[dialog_common::test]
-    fn account_completion_only_accepts_local_space_routes() {
+    fn account_completion_only_accepts_space_and_link_routes() {
         assert_eq!(
             super::account_completion_destination(Some("/space/example")),
             "/space/example"
@@ -3453,8 +3501,21 @@ mod tests {
             super::account_completion_destination(Some(local_link)),
             local_link
         );
+        for link in [
+            "/settings/link?audience=did%3Akey%3Atest&callback=http%3A%2F%2F127.0.0.1%3A54321%2Fcallback%3Fstate%3Dbound-state",
+            "/settings/link?audience=did%3Akey%3Atest&callback=https%3A%2F%2Fexample.test%2Foauth%2Fcontinue&name=ChatGPT",
+        ] {
+            assert_eq!(super::account_completion_destination(Some(link)), link);
+        }
         for destination in [
             None,
+            Some("/settings/link?audience=device"),
+            Some("/settings/link?callback=http://127.0.0.1:54321"),
+            Some("/settings/link?audience=&callback=http://127.0.0.1:54321"),
+            Some("/settings/link?audience=device&callback="),
+            Some("/settings/link?audience=device&callback=http://127.0.0.1:54321#fragment"),
+            Some("//elsewhere.test/settings/link?audience=device&callback=callback"),
+            Some("/account?audience=device&callback=callback"),
             Some("https://elsewhere.test/space/example"),
             Some("//elsewhere.test/space/example"),
             Some("/settings/link#tonk-terminal-v1=x"),

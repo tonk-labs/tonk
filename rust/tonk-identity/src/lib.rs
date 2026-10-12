@@ -24,6 +24,8 @@ pub mod custody;
 pub mod delegation;
 pub mod envelope;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod handoff;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod install;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod passkey;

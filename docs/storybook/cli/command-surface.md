@@ -35,6 +35,11 @@ sync modifiers. When a remote is unavailable, local-first commands either
 complete locally with an explicit deferred-sync result or fail before a
 remote-required mutation. A rerun inspects current state and is safe.
 
+For `ACCT-C14`, committed scoped-tool content edits skip account-directory
+recording and do not emit an account-directory update warning. Local write
+verification and remote push reporting still apply. The executable regression
+is `connection_command_imports_bearer_restarts_and_keeps_account_state`.
+
 ## Task-focused agent workflow
 
 For `DATA-08`, bare `show` gives a bounded application-concept overview with
