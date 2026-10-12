@@ -29,7 +29,7 @@ use worker::{Bucket, ByteStream, Range};
 
 use crate::cached::{blob_key, block_key};
 use crate::handlers::object::store;
-use crate::permit::{Claims, Method, Precondition};
+use crate::operation::{Method, Operation, Precondition};
 
 /// The bucket behind the access service, as a provider.
 #[derive(Clone)]
@@ -49,14 +49,21 @@ fn cell_key(subject: &Did, space: &str, cell: &str) -> String {
     format!("{subject}/{space}/{cell}")
 }
 
-fn claims(method: Method, key: String, body: Option<&[u8]>, precondition: Precondition) -> Claims {
-    Claims {
+fn claims(
+    method: Method,
+    key: String,
+    body: Option<&[u8]>,
+    precondition: Precondition,
+) -> Operation {
+    Operation {
         method,
         key,
-        expires: 0,
+        digest: None,
+        size: None,
+        range: None,
+        immutable: false,
         sha256: body.map(|body| Sha256::digest(body).to_vec()),
         precondition,
-        revocations: None,
     }
 }
 

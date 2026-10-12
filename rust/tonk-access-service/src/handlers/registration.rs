@@ -439,7 +439,7 @@ impl crate::vault::Vault for WorkerVault {
             .map_err(|error| VaultError::Unavailable(error.to_string()))?;
         // The permit is never presented anywhere, so it carries no
         // expiry worth setting.
-        let claims = crate::permit::Claims::lift(&permit, super::ucan::authorizer_address(), 0)
+        let claims = crate::operation::Operation::lift(&permit, super::ucan::authorizer_address())
             .map_err(VaultError::Unavailable)?;
         let sealed = worker::js_sys::Uint8Array::from(sealed).into();
         match super::object::store::put(&self.bucket, &claims, sealed).await {

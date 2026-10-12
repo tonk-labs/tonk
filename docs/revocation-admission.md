@@ -1,103 +1,109 @@
-# Revocation admission barrier (BUG-138)
+# Direct UCAN admission (BUG-138)
 
-## Guarantee and boundary
+Every data operation verifies the original signed UCAN chain at execution:
+proof scope, ancestor expiry, signatures, entitled revokers and provisioning.
+Request-local operation metadata is not a credential and has no independent
+expiry. The service no longer issues or accepts HMAC object authority.
 
-After all removal receipts have succeeded against the updated service, subsequent
-UCAN authorization and object-permit redemption refuse the removed grants and
-all descendant authority. Each dependency retains the chain verifier's per-link
-revoker scope. Unrelated grants and unrevoked leaves remain valid.
+After all removal receipts succeed against updated instances, subsequent
+admissions reject that grant and descendants. Independent grants remain valid.
+Already-admitted operations can finish; this is not a drain or a guarantee that
+no write commits after the removal receipt. Downloaded data cannot be recalled.
 
-This is an **admission barrier**, not an in-flight-operation drain. A request
-which passed its last authority check before removal may still complete afterward.
-Downloaded bytes and local edits cannot be recalled. If the contract requires
-that no already-admitted write commit after acknowledgement, a coordinator that
-serializes revocation and mutation commits is still required; this patch does not
-claim that stronger contract.
+## Revocation storage
 
-## Storage and compatibility
+The existing R2 `BUCKET` stores monotonic empty facts under
+`__tonk/revocations/{delegation CID}/{revoker DID}`. Subject-scoped capabilities
+cannot address this service prefix. These facts must never expire or be covered
+by object lifecycle deletion. They bypass the object cache.
 
-The existing `BUCKET` R2 binding stores monotonic, empty revocation facts under
-`__tonk/revocations/{delegation CID}/{revoker DID}`. Ordinary storage capabilities
-are scoped under subject DIDs and cannot address this reserved prefix. Never
-expire, delete, or apply bucket lifecycle cleanup to these security facts.
+New facts are mirrored to `REVOCATIONS_KV` first, then R2; acknowledgment requires
+both. A failed write returns failure and can be retried. Existing R2 facts are
+idempotent. Legacy KV facts remain consulted so earlier removals are preserved;
+this cannot retroactively remove the old propagation window for old receipts.
+Lookups fail closed on infrastructure errors, without calling them revocations.
+The pinned verifier's per-link candidate scope is retained; unrelated proof
+material does not become an authority dependency.
 
-R2 binding reads bypass the HTTP cache. Cloudflare documents strongly consistent
-object reads and listing, globally following an acknowledged write:
-https://developers.cloudflare.com/r2/reference/consistency/
+## Transport compatibility
 
-`REVOCATIONS_KV` remains a legacy mirror. New facts are written to KV first, then
-R2; acknowledgement requires both. If KV fails, the call fails. If R2 fails after
-KV succeeds, the call fails and retry can complete the barrier. Existing R2 facts
-are idempotent without another write. Replaying a valid legacy revocation also
-records it in R2 before returning success. Legacy-only facts remain checked in
-KV, preserving earlier removals; this does not retroactively eliminate the old
-KV propagation window for old receipts.
+Modern Authorization-header requests execute directly. Legacy CBOR redeems
+return the existing Permit-shaped transport description: POST `/ucan/`, the
+**original** signed invocation in Authorization, and its full invocation CID in
+the query. The query only separates old clients' URL-keyed read flights; it never
+authorizes. Each execution verifies the chain again, so timely redemption cannot
+extend ancestor expiry or evade subsequent removal. Unsupported or malformed
+operations never fall back to bearer authority.
 
-All data-plane entry points and registration authority checks use the same
-index. Missing bindings or failed lookups fail closed. No negative result is
-cached in the service. A storage failure is not evidence of revocation.
+Old `/object/*` URLs return typed 401 `ReauthorizationRequired`, including GET,
+PUT and DELETE. Cached legacy reads invalidate and redeem once. In-flight older
+writes/deletes are not automatically retried and may surface one operation
+failure across cutover; callers must retry according to the operation's CAS
+semantics. This cutover was explicitly approved; no deployment is authorized.
 
-New signed object permits include the exact revocation selectors observed while
-verifying the invocation. Redemption checks them again before any object I/O,
-including GET, PUT without a checksum, and DELETE. Legacy signed permits without
-selectors return 401 `ReauthorizationRequired`; clients must reauthorize using
-their original invocation. The pinned client automatically drops and retries a
-cached GET permit once on 401/403. A noncached permit, including PUT/DELETE,
-returns the rejection and needs an operation retry. This distinction is inspected
-in dialog-remote-ucan-s3/provider.rs; automatic retry with a legacy deployed
-client has not been run end to end. The server's legacy 401 behavior for all
-three methods is covered by executed HTTP tests.
-A direct subject-signed operation may legitimately have an empty selector list;
-absence of the field is distinct from an explicit empty list.
+Legacy read caches omit Range. A descriptor executes only its signed range.
+A mismatched requested Range, including absent versus present, returns 401 so a
+cached read redeems the current invocation. An old client's **concurrent cold
+reads of different ranges of the same blob** can share one redeem while neither
+is marked cached: the mismatching read is safely rejected and is not retried by
+that old provider. The standalone v0.6.15 probe documents this case, alongside
+sequential cached-range recovery and concurrent distinct-object reads. The failure
+is `Authorization(UnavailableProof { link: "blob read failed: 401 Unauthorized" })`;
+an explicit retry on the same client recovered the exact requested range in both
+fixture variants. Earlier
+or external clients are not covered by running that probe. v0.6.16/17 and current
+clients default to Direct; explicit legacy transport remains subject to its
+cache behavior. Do not promise transparent recovery for all old reads.
 
-## Rollout and rollback
+## Streaming, cache and response semantics
 
-No new binding, table, credential, or manifest migration is introduced. Deployment
-is still an operational change and has not been performed by this implementation.
-Complete the access-service rollout across all serving instances before exposing
-the updated confirmation copy or promising the admission guarantee. Mixed old
-instances can still authorize through stale KV and redeem legacy permits.
+Known-length uploads have no new application upload cap. Signed blob size also
+supplies the length for headerless uploads. The Worker forwards chunks with
+backpressure, retaining one final byte until EOF, declared and signed sizes,
+SHA-256 and BLAKE3 validate. R2 never receives a complete invalid body. Empty
+uploads validate before storage. Incoming failures, truncation and extra data
+abort the stream; validation is never implemented as overwrite-then-delete.
+Headerless archive/cell uploads retain the historical direct transport's collect
+fallback. The collected bytes must be nonempty (otherwise 411), and all signed
+checksums/digests validate before storage; invalid bodies never replace an object.
+This narrow fallback retains the preexisting **unbounded-buffer risk**. It needs
+a separately designed limit or spooling solution; not all uploads use bounded
+memory. The historical 32MiB check only inspected optional Content-Length and
+never bounded this headerless path. Known-length and signed-size uploads use the
+streaming validator without a new 32MiB cap. Metering records the actual collected
+length only on successful storage, and descriptor issuance records no transfer.
 
-The KV-first mirror preserves new facts if code is rolled back, but rollback to
-old code loses strong consistency and permit-redemption enforcement. Do not claim
-the admission guarantee after rollback. Keep the new R2 facts permanently.
+Platform/R2 limits still apply. The native test helper shares the validator;
+its local S3 reads and uploads remain buffered and do not prove Worker memory use.
+The LocalS3 fixture accepts truncated request bodies; the helper validates uploads
+fully before sending them there. Worker atomic-abort evidence comes from the
+production Wasm/R2-binding fixture, not the native S3 server.
 
-## Cost, latency, and required release validation
+Archive/blob data caches are accessed only after authorization and provisioning.
+Keys encode the entire raw object key in a versioned namespace. Fills use a
+separate R2 response stream, without a Rust whole-object buffer or response tee.
+As before, bypass skips lookup but still fills. Memory cells are never cached.
+Ranges, ETags, missing404, CAS412 and POST/Authorization CORS remain supported.
+Conditional DELETE retains the existing R2 HEAD-then-DELETE limitation: it is not
+an atomic compare-and-delete. Upload bytes are recorded at successful execution,
+not descriptor issuance; rejected payloads and infrastructure failures are not
+successful uploads.
 
-Each selector with at most four principals performs concurrent R2 HEAD reads,
-then the legacy KV check on a miss. Broader selectors use paginated R2 and KV
-listing instead of unbounded HEAD fan-out. Object redemption now performs these
-checks on every network request. This adds storage requests, latency, and a
-fail-closed dependency on R2/KV availability. No production latency or cost
-benchmark has been performed. Measure representative chain depths, high fan-out,
-large object streams, and cold/hot edges before rollout.
+## Validation and rollout limits
 
-Native tests exercise fresh/direct requests, old read/write permits, ancestor
-revocation, copied bearers, independent grants, partial leaf removal, repeated
-revocation, missing legacy selectors, unchecksummed claims and index failures.
-They do not establish live Cloudflare behavior. Before release, run disposable
-Workers integration tests across locations with warmed negative KV results;
-verify KV-first/R2-second failure and retry, paginated listing, R2 object lifecycle
-rules, legacy-client retry, and no access through a remaining old deployment.
-Use a slow in-flight PUT to confirm and document the admission boundary rather
-than claiming it is drained by removal.
+`tests/connections.rs` covers fresh/direct and original-descriptor execution,
+partial removal, descendant/copy authority, independent chains, unsupported
+escalation, expiry, payload validation, ranges, empty uploads and CAS.
+`upload.rs` tests truncation, extra data, read errors, both digests, zero bodies
+and final-byte retention. `scripts/test-connection-worker.sh` exercises the actual
+production Wasm against disposable Miniflare R2/KV/D1, including absent KV mirrors,
+restart, storage failure, metering and a 33MiB upload. The optional standalone
+legacy probe runs pinned v0.6.15 client code, not a rewritten client emulator.
 
-## Proof shape and URL bounds
-
-The pinned verifier requires one ordered root-to-leaf proof sequence. It does not
-search alternative branches. Only the invocation's referenced `prf` entries are
-queried; unrelated proof material in the container is excluded. The regression
-includes an unused, later-revoked proof path and verifies both its old permit and
-fresh authorization still work.
-
-Selectors grow with proof depth (candidate prefixes can make this quadratic).
-The service refuses to issue a URL exceeding 16 KiB rather than truncating a
-security dependency or returning an unusable URL. Such callers must use direct
-UCAN access or a shorter chain. This is a representation limit for deep chains,
-not a new permission. Cloudflare's documented request-URL bound:
-https://developers.cloudflare.com/workers/platform/limits/
-
-Measured URL sizes in native fixtures: an actual two-link grant produced 1,061
-bytes; synthetic 2-, 3-, and 8-link chains produced 957, 1,370, and 4,617 bytes.
-The 32-link synthetic case is explicitly refused at issuance. These fixtures
-use compact did:key principals, not an upper bound on arbitrary DID lengths.
+These tests do not establish live multi-location Cloudflare behavior. Release
+validation still needs warmed legacy KV misses across locations, storage-write
+failure/retry ordering, pagination, lifecycle rules and representative latency
+and cost. Full rollout is necessary before promising the admission barrier;
+mixed old instances and rollback to bearer-serving code lose the guarantee.
+No merge, production deployment, credential rotation or binding change is part
+of this PR.

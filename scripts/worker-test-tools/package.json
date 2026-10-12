@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "description": "Disposable production-Wasm integration test runtime; never deployed",
+  "dependencies": {
+    "miniflare": "5.20260831.0-alpha",
+    "cbor-x": "1.6.6"
+  }
+}

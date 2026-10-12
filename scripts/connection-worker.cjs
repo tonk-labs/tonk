@@ -4,14 +4,34 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { Miniflare, convertV4MiniflareOptions } = require('miniflare');
+const { decode } = require('cbor-x');
 
 async function main() {
   const [shim, fixtureFile, root, state] = process.argv.slice(2);
   const fixture = JSON.parse(fs.readFileSync(fixtureFile, 'utf8'));
+  const faultShim=path.join(path.dirname(shim),'fault-fixture.mjs');
+  fs.writeFileSync(faultShim,`import worker from './${path.basename(shim)}';
+export default {fetch(req,env,ctx) {
+ // Fetch normalizes an empty stream to Content-Length:0. Remove only that
+ // synthetic header to exercise the production empty headerless fallback.
+ if(req.headers.get('x-test-no-length') && req.headers.get('Content-Length')==='0') {
+   req=new Request(req);req.headers.delete('Content-Length');
+ }
+ if(req.headers.get('x-test-no-length') && req.headers.has('Content-Length')) throw new Error('fixture unexpectedly supplied Content-Length');
+ if(req.headers.get('x-test-storage-failure')) {
+  const bucket=env.BUCKET;
+  env={...env,BUCKET:new Proxy(bucket,{get(target,name) {
+   if(name==='get') return (...args)=>String(args[0]).startsWith('__tonk/')?target.get(...args):Promise.reject(new Error('injected storage failure'));
+   const value=Reflect.get(target,name);return typeof value==='function'?value.bind(target):value;
+  }})};
+ }
+ return typeof worker === 'function' ? new worker(ctx,env).fetch(req) : worker.fetch(req,env,ctx);
+}};`);
   const options = convertV4MiniflareOptions({
     name: 'connection-fixture', resourcePersistencePath: state,
     modulesRoot: path.dirname(path.dirname(shim)),
     modules: [
+      { type: 'ESModule', path: faultShim },
       { type: 'ESModule', path: shim },
       { type: 'ESModule', path: path.join(path.dirname(shim), '../index.js') },
       { type: 'CompiledWasm', path: path.join(path.dirname(shim), '../index_bg.wasm') },
@@ -19,7 +39,7 @@ async function main() {
     compatibilityDate: '2026-01-01', compatibilityFlags: ['nodejs_compat'],
     kvNamespaces: ['REVOCATIONS_KV'],
     r2Buckets: ['BUCKET'],
-    d1Databases: ['CONTROL'],
+    d1Databases: ['CONTROL','INGEST'],
     bindings: {
       R2_ACCOUNT_ID: 'local-fixture', R2_BUCKET_NAME: 'connections',
       R2_ACCESS_KEY_ID: 'test', R2_SECRET_ACCESS_KEY: 'test',
@@ -35,23 +55,21 @@ async function main() {
     assert.equal(response.status, status, `HTTP ${response.status}: ${Buffer.from(body).toString()}`);
     return body;
   }
-  async function redeem(permit, status) {
+  let issued = [], mutations = [], sibling;
+  async function redeem(permit, status, body, extraHeaders={}) {
     const headers = new Headers(permit.headers);
-    if (permit.method === 'PUT') headers.set('Content-Length', '7');
-    const response = await worker.dispatchFetch(permit.url, {
-      method: permit.method, headers,
-      ...(permit.method === 'PUT' ? { body: 'changed' } : {}),
-    });
-    const body = await response.text();
-    assert.equal(response.status, status, `${permit.method}: HTTP ${response.status}: ${body}`);
-    return body;
+    for (const [key,value] of Object.entries(extraHeaders)) headers.set(key,value);
+    if (body !== undefined) headers.set('Content-Length', String(Buffer.byteLength(body)));
+    const response = await worker.dispatchFetch(permit.url, {method:permit.method,headers,...(body !== undefined ? {body} : {})});
+    const bytes = Buffer.from(await response.arrayBuffer());
+    assert.equal(response.status,status,`${permit.method} ${permit.url}: ${response.status} ${bytes}`);
+    return bytes;
   }
   async function checkRevokedPermits() {
-    for (const permit of fixture.objectPermits) await redeem(permit, 403);
-    assert.equal(await redeem(fixture.siblingPermit, 200), 'original');
-    const bucket = await worker.getR2Bucket('BUCKET');
-    assert.equal(await (await bucket.get(fixture.objectKey)).text(), 'original',
-      'rejected PUT/DELETE must not alter the object');
+    for (const permit of issued) await redeem(permit,403);
+    for (const [permit,body] of mutations) await redeem(permit,403,body);
+    assert.deepEqual(await redeem(sibling,200),Buffer.from(fixture.content));
+    assert.ok(await (await worker.getR2Bucket('BUCKET')).head(fixture.subject+'/branch/main/empty'),'revoked DELETE leaves cell intact');
   }
   try {
     const db = await worker.getD1Database('CONTROL');
@@ -61,20 +79,110 @@ async function main() {
       const statements = sql.split(';').map(statement => statement.trim()).filter(Boolean);
       await db.batch(statements.map(statement => db.prepare(statement)));
     }
+    const ingest=await worker.getD1Database('INGEST');
+    const ingestSql=fs.readFileSync(path.join(root,'rust/tonk-access-service/migrations-ingest/0001_ingest.sql'),'utf8').replace(/--[^\n]*/g,'');
+    await ingest.batch(ingestSql.split(';').map(s=>s.trim()).filter(Boolean).map(s=>ingest.prepare(s)));
     await db.prepare("INSERT INTO customer(account,email,verified_at,status,plan,cycle_anchor_at) VALUES(?,?,1,'Active','free@2026-08',1)")
       .bind(fixture.subject, 'connection@example.test').run();
     await db.prepare('INSERT INTO subscription(consumer,provider,registered_at) VALUES(?,?,1)')
       .bind(fixture.subject, fixture.subject).run();
-    for (const invocation of fixture.invocations) await post(invocation, 200);
-    await post(fixture.sibling, 200);
+    for (const invocation of fixture.invocations) issued.push(decode(await post(invocation,200)));
+    sibling=decode(await post(fixture.sibling,200));
+    assert.ok(issued.every(p=>p.method==='POST' && p.url.includes('?invocation=')));
     const bucket = await worker.getR2Bucket('BUCKET');
-    for (const permit of fixture.objectPermits) {
-      await bucket.put(fixture.objectKey, 'original');
-      await redeem(permit, permit.method === 'DELETE' ? 204 : 200);
+    await bucket.put(fixture.objectKey,Buffer.from(fixture.content));
+    for (const permit of issued) assert.deepEqual(await redeem(permit,200),Buffer.from(fixture.content));
+    for (const method of ['GET','PUT','DELETE']) {
+      const response=await worker.dispatchFetch('http://localhost/object/old?permit=old&signature=old',{method});
+      assert.equal(response.status,401);
+      assert.equal((await response.json()).kind,'ReauthorizationRequired');
     }
-    await bucket.put(fixture.objectKey, 'original');
-    for (const permit of fixture.legacyPermits) await redeem(permit, 401);
-    assert.equal(await redeem(fixture.siblingPermit, 200), 'original');
+    const content=Buffer.from(fixture.content);
+    for (const item of fixture.writes) {
+      const before=await ingest.prepare('SELECT COALESCE(SUM(bytes),0) AS bytes FROM invocation').first();
+      const permit=decode(await post(item.invocation,200));
+      await redeem(permit,200,content);
+      const after=await ingest.prepare('SELECT COALESCE(SUM(bytes),0) AS bytes FROM invocation').first();
+      assert.equal(after.bytes-before.bytes,content.length,'one transfer is charged once');
+      const rows=await ingest.prepare("SELECT COUNT(*) AS n FROM invocation WHERE outcome='ok'").first();
+      if(item.resource!=='memory/cell') await redeem(permit,400,Buffer.alloc(content.length));
+      const rejected=await ingest.prepare("SELECT COUNT(*) AS n FROM invocation WHERE outcome='ok'").first();
+      assert.equal(rejected.n,rows.n,'bad digest is not a successful upload');
+      if(item.resource==='memory/cell') await redeem(permit,412,content);
+      mutations.push([permit,content]);
+    }
+    const deletePermit=decode(await post(fixture.delete,200));
+    const deleteKey=fixture.subject+'/branch/main/empty';
+    await bucket.put(deleteKey,'');
+    await redeem(deletePermit,204);
+    await bucket.put(deleteKey,'');
+    mutations.push([deletePermit,undefined]);
+    const okBeforeFailure=await ingest.prepare("SELECT COUNT(*) AS n FROM invocation WHERE outcome='ok'").first();
+    await redeem(issued[0],503,undefined,{'Cache-Control':'no-store','x-test-storage-failure':'true'});
+    const okAfterFailure=await ingest.prepare("SELECT COUNT(*) AS n FROM invocation WHERE outcome='ok'").first();
+    assert.equal(okAfterFailure.n,okBeforeFailure.n,'storage failure is not successful usage');
+    // ReadableStream deliberately has no Content-Length. The wrapper asserts
+    // that the production handler sees no header (not an inferred fetch size).
+    async function headerless(permit,body,status) {
+      const headers=new Headers(permit.headers); headers.delete('Content-Length');
+      headers.set('x-test-no-length','true');
+      const stream=new ReadableStream({start(controller) {controller.enqueue(body);controller.close();}});
+      const response=await worker.dispatchFetch(permit.url,{method:permit.method,headers,body:stream,duplex:'half'});
+      const text=await response.text();assert.equal(response.status,status,text);
+    }
+    const blobPermit=decode(await post(fixture.writes.find(w=>w.resource==='archive/blob').invocation,200));
+    const beforeHeaderless=await ingest.prepare('SELECT COALESCE(SUM(bytes),0) AS bytes FROM invocation').first();
+    await headerless(blobPermit,content,200);
+    const afterHeaderless=await ingest.prepare('SELECT COALESCE(SUM(bytes),0) AS bytes FROM invocation').first();
+    assert.equal(afterHeaderless.bytes-beforeHeaderless.bytes,content.length,'signed size meters headerless upload');
+    await headerless(blobPermit,content.subarray(0,content.length-1),400);
+    await headerless(blobPermit,Buffer.concat([content,Buffer.from([1])]),400);
+    await headerless(blobPermit,Buffer.alloc(content.length),400);
+    assert.deepEqual(await redeem(decode(await post(fixture.ranges[2],200)),200,undefined,{'Cache-Control':'no-store'}),content,'invalid headerless uploads preserve prior object');
+    for(const [invocation,key] of [
+      [fixture.writes.find(w=>w.resource==='archive/block').invocation,fixture.objectKey],
+      [fixture.headerlessCell,fixture.subject+'/branch/main/headerless']
+    ]) {
+      const permit=decode(await post(invocation,200));
+      const before=await ingest.prepare('SELECT COALESCE(SUM(bytes),0) AS bytes FROM invocation').first();
+      await headerless(permit,content,200);
+      const after=await ingest.prepare('SELECT COALESCE(SUM(bytes),0) AS bytes FROM invocation').first();
+      assert.equal(after.bytes-before.bytes,content.length,'collected transfer metered once');
+      const rows=await ingest.prepare("SELECT COUNT(*) AS n FROM invocation WHERE outcome='ok'").first();
+      for(const invalid of [Buffer.alloc(content.length),content.subarray(0,content.length-1)]) {
+        await headerless(permit,invalid,400);
+        assert.deepEqual(Buffer.from(await (await bucket.get(key)).arrayBuffer()),content,'bad collected payload preserves existing object');
+      }
+      await headerless(permit,Buffer.alloc(0),411);
+      assert.equal((await ingest.prepare("SELECT COUNT(*) AS n FROM invocation WHERE outcome='ok'").first()).n,rows.n,'invalid collected transfers not metered as success');
+    }
+    const firstRange=decode(await post(fixture.ranges[0],200));
+    assert.deepEqual(await redeem(firstRange,206,undefined,{Range:'bytes=0-2'}),content.subarray(0,3));
+    await redeem(firstRange,401,undefined,{Range:'bytes=3-5'});
+    await redeem(firstRange,401);
+    // Modern direct requests bypass the legacy redeem/cache entirely.
+    const secondRange=decode(await post(fixture.ranges[1],200));
+    const direct=permit=>({...permit,url:permit.url.split('?')[0]});
+    const [directFirst,directSecond]=await Promise.all([
+      redeem(direct(firstRange),206),redeem(direct(secondRange),206)
+    ]);
+    assert.deepEqual(directFirst,content.subarray(0,3));
+    assert.deepEqual(directSecond,content.subarray(3,6));
+
+    await redeem(decode(await post(fixture.empty,200)),200,Buffer.alloc(0));
+    await redeem(decode(await post(fixture.badEmpty,200)),400,Buffer.alloc(0));
+    const large=decode(await post(fixture.large,200));
+    await redeem(large,200,Buffer.alloc(33*1024*1024,7));
+    await bucket.put(fixture.secondKey,Buffer.from(fixture.secondContent));
+    if(process.env.TONK_LEGACY_CLIENT_PROBE) {
+      const {spawn}=require('node:child_process');
+      const endpoint=new URL('/ucan/',await worker.ready).toString();
+      await new Promise((resolve,reject)=>{
+        const child=spawn(process.env.TONK_LEGACY_CLIENT_PROBE,[fixtureFile,endpoint],{stdio:'inherit'});
+        child.on('error',reject);child.on('exit',code=>code===0?resolve():reject(new Error('old client probe failed: '+code)));
+      });
+    }
+    console.log('Worker original descriptors: block/blob/cell transfer, invalid digest, zero body, range mismatch, CAS, DELETE, 33MiB stream and metering passed');
     // This hits the actual authenticated revoke handler and the R2/KV mirrored index.
     const receipt = JSON.parse(Buffer.from(await post(fixture.revocation, 200)).toString());
     assert.equal(receipt.recorded, true);

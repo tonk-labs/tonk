@@ -65,7 +65,7 @@ pub struct VerifiedRevocation {
     /// chain: the spec's pseudocode tests the invocation's issuer, which
     /// contradicts its own delegated-revocation section, since a
     /// delegate is never in the chain whose authority they borrowed.
-    /// Fixed upstream in ucan-wg/revocation#4; we implement the
+    /// Proposed upstream in ucan-wg/revocation#4; we implement the
     /// corrected form.
     pub subject: Did,
     /// Subject of the delegation being withdrawn — what capability it

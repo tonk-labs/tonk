@@ -2,7 +2,6 @@
 //! No connection marker, confirmation, or management row participates in access.
 #![cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 
-use base64::Engine as _;
 use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_remote_s3::Permit;
 use dialog_ucan_core::promise::Promised;
@@ -12,7 +11,6 @@ use dialog_ucan_core::{DelegationBuilder, DelegationChain, InvocationBuilder, In
 use dialog_varsig::{Did, Principal};
 use std::collections::{BTreeMap, HashMap};
 use tonk_access_service::helpers::{AccessServer, AccessServiceAddress};
-use tonk_access_service::permit::{Claims, PERMIT_TTL};
 
 const CONTENT: &[u8] = b"ordinary connection storage roundtrip";
 
@@ -62,30 +60,52 @@ impl Fixture {
             String::from_utf8_lossy(&body)
         );
         let permit: Permit = serde_ipld_dagcbor::from_slice(&body)?;
-        let encoded = permit
-            .url
-            .query_pairs()
-            .find(|(key, _)| key == "permit")
-            .expect("signed object permit")
-            .1;
-        let claims: Claims = serde_ipld_dagcbor::from_slice(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded.as_bytes())?,
-        )?;
-        let received_at = Timestamp::now().to_unix();
-        assert!((received_at + 1..=received_at + PERMIT_TTL).contains(&claims.expires));
+        assert_eq!(permit.method, "POST");
+        assert!(
+            permit
+                .url
+                .query_pairs()
+                .any(|(name, _)| name == "invocation")
+        );
+        assert!(
+            permit
+                .headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        );
         Ok(permit)
     }
-    async fn transfer(&self, permit: &Permit) -> anyhow::Result<Vec<u8>> {
+    fn send_permit(&self, permit: &Permit) -> reqwest::RequestBuilder {
         let mut request = self
             .client
-            .request(permit.method.parse()?, permit.url.clone());
+            .request(permit.method.parse().unwrap(), permit.url.clone());
         for (name, value) in &permit.headers {
             request = request.header(name, value);
         }
-        if permit.method == "PUT" {
+        let credential = permit
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+            .unwrap()
+            .1
+            .clone();
+        let chain = InvocationChain::try_from(
+            dialog_remote_ucan::credential_container(&credential).unwrap(),
+        )
+        .unwrap();
+        if chain
+            .command()
+            .0
+            .iter()
+            .any(|part| part == "put" || part == "publish")
+        {
             request = request.body(CONTENT);
         }
-        Ok(request
+        request
+    }
+    async fn transfer(&self, permit: &Permit) -> anyhow::Result<Vec<u8>> {
+        Ok(self
+            .send_permit(permit)
             .send()
             .await?
             .error_for_status()?
@@ -418,11 +438,7 @@ async fn connection_standard_revocation_denies_bearer_copies_and_rotated_descend
     // and the matching-body write permit lose authority at object admission.
     issued.push(pending_write);
     for permit in issued {
-        let mut request = fixture.client.request(permit.method.parse()?, permit.url);
-        if permit.method == "PUT" {
-            request = request.body(CONTENT);
-        }
-        let response = request.send().await?;
+        let response = fixture.send_permit(&permit).send().await?;
         assert_eq!(response.status().as_u16(), 403);
         assert_eq!(
             response.json::<serde_json::Value>().await?["kind"],
@@ -520,7 +536,7 @@ async fn connection_worker_standard_revocation_survives_persisted_kv_restart() -
         let operator = Ed25519Signer::generate().await?;
         let sibling_key = Ed25519Signer::generate().await?;
         let service = Ed25519Signer::import(&[93; 32]).await?;
-        let mut read = grant(&space, &holder, "get", "archive/block", expiry()).await;
+        let mut read = broad_grant(&space, &holder, expiry()).await;
         let account = Ed25519Signer::generate().await?;
         let other_browser = Ed25519Signer::generate().await?;
         let browser = Ed25519Signer::import(&[73; 32]).await?;
@@ -550,7 +566,7 @@ async fn connection_worker_standard_revocation_survives_persisted_kv_restart() -
             read = prefix.push(leaf)?;
         }
         let derived = operator_chain(&read, &holder, &operator).await;
-        let sibling = grant(&space, &sibling_key, "get", "archive/block", expiry()).await;
+        let sibling = broad_grant(&space, &sibling_key, expiry()).await;
         let mut invocations = Vec::new();
         for (chain, key) in [(&read, &holder), (&read, &second), (&derived, &operator)] {
             invocations.push(
@@ -596,54 +612,118 @@ async fn connection_worker_standard_revocation_survives_persisted_kv_restart() -
         );
         let state = tempfile::tempdir()?;
         let fixture = state.path().join("fixture.json");
-        // Mint signed fixture URLs under the disposable service seed, as the
-        // native object adapter tests do. These exercise the production Worker
-        // redemption boundary independently of invocation/permit serialization.
-        use tonk_access_service::permit::{Method, PermitKey, Precondition};
-        use tonk_access_service::revocation::checker::Check;
-        let object_key = format!("{}/worker-permit/item", space.did());
-        let signing_key = PermitKey::derive(&"5d".repeat(32)).unwrap();
-        let issue = |method, revocations| {
-            signing_key
-                .issue(
-                    "http://localhost",
-                    &Claims {
-                        method,
-                        key: object_key.clone(),
-                        expires: Timestamp::now().to_unix() + PERMIT_TTL,
-                        sha256: None,
-                        precondition: Precondition::None,
-                        revocations,
-                    },
-                )
-                .unwrap()
-        };
-        let checks = vec![Check {
-            target: target.to_string(),
-            by: [verified.subject.to_string()].into_iter().collect(),
-        }];
-        let object_permits: Vec<_> = [Method::Get, Method::Put, Method::Delete]
-            .into_iter()
-            .map(|method| issue(method, Some(checks.clone())))
-            .collect();
-        let legacy_permits: Vec<_> = [Method::Get, Method::Put, Method::Delete]
-            .into_iter()
-            .map(|method| issue(method, None))
-            .collect();
-        let sibling_permit = issue(
-            Method::Get,
-            Some(vec![Check {
-                target: sibling.proof_cids().last().unwrap().to_string(),
-                by: [browser.did().to_string()].into_iter().collect(),
-            }]),
+        let object_key = format!(
+            "{}/index/{}",
+            space.did(),
+            bs58::encode(blake3::hash(CONTENT).as_bytes()).into_string()
         );
+        let mut writes = Vec::new();
+        for resource in ["archive/block", "archive/blob", "memory/cell"] {
+            writes.push(serde_json::json!({"resource":resource,"invocation":request(&read,&holder,service.did().as_str(),&space.did(),command("put",resource),arguments(resource)).await}));
+        }
+        let mut headerless_args = arguments("memory/cell");
+        headerless_args.insert("cell".into(), Promised::String("headerless".into()));
+        let headerless_cell = request(
+            &read,
+            &holder,
+            service.did().as_str(),
+            &space.did(),
+            command("put", "memory/cell"),
+            headerless_args,
+        )
+        .await;
+        let mut delete_args = arguments("memory/cell");
+        delete_args.insert("cell".into(), Promised::String("empty".into()));
+        delete_args.insert(
+            "when".into(),
+            Promised::Bytes(b"d41d8cd98f00b204e9800998ecf8427e".to_vec()),
+        );
+        let delete = request(
+            &read,
+            &holder,
+            service.did().as_str(),
+            &space.did(),
+            command("delete", "memory/cell"),
+            delete_args,
+        )
+        .await;
+        let mut ranges = Vec::new();
+        for range in [Some((0, 3)), Some((3, 3)), None, Some((1, 4))] {
+            let mut args = arguments("archive/blob");
+            args.insert(
+                "range".into(),
+                range
+                    .map(|(offset, length)| {
+                        Promised::Map(BTreeMap::from([
+                            ("offset".into(), Promised::Integer(offset)),
+                            ("length".into(), Promised::Integer(length)),
+                        ]))
+                    })
+                    .unwrap_or(Promised::Null),
+            );
+            ranges.push(
+                request(
+                    &read,
+                    &holder,
+                    service.did().as_str(),
+                    &space.did(),
+                    command("get", "archive/blob"),
+                    args,
+                )
+                .await,
+            );
+        }
+        let second_content = b"independent block from another authority";
+        let second_block = request(
+            &sibling,
+            &sibling_key,
+            service.did().as_str(),
+            &space.did(),
+            command("get", "archive/block"),
+            arguments_for("archive/block", second_content),
+        )
+        .await;
+        let second_key = format!(
+            "{}/index/{}",
+            space.did(),
+            bs58::encode(blake3::hash(second_content).as_bytes()).into_string()
+        );
+        let large = vec![7; 33 * 1024 * 1024];
+        let large_invocation = request(
+            &read,
+            &holder,
+            service.did().as_str(),
+            &space.did(),
+            command("put", "archive/blob"),
+            arguments_for("archive/blob", &large),
+        )
+        .await;
+        let empty = request(
+            &read,
+            &holder,
+            service.did().as_str(),
+            &space.did(),
+            command("put", "archive/blob"),
+            arguments_for("archive/blob", b""),
+        )
+        .await;
+        let mut bad_args = arguments_for("archive/blob", b"");
+        bad_args.insert("digest".into(), Promised::Bytes(vec![0; 32]));
+        let bad_empty = request(
+            &read,
+            &holder,
+            service.did().as_str(),
+            &space.did(),
+            command("put", "archive/blob"),
+            bad_args,
+        )
+        .await;
         std::fs::write(
             &fixture,
             serde_json::to_vec(&serde_json::json!({
                 "subject": space.did().to_string(), "revoker": verified.subject.to_string(), "target": target.to_string(), "targetBytes": target.to_bytes(), "invocations": invocations,
                 "revocation": revocation, "sibling": request(&sibling, &sibling_key, service.did().as_str(), &space.did(), command("get", "archive/block"), arguments("archive/block")).await,
-                "objectKey": object_key, "objectPermits": object_permits,
-                "legacyPermits": legacy_permits, "siblingPermit": sibling_permit,
+                "objectKey": object_key, "content": CONTENT, "writes":writes,"delete":delete,"ranges":ranges,"secondContent":second_content.as_slice(),"secondBlock":second_block,"secondKey":second_key,"large":large_invocation,"headerlessCell":headerless_cell,"empty":empty,"badEmpty":bad_empty,
             }))?,
         )?;
         let result = std::process::Command::new("node")
@@ -911,14 +991,7 @@ async fn removal_denies_stale_and_fresh_writes_without_revoking_other_leaves() -
         .await?;
         fixture.post(revoked).await?.error_for_status()?;
         assert_eq!(
-            fixture
-                .client
-                .put(put.url)
-                .body(CONTENT)
-                .send()
-                .await?
-                .status()
-                .as_u16(),
+            fixture.send_permit(&put).send().await?.status().as_u16(),
             403
         );
         assert_eq!(
@@ -951,7 +1024,7 @@ async fn removal_denies_stale_and_fresh_writes_without_revoking_other_leaves() -
         .await?;
         fixture.post(revoked).await?.error_for_status()?;
         assert_eq!(
-            fixture.client.get(get.url).send().await?.status().as_u16(),
+            fixture.send_permit(&get).send().await?.status().as_u16(),
             403
         );
     }
@@ -959,7 +1032,7 @@ async fn removal_denies_stale_and_fresh_writes_without_revoking_other_leaves() -
 }
 
 #[tokio::test]
-async fn unreferenced_alternative_proofs_do_not_become_permit_dependencies() -> anyhow::Result<()> {
+async fn unreferenced_alternative_proofs_do_not_revoke_the_invocation() -> anyhow::Result<()> {
     let fixture = Fixture::new().await?;
     let owner = Ed25519Signer::generate().await?;
     let agent = Ed25519Signer::generate().await?;
@@ -981,23 +1054,6 @@ async fn unreferenced_alternative_proofs_do_not_become_permit_dependencies() -> 
     }
     let container = dialog_ucan_core::Container::new(tokens).to_bytes()?;
     let permit = fixture.permit(container.clone()).await?;
-    let key = tonk_access_service::permit::PermitKey::derive(&fixture.env.service_seed).unwrap();
-    let claims = key
-        .verify(
-            tonk_access_service::permit::Method::Put,
-            permit.url.path(),
-            permit.url.query(),
-            Timestamp::now().to_unix(),
-        )
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    let dependencies = claims.revocations.unwrap();
-    assert_eq!(dependencies.len(), used.proof_cids().len());
-    assert!(dependencies.iter().all(|check| {
-        used.proof_cids()
-            .iter()
-            .any(|cid| cid.to_string() == check.target)
-    }));
-    println!("two-link permit URL bytes: {}", permit.url.as_str().len());
     let revocation = tonk_identity::revocation::mint_root_revocation(
         owner,
         &unused,
@@ -1007,5 +1063,315 @@ async fn unreferenced_alternative_proofs_do_not_become_permit_dependencies() -> 
     fixture.post(revocation).await?.error_for_status()?;
     fixture.transfer(&permit).await?;
     fixture.transfer(&fixture.permit(container).await?).await?;
+    Ok(())
+}
+
+async fn broad_grant(
+    owner: &Ed25519Signer,
+    holder: &Ed25519Signer,
+    expires: Timestamp,
+) -> DelegationChain {
+    let browser = Ed25519Signer::import(&[73; 32]).await.unwrap();
+    let root = DelegationChain::new(
+        DelegationBuilder::new()
+            .issuer(Signer::from(owner.clone()))
+            .audience(&browser.did())
+            .subject(Subject::Specific(owner.did()))
+            .command(vec!["use".into()])
+            .expiration(expires)
+            .try_build()
+            .await
+            .unwrap(),
+    );
+    root.push(
+        DelegationBuilder::new()
+            .issuer(Signer::from(browser))
+            .audience(&holder.did())
+            .subject(Subject::Specific(owner.did()))
+            .command(vec!["use".into()])
+            .expiration(expires)
+            .try_build()
+            .await
+            .unwrap(),
+    )
+    .unwrap()
+}
+async fn describe(
+    fixture: &Fixture,
+    chain: &DelegationChain,
+    holder: &Ed25519Signer,
+    owner: &Ed25519Signer,
+    verb: &str,
+    resource: &str,
+    args: BTreeMap<String, Promised>,
+) -> anyhow::Result<Permit> {
+    fixture
+        .permit(
+            request(
+                chain,
+                holder,
+                &fixture.env.service_did,
+                &owner.did(),
+                command(verb, resource),
+                args,
+            )
+            .await,
+        )
+        .await
+}
+#[tokio::test]
+async fn descriptors_preserve_digests_ranges_empty_bodies_cas_and_distinct_urls()
+-> anyhow::Result<()> {
+    let fixture = Fixture::new().await?;
+    let owner = Ed25519Signer::generate().await?;
+    let holder = Ed25519Signer::generate().await?;
+    fixture.env.provision_subject(owner.did().as_str()).await?;
+    let chain = broad_grant(&owner, &holder, expiry()).await;
+    for resource in ["archive/block", "archive/blob"] {
+        let put = describe(
+            &fixture,
+            &chain,
+            &holder,
+            &owner,
+            "put",
+            resource,
+            arguments(resource),
+        )
+        .await?;
+        let get = describe(
+            &fixture,
+            &chain,
+            &holder,
+            &owner,
+            "get",
+            resource,
+            arguments(resource),
+        )
+        .await?;
+        fixture.transfer(&put).await?;
+        assert_eq!(fixture.transfer(&get).await?, CONTENT);
+        // Streaming reqwest bodies omit Content-Length.
+        for (bytes, status) in [
+            (CONTENT.to_vec(), 200),
+            (vec![0; CONTENT.len()], 400),
+            (CONTENT[..CONTENT.len() - 1].to_vec(), 400),
+        ] {
+            let body =
+                reqwest::Body::wrap_stream(futures_util::stream::iter([Ok::<_, std::io::Error>(
+                    bytes,
+                )]));
+            assert_eq!(
+                fixture.send_permit(&put).body(body).send().await?.status(),
+                status
+            );
+            assert_eq!(fixture.transfer(&get).await?, CONTENT);
+        }
+
+        let response = fixture
+            .send_permit(&put)
+            .body(vec![0; CONTENT.len()])
+            .send()
+            .await?;
+        assert_eq!(response.status(), 400);
+        assert_eq!(
+            fixture.transfer(&get).await?,
+            CONTENT,
+            "invalid stream cannot replace valid object"
+        );
+        if resource == "archive/blob" {
+            assert_eq!(
+                fixture
+                    .send_permit(&put)
+                    .body("short")
+                    .send()
+                    .await?
+                    .status(),
+                400
+            );
+            let mut args = arguments(resource);
+            args.insert(
+                "range".into(),
+                Promised::Map(BTreeMap::from([
+                    ("offset".into(), Promised::Integer(2)),
+                    ("length".into(), Promised::Integer(5)),
+                ])),
+            );
+            let range = describe(&fixture, &chain, &holder, &owner, "get", resource, args).await?;
+            assert_eq!(
+                fixture
+                    .send_permit(&get)
+                    .header("Range", "bytes=2-6")
+                    .send()
+                    .await?
+                    .status(),
+                401
+            );
+            assert_eq!(fixture.send_permit(&range).send().await?.status(), 401);
+            assert_eq!(
+                fixture
+                    .send_permit(&range)
+                    .header("Range", "bytes=2-6")
+                    .send()
+                    .await?
+                    .bytes()
+                    .await?
+                    .as_ref(),
+                &CONTENT[2..7]
+            );
+            assert_ne!(get.url, range.url);
+        }
+    }
+    let empty = describe(
+        &fixture,
+        &chain,
+        &holder,
+        &owner,
+        "put",
+        "archive/blob",
+        arguments_for("archive/blob", b""),
+    )
+    .await?;
+    assert_eq!(
+        fixture
+            .send_permit(&empty)
+            .body(Vec::new())
+            .send()
+            .await?
+            .status(),
+        200
+    );
+    let mut args = arguments_for("archive/blob", b"");
+    args.insert("digest".into(), Promised::Bytes(vec![0; 32]));
+    let wrong_empty = describe(
+        &fixture,
+        &chain,
+        &holder,
+        &owner,
+        "put",
+        "archive/blob",
+        args,
+    )
+    .await?;
+    assert_eq!(
+        fixture
+            .send_permit(&wrong_empty)
+            .body(Vec::new())
+            .send()
+            .await?
+            .status(),
+        400
+    );
+    let put = describe(
+        &fixture,
+        &chain,
+        &holder,
+        &owner,
+        "put",
+        "memory/cell",
+        arguments("memory/cell"),
+    )
+    .await?;
+    let body = reqwest::Body::wrap_stream(futures_util::stream::iter([Ok::<_, std::io::Error>(
+        CONTENT.to_vec(),
+    )]));
+    let response = fixture.send_permit(&put).body(body).send().await?;
+    assert_eq!(response.status(), 200);
+    let etag = response.headers()["etag"]
+        .to_str()?
+        .trim_matches('"')
+        .to_string();
+    assert_eq!(fixture.send_permit(&put).send().await?.status(), 412);
+    for bytes in [
+        vec![0; CONTENT.len()],
+        CONTENT[..CONTENT.len() - 1].to_vec(),
+    ] {
+        let body =
+            reqwest::Body::wrap_stream(futures_util::stream::iter([Ok::<_, std::io::Error>(
+                bytes,
+            )]));
+        assert_eq!(
+            fixture.send_permit(&put).body(body).send().await?.status(),
+            400
+        );
+    }
+    let preserved = describe(
+        &fixture,
+        &chain,
+        &holder,
+        &owner,
+        "get",
+        "memory/cell",
+        arguments("memory/cell"),
+    )
+    .await?;
+    assert_eq!(fixture.transfer(&preserved).await?, CONTENT);
+
+    let mut args = arguments("memory/cell");
+    args.insert("when".into(), Promised::Bytes(b"wrong".to_vec()));
+    let wrong_delete = describe(
+        &fixture,
+        &chain,
+        &holder,
+        &owner,
+        "delete",
+        "memory/cell",
+        args.clone(),
+    )
+    .await?;
+    assert_eq!(
+        fixture.send_permit(&wrong_delete).send().await?.status(),
+        412
+    );
+    args.insert("when".into(), Promised::Bytes(etag.into_bytes()));
+    let delete = describe(
+        &fixture,
+        &chain,
+        &holder,
+        &owner,
+        "delete",
+        "memory/cell",
+        args,
+    )
+    .await?;
+    assert_eq!(fixture.send_permit(&delete).send().await?.status(), 204);
+    let get = describe(
+        &fixture,
+        &chain,
+        &holder,
+        &owner,
+        "get",
+        "memory/cell",
+        arguments("memory/cell"),
+    )
+    .await?;
+    assert_eq!(fixture.send_permit(&get).send().await?.status(), 404);
+    Ok(())
+}
+
+#[tokio::test]
+async fn descriptor_does_not_extend_an_ancestor_expiry() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await?;
+    let owner = Ed25519Signer::generate().await?;
+    let holder = Ed25519Signer::generate().await?;
+    fixture.env.provision_subject(owner.did().as_str()).await?;
+    let deadline = Timestamp::new(SystemTime::now() + Duration::from_secs(3))?;
+    let chain = broad_grant(&owner, &holder, deadline).await;
+    let descriptor = describe(
+        &fixture,
+        &chain,
+        &holder,
+        &owner,
+        "get",
+        "archive/block",
+        arguments("archive/block"),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let response = fixture.send_permit(&descriptor).send().await?;
+    assert_eq!(response.status(), 401);
+    assert_eq!(
+        response.json::<serde_json::Value>().await?["kind"],
+        "Expired"
+    );
     Ok(())
 }
