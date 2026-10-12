@@ -111,7 +111,7 @@ concept!: &space
         local-only space made here from a space joined through somebody
         else's invite; hosted ownership is still decided by `provider`.
       the: xyz.tonk.space/founded-at
-      as: natural
+      as: natural:64
 
 # The Add Space command. The Hub's named creation dialogs submit this shape.
 # The worker records the replica, seeds the repository, and navigates the
@@ -1082,7 +1082,7 @@ command!: &account/resend-activation
     at:
       description: The click timestamp, so every resend is a distinct request.
       the: xyz.tonk.resend-activation/at
-      as: natural
+      as: natural:64
 
 # Toggle auto-sync (pause ⇄ resume) for a space. Dispatched by the FAB's
 # `<ui-sync-status onpause=…>` cap on alt/option-click. Defined here on the
@@ -1110,7 +1110,7 @@ command!: &tonk/check-update
     time:
       description: The click's timestamp; makes each ask a distinct transient.
       the: xyz.tonk.command.check-update/time
-      as: float
+      as: float:64
     space:
       description: The space to check, as its subject DID.
       the: xyz.tonk.command.check-update/space
@@ -1148,7 +1148,7 @@ concept!: &replica/checked
     checked:
       description: The completing check's timestamp.
       the: xyz.tonk.replica/checked
-      as: float
+      as: float:64
 
 # Why the last check FAILED, asserted only on failure and retracted on
 # the next success. Text rather than a case: an unreachable source and
@@ -1196,7 +1196,7 @@ concept!: &seed/available
 attribute!: &pause-sync/time
   description: The click's timestamp; makes each dispatch a distinct transient.
   the: xyz.tonk.command.pause-sync/time
-  as: float
+  as: float:64
   role: now
 
 attribute!: &pause-sync/space
@@ -1216,7 +1216,7 @@ command!: &tonk/pause-sync
 attribute!: &home/time
   description: The moment it was asked; makes each dispatch a distinct transient.
   the: xyz.tonk.command.home/time
-  as: float
+  as: float:64
   role: now
 
 command!: &tonk/home
@@ -1231,7 +1231,7 @@ command!: &tonk/home
 attribute!: &add-account/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.add-account/time
-  as: float
+  as: float:64
   role: now
 
 command!: &account/add
@@ -1243,7 +1243,7 @@ command!: &account/add
 attribute!: &share-link/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.share-link/time
-  as: float
+  as: float:64
   role: now
 
 command!: &space/share-link
@@ -1255,7 +1255,7 @@ command!: &space/share-link
 attribute!: &view-members/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.view-members/time
-  as: float
+  as: float:64
   role: now
 
 command!: &space/view-members
@@ -1267,7 +1267,7 @@ command!: &space/view-members
 attribute!: &connect-agent/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.connect-agent/time
-  as: float
+  as: float:64
   role: now
 
 command!: &agent/connect
@@ -1279,7 +1279,7 @@ command!: &agent/connect
 attribute!: &connect-space/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.connect-space/time
-  as: float
+  as: float:64
   role: now
 
 # The bar's condition: "connect this space" while it is local-only, "confirm
@@ -1299,7 +1299,7 @@ command!: &space/connect
 attribute!: &inspect/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.command.inspect/time
-  as: float
+  as: float:64
   role: now
 
 command!: &devtools/inspect
@@ -1521,7 +1521,7 @@ command!: &site/select
     time:
       description: When it changed, so reporting the same selection again re-fires.
       the: xyz.tonk.command.site-select/time
-      as: float
+      as: float:64
 # The site view: render the matched route concept on this same site entity.
 view!:
   this: tonk:site
@@ -1675,7 +1675,7 @@ command!: &profile/add
     time:
       description: The click's timestamp, so a retry after a cancelled ceremony re-fires.
       the: xyz.tonk.command.add-profile/time
-      as: float
+      as: float:64
 
 command!: &profile/switch
   this: tonk:switch-profile
@@ -1688,7 +1688,7 @@ command!: &profile/switch
     time:
       description: The click's timestamp, so switching back re-fires.
       the: xyz.tonk.command.switch-profile/time
-      as: float
+      as: float:64
 
 # The settings page's acts. Each is a command the page fires with a
 # click; the worker does the work and reports where it got to as a
@@ -1707,7 +1707,7 @@ command!: &profile/sign-out
     time:
       description: The click's timestamp, so signing out again re-fires.
       the: xyz.tonk.command.sign-out/time
-      as: float
+      as: float:64
 
 # The account entity is read off the control rather than typed here,
 # because a command field is a fact the click asserts, not a constant.
@@ -2148,7 +2148,7 @@ concept!: &account/passkey
     created-at:
       description: When it was made, unix seconds.
       the: xyz.tonk.recovery/created-at
-      as: natural
+      as: natural:64
 
 # The settings page's account pane.
 #
@@ -3574,7 +3574,7 @@ concept!: &account/registered
     registered-at:
       description: When enrollment recorded the address, unix seconds.
       the: xyz.tonk.account/registered-at
-      as: natural
+      as: natural:64
     email:
       description: The address enrollment named.
       the: xyz.tonk.account/customer-email
@@ -3649,7 +3649,7 @@ concept!: &account/active
         When the emailed link was opened and the service confirmed it,
         unix seconds.
       the: xyz.tonk.account/activated-at
-      as: natural
+      as: natural:64
 
 # Suspension: the service withdrew.
 concept!: &account/suspended
@@ -3662,7 +3662,7 @@ concept!: &account/suspended
         When the withdrawal took effect, unix seconds. A support
         conversation starts with when service stopped.
       the: xyz.tonk.account/suspended-at
-      as: natural
+      as: natural:64
     reason:
       description: Why the service withdrew, in words a person can act on.
       the: xyz.tonk.account/suspension-reason
@@ -3696,7 +3696,7 @@ concept!: &account/onboarding
     minted-at:
       description: When this device minted the onboarding account, unix seconds.
       the: xyz.tonk.account/onboarding-minted-at
-      as: natural
+      as: natural:64
   maybe:
     custodian:
       description: >
@@ -3712,7 +3712,7 @@ concept!: &account/onboarding
         says this account is no longer the one in use — the row stays so
         the handover is visible rather than silently gone.
       the: xyz.tonk.account/onboarding-retired-at
-      as: natural
+      as: natural:64
 
 # The account's status, DERIVED from the facts above.
 #
@@ -4089,7 +4089,7 @@ concept!: &recovery/passkey
     created-at:
       description: Unix seconds at credential creation.
       the: xyz.tonk.recovery/created-at
-      as: natural
+      as: natural:64
     created-on:
       description: Browser and operating-system label, e.g. "Chrome on macOS".
       the: xyz.tonk.recovery/created-on
@@ -4157,7 +4157,7 @@ concept!: &account/device-link
         the act, so a re-issued grant with the same window still gets a
         new time.
       the: xyz.tonk.device/created-at
-      as: natural
+      as: natural:64
     title:
       description: >
         Human label, e.g. "Chrome on macOS". Kept here so a list renders
@@ -5786,7 +5786,7 @@ command!: &intent/interpret
     time:
       description: When it was typed, so typing the same line again re-fires.
       the: tonk.dialog.intent.interpret/time
-      as: float
+      as: float:64
 
 concept!: &intent/expression
   description: One opening of the command palette, as interpreted so far. Session facts.

@@ -1318,7 +1318,9 @@ fn value_to_json(value: &Value) -> serde_json::Value {
     match value {
         Value::SignedInt(i) if *i >= 0 => serde_json::Value::String(format!("+{i}")),
         Value::SignedInt(i) => serde_json::Value::String(i.to_string()),
-        other => serde_json::to_value(other).unwrap_or(serde_json::Value::Null),
+        // Bare: a match block shows an entity as its URI and text as
+        // text, never a value tagged by its type.
+        other => serde_json::to_value(other.untagged()).unwrap_or(serde_json::Value::Null),
     }
 }
 

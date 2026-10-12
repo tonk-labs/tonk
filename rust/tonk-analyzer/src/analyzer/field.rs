@@ -284,7 +284,7 @@ pub(crate) fn scalar_to_value(
     // mismatch the user should see at assert time. A `None`
     // `expected` (untyped slot) admits any type.
     if let Some(expected) = expected
-        && value.data_type() != expected
+        && !expected.holds(&value)
     {
         return Err(AnalyzeErrorKind::TypeMismatch {
             field: "<scalar>".into(),

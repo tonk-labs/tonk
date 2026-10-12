@@ -1508,7 +1508,7 @@ pub mod tests {
                     "predicate": { "kind": "transient", "concept": {
                         "description": "Mint a repo invite — generates a membership keypair and delegation.",
                         "with": {
-                            "time": { "as": "Float", "cardinality": "one", "description": "",
+                            "time": { "as": "float:64", "cardinality": "one", "description": "",
                                 "the": "dom.event/time-stamp" },
                             "marker": { "as": "Entity", "cardinality": "one", "description": "",
                                 "the": "dom.event.current-target.dataset/invite" },
@@ -1645,7 +1645,7 @@ pub mod tests {
                     "predicate": { "kind": "transient", "concept": {
                         "description": "Attach a remote and mint an invite.",
                         "with": {
-                            "time": { "the": "dom.event/time-stamp", "as": "Float" },
+                            "time": { "the": "dom.event/time-stamp", "as": "float:64" },
                             "marker": { "the": "dom.event.current-target.dataset/enable-sync", "as": "Entity" },
                             "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
                             "remote": { "the": "xyz.tonk.enable-sync/remote", "as": "Text" },

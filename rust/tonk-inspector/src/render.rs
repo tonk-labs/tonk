@@ -622,10 +622,7 @@ fn revision_badge(revision: Option<&Revision>) -> String {
 /// its built-in anchor.
 fn type_name_to_notation(stored: &str) -> &str {
     dialog_artifacts::ValueDataType::named(stored)
-        .map(|kind| {
-            let uri = kind.uri();
-            &uri[..uri.len() - 1]
-        })
+        .map(|kind| tonk_notation::type_anchor(kind.uri()))
         .unwrap_or(stored)
 }
 

@@ -80,15 +80,18 @@ pub fn project(conclusion: &ConceptConclusion, terms: &Parameters) -> Conclusion
 /// `serialize_u128`, which errors). Map unsigned integers that fit
 /// in `i128` to [`Ipld::Integer`] directly; values past `i128::MAX`
 /// fall back to a decimal string so they survive the hop rather
-/// than vanishing. Every other variant routes through the derived
-/// serialization, which handles them.
+/// than vanishing. Every other variant goes over bare
+/// ([`Value::untagged`]): the IPLD serializer is a binary one, under
+/// which dialog tags every value by its type (`{"text:": "foo"}`),
+/// and the UI reads a field as the plain string, number or boolean
+/// it displays.
 fn value_to_ipld(value: &Value) -> Option<Ipld> {
     match value {
         Value::UnsignedInt(u) => Some(match i128::try_from(*u) {
             Ok(i) => Ipld::Integer(i),
             Err(_) => Ipld::String(u.to_string()),
         }),
-        other => to_ipld(other).ok(),
+        other => to_ipld(other.untagged()).ok(),
     }
 }
 

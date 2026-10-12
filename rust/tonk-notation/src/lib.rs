@@ -28,5 +28,5 @@ pub use syntax::{
     Anchor, Application, Effectful, Expression, Field, FieldValue, HeadName, Include, IncludeForm,
     Predicate, Premise, Scalar, Spanned, Syntax,
 };
-pub use types::ValueType;
+pub use types::{ValueType, type_anchor, type_uri};
 pub use url::Url;

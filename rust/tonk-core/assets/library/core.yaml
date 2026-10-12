@@ -236,7 +236,7 @@ command!: &tonk/invite
           from also decoding as an invite. Each command now owns its
           attribute namespace, so the two are disjoint and the marker is gone.
       the: xyz.tonk.command.invite/time
-      as: float
+      as: float:64
 
 # Load the requesting tab's site for its current path. Asserted transiently by
 # `<tonk-site>` (via the regular transact API) instead of a `/site` fetch: the
@@ -377,7 +377,7 @@ concept!:
     time:
       description: The time this handoff was requested.
       the: xyz.tonk.agent-handoff/time
-      as: float
+      as: float:64
 
 concept!: &tonk/agent-handoff-state
   this: tonk:agent-handoff-state
@@ -419,7 +419,7 @@ concept!:
     time:
       description: The time a separate invitation was explicitly requested.
       the: xyz.tonk.agent-handoff/time
-      as: float
+      as: float:64
     fresh:
       description: Explicit new-invitation marker; absent from automatic mounts.
       the: xyz.tonk.agent-handoff/fresh
@@ -539,7 +539,7 @@ concept!: &share/blocked
     time:
       description: Timestamp of the invite request this refusal answers.
       the: xyz.tonk.share/time
-      as: float
+      as: float:64
 
 view!:
   this: tonk:share/blocked
@@ -1683,7 +1683,7 @@ command!: &site/select
     time:
       description: When it changed, so reporting the same selection again re-fires.
       the: xyz.tonk.command.site-select/time
-      as: float
+      as: float:64
 # A site renders the route model it matched. The shell mounts a fixed
 # `<tonk-display entity=site:… model=tonk:site>`; this view nests into the
 # matched `{concept}` on the SAME site entity, so the route model
@@ -2643,7 +2643,7 @@ command!: &intent/interpret
     time:
       description: When it was typed, so typing the same line again re-fires.
       the: tonk.dialog.intent.interpret/time
-      as: float
+      as: float:64
 
 concept!: &intent/expression
   description: One opening of the command palette, as interpreted so far. Session facts.
@@ -2761,7 +2761,7 @@ attribute!: &install-component/component
 attribute!: &install-component/time
   description: The moment it was asked; makes each dispatch a distinct transient.
   the: xyz.tonk.command.install-component/time
-  as: float
+  as: float:64
   role: now
 
 command!: &library/install

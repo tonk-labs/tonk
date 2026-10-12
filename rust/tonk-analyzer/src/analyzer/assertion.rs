@@ -561,7 +561,7 @@ pub(crate) fn build_assertion_application(
                     // not see this fact.
                     if let (Some(expected), Term::Constant(value)) =
                         (declared.descriptor.content_type(), &term)
-                        && value.data_type() != expected
+                        && !expected.holds(value)
                     {
                         analysis.warnings.push(AnalyzeDiagnostic::warning(
                             AnalyzeDiagnosticKind::DeclaredTypeDivergence {

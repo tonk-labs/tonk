@@ -82,7 +82,7 @@ pub fn application_plan_from_predicate(application: PredicateApplication) -> App
 pub fn derive_this(predicate: &Entity, payload: &ValueMap) -> Entity {
     Entity::of(&DigestInput {
         assert: predicate,
-        payload,
+        payload: Untagged(payload),
     })
 }
 
@@ -96,7 +96,24 @@ pub fn derive_this(predicate: &Entity, payload: &ValueMap) -> Entity {
 struct DigestInput<'a, P: Serialize> {
     assert: &'a P,
     #[serde(rename = "where")]
-    payload: &'a IndexMap<String, Value>,
+    payload: Untagged<'a>,
+}
+
+/// The payload with each value written bare ([`Value::untagged`]), as
+/// every release before dialog tagged values in binary encodings wrote
+/// it, so an entity derived from the same payload stays the same
+/// entity across the upgrade.
+struct Untagged<'a>(&'a IndexMap<String, Value>);
+
+impl Serialize for Untagged<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (key, value) in self.0 {
+            map.serialize_entry(key, &value.untagged())?;
+        }
+        map.end()
+    }
 }
 
 /// One lowered write — an assertion or a retraction of an

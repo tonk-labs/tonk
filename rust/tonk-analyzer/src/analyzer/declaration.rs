@@ -180,7 +180,7 @@ pub(crate) fn parse_attribute_fields(
                     _ => field,
                 };
                 let kind = attribute_type(value_field, scope)?;
-                shape.insert("as".into(), serde_json::Value::String(kind.uri().into()));
+                shape.insert("as".into(), serde_json::Value::String(kind));
             }
             // The older spelling of a pick: `one` is `pick: last`, the
             // default, and `many` is `pick: all`. Accepted so existing
@@ -1127,17 +1127,15 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
         .expect("concept schema is well-formed")
 }
 
-/// The type an attribute's `as:` names: a built-in type anchor
-/// (`text`, `integer`, `natural`, ... and the aliases `signed-integer`
-/// and `unsigned-integer`), or, quoted, the entity dialog names the
-/// type by (`"text:"`) or the name an earlier release wrote (`"Text"`).
-/// An anchor the document declares under a type's name means the
-/// declaration, which is no type.
-fn attribute_type(
-    field: &tonk_notation::Field,
-    scope: &Scope,
-) -> Result<tonk_notation::ValueType, AnalyzeError> {
-    use tonk_notation::ValueType;
+/// The type an attribute's `as:` names, as the entity dialog names it
+/// by: a built-in type anchor (`text`, `integer`, `natural`, ... and
+/// the aliases `signed-integer` and `unsigned-integer`), a sized number
+/// type (`natural:64`, `float:32`), `number` (every number), or, quoted,
+/// the entity itself (`"text:"`) or the name an earlier release wrote
+/// (`"Text"`). An anchor the document declares under a type's name means
+/// the declaration, which is no type.
+fn attribute_type(field: &tonk_notation::Field, scope: &Scope) -> Result<String, AnalyzeError> {
+    use tonk_notation::{ValueType, type_uri};
     let expected = || {
         ValueType::ALL
             .iter()
@@ -1156,12 +1154,9 @@ fn attribute_type(
                 }
                 .into());
             }
-            ValueType::from_anchor(name)
+            type_uri(name)
         }
-        _ => {
-            let value = stringify_simple_value(field)?;
-            ValueType::from_wire(&value).or_else(|| ValueType::from_anchor(&value))
-        }
+        _ => type_uri(&stringify_simple_value(field)?),
     };
     kind.ok_or_else(|| {
         AnalyzeErrorKind::InvalidAttributeBody {

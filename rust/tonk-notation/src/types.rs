@@ -122,6 +122,67 @@ impl ValueType {
     }
 }
 
+/// The widths a sized number type may have, by its kind.
+const NATURAL_WIDTHS: [&str; 5] = ["8", "16", "32", "64", "128"];
+const FLOAT_WIDTHS: [&str; 2] = ["32", "64"];
+
+/// The entity dialog names a type by, from any spelling the notation
+/// accepts: a built-in anchor (`text`, `natural`), an alias
+/// (`unsigned-integer`), the entity itself (`natural:`), the name an
+/// earlier release wrote (`UnsignedInteger`), `number` (every number),
+/// or a sized number type by its entity, `natural:64`, `integer:8`,
+/// `float:32`. `None` for anything else.
+pub fn type_uri(spelling: &str) -> Option<String> {
+    if let Some(kind) = ValueType::from_wire(spelling).or_else(|| ValueType::from_anchor(spelling))
+    {
+        return Some(kind.uri().to_string());
+    }
+    if spelling == "number" || spelling == "number:" {
+        return Some("number:".to_string());
+    }
+    let (kind, width) = spelling.split_once(':')?;
+    let widths: &[&str] = match kind {
+        "natural" | "integer" => &NATURAL_WIDTHS,
+        "float" => &FLOAT_WIDTHS,
+        _ => return None,
+    };
+    widths.contains(&width).then(|| format!("{kind}:{width}"))
+}
+
+/// The anchor the notation spells a type's entity by: the entity less
+/// its trailing colon (`text:` is `text`), and a sized type as it is
+/// (`natural:64`).
+pub fn type_anchor(uri: &str) -> &str {
+    uri.strip_suffix(':').unwrap_or(uri)
+}
+
+#[cfg(test)]
+mod sized_tests {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_names_every_spelling_of_a_type() {
+        assert_eq!(type_uri("text").as_deref(), Some("text:"));
+        assert_eq!(type_uri("text:").as_deref(), Some("text:"));
+        assert_eq!(type_uri("Text").as_deref(), Some("text:"));
+        assert_eq!(type_uri("unsigned-integer").as_deref(), Some("natural:"));
+        assert_eq!(type_uri("number").as_deref(), Some("number:"));
+        assert_eq!(type_uri("natural:64").as_deref(), Some("natural:64"));
+        assert_eq!(type_uri("integer:8").as_deref(), Some("integer:8"));
+        assert_eq!(type_uri("float:32").as_deref(), Some("float:32"));
+        assert_eq!(type_uri("float:8"), None);
+        assert_eq!(type_uri("natural:7"), None);
+        assert_eq!(type_uri("text:8"), None);
+    }
+
+    #[dialog_common::test]
+    fn it_spells_a_type_by_its_anchor() {
+        assert_eq!(type_anchor("text:"), "text");
+        assert_eq!(type_anchor("natural:64"), "natural:64");
+        assert_eq!(type_anchor("number:"), "number");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

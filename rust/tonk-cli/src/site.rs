@@ -422,6 +422,12 @@ impl TonkSite {
                         upgraded.rules.reinstalled.len()
                     );
                 }
+                if !upgraded.rules.rewritten.is_empty() {
+                    eprintln!(
+                        "note: rewrote {} rule body(ies) in the current format",
+                        upgraded.rules.rewritten.len()
+                    );
+                }
             }
             Ok(None) => {}
             Err(error) => eprintln!("warning: upgrade failed: {error}"),

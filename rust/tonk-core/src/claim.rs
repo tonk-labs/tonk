@@ -86,10 +86,23 @@ fn cast(
         return Ok(value);
     };
     let found = value.data_type();
-    if found == expected {
-        return Ok(value);
+    let mismatch = |field: &str| TransactError::TypeMismatch {
+        field: field.to_string(),
+        expected,
+        found,
+    };
+    // A sized number type (`natural:64`) stores the numbers of its
+    // storage type and holds those in its range: coerce toward the
+    // storage type, then let the declared type judge the result.
+    let storage = expected.storage();
+    if found == storage {
+        return if expected.holds(&value) {
+            Ok(value)
+        } else {
+            Err(mismatch(field))
+        };
     }
-    let coerced = match (expected, &value) {
+    let coerced = match (storage, &value) {
         // An integral float fills an integer field. JS numbers are
         // always floats, so this is the path UI-created integers take.
         (ValueDataType::SignedInt, Value::Float(f)) if f.fract() == 0.0 && i128_in_range(*f) => {
@@ -138,11 +151,10 @@ fn cast(
         }
         _ => None,
     };
-    coerced.ok_or(TransactError::TypeMismatch {
-        field: field.to_string(),
-        expected,
-        found,
-    })
+    match coerced {
+        Some(value) if expected.holds(&value) => Ok(value),
+        _ => Err(mismatch(field)),
+    }
 }
 
 /// `true` if `f` is exactly representable as an `i128`.

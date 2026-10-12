@@ -622,17 +622,15 @@ fn value_to_notation(value: &dialog_artifacts::Value) -> String {
     match value {
         dialog_artifacts::Value::Entity(entity) => entity.to_string(),
         dialog_artifacts::Value::String(text) => quote_string(text),
-        other => serde_json::to_string(other).unwrap_or_default(),
+        other => serde_json::to_string(&other.untagged()).unwrap_or_default(),
     }
 }
 
-/// Map a dialog `Type` onto the built-in type anchor the analyzer
-/// accepts in `as:` slots (`text`, `natural`, ...).
+/// Map a dialog `Type` onto the anchor the analyzer accepts in `as:`
+/// slots: `text`, `natural`, ..., and a sized number type by its
+/// entity, `natural:64`.
 pub(crate) fn type_to_notation(ty: &Type) -> String {
-    match tonk_notation::ValueType::from_wire(ty.uri()) {
-        Some(kind) => kind.anchor().to_string(),
-        None => format!("{ty:?}"),
-    }
+    tonk_notation::type_anchor(ty.uri()).to_string()
 }
 
 fn quote_string(s: &str) -> String {

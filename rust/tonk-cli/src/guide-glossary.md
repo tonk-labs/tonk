@@ -13,8 +13,12 @@ A **type** is named by a built-in anchor: `text`, `integer`, `natural`,
 `float`, `boolean`, `bytes`, `entity`, `symbol`, `record`
 (`signed-integer` and `unsigned-integer` are aliases of `integer` and
 `natural`). Each names the entity dialog knows the type by, `text:` for
-`text`. A document that declares an anchor of the same name gets a warning,
-and within that document the name means its declaration.
+`text`. A number type may fix its width, as the entity spells it:
+`natural:64` holds what a `u64` holds, `integer:8` an `i8`, `float:32` an
+`f32`; a value outside the width is refused on write and left out on
+read. `number` holds every number. A document that declares an anchor of
+the same name gets a warning, and within that document the name means
+its declaration.
 
 A **pick** says which of an entity's claims in the relation a read returns:
 `last` (the default) the newest, `all` every one, `top` the best ranked of the

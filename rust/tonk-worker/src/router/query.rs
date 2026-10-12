@@ -145,6 +145,13 @@ async fn upgrade_rules_while_migrating(
                     branch.repository.name()
                 );
             }
+            if !upgraded.rules.rewritten.is_empty() {
+                tonk_common::log!(
+                    "rewrote {} rule body(ies) on '{}' in the current format",
+                    upgraded.rules.rewritten.len(),
+                    branch.repository.name()
+                );
+            }
         }
         Ok(None) => {}
         Err(error) if is_absence(&error) => {}

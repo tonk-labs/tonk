@@ -102,7 +102,9 @@ pub fn render_value(ty: Option<Type>, raw: &str) -> Result<String, DataError> {
         ty: ty.into(),
         raw: raw.into(),
     };
-    match ty {
+    // A sized number type (`natural:64`) is spelled as the numbers it
+    // stores.
+    match ty.map(Type::storage) {
         Some(Type::UnsignedInt) => {
             raw.parse::<u128>().map_err(|_| bad("natural"))?;
             Ok(raw.to_string())
