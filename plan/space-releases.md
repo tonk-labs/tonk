@@ -11,7 +11,7 @@ own worker, reached by the host over a message port.
 
 The application is everything that changes with a build: the worker's wasm,
 the `wasm-bindgen` glue generated for that wasm, the worker script that
-imports the glue, the page runtime, and the library of definitions. A space
+uses the glue, the page runtime, and the library of definitions. A space
 pins all of it as one release.
 
 The host is what a space can rely on without pinning it:
@@ -36,7 +36,7 @@ build) is not an interface anyone can keep stable.
 A release says which host it needs.
 
 - `v: 1`: the host registers the release's own worker script. That script
-  imports its glue, loads its wasm, and uses the browser directly. This is
+  carries its glue, loads its wasm, and uses the browser directly. This is
   what ships first.
 - `v: 2`, later: the host runs a bootloader of its own that loads a wasm
   module by hash and gives it only what it imports, in the shape of Sapling's
@@ -47,41 +47,33 @@ A release says which host it needs.
 A host serves every version it has ever served. A space on `v: 1` is not
 moved to `v: 2` by anything but its own upgrade.
 
+## A release is one script
+
+A release is entered through one file, `worker.js`: the worker script and the
+glue generated for its wasm, bundled together at build time. The hash of that
+file is the release's edition.
+
+The script names the rest of its release itself, relative to its own address
+and by hash: its wasm, the page runtime, the library. It checks what it
+fetches against those hashes, as today's worker script checks its wasm. So
+one hash pins the whole release, and loading it takes no step of its own:
+the browser fetches the script when it is registered, and the script fetches
+its wasm.
+
 ## The boot cell
 
 A cell in the space, `boot/loader`, replicated with it:
 
 ```yaml
 v: 1
-src: https://tonk.network/releases/
-channel: stable
-edition: <hash of the release's manifest>
+src: https://tonk.network/releases/stable/worker.js
+edition: <sha256 of worker.js>
 ```
 
 - `v` is the host version above.
-- `src` is the store the release was published to. It says where the files
-  can be had and where to ask whether there is a newer one.
-- `channel` is which line of releases at `src` the space watches. It is for
-  discovery only and never moves the pin.
+- `src` is the address the release was taken from: a line of releases, such
+  as the stable one. It is where to ask whether there is a newer one.
 - `edition` is the pin.
-
-The files of a release are named in its manifest, which `edition` is the hash
-of, and not in the cell. The cell then cannot disagree with the bytes.
-
-```json
-{
-  "v": 1,
-  "version": "0.7.0",
-  "entry": "space_worker.js",
-  "glue": "worker.js",
-  "wasm": { "path": "worker_bg.wasm", "sha256": "…" },
-  "page": { "bootstrap": "…", "runtime": "…", "js": "…", "wasm": "…", "styles": ["…"] },
-  "library": ["library/core.yaml"],
-  "port": 2
-}
-```
-
-`port` is the version of the port protocol the release speaks.
 
 A worker cannot read its own boot cell before it exists, so the pin is also
 kept where the shell page can read it without Dialog: a boot record in the
@@ -97,28 +89,23 @@ request previews that is emptied when the pull request closes.
 
 ```
 releases/
-  editions/<edition>/manifest.json
-  editions/<edition>/space_worker.js
-  editions/<edition>/worker.js
-  editions/<edition>/worker_bg.wasm
-  editions/<edition>/guest/…
-  editions/<edition>/library/…
-  channels/stable.json
-  channels/staging.json
-  channels/dev.json
+  <edition>/worker.js
+  <edition>/worker_bg.wasm
+  <edition>/guest/…
+  <edition>/library/…
+  stable/worker.js     redirects to the current <edition>/worker.js
+  staging/worker.js
+  dev/worker.js
 ```
 
-An edition is a content hash, so channels cannot collide, and a release
-promoted from one channel to the next is not uploaded twice. A space pinned
-on one deployment can turn up on another (signing in through another
-deployment already exists), and with one store any deployment can serve it.
-A release is under 20 MB.
+An edition is a content hash, so the lines cannot collide, and a release
+promoted from one line to the next is not uploaded twice. A space pinned on
+one deployment can turn up on another (signing in through another deployment
+already exists), and with one store any deployment can serve it. A release
+is under 20 MB.
 
-A channel file names the current edition and the ones before it:
-
-```json
-{ "edition": "…", "version": "0.7.0", "v": 1, "published": "2026-10-12", "previous": ["…"] }
-```
+A line is one address that redirects to the edition current on it. The
+edition's `worker.js` is served with its hash as its `ETag`.
 
 ## Serving a release
 
@@ -131,38 +118,41 @@ GET /_release/<edition>/<file>
 ```
 
 The access worker answers from the store, marks the response immutable, and
-sends `Service-Worker-Allowed: /` with the entry script so that it may control
-the whole origin. The shell registers `/_release/<edition>/<entry>`.
+sends `Service-Worker-Allowed: /` with `worker.js` so that it may control the
+whole origin. The shell registers `/_release/<edition>/worker.js`, and
+everything the script asks for is beside it.
 
 `src` in the cell may name another deployment's store. The host then fetches
-the edition from there, checks the manifest against `edition` and each file
-against the manifest, and keeps it in its own store before serving it. Only
-the stores of our own deployments are accepted at first.
+the edition from there, checks `worker.js` against `edition`, and keeps it in
+its own store before serving it. Only the stores of our own deployments are
+accepted at first.
 
 ## Publishing
 
-1. Build. Write the manifest and hash it: that is the edition.
-2. Upload `editions/<edition>/` (nothing to do if it is there).
+1. Build. Bundle the worker script with its glue, with the hashes of its
+   wasm and other files written into it. Its hash is the edition.
+2. Upload `<edition>/` (nothing to do if it is there).
 3. Deploy the host.
-4. Move the channel file. Moving it back is a rollback.
+4. Point the line at the edition. Pointing it back is a rollback.
 
 Local development and the browser tests serve the same paths out of `dist`.
 The tests' two generations become two editions.
 
 ## Finding and taking an update
 
-- The host knows each space's pin and reads `channels/<channel>.json` at its
-  `src`. Where they differ, it tells the owner a newer release is there.
-- A space opened on its own reads the channel file itself, at most daily,
-  and records what it found where its own views can show it.
+- Asking `src` with `If-None-Match: "<edition>"` answers either that nothing
+  changed or with the script current on that line, whose `ETag` is the newer
+  edition. The host asks for the spaces it shows and tells the owner. A space
+  opened on its own asks for itself, at most daily, and records what it found
+  where its own views can show it.
 - Taking the update is one commit on the space by its owner: the cell's
   `edition` moves, and the library definitions that match are installed with
   it. Members' devices follow when they pull.
-- A device that sees a new pin fetches the edition, registers its entry
-  script, and switches when idle. The session overlay is handed over as it is
-  today, and the page's subscription client reopens what it had, so nothing
-  on screen drops. Where the new worker does not come up, the device stays on
-  the one it has and says so.
+- A device that sees a new pin registers that edition's script and switches
+  when idle. The session overlay is handed over as it is today, and the
+  page's subscription client reopens what it had, so nothing on screen drops.
+  Where the new worker does not come up, the device stays on the one it has
+  and says so.
 
 ## Keeping the promise
 
