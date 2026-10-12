@@ -130,7 +130,9 @@ impl<S: Stream<Item = Result<Vec<u8>, String>> + Unpin> Stream for Validated<S> 
     }
 }
 
-#[cfg(test)]
+// Worker fetch exports conflict with the browser test loader; exercise this
+// shared validator natively and the production adapter through Miniflare.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::operation::{Method, Precondition};
