@@ -475,6 +475,24 @@ async fn retract_library_before_first_contact(tonk: &TonkState) {
     }
 }
 
+/// Move the head a pull just gave profile main to this release's layout,
+/// before the views over it are polled. The account's head was pushed by
+/// the release the other devices run, so on first contact with an account
+/// that has content, and on a sweep that adopts what another device
+/// pushed since, profile main is laid out the earlier way until something
+/// moves it; a display polled against it meanwhile reads definitions this
+/// release does not match and shows its model missing. Nothing to move is
+/// one root read; a failure is logged by the gate and the sweep goes on.
+async fn migrate_adopted_profile_head(tonk: &TonkState) {
+    let _ = super::query::migrate_while_opening(
+        tonk,
+        tonk.reactor
+            .profile_repository()
+            .branch(&tonk.active_branch),
+    )
+    .await;
+}
+
 async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
     let session = tonk
         .reactor
@@ -525,6 +543,7 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
                         "failed to hydrate the account into profile main: {error}"
                     ))
                 })?;
+            migrate_adopted_profile_head(tonk).await;
         }
         Ok(RemotePresence::Absent) => {
             tonk.reactor
@@ -564,6 +583,7 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
                                 "failed to adopt winning account genesis: {error}"
                             ))
                         })?;
+                    migrate_adopted_profile_head(tonk).await;
                 }
                 Err(error) => return Err(TonkWorkerError::Internal(error.to_string())),
             }
@@ -792,6 +812,7 @@ async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<()
         .perform(&tonk.operator)
         .await
         .map_err(|error| format!("account pull failed: {error}"))?;
+    migrate_adopted_profile_head(tonk).await;
     // The account's own sync is not enough on its own: the operator proves
     // from the PROFILE's access branch, so authority that arrived in the
     // account above is present but unusable until the access branch adopts
