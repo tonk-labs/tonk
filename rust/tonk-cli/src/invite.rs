@@ -398,6 +398,11 @@ pub(crate) async fn record_invitation(
         .perform(&site.operator)
         .await
         .map_err(|e| InviteError::Io(format!("failed to open meta branch: {e}")))?;
+    // Written directly, outside the site's branch gate: a meta branch an
+    // earlier release wrote is moved to this release's format first.
+    dialog_reactor::migrate(&meta, &site.operator)
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to migrate meta branch: {e}")))?;
     meta.transaction()
         .assert(invitation)
         .assert(execution)

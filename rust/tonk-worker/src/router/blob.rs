@@ -171,6 +171,22 @@ async fn first_text(
     })
 }
 
+/// Move `branch` of the space at `repo` to this release's storage format,
+/// once per process, before a blob import: the import commits the asset
+/// fact into the branch directly, not through the reactor, and a commit
+/// into a branch an earlier release wrote is refused.
+async fn migrate_once(tonk: &TonkState, repo: &str, branch: &str) -> Result<(), TonkWorkerError> {
+    tonk.reactor
+        .repository(repo)
+        .branch(branch)
+        .migrate_once(&tonk.operator)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("migrating '{repo}/{branch}' failed: {error}"))
+        })
+}
+
 /// Handler for `POST /api/repository/{repo}/branch/{branch}/blob`.
 ///
 /// Buffers the request body, writes it into the branch's content-addressed
@@ -228,6 +244,7 @@ pub async fn upload(
         .map_err(|e| {
             TonkWorkerError::NotFound(format!("Repository '{}' not found: {e}", path.repo))
         })?;
+    migrate_once(&tonk, &path.repo, path.branch.as_str()).await?;
     let branch_handle = repository
         .branch(path.branch.as_str())
         .open()
@@ -841,6 +858,7 @@ async fn hydrate_media(
         .perform(&tonk.operator)
         .await
         .map_err(internal)?;
+    migrate_once(&tonk, key, branch_name).await?;
     let branch = repository
         .branch(branch_name)
         .open()

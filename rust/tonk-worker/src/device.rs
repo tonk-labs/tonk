@@ -400,14 +400,23 @@ impl Registry {
         operator: &DefaultOperator,
     ) -> Result<Branch, TonkWorkerError> {
         let registry = self.open_self(storage).await?;
-        Repository::from(registry.did())
+        let branch = Repository::from(registry.did())
             .branch(ROSTER_BRANCH)
             .open()
             .perform(operator)
             .await
             .map_err(|error| {
                 TonkWorkerError::Internal(format!("failed to open the profile roster: {error}"))
-            })
+            })?;
+        // The roster is written directly, outside the reactor: a roster an
+        // earlier release wrote is moved to this release's format first,
+        // since a commit into the earlier layout is refused.
+        dialog_reactor::migrate(&branch, operator)
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("failed to migrate the profile roster: {error}"))
+            })?;
+        Ok(branch)
     }
 
     /// The stored roster, ordered by storage name; empty when no entry was

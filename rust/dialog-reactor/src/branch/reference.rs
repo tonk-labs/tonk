@@ -47,6 +47,64 @@ pub struct Upgraded {
     pub rules: dialog_repository::RulesUpgraded,
 }
 
+/// Move what an earlier release stored in `branch` to the shape this
+/// release reads and writes, if its head is laid out the earlier way: the
+/// storage rewrite under the number band ([`Branch::migrate_storage`]),
+/// then the attribute and concept definitions recorded the earlier way
+/// ([`tonk_schema::upgrade::upgrade_definitions`]), then the rules stored
+/// under an identity an earlier dialog release gave them
+/// ([`Branch::upgrade_rules`]). `None` when the head is already in this
+/// release's layout, after one root read ([`Branch::needs_migration`]).
+///
+/// For a write into a branch opened outside the reactor (a meta branch a
+/// repository route records into, a blob import, the CLI's account branch),
+/// which the gate in [`BranchReference::migrate_once`] does not cover: a
+/// commit into a tree laid out the earlier way is refused, so run this
+/// first. Through the reactor, prefer `migrate_once`, which also runs once
+/// per process and tells pages that the upgrade is taking place.
+///
+/// [`Branch::migrate_storage`]: dialog_repository::Branch::migrate_storage
+/// [`Branch::needs_migration`]: dialog_repository::Branch::needs_migration
+/// [`Branch::upgrade_rules`]: dialog_repository::Branch::upgrade_rules
+pub async fn migrate<Env>(
+    branch: &dialog_repository::Branch,
+    env: &Env,
+) -> Result<Option<Upgraded>, ReactorError>
+where
+    Env: LoadProvider + BranchOpenProvider + CommitProvider,
+{
+    let needed = branch
+        .needs_migration(env)
+        .await
+        .map_err(|error| ReactorError::Upgrade {
+            reason: error.to_string(),
+        })?;
+    if !needed {
+        return Ok(None);
+    }
+    migrate_branch(branch, env).await.map(Some)
+}
+
+/// The three steps of a migration, unconditionally.
+async fn migrate_branch<Env>(
+    branch: &dialog_repository::Branch,
+    env: &Env,
+) -> Result<Upgraded, ReactorError>
+where
+    Env: LoadProvider + BranchOpenProvider + CommitProvider,
+{
+    let storage = branch.migrate_storage().perform(env).await?;
+    let definitions = tonk_schema::upgrade::upgrade_definitions(branch, env)
+        .await
+        .map_err(|reason| ReactorError::Upgrade { reason })?;
+    let rules = branch.upgrade_rules().perform(env).await?;
+    Ok(Upgraded {
+        storage,
+        definitions,
+        rules,
+    })
+}
+
 /// Move every subscription waiting on this branch out of the reactor's
 /// waiting room and onto the live [`BranchState`].
 ///
@@ -172,19 +230,7 @@ impl<'a> BranchReference<'a> {
         // later head that has.
         session.state.claim_migration();
         session.state.set_migrating(true);
-        let outcome = async {
-            let storage = branch.migrate_storage().perform(env).await?;
-            let definitions = tonk_schema::upgrade::upgrade_definitions(branch, env)
-                .await
-                .map_err(|reason| ReactorError::Upgrade { reason })?;
-            let rules = branch.upgrade_rules().perform(env).await?;
-            Ok::<_, ReactorError>(Upgraded {
-                storage,
-                definitions,
-                rules,
-            })
-        }
-        .await;
+        let outcome = migrate_branch(branch, env).await;
         session.state.set_migrating(false);
         let upgraded = outcome?;
         self.reactor().schedule_poll(Arc::clone(&session.state));

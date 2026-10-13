@@ -1925,8 +1925,9 @@ concept!: &note
 
     /// The read side of the open-ended ruling: a domain query's `_`
     /// matches a value of ANY type — a branch-declared attribute
-    /// imposes nothing on reads — and a literal matches by its own
-    /// spelling (`+41` finds the signed fact, bare `41` does not).
+    /// imposes nothing on reads. A number is one value whatever spelling
+    /// wrote it (the store keys every number in one band), so `+41`
+    /// comes back as the number 41, and both `+41` and bare `41` find it.
     #[dialog_common::test]
     async fn it_reads_raw_domains_untyped() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
@@ -2002,24 +2003,25 @@ concept!: &note
             }
         };
 
-        // `_` matches the signed value despite the unsigned
-        // declaration — and it comes back spelled.
+        // `_` matches the value despite the unsigned declaration — and
+        // it comes back as the number it is: the store holds 41, not the
+        // `+` the write spelled it with.
         let (blank_matches, age) =
             ask(query("io.test.person:\n  this: test:q\n  age: _\n")).await?;
         assert_eq!(blank_matches, 1, "a blank matches any value type");
         assert_eq!(
             age,
-            Some(serde_json::json!("+41")),
-            "and the value rides out in its spelling",
+            Some(serde_json::json!(41)),
+            "and the value rides out as the number it is",
         );
 
-        // A literal matches by its own spelling.
+        // Either spelling of 41 finds the fact: they name one number.
         let (signed_matches, _) =
             ask(query("io.test.person:\n  this: test:q\n  age: +41\n")).await?;
-        assert_eq!(signed_matches, 1, "+41 finds the signed fact");
+        assert_eq!(signed_matches, 1, "+41 finds the fact");
         let (unsigned_matches, _) =
             ask(query("io.test.person:\n  this: test:q\n  age: 41\n")).await?;
-        assert_eq!(unsigned_matches, 0, "bare 41 (unsigned) does not");
+        assert_eq!(unsigned_matches, 1, "and so does bare 41");
         Ok(())
     }
 
@@ -2118,9 +2120,11 @@ concept!: &note
         Ok(())
     }
 
-    /// Raw domains are open-ended: every spelling lands with its own
-    /// type, side by side, no declaration anywhere — and a blank in a
-    /// domain query matches values of every type.
+    /// Raw domains are open-ended: every spelling lands, side by side,
+    /// no declaration anywhere — and a blank in a domain query matches
+    /// values of every type. The store keys every number in one band, so
+    /// a raw read gives the narrowest type that holds the number: `+41`
+    /// reads back as the natural 41, `-7` as an integer, `41.5` as a float.
     #[dialog_common::test]
     async fn it_keeps_raw_domains_open_ended() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
@@ -2173,7 +2177,7 @@ concept!: &note
             by_field.insert(field, claims[0].is.clone());
         }
         assert_eq!(by_field["bare"], Value::UnsignedInt(41));
-        assert_eq!(by_field["signed"], Value::SignedInt(41));
+        assert_eq!(by_field["signed"], Value::UnsignedInt(41));
         assert_eq!(by_field["negative"], Value::SignedInt(-7));
         assert_eq!(by_field["float"], Value::Float(41.5));
         Ok(())

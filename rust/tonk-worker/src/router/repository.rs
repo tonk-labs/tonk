@@ -4849,10 +4849,14 @@ pub(super) async fn install_fresh_from(
 ) -> Result<(), RepositoryError> {
     let install = install_claims_for(source, library).await?;
     let seed = seed_version(library);
-    let session = tonk
-        .reactor
-        .repository(key)
-        .branch(branch)
+    let reference = tonk.reactor.repository(key).branch(branch);
+    // The install commits through the session's handle, not the reactor's
+    // commit, so the once-per-process move of a branch an earlier release
+    // wrote runs here.
+    reference.migrate_once(&tonk.operator).await.map_err(|e| {
+        RepositoryError::Internal(format!("migrate '{key}' branch '{branch}': {e}"))
+    })?;
+    let session = reference
         .acquire(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("open '{key}' branch '{branch}': {e}")))?;
@@ -5926,6 +5930,27 @@ pub(crate) async fn space_root_prefix_of(
     })
 }
 
+/// Move the meta branch of the space at `key` to this release's storage
+/// format, once per process, before a write into it. The meta commits in
+/// this module go through dialog's `Branch` directly rather than the
+/// reactor, so they run the migration every reactor commit runs first
+/// ([`BranchReference::migrate_once`]); a commit into a branch an earlier
+/// release wrote is refused otherwise. A failure is logged, and the commit
+/// that follows reports the refusal.
+///
+/// [`BranchReference::migrate_once`]: dialog_reactor::BranchReference::migrate_once
+async fn migrate_meta_once(tonk: &TonkState, key: &str) {
+    if let Err(error) = tonk
+        .reactor
+        .repository(key)
+        .branch(META_BRANCH)
+        .migrate_once(&tonk.operator)
+        .await
+    {
+        log!("migrating the meta branch of '{key}' failed: {error}");
+    }
+}
+
 /// Lay down the meta-branch facts and profile-side index for an
 /// already-opened repository.
 ///
@@ -5966,7 +5991,7 @@ where
     // Seed it with the replica record and the meta branch's own
     // `Branch` fact — the meta branch is a real branch of this
     // replica, so it belongs in the enumeration like any other.
-
+    migrate_meta_once(tonk, key).await;
     let meta = repository
         .branch(META_BRANCH)
         .open()
@@ -7837,6 +7862,7 @@ where
         return Ok(effective);
     }
 
+    migrate_meta_once(tonk, repository.did().repo_key()).await;
     let meta = repository
         .branch(META_BRANCH)
         .open()
@@ -15758,6 +15784,82 @@ mod library_quarantine_tests {
             quarantined(&tonk, &profile, &tonk.active_branch).await,
             Vec::<String>::new(),
             "no profile library rule is set aside"
+        );
+    }
+}
+
+#[cfg(test)]
+mod meta_migration_tests {
+    use super::*;
+
+    /// A space an earlier release wrote has its meta branch laid out the
+    /// earlier way too. The writes into it from this module (an upstream
+    /// recorded on `PUT /api/repository/{key}`, a join renewed) go through
+    /// dialog's `Branch` directly, not the reactor, so they move the branch
+    /// to this release's format first; a commit into the earlier layout is
+    /// refused.
+    ///
+    /// Native only: it needs a whole worker state, which the native test
+    /// fixture builds. The refusal itself is pinned on both targets by
+    /// dialog-repository's `a_branch_an_earlier_release_wrote_is_migrated_once`.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn a_meta_branch_an_earlier_release_wrote_is_migrated_before_it_is_written() {
+        use dialog_credentials::ed25519::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+
+        let state = crate::router::command::tests::native::test_state().await;
+        let tonk = state.read().await;
+        let subject = Ed25519Signer::generate().await.unwrap().did();
+        let key = subject.repo_key().to_owned();
+        let repository = super::super::join::mount_replica_with_configuration(
+            &tonk,
+            &subject,
+            RepositoryConfiguration::default(),
+        )
+        .await
+        .expect("the replica mounts");
+
+        let meta = tonk.reactor.repository(&key).branch(META_BRANCH);
+        let handle = meta
+            .acquire(&tonk.operator)
+            .await
+            .expect("the meta branch opens")
+            .handle()
+            .clone();
+        // The reactor opened this branch while the mount was recording
+        // into it directly; read the head the mount left.
+        handle
+            .refresh(&tonk.operator)
+            .await
+            .expect("the meta branch head is read");
+        handle
+            .rekey_storage(0)
+            .perform(&tonk.operator)
+            .await
+            .expect("the meta branch is laid out the earlier way");
+        assert!(
+            meta.migration_pending(&tonk.operator)
+                .await
+                .expect("the layout is read"),
+            "a meta branch the earlier release laid out needs migrating"
+        );
+
+        let configuration = RepositoryConfiguration::default().remote(
+            "origin",
+            RemoteConfiguration::new(dialog_repository::SiteAddress::from(
+                dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
+            )),
+        );
+        ensure_remote_config(&tonk, &repository, &key, &configuration)
+            .await
+            .expect("the write moves the meta branch to this release's format first");
+        assert!(
+            !meta
+                .migration_pending(&tonk.operator)
+                .await
+                .expect("the layout is read"),
+            "the meta branch is in this release's format"
         );
     }
 }

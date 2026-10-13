@@ -275,9 +275,9 @@ fn upgrading_response(
 /// Shared body for [`query`] and [`query_profile`]. Takes a
 /// [`crate::reactor::BranchReference`] so the URL extraction is the
 /// only difference between the two routes.
-async fn query_on_branch<'a>(
+async fn query_on_branch(
     state: &AppState,
-    tonk: &'a crate::worker::TonkState,
+    tonk: &crate::worker::TonkState,
     target: QueryTarget,
     headers: HeaderMap,
     request: Request,

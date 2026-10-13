@@ -5,6 +5,6 @@ mod reference;
 mod session;
 mod state;
 
-pub use reference::{BranchReference, Upgraded};
+pub use reference::{BranchReference, Upgraded, migrate};
 pub use session::BranchSession;
 pub use state::BranchState;

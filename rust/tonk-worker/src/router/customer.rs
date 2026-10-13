@@ -653,13 +653,18 @@ pub(crate) async fn retract_space_provider(
     use dialog_query::{Output as _, Query, Term};
     use tonk_schema::{SpaceProvider, prelude::DidExt as _};
 
-    let branch = match state
+    let reference = state
         .reactor
         .profile_repository()
-        .branch(&state.active_branch)
-        .acquire(&state.operator)
-        .await
-    {
+        .branch(&state.active_branch);
+    // The retraction below commits through the session's handle, not the
+    // reactor's commit, so the once-per-process move of a branch an
+    // earlier release wrote runs here.
+    if let Err(error) = reference.migrate_once(&state.operator).await {
+        log!("space provider for {consumer} not retracted: {error}");
+        return;
+    }
+    let branch = match reference.acquire(&state.operator).await {
         Ok(branch) => branch,
         Err(error) => {
             log!("space provider for {consumer} not read: {error}");

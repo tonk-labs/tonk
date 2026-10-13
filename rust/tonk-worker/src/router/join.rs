@@ -742,6 +742,24 @@ async fn perform_join(
         validate_content(&branch, &tonk.operator, &prepared.subject).await?;
     }
 
+    // The claim below commits into the content branch directly, not
+    // through the reactor: a branch an earlier release wrote (a renewal,
+    // or a head the pull just adopted) is moved to this release's format
+    // first, once per process, as every reactor commit is. A failure is
+    // logged; the commit reports the refusal.
+    if let Err(error) = tonk
+        .reactor
+        .repository(prepared.subject.repo_key())
+        .branch(DEFAULT_BRANCH)
+        .migrate_once(&tonk.operator)
+        .await
+    {
+        log!(
+            "join: migrating '{}' failed: {error}",
+            prepared.subject.repo_key()
+        );
+    }
+
     // Every claim, including a renewal, lands its roster/provenance/name
     // facts as an ordinary commit; the next sync tick pushes them.
     let (changes, _already_claimed) = claim_changes(

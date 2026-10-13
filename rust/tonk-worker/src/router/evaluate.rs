@@ -608,6 +608,14 @@ async fn evaluate_on_branch_with<'a>(
     let exprs = syntax.expressions.len();
     log!("Evaluating {exprs} expression(s)");
 
+    // The document's commits write through the session's handle, not
+    // the reactor's commit, so the once-per-process move of a branch an
+    // earlier release wrote runs here: a commit into the earlier layout
+    // is refused.
+    tonk_branch
+        .migrate_once(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("migrating the branch failed: {e}")))?;
     let session = tonk_branch
         .acquire(&tonk_state.operator)
         .await

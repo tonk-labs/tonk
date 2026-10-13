@@ -475,12 +475,19 @@ pub async fn resolve(
 /// implicit-create-on-first-write semantics mean a fresh tonk
 /// site doesn't need a separate meta-branch bootstrap step.
 async fn open_meta(site: &TonkSite) -> Result<Branch, RemoteError> {
-    site.repository
+    let meta = site
+        .repository
         .branch(META_BRANCH)
         .open()
         .perform(&site.operator)
         .await
-        .map_err(|e| RemoteError::Io(format!("failed to open meta branch: {e}")))
+        .map_err(|e| RemoteError::Io(format!("failed to open meta branch: {e}")))?;
+    // Its callers write into it directly: a meta branch an earlier release
+    // wrote is moved to this release's format first.
+    dialog_reactor::migrate(&meta, &site.operator)
+        .await
+        .map_err(|e| RemoteError::Io(format!("failed to migrate meta branch: {e}")))?;
+    Ok(meta)
 }
 
 /// Connect to the replica of `subject` at `address`, recording the
