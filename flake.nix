@@ -420,29 +420,29 @@
           "test:e2e" = {
             description = "Run serialized real-browser account integration tests";
             command = ''
-              # These artifacts come from the Nix store, so cachix serves
-              # them warm; rebuilding them in-place with cargo cost every CI
-              # run a from-scratch compile, since runners keep no cargo
-              # target directory between runs.
-              nix build .#tonk-cli .#tests-e2e .#tonk-ui-preview
-
-              TONK_BIN="$(nix eval .#tonk-cli.outPath --raw)/bin/tonk"
-              export TONK_BIN
-              TONK_UI_TEST_ARTIFACT="$(nix eval .#tonk-ui-preview.outPath --raw)"
-              export TONK_UI_TEST_ARTIFACT
-              # The store-built CLI bakes in the release PostHog key; the
-              # debug build the suite spawned before had none. Keep test
-              # runs out of the analytics.
+              # CI supplies exact producer outputs, including on forks without
+              # cache write credentials. Local runs build their inputs here.
+              if [ -z "''${TONK_E2E_ARCHIVE:-}" ]; then
+                nix build .#tonk-cli .#tests-e2e .#tonk-ui-preview
+                TONK_BIN="$(nix eval .#tonk-cli.outPath --raw)/bin/tonk"
+                TONK_UI_TEST_ARTIFACT="$(nix eval .#tonk-ui-preview.outPath --raw)"
+                TONK_E2E_ARCHIVE="$(nix eval .#tests-e2e.outPath --raw)/tests-e2e.tar.zst"
+              fi
+              export TONK_BIN TONK_UI_TEST_ARTIFACT
+              export TONK_UI_TEST_SERVER="${
+                self.packages.${system}.tonk-ui-test-server-runtime
+              }/bin/tonk-ui-test-server"
+              test -x "$TONK_BIN"
+              test -f "$TONK_UI_TEST_ARTIFACT/index.html"
+              test -f "$TONK_E2E_ARCHIVE"
               export DO_NOT_TRACK=1
-
-              TESTS_PATH="$(nix eval .#tests-e2e.outPath --raw)"
 
               # The `e2e` profile (.config/nextest.toml) serializes the
               # suite and holds the quarantine list of known-broken tests.
               cargo nextest run \
                 --profile e2e \
                 --workspace-remap ./ \
-                --archive-file "$TESTS_PATH/tests-e2e.tar.zst" \
+                --archive-file "$TONK_E2E_ARCHIVE" \
                 "$@"
             '';
           };
@@ -691,7 +691,14 @@
           # This package is used by integration tests to run a web server
           # over a local deployment of tonk-ui with Caddy as reverse proxy
           # to route /ucan/* to the access service
-          tonk-ui-test-server =
+          tonk-ui-test-server = pkgs.writeShellScriptBin "tonk-ui-test-server" ''
+            export TONK_UI_TEST_ARTIFACT="''${TONK_UI_TEST_ARTIFACT:-${tonk-ui}}"
+            exec ${tonk-ui-test-server-runtime}/bin/tonk-ui-test-server "$@"
+          '';
+
+          # Runtime-only launcher for CI: selecting an artifact must not pull
+          # the default optimized browser artifact into the CI shell closure.
+          tonk-ui-test-server-runtime =
             with pkgs;
             writeScriptBin "tonk-ui-test-server" ''
               #!${bash}/bin/bash
@@ -704,7 +711,11 @@
               # in front of its own access service.
               SIBLING_PORT=''${4:-}
               SIBLING_ACCESS_SERVICE_PORT=''${5:-}
-              ARTIFACT_ROOT=''${TONK_UI_TEST_ARTIFACT:-${self.packages.${system}.tonk-ui}}
+              ARTIFACT_ROOT=''${TONK_UI_TEST_ARTIFACT:-}
+              if [ -z "$ARTIFACT_ROOT" ]; then
+                  echo "Set TONK_UI_TEST_ARTIFACT to a built Tonk UI output (or run test:e2e)." >&2
+                  exit 1
+              fi
               if [ ! -f "$ARTIFACT_ROOT/index.html" ] || [ ! -f "$ARTIFACT_ROOT/service_worker.js" ]; then
                   echo "Invalid Tonk test artifact: $ARTIFACT_ROOT" >&2
                   exit 1
@@ -725,8 +736,7 @@
               fi
 
               # Name the build under test. The artifact is pinned into this
-              # script when it is built, so a stale server silently serves a
-              # stale app; the harness records this line so a log always says
+              # script at runtime; the harness records this line so a log always says
               # which build produced it.
               BUILD_ID=unknown
               while IFS= read -r line; do
