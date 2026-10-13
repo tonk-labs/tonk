@@ -1660,7 +1660,6 @@ concept!: &site
         `site/select`. Absent when nothing is selected. A session fact like the
         rest of the site: it goes with the tab.
       the: xyz.tonk.site/selection
-      cardinality: :one
       as: text
 
 
@@ -2136,12 +2135,10 @@ concept!: &asset
     media-type:
       description: Media type of the asset's content, such as image/png
       the: tonk.dialog.asset/media-type
-      cardinality: :one
       as: text
     name:
       description: Human-readable file name
       the: tonk.dialog.asset/name
-      cardinality: :one
       as: text
 
 rule!:
@@ -2612,7 +2609,7 @@ concept!: &intent/action
     name:
       description: A word or phrase the command answers to.
       the: tonk.dialog.intent.action/name
-      cardinality: :many
+      pick: :all
       as: text
 
 # The command palette's interpretation of what was typed, as session facts.
@@ -2651,23 +2648,19 @@ concept!: &intent/expression
     input:
       description: What is typed.
       the: tonk.dialog.intent.expression/input
-      cardinality: :one
       as: text
     site:
       description: The tab's site, where the palette was opened.
       the: tonk.dialog.intent.expression/site
-      cardinality: :one
       as: entity
     time:
       description: When the line was last interpreted.
       the: tonk.dialog.intent.expression/time
-      cardinality: :one
       as: float
   maybe:
     selection:
       description: The text selected in the tab's page, when there was some.
       the: tonk.dialog.intent.expression/selection
-      cardinality: :one
       as: text
 
 concept!: &intent
@@ -2676,12 +2669,10 @@ concept!: &intent
     expression:
       description: The expression it was read from.
       the: tonk.dialog.intent/expression
-      cardinality: :one
       as: entity
     command:
       description: The command it would run.
       the: tonk.dialog.intent/command
-      cardinality: :one
       as: entity
 
 # A member as the account `member/expel` wants. A roster row is the
@@ -2695,7 +2686,6 @@ concept!: &member/account
     name:
       description: The display name the member uses in this space.
       the: xyz.tonk.member.account/name
-      cardinality: :one
       as: text
 
 rule!:
@@ -2723,7 +2713,6 @@ concept!: &library/component
     name:
       description: The component's name, the file it is in without `.yaml`.
       the: xyz.tonk.library.component/name
-      cardinality: :one
       as: text
 
 view!:

@@ -1495,7 +1495,7 @@ mod tests {
                     "uri": "tonk-buffer:///test",
                     "languageId": "carry-asserted",
                     "version": 1,
-                    "text": "attribute!:\n  the: io.gozala.person/name\n  as: text\n  cardinality: :one\n  description: \"The person's full name\"\n"
+                    "text": "attribute!:\n  the: io.gozala.person/name\n  as: text\n  description: \"The person's full name\"\n"
                 }
             }
         });

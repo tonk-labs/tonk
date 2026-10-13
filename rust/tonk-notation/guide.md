@@ -98,7 +98,6 @@ attribute!: &person-name
   description: The person's name
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: :one
 
 concept!: &person
   description: A person
@@ -178,13 +177,18 @@ attribute!: &task-tags
   pick:        :all
 ```
 
-`pick:` (`:last`, `:all`, `:top`, `:max`, `:min`), the older
-`cardinality:` (`:one`, `:many`) and a command field's `role:`
-(`:object`, `:goal`, …) take keywords. These three fields also
+`pick:` (`:last`, `:all`, `:top`, `:max`, `:min`) and a command
+field's `role:` (`:object`, `:goal`, …) take keywords. Both also
 read the spellings earlier releases wrote, the bare word
-(`pick: all`) and the quoted word (`cardinality: "one"`), as the
-same keyword, so a template or notebook written for an earlier
-release still evaluates. Write the keyword in new documents.
+(`pick: all`) and the quoted word (`role: "object"`), as the same
+keyword, with a warning (`W_OLDER_KEYWORD_SPELLING`) naming the
+keyword to write. `cardinality:`, the spelling earlier releases
+used for a field's pick, is deprecated: it is read, in every
+spelling (`one`, `:one`, `"one"`), as `pick: :last` for `one`
+(the default, so the field can go) and `pick: :all` for `many`,
+with a warning (`W_DEPRECATED_CARDINALITY`) saying so. A template
+or notebook written for an earlier release still evaluates; a
+new document writes the pick.
 
 ## Heads in detail
 
@@ -472,7 +476,6 @@ attribute!: &person-name
   description: "The person's name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: :one
 ```
 
 is equivalent to:
@@ -483,7 +486,6 @@ attribute!:
   description: "The person's name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: :one
 
 name!:
   this:   id:person-name
@@ -502,7 +504,6 @@ attribute!: &person-name
   description: "The person's name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: :one
 
 # Additional names for the same entity:
 name!:
@@ -696,7 +697,6 @@ attribute!:
   description: "The entity identified by the name"
   the:         dialog.meta/name
   as:          entity
-  cardinality: :one
 
 concept!: &name
   description: "A mutable name for an entity"

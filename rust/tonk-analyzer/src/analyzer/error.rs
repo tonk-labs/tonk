@@ -260,6 +260,31 @@ pub enum AnalyzeDiagnosticKind {
         /// value.
         known: String,
     },
+    /// An attribute body writes `cardinality:`, the spelling earlier
+    /// releases used for what is now the attribute's pick. It is read
+    /// (`one` is `pick: :last`, the default; `many` is `pick: :all`) so
+    /// the templates and notebooks those releases published still
+    /// evaluate, and warned about so new documents write the pick.
+    #[error("`cardinality: {value}` is deprecated — {advice}")]
+    DeprecatedCardinality {
+        /// The value as written (`one`, `:one`, `"one"`).
+        value: String,
+        /// What to write instead.
+        advice: String,
+    },
+    /// A keyword-valued field (`pick:`, `role:`) writes the bare or
+    /// quoted word earlier releases used instead of the keyword. It is
+    /// read as the keyword, and warned about so the document moves to
+    /// the spelling the guide teaches.
+    #[error("`{field}: {word}` is the older spelling of the keyword `{field}: :{keyword}`")]
+    OlderKeywordSpelling {
+        /// The field name.
+        field: String,
+        /// The value as written.
+        word: String,
+        /// The keyword it reads as.
+        keyword: String,
+    },
     /// the author gets a heads-up with the spelling that would.
     #[error("{attribute} is declared {declared}, this literal stores {found} — {hint}")]
     DeclaredTypeDivergence {
@@ -291,6 +316,8 @@ impl AnalyzeDiagnosticKind {
                 "E_SINGLE_OCCURRENCE_VARIABLE_ASSERTION_FIELD"
             }
             Self::ShadowsBuiltin { .. } => "W_SHADOWS_BUILTIN",
+            Self::DeprecatedCardinality { .. } => "W_DEPRECATED_CARDINALITY",
+            Self::OlderKeywordSpelling { .. } => "W_OLDER_KEYWORD_SPELLING",
             Self::DeclaredTypeDivergence { .. } => "W_DECLARED_TYPE_DIVERGENCE",
             Self::UnknownEmbed { .. } => "W_UNKNOWN_EMBED",
         }

@@ -1541,7 +1541,6 @@ concept!: &site
         `site/select`. Absent when nothing is selected. A session fact like the
         rest of the site: it goes with the tab.
       the: xyz.tonk.site/selection
-      cardinality: :one
       as: text
 
 
@@ -1585,12 +1584,10 @@ concept!: &site/request
     request:
       description: The act — `account`, `share`, `members` or `agent`.
       the: xyz.tonk.site/request
-      cardinality: :one
       as: text
     time:
       description: When it was asked, so the same act asked twice is two requests.
       the: xyz.tonk.site/request-time
-      cardinality: :one
       as: float
 
 # The route table concept. Mirrors core.yaml's `&route`.
@@ -2748,7 +2745,6 @@ concept!: &hub
         The branch the profile is on, picked off the site entity: the
         latent bar's command line talks to the profile.
       the: xyz.tonk.site/profile-branch
-      cardinality: :one
       as: text
 
 view!:
@@ -2975,7 +2971,6 @@ concept!: &join/route
         The branch the profile is on, picked off the site entity: the
         latent bar's command line talks to the profile.
       the: xyz.tonk.site/profile-branch
-      cardinality: :one
       as: text
 
 view!:
@@ -3107,7 +3102,6 @@ concept!: &inspector/route
         The branch the profile is on, picked off the site entity: the
         latent bar's command line talks to the profile.
       the: xyz.tonk.site/profile-branch
-      cardinality: :one
       as: text
 
 view!:
@@ -3151,7 +3145,6 @@ concept!: &diagnose/route
         The branch the profile is on, picked off the site entity: the
         latent bar's command line talks to the profile.
       the: xyz.tonk.site/profile-branch
-      cardinality: :one
       as: text
 
 view!:
@@ -3198,7 +3191,6 @@ concept!: &seed/route
         The branch the profile is on, picked off the site entity: the
         latent bar's command line talks to the profile.
       the: xyz.tonk.site/profile-branch
-      cardinality: :one
       as: text
 
 view!:
@@ -3258,7 +3250,7 @@ view!:
 # `<tonk-site>` defaults its absent `path` to `/`.
 #
 # The view keeps `<tonk-site path={rest}>` even when `rest` is absent because
-# `rest` is a `cardinality: :one` (scalar) field: `<tonk-display>` stamps the
+# `rest` is a scalar (`pick: :last`) field: `<tonk-display>` stamps the
 # concept's scalar field names onto the `<tonk-view>` (`data-scalar-fields`), so
 # the planner renders them as plain substitutions rather than iteration axes that
 # would clone the host zero times — and drop it — when the value is empty.
@@ -3291,7 +3283,6 @@ concept!: &profile/repository
     name:
       description: The repository's display name.
       the: xyz.tonk.repo/name
-      cardinality: :one
       as: text
 
 view!:
@@ -3563,7 +3554,6 @@ concept!: &not-found
         The branch the profile is on, picked off the site entity: the
         latent bar's command line talks to the profile.
       the: xyz.tonk.site/profile-branch
-      cardinality: :one
       as: text
 
 view!:
@@ -5828,7 +5818,7 @@ concept!: &intent/action
     name:
       description: A word or phrase the command answers to.
       the: tonk.dialog.intent.action/name
-      cardinality: :many
+      pick: :all
       as: text
 
 concept!: &intent/choice
@@ -5837,17 +5827,14 @@ concept!: &intent/choice
     command:
       description: The command that was run.
       the: tonk.dialog.intent.choice/command
-      cardinality: :one
       as: entity
     input:
       description: The words typed for the verb; empty when it was suggested from a noun.
       the: tonk.dialog.intent.choice/input
-      cardinality: :one
       as: text
     time:
       description: When it was run, so two runs are two choices.
       the: tonk.dialog.intent.choice/time
-      cardinality: :one
       as: float
 
 # The command palette's interpretation of what was typed, as session facts.
@@ -5886,23 +5873,19 @@ concept!: &intent/expression
     input:
       description: What is typed.
       the: tonk.dialog.intent.expression/input
-      cardinality: :one
       as: text
     site:
       description: The tab's site, where the palette was opened.
       the: tonk.dialog.intent.expression/site
-      cardinality: :one
       as: entity
     time:
       description: When the line was last interpreted.
       the: tonk.dialog.intent.expression/time
-      cardinality: :one
       as: float
   maybe:
     selection:
       description: The text selected in the tab's page, when there was some.
       the: tonk.dialog.intent.expression/selection
-      cardinality: :one
       as: text
 
 concept!: &intent
@@ -5911,12 +5894,10 @@ concept!: &intent
     expression:
       description: The expression it was read from.
       the: tonk.dialog.intent/expression
-      cardinality: :one
       as: entity
     command:
       description: The command it would run.
       the: tonk.dialog.intent/command
-      cardinality: :one
       as: entity
 
 # The directory row IS the repository's own entity (its subject DID), which

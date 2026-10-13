@@ -170,7 +170,6 @@ pub(super) fn home_recipe(entrypoint: &str) -> String {
       description: The repository's subject DID.
       the: dialog.replica/subject
       as: entity
-      cardinality: :one
 
 view!:
   this: space:home
