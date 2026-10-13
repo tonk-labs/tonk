@@ -27,6 +27,11 @@ jobs:
     name: MCP contracts and ordinary worker
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      # nothing-but-nix gives reclaimed disk space to /nix, not the checkout.
+      CARGO_TARGET_DIR: /nix/var/tonk-mcp-target
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
     steps:
       - uses: actions/checkout@v4
       - uses: wimpysworld/nothing-but-nix@main
@@ -37,6 +42,10 @@ jobs:
         with:
           name: tonk-test-cache
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: Prepare Cargo build storage
+        run: |
+          sudo install -d -o "$(id -u)" -g "$(id -g)" "$CARGO_TARGET_DIR"
+          df -h / "$CARGO_TARGET_DIR"
       - name: Install locked MCP dependencies
         run: nix --accept-flake-config develop .#ci -c npm --prefix mcp ci --ignore-scripts
       - name: Check formatting, generated guides and core contracts
@@ -49,5 +58,5 @@ jobs:
       - name: Build ordinary worker and test through MCP
         run: |
           nix --accept-flake-config develop .#ci -c cargo build --locked -p tonk-worker --features native-host --bin tonk-worker-host
-          export TONK_WORKER_BINARY="$PWD/target/debug/tonk-worker-host"
+          export TONK_WORKER_BINARY="$CARGO_TARGET_DIR/debug/tonk-worker-host"
           nix --accept-flake-config develop .#ci -c npm --prefix mcp run test:integration

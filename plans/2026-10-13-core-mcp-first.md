@@ -150,3 +150,19 @@ Final validation after all fixture changes: the focused publication test passes;
 the full worker suite passes with CI's two-thread setting (244 passed, zero
 failures, three existing ignored tests). Rust formatting and diff whitespace
 checks pass. The fresh GitHub run remains the Linux CI verification boundary.
+
+## CI disk layout correction
+
+Run `38400113671` on `49052644c6` passed the worker suite, then the runner failed
+with `No space left on device` while starting the native-host build. The runner
+annotation identifies its root-filesystem diagnostic log; full job logs were
+unavailable. The existing nothing-but-nix action allocates reclaimed space to
+`/nix`, retaining only 2048 MB on root by default, while Cargo wrote into the
+checkout's root-backed `target/` directory.
+
+The MCP job now puts Cargo artifacts in a runner-owned directory under `/nix`
+and resolves the integration binary from that same target directory. It also
+disables incremental output and development debug data for this disposable CI
+build. Local build profiles and test coverage are unchanged. Actionlint and
+whitespace checks pass; independent review found no issues. Disk headroom and
+end-to-end job completion still require verification on the next hosted run.
