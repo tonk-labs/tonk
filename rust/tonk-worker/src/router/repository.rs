@@ -5953,23 +5953,21 @@ pub(crate) async fn space_root_prefix_of(
     })
 }
 
-/// Move the meta branch of the space at `key` to this release's storage
-/// format, once per process, before a write into it. The meta commits in
-/// this module go through dialog's `Branch` directly rather than the
-/// reactor, so they run the migration every reactor commit runs first
-/// ([`BranchReference::migrate_once`]); a commit into a branch an earlier
-/// release wrote is refused otherwise. A failure is logged, and the commit
-/// that follows reports the refusal.
+/// Move `meta`, the meta branch of the space at `key` opened for a direct
+/// write, to this release's storage format when an earlier release laid it
+/// out. The meta commits in this module go through dialog's `Branch`
+/// directly rather than the reactor, so they run the migration every
+/// reactor commit runs first ([`BranchReference::migrate_once`]); a commit
+/// into a branch an earlier release wrote is refused otherwise. It runs on
+/// the handle the write uses, not the reactor's cached one: a cached entry
+/// made here would hold a head the write then moves past, and the
+/// admission cache stamps that head. The reactor learns the head on its
+/// next refresh. A failure is logged, and the commit that follows reports
+/// the refusal.
 ///
 /// [`BranchReference::migrate_once`]: dialog_reactor::BranchReference::migrate_once
-async fn migrate_meta_once(tonk: &TonkState, key: &str) {
-    if let Err(error) = tonk
-        .reactor
-        .repository(key)
-        .branch(META_BRANCH)
-        .migrate_once(&tonk.operator)
-        .await
-    {
+async fn migrate_meta(meta: &dialog_repository::Branch, key: &str, tonk: &TonkState) {
+    if let Err(error) = dialog_reactor::migrate(meta, &tonk.operator).await {
         log!("migrating the meta branch of '{key}' failed: {error}");
     }
 }
@@ -6014,13 +6012,13 @@ where
     // Seed it with the replica record and the meta branch's own
     // `Branch` fact — the meta branch is a real branch of this
     // replica, so it belongs in the enumeration like any other.
-    migrate_meta_once(tonk, key).await;
     let meta = repository
         .branch(META_BRANCH)
         .open()
         .perform(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to open meta branch: {}", e)))?;
+    migrate_meta(&meta, key, tonk).await;
 
     // Local replica of this repository. The display name is not stored
     // here — it lives in the repository's own `tonk/repository` concept
@@ -7885,13 +7883,13 @@ where
         return Ok(effective);
     }
 
-    migrate_meta_once(tonk, repository.did().repo_key()).await;
     let meta = repository
         .branch(META_BRANCH)
         .open()
         .perform(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to open meta branch: {}", e)))?;
+    migrate_meta(&meta, repository.did().repo_key(), tonk).await;
 
     let replica = Replica::new(tonk.profile.did(), repository.did());
     let mut transaction = meta.transaction().assert(replica.clone());
@@ -15965,6 +15963,12 @@ mod meta_migration_tests {
         ensure_remote_config(&tonk, &repository, &key, &configuration)
             .await
             .expect("the write moves the meta branch to this release's format first");
+        // The write moved the branch through its own handle; the reactor's
+        // cached handle learns the head on its next refresh.
+        handle
+            .refresh(&tonk.operator)
+            .await
+            .expect("the cached handle reads the moved head");
         assert!(
             !meta
                 .migration_pending(&tonk.operator)
