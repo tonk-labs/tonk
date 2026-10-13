@@ -253,7 +253,7 @@ let
         cargoArtifacts = targetArtifacts;
 
         buildPhaseCargoCommand = ''
-          cargo nextest archive --cargo-profile ${profile} \
+          cargo nextest archive --cargo-profile ${profile} --timings \
             ${args} \
             --archive-file ./tests-${name}.tar.zst
         '';
@@ -261,6 +261,7 @@ let
         installPhaseCommand = ''
           mkdir -p $out
           cp ./*.tar.zst $out/
+          cp -r target/cargo-timings $out/cargo-timings
         '';
 
         doInstallCargoArtifacts = false;

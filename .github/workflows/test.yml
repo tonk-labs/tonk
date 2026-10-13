@@ -113,10 +113,12 @@ jobs:
       - name: 'Build end-to-end test inputs'
         shell: bash
         run: |
-          time nix build --accept-flake-config --no-link ".#tonk-cli$CI_SUFFIX" ".#tests-e2e$CI_SUFFIX"
+          time nix build --accept-flake-config --print-build-logs --no-link ".#tonk-cli$CI_SUFFIX" ".#tests-e2e$CI_SUFFIX"
           cli="$(nix eval --raw ".#tonk-cli$CI_SUFFIX.outPath")"
           archive="$(nix eval --raw ".#tests-e2e$CI_SUFFIX.outPath")"
           mkdir -p e2e-native
+          cp -r "$archive/cargo-timings" e2e-native/cargo-timings
+          printf '%s\n' "$archive" > e2e-native/cargo-timings/store-path.txt
           mapfile -t closure < <(nix-store --query --requisites "$cli" "$archive")
           time nix-store --export "${closure[@]}" | gzip -1 > e2e-native/closure.nar.gz
           printf 'TONK_BIN=%s/bin/tonk\nTONK_E2E_ARCHIVE=%s/tests-e2e%s.tar.zst\n' "$cli" "$archive" "$CI_SUFFIX" > e2e-native/paths.env
@@ -339,6 +341,7 @@ jobs:
         if: github.event_name != 'pull_request' || matrix.profile != 'release'
         env:
           TEST_PROFILE: ${{ github.event_name == 'pull_request' && 'ci' || matrix.profile }}
+          TONK_BUILD_TIMINGS_DIR: ${{ runner.temp }}/cargo-timings
         shell: bash
         run: |
           nix develop \
@@ -346,3 +349,11 @@ jobs:
             --set-env-var TMPDIR "$RUNNER_TEMP" \
             .#ci \
             --command test:${{matrix.platform}}:"$TEST_PROFILE"
+      - name: Upload Cargo build timings
+        if: always() && (github.event_name != 'pull_request' || matrix.profile != 'release')
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-timings-${{ matrix.platform }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/cargo-timings/
+          if-no-files-found: ignore
+          retention-days: 14

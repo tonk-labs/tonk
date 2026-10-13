@@ -159,3 +159,32 @@ main at `d6389ce346` during local validation. Rebased the unpublished fix onto
 that merge, preserving the MCP/worker changes. Formatting, workflow and
 source-reference checks passed afterward. The local browser comparison above
 predates that main merge; hosted CI must verify the combined revision.
+
+## Second optimization pass: measure native compilation
+
+Passing hosted run `38409371674` took approximately 44 minutes. Native was the
+critical path: 41m17s total, including about 11m dependency compilation, 24m
+workspace archive compilation, and 84s running 2,650 tests. Web took 38m05s,
+including about 24m compilation and 9m execution. E2E took about 32m including
+input preparation. A warm rerun of the identical commit does not measure PR
+iteration after a source edit.
+
+Next independently reviewable increment: retain Cargo HTML timing reports in
+archive outputs and upload native/web reports even if execution fails. A cache
+hit serves the original build report; the store path identifies it, so report
+compile time must not be mistaken for current-run wall time.
+
+Benchmark 16 versus 256 native codegen units using the existing `ci-test`
+optimization/assertion settings. Warm both dependency configurations first;
+append the same inert comment to copied worker source for each pair of trials,
+keeping the dependency source unchanged. Compile serially with four build cores,
+then execute the archive's tests. Begin with the worker library as a focused
+probe; its narrower feature graph and Darwin host are not a hosted full-workspace
+speed claim. Alternate order for repeated trials. Do not change the normal
+native profile without evidence, and retain all existing Wasm profiles.
+
+Timing-report checkpoint validation: built a real `tonk-template` archive with
+`--timings`; both timestamped and stable Cargo HTML reports are present in the
+Nix output, and all 113 tests passed. Nix formatting, workflow expression/syntax,
+source-reference and whitespace checks passed. E2E producer artifacts now also
+carry their archive timing reports; no test/profile/selection change is included.
