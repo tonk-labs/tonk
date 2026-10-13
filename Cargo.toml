@@ -233,10 +233,14 @@ codegen-units = 1
 # The release test archive: release optimizations without link-time
 # optimization. LTO re-optimizes every crate a binary pulls in at each
 # link, and the archive links one binary per test target, which put the
-# release test build past CI's time limit. Shipped builds keep `release`.
+# release test build past CI's time limit. The one codegen unit `release`
+# compiles each crate in serializes the optimizer over the archive's many
+# test targets, and put the build past the limit again; the default count
+# lets them compile in parallel. Shipped builds keep `release`.
 [profile.release-test]
 inherits = "release"
 lto = false
+codegen-units = 16
 
 [profile.wasm-release]
 inherits = "release"
