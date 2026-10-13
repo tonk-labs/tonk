@@ -1,0 +1,10 @@
+name: Require tag verification
+description: Wait for the latest Test attempt for this exact pushed release tag and SHA
+runs:
+  using: composite
+  steps:
+    - name: Require successful full tag verification
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 scripts/wait-tag-verification.py

@@ -127,7 +127,18 @@ let
       // {
         version = "0.1.0";
 
-        cargoArtifacts = nativeArtifacts;
+        cargoArtifacts =
+          if attributes ? CARGO_PROFILE then
+            craneLib.buildDepsOnly (
+              commonAttributes
+              // {
+                pname = "${attributes.pname}-deps";
+                CARGO_PROFILE = attributes.CARGO_PROFILE;
+                cargoExtraArgs = attributes.cargoExtraArgs or "";
+              }
+            )
+          else
+            nativeArtifacts;
       }
       // attributes
     );
@@ -168,6 +179,7 @@ let
           muslAttributes
           // {
             pname = "${attributes.pname}-static-deps";
+            CARGO_PROFILE = attributes.CARGO_PROFILE or "release";
             cargoExtraArgs = attributes.cargoExtraArgs or "";
           }
         );
@@ -198,13 +210,30 @@ let
     craneLib.buildTrunkPackage (
       wasmAttributes
       // {
-        cargoArtifacts = wasmArtifacts;
+        cargoArtifacts =
+          if attributes ? dependencyProfile then
+            craneLib.buildDepsOnly (
+              wasmAttributes
+              // {
+                pname = "${attributes.pname}-deps";
+                CARGO_PROFILE = attributes.dependencyProfile;
+                # Trunk invokes Cargo separately for these packages. Preserve
+                # those feature graphs instead of unifying guest/UI features.
+                buildPhaseCargoCommand = ''
+                  cargoWithProfile build --package tonk-ui --bin ui --features connection-invites
+                  cargoWithProfile build --package tonk-ui --bin worker --features connection-invites
+                  cargoWithProfile build --package tonk-guest --bin guest
+                '';
+              }
+            )
+          else
+            wasmArtifacts;
         preBuild = ''
           cd ${crateRoot}
         '';
         inherit wasm-bindgen-cli;
       }
-      // attributes
+      // builtins.removeAttrs attributes [ "dependencyProfile" ]
     );
 
   # Build cargo-nextest test archive

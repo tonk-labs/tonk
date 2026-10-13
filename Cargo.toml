@@ -258,3 +258,25 @@ lto = "fat"
 inherits = "release"
 opt-level = "s"
 lto = "fat"
+
+# PR correctness checks retain assertions and overflow checking. Override the
+# dev wildcard explicitly so dependencies do not silently remain at opt-level 3.
+[profile.ci-test]
+inherits = "test"
+opt-level = 1
+lto = "off"
+codegen-units = 16
+
+[profile.ci-test.package."*"]
+opt-level = 1
+
+# Platform/browser smoke builds exercise release code paths without shipping
+# optimization. Real releases keep the profiles above unchanged.
+[profile.ci-release]
+inherits = "release"
+opt-level = 1
+lto = "off"
+codegen-units = 16
+
+[profile.ci-release.package."*"]
+opt-level = 1

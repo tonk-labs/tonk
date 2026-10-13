@@ -493,6 +493,17 @@
             package = "tests-native-debug";
           };
 
+          "test:native:ci" = menuTestCommand {
+            description = "PR unit and integration tests (native)";
+            package = "tests-native-ci";
+          };
+
+          "test:web:ci" = menuTestCommand {
+            description = "PR unit tests (Wasm, pooled runner)";
+            package = "tests-web-ci";
+            runner = "${wbg-pool}/bin/wbg-pool";
+          };
+
           "test:native:release" = menuTestCommand {
             description = "Unit and integration tests (${system}, release)";
             package = "tests-native-release";
@@ -610,6 +621,25 @@
             args = "--package tonk-ui --features integration-tests,connection-invites";
           };
 
+          tests-native-ci = buildTestArchive {
+            name = "native-ci";
+            profile = "ci-test";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+          };
+
+          tests-web-ci = buildTestArchive {
+            name = "web-ci";
+            profile = "ci-test";
+            target = "wasm32-unknown-unknown";
+            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
+          };
+
+          tests-e2e-ci = buildTestArchive {
+            name = "e2e-ci";
+            profile = "ci-test";
+            args = "--package tonk-ui --features integration-tests,connection-invites";
+          };
+
           tests = pkgs.runCommand "tests-all" { } ''
             mkdir -p $out
             cp ${self.packages.${system}.tests-native-debug}/*.tar.zst $out/
@@ -622,6 +652,14 @@
           # distribution, not only where Nix's glibc is installed.
           tonk-cli = (if system == "x86_64-linux" then buildStaticCrate else buildCrate) {
             pname = "tonk-cli";
+            cargoExtraArgs = "--package tonk-cli";
+            TONK_POSTHOG_KEY = posthogKey;
+            fixupPhase = darwinBinaryFixup;
+          };
+
+          tonk-cli-ci = (if system == "x86_64-linux" then buildStaticCrate else buildCrate) {
+            pname = "tonk-cli-ci";
+            CARGO_PROFILE = "ci-release";
             cargoExtraArgs = "--package tonk-cli";
             TONK_POSTHOG_KEY = posthogKey;
             fixupPhase = darwinBinaryFixup;
@@ -650,6 +688,31 @@
           tonk-ui-preview = tonk-ui.overrideAttrs (_: {
             pname = "tonk-ui-preview";
           });
+
+          # Keep Trunk's release mode (and release-only application behavior),
+          # but compile all three binaries with the matched fast profile.
+          tonk-ui-ci =
+            (buildTrunkCrate {
+              pname = "tonk-ui-ci";
+              trunkConfig = "./rust/tonk-ui/Trunk.toml";
+              dependencyProfile = "ci-release";
+              TONK_POSTHOG_KEY = posthogKey;
+              postFixup = ''
+                ${./rust/tonk-ui/scripts/stamp-service-worker.sh} "$out"
+              '';
+            }).overrideAttrs
+              (old: {
+                preBuild = old.preBuild + ''
+                  sed -i \
+                    -e 's/data-bin="ui"/data-bin="ui" data-cargo-features="connection-invites"/' \
+                    -e 's/data-bin="worker"/data-bin="worker" data-cargo-features="connection-invites"/' \
+                    -e 's/wasm-ui-release/ci-release/g' \
+                    -e 's/wasm-worker-release/ci-release/g' \
+                    -e 's/wasm-release/ci-release/g' \
+                    -e 's/data-wasm-opt="z"/data-wasm-opt="0"/g' \
+                    index.html
+                '';
+              });
 
           tonk-access-service = buildWasmCrate {
             pname = "tonk-access-service";
@@ -685,6 +748,15 @@
               mkdir -p ./build
               cp -r ${tonk-access-service} ./build/tonk-access-service
               cp -r ${tonk-ui-preview} ./build/tonk-ui
+            '';
+          });
+
+          tonk-cloudflare-ci-artifacts = tonk-cloudflare-artifacts.overrideAttrs (_: {
+            pname = "tonk-cloudflare-ci-assets";
+            buildPhase = ''
+              mkdir -p ./build
+              cp -r ${tonk-access-service} ./build/tonk-access-service
+              cp -r ${tonk-ui-ci} ./build/tonk-ui
             '';
           });
 

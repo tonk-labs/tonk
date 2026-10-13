@@ -56,7 +56,9 @@ jobs:
           name: tonk-test-cache
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
       - name: 'Build tonk'
-        run: nix build --accept-flake-config .#tonk-cli
+        env:
+          CLI_PACKAGE: ${{ inputs.version != '' && 'tonk-cli' || 'tonk-cli-ci' }}
+        run: nix build --accept-flake-config ".#$CLI_PACKAGE"
       - name: 'Stage tonk artifact'
         run: |
           mkdir -p artifacts

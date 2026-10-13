@@ -14,6 +14,14 @@ branch-promotion and mutable-checklist alternatives, plus the GitHub Release
 metadata/CLI channel boundary that must be resolved before enforcement is
 claimed complete.
 
+## CI compile time
+
+| Plan | Priority | Status | Execution order |
+| --- | --- | --- | --- |
+| [012: Shorten PR verification and retain optimized release gates](012-ci-compile-time.md) | P1 | IMPLEMENTED; hosted validation pending | Matched test caches; shared E2E artifacts and parallel checks; PR profiles and exact-tag release gates |
+
+The [2026-10-13 audit](2026-10-13-ci-compile-audit.md) records hosted timing evidence. All five recommendations are implemented; shipping profiles remain unchanged and optimized suites now run after merge/on tags. Local verification passed 113 focused archive tests, 8 gate tests and 16 artifact/server tests. The plan records the unchanged lifecycle-test timeout and outstanding full hosted verification and measurements.
+
 ## Agent access management
 
 | Plan | Priority | Status | Execution order |
