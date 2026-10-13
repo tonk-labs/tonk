@@ -118,7 +118,11 @@ namespace_id = "1001"
 
 [vars]
 ACCOUNT_SERVICE_URL = "https://accounts.tonk.xyz"
-EMAIL_FROM = "tonk <accounts@tonk.xyz>"
+# Sent from the host the activation link points at. A verification mail
+# whose sender domain differs from its link's reads as phishing to spam
+# filters. The domain has to be verified in Resend (DKIM, SPF on its
+# return-path subdomain) or every send is refused.
+EMAIL_FROM = "tonk <accounts@tonk.network>"
 
 [env.staging]
 routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
