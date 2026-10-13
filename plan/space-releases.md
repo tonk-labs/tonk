@@ -340,3 +340,54 @@ when this ships and writes that cell the next time its owner opens it.
   over a size limit, checks `worker.js` against the identifier in the pin's
   address and every other file against the hashes `worker.js` carries, and
   keeps its own copy before serving it.
+
+## What is built
+
+On `feat/space-boot`:
+
+- **The bootloader** (`assets/boot.js`). The script a site's shell
+  registers. It holds the worker's events, loads one release with
+  `importScripts`, and passes each event's call to the handlers that release
+  gives it. Its address may carry `?pin=`; with none it runs the release the
+  deployment was built with, which the publisher stamps into it.
+- **The release** (`assets/release.js`, bundled). The publisher bundles it
+  with the wasm's bindings into `/_release/<release>/worker.js`, with the
+  wasm beside it, and names it by the CID of that file. It adds no listener;
+  it sets `self.release`, whose `start` returns its handlers.
+- **Pinning.** A space's shell reads a boot record (cache `tonk-boot`, key
+  `/__boot`) and registers the bootloader for the pin in it, withdrawing a
+  worker registered for another release. The bootloader takes a pin from any
+  store and loads `/_release/<release>/worker.js?from=<pin>` on its own
+  origin.
+- **Keeping releases.** With `TONK_RELEASE_STORE` set, the publisher keeps
+  the newest few releases there and serves them all from the dist. The dev
+  server keeps five in `rust/tonk-ui/.releases`.
+- **The address before.** A worker still registered at `/space_worker.js`
+  is retired by the script now served there.
+
+A browser test publishes two generations and shows a space pinned to the
+first staying on it when the deployment moves to the second, while the
+profile follows the deployment.
+
+## Not built
+
+- **The boot cell.** Nothing writes the boot record but a test. The cell in
+  the space, the worker copying it into the record, and the pin arriving with
+  a delegation are next.
+- **Whether a new space pins.** A space with no pin follows its deployment,
+  which is what local development needs. Pinning at creation is to be a
+  setting of the deployment.
+- **A store on a deployment.** `/_release/` is served from the build's own
+  files. Keeping releases in a bucket, fetching one from its `src` and
+  checking it, and the lines of releases are not built, nor is the
+  publishing workflow.
+- **Finding and taking an update.**
+- **The contract as written above.** A handler is given a call carrying the
+  request or message, with `respondWith` and `waitUntil`, not ids. The
+  release still loads its own wasm, serves the shell, hands over to its
+  successor, and uses the worker's globals (`clients`, `registration`,
+  `skipWaiting`). Each of those moves to the bootloader in turn.
+- **The profile's and the app's workers.** The profile's runs a release
+  through the bootloader and always follows its deployment. The app's own
+  worker (`service_worker.js`) is unchanged.
+
