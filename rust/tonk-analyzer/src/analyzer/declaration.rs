@@ -1248,11 +1248,13 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
 
 /// The keyword a keyword-valued field holds: `pick: :all` is `all`.
 ///
-/// A bare symbol is a reference to an anchor, and a pick, a
-/// cardinality or a role is not something an anchor names, so a
-/// bare `all` is refused with the keyword spelling to write instead.
-/// `example` is the keyword the message suggests when the value is
-/// not even symbol-shaped.
+/// A pick, a cardinality or a role is a fixed word, never an entity,
+/// so the field also reads the spellings earlier releases wrote, the
+/// bare word (`pick: all`) and the quoted word (`cardinality: "one"`):
+/// the templates and notebooks those releases published are written
+/// that way, and a release that still reads them cannot write the
+/// keyword. `example` is the keyword the message suggests when the
+/// value is none of these.
 fn keyword_of(field: &tonk_notation::Field, example: &str) -> Result<String, AnalyzeError> {
     let name = &field.name;
     match &field.value {
@@ -1265,13 +1267,7 @@ fn keyword_of(field: &tonk_notation::Field, example: &str) -> Result<String, Ana
             }
             .into()),
         },
-        FieldValue::Symbol(symbol) => Err(AnalyzeErrorKind::InvalidAttributeBody {
-            reason: format!(
-                "`{name}: {symbol}` reads `{symbol}` as a reference to an anchor; \
-                 write the keyword `{name}: :{symbol}`"
-            ),
-        }
-        .into()),
+        FieldValue::Symbol(word) | FieldValue::Literal(Scalar::String(word)) => Ok(word.clone()),
         _ => Err(AnalyzeErrorKind::InvalidAttributeBody {
             reason: format!("`{name}:` takes a keyword such as `:{example}`"),
         }

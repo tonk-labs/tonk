@@ -131,7 +131,7 @@ fn request_client(request: &Request) -> Option<String> {
 /// release gave them. What moved is logged; a failure is logged and
 /// returned, so a stream can tell its page, and the read proceeds on what
 /// the earlier release left.
-async fn migrate_while_opening(
+pub(super) async fn migrate_while_opening(
     tonk: &crate::worker::TonkState,
     branch: crate::reactor::BranchReference<'_>,
 ) -> Result<(), ReactorError> {

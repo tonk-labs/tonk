@@ -1245,9 +1245,9 @@ concept!: &job
     }
 
     /// A pick is a keyword: `pick: :all` names the entity `all:`, which
-    /// is what the attribute records. A bare `pick: all` reads `all` as a
-    /// reference and is refused with the keyword spelling, and so is a
-    /// pick quoted as its entity.
+    /// is what the attribute records. The bare word and the quoted word,
+    /// which earlier releases wrote, name the same entity; a pick quoted
+    /// as its entity (`"all:"`) is no pick's name and is refused.
     #[dialog_common::test]
     async fn it_resolves_picks_as_built_in_anchors() {
         let entity = |source: &str| -> Option<String> {
@@ -1270,17 +1270,17 @@ concept!: &job
         };
         assert_eq!(entity(&declare(":all")).as_deref(), Some("all:"));
         assert_eq!(entity(&declare(":max")).as_deref(), Some("max:"));
-        for spelling in ["all", "\"all:\""] {
-            let syntax = must_parse(&declare(spelling));
-            let error = super::analyze_local(&syntax).expect_err("refused");
-            assert!(
-                matches!(
-                    &error.kind,
-                    AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains(":all")
-                ),
-                "{spelling} is refused with the keyword spelling: {error:?}"
-            );
-        }
+        assert_eq!(entity(&declare("all")).as_deref(), Some("all:"));
+        assert_eq!(entity(&declare("\"all\"")).as_deref(), Some("all:"));
+        let syntax = must_parse(&declare("\"all:\""));
+        let error = super::analyze_local(&syntax).expect_err("refused");
+        assert!(
+            matches!(
+                &error.kind,
+                AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("unknown pick \"all:\"")
+            ),
+            "a pick quoted as its entity is refused: {error:?}"
+        );
     }
 
     /// An instance head's `&anchor` must be resolvable by a later
@@ -1902,27 +1902,62 @@ attribute!: &rename/name
         );
     }
 
-    /// A bare symbol is a reference to an anchor, so a keyword-valued
-    /// field refuses one and names the keyword to write instead.
+    /// A keyword-valued field reads the spellings earlier releases
+    /// wrote, the bare word and the quoted word, as the keyword: the
+    /// published templates are written that way. All three spellings
+    /// lower to the same statements.
     #[dialog_common::test]
-    async fn it_refuses_a_bare_symbol_where_a_keyword_belongs() {
+    async fn it_reads_the_older_spellings_of_a_keyword() {
         for (field, word) in [("pick", "all"), ("cardinality", "many"), ("role", "goal")] {
-            let syntax = must_parse(&format!(
-                r#"
+            let lowered = |value: String| async move {
+                let syntax = must_parse(&format!(
+                    r#"
 attribute!: &rename/name
   description: "The new name"
   the:         xyz.tonk.rename/name
   as:          text
-  {field}: {word}
+  {field}: {value}
 "#
-            ));
-            let err = analyze_empty(&syntax).await.unwrap_err();
-            let expected = format!("`{field}: :{word}`");
-            assert!(
-                matches!(&err.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains(&expected)),
-                "expected {field}: {word} refused with the keyword spelling, got {err:?}"
+                ));
+                let analysis = flat(
+                    analyze_empty(&syntax)
+                        .await
+                        .unwrap_or_else(|err| panic!("{field}: {value} did not analyze: {err:?}")),
+                );
+                format!("{:?}", analysis.mutate.statements)
+            };
+            let keyword = lowered(format!(":{word}")).await;
+            assert_eq!(
+                lowered(word.to_owned()).await,
+                keyword,
+                "bare {field}: {word}"
+            );
+            assert_eq!(
+                lowered(format!("{word:?}")).await,
+                keyword,
+                "quoted {field}: {word}"
             );
         }
+    }
+
+    /// A word no keyword of the field spells is still refused, in the
+    /// bare spelling as in the keyword one.
+    #[dialog_common::test]
+    async fn it_rejects_an_unknown_bare_keyword() {
+        let syntax = must_parse(
+            r#"
+attribute!: &rename/name
+  description: "The new name"
+  the:         xyz.tonk.rename/name
+  as:          text
+  pick:        everything
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(&err.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("unknown pick \"everything\"")),
+            "expected the unknown pick refused, got {err:?}"
+        );
     }
 
     /// The keyword spelling of a pick lowers to the same pick the

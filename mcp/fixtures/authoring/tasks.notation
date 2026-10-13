@@ -2,12 +2,12 @@ attribute!: &integration-task-title
   description: Task title
   the: integration.task/title
   as: text
-  cardinality: one
+  cardinality: :one
 attribute!: &integration-task-done
   description: Whether the task is complete
   the: integration.task/done
   as: boolean
-  cardinality: one
+  cardinality: :one
 concept!: &integration-task
   description: Integration test task
   with:

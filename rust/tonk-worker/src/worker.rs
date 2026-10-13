@@ -2729,7 +2729,7 @@ mod native_host_tests {
         );
         let repository: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let key = repository["name"].as_str().expect("routing key");
-        let document = "concept!: &host-example\n  with:\n    title: { the: example.host/title, as: text, cardinality: one, description: Test title }\nhost-example!:\n  this: urn:host:record\n  title: Shared worker\n";
+        let document = "concept!: &host-example\n  with:\n    title: { the: example.host/title, as: text, cardinality: :one, description: Test title }\nhost-example!:\n  this: urn:host:record\n  title: Shared worker\n";
         let evaluated = router
             .clone()
             .oneshot(

@@ -180,8 +180,11 @@ attribute!: &task-tags
 
 `pick:` (`:last`, `:all`, `:top`, `:max`, `:min`), the older
 `cardinality:` (`:one`, `:many`) and a command field's `role:`
-(`:object`, `:goal`, …) take keywords. A bare `pick: all`
-is refused: `all` would be a reference to an anchor.
+(`:object`, `:goal`, …) take keywords. These three fields also
+read the spellings earlier releases wrote, the bare word
+(`pick: all`) and the quoted word (`cardinality: "one"`), as the
+same keyword, so a template or notebook written for an earlier
+release still evaluates. Write the keyword in new documents.
 
 ## Heads in detail
 
