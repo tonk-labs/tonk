@@ -573,7 +573,7 @@ pub fn publication_claim_json(space: &str, publish: bool, time: f64) -> Value {
                         "description": description,
                         "with": {
                             "space": { "the": format!("xyz.tonk.{verb}/space"), "cardinality": "one", "as": "Entity" },
-                            "time": { "the": format!("xyz.tonk.{verb}/time"), "cardinality": "one", "as": "Float" }
+                            "time": { "the": format!("xyz.tonk.{verb}/time"), "cardinality": "one", "as": "float:64" }
                         }
                     }
                 },

@@ -1222,13 +1222,13 @@ attribute!: &publish/space
   description: The space to make readable by anyone.
   the: xyz.tonk.publish/space
   as: entity
-  role: object
+  role: :object
 
 attribute!: &publish/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.publish/time
-  as: float
-  role: now
+  as: float:64
+  role: :now
 
 command!: &space/publish
   description: Make a space readable by anyone who opens its address.
@@ -1241,13 +1241,13 @@ attribute!: &unpublish/space
   description: The space to make private again.
   the: xyz.tonk.unpublish/space
   as: entity
-  role: object
+  role: :object
 
 attribute!: &unpublish/time
   description: When it was asked, so asking again re-fires.
   the: xyz.tonk.unpublish/time
-  as: float
-  role: now
+  as: float:64
+  role: :now
 
 command!: &space/unpublish
   description: Make a published space private again, and stop its readers reading.
