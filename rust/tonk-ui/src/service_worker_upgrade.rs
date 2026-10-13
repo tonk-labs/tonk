@@ -1705,4 +1705,191 @@ pub(crate) mod tests {
         quit_result?;
         Ok(())
     }
+
+    /// The release a generation was published with, as its bootloader names
+    /// it.
+    fn release_of(root: &Path) -> Result<String> {
+        let boot = std::fs::read_to_string(root.join("boot.js"))?;
+        boot.lines()
+            .find_map(|line| {
+                line.strip_prefix("const CURRENT_RELEASE = \"/_release/")?
+                    .strip_suffix("/worker.js\";")
+            })
+            .map(str::to_owned)
+            .context("the bootloader names no release")
+    }
+
+    /// Have the generation after keep serving the release of the one before,
+    /// as a deployment that keeps its releases does. The copy generation B
+    /// was made from had its wasm marked along with every other, so the
+    /// release is taken from generation A again, as it was published.
+    fn keep_release(env: &TestEnvironment, release: &str) -> Result<()> {
+        let published = env
+            .deployment_root
+            .join("generation-a/_release")
+            .join(release);
+        let kept = env
+            .deployment_root
+            .join("generation-b/_release")
+            .join(release);
+        if kept.exists() {
+            std::fs::remove_dir_all(&kept)?;
+        }
+        copy_artifact_tree(&published, &kept)
+    }
+
+    /// Run an asynchronous `script` in the space the page shows, on that
+    /// space's own origin, and come back to the page. `None` while the page
+    /// shows no space.
+    async fn in_space(
+        driver: &WebDriver,
+        script: &str,
+        arguments: Vec<Value>,
+    ) -> Result<Option<Value>> {
+        if !enter_site(driver).await {
+            return Ok(None);
+        }
+        let entered = match driver.find(By::Css("tonk-site > iframe")).await {
+            Ok(frame) => frame.enter_frame().await.is_ok(),
+            Err(_) => false,
+        };
+        let result = if entered {
+            driver.execute_async(script, arguments).await.ok()
+        } else {
+            None
+        };
+        driver.enter_default_frame().await?;
+        Ok(result.map(|value| value.json().clone()))
+    }
+
+    /// Wait for the space the page shows to be up under a worker registered
+    /// for `release`, running the wasm of `generation`, and say how it is.
+    async fn wait_for_space_on(
+        driver: &WebDriver,
+        release: &str,
+        generation: &GenerationContract,
+    ) -> Result<Value> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            let last = in_space(
+                driver,
+                r#"
+                const done = arguments[arguments.length - 1];
+                (async () => {
+                    const worker = navigator.serviceWorker.controller;
+                    const health = worker ? await (await fetch("/api/health")).json() : null;
+                    done({
+                        worker: worker ? decodeURIComponent(worker.scriptURL) : null,
+                        state: health?.worker ?? null,
+                        wasm: health?.workerWasm ?? null,
+                        error: health?.error ?? null,
+                        shown: [...document.querySelectorAll("tonk-display")]
+                            .map(display => display.getAttribute("data-state")),
+                    });
+                })().catch(error => done({ failed: String(error) }));
+                "#,
+                vec![],
+            )
+            .await?
+            .unwrap_or(Value::Null);
+            let pinned = last["worker"]
+                .as_str()
+                .is_some_and(|worker| worker.contains("/boot.js?pin=") && worker.contains(release));
+            let shown = last["shown"].as_array().is_some_and(|shown| {
+                !shown.is_empty() && shown.iter().all(|state| state == "ready")
+            });
+            if pinned
+                && shown
+                && last["state"] == "ok"
+                && last["wasm"] == generation.worker_wasm.as_str()
+            {
+                return Ok(last);
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the space never came up under release {release}: {last}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// A space runs the release it pins. A deployment that moves on takes
+    /// the profile with it, which follows the deployment, and leaves the
+    /// space on the release it chose, served again by the deployment after.
+    #[dialog_common::test]
+    async fn it_keeps_a_space_on_the_release_it_pins_when_its_deployment_moves_on(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (generation_a, generation_b) = prepare_second_generation(&env)?;
+        let release_a = release_of(&env.deployment_root.join("generation-a"))?;
+        let release_b = release_of(&env.deployment_root.join("generation-b"))?;
+        ensure!(
+            release_a != release_b,
+            "the two generations must publish different releases"
+        );
+        keep_release(&env, &release_a)?;
+
+        let driver = env.driver().await?;
+        wait_for_complete_generation(&driver, &generation_a, None, None).await?;
+        let space = crate::account_flow::tests::create_space(&driver, "Pinned").await?;
+        let shown = env.tonk_web.join(&format!("space/{space}"))?;
+
+        // The space writes down the release it runs as the one it pins, the
+        // way its worker does on reading its boot cell.
+        let pin = env
+            .tonk_web
+            .join(&format!("_release/{release_a}/worker.js"))?;
+        driver.goto(shown.as_str()).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let wrote = in_space(
+                &driver,
+                r#"
+                const [pin, done] = arguments;
+                caches.open("tonk-boot")
+                    .then(cache => cache.put("/__boot", new Response(JSON.stringify({ v: 1, pin }))))
+                    .then(() => done(true), error => done(String(error)));
+                "#,
+                vec![Value::String(pin.to_string())],
+            )
+            .await?;
+            if wrote == Some(Value::Bool(true)) {
+                break;
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the space never took its pin: {wrote:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        driver.goto(shown.as_str()).await?;
+        wait_for_space_on(&driver, &release_a, &generation_a)
+            .await
+            .context("before the deployment moves")?;
+
+        promote_second_generation(&env)?;
+        driver.enter_default_frame().await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        wait_for_complete_generation(&driver, &generation_b, None, Some(&generation_a.build))
+            .await
+            .context("the profile follows its deployment")?;
+
+        driver.goto(shown.as_str()).await?;
+        let pinned = wait_for_space_on(&driver, &release_a, &generation_a)
+            .await
+            .context("after the deployment moved")?;
+        let profile = worker_health(&driver).await?;
+        assert_eq!(
+            profile["body"]["workerWasm"],
+            generation_b.worker_wasm.as_str(),
+            "the profile runs the release its deployment was built with: {profile}"
+        );
+        assert_ne!(
+            pinned["wasm"], profile["body"]["workerWasm"],
+            "the space and the profile run different releases: {pinned}"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
 }
