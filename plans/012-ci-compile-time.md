@@ -188,3 +188,39 @@ Timing-report checkpoint validation: built a real `tonk-template` archive with
 Nix output, and all 113 tests passed. Nix formatting, workflow expression/syntax,
 source-reference and whitespace checks passed. E2E producer artifacts now also
 carry their archive timing reports; no test/profile/selection change is included.
+
+### Native worker measurements (four-core Darwin probe)
+
+Commands use `nix develop .#ci -c python3 scripts/benchmark-native-codegen.py`
+with `--scope worker --cores 4` and an output directory under `/tmp`.
+Each source trial appends an inert comment to a Nix copy of the same Rust source,
+with independently warmed, matching dependency artifacts. Compiler commands
+confirmed the requested settings; no third-party crate recompiled in the source
+trials. The narrower worker graph runs 244 enabled tests, not the full 2,650-test
+workspace. These single-pair measurements are not Linux CI speed claims.
+
+| Workspace optimization | Codegen units | Source archive wall time | Test result |
+| --- | --- | --- | --- |
+| 1 | 16 | 311.40s | 244 passed, 3 existing skips; nextest 14.02s |
+| 1 | 256 | 464.07s | 244 passed, 3 existing skips; nextest about 14s |
+| 0 | 16 | 191.26s | rejected: 11 stack-overflow failures; stopped after 33/244 |
+
+Retain optimization 1 and 16 units. At 16 units, the worker test binary dominated
+Cargo time (263.95s of 299.61s). At 256 units it took 289.63s and smaller workspace
+crates also regressed (lingo 84.42s, identity 80.08s); compressed archive size grew
+from 34,007,717 to 40,096,536 bytes. Optimization 0 was faster but failed account
+hydration/sign-in tests with native stack overflows. No failed configuration was
+promoted into normal CI, and Wasm profiles remain untouched.
+
+Raw local reports and logs: `/tmp/tonk-codegen-worker-20261013-corrected` and
+`/tmp/tonk-native-opt0-worker-20261013`. The first benchmark attempt incorrectly
+overrode Crane's pre-expansion command fields; it was cancelled before source
+measurement, corrected to override the generated phases, and excluded. The
+E2E timing-copy permission issue was reproduced and fixed by precreating the
+writable destination before copying Nix report contents.
+
+Next measured change: replace the archive dependency builder's separate
+check/build/test passes with one `cargo test --no-run` pass. This preserves the
+profile, package/feature graph and test compilation, and executes no tests in
+Nix (including Wasm builds). Validate external-dependency reuse in the consumer
+and run the resulting worker tests before publishing this change.
