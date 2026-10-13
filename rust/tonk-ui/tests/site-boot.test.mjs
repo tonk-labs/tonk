@@ -62,21 +62,36 @@ test("a site that pins no release runs the one the deployment was built with", (
     [`${ORIGIN}${CURRENT}`],
     "the release is told where it was loaded from",
   );
+  assert.equal(site.started[0].host.pin, null, "and that this worker pins none");
 });
+
+const RELEASE = "bafkreib7f5smq4ggn5xwqas57gchvhvfry6ym7jbw5h3w4zg7wtwk33l2i";
+const worker = (pin) => `${ORIGIN}/boot.js?pin=${encodeURIComponent(pin)}`;
 
 test("a site runs the release its worker's address pins", () => {
-  const pin = "/_release/bafkreipinned/worker.js";
-  const site = boot(`${ORIGIN}/boot.js?pin=${encodeURIComponent(pin)}`);
+  const pin = `/_release/${RELEASE}/worker.js`;
+  const site = boot(worker(pin));
   assert.deepEqual(site.imported, [`${ORIGIN}${pin}`]);
   assert.deepEqual(site.started.map((options) => options.base), [`${ORIGIN}${pin}`]);
+  assert.equal(site.started[0].host.pin, pin, "the release is told what this worker was started for");
 });
 
-test("a release at another origin is not loaded", () => {
-  const pin = "https://elsewhere.test/_release/bafkreiother/worker.js";
-  assert.throws(
-    () => boot(`${ORIGIN}/boot.js?pin=${encodeURIComponent(pin)}`),
-    /is not on this origin/,
-  );
+test("a release pinned at another store is loaded from this origin, which is told where it is", () => {
+  const pin = `https://tonk.network/releases/${RELEASE}/worker.js`;
+  const site = boot(worker(pin));
+  assert.deepEqual(site.imported, [
+    `${ORIGIN}/_release/${RELEASE}/worker.js?from=${encodeURIComponent(pin)}`,
+  ]);
+});
+
+test("a pin that names no release starts no worker", () => {
+  for (const pin of [
+    "https://tonk.network/releases/stable/worker.js",
+    `/_release/${RELEASE}/other.js`,
+    `/_release/${RELEASE.slice(0, 20)}/worker.js`,
+  ]) {
+    assert.throws(() => boot(worker(pin)), /does not name a release/, pin);
+  }
 });
 
 test("a script that is not a release does not start the worker", () => {

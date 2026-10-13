@@ -352,6 +352,10 @@
               # link's `#seed` onto it. Left to follow the redirect itself, trunk
               # would resolve that Location against the access service, which has
               # no `/join` route, and serve its 405.
+              # A space may pin a release older than the one being built, and
+              # trunk builds its dist from nothing each time. Keep the last few
+              # releases beside the sources, for the publisher to serve again.
+              export TONK_RELEASE_STORE="''${TONK_RELEASE_STORE:-$PWD/rust/tonk-ui/.releases}"
               TRUNK_CONFIG_GENERATED="./rust/tonk-ui/.Trunk.dev.toml"
               cp ./rust/tonk-ui/Trunk.toml "$TRUNK_CONFIG_GENERATED"
               # Enable scoped agent invitations in local development. Select

@@ -30,11 +30,13 @@ const settle = async () => { for (let i = 0; i < 20; i++) await turn(); };
 //   that does not say a worker served it.
 // - `active`: whether the origin's worker is running already, whoever it
 //   controls.
+// - `pin`: the release the space pins, as its worker wrote it down.
+// - `runs`: the release the worker in control was registered for.
 function boot(
   name,
   {
     address = "/", controlled = true, served = true, framed = "site", content = [], store = new Map(),
-    answers = {}, marked = false, active = false,
+    answers = {}, marked = false, active = false, pin = null, runs = null,
   } = {},
 ) {
   const host = name === "profile" ? "profile.tonk.test" : "bspace.tonk.test";
@@ -56,7 +58,10 @@ function boot(
       this.port1.other = this.port2; this.port2.other = this.port1;
     }
   }
+  // What became of the worker's registration.
+  const registration = { unregistered: false, unregister: async () => void (registration.unregistered = true) };
   const worker = {
+    scriptURL: `${origin}/boot.js${runs ? `?pin=${encodeURIComponent(runs)}` : ""}`,
     postMessage(message, transfer) {
       toWorker.push(message);
       if (message.type === "protocol") transfer[0].postMessage({ protocol: 2 });
@@ -69,7 +74,7 @@ function boot(
     register: async (...args) => void container.registered.push(args),
     addEventListener: (type, listener) => void (workerListeners[type] = listener),
     startMessages() {},
-    getRegistration: async () => null,
+    getRegistration: async () => (controlled ? registration : null),
     ready: active ? Promise.resolve({ active: worker }) : new Promise(() => {}),
   };
   const location = {
@@ -145,6 +150,12 @@ function boot(
       if (url in answers) return new Response(JSON.stringify(answers[url]));
       return new Response(null, { status: content.includes(url) ? 200 : 404 });
     },
+    caches: {
+      open: async () => ({
+        match: async () => (pin ? new Response(JSON.stringify({ v: 1, pin })) : undefined),
+      }),
+    },
+    URL, encodeURIComponent,
     MessageChannel: Channel,
     setTimeout, clearTimeout, setInterval: () => 0, Promise, Number, Date, String,
     decodeURIComponent, Error,
@@ -158,7 +169,10 @@ function boot(
     listeners["tonk:context"]?.();
     await settle();
   };
-  return { said, failed, toWorker, ran, requests, went, body, container, at, workerSays, moved, workerListeners };
+  return {
+    said, failed, toWorker, ran, requests, went, body, container, at, workerSays, moved, workerListeners,
+    registration,
+  };
 }
 
 for (const name of ["space", "profile"]) {
@@ -423,4 +437,49 @@ test("the app's page stays put on the app's own origin", () => {
   assert.deepEqual(app.went, []);
   assert.equal(app.stopped, false);
   assert.equal(app.site, false);
+});
+
+const PIN = "https://tonk.network/releases/bafkreib7f5smq4ggn5xwqas57gchvhvfry6ym7jbw5h3w4zg7wtwk33l2i/worker.js";
+const OTHER = "https://tonk.network/releases/bafkreiebnz2m3oin767zzlo5idwbljwfe6oakn7nihb2umtqj3c6q4bncm/worker.js";
+
+test("a space registers the bootloader for the release it pins", async () => {
+  const site = boot("space", { controlled: false, served: false, pin: PIN });
+  await settle();
+  assert.equal(site.container.registered[0][0], `/boot.js?pin=${encodeURIComponent(PIN)}`);
+});
+
+test("a space under the worker of the release it pins is brought up", async () => {
+  const site = boot("space", { pin: PIN, runs: PIN });
+  await settle();
+  assert.equal(site.registration.unregistered, false);
+  assert.deepEqual(site.went, []);
+  assert.match(site.body.innerHTML, /tonk-display/);
+});
+
+for (const [what, options] of [
+  ["a space that pinned a release since", { pin: PIN, runs: null }],
+  ["a space that pins another release now", { pin: OTHER, runs: PIN }],
+  ["a space that pins none any more", { pin: null, runs: PIN }],
+]) {
+  test(`${what} gives up the worker it has and loads again`, async () => {
+    const store = new Map();
+    const site = boot("space", { ...options, store });
+    await settle();
+    assert.equal(site.registration.unregistered, true, "the worker of the other release is withdrawn");
+    assert.deepEqual(site.went, [["reload"]]);
+    assert.deepEqual(site.ran, [], "nothing of the site runs under the other release");
+
+    // The same worker is still in control after that load: the release
+    // could not be started. Said once, with no second load.
+    const again = boot("space", { ...options, store });
+    await settle();
+    assert.deepEqual(again.went, []);
+    assert.match(again.failed.join(), /the release this space pins could not be started/);
+  });
+}
+
+test("a profile runs the release its deployment was built with, whatever is written down", async () => {
+  const site = boot("profile", { controlled: false, served: false, pin: PIN });
+  await settle();
+  assert.equal(site.container.registered[0][0], "/boot.js");
 });

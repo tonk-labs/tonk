@@ -242,6 +242,57 @@ test("the publisher builds the release a site's worker loads, and names it by it
   }
 });
 
+test("a store of releases keeps the newest few, and a build serves all it keeps", () => {
+  const store = mkdtempSync(join(tmpdir(), "tonk-release-store-"));
+  const publish = (wasm) => {
+    const dist = fixtureDist();
+    try {
+      for (const name of ["release.js", "boot.js"]) {
+        copyFileSync(join(UI, "assets", name), join(dist, name));
+      }
+      writeFileSync(join(dist, "worker_bg.wasm"), wasm);
+      const result = spawnSync("sh", [STAMP, dist], {
+        encoding: "utf8",
+        env: { ...process.env, TONK_RELEASE_STORE: store, TONK_RELEASE_KEEP: "2" },
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const current = /^const CURRENT_RELEASE = "\/_release\/([a-z2-7]+)\/worker\.js";$/m.exec(
+        readFileSync(join(dist, "boot.js"), "utf8"),
+      )[1];
+      const served = readdirSync(join(dist, "_release")).sort();
+      for (const release of served) {
+        assert.equal(
+          release,
+          cid(join(dist, "_release", release, "worker.js")),
+          "a release served again is the one that was published",
+        );
+      }
+      return { current, served };
+    } finally {
+      rmSync(dist, { recursive: true, force: true });
+    }
+  };
+  try {
+    const first = publish("wasm one\n");
+    assert.deepEqual(first.served, [first.current]);
+
+    const second = publish("wasm two\n");
+    assert.deepEqual(second.served, [first.current, second.current].sort(), "the release before is still served");
+
+    const third = publish("wasm three\n");
+    assert.deepEqual(
+      third.served,
+      [second.current, third.current].sort(),
+      "the store holds its newest two, and the oldest is gone",
+    );
+
+    const again = publish("wasm three\n");
+    assert.deepEqual(again.served, third.served, "publishing a release again changes nothing");
+  } finally {
+    rmSync(store, { recursive: true, force: true });
+  }
+});
+
 test("trunk's unordered module preloads do not change the build identity", () => {
   const preloads = (order) =>
     order

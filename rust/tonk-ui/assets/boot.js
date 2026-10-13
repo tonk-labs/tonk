@@ -10,8 +10,8 @@
 //
 // A service worker cannot load a script once it is running, but a classic
 // one may name what it imports as it starts. So the release is named in this
-// worker's own address, `/boot.js?pin={address}`, and a site that pins
-// another is a site with another worker. A site that names none runs the
+// worker's own address, `/boot.js?pin={pin}`, and a site that pins another
+// is a site with another worker. A site that names none runs the
 // release this deployment was built with, and so follows the deployment.
 
 // The release built alongside this script, as an address on this origin.
@@ -20,25 +20,39 @@
 // for an update to a site that follows the deployment.
 const CURRENT_RELEASE = "dev";
 
-const PIN = new URL(
-    new URL(self.location.href).searchParams.get("pin") || CURRENT_RELEASE,
-    self.location.href,
-);
-// A release is served by the origin it runs on, which has checked it. One
-// named at another origin is not loaded from there.
-if (PIN.origin !== self.location.origin) {
-    throw new Error(`boot: ${PIN.href} is not on this origin`);
+// Where this origin serves the release a pin names. A pin is the address of
+// a release's `worker.js`, in the directory its content identifier names;
+// the origin a release runs on serves it at `/_release/`, having checked it,
+// and is told where it came from when that is elsewhere.
+function served(pin) {
+    if (!pin) return new URL(CURRENT_RELEASE, self.location.href);
+    const named = new URL(pin, self.location.href);
+    const release = /\/(b[a-z2-7]{58})\/worker\.js$/.exec(named.pathname)?.[1];
+    if (!release) throw new Error(`boot: ${pin} does not name a release`);
+    const here = new URL(`/_release/${release}/worker.js`, self.location.href);
+    if (named.origin !== here.origin || named.pathname !== here.pathname) {
+        here.searchParams.set("from", named.href);
+    }
+    return here;
 }
 
-importScripts(PIN.href);
+const PINNED = new URL(self.location.href).searchParams.get("pin");
+const RELEASE = served(PINNED);
+
+importScripts(RELEASE.href);
 
 const release = self.release;
 if (typeof release?.start !== "function") {
-    throw new Error(`boot: ${PIN.href} is not a release`);
+    throw new Error(`boot: ${RELEASE.href} is not a release`);
 }
 // What the release answers each kind of call with. Asked for as the worker
-// starts, so a call that arrives at once has somewhere to go.
-const handlers = release.start({ base: PIN.href });
+// starts, so a call that arrives at once has somewhere to go. `host` is what
+// a release may ask of the worker it runs in: for now, which release this
+// worker was started for.
+const handlers = release.start({
+    base: RELEASE.href,
+    host: { v: 1, pin: PINNED },
+});
 
 // What a handler is given in place of the worker's event: what the event
 // carried, and the two things a handler may ask of it.

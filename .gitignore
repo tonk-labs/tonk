@@ -74,6 +74,8 @@ temp/**
 .claude/scheduled_tasks.lock
 .Trunk.dev.toml
 .index.dev.html
+# Releases the dev server keeps so a space pinned to an older one still loads.
+.releases
 
 # Repositories minted by test runs against ephemeral local services.
 # They carry throwaway credentials and must never be committed.

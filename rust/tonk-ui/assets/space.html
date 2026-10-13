@@ -147,18 +147,68 @@
                     return true;
                 }
 
+                // The release this space pins: what its worker last read in the
+                // space's boot cell and wrote down here, where a page can read
+                // it with no worker running. A space that pins none runs the
+                // release its deployment was built with.
+                var BOOT_CACHE = "tonk-boot";
+                var BOOT_KEY = "/__boot";
+                async function pinned() {
+                    try {
+                        var held = await (await caches.open(BOOT_CACHE)).match(BOOT_KEY);
+                        var record = held ? await held.json() : null;
+                        return record && typeof record.pin === "string" ? record.pin : null;
+                    } catch (error) {
+                        return null;
+                    }
+                }
+
+                // The release a worker was registered for: its own address says.
+                function runs(worker) {
+                    return new URL(worker.scriptURL).searchParams.get("pin");
+                }
+
+                // The worker in control runs another release than the space
+                // pins. A document it served may not register a worker, so
+                // withdraw its registration and load again: the shell the
+                // server answers with registers the one pinned. Once for each
+                // pin, so a release that cannot start does not loop the frame.
+                var SWITCH_KEY = "tonk-space-pin-switch";
+                async function switchTo(pin) {
+                    var tried = String(pin);
+                    try {
+                        if (sessionStorage.getItem(SWITCH_KEY) === tried) return false;
+                        sessionStorage.setItem(SWITCH_KEY, tried);
+                    } catch (error) {
+                        return false;
+                    }
+                    var registration = await navigator.serviceWorker.getRegistration();
+                    if (!registration) return false;
+                    await registration.unregister();
+                    location.reload();
+                    return true;
+                }
+
                 // Registers only when nothing controls the frame yet: once the
                 // worker serves this shell, its `worker-src` refuses a second
                 // `register()`, and the browser checks for updates on its own.
                 async function control() {
                     var container = navigator.serviceWorker;
+                    var pin = await pinned();
                     if (container.controller) {
+                        if (runs(container.controller) !== pin) {
+                            if (await switchTo(pin)) return new Promise(function () {});
+                            throw new Error("the release this space pins could not be started: " + pin);
+                        }
+                        try {
+                            sessionStorage.removeItem(SWITCH_KEY);
+                        } catch (error) {}
                         if (await speaks(container.controller)) return;
                         if (await recover()) return new Promise(function () {});
                         throw new Error("the site's worker is out of date and could not be replaced");
                     }
                     say("installing its worker");
-                    await container.register("/boot.js", {
+                    await container.register("/boot.js" + (pin ? "?pin=" + encodeURIComponent(pin) : ""), {
                         scope: "/",
                         updateViaCache: "none",
                     });

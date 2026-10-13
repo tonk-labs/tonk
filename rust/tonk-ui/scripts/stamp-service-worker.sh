@@ -240,10 +240,34 @@ if [ -f "$SPACE_SW" ] && [ -f "$BOOT" ]; then
         echo "stamp-service-worker: malformed release '$RELEASE'" >&2
         exit 1
     fi
-    rm -rf "$DIST/_release"
+    # Published whole or not at all: a release is immutable, and one that
+    # is there already under this name is this one.
+    rm -rf "$DIST/_release/$RELEASE"
     mkdir -p "$DIST/_release/$RELEASE"
     mv -f "$RELEASE_TMP" "$DIST/_release/$RELEASE/worker.js"
     cp "$WORKER_WASM" "$DIST/_release/$RELEASE/worker_bg.wasm"
+
+    # A site may pin a release older than the one built here, and a dist is
+    # built from nothing each time. Where a store of releases is named, the
+    # one built here is kept in it, the store is held to its newest few, and
+    # the dist serves every release the store still has.
+    if [ -n "${TONK_RELEASE_STORE:-}" ]; then
+        KEEP=${TONK_RELEASE_KEEP:-5}
+        mkdir -p "$TONK_RELEASE_STORE"
+        if [ ! -d "$TONK_RELEASE_STORE/$RELEASE" ]; then
+            cp -R "$DIST/_release/$RELEASE" "$TONK_RELEASE_STORE/$RELEASE.tmp.$$"
+            mv "$TONK_RELEASE_STORE/$RELEASE.tmp.$$" "$TONK_RELEASE_STORE/$RELEASE"
+        fi
+        touch "$TONK_RELEASE_STORE/$RELEASE"
+        ls -1t "$TONK_RELEASE_STORE" | tail -n +$((KEEP + 1)) | while IFS= read -r OLD; do
+            rm -rf "${TONK_RELEASE_STORE:?}/$OLD"
+        done
+        for KEPT in "$TONK_RELEASE_STORE"/bafkrei*; do
+            [ -d "$KEPT" ] || continue
+            NAME=${KEPT##*/}
+            [ -d "$DIST/_release/$NAME" ] || cp -R "$KEPT" "$DIST/_release/$NAME"
+        done
+    fi
     BOOT_TMP="$LOCK/boot"
     sed -e "s|^const CURRENT_RELEASE = .*|const CURRENT_RELEASE = \"/_release/$RELEASE/worker.js\";|" \
         "$BOOT" > "$BOOT_TMP"
