@@ -96,3 +96,6 @@ Integration tests fail if `TONK_WORKER_BINARY` is missing. The worker host binds
 only loopback, requires a private bearer token, and opens an explicit data
 directory; it is not a public MCP listener. Tests use disposable local data and
 do not establish live account linking, remote persistence or frontend rendering.
+The MCP workflow runs formatting, generated-guide checks, core contracts, worker
+library tests (including native storage/restart) and the generic-client/native-worker
+integration independently of any application integration.

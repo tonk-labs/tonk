@@ -3,21 +3,25 @@ import assert from 'node:assert/strict';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { authoringGuide } from '../authoring.mjs';
 import { startWorker } from '../worker-process.mjs';
-import { workerPrimitive } from '../primitive.mjs';
+import { createAgentTools } from '../browser.mjs';
+import { createTonkHTTP } from '../http.mjs';
 
 assert.ok(
   process.env.TONK_WORKER_BINARY,
   'Build tonk-worker-host and set TONK_WORKER_BINARY; integration tests must not skip.',
 );
 
-test('documented native schema and views create three tasks and query them back', async () => {
+test('generic MCP client authors and queries the ordinary native worker', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'tonk-authoring-'));
   const worker = await startWorker({
     binary: process.env.TONK_WORKER_BINARY,
     dataDirectory: directory,
   });
+  let app;
+  let client;
   try {
     const created = await (
       await worker.request('/api/repository/authoring-test', {
@@ -27,10 +31,32 @@ test('documented native schema and views create three tasks and query them back'
       })
     ).json();
     const subject = created.name.startsWith('did:') ? created.name : 'did:key:' + created.name;
-    const backend = workerPrimitive({
+    const agent = createAgentTools({
       subject,
       request: (path, options) => worker.request(path, options),
     });
+    app = createTonkHTTP(async () => ({
+      capabilities: agent.tools.map((tool) => tool.name),
+      call: agent.call,
+    }));
+    client = new Client({ name: 'native-core-integration', version: '1' });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL('http://localhost/mcp'), {
+        fetch: (url, options) => app.fetch(new Request(url, options)),
+      }),
+    );
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), [
+      'tonk_evaluate',
+      'tonk_guide',
+      'tonk_query',
+    ]);
+    const backend = {
+      async call(name, args) {
+        const result = await client.callTool({ name, arguments: args });
+        assert.notEqual(result.isError, true, JSON.stringify(result.content));
+        return result.structuredContent;
+      },
+    };
     await backend.call('tonk_evaluate', {
       document: await readFile(
         new URL('../fixtures/authoring/tasks.notation', import.meta.url),
@@ -110,6 +136,8 @@ test('documented native schema and views create three tasks and query them back'
     });
     assert.equal(library.matches_after[0].results.length, 1);
   } finally {
+    await client?.close();
+    await app?.close();
     await worker.close();
     await rm(directory, { recursive: true, force: true });
   }

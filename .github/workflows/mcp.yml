@@ -1,0 +1,53 @@
+name: MCP core
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: &mcp-paths
+      - 'mcp/**'
+      - 'rust/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'nix/**'
+      - '.github/workflows/mcp.yml'
+  push:
+    branches: [main]
+    paths: *mcp-paths
+
+concurrency:
+  group: mcp-core-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: MCP contracts and ordinary worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wimpysworld/nothing-but-nix@main
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: Install locked MCP dependencies
+        run: nix --accept-flake-config develop .#ci -c npm --prefix mcp ci --ignore-scripts
+      - name: Check formatting, generated guides and core contracts
+        run: |
+          nix --accept-flake-config develop .#ci -c cargo fmt --all -- --check
+          nix --accept-flake-config develop .#ci -c npm --prefix mcp run check:format
+          nix --accept-flake-config develop .#ci -c npm --prefix mcp test
+      - name: Test worker behavior, storage isolation and restart
+        run: nix --accept-flake-config develop .#ci -c cargo test --locked -p tonk-worker --lib -- --test-threads=2
+      - name: Build ordinary worker and test through MCP
+        run: |
+          nix --accept-flake-config develop .#ci -c cargo build --locked -p tonk-worker --features native-host --bin tonk-worker-host
+          export TONK_WORKER_BINARY="$PWD/target/debug/tonk-worker-host"
+          nix --accept-flake-config develop .#ci -c npm --prefix mcp run test:integration

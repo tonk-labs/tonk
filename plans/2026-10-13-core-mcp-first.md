@@ -28,9 +28,9 @@ an ordinary consumer of the same core and needs no application integration.
   generic HTTP/browser contracts and native worker authoring; commit separately.
 - [x] Enforce response byte limits during streaming on success and error paths;
   prove bounded consumption/cancellation and no uncertain-write replay; commit.
-- [ ] Add independent core CI and usage/authority documentation. Native integration
+- [x] Add independent core CI and usage/authority documentation. Native integration
   tests must fail, not skip, if their required worker binary is absent.
-- [ ] Final format, generated-guide, native and MCP checks; report scope and gaps.
+- [x] Final format, generated-guide, native and MCP checks; report scope and gaps.
 
 ## Extraction evidence
 
@@ -58,6 +58,43 @@ each chunk, handles split UTF-8 correctly, and cancels excess/unneeded bodies.
 Success and analysis-error paths share the bound; dispatched writes still have
 an uncertain outcome and are never replayed. All 13 core tests and the native
 authoring integration pass after this change. Extraction commit: `9a07a87b4f`.
+
+## Independent CI and final verification
+
+Response-limit commit: `d6af21c95f`. The native integration now runs through an
+ordinary MCP client and HTTP handler into the real worker, rather than only
+calling the primitive directly. Running it without `TONK_WORKER_BINARY` was
+verified to fail explicitly. `.github/workflows/mcp.yml` runs the standalone core
+contracts, format/generated checks, worker library suite and native integration.
+It does not depend on ChatGPT or Desktop. Actionlint passes; GitHub CI has not run.
+
+The first broad worker run found one path regression and eight failures amid
+file-descriptor exhaustion (the local soft limit was 256). The receipt-projection
+fixture's absolute-path workaround reproduced in isolation; changing it to a
+repository name under the explicit native root fixed it. This fixture tests
+legacy receipt data, not the removed legacy MCP tools; that coverage is retained.
+
+Final checks:
+
+- Core JavaScript suite: 13 passed, zero skips.
+- Generic MCP client / fresh native worker integration: one passed, zero skips.
+- Worker library suite: 244 passed, zero failures, three existing ignored tests
+  (two timing probes and the public Honky Tonks service test). Local command:
+  `ulimit -n 4096`, then
+  `nix develop --command cargo test --locked -p tonk-worker --lib -- --test-threads=2`.
+  CI uses two test threads as well.
+- Rust formatting, JavaScript formatting, generated-guide parity, actionlint
+  and diff whitespace checks pass. Formatter registry access initially failed
+  in the sandbox and passed on the scoped retry; actionlint passed using the
+  repository's pinned nixpkgs after a global-registry resource error.
+- The actual filtered `tonk-cli.src` contains the canonical agent guide without
+  containing or depending on the `mcp/` directory.
+- New main's invite/public-space changes are preserved. Cargo/flake locks are
+  unchanged; the MCP lockfile is copied with its existing dependency versions.
+
+The local core branch is ready for PR review and remote CI. It has not been
+pushed or merged. The prior combined branch is preserved only as a reference;
+it must not be merged as the core PR or used to reintroduce compatibility tools.
 
 ## Deferred to the second PR
 
