@@ -142,6 +142,24 @@ pub(crate) async fn ask_for_passkey(
     }
 }
 
+fn passkey_addition_eligibility(
+    registration: &super::customer::Registration,
+) -> Result<(), &'static str> {
+    use super::customer::Registration;
+    match registration {
+        Registration::Served { .. } => Ok(()),
+        Registration::AwaitingActivation { .. } => Err(
+            "Confirm your email before adding a passkey. Open the confirmation link, then try again once your account is active.",
+        ),
+        Registration::Suspended => {
+            Err("This account is suspended. Contact support before adding a passkey.")
+        }
+        Registration::Unregistered => {
+            Err("Finish setting up your account before adding a passkey.")
+        }
+    }
+}
+
 /// Run `tonk:add-passkey`: seal the account under a second passkey.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -159,6 +177,18 @@ impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::ro
                 .await;
                 return;
             };
+            if let Err(detail) =
+                passkey_addition_eligibility(&super::customer::registration(&tonk).await)
+            {
+                report(
+                    &tonk,
+                    ceremony::ADD_PASSKEY,
+                    ceremony_state::REFUSED,
+                    detail,
+                )
+                .await;
+                return;
+            }
             let Ok(origin) = super::customer::service_origin() else {
                 report(
                     &tonk,
@@ -437,6 +467,36 @@ mod authorization_tests {
                 "{frame}"
             );
         }
+    }
+
+    #[test]
+    fn adding_a_passkey_requires_an_active_account() {
+        use super::super::customer::Registration;
+        use super::passkey_addition_eligibility;
+        for status in [
+            Registration::Unregistered,
+            Registration::AwaitingActivation {
+                email: "fixture@example.test".into(),
+            },
+            Registration::Suspended,
+        ] {
+            assert!(passkey_addition_eligibility(&status).is_err());
+        }
+        assert!(
+            passkey_addition_eligibility(&Registration::Served {
+                provider: "https://fixture.test".into()
+            })
+            .is_ok()
+        );
+        // Re-evaluate every request; a previous active result is not a capability.
+        assert!(passkey_addition_eligibility(&Registration::Suspended).is_err());
+        assert!(
+            passkey_addition_eligibility(&Registration::AwaitingActivation {
+                email: "fixture@example.test".into()
+            })
+            .unwrap_err()
+            .contains("Confirm your email")
+        );
     }
 
     #[test]

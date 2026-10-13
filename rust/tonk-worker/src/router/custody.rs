@@ -102,6 +102,11 @@ pub(crate) async fn receive(
         .and_then(|value| value.as_string())
         .as_deref()
         == Some("authorize-device");
+    let addition = js_sys::Reflect::get(&request, &"kind".into())
+        .ok()
+        .and_then(|value| value.as_string())
+        .as_deref()
+        == Some("add-passkey");
     let progress_requested = js_sys::Reflect::get(&data, &"progress".into())
         .ok()
         .and_then(|value| value.as_bool())
@@ -145,6 +150,32 @@ pub(crate) async fn receive(
             web_time::Duration::from_secs(5),
         )
         .await
+    } else if addition {
+        // Preflight/final enrollment hold the profile-transition guard. The
+        // page's 30s timeout alone does not drop worker work or release it.
+        // Bound lock waits and network work here before the page times out.
+        match authorization_deadline(operation, web_time::Duration::from_secs(25)).await {
+            Some(answer) => answer,
+            None => {
+                let detail = "The passkey request timed out. Keep using your original passkey; check enrollment before retrying if you already created a new one.";
+                let report = async {
+                    if let Ok(tonk_worker_api::CustodyIntent::AddPasskey(addition)) =
+                        serde_wasm_bindgen::from_value(request.clone())
+                    {
+                        report_addition(
+                            &state,
+                            &addition,
+                            tonk_schema::ceremony_state::FAILED,
+                            detail,
+                        )
+                        .await;
+                    }
+                    Ok(())
+                };
+                let _ = authorization_deadline(report, web_time::Duration::from_secs(2)).await;
+                Err(detail.into())
+            }
+        }
     } else {
         operation.await
     };
@@ -235,6 +266,83 @@ mod deadline_tests {
     use super::authorization_deadline;
     use std::{cell::Cell, rc::Rc};
     use web_time::Duration;
+
+    #[dialog_common::test]
+    async fn stale_passkey_addition_cannot_replace_current_account_status() {
+        use dialog_query::{Output as _, Query};
+        use tonk_schema::{CeremonyStatus, ceremony_state};
+        let state = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state_without_account().await,
+        ));
+        let account_did = {
+            let tonk = state.read().await;
+            crate::router::identity::local_root(&tonk)
+                .await
+                .unwrap()
+                .root_did
+                .to_string()
+        };
+        let current = tonk_worker_api::PasskeyAddition {
+            account_did,
+            endpoint: "https://example.test/ucan/".into(),
+        };
+        super::report_addition(
+            &state,
+            &current,
+            ceremony_state::PREPARED,
+            "current account",
+        )
+        .await;
+        let stale = tonk_worker_api::PasskeyAddition {
+            account_did: "did:key:previous-account".into(),
+            ..current
+        };
+        for status in [
+            ceremony_state::PREPARED,
+            ceremony_state::DONE,
+            ceremony_state::FAILED,
+        ] {
+            super::report_addition(&state, &stale, status, "stale reply").await;
+        }
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<CeremonyStatus> = session
+            .handle()
+            .query()
+            .select(Query::<CeremonyStatus>::default())
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.this.to_string() == CeremonyStatus::ENTITY)
+            .unwrap();
+        assert_eq!(row.state.0, ceremony_state::PREPARED);
+        assert_eq!(row.detail.0, "current account");
+    }
+
+    #[dialog_common::test]
+    async fn passkey_addition_deadline_releases_profile_transition() {
+        let transition = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let held = transition.clone();
+        let operation = async move {
+            let _guard = held.lock().await;
+            std::future::pending::<Result<(), String>>().await
+        };
+        let result = authorization_deadline(operation, Duration::from_millis(5)).await;
+        assert!(result.is_none());
+        assert!(
+            transition.try_lock().is_ok(),
+            "a timed-out addition must not block sign-out"
+        );
+    }
 
     #[dialog_common::test]
     async fn approval_deadline_publishes_failure_for_only_the_timed_out_request() {
@@ -435,10 +543,33 @@ async fn perform(
             login(&state, source, &custodian, link).await
         }
         tonk_worker_api::CustodyIntent::AddPasskey(addition) => {
-            let holder = custodian_named(data, "holder")
-                .await?
-                .ok_or_else(|| "the handoff carried no holder passkey".to_string())?;
-            add_passkey(&state, &custodian, &holder, addition).await
+            let preflight = js_sys::Reflect::get(data, &"preflight".into())
+                .ok()
+                .and_then(|value| value.as_bool())
+                == Some(true);
+            let result = if preflight {
+                let transition = state.read().await.profile_transition.clone();
+                let _transition = transition.lock().await;
+                checked_addition_account(&state, &custodian, &addition)
+                    .await
+                    .map(|_| JsValue::UNDEFINED)
+            } else {
+                match custodian_named(data, "holder").await {
+                    Ok(Some(holder)) => add_passkey(&state, &custodian, &holder, &addition).await,
+                    Ok(None) => Err("the handoff carried no holder passkey".to_string()),
+                    Err(error) => Err(error),
+                }
+            };
+            let (status, detail) = match &result {
+                Ok(_) if preflight => (
+                    tonk_schema::ceremony_state::PREPARED,
+                    "Account checked. The additional passkey isn't confirmed yet.",
+                ),
+                Ok(_) => (tonk_schema::ceremony_state::DONE, "Passkey added."),
+                Err(error) => (tonk_schema::ceremony_state::FAILED, split_refusal(error).1),
+            };
+            report_addition(&state, &addition, status, detail).await;
+            result
         }
         // Both answer with where the page goes next: the guest that
         // asked is on a page the outcome retires (a purged profile, or
@@ -503,6 +634,60 @@ pub(crate) async fn held_account(
         .ok_or_else(|| "this passkey holds no account".to_string())
 }
 
+/// Both preflight and enrollment check live service custody and the current
+/// profile. A stale page, different holder, or inactive service must fail closed.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn check_addition_profile(
+    tonk: &crate::worker::TonkState,
+    addition: &tonk_worker_api::PasskeyAddition,
+) -> Result<(), String> {
+    let root = super::identity::local_root(tonk)
+        .await
+        .map_err(|error| error.to_string())?;
+    if root.root_did.to_string() != addition.account_did {
+        return Err("The signed-in account changed. Start adding the passkey again.".into());
+    }
+    Ok(())
+}
+
+/// Delayed replies must not replace another account's Settings status. Keep
+/// profile transitions excluded from the identity check through publication.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn report_addition(
+    state: &AppState,
+    addition: &tonk_worker_api::PasskeyAddition,
+    status: &str,
+    detail: &str,
+) {
+    let transition = state.read().await.profile_transition.clone();
+    let _transition = transition.lock().await;
+    let tonk = state.read().await;
+    if check_addition_profile(&tonk, addition).await.is_ok() {
+        super::ceremony::report(&tonk, tonk_schema::ceremony::ADD_PASSKEY, status, detail).await;
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn checked_addition_account(
+    state: &AppState,
+    holder: &tonk_identity::custodian::Custodian,
+    addition: &tonk_worker_api::PasskeyAddition,
+) -> Result<tonk_identity::account::Account, String> {
+    use dialog_varsig::Principal as _;
+    let tonk = state.read().await;
+    check_addition_profile(&tonk, addition).await?;
+    // Use this deployment's endpoint, never a page-supplied custody destination.
+    let account = held_account(holder).await?;
+    let root = account
+        .signer()
+        .await
+        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
+    if root.did().to_string() != addition.account_did {
+        return Err("the asserted passkey unlocks a different account".to_string());
+    }
+    Ok(account)
+}
+
 /// Seal the account a first passkey holds under a second one.
 ///
 /// Both custodians travel in the same handoff, so the secret is opened
@@ -515,25 +700,16 @@ async fn add_passkey(
     state: &AppState,
     added: &tonk_identity::custodian::Custodian,
     holder: &tonk_identity::custodian::Custodian,
-    addition: tonk_worker_api::PasskeyAddition,
+    addition: &tonk_worker_api::PasskeyAddition,
 ) -> Result<wasm_bindgen::JsValue, String> {
-    use dialog_varsig::Principal as _;
-
-    let account = holder
-        .account()
-        .load(addition.endpoint.clone())
-        .perform(&tonk_identity::account::Crypto)
-        .await
-        .map_err(|error| refusal("the custody cell did not open", &error))?
-        .ok_or_else(|| "that passkey has published no account".to_string())?;
-
-    let root = account
-        .signer()
-        .await
-        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
-    if root.did().to_string() != addition.account_did {
-        return Err("the asserted passkey unlocks a different account".to_string());
-    }
+    // Sign-out can mutate account facts through a read guard. Serialize with
+    // the same transition mutex as profile switching, then revalidate.
+    let transition = state.read().await.profile_transition.clone();
+    let _transition = transition.lock().await;
+    let account = checked_addition_account(state, holder, addition).await?;
+    // Hold the profile stable from the final identity check through enrollment.
+    let tonk = state.read().await;
+    check_addition_profile(&tonk, addition).await?;
 
     // The same secret, sealed again: either passkey opens the account
     // from here on.
@@ -544,7 +720,6 @@ async fn add_passkey(
         .await
         .map_err(|error| format!("the account did not seal under the new passkey: {error:#}"))?;
 
-    let tonk = state.read().await;
     enroll(&tonk, added, &sealed, None, None).await
 }
 

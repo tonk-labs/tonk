@@ -35,6 +35,9 @@ thread_local! {
     /// One card at a time: a second request arriving while the card is
     /// up is already answered by the save the first one performs.
     static BUSY: Cell<bool> = const { Cell::new(false) };
+    static ADDITION_GENERATION: Cell<u64> = const { Cell::new(0) };
+    static ADDITION_NAVIGATION_INSTALLED: Cell<bool> = const { Cell::new(false) };
+    static ADDITION_CANCEL: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
 }
 
 const CARD_ID: &str = "tonk-custody-consent";
@@ -111,6 +114,11 @@ pub(crate) async fn publish_encryption_key() -> Result<bool, String> {
 }
 
 fn remove_card() {
+    ADDITION_GENERATION.with(|generation| generation.set(generation.get().wrapping_add(1)));
+    let cancel = ADDITION_CANCEL.with(|cancel| cancel.borrow_mut().take());
+    if let Some(cancel) = cancel {
+        let _ = cancel.call0(&wasm_bindgen::JsValue::NULL);
+    }
     let anchored = card().is_some_and(|card| {
         let anchored = card.has_attribute("data-anchored");
         card.remove();
@@ -377,9 +385,12 @@ fn assert_on_the_click(intent: tonk_worker_api::CustodyIntent, credential_id: Op
     );
     wasm_bindgen_futures::spawn_local(async move {
         let outcome = match started {
-            Ok(mediation) => mediation.finish().await,
+            Ok(mediation) => mediation.finish_current().await,
             Err(error) => Err(error),
         };
+        if matches!(outcome, Ok(false)) {
+            return;
+        }
         BUSY.with(|busy| busy.set(false));
         let Err(error) = outcome else {
             return;
@@ -399,7 +410,11 @@ fn assert_on_the_click(intent: tonk_worker_api::CustodyIntent, credential_id: Op
             let anchored = matches!(&intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_));
             if mount_card(anchored).is_some() {
                 set_card_text(&said);
-                remove_card_after(4000);
+                remove_card_after(if error.incomplete_passkey {
+                    12_000
+                } else {
+                    4_000
+                });
             } else {
                 BUSY.with(|busy| busy.set(false));
             }
@@ -442,20 +457,37 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
         tonk_common::log!("custody: continue clicked for {}", intent_label(&intent));
         match begin_with(method, intent.clone(), credential_id.clone()) {
             Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
-                if let Err(error) = mediation.finish().await {
-                    report(&error.message);
-                    set_card_text(&user_error::ceremony(action, &error));
-                    remove_card_after(4000);
-                } else {
-                    remove_card();
+                match mediation.finish_current().await {
+                    Err(error) => {
+                        report(&error.message);
+                        show_command_failure(action, &error);
+                    }
+                    Ok(true) => remove_card(),
+                    Ok(false) => {}
                 }
             }),
             Err(error) => {
                 report(&error.message);
-                set_card_text(&user_error::ceremony(action, &error));
-                remove_card_after(4000);
+                show_command_failure(action, &error);
             }
         }
+    });
+}
+
+fn show_command_failure(action: AccountAction, error: &CeremonyError) {
+    // The second-stage card has already been retired on cancellation/completion.
+    if card().is_none() {
+        BUSY.with(|busy| busy.set(true));
+        if mount_card(false).is_none() {
+            BUSY.with(|busy| busy.set(false));
+            return;
+        }
+    }
+    set_card_text(&user_error::ceremony(action, error));
+    remove_card_after(if error.incomplete_passkey {
+        12_000
+    } else {
+        4_000
     });
 }
 
@@ -559,8 +591,12 @@ pub(crate) fn mediate_custody(intent: tonk_worker_api::CustodyIntent) {
 /// [`mediate_custody`], naming the ceremony explicitly.
 pub(crate) fn mediate_with(method: &'static str, intent: tonk_worker_api::CustodyIntent) {
     wasm_bindgen_futures::spawn_local(async move {
+        let addition = matches!(&intent, tonk_worker_api::CustodyIntent::AddPasskey(_));
         if let Err(error) = run(method, intent).await {
             report(&error.message);
+            if addition {
+                show_command_failure(AccountAction::AddPasskey, &error);
+            }
         }
     });
 }
@@ -576,6 +612,8 @@ pub(crate) fn mediate_with(method: &'static str, intent: tonk_worker_api::Custod
 pub(crate) struct CeremonyError {
     /// What went wrong, for a reader.
     pub message: String,
+    /// Creation succeeded, but enrollment/evaluation did not return success.
+    pub incomplete_passkey: bool,
     /// Why the access service refused, when it is what refused.
     pub denial: Option<tonk_identity::custody::CustodyDenial>,
     /// Browser refusal, independently of a service denial.
@@ -601,13 +639,54 @@ pub(crate) async fn mediate_now(
 /// asynchronous worker handoff to finish.
 pub(crate) struct Mediation {
     promise: js_sys::Promise,
+    addition_generation: Option<(u64, String)>,
 }
 
 impl Mediation {
     pub(crate) async fn finish(self) -> Result<(), CeremonyError> {
-        let reply = wasm_bindgen_futures::JsFuture::from(self.promise)
-            .await
-            .map_err(|error| CeremonyError::thrown(&error))?;
+        self.finish_current().await.map(|_| ())
+    }
+
+    // False means a retired UI operation: callers must not touch current cards.
+    async fn finish_current(self) -> Result<bool, CeremonyError> {
+        let initial_card = card();
+        let outcome = wasm_bindgen_futures::JsFuture::from(self.promise).await;
+        if self.addition_generation.is_some_and(|(started, location)| {
+            ADDITION_GENERATION.with(|generation| generation.get() != started)
+                || web_sys::window()
+                    .and_then(|window| window.location().href().ok())
+                    .as_deref()
+                    != Some(location.as_str())
+        }) {
+            if let Ok(reply) = outcome {
+                if let Ok(cancel) = js_sys::Reflect::get(&reply, &"cancelPasskey".into())
+                    && let Ok(cancel) = cancel.dyn_into::<js_sys::Function>()
+                {
+                    let _ = cancel.call0(&wasm_bindgen::JsValue::NULL);
+                }
+            }
+            if card() == initial_card {
+                remove_card();
+            }
+            return Ok(false);
+        }
+        let mut reply = outcome.map_err(|error| CeremonyError::thrown(&error))?;
+        if let Ok(create) = js_sys::Reflect::get(&reply, &"createPasskey".into())
+            && let Ok(create) = create.dyn_into::<js_sys::Function>()
+        {
+            let cancel = js_sys::Reflect::get(&reply, &"cancelPasskey".into())
+                .ok()
+                .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+                .ok_or_else(|| {
+                    CeremonyError::said(
+                        "The passkey continuation cannot be cancelled. Reload and try again.",
+                    )
+                })?;
+            let Some(confirmed) = confirm_additional_passkey(create, cancel).await? else {
+                return Ok(false);
+            };
+            reply = confirmed;
+        }
         // The worker answers a purge or a device authorization with
         // where this page goes next: the guest that asked is on a page
         // the outcome retires, and only the top document can leave it.
@@ -627,8 +706,136 @@ impl Mediation {
         {
             let _ = window.location().reload();
         }
-        Ok(())
+        Ok(true)
     }
+}
+
+/// A service preflight may consume the initial gesture. Get a fresh click,
+/// and consume the continuation at most once; dismissing drops its PRF handles.
+async fn confirm_additional_passkey(
+    create: js_sys::Function,
+    cancel: js_sys::Function,
+) -> Result<Option<wasm_bindgen::JsValue>, CeremonyError> {
+    use std::rc::Rc;
+    use wasm_bindgen::JsValue;
+    struct CancelOnDrop(js_sys::Function);
+    impl Drop for CancelOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.call0(&JsValue::NULL);
+        }
+    }
+    let _cancel_on_drop = CancelOnDrop(cancel.clone());
+    // Replace the first-stage card, including its old button listeners.
+    remove_card();
+    BUSY.with(|busy| busy.set(true));
+    let host = mount_card(false).ok_or_else(|| {
+        BUSY.with(|busy| busy.set(false));
+        CeremonyError::said("The passkey confirmation could not be shown. Try again.")
+    })?;
+    set_card_message("Account verified. Create an additional passkey for this account?");
+    let button = host
+        .query_selector("#tonk-custody-continue")
+        .ok()
+        .flatten()
+        .unwrap();
+    button.set_text_content(Some("Create additional passkey"));
+    let dismiss = host
+        .query_selector("#tonk-custody-dismiss")
+        .ok()
+        .flatten()
+        .unwrap();
+    let generation = ADDITION_GENERATION.with(Cell::get);
+    let location = web_sys::window().and_then(|window| window.location().href().ok());
+    let retired = Rc::new(Cell::new(false));
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let send = Rc::new(RefCell::new(Some(send)));
+    let create = Rc::new(RefCell::new(Some(create)));
+    let clicked = {
+        let send = send.clone();
+        let create = create.clone();
+        let cancel = cancel.clone();
+        let location = web_sys::window().and_then(|window| window.location().href().ok());
+        Closure::<dyn FnMut()>::new(move || {
+            let Some(send) = send.borrow_mut().take() else {
+                return;
+            };
+            let Some(create) = create.borrow_mut().take() else {
+                return;
+            };
+            if web_sys::window().and_then(|window| window.location().href().ok()) != location {
+                let _ = cancel.call0(&JsValue::NULL);
+                let _ = send.send(None);
+                return;
+            }
+            set_card_text("Creating additional passkey…");
+            // Invoke inside the click, before awaiting anything else.
+            let result = create.call0(&JsValue::NULL);
+            let _ = send.send(Some(result));
+        })
+    };
+    let cancelled = {
+        let retired = retired.clone();
+        let send = send.clone();
+        let create = create.clone();
+        Closure::<dyn FnMut()>::new(move || {
+            retired.set(true);
+            let _ = cancel.call0(&JsValue::NULL);
+            create.borrow_mut().take();
+            if let Some(send) = send.borrow_mut().take() {
+                let _ = send.send(None);
+            }
+        })
+    };
+    ADDITION_CANCEL.with(|cancel| {
+        *cancel.borrow_mut() = Some(
+            cancelled
+                .as_ref()
+                .unchecked_ref::<js_sys::Function>()
+                .clone(),
+        )
+    });
+    let window = web_sys::window().unwrap();
+    for event in ["popstate", "hashchange", "pagehide"] {
+        let _ = window.add_event_listener_with_callback(event, cancelled.as_ref().unchecked_ref());
+    }
+    button
+        .add_event_listener_with_callback("click", clicked.as_ref().unchecked_ref())
+        .unwrap();
+    dismiss
+        .add_event_listener_with_callback("click", cancelled.as_ref().unchecked_ref())
+        .unwrap();
+    let chosen = receive.await;
+    let result = match chosen {
+        Ok(Some(Ok(promise))) => {
+            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&promise))
+                .await
+                .map_err(|error| CeremonyError::thrown(&error))
+        }
+        Ok(Some(Err(error))) => Err(CeremonyError::thrown(&error)),
+        _ => Ok(JsValue::UNDEFINED),
+    };
+    ADDITION_CANCEL.with(|cancel| {
+        let mut current = cancel.borrow_mut();
+        if current.as_ref() == Some(cancelled.as_ref().unchecked_ref::<js_sys::Function>()) {
+            current.take();
+        }
+    });
+    for event in ["popstate", "hashchange", "pagehide"] {
+        let _ =
+            window.remove_event_listener_with_callback(event, cancelled.as_ref().unchecked_ref());
+    }
+
+    let _ = button.remove_event_listener_with_callback("click", clicked.as_ref().unchecked_ref());
+    let _ =
+        dismiss.remove_event_listener_with_callback("click", cancelled.as_ref().unchecked_ref());
+    let stale = retired.get()
+        || ADDITION_GENERATION.with(Cell::get) != generation
+        || web_sys::window().and_then(|window| window.location().href().ok()) != location;
+    // An old continuation cannot remove a card opened by a newer operation.
+    if card().as_ref() == Some(&host) {
+        remove_card();
+    }
+    if stale { Ok(None) } else { result.map(Some) }
 }
 
 /// Log a mediation failure, keeping a dismissed prompt quiet: declining
@@ -650,7 +857,7 @@ async fn run(
     method: &'static str,
     intent: tonk_worker_api::CustodyIntent,
 ) -> Result<(), CeremonyError> {
-    begin(method, intent)?.finish().await
+    begin(method, intent)?.finish().await.map(|_| ())
 }
 
 /// Invoke the window ceremony now and return its in-flight promise.
@@ -710,13 +917,40 @@ pub(crate) fn begin_with(
         let _ = js_sys::Reflect::set(&input, &"displayName".into(), &email.as_str().into());
     }
 
+    let addition_generation = matches!(&intent, tonk_worker_api::CustodyIntent::AddPasskey(_))
+        .then(|| {
+            if !ADDITION_NAVIGATION_INSTALLED.with(|installed| installed.replace(true)) {
+                let listener = Closure::<dyn FnMut()>::new(|| {
+                    ADDITION_GENERATION
+                        .with(|generation| generation.set(generation.get().wrapping_add(1)));
+                });
+                if let Some(window) = web_sys::window() {
+                    for event in ["popstate", "hashchange", "pagehide"] {
+                        let _ = window.add_event_listener_with_callback(
+                            event,
+                            listener.as_ref().unchecked_ref(),
+                        );
+                    }
+                }
+                listener.forget();
+            }
+            (
+                ADDITION_GENERATION.with(Cell::get),
+                web_sys::window()
+                    .and_then(|window| window.location().href().ok())
+                    .unwrap_or_default(),
+            )
+        });
     let answer = ceremony
         .call1(&JsValue::NULL, &input)
         .map_err(|error| CeremonyError::thrown(&error))?;
     let promise = answer.dyn_into::<js_sys::Promise>().map_err(|_| {
         CeremonyError::said(format!("tonkIdentity.{method} did not return a promise"))
     })?;
-    Ok(Mediation { promise })
+    Ok(Mediation {
+        promise,
+        addition_generation,
+    })
 }
 
 /// A failure that never reached the service carries no reason from it.
@@ -731,6 +965,7 @@ impl CeremonyError {
     pub(crate) fn said(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            incomplete_passkey: false,
             denial: None,
             refusal: None,
         }
@@ -758,6 +993,11 @@ impl CeremonyError {
             .map(|name| tonk_identity::passkey::CeremonyRefusal::from_name(&name));
         Self {
             message: describe(error),
+            incomplete_passkey: js_sys::Reflect::get(error, &"name".into())
+                .ok()
+                .and_then(|name| name.as_string())
+                .as_deref()
+                == Some("PasskeyEnrollmentIncomplete"),
             denial,
             refusal,
         }
@@ -784,6 +1024,190 @@ fn describe(error: &wasm_bindgen::JsValue) -> String {
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    async fn next_tick() {
+        let promise = js_sys::Promise::new(&mut |resolve, _| {
+            web_sys::window()
+                .unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0)
+                .unwrap();
+        });
+        wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn additional_passkey_confirmation_cancels_without_creating_and_can_reopen() {
+        use std::rc::Rc;
+        let creates = Rc::new(Cell::new(0));
+        for action in ["dismiss", "remove", "navigate", "continue"] {
+            let count = creates.clone();
+            let create = Closure::<dyn FnMut() -> js_sys::Promise>::new(move || {
+                count.set(count.get() + 1);
+                js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED)
+            });
+            let function = create.as_ref().unchecked_ref::<js_sys::Function>().clone();
+            let operation = wasm_bindgen_futures::future_to_promise(async move {
+                let cancel = js_sys::Function::new_no_args("");
+                confirm_additional_passkey(function, cancel)
+                    .await
+                    .map(|reply| reply.unwrap_or(wasm_bindgen::JsValue::UNDEFINED))
+                    .map_err(|error| wasm_bindgen::JsValue::from_str(&error.message))
+            });
+            next_tick().await;
+            let host = card().expect("the explicit creation choice must be visible");
+            assert_eq!(creates.get(), 0);
+            match action {
+                "remove" => remove_card(),
+                "navigate" => {
+                    web_sys::window()
+                        .unwrap()
+                        .dispatch_event(&web_sys::Event::new("popstate").unwrap())
+                        .unwrap();
+                }
+                _ => {
+                    let selector = if action == "dismiss" {
+                        "#tonk-custody-dismiss"
+                    } else {
+                        "#tonk-custody-continue"
+                    };
+                    let button = host
+                        .query_selector(selector)
+                        .unwrap()
+                        .unwrap()
+                        .dyn_into::<web_sys::HtmlElement>()
+                        .unwrap();
+                    button.click();
+                    button.click(); // Repeated clicks consume the continuation only once.
+                }
+            }
+            wasm_bindgen_futures::JsFuture::from(operation)
+                .await
+                .unwrap();
+            assert!(card().is_none());
+            assert!(!BUSY.with(Cell::get));
+            assert_eq!(creates.get(), usize::from(action == "continue"));
+        }
+    }
+
+    #[wasm_bindgen_test]
+    async fn late_creation_failure_after_navigation_keeps_newer_card() {
+        use wasm_bindgen::JsValue;
+        for replace in [false, true] {
+            let mut reject = None;
+            let pending = js_sys::Promise::new(&mut |_, failure| reject = Some(failure));
+            let create = Closure::<dyn FnMut() -> js_sys::Promise>::new(move || pending.clone());
+            let prepared = js_sys::Object::new();
+            js_sys::Reflect::set(&prepared, &"createPasskey".into(), create.as_ref()).unwrap();
+            js_sys::Reflect::set(
+                &prepared,
+                &"cancelPasskey".into(),
+                &js_sys::Function::new_no_args(""),
+            )
+            .unwrap();
+            let operation = wasm_bindgen_futures::future_to_promise(async move {
+                let mediation = Mediation {
+                    promise: js_sys::Promise::resolve(&JsValue::from(prepared)),
+                    addition_generation: None,
+                };
+                let active = mediation
+                    .finish_current()
+                    .await
+                    .map_err(|error| JsValue::from_str(&error.message))?;
+                assert!(
+                    !active,
+                    "the retired operation must not deliver an error or cleanup to its caller"
+                );
+                Ok(JsValue::UNDEFINED)
+            });
+            next_tick().await;
+            card()
+                .unwrap()
+                .query_selector("#tonk-custody-continue")
+                .unwrap()
+                .unwrap()
+                .dyn_into::<web_sys::HtmlElement>()
+                .unwrap()
+                .click();
+            next_tick().await;
+            web_sys::window()
+                .unwrap()
+                .dispatch_event(&web_sys::Event::new("popstate").unwrap())
+                .unwrap();
+            let newer = if replace {
+                remove_card();
+                BUSY.with(|busy| busy.set(true));
+                let newer = mount_card(false).unwrap();
+                set_card_message("new operation");
+                Some(newer)
+            } else {
+                None
+            };
+            reject
+                .unwrap()
+                .call1(
+                    &JsValue::NULL,
+                    &js_sys::Error::new("late enrollment failure"),
+                )
+                .unwrap();
+            wasm_bindgen_futures::JsFuture::from(operation)
+                .await
+                .unwrap();
+            if let Some(newer) = newer {
+                assert_eq!(card().as_ref(), Some(&newer));
+                assert!(BUSY.with(Cell::get));
+                assert!(newer.text_content().unwrap().contains("new operation"));
+                remove_card();
+            } else {
+                assert!(card().is_none());
+                assert!(!BUSY.with(Cell::get));
+            }
+        }
+    }
+
+    #[wasm_bindgen_test]
+    async fn a_late_preflight_after_navigation_cancels_without_showing_creation() {
+        use std::rc::Rc;
+        let cancelled = Rc::new(Cell::new(false));
+        let did_cancel = cancelled.clone();
+        let cancel = Closure::<dyn FnMut()>::new(move || did_cancel.set(true));
+        let reply = js_sys::Object::new();
+        js_sys::Reflect::set(
+            &reply,
+            &"createPasskey".into(),
+            &js_sys::Function::new_no_args("throw new Error('must not create')"),
+        )
+        .unwrap();
+        js_sys::Reflect::set(&reply, &"cancelPasskey".into(), cancel.as_ref()).unwrap();
+        let started = ADDITION_GENERATION.with(Cell::get);
+        let mediation = Mediation {
+            promise: js_sys::Promise::resolve(&wasm_bindgen::JsValue::from(reply)),
+            addition_generation: Some((
+                started,
+                web_sys::window().unwrap().location().href().unwrap(),
+            )),
+        };
+        // The production navigation listeners and card dismissal bump this epoch.
+        ADDITION_GENERATION.with(|generation| generation.set(started.wrapping_add(1)));
+        mediation.finish_current().await.unwrap();
+        assert!(cancelled.get());
+        assert!(card().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn incomplete_addition_is_actionable_and_never_suggests_blind_retry() {
+        let error = js_sys::Error::new("fixture failure after creation");
+        error.set_name("PasskeyEnrollmentIncomplete");
+        let error = CeremonyError::thrown(&error.into());
+        let problem = user_error::ceremony_problem(AccountAction::AddPasskey, &error);
+        assert_eq!(
+            problem.outcome.result(),
+            tonk_analytics::account::AccountResult::UnknownCommit
+        );
+        let message = problem.message;
+        assert!(message.contains("original passkey"));
+        assert!(message.contains("Don't create another passkey yet"));
+        assert!(message.contains("before removing or retrying"));
+    }
 
     #[wasm_bindgen_test]
     fn device_consent_tracks_its_guest_seat() {

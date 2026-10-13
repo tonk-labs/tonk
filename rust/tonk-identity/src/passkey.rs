@@ -328,19 +328,42 @@ pub async fn create_custody_passkey(
     name: Option<&str>,
     display_name: Option<&str>,
 ) -> Result<CustodyCredential> {
+    begin_create_custody_passkey(name, display_name)?
+        .finish()
+        .await
+}
+
+/// A creation started synchronously on its explicit user gesture.
+pub struct PendingCustodyCreation {
+    promise: js_sys::Promise,
+}
+
+/// Open the creation prompt before returning from a click handler.
+pub fn begin_create_custody_passkey(
+    name: Option<&str>,
+    display_name: Option<&str>,
+) -> Result<PendingCustodyCreation> {
     let creation = CredentialCreationOptions::new();
     creation.set_public_key(&custody_creation_options(name, display_name)?);
     let promise = credentials()?
         .create_with_options(&creation)
         .map_err(|e| ceremony_error("credentials.create was rejected", e))?;
-    let credential: PublicKeyCredential = JsFuture::from(promise)
-        .await
-        .map_err(|e| ceremony_error("custody passkey creation failed", e))?
-        .dyn_into()
-        .map_err(|_| anyhow!("credentials.create returned a non-public-key credential"))?;
-    let id = Uint8Array::new(&credential.raw_id()).to_vec();
-    let evaluation = extract_custody(&credential);
-    Ok(CustodyCredential { id, evaluation })
+    Ok(PendingCustodyCreation { promise })
+}
+
+impl PendingCustodyCreation {
+    /// Finish creation without repeating the authenticator operation.
+    pub async fn finish(self) -> Result<CustodyCredential> {
+        let promise = self.promise;
+        let credential: PublicKeyCredential = JsFuture::from(promise)
+            .await
+            .map_err(|e| ceremony_error("custody passkey creation failed", e))?
+            .dyn_into()
+            .map_err(|_| anyhow!("credentials.create returned a non-public-key credential"))?;
+        let id = Uint8Array::new(&credential.raw_id()).to_vec();
+        let evaluation = extract_custody(&credential);
+        Ok(CustodyCredential { id, evaluation })
+    }
 }
 
 /// Evaluate both custody salts via an assertion. One biometric prompt;

@@ -5693,6 +5693,7 @@ element!: &account-settings
         const text = {
           'pending-ceremony': `${subject}: waiting for passkey…`,
           'working': `${subject}…`,
+          'prepared': detail || `${subject}: confirmation required.`,
           'done': done,
           'refused': `${subject} did not finish: ${detail}`,
           'failed': `${subject} did not finish: ${detail}`,

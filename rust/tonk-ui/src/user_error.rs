@@ -209,9 +209,19 @@ pub(crate) fn ceremony_problem(
     use tonk_identity::custody::CustodyDenial;
     use tonk_identity::passkey::CeremonyRefusal;
 
+    if error.incomplete_passkey {
+        return AccountProblem::new(
+            "Your new passkey was created, but we couldn't confirm enrollment. Keep using your original passkey. Don't create another passkey yet; the Settings list may be incomplete. Contact support to check enrollment before removing or retrying this entry.".to_owned(),
+            AccountOutcome::unknown_commit(FailureKind::Unknown),
+        );
+    }
     match &error.denial {
         Some(CustodyDenial::AwaitingActivation) => AccountProblem::new(
-            "Open the confirmation link in your email to finish signing in. You can leave this page open.".to_owned(),
+            if matches!(action, AccountAction::AddPasskey) {
+                "Confirm your email before adding a passkey. Open the confirmation link, then try again.".to_owned()
+            } else {
+                "Open the confirmation link in your email to finish signing in. You can leave this page open.".to_owned()
+            },
             AccountOutcome::blocked(FailureKind::AwaitingActivation),
         ),
         Some(CustodyDenial::Suspended(_)) => AccountProblem::new(
