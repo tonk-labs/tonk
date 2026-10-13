@@ -627,9 +627,11 @@
             args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
           };
 
+          # The reduced ci-test profile traps in Wasm repository tests. Keep
+          # the established test profile here while retaining matched caches.
           tests-web-ci = buildTestArchive {
             name = "web-ci";
-            profile = "ci-test";
+            profile = "test";
             target = "wasm32-unknown-unknown";
             args = "--workspace --exclude tonk-cli --exclude tonk-perf";
           };

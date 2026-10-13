@@ -54,7 +54,7 @@ Implemented in isolated worktree `/tmp/tonk-ci-compile`, branch `perf/ci-compile
 - Archive producers and consumers now share explicit profiles, package selections and features. Test caches compile dev dependencies with `--no-run`.
 - E2E browser/native producers run concurrently. Shards restore outputs through workflow artifacts, including on forks without Cachix upload credentials. Artifact payload sizes and build/pack/restore/E2E timings are logged; producer retries overwrite old artifacts.
 - The CI server launcher has no shipping browser dependency. The local server wrapper preserves its existing optimized default. Recursive CI-shell derivation inspection confirmed no browser build dependency.
-- New `ci-test` and `ci-release` profiles use opt-level 1, dependency opt-level 1, LTO off and 16 codegen units. Correctness tests keep assertions; browser/CLI builds keep release semantics. PR UI/worker/guest skip wasm-opt; shipping profile tables are unchanged. The access-service worker retains its existing release optimization.
+- New `ci-test` and `ci-release` profiles use opt-level 1, dependency opt-level 1, LTO off and 16 codegen units. Correctness tests keep assertions; browser/CLI builds keep release semantics. After the first hosted run, Wasm correctness tests were restored to the established `test` profile (see follow-up below). PR UI/worker/guest skip wasm-opt; shipping profile tables are unchanged. The access-service worker retains its existing release optimization.
 - Original required check names remain. PR release cells explicitly report deferral in their job summaries; main and tag runs execute all matrix cells. Tag verification uses full history and the same version stamping as publishers. Main/tag E2E and deployment select the same optimized UI package.
 - GitHub release, npm and tagged web publication fail closed unless the latest Test run/attempt matches the exact tag, commit, push event and workflow and succeeds. API failures, failed/cancelled runs and a bounded three-hour wait reject publication. No live publication was attempted.
 
@@ -75,3 +75,39 @@ Environment/setup failures: Nix daemon access needed scoped escalation; registry
 Run the baseline and this branch on the same hosted runner class, separating first builds with cold profile caches from warm dependency builds. Repeat after a source-only Rust edit. Compare queue/setup, dependency and workspace compilation, browser asset processing, artifact packing/transfers/restoration, test execution/retries, final required-check completion and total runner minutes. New profiles invalidate old caches initially, so the first run alone is not representative.
 
 Verify fresh Linux NAR import, fork artifact handoff, rerun recovery, all native/Wasm/E2E tests, and tag-gate integration before merging. Reduced optimization may increase runtime or payload size; measure build plus execution. No overall CI speedup or hosted passing run has been established.
+
+
+## First hosted run: Wasm profile follow-up
+
+PR #1090 Test run `38397722914` built the Wasm archive successfully, then failed
+three browser tests with `RuntimeError: memory access out of bounds`, followed by
+the 60-second wasm-bindgen timeout. It ran 1,530 of 1,981 tests: 1,527 passed and
+three failed. The first failure was
+`tonk-schema account::tests::it_converges_divergent_display_names_in_both_orders`;
+the other two were worker account-state projection and adoption tracking tests.
+The matrix cancelled native debug, so it provides no native test result.
+
+The exact hosted archive was fetched from the signed project cache and its
+account-convergence test reproduced the same trap alone on local Chrome. Restore
+`tests-web-ci` to the established `test` profile, retaining matched dependency
+caching, shared browser artifacts, parallel gates, and the native/E2E CI profiles.
+This is a conservative rollback of the failing profile; the precise low-level
+cause of the Wasm trap has not been established. Disable matrix fail-fast so a
+failure in one platform does not cancel the other platform's evidence.
+
+Hosted timing: browser assets finished in 8m25s, E2E archive in 25m17s, Wasm job
+failed after 25m55s (about 5m of test execution). Lints, service-worker lifecycle,
+Cloudflare artifacts and all CLI build/smoke jobs passed. Optimized matrix cells
+were explicitly deferred, not exercised. E2E shards were still running at this
+checkpoint. These first-run timings are not a controlled performance comparison.
+
+Focused validation: the hosted `ci-test` Wasm binary reproduced the trap locally
+in the isolated account-convergence test (64.4s including its timeout). Rebuilding
+`tonk-schema` with the existing `test` profile made that test pass in 2.55s in the
+same local browser runner. This comparison uses a focused package build rather
+than the complete workspace feature graph. Linux evaluation confirms both the
+updated archive and its dependency producer use `test`. Nix formatting,
+workflow syntax/expression validation and Nix source-reference checks passed.
+The full hosted Wasm and worker tests still need the PR rerun.
+
+The focused `test`-profile schema Wasm archive also passed its full 95-test suite.
