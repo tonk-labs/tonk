@@ -189,7 +189,7 @@ fn older_attribute_spellings(fields: &[Field], out: &mut Vec<AnalyzeDiagnostic>)
                 let advice = match word.as_str() {
                     "many" | "Many" => "write `pick: :all`".to_owned(),
                     "one" | "One" => {
-                        "it reads as `pick: :last`, the default; remove the field".to_owned()
+                        "write `pick: :last` (the default, so the field can also go)".to_owned()
                     }
                     _ => "a field's pick is `pick: :last` (the default) or `pick: :all`".to_owned(),
                 };
@@ -415,9 +415,9 @@ person!:
     #[dialog_common::test]
     fn it_warns_about_a_deprecated_cardinality_in_every_spelling() {
         for (spelling, advice) in [
-            ("one", "remove the field"),
-            (":one", "remove the field"),
-            ("\"one\"", "remove the field"),
+            ("one", "write `pick: :last`"),
+            (":one", "write `pick: :last`"),
+            ("\"one\"", "write `pick: :last`"),
             ("many", "write `pick: :all`"),
             (":many", "write `pick: :all`"),
         ] {

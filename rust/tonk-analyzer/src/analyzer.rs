@@ -1283,6 +1283,81 @@ concept!: &job
         );
     }
 
+    /// An attribute body written directly under `with:`, without the
+    /// field name it belongs to, is named as that mistake at the key
+    /// that gives it away, whether the key is `the:` (otherwise read as
+    /// a field referring to a relation that is no entity URI) or `as:`
+    /// (otherwise read as a field referring to a type entity that is no
+    /// attribute). Nested under its field, the same body lowers.
+    #[dialog_common::test]
+    async fn it_names_an_attribute_body_missing_its_field_name() {
+        for (document, key) in [
+            (
+                "concept!: &person\n  description: Person\n  with:\n    the: io.gozala.person/name\n    as: :text\n    description: Name\n",
+                "the",
+            ),
+            (
+                "concept!: &person\n  description: Person\n  with:\n    as: :text\n",
+                "as",
+            ),
+        ] {
+            let syntax = must_parse(document);
+            let err = analyze_empty(&syntax).await.unwrap_err();
+            let expected = format!("`{key}:` directly under `with:`");
+            assert!(
+                matches!(
+                    &err.kind,
+                    AnalyzeErrorKind::InvalidConceptBody { reason }
+                        if reason.contains(&expected) && reason.contains("without a field name")
+                ),
+                "expected the missing field name named for `{key}:`, got {err:?}"
+            );
+            assert_eq!(
+                err.range.map(|range| range.start.line),
+                Some(3),
+                "anchored at the `{key}:` key: {err:?}"
+            );
+        }
+        let nested = must_parse(
+            "concept!: &person\n  description: Person\n  with:\n    name:\n      the: io.gozala.person/name\n      as: :text\n      description: Name\n",
+        );
+        analyze_empty(&nested)
+            .await
+            .expect("the nested body lowers");
+    }
+
+    /// A field under `with:` names the attribute it reads. A relation
+    /// or a type in its place is told apart from an unknown attribute:
+    /// each is a key of the attribute body the field would declare
+    /// inline, and the message says so.
+    #[dialog_common::test]
+    async fn it_tells_a_relation_or_a_type_apart_from_an_attribute_reference() {
+        let relation = must_parse(
+            "concept!: &person\n  description: Person\n  with:\n    name: io.gozala.person/name\n",
+        );
+        let err = analyze_empty(&relation).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::InvalidConceptBody { reason }
+                    if reason.contains("is a relation, not an attribute entity")
+                        && reason.contains("`the: io.gozala.person/name`")
+            ),
+            "a relation in an attribute's place is named: {err:?}"
+        );
+        let kind =
+            must_parse("concept!: &person\n  description: Person\n  with:\n    name: :text\n");
+        let err = analyze_empty(&kind).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::InvalidConceptBody { reason }
+                    if reason.contains("is a type, not an attribute") && reason.contains("`as: text:`")
+            ),
+            "a type in an attribute's place is named: {err:?}"
+        );
+    }
+
     /// An instance head's `&anchor` must be resolvable by a later
     /// field reference in the same document, under both the full
     /// (branch-backed) pipeline and the env-free local path.

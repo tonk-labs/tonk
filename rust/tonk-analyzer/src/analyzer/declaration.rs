@@ -668,6 +668,25 @@ fn parse_concept_field_block(
                 sub.name_range,
             ));
         }
+        // An attribute body's own keys directly under `with:`/`maybe:`
+        // are an inline definition missing its field name: `the:` and
+        // `as:` are no concept field's name. Said so, rather than read
+        // as a field named `the` or `as` referring to an attribute,
+        // which fails on the relation not being an entity URI, or on
+        // the type entity not being an attribute.
+        if matches!(sub.name.as_str(), "the" | "as") {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::InvalidConceptBody {
+                    reason: format!(
+                        "`{name}:` directly under `{block}:` is an attribute body without a \
+                         field name — `{block}:` maps each field name to its attribute, so \
+                         nest the body under the field: `{block}:` / `<field>:` / `{name}: …`",
+                        name = sub.name
+                    ),
+                },
+                sub.name_range,
+            ));
+        }
         // Reject a field name declared twice (in one block or across
         // `with:`/`maybe:`) — a field is required or optional, never
         // both. Anchor the diagnostic at the second occurrence.
@@ -729,12 +748,31 @@ fn resolve_concept_field(
             })
         }
         FieldValue::Uri(uri) => {
-            let entity: Entity = uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
-                AnalyzeErrorKind::InvalidSubjectUri {
-                    subject: uri.clone(),
-                    reason: e.to_string(),
+            // A field's value here is the attribute it reads, by its
+            // entity. A relation (`io.gozala.person/name`) is not one,
+            // and neither is a type (`:text`): both are keys of the
+            // attribute body the field would declare inline instead.
+            let Ok(entity) = uri.parse::<Entity>() else {
+                return Err(AnalyzeErrorKind::InvalidConceptBody {
+                    reason: format!(
+                        "field {field_name:?} refers to `{uri}`, which is a relation, not an \
+                         attribute entity — name a declared attribute (its `&anchor`), or \
+                         declare the attribute inline: `{field_name}:` / `the: {uri}` / \
+                         `as: …` / `description: …`"
+                    ),
                 }
-            })?;
+                .into());
+            };
+            if tonk_notation::type_uri(uri).is_some() {
+                return Err(AnalyzeErrorKind::InvalidConceptBody {
+                    reason: format!(
+                        "field {field_name:?} refers to `{uri}`, which is a type, not an \
+                         attribute — a field's type is declared in its attribute body: \
+                         `{field_name}:` / `the: <relation>` / `as: {uri}` / `description: …`"
+                    ),
+                }
+                .into());
+            }
             scope.attribute_by_entity(&entity).ok_or_else(|| {
                 AnalyzeErrorKind::UnknownNameReference {
                     field: field_name.into(),
