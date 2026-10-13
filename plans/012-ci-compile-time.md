@@ -224,3 +224,38 @@ check/build/test passes with one `cargo test --no-run` pass. This preserves the
 profile, package/feature graph and test compilation, and executes no tests in
 Nix (including Wasm builds). Validate external-dependency reuse in the consumer
 and run the resulting worker tests before publishing this change.
+
+
+### Single-pass dependency preparation validation
+
+The archive dependency builder now runs only `cargo test --no-run`, replacing
+separate check/build/test passes. The worker probe prepared dependencies in
+166.33s versus 247.87s (33% faster); compressed dependency artifacts shrank from
+436,233,972 to 288,553,256 bytes (34%). The subsequent source archive took
+315.97s versus 311.40s, with no third-party recompilation. All 244 enabled worker
+tests passed, with 3 existing skips. Raw results are under
+`/tmp/tonk-native-single-pass-20261013`.
+
+A Wasm schema archive built through the same helper and passed all 95 tests
+in 11.65s. Linux evaluation confirms native, Wasm and E2E producer/consumer
+profiles and package/feature selections match; only dependency compilation
+phases changed. Nix formatting, source-reference and whitespace checks passed.
+These focused Darwin measurements establish dependency reuse and correctness,
+not a predicted percentage reduction in full Linux CI time.
+
+### Hosted timing checkpoint
+
+[Run 38420809330](https://github.com/tonk-labs/tonk/actions/runs/38420809330)
+at `f3f390572d` passed in 24m37s, versus the earlier approximately 44m run.
+It reused warm dependencies and browser assets but freshly compiled native and
+web test archives. Native took 21m57s; web was the last gate at 23m27s. E2E input
+preparation took 9m08s and shards approximately 9–11m. This predates the
+single-pass dependency change and is not a controlled end-to-end speedup claim;
+a Rust edit can additionally invalidate optimized browser assets.
+
+The new Cargo reports identify remaining workspace compilation costs. Native
+worker test compilation took 677.62s and its library 584.76s, overlapping; CLI
+test library compilation took 308.73s, and the late CLI `site` integration binary
+211.86s. Web worker tests took 456.06s, its library 332s, schema tests 188.5s and
+analyzer tests 165.8s. Compilation remains the main target for future work.
+The final single-pass change still requires hosted full-workspace verification.

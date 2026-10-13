@@ -239,10 +239,11 @@ let
         // {
           pname = "tonk-workspace-${name}-deps";
           cargoExtraArgs = args;
-          # Compile test/dev dependencies as well, without executing tests
-          # (which also works for the Wasm target).
-          doCheck = true;
-          cargoTestExtraArgs = "--no-run";
+          # nextest archives consume test artifacts. Compile that graph once;
+          # separate check/build passes produce artifacts this consumer does
+          # not need. --no-run also supports cross-compiled Wasm tests.
+          buildPhaseCargoCommand = "cargoWithProfile test ${args} --no-run";
+          doCheck = false;
         }
       );
     in
