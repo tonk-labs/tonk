@@ -68,7 +68,21 @@ out of scope. The earlier no-deployment extraction boundary is superseded.
 - [x] Package guest assets from the same frontend build in the existing Deploy job.
 - [x] Add a separate Docker runner for MCP, deployment smoke checks and connection settings.
 - [x] Verify 13 core and 42 hosted tests locally; new deployment CLI audit is clean.
-- [ ] Verify CI image build and deployed PR preview, then publish its connection settings.
+- [x] Verify CI image build and deployed PR preview, then publish its connection settings.
 
 Wrangler is pinned as a deployment dev dependency. Preview R2 data is retained;
 production durability and capacity policies remain separate readiness limitations.
+
+## CI follow-up
+
+Deployment run 38426137947 passed; preview is
+`https://tonk-mcp-pr-1091.tonk.workers.dev/mcp`, public client
+`tonk-mcp-pr-1091-chatgpt`. Live smoke independently verified merge image
+`2b244a15691cd968e1d4a8b1617ca5837c0ef259`. Core MCP CI also passed.
+
+Test run 38426137961: all 2,650 native debug tests passed (9 skipped), then
+Cachix post-job upload failed with exit 3 after its push manager drain timeout.
+Matrix fail-fast cancelled the native release build. Make only the matrix's
+cache action best-effort and disable fail-fast; test commands remain required.
+Workflow syntax validation is the focused check; the new CI run must establish
+the previously cancelled native release result.
