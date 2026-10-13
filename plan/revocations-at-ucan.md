@@ -140,7 +140,7 @@ This is why the store cannot be a flat revoked-CID set, and it is the same fact 
 
 > **Bind on `sub`, not `iss`.** The spec's pseudocode tests `delegators.includes(revocation.iss)`, which contradicts its own "Delegating Revocation" section. When Alice delegates `ucan/revoke` to Zelda, Zelda's invocation carries `iss: Zelda, sub: Alice`; `delegators` contains only delegation-chain issuers, so Zelda is never in it and a delegated revocation could never match. The subject is the principal whose authority is exercised, and that is who must be in the chain.
 >
-> Fixed upstream in [ucan-wg/revocation#4](https://github.com/ucan-wg/revocation/pull/4), open at time of writing. We implement the corrected form.
+> Proposed upstream in [ucan-wg/revocation#4](https://github.com/ucan-wg/revocation/pull/4), open at time of writing. We implement the corrected form.
 >
 > Our `tonk_identity::revocation::verify` currently returns `issuer`, and reaches the delegated case through a separate branch rather than by subject. That field becomes the subject.
 

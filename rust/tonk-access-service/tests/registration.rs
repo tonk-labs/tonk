@@ -1004,11 +1004,11 @@ async fn it_drives_registration_over_http(env: AccessServiceAddress) -> anyhow::
     Ok(())
 }
 
-/// The presign gate: a subject is served only while an active customer
+/// The provisioning gate: a subject is served only while an active customer
 /// pays for it, and confirming the email is what lifts the denial for
 /// every consumer that customer funds at once.
 #[dialog_common::test]
-async fn it_denies_presign_until_the_customer_confirms_their_email(
+async fn it_denies_storage_until_the_customer_confirms_their_email(
     env: AccessServiceAddress,
 ) -> anyhow::Result<()> {
     use tonk_identity::custody;
@@ -1023,8 +1023,7 @@ async fn it_denies_presign_until_the_customer_confirms_their_email(
     let resolve = custody::build_resolve_invocation(Signer::from(custody_key.clone())).await?;
     let response = client
         .post(&ucan)
-        .header("Content-Type", "application/cbor")
-        .body(resolve.clone())
+        .header("Authorization", direct_credential(&resolve))
         .send()
         .await?;
     assert_eq!(response.status(), 403, "an unprovisioned subject is served");
@@ -1057,8 +1056,7 @@ async fn it_denies_presign_until_the_customer_confirms_their_email(
     let account_resolve = custody::build_resolve_invocation(Signer::from(account.clone())).await?;
     let response = client
         .post(&ucan)
-        .header("Content-Type", "application/cbor")
-        .body(account_resolve.clone())
+        .header("Authorization", direct_credential(&account_resolve))
         .send()
         .await?;
     assert_eq!(response.status(), 403, "a Registered customer is served");
@@ -1086,8 +1084,7 @@ async fn it_denies_presign_until_the_customer_confirms_their_email(
     activate_over_http(&client, &base).await?;
     let response = client
         .post(&ucan)
-        .header("Content-Type", "application/cbor")
-        .body(account_resolve)
+        .header("Authorization", direct_credential(&account_resolve))
         .send()
         .await?;
     assert_ne!(
@@ -1105,7 +1102,7 @@ async fn custody_signer_for(key: &[u8; 32]) -> anyhow::Result<Ed25519Signer> {
 }
 
 /// Activate the customer the last captured email was sent to, over
-/// HTTP. Provisioning and presign both require an `Active` customer, so
+/// HTTP. Provisioning and storage both require an `Active` customer, so
 /// a test driving the real endpoints enrolls and then comes through
 /// here before it can do anything else.
 async fn activate_over_http(client: &reqwest::Client, base: &str) -> anyhow::Result<()> {
@@ -1130,11 +1127,11 @@ async fn activate_over_http(client: &reqwest::Client, base: &str) -> anyhow::Res
 ///
 /// Enrollment hands back a `/use/get` over a space the service owns,
 /// and the point of it is reading the record kept there. So: enroll,
-/// activate, then present that exact delegation and get a presigned
+/// activate, then present that exact delegation and execute a
 /// URL. A receipt naming a grant the gate then refuses would be worse
 /// than naming none.
 #[dialog_common::test]
-async fn it_presigns_a_ledger_read_with_the_grant_the_receipt_named(
+async fn it_admits_a_ledger_read_with_the_grant_the_receipt_named(
     env: AccessServiceAddress,
 ) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
@@ -1180,14 +1177,13 @@ async fn it_presigns_a_ledger_read_with_the_grant_the_receipt_named(
     .await?;
     let response = client
         .post(&ucan)
-        .header("Content-Type", "application/cbor")
-        .body(read)
+        .header("Authorization", direct_credential(&read))
         .send()
         .await?;
     assert_eq!(
         response.status(),
-        200,
-        "the grant the receipt named must presign a read of the space it named: {}",
+        404,
+        "the named grant must reach storage and find the not-yet-written cell: {}",
         response.text().await.unwrap_or_default()
     );
     Ok(())
@@ -1208,7 +1204,6 @@ async fn it_presigns_a_ledger_read_with_the_grant_the_receipt_named(
 async fn it_adds_a_second_passkey_to_an_existing_account(
     env: AccessServiceAddress,
 ) -> anyhow::Result<()> {
-    use dialog_remote_s3::Permit;
     use tonk_identity::envelope::{
         AccountSecret, Envelope, KekMethod, custody_kek, custody_signer,
     };
@@ -1239,8 +1234,7 @@ async fn it_adds_a_second_passkey_to_an_existing_account(
     let resolve_before = custody::build_resolve_invocation(Signer::from(account.clone())).await?;
     let response = client
         .post(&ucan)
-        .header("Content-Type", "application/cbor")
-        .body(resolve_before)
+        .header("Authorization", direct_credential(&resolve_before))
         .send()
         .await?;
     assert_eq!(
@@ -1294,9 +1288,7 @@ async fn it_adds_a_second_passkey_to_an_existing_account(
     assert_eq!(response.status(), 200, "provisioning refused");
 
     // 5. Seal the account secret under the new passkey's KEK and write
-    // it: the invocation buys a presigned permit, the permit carries the
-    // PUT. Two round trips because the service signs but never holds the
-    // bytes.
+    // it directly under the original signed invocation.
     let secret = AccountSecret::generate()?;
     let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
     let publish = custody::build_publish_invocation(
@@ -1308,13 +1300,12 @@ async fn it_adds_a_second_passkey_to_an_existing_account(
     .await?;
     let response = client
         .post(&ucan)
-        .header("Content-Type", "application/cbor")
-        .body(publish)
+        .header("Authorization", direct_credential(&publish))
+        .body(sealed.clone())
         .send()
         .await?;
-    assert_eq!(response.status(), 200, "publish permit refused");
-    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
-    let stored = permit.upload(sealed.clone()).await?;
+    assert_eq!(response.status(), 200, "direct publish refused");
+    let stored = response;
     assert!(
         stored.status().is_success(),
         "storage PUT failed: {}",
@@ -1326,13 +1317,11 @@ async fn it_adds_a_second_passkey_to_an_existing_account(
     let resolve = custody::build_resolve_invocation(Signer::from(custody_key.clone())).await?;
     let response = client
         .post(&ucan)
-        .header("Content-Type", "application/cbor")
-        .body(resolve)
+        .header("Authorization", direct_credential(&resolve))
         .send()
         .await?;
-    assert_eq!(response.status(), 200, "resolve permit refused");
-    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
-    let fetched = permit.send().await?;
+    assert_eq!(response.status(), 200, "direct resolve refused");
+    let fetched = response;
     assert!(
         fetched.status().is_success(),
         "storage GET failed: {}",
@@ -1366,7 +1355,6 @@ async fn it_adds_a_second_passkey_to_an_existing_account(
 /// fail at the write.
 #[dialog_common::test]
 async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> anyhow::Result<()> {
-    use dialog_remote_s3::Permit;
     use tonk_identity::envelope::{
         AccountSecret, Envelope, KekMethod, custody_kek, custody_signer,
     };
@@ -1413,7 +1401,7 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
         .await?;
     assert_eq!(response.status(), 200, "provisioning refused");
 
-    // Seal the secret and publish the cell: permit, then presigned PUT.
+    // Seal the secret and publish the cell with direct UCAN execution.
     let secret = AccountSecret::generate()?;
     let sealed = kek.seal(&secret, KekMethod::Passkey)?.encode();
     // The ceremony's pre-signed shape: bounded to a month, and redeemed
@@ -1433,13 +1421,12 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
     );
     let response = client
         .post(&ucan)
-        .header("Content-Type", "application/cbor")
-        .body(publish)
+        .header("Authorization", direct_credential(&publish))
+        .body(sealed.clone())
         .send()
         .await?;
-    assert_eq!(response.status(), 200, "publish permit refused");
-    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
-    let stored = permit.upload(sealed.clone()).await?;
+    assert_eq!(response.status(), 200, "direct publish refused");
+    let stored = response;
     assert!(
         stored.status().is_success(),
         "storage PUT failed: {}",
@@ -1450,13 +1437,11 @@ async fn it_redeems_a_deferred_publish_invocation(env: AccessServiceAddress) -> 
     let resolve = custody::build_resolve_invocation(Signer::from(custody_key.clone())).await?;
     let response = client
         .post(&ucan)
-        .header("Content-Type", "application/cbor")
-        .body(resolve)
+        .header("Authorization", direct_credential(&resolve))
         .send()
         .await?;
-    assert_eq!(response.status(), 200, "resolve permit refused");
-    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
-    let fetched = permit.send().await?;
+    assert_eq!(response.status(), 200, "direct resolve refused");
+    let fetched = response;
     assert!(
         fetched.status().is_success(),
         "storage GET failed: {}",
@@ -2658,4 +2643,11 @@ mod operator {
         );
         Ok(())
     }
+}
+
+fn direct_credential(bytes: impl AsRef<[u8]>) -> String {
+    dialog_remote_ucan::credential(
+        dialog_ucan_core::Container::from_bytes(bytes.as_ref()).expect("fixture container"),
+    )
+    .expect("fixture credential")
 }

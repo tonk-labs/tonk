@@ -1,29 +1,20 @@
-//! UCAN authorization handler.
+//! Execute the original UCAN at the resource boundary.
 //!
-//! Handles POST /ucan/ requests. An invocation arrives one of two ways:
-//!
-//! - Under the UCAN scheme in `Authorization`, the body being the bytes
-//!   the operation stores. The invocation is verified and performed in
-//!   this request over the bucket ([`crate::objects`]). Off the worker
-//!   runtime, where there is no bucket, it is answered with a
-//!   service-signed permit against this worker's `/object/` path (see
-//!   [`crate::permit`]), as CBOR.
-//! - As a CBOR container in the body, the permit flow of clients that
-//!   ask for it and of the registration, revocation and deletion
-//!   commands, always answered with a permit.
-//!
-//! Served outside the Router, straight from the fetch event: recording
-//! an invocation must outlive the response, and only the event's
-//! [`Context`] can extend the isolate's life for it.
+//! Authorization-header requests perform their verified operation immediately.
+//! Legacy CBOR data requests receive actionable upgrade guidance;
+//! every supported data request verifies the full chain at execution. No service authority or
+//! expiry is minted. Registration/revocation/deletion commands retain their routes.
 
 use crate::error::Refusal;
 #[cfg(target_arch = "wasm32")]
 use crate::handlers::registration::handle as handle_registration;
-use crate::permit::{Claims, PERMIT_TTL, PermitKey};
+use crate::operation::Operation;
 #[cfg(target_arch = "wasm32")]
 use crate::registration::registration_command;
 use dialog_capability::access::AuthorizeError;
-use dialog_remote_s3::{Address, S3Error};
+#[cfg(target_arch = "wasm32")]
+use dialog_remote_s3::Address;
+#[cfg(target_arch = "wasm32")]
 use dialog_remote_ucan_s3::UcanAuthorizer;
 use worker::*;
 
@@ -132,20 +123,6 @@ fn max_body_bytes(env: &Env) -> u64 {
         .unwrap_or(DEFAULT_MAX_BODY_BYTES)
 }
 
-/// The limit for a request that carries its invocation in
-/// `Authorization`: its body is the bytes a write stores, so it is
-/// bounded by the object size the service accepts rather than by a
-/// chain's size.
-const DEFAULT_MAX_PAYLOAD_BYTES: u64 = 32 * 1024 * 1024;
-
-fn max_payload_bytes(env: &Env) -> u64 {
-    env.var("UCAN_MAX_PAYLOAD_BYTES")
-        .ok()
-        .and_then(|value| value.to_string().parse().ok())
-        .unwrap_or(DEFAULT_MAX_PAYLOAD_BYTES)
-        .max(max_body_bytes(env))
-}
-
 /// What the caller said it was sending, when it said.
 fn declared_length(req: &Request) -> Option<u64> {
     req.headers()
@@ -176,8 +153,8 @@ fn credential(req: &Request) -> Option<String> {
         .filter(|value| dialog_remote_ucan::is_credential(value))
 }
 
-/// POST /ucan/ → Authorize UCAN invocation and return presigned S3
-/// request, recording the invocation in ingest under `ctx.wait_until`.
+/// POST /ucan/ executes a direct invocation or returns the original-request
+/// upgrade-required rejection for legacy data clients, recording execution usage.
 pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     if let Some(credential) = credential(&req) {
         return serve_invocation(req, &credential, env, ctx)
@@ -210,7 +187,7 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
     }
 
     // Registration commands ride the same endpoint; anything else falls
-    // through to the presign path untouched. Registration is not
+    // through to the data execution path untouched. Registration is not
     // metered: those invocations are once-per-account ceremonies, not
     // billable operations.
     #[cfg(target_arch = "wasm32")]
@@ -226,7 +203,7 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
             .map(with_cors_headers);
     }
     // Revocation writes to the index rather than reading it, so it is
-    // answered here rather than on the presign path that consults it.
+    // answered here rather than on the data execution path that consults it.
     #[cfg(target_arch = "wasm32")]
     if crate::revoke::is_revocation(&body_bytes) {
         return crate::handlers::revoke::handle(&body_bytes, &env)
@@ -240,19 +217,16 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
             .map(with_cors_headers);
     }
 
-    // A ticket claim carries no proof, so it never reaches the chain walk:
-    // it is answered here, with the ticket itself.
+    // Ticket claims remain supported, including claims delegated by a holder.
     #[cfg(target_arch = "wasm32")]
     if tonk_account::ticket::is_claim(&body_bytes) {
         return serve_claim(&body_bytes, &env).await.map(with_cors_headers);
     }
 
-    let origin = match origin(&req) {
-        Ok(origin) => origin,
-        Err(refusal) => return Ok(with_cors_headers(refusal.to_response()?)),
-    };
-    let served = presign(&body_bytes, &origin, &env).await;
-    answer(served, &body_bytes, &env, &ctx).map(with_cors_headers)
+    // Control-plane CBOR commands above remain supported. Data operations
+    // must carry original UCAN authority at execution, never redeem a permit.
+    Response::from_json(&crate::operation::upgrade_required())
+        .map(|r| with_cors_headers(r.with_status(426)))
 }
 
 /// Answer a `/use/get/ticket/claim` with the ticket the space it names
@@ -262,7 +236,7 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
 /// space, not the holder, is screened, since that is what is served.
 #[cfg(target_arch = "wasm32")]
 async fn serve_claim(body_bytes: &[u8], env: &Env) -> Result<Response> {
-    use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
+    use crate::revocation::{checker::IndexedRevocations, index::r2::R2RevocationIndex};
 
     let container = match dialog_ucan_core::Container::from_bytes(body_bytes) {
         Ok(container) => container,
@@ -273,8 +247,8 @@ async fn serve_claim(body_bytes: &[u8], env: &Env) -> Result<Response> {
             .to_response();
         }
     };
-    let revocations = match env.kv("REVOCATIONS_KV") {
-        Ok(store) => IndexedRevocations(KvRevocationIndex::new(store)),
+    let revocations = match R2RevocationIndex::from_env(env) {
+        Ok(index) => IndexedRevocations(index),
         Err(_) => return unavailable().to_response(),
     };
     let claim = match dialog_remote_ucan_s3::verify_invocation(
@@ -306,20 +280,13 @@ async fn serve_claim(body_bytes: &[u8], env: &Env) -> Result<Response> {
 }
 
 /// Serve an invocation that arrived in `Authorization`: verify it and
-/// perform it in this request when this runtime has the bucket, else
-/// answer with a permit for it.
+/// perform it in this request.
 async fn serve_invocation(
     mut req: Request,
     credential: &str,
     env: Env,
     ctx: Context,
 ) -> Result<Response> {
-    let limit = max_payload_bytes(&env);
-    if let Some(declared) = declared_length(&req)
-        && declared > limit
-    {
-        return too_large(limit);
-    }
     let container = match dialog_remote_ucan::credential_container(credential) {
         Ok(container) => container,
         Err(error) => {
@@ -339,26 +306,8 @@ async fn serve_invocation(
             return refusal.to_response();
         }
     };
-    let origin = match origin(&req) {
-        Ok(origin) => origin,
-        Err(refusal) => return refusal.to_response(),
-    };
-
-    let served = match perform(container, &container_bytes, &mut req, &env, &ctx).await {
-        Ok(Some(answer)) => Ok(answer),
-        Ok(None) => presign(&container_bytes, &origin, &env).await,
-        Err(failure) => Err(failure),
-    };
+    let served = perform(container, &container_bytes, &mut req, &env, &ctx).await;
     answer(served, &container_bytes, &env, &ctx)
-}
-
-/// Permits are redeemed where they were issued: the origin the client
-/// reached this service at is the one its `/object/` URLs name, so a
-/// preview alias and a custom domain each answer for themselves.
-fn origin(req: &Request) -> std::result::Result<String, Refusal> {
-    req.url()
-        .map(|url| url.origin().ascii_serialization())
-        .map_err(|error| Refusal::unclassified(format!("request url: {error}")))
 }
 
 /// The response for how an invocation was served, its record queued
@@ -370,7 +319,17 @@ fn answer(
     ctx: &Context,
 ) -> Result<Response> {
     let (response, metered) = match served {
-        Ok((response, bytes)) => (response, Some(("ok", None, bytes))),
+        Ok((response, bytes)) => {
+            let status = response.status_code();
+            let metered = if (200..300).contains(&status) {
+                Some(("ok", None, bytes))
+            } else if matches!(status, 401 | 403) {
+                Some(("denied", Some("execution refused".into()), 0))
+            } else {
+                None
+            };
+            (response, metered)
+        }
         Err(failure) => {
             failure.emit();
             let refusal = failure.refusal;
@@ -422,8 +381,6 @@ fn record_invocation(
     }
 }
 
-/// Authorize the container and answer the signed permit, together
-/// with the declared write bytes when the permit carries them.
 /// When the stages of verifying an invocation finished, in
 /// milliseconds since the epoch, for `Server-Timing`.
 struct Stages {
@@ -434,287 +391,152 @@ struct Stages {
 
 /// Verify the invocation's chain, its revocations and the subject's
 /// provisioning, and read the operation it authorizes: the same three
-/// steps whether the answer is a permit or the operation's outcome.
+/// steps for the operation's outcome.
 async fn authorize(
     body_bytes: &[u8],
     env: &Env,
-) -> std::result::Result<(dialog_remote_s3::Permit, Stages), PresignFailure> {
+) -> std::result::Result<(dialog_remote_ucan::Verified, Stages), PresignFailure> {
     let started = Date::now().as_millis();
-    let authorizer = create_authorizer(env).map_err(PresignFailure::authorization)?;
-
-    // Revocation is checked inside the chain walk rather than after it,
-    // so every proof is measured against the principals entitled to
-    // revoke that particular link. The index is bound per request: it
-    // wraps a KV handle taken from this request's `Env`, which is not
-    // ours to keep, unlike the deployment config the authorizer caches.
+    let container = dialog_ucan_core::Container::from_bytes(body_bytes).map_err(|e| {
+        PresignFailure::authorization(
+            AuthorizeError::Malformed {
+                detail: e.to_string(),
+            }
+            .into(),
+        )
+    })?;
     #[cfg(target_arch = "wasm32")]
-    let authorizer = {
-        use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
-
-        let store = env
-            .kv("REVOCATIONS_KV")
+    let access = {
+        use crate::revocation::{checker::IndexedRevocations, index::r2::R2RevocationIndex};
+        let index = R2RevocationIndex::from_env(env)
             .map_err(|_| PresignFailure::authorization(unavailable()))?;
-        authorizer.with_revocations(IndexedRevocations(KvRevocationIndex::new(store)))
+        dialog_remote_ucan::Access::with_shared_resolver((), shared_resolver())
+            .with_revocations(IndexedRevocations(index))
     };
-
-    let authorized_request = authorizer
-        .authorize(body_bytes)
+    #[cfg(not(target_arch = "wasm32"))]
+    let access = dialog_remote_ucan::Access::new(());
+    let verified = access
+        .verify(container)
         .await
-        .map_err(map_access_error)
-        .map_err(PresignFailure::authorization)?;
+        .map_err(|e| PresignFailure::authorization(Refusal::Authorization(e.reason().clone())))?;
     let authorized = Date::now().as_millis();
-
     #[cfg(target_arch = "wasm32")]
     screen_provisioning(body_bytes, env).await?;
-    let screened = Date::now().as_millis();
-
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = env;
     Ok((
-        authorized_request,
+        verified,
         Stages {
             started,
             authorized,
-            screened,
+            screened: Date::now().as_millis(),
         },
     ))
 }
 
-/// Carry the operation out in the request that proved it, through the
-/// access layer over this service's bucket: the layer verifies the invocation and checks a
-/// write's body against what the invocation bound, feeding a blob's
-/// bytes to the bucket as they arrive; this service screens the
-/// subject's provisioning between the two, as it does before issuing a
-/// permit. `None` when the layer does not perform the operation, which
-/// the caller answers with a permit instead. Never answers with a
-/// permit's media type, which is how the client tells the two answers
-/// apart.
-#[cfg(target_arch = "wasm32")]
 async fn perform(
-    container: dialog_ucan_core::Container,
+    _container: dialog_ucan_core::Container,
     container_bytes: &[u8],
     req: &mut Request,
     env: &Env,
     ctx: &Context,
-) -> std::result::Result<Option<(Response, u64)>, PresignFailure> {
-    use crate::cached::{Cached, worker::WorkerCache};
-    use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
-    use dialog_remote_ucan::{Access, Answer, Content, Payload};
-
-    let started = Date::now().as_millis();
-    let bucket = env.bucket("BUCKET").map_err(|e| {
-        PresignFailure::authorization(Refusal::unclassified(format!("Missing BUCKET: {e}")))
+) -> std::result::Result<(Response, u64), PresignFailure> {
+    let (verified, stages) = authorize(container_bytes, env).await?;
+    let operation = Operation::from_verified(&verified).map_err(|detail| {
+        PresignFailure::authorization(AuthorizeError::Malformed { detail }.into())
     })?;
-    let revocations = env
-        .kv("REVOCATIONS_KV")
+    let url = req
+        .url()
+        .map_err(|e| PresignFailure::authorization(Refusal::unclassified(e.to_string())))?;
+    let bucket = env
+        .bucket("BUCKET")
         .map_err(|_| PresignFailure::authorization(unavailable()))?;
-    // Content-addressed objects are served from the data center's cache
-    // when it holds them, and every one read or written fills it.
-    let objects = Cached::new(crate::objects::Objects::new(bucket), WorkerCache::default())
-        .with_mode(cache_mode(req));
-    let access = Access::with_shared_resolver(objects, shared_resolver())
-        .with_revocations(IndexedRevocations(KvRevocationIndex::new(revocations)));
-
-    let verified = access.verify(container).await.map_err(|refusal| {
-        PresignFailure::authorization(Refusal::Authorization(refusal.reason().clone()))
-    })?;
-    let authorized = Date::now().as_millis();
-    screen_provisioning(container_bytes, env).await?;
-    let screened = Date::now().as_millis();
-    let described = crate::describe::describe(verified.chain());
-
-    // A write's bytes are the body, metered as declared; the layer
-    // reads them as they arrive.
-    let declared = declared_length(req).unwrap_or(0);
-    let payload: dialog_effects::blob::BlobReader = Box::new(Incoming {
-        stream: req
-            .stream()
-            .map_err(|e| Refusal::unclassified(format!("request body: {e}")))
-            .map_err(PresignFailure::authorization)?,
-    });
-    let answer = match access.perform(verified, Payload::Stream(payload)).await {
-        Answer::Unsupported => return Ok(None),
-        Answer::Refused(refusal) => {
-            return Err(PresignFailure::authorization(Refusal::Authorization(
-                refusal.reason().clone(),
-            )));
-        }
-        Answer::Performed(answer) => answer,
-    };
-    let stored = Date::now().as_millis();
-    let cache = access.provider().outcome();
-    let fills = access.provider().take_fills();
-    if !fills.is_empty() {
-        ctx.wait_until(async move {
-            for fill in fills {
-                fill.await;
-            }
-        });
-    }
-
-    let bytes = match answer.length {
-        Some(length) if length > 0 => length,
-        _ => declared,
-    };
-    let headers = Headers::new();
-    let _ = headers.set("Content-Type", answer.content_type);
-    if let Some(version) = &answer.version {
-        let _ = headers.set("ETag", &format!("\"{version}\""));
-    }
-    for (name, value) in &described {
-        let _ = headers.set(name, value);
-    }
-    let _ = headers.set(
-        "Server-Timing",
-        &format!(
-            "authorize;dur={}, screen;dur={}, store;dur={}, total;dur={}, cache;desc={}",
-            authorized.saturating_sub(started),
-            screened.saturating_sub(authorized),
-            stored.saturating_sub(screened),
-            Date::now().as_millis().saturating_sub(started),
-            cache.as_str()
-        ),
+    // Cache only immutable content, after the complete chain and provisioning
+    // check. A cache hit is data, never an authorization result.
+    let cache_url = format!(
+        "https://objects.tonk.invalid/v2/{}",
+        hex::encode(operation.key.as_bytes())
     );
-    let response = match answer.body {
-        Content::Bytes(body) => Response::from_bytes(body),
-        Content::Stream(source) => {
-            if let Some(length) = answer.length {
-                let _ = headers.set("Content-Length", &length.to_string());
-            }
-            Response::from_stream(futures_util::stream::unfold(
-                source,
-                |mut source| async move {
-                    match source.next().await {
-                        Ok(Some(chunk)) => Some((Ok(chunk), source)),
-                        Ok(None) => None,
-                        Err(error) => {
-                            Some((Err(worker::Error::RustError(error.to_string())), source))
-                        }
-                    }
-                },
-            ))
-        }
-    };
-    let response = response
-        .map_err(|e| Refusal::unclassified(format!("response error: {e}")))
-        .map_err(PresignFailure::authorization)?
-        .with_status(answer.status)
-        .with_headers(headers);
-    Ok(Some((response, bytes)))
-}
-
-/// The request body as the layer reads it: chunk by chunk, as it
-/// arrives.
-#[cfg(target_arch = "wasm32")]
-struct Incoming {
-    stream: ByteStream,
-}
-
-#[cfg(target_arch = "wasm32")]
-#[async_trait::async_trait(?Send)]
-impl dialog_effects::blob::BlobSource for Incoming {
-    async fn next(
-        &mut self,
-    ) -> std::result::Result<Option<Vec<u8>>, dialog_effects::blob::BlobError> {
-        use futures_util::StreamExt as _;
-        self.stream
-            .next()
-            .await
-            .transpose()
-            .map_err(|error| dialog_effects::blob::BlobError::Storage(error.to_string()))
-    }
-}
-
-/// Off the worker runtime there is no bucket to perform against; every
-/// request is answered with a permit.
-#[cfg(not(target_arch = "wasm32"))]
-async fn perform(
-    _container: dialog_ucan_core::Container,
-    _container_bytes: &[u8],
-    _req: &mut Request,
-    _env: &Env,
-    _ctx: &Context,
-) -> std::result::Result<Option<(Response, u64)>, PresignFailure> {
-    Ok(None)
-}
-
-/// Whether the request asks to read past the cache: `Cache-Control:
-/// no-cache` or `no-store`, as HTTP says it, or `cache=bypass` in the
-/// query, which a deployment config can carry on the endpoint URL. The
-/// cache is still filled either way.
-#[cfg(target_arch = "wasm32")]
-fn cache_mode(req: &Request) -> crate::cached::Mode {
-    let by_header = req
+    let bypass = req
         .headers()
         .get("cache-control")
         .ok()
         .flatten()
-        .is_some_and(|value| value.contains("no-cache") || value.contains("no-store"));
-    let by_query = req.url().is_ok_and(|url| {
-        url.query_pairs()
-            .any(|(name, value)| name == "cache" && value == "bypass")
-    });
-    if by_header || by_query {
-        crate::cached::Mode::Bypass
-    } else {
-        crate::cached::Mode::ReadThrough
+        .is_some_and(|v| v.contains("no-cache") || v.contains("no-store"))
+        || url
+            .query_pairs()
+            .any(|(k, v)| k == "cache" && v == "bypass");
+    let mut cached = None;
+    if operation.immutable && operation.method == crate::operation::Method::Get && !bypass {
+        let headers = Headers::new();
+        if let Some(range) = operation.range_header() {
+            let _ = headers.set("Range", &range);
+        }
+        let mut init = RequestInit::new();
+        init.with_headers(headers);
+        if let Ok(request) = Request::new_with_init(&cache_url, &init) {
+            cached = Cache::default()
+                .get(&request, false)
+                .await
+                .ok()
+                .flatten()
+                .filter(|r| r.status_code() == if operation.range.is_some() { 206 } else { 200 });
+        }
     }
-}
-
-async fn presign(
-    body_bytes: &[u8],
-    origin: &str,
-    env: &Env,
-) -> std::result::Result<(Response, u64), PresignFailure> {
-    let (authorized_request, stages) = authorize(body_bytes, env).await?;
-    let started = stages.started;
-    let authorized = stages.authorized;
-    let screened = stages.screened;
-    let permit_key = permit_key(env).map_err(PresignFailure::authorization)?;
-
-    // Write permits carry the declared size as a signed Content-Length,
-    // which is the exact byte figure metering records.
-    let bytes = authorized_request
-        .headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, value)| value.parse().ok())
-        .unwrap_or(0);
-
-    // The authorizer described the operation against its placeholder
-    // address; what the client gets is that operation signed for this
-    // service's own `/object/` path.
-    let expires = Date::now().as_millis() / 1_000 + PERMIT_TTL;
-    let permit = Claims::lift(&authorized_request, authorizer_address(), expires)
-        .and_then(|claims| permit_key.issue(origin, &claims))
-        .map_err(Refusal::unclassified)
-        .map_err(PresignFailure::authorization)?;
-
-    let cbor_bytes = serde_ipld_dagcbor::to_vec(&permit)
-        .map_err(|e| Refusal::unclassified(format!("failed to serialize response: {e}")))
-        .map_err(PresignFailure::authorization)?;
-    Response::from_bytes(cbor_bytes)
-        .map(|r| {
-            let headers = Headers::new();
-            let _ = headers.set("Content-Type", "application/cbor");
-            // Where the redeem's time went: the chain verify with its
-            // revocation lookups, the servability screen, and the whole.
-            let _ = headers.set(
-                "Server-Timing",
-                &format!(
-                    "authorize;dur={}, screen;dur={}, total;dur={}",
-                    authorized.saturating_sub(started),
-                    screened.saturating_sub(authorized),
-                    Date::now().as_millis().saturating_sub(started)
-                ),
-            );
-            (r.with_headers(headers), bytes)
-        })
-        .map_err(|e| Refusal::unclassified(format!("response error: {e}")))
-        .map_err(PresignFailure::authorization)
+    let hit = cached.is_some();
+    let mut bytes = 0;
+    let response = if let Some(response) = cached {
+        response
+    } else {
+        match super::object::execute(req, &bucket, &operation, &mut bytes).await {
+            Ok(response) => response,
+            Err(failure) => failure
+                .into_response()
+                .map_err(|e| PresignFailure::authorization(Refusal::unclassified(e.to_string())))?,
+        }
+    };
+    if !hit && operation.immutable && operation.range.is_none() && response.status_code() == 200 {
+        let key = operation.key.clone();
+        // A separate R2 stream avoids teeing an unbounded slow-client queue or
+        // collecting the upload/read in Rust memory. No partial responses cache.
+        ctx.wait_until(async move {
+            if let Ok(response) = super::object::get(&bucket, &key, None).await
+                && response.status_code() == 200
+            {
+                let headers = response.headers().clone();
+                let _ = headers.set("Cache-Control", "public, max-age=31536000, immutable");
+                let _ = Cache::default()
+                    .put(cache_url, response.with_headers(headers))
+                    .await;
+            }
+        });
+    }
+    let headers = response.headers().clone();
+    for (name, value) in crate::describe::describe(verified.chain()) {
+        let _ = headers.set(name, &value);
+    }
+    let _ = headers.set(
+        "Server-Timing",
+        &format!(
+            "authorize;dur={}, screen;dur={}, total;dur={}, cache;desc={}",
+            stages.authorized.saturating_sub(stages.started),
+            stages.screened.saturating_sub(stages.authorized),
+            Date::now().as_millis().saturating_sub(stages.started),
+            if hit {
+                "hit"
+            } else if bypass {
+                "bypass"
+            } else {
+                "miss"
+            }
+        ),
+    );
+    Ok((response.with_headers(headers), bytes))
 }
 
 /// Screen the subject against the provisioning gate: a space is served
 /// only while an active customer pays for it. Registration commands
-/// never reach here — `serve` answers them before the presign path —
+/// never reach here — `serve` answers them before the data execution path —
 /// so enrolling and activating stay possible while the gate denies the
 /// data plane.
 ///
@@ -830,7 +652,7 @@ pub(crate) fn servability_kv(env: &Env) -> Option<worker::kv::KvStore> {
 
 /// Derive `subject`'s verdict from control D1 and remember it in the
 /// isolate cache and KV. The single write path for cached verdicts:
-/// the presign path calls it on a cache miss, the registration and
+/// the data execution path calls it on a cache miss, the registration and
 /// deletion handlers after a state change, so a change propagates as
 /// itself rather than waiting out a stale entry's validity.
 #[cfg(target_arch = "wasm32")]
@@ -883,7 +705,6 @@ fn provisioning_unavailable() -> Refusal {
 /// The client-facing 503. The reason stays in the logs: it names
 /// internal infrastructure and the caller can do nothing with it but
 /// retry.
-#[cfg(target_arch = "wasm32")]
 fn unavailable() -> Refusal {
     AuthorizeError::Unavailable {
         detail: "access service unavailable, retry shortly".to_string(),
@@ -891,13 +712,12 @@ fn unavailable() -> Refusal {
     .into()
 }
 
+#[cfg(target_arch = "wasm32")]
 thread_local! {
     /// The authorizer built by this isolate, if it has built one.
     static AUTHORIZER: std::cell::OnceCell<UcanAuthorizer> =
         const { std::cell::OnceCell::new() };
-    /// The permit key derived by this isolate, if it has derived one.
-    static PERMIT_KEY: std::cell::OnceCell<PermitKey> = const { std::cell::OnceCell::new() };
-    /// The issuer resolver the access layer verifies with, one per
+        /// The issuer resolver the access layer verifies with, one per
     /// isolate so its cache of resolved `did:web` documents outlives a
     /// request.
     static RESOLVER: std::cell::OnceCell<std::sync::Arc<dialog_remote_ucan_s3::DefaultResolver>> =
@@ -919,6 +739,7 @@ fn shared_resolver() -> std::sync::Arc<dialog_remote_ucan_s3::DefaultResolver> {
 
 /// The address every authorizer describes requests against. See
 /// [`authorizer_address`].
+#[cfg(target_arch = "wasm32")]
 static ADDRESS: std::sync::LazyLock<Address> = std::sync::LazyLock::new(|| {
     Address::builder("https://object.invalid")
         .region("auto")
@@ -927,32 +748,15 @@ static ADDRESS: std::sync::LazyLock<Address> = std::sync::LazyLock::new(|| {
         .expect("the placeholder address is well-formed")
 });
 
-/// The key permits are signed and verified with, derived once per
-/// isolate from the service seed. A failed derivation is not cached.
-pub(crate) fn permit_key(env: &Env) -> std::result::Result<PermitKey, Refusal> {
-    PERMIT_KEY.with(|cached| {
-        if let Some(key) = cached.get() {
-            return Ok(key.clone());
-        }
-        let seed = env
-            .secret("SERVICE_SECRET_KEY")
-            .map_err(|e| Refusal::unclassified(format!("Missing SERVICE_SECRET_KEY: {e}")))?
-            .to_string();
-        let key = PermitKey::derive(&seed).map_err(Refusal::unclassified)?;
-        let _ = cached.set(key.clone());
-        Ok(key)
-    })
-}
-
 /// The address the authorizer describes requests against.
 ///
 /// It is a placeholder. The authorizer needs an S3 address to turn a
 /// verified invocation into a request, but nothing here talks S3 any
-/// more: the request is read back off the permit ([`Claims::lift`])
-/// and performed over the R2 binding, or reissued for the client to
-/// present at `/object/`. The host does not resolve on purpose, so a
+/// more: the request is read back off the permit ([`Operation::lift`])
+/// for enrollment custody storage only. The host does not resolve on purpose, so a
 /// permit that escaped this translation fails loudly instead of
 /// reaching a bucket.
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn authorizer_address() -> &'static Address {
     &ADDRESS
 }
@@ -963,6 +767,7 @@ pub(crate) fn authorizer_address() -> &'static Address {
 /// `did:web` resolution cache, which is what makes a chain issued by a
 /// web identity cheap to verify the second time. A failed build is
 /// not cached: the next request tries again.
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn create_authorizer(env: &Env) -> std::result::Result<UcanAuthorizer, Refusal> {
     AUTHORIZER.with(|cached| {
         if let Some(authorizer) = cached.get() {
@@ -977,17 +782,7 @@ pub(crate) fn create_authorizer(env: &Env) -> std::result::Result<UcanAuthorizer
 /// Create the authorizer: verification only, describing requests
 /// against the placeholder [`authorizer_address`] with no credential,
 /// since nothing it produces is ever presigned.
+#[cfg(target_arch = "wasm32")]
 fn build_authorizer(_env: &Env) -> std::result::Result<UcanAuthorizer, Refusal> {
     Ok(UcanAuthorizer::new(authorizer_address().clone(), None))
-}
-
-/// The typed refusal for an authorization failure: the reason itself
-/// where the authorizer produced one, `Unclassified` for anything
-/// that is not an access decision.
-fn map_access_error(err: S3Error) -> Refusal {
-    match err {
-        S3Error::Authorization(reason) => Refusal::Authorization(reason),
-        S3Error::Rejected(rejection) => Refusal::Rejection(rejection),
-        other => Refusal::unclassified(other.to_string()),
-    }
 }

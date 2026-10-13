@@ -6,7 +6,7 @@
 
 use super::AccessServiceAddress;
 use crate::email::{CapturedEmail, EmailError, EmailSender};
-use crate::permit::{Claims, Method as ObjectMethod, PERMIT_TTL, PermitKey, Precondition};
+use crate::operation::{Method as ObjectMethod, Operation, Precondition};
 use crate::registration::{Registration, registration_command};
 use crate::service::did_document;
 use crate::shortcut::{
@@ -21,6 +21,7 @@ use dialog_credentials::Ed25519Signer;
 use dialog_remote_s3::helpers::LocalS3;
 use dialog_remote_s3::{Address, s3::S3Credential};
 use dialog_remote_ucan_s3::UcanAuthorizer;
+use futures_util::StreamExt;
 
 /// The authorizer this server runs, revocation checking included.
 type ServerAuthorizer = UcanAuthorizer<
@@ -57,7 +58,7 @@ pub struct AccessServer {
     pub emails: Arc<CapturedEmail>,
     /// The service's signing DID, issuer of activation delegations.
     pub service_did: String,
-    /// The hex seed the service identity and the permit key derive from.
+    /// The hex seed from which the service identity derives.
     pub service_seed: String,
     shutdown_tx: tokio::sync::oneshot::Sender<()>,
     server_handle: tokio::task::JoinHandle<()>,
@@ -78,7 +79,7 @@ struct RegistrationState {
     origin: String,
     purger: crate::deletion::NativeSpacePurger,
     /// Revocations recorded by `/ucan/revoke`. In memory, as the
-    /// worker's KV namespace is. Shared with the authorizer, which
+    /// worker's authoritative R2 index is durable. Shared with the authorizer, which
     /// reads it back while verifying every presented chain.
     revocations: Arc<crate::revocation::index::MemoryRevocationIndex>,
     /// Redeems the enrollment's recovery invocation for a presigned
@@ -87,11 +88,9 @@ struct RegistrationState {
     authorizer: Arc<tokio::sync::RwLock<ServerAuthorizer>>,
     /// Signs the permits `/ucan/` answers with and verifies them at
     /// `/object/`, derived from `service_seed` as the worker derives it.
-    permit_key: PermitKey,
     /// Where those permits are redeemed: this server's own address.
     /// Not `origin`, which is the page origin a dev proxy fronts, and
     /// which does not forward `/object/`.
-    endpoint: String,
     /// The backing S3 store `/object/` performs against, with the
     /// credential the worker's R2 binding stands in for.
     objects: ObjectStore,
@@ -215,8 +214,6 @@ impl AccessServer {
                 SqliteIngest::in_memory().map_err(|err| anyhow::anyhow!("{err}"))?,
             ),
         };
-        let permit_key = PermitKey::derive(&service_seed)
-            .map_err(|message| anyhow::anyhow!("permit key: {message}"))?;
         let registration = Arc::new(RegistrationState {
             store,
             ingest,
@@ -230,8 +227,6 @@ impl AccessServer {
             purger,
             revocations,
             authorizer: authorizer.clone(),
-            permit_key,
-            endpoint: endpoint.clone(),
             objects,
         });
 
@@ -304,11 +299,6 @@ fn request_host(req: &Request<Incoming>) -> String {
 
 /// The largest `/ucan/` body the harness accepts, matching the worker's default.
 const MAX_BODY_BYTES: u64 = 64 * 1024;
-
-/// The largest body a request carrying its invocation in
-/// `Authorization` may have: the bytes a write stores, bounded as the
-/// worker bounds them.
-const MAX_PAYLOAD_BYTES: u64 = 32 * 1024 * 1024;
 
 /// `413`, naming the limit so a caller can act on it.
 fn too_large_response(limit: u64) -> Response<http_body_util::Full<bytes::Bytes>> {
@@ -440,7 +430,7 @@ async fn serve_claim(
 /// - OPTIONS → CORS preflight
 async fn handle_request(
     req: Request<Incoming>,
-    authorizer: Arc<RwLock<ServerAuthorizer>>,
+    _authorizer: Arc<RwLock<ServerAuthorizer>>,
     shortcuts: Shortcuts,
     deployment: Arc<Option<tonk_worker_api::DeploymentConfig>>,
     registration: Arc<RegistrationState>,
@@ -707,8 +697,8 @@ async fn handle_request(
         };
         return Ok(cors_response(response));
     }
-    if req.uri().path().starts_with(crate::permit::PATH_PREFIX) {
-        return Ok(cors_response(serve_object(req, &registration).await));
+    if req.uri().path().starts_with("/object/") {
+        return Ok(cors_response(reauthorization_response()));
     }
     if req.method() == Method::PUT && req.uri().path() == "/@" {
         return Ok(cors_response(store_shortcut(req, shortcuts).await));
@@ -745,11 +735,12 @@ async fn handle_request(
         .and_then(|value| value.to_str().ok())
         .filter(|value| dialog_remote_ucan::is_credential(value))
         .map(str::to_owned);
-    let limit = if credential.is_some() {
-        MAX_PAYLOAD_BYTES
-    } else {
-        MAX_BODY_BYTES
-    };
+    if let Some(credential) = credential.as_deref() {
+        return Ok(cors_response(
+            serve_direct(req, credential.to_owned(), &registration).await,
+        ));
+    }
+    let limit = MAX_BODY_BYTES;
 
     // Refused on size alone, before anything is decoded — the same
     // limit the worker applies, so a request rejected in production is
@@ -786,7 +777,7 @@ async fn handle_request(
 
     // From here on `body_bytes` is the container, as the body used to
     // carry it, and `payload` the bytes a performed write stores.
-    let (body_bytes, payload) = match &credential {
+    let (body_bytes, _payload) = match &credential {
         Some(credential) => match dialog_remote_ucan::credential_container(credential)
             .and_then(|container| container.to_bytes())
         {
@@ -918,209 +909,21 @@ async fn handle_request(
         return Ok(cors_response(response));
     }
 
-    // A ticket claim carries no proof, so it never reaches the chain walk:
-    // it is answered here, with the ticket itself. Mirrors the worker.
+    // Ticket claims are control requests, including claims delegated by a holder.
     if tonk_account::ticket::is_claim(&body_bytes) {
         return Ok(cors_response(serve_claim(&registration, &body_bytes).await));
     }
 
-    // Authorize the UCAN container using UcanAuthorizer
-    let authorizer = authorizer.read().await;
-    let outcome = authorizer.authorize(&body_bytes).await;
-    // Test visibility: one line per permit request, so a CI job log
-    // shows whether a publish or resolve ever arrived and how it fared
-    // — the service worker's own console never reaches those logs.
-    {
-        let command = dialog_ucan_core::InvocationChain::try_from(body_bytes.as_ref())
-            .map(|chain| chain.command().0.join("/"))
-            .unwrap_or_else(|_| "?".into());
-        let subject =
-            crate::provisioning::container_subject(&body_bytes).unwrap_or_else(|| "?".into());
-        // The permit URL names the object the redeem is for (e.g.
-        // `{subject}/index/{hash}`), which is what a replication trace
-        // needs: without it every block fetch logs as the same command
-        // and over-fetching is invisible.
-        let object = match &outcome {
-            Ok(permit) => format!("{} {}", permit.method, permit.url.path()),
-            Err(_) => "-".into(),
-        };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|t| t.as_millis())
-            .unwrap_or(0);
-        println!(
-            "ACCESS_UCAN t={now} command=/{command} subject={subject} authorized={} object={object}",
-            outcome.is_ok()
-        );
-    }
-    if outcome.is_ok()
-        && let Some(subject) = crate::deletion::subject(&body_bytes)
-    {
-        use crate::store::Store;
-        match registration.store.consumer(subject.as_str()).await {
-            Ok(Some(consumer)) if consumer.deleted_at.is_some() => {
-                return Ok(cors_response(
-                    Response::builder()
-                        .status(StatusCode::FORBIDDEN)
-                        .body(Full::new(Bytes::from(
-                            "Authorization failed: hosted space is deleting or deleted",
-                        )))
-                        .unwrap(),
-                ));
-            }
-            Err(error) => {
-                return Ok(cors_response(
-                    Response::builder()
-                        .status(StatusCode::SERVICE_UNAVAILABLE)
-                        .body(Full::new(Bytes::from(format!(
-                            "consumer deletion state unavailable: {error}"
-                        ))))
-                        .unwrap(),
-                ));
-            }
-            _ => {}
-        }
-    }
-    // The provisioning gate, mirroring the worker: a subject is served
-    // only while an active customer pays for it. Registration commands
-    // returned above, so enrolling and activating stay possible while
-    // this denies the data plane.
-    if outcome.is_ok() {
-        match crate::provisioning::container_subject(&body_bytes) {
-            Some(subject) => {
-                match crate::provisioning::screen(&registration.store, &subject, unix_now()).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(reason)) => {
-                        println!("ACCESS_UCAN_REFUSED subject={subject} reason={reason:?}");
-                        return Ok(cors_response(authorize_error_response(
-                            StatusCode::FORBIDDEN,
-                            &reason,
-                        )));
-                    }
-                    Err(error) => {
-                        // Fails closed, but as our own unavailability rather
-                        // than a denial billed to the customer.
-                        eprintln!("presign refused, control store unreachable: {error}");
-                        return Ok(cors_response(authorize_error_response(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            &unavailable_provisioning(),
-                        )));
-                    }
-                }
-            }
-            None => {
-                return Ok(cors_response(authorize_error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    &unavailable_provisioning(),
-                )));
-            }
-        }
-    }
-    // Metering mirrors the worker: permits and attributable denials are
-    // recorded, infra failures and unparseable containers are not.
-    let metered = match &outcome {
-        Ok(descriptor) => {
-            let bytes = descriptor
-                .headers
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                .and_then(|(_, value)| value.parse().ok())
-                .unwrap_or(0);
-            Some(("ok", None, bytes))
-        }
-        Err(dialog_remote_s3::S3Error::Authorization(reason)) => {
-            Some(("denied", Some(format!("{reason:?}")), 0))
-        }
-        Err(_) => None,
-    };
-    if let Some((label, reason, bytes)) = metered
-        && let Some(record) =
-            crate::metering::collect(&body_bytes, label, reason, bytes, unix_now())
-        && let Err(error) = registration.ingest.record(&record).await
-    {
-        eprintln!("metering write failed: {error}");
-    }
-    match outcome {
-        // An invocation that arrived in `Authorization` is performed
-        // here, against the local S3 the permit names, and answered
-        // with the outcome the object route would have given.
-        Ok(descriptor) if credential.is_some() => {
-            let range = dialog_remote_ucan_s3::helpers::read_range(&body_bytes);
-            let mut response =
-                dialog_remote_ucan_s3::helpers::perform(descriptor, payload, range).await;
-            if let Ok(chain) = dialog_ucan_core::InvocationChain::try_from(body_bytes.as_ref()) {
-                for (name, value) in crate::describe::describe(&chain) {
-                    if let Ok(value) = HeaderValue::from_str(&value) {
-                        response.headers_mut().insert(name, value);
-                    }
-                }
-            }
-            Ok(cors_response(response))
-        }
-        Ok(descriptor) => {
-            // What the client gets is the authorized operation signed
-            // for this server's `/object/` path, as the worker answers
-            // it: the S3 permit itself never leaves the service.
-            let permit = Claims::lift(
-                &descriptor,
-                &registration.objects.address,
-                unix_now() + PERMIT_TTL,
-            )
-            .and_then(|claims| {
-                registration
-                    .permit_key
-                    .issue(&registration.endpoint, &claims)
-            });
-            let permit = match permit {
-                Ok(permit) => permit,
-                Err(message) => {
-                    return Ok(cors_response(
-                        Response::builder()
-                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .body(Full::new(Bytes::from(format!(
-                                "Failed to issue permit: {message}"
-                            ))))
-                            .unwrap(),
-                    ));
-                }
-            };
-            // Serialize the permit as CBOR
-            match serde_ipld_dagcbor::to_vec(&permit) {
-                Ok(cbor_bytes) => Ok(cors_response(
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header(CONTENT_TYPE, "application/cbor")
-                        .body(Full::new(Bytes::from(cbor_bytes)))
-                        .unwrap(),
-                )),
-                Err(e) => Ok(cors_response(
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Full::new(Bytes::from(format!(
-                            "Failed to encode response: {}",
-                            e
-                        ))))
-                        .unwrap(),
-                )),
-            }
-        }
-        // The refusal travels as itself. Rendering it into prose here
-        // would undo the point of the authorizer naming what failed: a
-        // client parsing the body could no longer tell an expired proof
-        // from a revoked one, and every denial through this server
-        // would arrive unclassified.
-        Err(dialog_remote_s3::S3Error::Authorization(reason)) => Ok(cors_response(
-            authorize_error_response(authorize_status(&reason), &reason),
-        )),
-        Err(other) => Ok(cors_response(
-            Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .body(Full::new(Bytes::from(format!(
-                    "Authorization failed: {other}"
-                ))))
-                .unwrap(),
-        )),
-    }
+    Ok(cors_response(
+        Response::builder()
+            .status(StatusCode::UPGRADE_REQUIRED)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(
+                serde_json::to_vec(&crate::operation::upgrade_required())
+                    .expect("upgrade response serializes"),
+            )))
+            .unwrap(),
+    ))
 }
 
 /// The status an authorization refusal answers with.
@@ -1309,117 +1112,12 @@ async fn serve_shortcut(
     }
 }
 
-/// What a [`VerifiedBody`] concluded once the client finished sending.
-enum Verdict {
-    /// The body has not ended, or the client gave up before it did.
-    Pending,
-    /// The body was the declared length and hashed to the bound digest.
-    Complete,
-    /// The body hashed to something else.
-    ChecksumMismatch,
-    /// The body was not the declared length.
-    LengthMismatch { declared: u64, received: u64 },
-}
-
-/// A request body forwarded to the store one chunk behind, so the last
-/// chunk is only released once the whole body has been hashed and
-/// measured. When the verdict is against the body, the stream ends in
-/// an error instead: the upstream write stops short of its declared
-/// length and the store never completes the object.
-struct VerifiedBody {
-    inner: http_body_util::BodyDataStream<Incoming>,
-    hasher: sha2_0_10::Sha256,
-    expected: Option<Vec<u8>>,
-    declared: u64,
-    received: u64,
-    held: Option<bytes::Bytes>,
-    verdict: Arc<std::sync::Mutex<Verdict>>,
-}
-
-impl futures_util::Stream for VerifiedBody {
-    type Item = std::io::Result<bytes::Bytes>;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        use futures_util::StreamExt as _;
-        use sha2_0_10::Digest as _;
-        use std::task::Poll;
-
-        loop {
-            match self.inner.poll_next_unpin(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Some(Err(error))) => {
-                    return Poll::Ready(Some(Err(std::io::Error::other(error))));
-                }
-                Poll::Ready(Some(Ok(chunk))) => {
-                    self.hasher.update(&chunk);
-                    self.received += chunk.len() as u64;
-                    // Release the previous chunk, keep this one back.
-                    if let Some(released) = self.held.replace(chunk) {
-                        return Poll::Ready(Some(Ok(released)));
-                    }
-                }
-                Poll::Ready(None) => {
-                    let verdict =
-                        if self.received != self.declared {
-                            Verdict::LengthMismatch {
-                                declared: self.declared,
-                                received: self.received,
-                            }
-                        } else if self.expected.as_ref().is_some_and(|expected| {
-                            self.hasher.clone().finalize()[..] != expected[..]
-                        }) {
-                            Verdict::ChecksumMismatch
-                        } else {
-                            Verdict::Complete
-                        };
-                    let refused = !matches!(verdict, Verdict::Complete);
-                    *self.verdict.lock().expect("verdict mutex poisoned") = verdict;
-                    if refused {
-                        self.held = None;
-                        return Poll::Ready(Some(Err(std::io::Error::other(
-                            "the body was refused before its last chunk",
-                        ))));
-                    }
-                    return Poll::Ready(self.held.take().map(Ok));
-                }
-            }
-        }
-    }
-}
-
-/// Add CORS headers to a response.
-fn cors_response<T>(mut response: Response<T>) -> Response<T> {
-    let headers = response.headers_mut();
-    headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().unwrap());
-    headers.insert(
-        ACCESS_CONTROL_ALLOW_METHODS,
-        "GET, HEAD, PUT, POST, DELETE, OPTIONS".parse().unwrap(),
-    );
-    headers.insert(
-        ACCESS_CONTROL_ALLOW_HEADERS,
-        "Authorization, Content-Type, Range".parse().unwrap(),
-    );
-    headers.insert(
-        ACCESS_CONTROL_EXPOSE_HEADERS,
-        "Content-Type, ETag, Content-Length, Content-Range, UCAN-Command, UCAN-Subject, UCAN-Arguments"
-            .parse()
-            .unwrap(),
-    );
-    response
-}
-
-/// `/object/{key}`: verify the permit the request carries, then perform
-/// the operation it names against the backing S3 store, mirroring the
-/// worker's R2 binding. The store is reached with a presigned request
-/// built from the claims — the same translation the client used to be
-/// handed — so nothing about the operation comes from the request
-/// beyond the permit and, for a read, its `Range`.
+/// Execute the verified operation over the local test store.
 async fn serve_object(
     req: Request<Incoming>,
     registration: &RegistrationState,
+    claims: Operation,
+    upload_bytes: &mut u64,
 ) -> Response<http_body_util::Full<bytes::Bytes>> {
     use bytes::Bytes;
     use http_body_util::{BodyExt, Full};
@@ -1436,7 +1134,7 @@ async fn serve_object(
     fn unavailable(detail: String) -> Response<Full<Bytes>> {
         eprintln!("object operation failed: {detail}");
         json(
-            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
             serde_json::json!({
                 "kind": "Unavailable",
                 "detail": "object storage unavailable, retry shortly",
@@ -1444,61 +1142,51 @@ async fn serve_object(
         )
     }
 
-    let method = match *req.method() {
-        Method::GET => ObjectMethod::Get,
-        Method::PUT => ObjectMethod::Put,
-        Method::DELETE => ObjectMethod::Delete,
-        _ => {
-            return Response::builder()
-                .status(StatusCode::METHOD_NOT_ALLOWED)
-                .body(Full::new(Bytes::from("Method not allowed")))
-                .unwrap();
-        }
-    };
-    let claims = match registration.permit_key.verify(
-        method,
-        req.uri().path(),
-        req.uri().query(),
-        unix_now(),
-    ) {
-        Ok(claims) => claims,
-        Err(refusal) => {
-            return json(
-                StatusCode::from_u16(refusal.status()).expect("permit refusal status is valid"),
-                refusal,
-            );
-        }
-    };
-
-    let range = req
-        .headers()
-        .get(hyper::header::RANGE)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    // A write's body is neither read whole nor trusted to the store's
-    // checksum check, which the in-memory store does not do. It flows
-    // through a verifying adapter (see [`VerifiedBody`]) that hashes
-    // the chunks as it forwards them and withholds the last one until
-    // the digest is known: a mismatch, or a body not of the declared
-    // length, ends the upstream write short of its `Content-Length`,
-    // and the store discards an incomplete object. The adapter's
-    // verdict, not the store's answer, then decides what the client
-    // is told. The worker does the same with R2 checking the digest.
+    let method = claims.method;
+    let range = claims.range_header();
+    // Exercise the shared validator, then buffer before forwarding to LocalS3:
+    // that fixture does not reject incomplete HTTP bodies atomically. Unknown-
+    // length archive/cell writes retain the historical collect fallback too.
+    // Production streams validated chunks through R2's FixedLengthStream; this
+    // native helper is functional validation, not evidence of bounded memory.
     let declared = req
         .headers()
         .get(hyper::header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok());
-    if method == ObjectMethod::Put && declared.is_none() {
-        return json(
-            StatusCode::LENGTH_REQUIRED,
-            serde_json::json!({
-                "kind": "LengthRequired",
-                "detail": "a write must declare its length",
-            }),
-        );
+        .and_then(|value| value.parse::<u64>().ok())
+        .or(claims.size);
+    let mut body = Some(req.into_body());
+    let buffered = if method == ObjectMethod::Put && declared.is_none() {
+        let bytes = match body.take().expect("request body").collect().await {
+            Ok(bytes) => bytes.to_bytes(),
+            Err(error) => {
+                return json(
+                    StatusCode::BAD_REQUEST,
+                    serde_json::json!({"kind":"InvalidPayload","detail":error.to_string()}),
+                );
+            }
+        };
+        if bytes.is_empty() {
+            return json(
+                StatusCode::LENGTH_REQUIRED,
+                serde_json::json!({"kind":"LengthRequired","detail":"a write must contain a payload"}),
+            );
+        }
+        if let Err(detail) = crate::upload::validate_buffer(&claims, &bytes) {
+            return json(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"kind":"InvalidPayload","detail":detail}),
+            );
+        }
+        *upload_bytes = bytes.len() as u64;
+        Some(bytes)
+    } else {
+        None
+    };
+    if method == ObjectMethod::Put {
+        *upload_bytes = declared.unwrap_or(*upload_bytes);
     }
-    let verdict = Arc::new(std::sync::Mutex::new(Verdict::Pending));
+    let mut verdict = None;
 
     let request = dialog_remote_s3::request::S3Request {
         method: method.as_str().to_string(),
@@ -1515,6 +1203,45 @@ async fn serve_object(
         },
         ..Default::default()
     };
+    // Match the Worker R2 adapter's existing HEAD-then-DELETE semantics.
+    // The local S3 fixture ignores conditional DELETE headers.
+    if method == ObjectMethod::Delete
+        && let Precondition::IfMatch(expected) = &claims.precondition
+    {
+        let head = dialog_remote_s3::request::S3Request {
+            method: "HEAD".into(),
+            path: claims.key.clone(),
+            ..Default::default()
+        }
+        .attest(registration.objects.credential.clone())
+        .redeem(&registration.objects.address)
+        .await;
+        let head = match head {
+            Ok(head) => reqwest::RequestBuilder::from(head).send().await,
+            Err(error) => return unavailable(format!("head {}: {error}", claims.key)),
+        };
+        let head = match head {
+            Ok(head) => head,
+            Err(error) => return unavailable(error.to_string()),
+        };
+        if head.status().as_u16() == 404
+            || (head.status().is_success()
+                && head
+                    .headers()
+                    .get("etag")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.trim_matches('"'))
+                    != Some(expected.trim_matches('"')))
+        {
+            return Response::builder()
+                .status(StatusCode::PRECONDITION_FAILED)
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+        }
+        if !head.status().is_success() {
+            return unavailable(format!("head {}: {}", claims.key, head.status()));
+        }
+    }
     let permit = match request
         .attest(registration.objects.credential.clone())
         .redeem(&registration.objects.address)
@@ -1527,45 +1254,70 @@ async fn serve_object(
     if let Some(range) = &range {
         upstream = upstream.header(hyper::header::RANGE, range);
     }
-    if let (ObjectMethod::Put, Some(declared)) = (method, declared) {
-        let body = VerifiedBody {
-            inner: req.into_body().into_data_stream(),
-            hasher: sha2_0_10::Sha256::default(),
-            expected: claims.sha256.clone(),
-            declared,
-            received: 0,
-            held: None,
-            verdict: verdict.clone(),
-        };
-        upstream = upstream
-            .header(hyper::header::CONTENT_LENGTH, declared)
-            .body(reqwest::Body::wrap_stream(body));
+    if let Some(bytes) = buffered {
+        upstream = upstream.body(bytes);
+    } else if let (ObjectMethod::Put, Some(declared)) = (method, declared) {
+        if claims.size.is_some_and(|n| n != declared) {
+            return json(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"kind":"InvalidPayload","detail":"Content-Length differs from signed size"}),
+            );
+        }
+        if declared == 0 {
+            if let Err(detail) = crate::upload::validate_empty(&claims) {
+                return json(
+                    StatusCode::BAD_REQUEST,
+                    serde_json::json!({"kind":"InvalidPayload","detail":detail}),
+                );
+            }
+            let mut stream = body.take().expect("request body").into_data_stream();
+            while let Some(chunk) = stream.next().await {
+                if !matches!(chunk,Ok(ref bytes) if bytes.is_empty()) {
+                    return json(
+                        StatusCode::BAD_REQUEST,
+                        serde_json::json!({"kind":"InvalidPayload","detail":"nonempty or unreadable zero-sized body"}),
+                    );
+                }
+            }
+            upstream = upstream.body(Vec::new());
+        } else {
+            let input = body
+                .take()
+                .expect("request body")
+                .into_data_stream()
+                .map(|item| item.map(|bytes| bytes.to_vec()).map_err(|e| e.to_string()));
+            let (mut body, progress) =
+                crate::upload::Validated::new(input, claims.clone(), declared);
+            // The native LocalS3 fixture commits truncated HTTP uploads, unlike
+            // R2's FixedLengthStream contract. Validate before sending to that
+            // test backend so it cannot replace objects with a partial body.
+            // Production Worker uploads remain backpressured streams.
+            let mut payload = Vec::new();
+            while let Some(chunk) = body.next().await {
+                match chunk {
+                    Ok(chunk) => payload.extend_from_slice(&chunk),
+                    Err(detail) => {
+                        return json(
+                            StatusCode::BAD_REQUEST,
+                            serde_json::json!({"kind":"InvalidPayload","detail":detail}),
+                        );
+                    }
+                }
+            }
+            verdict = Some(progress);
+            upstream = upstream
+                .header(hyper::header::CONTENT_LENGTH, declared)
+                .body(payload);
+        }
     }
     let sent = upstream.send().await;
-    let verdict = std::mem::replace(
-        &mut *verdict.lock().expect("verdict mutex poisoned"),
-        Verdict::Pending,
-    );
-    match verdict {
-        Verdict::ChecksumMismatch => {
-            return json(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({
-                    "kind": "ChecksumMismatch",
-                    "detail": "the body does not hash to the checksum the permit binds",
-                }),
-            );
-        }
-        Verdict::LengthMismatch { declared, received } => {
-            return json(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({
-                    "kind": "LengthMismatch",
-                    "detail": format!("the body declared {declared} bytes and carried {received}"),
-                }),
-            );
-        }
-        Verdict::Pending | Verdict::Complete => {}
+    if let Some(progress) = verdict
+        && let crate::upload::Verdict::Invalid(detail) = &*progress.lock().expect("upload progress")
+    {
+        return json(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({"kind":"InvalidPayload","detail":detail}),
+        );
     }
     let answer = match sent {
         Ok(answer) => answer,
@@ -1939,4 +1691,118 @@ pub async fn access_service(
     };
 
     Ok(Service::new(address, access_server))
+}
+
+async fn verify_native(
+    bytes: &[u8],
+    registration: &RegistrationState,
+) -> Result<dialog_remote_ucan::Verified, dialog_capability::access::AuthorizeError> {
+    use dialog_capability::access::AuthorizeError;
+    let container =
+        dialog_ucan_core::Container::from_bytes(bytes).map_err(|e| AuthorizeError::Malformed {
+            detail: e.to_string(),
+        })?;
+    let access = dialog_remote_ucan::Access::new(()).with_revocations(
+        crate::revocation::checker::IndexedRevocations(registration.revocations.clone()),
+    );
+    let verified = access
+        .verify(container)
+        .await
+        .map_err(|e| e.reason().clone())?;
+    Operation::from_verified(&verified).map_err(|detail| AuthorizeError::Malformed { detail })?;
+    Ok(verified)
+}
+fn reauthorization_response() -> Response<http_body_util::Full<bytes::Bytes>> {
+    Response::builder()
+        .status(401)
+        .header(CONTENT_TYPE, "application/json")
+        .body(http_body_util::Full::new(bytes::Bytes::from(
+            serde_json::to_vec(&crate::operation::reauthorization()).unwrap(),
+        )))
+        .unwrap()
+}
+async fn serve_direct(
+    req: Request<Incoming>,
+    credential: String,
+    registration: &RegistrationState,
+) -> Response<http_body_util::Full<bytes::Bytes>> {
+    use dialog_capability::access::AuthorizeError;
+    let container =
+        match dialog_remote_ucan::credential_container(&credential).and_then(|c| c.to_bytes()) {
+            Ok(c) => c,
+            Err(e) => {
+                return authorize_error_response(
+                    StatusCode::BAD_REQUEST,
+                    &AuthorizeError::Malformed {
+                        detail: e.to_string(),
+                    },
+                );
+            }
+        };
+    let verified = match verify_native(&container, registration).await {
+        Ok(v) => v,
+        Err(e) => return authorize_error_response(authorize_status(&e), &e),
+    };
+    let op = Operation::from_verified(&verified).expect("verified operation");
+    match crate::provisioning::screen(
+        &registration.store,
+        verified.chain().subject().as_ref(),
+        unix_now(),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return authorize_error_response(authorize_status(&e), &e),
+        Err(_) => {
+            return authorize_error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &unavailable_provisioning(),
+            );
+        }
+    }
+    let mut upload_bytes = 0;
+    let described = crate::describe::describe(verified.chain());
+    let mut response = serve_object(req, registration, op, &mut upload_bytes).await;
+    let outcome = if response.status().is_success() {
+        Some(("ok", None, upload_bytes))
+    } else if matches!(response.status().as_u16(), 401 | 403) {
+        Some(("denied", Some("execution refused".into()), 0))
+    } else {
+        None
+    };
+    if let Some((label, reason, bytes)) = outcome
+        && let Some(record) = crate::metering::collect(&container, label, reason, bytes, unix_now())
+        && let Err(error) = registration.ingest.record(&record).await
+    {
+        eprintln!("metering: {error}");
+    }
+    for (name, value) in described {
+        if let Ok(value) = HeaderValue::from_str(&value) {
+            response.headers_mut().insert(name, value);
+        }
+    }
+    response
+}
+
+/// Add CORS headers to a response.
+fn cors_response<T>(mut response: Response<T>) -> Response<T> {
+    let headers = response.headers_mut();
+    headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().unwrap());
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_METHODS,
+        "GET, HEAD, PUT, POST, DELETE, OPTIONS".parse().unwrap(),
+    );
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_HEADERS,
+        "Authorization, Cache-Control, Content-Type, Accept, Range"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert(
+        ACCESS_CONTROL_EXPOSE_HEADERS,
+        "Content-Type, ETag, Content-Length, Content-Range, UCAN-Command, UCAN-Subject, UCAN-Arguments"
+            .parse()
+            .unwrap(),
+    );
+    response
 }

@@ -1,373 +1,184 @@
-//! Permitted object operations, performed over the R2 binding.
-//!
-//! `/object/{key}` is where a `/ucan/` answer is redeemed. The request
-//! carries a service-signed permit in its query string (see
-//! [`crate::permit`]); once that verifies, the operation it names is
-//! performed against the bucket this worker is bound to, and the bytes
-//! are streamed back. Nothing about the operation is read from the
-//! request beyond the permit and, for a read, the `Range` header: the
-//! key, the method, the checksum a write must match and the precondition
-//! it must satisfy all come out of the verified claims.
-//!
-//! The answers keep the shape the client already understands from the
-//! S3 endpoint this replaces: `ETag` on reads and writes, `404` for an
-//! absent object, `412` for a precondition that did not hold, `206`
-//! with `Content-Range` for a ranged read, and `401`/`403` for a permit
-//! that is not good here, which is what tells the client to redeem a
-//! fresh one.
-//!
-//! Neither direction is buffered. A read is handed to the runtime as
-//! the binding's own stream. A write flows chunk by chunk into the
-//! binding through a fixed-length stream, hashed on the way past; R2
-//! verifies the bound checksum itself and refuses to store a body that
-//! does not match, and the hash taken here is what tells that refusal
-//! apart from a store that failed for its own reasons. A blob is as
-//! large as it is, and the worker's memory is not what bounds it.
-
-use std::cell::RefCell;
-use std::pin::Pin;
-use std::rc::Rc;
-use std::task::{Context, Poll};
-
-use crate::observability::{
-    AccessFailureKind, AccessFailureLog, AccessOperation, AccessOutcome, AccessSite,
-};
-use crate::permit::{Claims, Method, PermitRefusal, Precondition};
-use futures_util::Stream;
-use sha2_0_10::{Digest, Sha256};
+//! Streaming storage adapter for a verified, request-local operation.
+use crate::operation::{Method, Operation, Precondition};
+use futures_util::StreamExt;
 use worker::js_sys::Uint8Array;
-use worker::wasm_bindgen::JsValue;
 use worker::{
-    Bucket, Data, Date, FixedLengthStream, Headers, Range, Request, Response, Result, RouteContext,
-    console_error,
+    Bucket, Data, FixedLengthStream, Headers, Range, Request, Response, Result, RouteContext,
 };
 
-/// Add CORS headers for the object path.
-///
-/// Reads need no header at all, so a cross-origin read is a simple
-/// request and never preflights. A ranged read adds `Range` and a
-/// write is a `PUT`, both of which preflight once per URL, the same as
-/// the presigned S3 URLs did.
-fn with_cors_headers(response: Response) -> Response {
+fn with_cors(response: Response) -> Response {
     let headers = response.headers().clone();
     let _ = headers.set("Access-Control-Allow-Origin", "*");
     let _ = headers.set("Access-Control-Allow-Methods", "GET, PUT, DELETE, OPTIONS");
     let _ = headers.set("Access-Control-Allow-Headers", "Content-Type, Range");
     let _ = headers.set(
         "Access-Control-Expose-Headers",
-        "ETag, Content-Length, Content-Range, Server-Timing",
+        "ETag, Content-Length, Content-Range",
     );
     response.with_headers(headers)
 }
-
-/// Where an object request's time went, in milliseconds: verifying the
-/// permit, and the binding call itself (for a read, up to the object's
-/// first byte; for a write, the whole store). Reported on the response
-/// as `Server-Timing`, so a HAR splits the server wait the client sees
-/// into the worker's own work and the storage call, which is what tells
-/// a slow object apart from a slow route to it.
-#[derive(Clone, Copy, Debug, Default)]
-struct Timing {
-    verify: u64,
-    store: u64,
-}
-
-fn with_server_timing(response: Response, timing: Timing, started: u64) -> Response {
-    let total = Date::now().as_millis().saturating_sub(started);
-    let headers = response.headers().clone();
-    let _ = headers.set(
-        "Server-Timing",
-        &format!(
-            "verify;dur={}, store;dur={}, total;dur={total}",
-            timing.verify, timing.store
-        ),
-    );
-    response.with_headers(headers)
-}
-
-/// OPTIONS /object/{key} → CORS preflight.
 pub async fn handle_options(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
-    let response = with_cors_headers(Response::empty()?.with_status(204));
-    let headers = response.headers().clone();
-    let _ = headers.set("Access-Control-Max-Age", crate::PREFLIGHT_MAX_AGE);
-    Ok(response.with_headers(headers))
+    Ok(with_cors(Response::empty()?.with_status(204)))
 }
-
-/// GET /object/{key} → the object, or a byte range of it.
-pub async fn handle_get(req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    serve(req, ctx, Method::Get).await
+/// Old bearer URLs cannot prove present authority. Keep typed 401 so cached
+/// readers redeem again; an in-flight old mutation must be retried by its caller.
+pub async fn handle_get(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
+    retired()
 }
-
-/// PUT /object/{key} → store the body as the object.
-pub async fn handle_put(req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    serve(req, ctx, Method::Put).await
+pub async fn handle_put(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
+    retired()
 }
-
-/// DELETE /object/{key} → remove the object.
-pub async fn handle_delete(req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    serve(req, ctx, Method::Delete).await
+pub async fn handle_delete(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
+    retired()
 }
-
-async fn serve(mut req: Request, ctx: RouteContext<()>, method: Method) -> Result<Response> {
-    let started = Date::now().as_millis();
-    let response = match perform(&mut req, &ctx, method).await {
-        Ok((response, timing)) => with_server_timing(response, timing, started),
-        Err(failure) => {
-            failure.emit();
-            failure.into_response()?
-        }
-    };
-    Ok(with_cors_headers(response))
-}
-
-/// Why an object request was not carried out.
-pub(crate) enum Failure {
-    /// The permit is not good for this request.
-    Refused(PermitRefusal),
-    /// A write declared no length, and the store needs one up front.
-    LengthRequired,
-    /// A write's body was not as long as it declared.
-    LengthMismatch { declared: u64, received: u64 },
-    /// The body a write carried does not hash to what the permit binds.
-    ChecksumMismatch,
-    /// The service could not reach its own configuration or storage.
-    Unavailable(String),
-}
-
-impl Failure {
-    fn status(&self) -> u16 {
-        match self {
-            Self::Refused(refusal) => refusal.status(),
-            Self::LengthRequired => 411,
-            Self::LengthMismatch { .. } | Self::ChecksumMismatch => 400,
-            Self::Unavailable(_) => 500,
-        }
-    }
-
-    pub(crate) fn into_response(self) -> Result<Response> {
-        let status = self.status();
-        let response = match self {
-            Self::Refused(refusal) => Response::from_json(&refusal)?,
-            Self::LengthRequired => Response::from_json(&serde_json::json!({
-                "kind": "LengthRequired",
-                "detail": "a write must declare its length",
-            }))?,
-            Self::LengthMismatch { declared, received } => {
-                Response::from_json(&serde_json::json!({
-                    "kind": "LengthMismatch",
-                    "detail": format!("the body declared {declared} bytes and carried {received}"),
-                }))?
-            }
-            Self::ChecksumMismatch => Response::from_json(&serde_json::json!({
-                "kind": "ChecksumMismatch",
-                "detail": "the body does not hash to the checksum the permit binds",
-            }))?,
-            // The reason names internal infrastructure; it goes to
-            // the log, not the caller.
-            Self::Unavailable(_) => Response::from_json(&serde_json::json!({
-                "kind": "Unavailable",
-                "detail": "object storage unavailable, retry shortly",
-            }))?,
-        };
-        Ok(response.with_status(status))
-    }
-
-    pub(crate) fn emit(&self) {
-        let status = self.status();
-        let (outcome, kind) = match self {
-            Self::Refused(_) => (AccessOutcome::Refused, AccessFailureKind::AccessDenied),
-            Self::LengthRequired | Self::LengthMismatch { .. } | Self::ChecksumMismatch => {
-                (AccessOutcome::Refused, AccessFailureKind::Invalid)
-            }
-            Self::Unavailable(reason) => {
-                console_error!("object operation failed: {reason}");
-                (AccessOutcome::Unavailable, AccessFailureKind::Unavailable)
-            }
-        };
-        AccessFailureLog::new(
-            AccessOperation::Object,
-            outcome,
-            kind,
-            status,
-            status >= 500,
-            AccessSite::Object,
-        )
-        .emit();
-    }
-}
-
-impl From<PermitRefusal> for Failure {
-    fn from(refusal: PermitRefusal) -> Self {
-        Self::Refused(refusal)
-    }
-}
-
-async fn perform(
-    req: &mut Request,
-    ctx: &RouteContext<()>,
-    method: Method,
-) -> std::result::Result<(Response, Timing), Failure> {
-    let started = Date::now().as_millis();
-    let key = super::ucan::permit_key(&ctx.env)
-        .map_err(|refusal| Failure::Unavailable(format!("{refusal:?}")))?;
-    let url = req
-        .url()
-        .map_err(|error| Failure::Unavailable(format!("request url: {error}")))?;
-    let now = started / 1_000;
-    let claims = key.verify(method, url.path(), url.query(), now)?;
-    let verified = Date::now().as_millis();
-
-    let bucket = ctx
-        .env
-        .bucket("BUCKET")
-        .map_err(|error| Failure::Unavailable(format!("Missing BUCKET: {error}")))?;
-
-    let response = match claims.method {
-        Method::Get => {
-            let range = req
-                .headers()
-                .get("range")
-                .ok()
-                .flatten()
-                .and_then(|value| parse_range(&value));
-            get(&bucket, &claims.key, range).await?
-        }
-        Method::Put => put(req, &bucket, &claims).await?,
-        Method::Delete => delete(&bucket, &claims).await?,
-    };
-    let stored = Date::now().as_millis();
-    Ok((
-        response,
-        Timing {
-            verify: verified.saturating_sub(started),
-            store: stored.saturating_sub(verified),
-        },
+fn retired() -> Result<Response> {
+    Ok(with_cors(
+        Response::from_json(&crate::operation::reauthorization())?.with_status(401),
     ))
 }
 
-/// Store the request body as the object the claims name, streaming it
-/// into the binding.
-///
-/// The store needs the length up front, so a write must declare one;
-/// the body then flows through a fixed-length stream, which fails the
-/// write if the client sends more or less than declared. The chunks
-/// are hashed as they pass. R2 checks the bound checksum on its side
-/// and refuses to store a mismatch, so the hash taken here never
-/// decides whether the object lands; it decides what a refused write
-/// is answered with, since the store's error says nothing a caller
-/// can act on.
-async fn delete(bucket: &Bucket, claims: &Claims) -> std::result::Result<Response, Failure> {
-    match store::delete(bucket, claims).await {
-        Ok(true) => Ok(Response::empty()
-            .map_err(|error| Failure::Unavailable(error.to_string()))?
-            .with_status(204)),
-        Ok(false) => precondition_failed(),
-        Err(error) => Err(Failure::Unavailable(format!(
-            "delete {}: {error}",
-            claims.key
-        ))),
+pub(crate) enum Failure {
+    LengthRequired,
+    Invalid(String),
+    Unavailable(String),
+}
+impl Failure {
+    pub(crate) fn into_response(self) -> Result<Response> {
+        let (status, kind, detail) = match self {
+            Self::LengthRequired => (
+                411,
+                "LengthRequired",
+                "a write must declare its length".to_string(),
+            ),
+            Self::Invalid(detail) => (400, "InvalidPayload", detail),
+            Self::Unavailable(detail) => {
+                worker::console_error!("object storage: {detail}");
+                (
+                    503,
+                    "Unavailable",
+                    "object storage unavailable, retry shortly".into(),
+                )
+            }
+        };
+        Ok(
+            Response::from_json(&serde_json::json!({"kind":kind,"detail":detail}))?
+                .with_status(status),
+        )
     }
 }
-
+pub(crate) async fn execute(
+    req: &mut Request,
+    bucket: &Bucket,
+    operation: &Operation,
+    upload_bytes: &mut u64,
+) -> std::result::Result<Response, Failure> {
+    match operation.method {
+        Method::Get => {
+            get(
+                bucket,
+                &operation.key,
+                operation.range.map(|r| match r.length {
+                    Some(length) => Range::OffsetWithLength {
+                        offset: r.offset,
+                        length,
+                    },
+                    None => Range::OffsetToEnd { offset: r.offset },
+                }),
+            )
+            .await
+        }
+        Method::Put => put(req, bucket, operation, upload_bytes).await,
+        Method::Delete => match store::delete(bucket, operation).await {
+            Ok(true) => Response::empty()
+                .map(|r| r.with_status(204))
+                .map_err(|e| Failure::Unavailable(e.to_string())),
+            Ok(false) => precondition_failed(),
+            Err(e) => Err(Failure::Unavailable(e.to_string())),
+        },
+    }
+}
 async fn put(
     req: &mut Request,
     bucket: &Bucket,
-    claims: &Claims,
+    operation: &Operation,
+    upload_bytes: &mut u64,
 ) -> std::result::Result<Response, Failure> {
-    let declared: u64 = req
+    let declared = req
         .headers()
         .get("content-length")
         .ok()
         .flatten()
-        .and_then(|value| value.parse().ok())
-        .ok_or(Failure::LengthRequired)?;
-
-    let progress = Rc::new(RefCell::new(Progress::default()));
-    let value: JsValue = if declared == 0 {
-        // The runtime gives an empty request no body stream at all.
-        Uint8Array::new_with_length(0).into()
+        .and_then(|v| v.parse::<u64>().ok())
+        .or(operation.size);
+    // Preserve the prior direct transport's unknown-length archive/cell
+    // collection. This fallback intentionally retains its unbounded memory risk.
+    let buffered = if declared.is_none() {
+        let bytes = req
+            .bytes()
+            .await
+            .map_err(|e| Failure::Invalid(e.to_string()))?;
+        if bytes.is_empty() {
+            return Err(Failure::LengthRequired);
+        }
+        crate::upload::validate_buffer(operation, &bytes).map_err(Failure::Invalid)?;
+        Some(bytes)
     } else {
-        let stream = req
-            .stream()
-            .map_err(|error| Failure::Unavailable(format!("request body: {error}")))?;
-        let watched = Watched {
-            inner: stream,
-            progress: progress.clone(),
-        };
-        Data::Stream(FixedLengthStream::wrap(watched, declared)).into()
+        None
     };
-
-    let stored = store::put(bucket, claims, value).await;
-    let progress = progress.borrow();
+    let declared =
+        declared.unwrap_or_else(|| buffered.as_ref().expect("collected upload").len() as u64);
+    *upload_bytes = declared;
+    if operation.size.is_some_and(|n| n != declared) {
+        return Err(Failure::Invalid(
+            "Content-Length differs from signed size".into(),
+        ));
+    }
+    let (value, progress) = if let Some(bytes) = buffered {
+        (Uint8Array::from(bytes.as_slice()).into(), None)
+    } else if declared == 0 {
+        crate::upload::validate_empty(operation).map_err(Failure::Invalid)?;
+        if let Ok(mut stream) = req.stream() {
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| Failure::Invalid(e.to_string()))?;
+                if !chunk.is_empty() {
+                    return Err(Failure::Invalid(
+                        "nonempty body for zero-sized upload".into(),
+                    ));
+                }
+            }
+        }
+        (Uint8Array::new_with_length(0).into(), None)
+    } else {
+        let input = req
+            .stream()
+            .map_err(|e| Failure::Invalid(e.to_string()))?
+            .map(|item| item.map_err(|e| e.to_string()));
+        let (validated, progress) =
+            crate::upload::Validated::new(input, operation.clone(), declared);
+        let stream = validated.map(|item| item.map_err(worker::Error::RustError));
+        (
+            Data::Stream(FixedLengthStream::wrap(stream, declared)).into(),
+            Some(progress),
+        )
+    };
+    let stored = store::put(bucket, operation, value).await;
+    if let Some(progress) = progress
+        && let crate::upload::Verdict::Invalid(detail) = &*progress.lock().expect("upload progress")
+    {
+        return Err(Failure::Invalid(detail.clone()));
+    }
     match stored {
         Ok(Some(etag)) => {
             let headers = Headers::new();
             let _ = headers.set("etag", &etag);
-            Ok(Response::empty()
-                .map_err(|error| Failure::Unavailable(error.to_string()))?
-                .with_headers(headers))
+            Response::empty()
+                .map(|r| r.with_headers(headers))
+                .map_err(|e| Failure::Unavailable(e.to_string()))
         }
         Ok(None) => precondition_failed(),
-        Err(error) => {
-            // The store refused, or failed. Which one is read off what
-            // the body did on its way in: a body that overran or ran
-            // out is the client's, a body of the declared length that
-            // does not hash to the bound checksum is the client's, and
-            // anything else is the store's.
-            let overran = progress.received > declared;
-            let ran_out = progress.ended && progress.received < declared;
-            if overran || ran_out {
-                return Err(Failure::LengthMismatch {
-                    declared,
-                    received: progress.received,
-                });
-            }
-            let complete = progress.ended && progress.received == declared;
-            if complete
-                && let Some(expected) = &claims.sha256
-                && progress.hasher.clone().finalize()[..] != expected[..]
-            {
-                return Err(Failure::ChecksumMismatch);
-            }
-            Err(Failure::Unavailable(format!("put {}: {error}", claims.key)))
-        }
+        Err(e) => Err(Failure::Unavailable(e.to_string())),
     }
 }
-
-/// What a request body did on its way into the store.
-#[derive(Default)]
-struct Progress {
-    hasher: Sha256,
-    received: u64,
-    /// The client finished sending. Without this a store that failed
-    /// mid-body would read as a client that stopped short.
-    ended: bool,
-}
-
-/// A body stream that records its [`Progress`] as it is drained.
-struct Watched<S> {
-    inner: S,
-    progress: Rc<RefCell<Progress>>,
-}
-
-impl<S: Stream<Item = Result<Vec<u8>>> + Unpin> Stream for Watched<S> {
-    type Item = Result<Vec<u8>>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let polled = Pin::new(&mut self.inner).poll_next(cx);
-        match &polled {
-            Poll::Ready(Some(Ok(chunk))) => {
-                let mut progress = self.progress.borrow_mut();
-                progress.hasher.update(chunk);
-                progress.received += chunk.len() as u64;
-            }
-            Poll::Ready(None) => self.progress.borrow_mut().ended = true,
-            Poll::Ready(Some(Err(_))) | Poll::Pending => {}
-        }
-        polled
-    }
-}
-
 fn precondition_failed() -> std::result::Result<Response, Failure> {
     Response::empty()
         .map(|response| response.with_status(412))
@@ -376,7 +187,7 @@ fn precondition_failed() -> std::result::Result<Response, Failure> {
 
 /// Read `key`, streaming the body straight from the binding to the
 /// client so the worker spends no CPU time on the bytes.
-async fn get(
+pub(crate) async fn get(
     bucket: &Bucket,
     key: &str,
     range: Option<Range>,
@@ -438,6 +249,7 @@ async fn get(
 /// The single byte range a `Range` header asks for, in the binding's
 /// terms. `None` for anything else — a malformed header, or several
 /// ranges — which serves the whole object, as the specification allows.
+#[cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 pub(crate) fn parse_range(header: &str) -> Option<Range> {
     let spec = header.trim().strip_prefix("bytes=")?;
     if spec.contains(',') {
@@ -464,7 +276,7 @@ pub(crate) fn parse_range(header: &str) -> Option<Range> {
 
 /// The writes, shared with enrollment's custody-cell write.
 pub mod store {
-    use super::{Claims, Precondition};
+    use super::{Operation, Precondition};
     use worker::js_sys::{Object as JsObject, Reflect, Uint8Array};
     use worker::wasm_bindgen::{JsCast, JsValue};
     use worker::wasm_bindgen_futures::JsFuture;
@@ -483,7 +295,11 @@ pub mod store {
     /// conditional header the S3 endpoint accepted, `If-None-Match: *`
     /// included, so the write keeps the exact semantics the permit
     /// was issued with.
-    pub async fn put(bucket: &Bucket, claims: &Claims, value: JsValue) -> Result<Option<String>> {
+    pub async fn put(
+        bucket: &Bucket,
+        claims: &Operation,
+        value: JsValue,
+    ) -> Result<Option<String>> {
         let options = JsObject::new();
         match &claims.precondition {
             Precondition::None => {}
@@ -519,7 +335,7 @@ pub mod store {
     /// checked against the object's current version first. The two
     /// steps are not one operation; a write landing between them is
     /// deleted as though it had been the version checked.
-    pub async fn delete(bucket: &Bucket, claims: &Claims) -> Result<bool> {
+    pub async fn delete(bucket: &Bucket, claims: &Operation) -> Result<bool> {
         if !matches!(claims.precondition, Precondition::None) {
             let current = bucket.head(claims.key.clone()).await?;
             let holds = match &claims.precondition {

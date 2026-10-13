@@ -1,7 +1,7 @@
 //! Worker glue for `/ucan/revoke`.
 //!
 //! The decision lives in [`crate::revoke`], generic over the control
-//! store and the revocation index; this binds it to D1 and KV and
+//! store and the revocation index; this binds it to D1, R2, and KV and
 //! shapes the HTTP answer.
 
 #[cfg(target_arch = "wasm32")]
@@ -11,7 +11,7 @@ use worker::{Env, Response};
 
 /// Answer a revocation invocation.
 ///
-/// Worker-only: it binds D1 and KV, neither of which exists natively.
+/// Worker-only: it binds D1, R2, and KV, which are unavailable natively.
 /// The native server reaches [`crate::revoke::revoke`] directly.
 #[cfg(target_arch = "wasm32")]
 pub async fn handle(body: &[u8], env: &Env) -> worker::Result<Response> {
@@ -29,7 +29,7 @@ async fn handle_inner(
     body: &[u8],
     env: &Env,
 ) -> Result<tonk_account::customer::RevokeReceipt, RegistrationError> {
-    use crate::revocation::index::kv::KvRevocationIndex;
+    use crate::revocation::index::r2::R2RevocationIndex;
     use crate::store::d1::D1Store;
 
     let store = D1Store::new(
@@ -38,10 +38,8 @@ async fn handle_inner(
                 message: format!("control database: {err}"),
             })?,
     );
-    let index = KvRevocationIndex::new(env.kv("REVOCATIONS_KV").map_err(|err| {
-        RegistrationError::Internal {
-            message: format!("revocation index: {err}"),
-        }
-    })?);
+    let index = R2RevocationIndex::from_env(env).map_err(|err| RegistrationError::Internal {
+        message: err.to_string(),
+    })?;
     crate::revoke::revoke(&store, &index, body).await
 }

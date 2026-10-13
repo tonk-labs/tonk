@@ -4,7 +4,9 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build_dir=$(mktemp -d "${TMPDIR:-/tmp}/tonk-connection-worker.XXXXXX")
 trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
-# Nix's configured Wrangler carries Miniflare; other environments can set NODE_PATH.
+# Install scripts/worker-test-tools with npm ci, then set NODE_PATH to its node_modules.
+# Optional TONK_RELEASED_CLI_FIXTURES points to extracted official Linux CLI tarballs.
+# Nix environments may instead supply the same modules through NODE_PATH.
 if [ -z "${NODE_PATH:-}" ]; then
   wrangler_bin=$(command -v wrangler)
   wrangler_root=$(CDPATH= cd -- "$(dirname -- "$wrangler_bin")/.." && pwd)

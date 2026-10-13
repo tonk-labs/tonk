@@ -8,6 +8,7 @@
 //! check that we hold the affected subject's data. An already-recorded
 //! fact is idempotent. Recording a new fact additionally requires current
 //! invocation authority whose proofs have not themselves been revoked.
+//! Valid replays may backfill the authoritative index from a legacy fact.
 
 use dialog_common::ConditionalSync;
 use dialog_credentials::DidKeyResolver;
@@ -99,7 +100,8 @@ pub async fn revoke<S: Store, I: RevocationIndex + ConditionalSync>(
         // Historical `pth` witnesses may already be revoked. Only the
         // invocation's current `prf` authorizes a new write to the index.
         // The ordinary chain verifier walks those proofs, not the witness
-        // pool. A valid replay needs no new authority or index mutation.
+        // pool. A valid replay needs no new authority; re-recording below may
+        // still backfill the authoritative index from the legacy mirror.
         let chain = InvocationChain::<AnySignature>::try_from(container).map_err(|error| {
             RegistrationError::Internal {
                 message: error.to_string(),
@@ -120,16 +122,15 @@ pub async fn revoke<S: Store, I: RevocationIndex + ConditionalSync>(
             })?;
     }
 
-    let recorded = if already_recorded {
-        false
-    } else {
-        index
-            .record(&verified.target_cid, &subject)
-            .await
-            .map_err(|error| RegistrationError::Internal {
-                message: error.to_string(),
-            })?
-    };
+    // Re-record even a valid replay: legacy facts must reach the strong
+    // index before this acknowledgement can act as an admission barrier.
+    let recorded = index
+        .record(&verified.target_cid, &subject)
+        .await
+        .map_err(|error| RegistrationError::Internal {
+            message: error.to_string(),
+        })?
+        && !already_recorded;
 
     Ok(RevokeReceipt {
         revoked: verified
