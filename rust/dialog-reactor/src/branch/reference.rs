@@ -210,20 +210,25 @@ impl<'a> BranchReference<'a> {
         Env: LoadProvider + BranchOpenProvider + CommitProvider,
     {
         let session = self.acquire(env).await?;
-        // Under the lock first: a caller arriving while the migration
-        // runs waits here, and then finds it has run.
-        let _transacting = session.state.transactor().lock().await;
-        if session.state.migration_claimed() {
+        let branch = &session.state.branch;
+        let needs_migration = || async {
+            branch
+                .needs_migration(env)
+                .await
+                .map_err(|error| ReactorError::Upgrade {
+                    reason: error.to_string(),
+                })
+        };
+        // Without the lock first: a branch already moved, or one with
+        // nothing to move, is the common case, and a read that only
+        // asks must not wait on a writer holding the lock.
+        if session.state.migration_claimed() || !needs_migration().await? {
             return Ok(None);
         }
-        let branch = &session.state.branch;
-        let needed = branch
-            .needs_migration(env)
-            .await
-            .map_err(|error| ReactorError::Upgrade {
-                reason: error.to_string(),
-            })?;
-        if !needed {
+        // Under the lock: a caller arriving while the migration runs
+        // waits here, and then finds it has run.
+        let _transacting = session.state.transactor().lock().await;
+        if session.state.migration_claimed() || !needs_migration().await? {
             return Ok(None);
         }
         // Claimed only now: a branch with nothing to move stays open to a
