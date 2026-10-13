@@ -586,8 +586,7 @@
           tests-native-release = buildTestArchive {
             name = "native-release";
             profile = "release-test";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests --cargo-profile release-test";
-            depsExtraArgs = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
           };
 
           tests-web-debug = buildTestArchive {
@@ -598,8 +597,9 @@
 
           tests-web-release = buildTestArchive {
             name = "web-release";
+            profile = "release";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --exclude tonk-perf --release";
+            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
           };
 
           # The real-browser suite `test:e2e` runs. Its `integration-tests`
@@ -608,7 +608,6 @@
           tests-e2e = buildTestArchive {
             name = "e2e";
             args = "--package tonk-ui --features integration-tests,connection-invites";
-            depsExtraArgs = "--package tonk-ui --features integration-tests,connection-invites";
           };
 
           tests = pkgs.runCommand "tests-all" { } ''
