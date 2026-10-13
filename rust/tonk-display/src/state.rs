@@ -344,8 +344,10 @@ const ABSENCE_CALLOUT_ATTR: &str = "data-tonk-display-absence";
 
 /// What the built-in `upgrading` notice says, when the embedder slots
 /// nothing for the state.
+#[cfg(target_arch = "wasm32")]
 pub const UPGRADING_TITLE: &str = "Upgrading this space";
 /// Its one line of explanation.
+#[cfg(target_arch = "wasm32")]
 pub const UPGRADING_MESSAGE: &str =
     "Your data is being moved to this release's format. This takes a moment.";
 
