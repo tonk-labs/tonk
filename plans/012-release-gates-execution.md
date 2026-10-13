@@ -3,7 +3,8 @@
 Scope decision: finish the observation/readiness phase, then plan protected
 channel migration. User authorized a private synthetic repository and later
 making it public. No production branch/tag/release/environment was changed.
-No existing release App is available. Source changes remain uncommitted locally.
+No existing release App is available. Implementation is under review in
+[PR #1092](https://github.com/tonk-labs/tonk/pull/1092).
 
 ## Implemented
 
@@ -59,8 +60,11 @@ protect the channel pointer followed by today's CLI/installers.
 
 No hosted Tonk candidate run, signing/notarization run, full product E2E suite,
 live manual product review or staging deployment has executed for this change.
-Artifact download/digest and API collectors have local negative tests; their
-end-to-end GitHub integration still needs a candidate run after merge. Current
+The real GitHub artifact transport was verified against
+[synthetic run 38428749659](https://github.com/tonk-labs/tonk-release-gates-test/actions/runs/38428749659):
+archive SHA-256, run/head provenance and JSON retrieval passed; altered head SHA
+and absent artifact were rejected. Live reviewer authorization also passed.
+Complete candidate/review collection still needs a candidate run after merge. Current
 web identity hashes the UI tree, not a complete publication manifest covering
 all worker packages. This must expand before publishing is enabled.
 
