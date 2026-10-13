@@ -37,3 +37,14 @@ final-status-level = "flaky"
 # The #852 quarantine is drained: every account flow it named is
 # repaired and back in the suite. To quarantine a newly broken test,
 # add a `default-filter` here excluding it, with a linked issue.
+
+# Release candidates run once against the selected artifact paths. Keep the
+# ordinary PR retry policy above; a release must not hide a flaky pass.
+[profile.release-gate]
+inherits = "e2e"
+retries = 0
+
+[profile.release-gate.junit]
+path = "junit.xml"
+store-success-output = false
+store-failure-output = false

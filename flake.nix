@@ -447,6 +447,34 @@
             '';
           };
 
+          "test:release-e2e" = {
+            description = "Test the explicitly selected release CLI and web artifacts";
+            command = ''
+              set -euo pipefail
+              : "''${TONK_BIN:?Select the candidate CLI binary}"
+              : "''${TONK_UI_TEST_ARTIFACT:?Select the candidate web artifact}"
+              : "''${TONK_RELEASE_CLI_SHA256:?Supply the candidate CLI digest}"
+              : "''${TONK_RELEASE_WEB_SHA256:?Supply the candidate web digest}"
+              : "''${TONK_RELEASE_TEST_ARCHIVE:?Select the candidate test archive}"
+              : "''${TONK_RELEASE_CONTROLLER:?Select the trusted controller checkout}"
+              : "''${TONK_RELEASE_INVENTORY:?Select the inventory output file}"
+              : "''${TONK_RELEASE_PARTITION:?Select the release shard}"
+              ${pkgs.python3}/bin/python3 "$TONK_RELEASE_CONTROLLER/scripts/release_artifacts.py" \
+                "$TONK_BIN" --expected "$TONK_RELEASE_CLI_SHA256"
+              ${pkgs.python3}/bin/python3 "$TONK_RELEASE_CONTROLLER/scripts/release_artifacts.py" \
+                "$TONK_UI_TEST_ARTIFACT" --tree --expected "$TONK_RELEASE_WEB_SHA256"
+              export DO_NOT_TRACK=1
+              cargo nextest list --profile release-gate \
+                --config-file "$TONK_RELEASE_CONTROLLER/.config/nextest.toml" \
+                --workspace-remap ./ --archive-file "$TONK_RELEASE_TEST_ARCHIVE" \
+                --partition "$TONK_RELEASE_PARTITION" --message-format json > "$TONK_RELEASE_INVENTORY"
+              cargo nextest run --profile release-gate --retries 0 \
+                --config-file "$TONK_RELEASE_CONTROLLER/.config/nextest.toml" \
+                --workspace-remap ./ --archive-file "$TONK_RELEASE_TEST_ARCHIVE" \
+                --partition "$TONK_RELEASE_PARTITION"
+            '';
+          };
+
           "test:storybook" = {
             description = "Validate the visual product Storybook and its local links";
             command = ''

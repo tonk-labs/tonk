@@ -1,4 +1,12 @@
 on:
+  workflow_call:
+    inputs:
+      source-sha:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
   workflow_dispatch:
   pull_request:
   push:
@@ -8,18 +16,44 @@ on:
 name: 'Test'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: tests-${{ github.workflow }}-${{ inputs.version != '' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  release-tools:
+    name: Release policy and evidence tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test release evidence and negative gate cases
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          for test in scripts/tests/test-release-*.py; do
+            python3 "$test"
+          done
+
   lints:
     name: 'Lints'
     runs-on: 'ubuntu-latest'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: wimpysworld/nothing-but-nix@main
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
       - uses: actions/checkout@v4
+        if: inputs.version != ''
+        with:
+          ref: ${{ github.sha }}
+          path: .release-controller
+          persist-credentials: false
+      - name: Stamp the selected candidate
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python3 .release-controller/scripts/release_stamp.py "$VERSION"
+      - uses: wimpysworld/nothing-but-nix@main
       - uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
@@ -37,6 +71,7 @@ jobs:
           nix --accept-flake-config develop .#ci -c lint
 
   e2e-build:
+    if: inputs.version == ''
     name: 'Build end-to-end test archive'
     runs-on: 'ubuntu-latest'
     # Build the source-dependent archive once. The shards below realize these
@@ -47,6 +82,8 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -66,6 +103,7 @@ jobs:
         run: nix build --accept-flake-config .#tonk-cli .#tests-e2e
 
   e2e-shard:
+    if: inputs.version == ''
     name: 'End-to-end shard ${{ matrix.shard }}/3'
     needs: ['lints', 'e2e-build']
     runs-on: 'ubuntu-latest'
@@ -76,6 +114,8 @@ jobs:
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
       - uses: wimpysworld/nothing-but-nix@main
         with:
           root-safe-haven: 40960
@@ -111,10 +151,10 @@ jobs:
           retention-days: 14
 
   e2e:
+    if: always() && inputs.version == ''
     # Preserve the required-check context while the implementation is sharded.
     name: 'End-to-end account tests'
     needs: ['e2e-shard']
-    if: always()
     runs-on: 'ubuntu-latest'
     timeout-minutes: 5
     steps:
@@ -130,6 +170,19 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
+      - uses: actions/checkout@v4
+        if: inputs.version != ''
+        with:
+          ref: ${{ github.sha }}
+          path: .release-controller
+          persist-credentials: false
+      - name: Stamp the selected candidate
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python3 .release-controller/scripts/release_stamp.py "$VERSION"
       - uses: wimpysworld/nothing-but-nix@main
       - uses: cachix/install-nix-action@v31
         with:
@@ -154,7 +207,19 @@ jobs:
         profile: ["debug", "release"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
+      - uses: actions/checkout@v4
+        if: inputs.version != ''
+        with:
+          ref: ${{ github.sha }}
+          path: .release-controller
+          persist-credentials: false
+      - name: Stamp the selected candidate
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python3 .release-controller/scripts/release_stamp.py "$VERSION"
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with:
