@@ -1,0 +1,32 @@
+attribute!: &integration-task-title
+  description: Task title
+  the: integration.task/title
+  as: text
+  cardinality: one
+attribute!: &integration-task-done
+  description: Whether the task is complete
+  the: integration.task/done
+  as: boolean
+  cardinality: one
+concept!: &integration-task
+  description: Integration test task
+  with:
+    title: integration-task-title
+    done: integration-task-done
+integration-task!:
+  this: urn:test:task:one
+  title: "First task"
+  done: false
+integration-task!:
+  this: urn:test:task:two
+  title: "Second task"
+  done: false
+integration-task!:
+  this: urn:test:task:three
+  title: "Third task"
+  done: true
+view!:
+  this: integration-task
+  show:
+    ui: "<article>{title}: {done}</article>"
+    directory: "<tonk-display model=integration-task view=ui></tonk-display>"

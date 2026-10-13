@@ -2155,10 +2155,18 @@ pub(crate) mod tests {
         passkey: Option<tonk_worker_api::PasskeyMetadata>,
     ) -> TonkState {
         let name = format!("account-state-worker-test-{}", rand::random::<u64>());
-        let (storage, profile) =
-            crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
-                .await
-                .unwrap();
+        // The system key belongs to the directory, not the profile name.
+        // Keep each device in its own directory so parallel first boots cannot
+        // create different system keys in the shared native profile store.
+        let directory = dialog_effects::storage::Directory::At(
+            std::env::temp_dir()
+                .join(&name)
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let (storage, profile) = crate::device::open_profile_at(&name, directory.clone())
+            .await
+            .unwrap();
         let session = crate::session::open(&profile).await.unwrap();
         let reactor = crate::Reactor::new(profile.credential().clone());
         let state = TonkState {
@@ -2182,7 +2190,7 @@ pub(crate) mod tests {
             profile_library: Default::default(),
             registry: crate::device::Registry {
                 profile: name.clone(),
-                directory: dialog_effects::storage::Directory::Profile,
+                directory,
             },
             profile_transition: Default::default(),
             context_generation: Default::default(),
@@ -2250,11 +2258,16 @@ pub(crate) mod tests {
         read_passkeys(state, ready).await.unwrap()
     }
 
-    /// Remove the on-disk verifier repository `NativeSpace` rooted in the
-    /// package working directory for one randomized fixture.
+    /// Remove the on-disk verifier repository from this fixture's isolated
+    /// native storage.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn discard(state: TonkState, key: &str) {
-        let local = std::env::current_dir().unwrap().join(key);
+        let dialog_effects::storage::Directory::At(root) =
+            state.registry.space_location(key).directory
+        else {
+            panic!("native fixture must use isolated storage");
+        };
+        let local = std::path::Path::new(&root).join(key);
         drop(state);
         if local.is_dir() {
             std::fs::remove_dir_all(local).unwrap();
