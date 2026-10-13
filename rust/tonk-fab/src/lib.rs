@@ -69,6 +69,9 @@ mod profile_name;
 mod share;
 
 #[cfg(target_arch = "wasm32")]
+mod publication;
+
+#[cfg(target_arch = "wasm32")]
 mod space_name;
 
 #[cfg(target_arch = "wasm32")]
@@ -105,6 +108,7 @@ pub fn register() {
     share::register();
     tool_connection::register();
     space_name::register();
+    publication::register();
     sync_status::register();
     profile_name::register();
     member_roster::register();

@@ -329,6 +329,102 @@ fn too_large_response(limit: u64) -> Response<http_body_util::Full<bytes::Bytes>
         .expect("a static response builds")
 }
 
+/// Answer a `/use/get/ticket/claim` with the ticket the space it names
+/// keeps for its subject, or 404 when it keeps none. Mirrors the worker:
+/// the claim verified as any invocation is, chain and revocations
+/// included; the space screened as what is served; then the cell read
+/// from the backing store.
+async fn serve_claim(
+    registration: &RegistrationState,
+    body_bytes: &[u8],
+) -> Response<http_body_util::Full<bytes::Bytes>> {
+    use bytes::Bytes;
+    use http_body_util::Full;
+
+    let verified = match dialog_ucan_core::Container::from_bytes(body_bytes) {
+        Ok(container) => {
+            dialog_remote_ucan_s3::verify_invocation(
+                container,
+                &dialog_did_web::CachingResolver::new(dialog_did_web::WebResolver::new()),
+                &crate::revocation::checker::IndexedRevocations(registration.revocations.clone()),
+            )
+            .await
+        }
+        Err(error) => Err(dialog_capability::access::AuthorizeError::Malformed {
+            detail: error.to_string(),
+        }),
+    };
+    let claim = match verified.and_then(|chain| tonk_account::ticket::claimed(&chain)) {
+        Ok(claim) => claim,
+        Err(reason) => {
+            println!("ACCESS_UCAN_REFUSED ticket claim reason={reason:?}");
+            return authorize_error_response(authorize_status(&reason), &reason);
+        }
+    };
+    let space = claim.space.to_string();
+    println!(
+        "ACCESS_UCAN command=/{} subject={} space={space}",
+        tonk_account::ticket::CLAIM.join("/"),
+        claim.holder
+    );
+    match crate::provisioning::screen(&registration.store, &space, unix_now()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(reason)) => {
+            println!("ACCESS_UCAN_REFUSED subject={space} reason={reason:?}");
+            return authorize_error_response(StatusCode::FORBIDDEN, &reason);
+        }
+        Err(error) => {
+            return Response::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .body(Full::new(Bytes::from(format!(
+                    "provisioning unavailable: {error}"
+                ))))
+                .unwrap();
+        }
+    }
+
+    let request = dialog_remote_s3::S3Request {
+        method: "GET".to_string(),
+        path: claim.object_key(),
+        ..dialog_remote_s3::S3Request::default()
+    };
+    let read = async {
+        let permit = request
+            .attest(registration.objects.credential.clone())
+            .redeem(&registration.objects.address)
+            .await?;
+        let response = permit.send().await?;
+        let status = response.status().as_u16();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| dialog_remote_s3::S3Error::Transport(error.to_string()))?;
+        Ok::<_, dialog_remote_s3::S3Error>((status, bytes))
+    };
+    match read.await {
+        Ok((200, bytes)) => Response::builder()
+            .status(StatusCode::OK)
+            .body(Full::new(bytes))
+            .unwrap(),
+        Ok((404, _)) => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+        Ok((status, _)) => Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .body(Full::new(Bytes::from(format!(
+                "the store answered {status} for the ticket"
+            ))))
+            .unwrap(),
+        Err(error) => Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .body(Full::new(Bytes::from(format!(
+                "the ticket could not be read: {error}"
+            ))))
+            .unwrap(),
+    }
+}
+
 /// Handle an incoming UCAN access service request.
 ///
 /// This implements the same logic as the Cloudflare Worker handler:
@@ -820,6 +916,12 @@ async fn handle_request(
                 .unwrap(),
         };
         return Ok(cors_response(response));
+    }
+
+    // A ticket claim carries no proof, so it never reaches the chain walk:
+    // it is answered here, with the ticket itself. Mirrors the worker.
+    if tonk_account::ticket::is_claim(&body_bytes) {
+        return Ok(cors_response(serve_claim(&registration, &body_bytes).await));
     }
 
     // Authorize the UCAN container using UcanAuthorizer

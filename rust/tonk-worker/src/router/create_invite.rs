@@ -30,7 +30,7 @@ use dialog_varsig::Principal;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_invite::{Invite, InviteAudience, home_address_meta, shortcut::ShortcutRequest};
+use tonk_invite::{Invite, InviteAudience, Ticket, home_address_meta, shortcut::ShortcutRequest};
 use tonk_schema::{Invitation, InvitationExecution};
 use url::Url;
 
@@ -267,9 +267,24 @@ async fn mint_invite(
 
     retain_invite_authority(&tonk, &repo_name, &invite.chain).await?;
 
-    let url_str = invite
-        .to_url(base_url.as_str())
-        .map_err(|e| TonkWorkerError::Router(format!("failed to serialize invite URL: {e}")))?;
+    // An open invite's grant waits in the space as the ephemeral key's
+    // ticket, and the link names only the space and the key's seed, on
+    // the host serving the space: that is where the recipient claims it.
+    // A scoped invite is addressed to a principal the recipient already
+    // holds, so its chain rides in `access=`, and so does an open one
+    // whose ticket the space did not keep (see `issue_ticket`).
+    let ticket_link = match &invite.audience {
+        InviteAudience::Open { seed } => {
+            issue_ticket(&tonk, &remote.access_url, &invite.chain, *seed).await
+        }
+        InviteAudience::Scoped => None,
+    };
+    let url_str = match ticket_link {
+        Some(link) => link,
+        None => invite
+            .to_url(base_url.as_str())
+            .map_err(|e| TonkWorkerError::Router(format!("failed to serialize invite URL: {e}")))?,
+    };
     let url_str =
         tonk_analytics::launch::space_referral_url(&url_str, &repo_name).map_err(|e| {
             TonkWorkerError::Internal(format!("failed to add invite referral attribution: {e}"))
@@ -312,6 +327,40 @@ async fn mint_invite(
         },
     };
     Ok(Json(response))
+}
+
+/// Leave an open invite's `chain` in its space as the ticket of the key
+/// `seed` derives, and answer the ticket link that redeems it:
+/// `{origin}/space/{did}#{seed}` on the host serving the space.
+///
+/// `None` when the space's service did not keep the ticket — unreachable,
+/// refusing, or not a service at all. The caller then hands out the
+/// `access=` link, which carries the same chain and redeems the same way:
+/// a share never fails because its grant could not be left in the space.
+pub(super) async fn issue_ticket(
+    tonk: &crate::worker::TonkState,
+    access_url: &Url,
+    chain: &dialog_ucan_core::DelegationChain,
+    seed: [u8; 32],
+) -> Option<String> {
+    let subject = chain.subject()?.clone();
+    if let Err(error) = tonk_account::ticket::issue(
+        SiteAddress::from(dialog_remote_ucan::UcanAddress::new(access_url.as_str())),
+        chain,
+        &tonk.operator,
+    )
+    .await
+    {
+        log!("invite: the space did not keep the ticket; sharing the full link: {error}");
+        return None;
+    }
+    match Ticket::new(subject, seed, access_url).and_then(|ticket| ticket.to_url()) {
+        Ok(link) => Some(link),
+        Err(error) => {
+            log!("invite: the ticket link did not assemble; sharing the full link: {error}");
+            None
+        }
+    }
 }
 
 /// Retain an invite's delegation chain, plus the profile-to-account union,
