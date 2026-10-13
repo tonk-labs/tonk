@@ -116,8 +116,8 @@ jobs:
           time nix build --accept-flake-config --print-build-logs --no-link ".#tonk-cli$CI_SUFFIX" ".#tests-e2e$CI_SUFFIX"
           cli="$(nix eval --raw ".#tonk-cli$CI_SUFFIX.outPath")"
           archive="$(nix eval --raw ".#tests-e2e$CI_SUFFIX.outPath")"
-          mkdir -p e2e-native
-          cp -r "$archive/cargo-timings" e2e-native/cargo-timings
+          mkdir -p e2e-native/cargo-timings
+          cp -r "$archive/cargo-timings/." e2e-native/cargo-timings/
           printf '%s\n' "$archive" > e2e-native/cargo-timings/store-path.txt
           mapfile -t closure < <(nix-store --query --requisites "$cli" "$archive")
           time nix-store --export "${closure[@]}" | gzip -1 > e2e-native/closure.nar.gz
