@@ -553,6 +553,27 @@ impl Command for RetainInvite {
     type Output = ();
 }
 
+/// Pin the release a branch runs.
+///
+/// It fires on the branch it pins for, in the worker that holds that
+/// branch. The handler signs a statement of the pin, sets it on the
+/// branch's head, and records it in the branch, so that the next sync
+/// carries the head and its statement to every other replica.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PinRelease {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The line of releases the pin is taken from.
+    pub src: crate::domain::command::current::pin_release::Src,
+    /// The release to pin: the address `src` led to.
+    pub pin: crate::domain::command::current::pin_release::Pin,
+}
+
+impl Command for PinRelease {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Admit a member of a space as admin, in the space's own worker.
 ///
 /// [`PromoteMember`] is what the bar fires, on the person's profile, naming

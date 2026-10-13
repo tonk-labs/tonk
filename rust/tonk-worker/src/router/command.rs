@@ -211,6 +211,8 @@ pub fn command_providers() -> CommandProviders {
 /// [`EnableSyncRequest`]: super::repository::EnableSyncRequest
 fn profile_commands() -> CommandRegistry<CommandEnv> {
     CommandRegistry::new()
+        // The profile's own branch is to run this release from now on.
+        .command::<tonk_schema::command::PinRelease>()
         .command::<super::repository::CreateSpaceRequest>()
         .command::<super::repository::InviteRequest>()
         .command::<super::repository::AgentHandoffRequest>()
@@ -299,6 +301,8 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // What the person's profile hands a space's own worker when a
         // signed-in account takes over the one its roster entry is under.
         .command::<tonk_schema::command::MoveMembership>()
+        // The branch it fires on is to run this release from now on.
+        .command::<tonk_schema::command::PinRelease>()
         // What the person's profile hands a space's own worker when the
         // bar promotes one of the space's members.
         .command::<tonk_schema::command::AdmitMember>()

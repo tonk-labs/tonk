@@ -1,0 +1,612 @@
+From d231e42a1929c342ed377dab9f665cdf84069d3a Mon Sep 17 00:00:00 2001
+From: Irakli Gozalishvili <contact@gozala.io>
+Date: Mon, 12 Oct 2026 22:33:32 -0700
+Subject: [PATCH 1/2] feat(capability): a head carries a boot statement its
+ signature does not cover
+
+A branch's head may say what the branch is to be run with: a line of
+releases and the one pinned from it. The statement is signed in its own
+right and sits beside the head's signed fields, so a reader from before
+decodes and verifies a head as it always did. A head minted on another
+carries the statement forward and a merge keeps the later of two.
+---
+ .../src/identity/revision.rs                  | 252 ++++++++++++++++++
+ .../src/repository/branch/pull.rs             |   1 +
+ .../src/repository/branch/push.rs             |  90 +++++++
+ .../src/repository/branch/reset.rs            |   1 +
+ 4 files changed, 344 insertions(+)
+
+diff --git a/rust/dialog-capability/src/identity/revision.rs b/rust/dialog-capability/src/identity/revision.rs
+index 4f7bcb0..6b5cd3d 100644
+--- a/rust/dialog-capability/src/identity/revision.rs
++++ b/rust/dialog-capability/src/identity/revision.rs
+@@ -65,6 +65,93 @@ impl From<TreeReference> for TreeHash {
+     }
+ }
+ 
++/// What a branch says it is to be run with: a line of releases, and the
++/// one release pinned from it.
++///
++/// A head carries the statement beside the fields it signs, not among them.
++/// The head's own signature does not cover it, so a reader that predates the
++/// field decodes and verifies a head exactly as it always did, and a writer
++/// that predates it mints heads without one. The statement is signed in its
++/// own right ([`Boot::payload`]) by whoever set it. This crate says that
++/// the signature is its issuer's; whether that issuer may say what a branch
++/// runs is for whoever acts on the statement to decide.
++///
++/// Statements are ordered by `seq`. A head minted on another carries its
++/// statement forward, and a merge keeps the later of its two parents', so
++/// one set once travels with the branch until a later one replaces it.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct Boot {
++    /// The version of the host the release needs.
++    pub v: u64,
++    /// The line of releases the pin was taken from.
++    pub src: String,
++    /// The release pinned: the address `src` led to. `None` follows the
++    /// line.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub pin: Option<String>,
++    /// Which statement this is, counting up from the branch's first.
++    pub seq: u64,
++    /// DID of the key that made the statement.
++    pub issuer: Did,
++    /// The issuer's Ed25519 signature over [`Boot::payload`].
++    #[serde(default, with = "serde_bytes")]
++    pub signature: Vec<u8>,
++}
++
++impl Boot {
++    /// The canonical signing payload of this statement, for the branch it
++    /// is made about: every field except the signature. It opens with
++    /// [`BOOT_SIGNING_DOMAIN`], so that a signature over a statement is
++    /// never one over a head or a revision record, and names the branch,
++    /// so that a statement made about one branch is none about another.
++    ///
++    /// ```text
++    /// domain tag ("dialog/boot@1\n")
++    /// (length (8, big-endian) ++ UTF-8) for branch, issuer, src
++    /// 0x00, or 0x01 ++ length (8, big-endian) ++ UTF-8 of pin
++    /// v (8, big-endian)
++    /// seq (8, big-endian)
++    /// ```
++    pub fn payload(&self, branch: &Entity) -> Vec<u8> {
++        let mut bytes = BOOT_SIGNING_DOMAIN.to_vec();
++        for field in [branch.as_str(), self.issuer.as_str(), self.src.as_str()] {
++            bytes.extend_from_slice(&(field.len() as u64).to_be_bytes());
++            bytes.extend_from_slice(field.as_bytes());
++        }
++        match &self.pin {
++            None => bytes.push(0x00),
++            Some(pin) => {
++                bytes.push(0x01);
++                bytes.extend_from_slice(&(pin.len() as u64).to_be_bytes());
++                bytes.extend_from_slice(pin.as_bytes());
++            }
++        }
++        bytes.extend_from_slice(&self.v.to_be_bytes());
++        bytes.extend_from_slice(&self.seq.to_be_bytes());
++        bytes
++    }
++
++    /// Verify that the signature is the issuer's over [`Boot::payload`]
++    /// for `branch`.
++    pub fn verify(&self, branch: &Entity) -> Result<(), HistoryError> {
++        verify_issuer_signature(self.issuer.as_str(), &self.payload(branch), &self.signature)
++    }
++
++    /// The later of two statements a head could carry: the one with the
++    /// higher `seq`, and of two with the same, the one a head already has.
++    fn later(held: Option<&Boot>, other: Option<&Boot>) -> Option<Boot> {
++        match (held, other) {
++            (Some(held), Some(other)) if other.seq > held.seq => Some(other.clone()),
++            (Some(held), _) => Some(held.clone()),
++            (None, other) => other.cloned(),
++        }
++    }
++}
++
++/// The domain tag opening every boot statement's signing payload. See
++/// [`HEAD_SIGNING_DOMAIN`].
++pub const BOOT_SIGNING_DOMAIN: &[u8] = b"dialog/boot@1\n";
++
+ /// A revision represents a concrete state of the repository at a point in time.
+ ///
+ /// Causal position is derived from the revision DAG per
+@@ -133,6 +220,11 @@ pub struct Revision {
+     /// root is only final at publish time) — see [`Revision::verify`].
+     #[serde(default, with = "serde_bytes")]
+     pub signature: Vec<u8>,
++
++    /// What the branch says it is to be run with, when it says. Not
++    /// covered by the head's signature: see [`Boot`].
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub boot: Option<Boot>,
+ }
+ 
+ impl Revision {
+@@ -146,6 +238,7 @@ impl Revision {
+             edition: Edition::GENESIS,
+             context: None,
+             signature: Vec::new(),
++            boot: None,
+         }
+     }
+ 
+@@ -170,6 +263,7 @@ impl Revision {
+             edition: self.edition.successor(),
+             context: None,
+             signature: Vec::new(),
++            boot: self.boot.clone(),
+         }
+     }
+ 
+@@ -196,6 +290,7 @@ impl Revision {
+             edition: self.edition.max(upstream.edition).successor(),
+             context: None,
+             signature: Vec::new(),
++            boot: Boot::later(self.boot.as_ref(), upstream.boot.as_ref()),
+         }
+     }
+ 
+@@ -437,4 +532,161 @@ mod tests {
+             "a hostile watermark entry must be refused despite the valid signature"
+         );
+     }
++
++    fn statement(issuer: &ed25519_dalek::SigningKey, branch: &Entity, seq: u64) -> Boot {
++        let mut boot = Boot {
++            v: 1,
++            src: "https://tonk.network/releases/stable/worker.js".into(),
++            pin: Some(format!(
++                "https://tonk.network/releases/release-{seq}/worker.js"
++            )),
++            seq,
++            issuer: did_of(issuer),
++            signature: Vec::new(),
++        };
++        boot.signature = issuer.sign(&boot.payload(branch)).to_bytes().to_vec();
++        boot
++    }
++
++    /// The head as a reader that predates the boot statement knows it.
++    #[derive(Debug, PartialEq, Serialize, Deserialize)]
++    struct HeadBefore {
++        branch: Entity,
++        issuer: Did,
++        tree: TreeReference,
++        edition: Edition,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        context: Option<Context>,
++        #[serde(default, with = "serde_bytes")]
++        signature: Vec<u8>,
++    }
++
++    impl HeadBefore {
++        fn verify(&self) -> Result<(), HistoryError> {
++            Revision {
++                branch: self.branch.clone(),
++                issuer: self.issuer.clone(),
++                tree: self.tree.clone(),
++                edition: self.edition,
++                context: self.context.clone(),
++                signature: self.signature.clone(),
++                boot: None,
++            }
++            .verify()
++        }
++    }
++
++    /// A statement is its issuer's, about one branch: another branch, a
++    /// changed pin, or another key's signature is refused.
++    #[test]
++    fn a_boot_statement_is_its_issuers_about_one_branch() {
++        let setter = key(3);
++        let branch: Entity = "branch:opaque".parse().unwrap();
++        let boot = statement(&setter, &branch, 1);
++        boot.verify(&branch).unwrap();
++
++        let elsewhere: Entity = "branch:another".parse().unwrap();
++        assert!(
++            boot.verify(&elsewhere).is_err(),
++            "made about another branch"
++        );
++
++        let mut repinned = boot.clone();
++        repinned.pin = Some("https://elsewhere.test/releases/other/worker.js".into());
++        assert!(repinned.verify(&branch).is_err(), "a pin it did not sign");
++
++        let mut following = boot.clone();
++        following.pin = None;
++        assert!(
++            following.verify(&branch).is_err(),
++            "following is not what it signed"
++        );
++
++        let mut reattributed = boot;
++        reattributed.issuer = did_of(&key(4));
++        assert!(reattributed.verify(&branch).is_err(), "another issuer");
++    }
++
++    /// A head's own signature does not cover its statement: a head verifies
++    /// with one, without one, and with another, and survives the wire with
++    /// it.
++    #[test]
++    fn a_head_carries_a_boot_statement_its_signature_does_not_cover() {
++        let issuer = key(1);
++        let head = signed_head(&issuer, |_| {});
++        let mut carrying = head.clone();
++        carrying.boot = Some(statement(&key(3), &head.branch, 1));
++        carrying.verify().unwrap();
++        assert_eq!(carrying.payload(), head.payload());
++
++        let bytes = serde_ipld_dagcbor::to_vec(&carrying).unwrap();
++        let read: Revision = serde_ipld_dagcbor::from_slice(&bytes).unwrap();
++        assert_eq!(read, carrying);
++        read.verify().unwrap();
++        read.boot.unwrap().verify(&head.branch).unwrap();
++    }
++
++    /// A reader that predates the statement reads a head that carries one
++    /// as the head it always read, and its signature verifies. What that
++    /// reader writes back has no statement.
++    #[test]
++    fn a_reader_from_before_ignores_a_boot_statement() {
++        let issuer = key(1);
++        let head = signed_head(&issuer, |_| {});
++        let mut carrying = head.clone();
++        carrying.boot = Some(statement(&key(3), &head.branch, 1));
++
++        let before: HeadBefore =
++            serde_ipld_dagcbor::from_slice(&serde_ipld_dagcbor::to_vec(&carrying).unwrap())
++                .unwrap();
++        before.verify().unwrap();
++        assert_eq!(
++            serde_ipld_dagcbor::to_vec(&before).unwrap(),
++            serde_ipld_dagcbor::to_vec(&head).unwrap(),
++            "it writes the head back without the statement"
++        );
++
++        // And a head from a writer that predates it reads as one with none.
++        let read: Revision =
++            serde_ipld_dagcbor::from_slice(&serde_ipld_dagcbor::to_vec(&before).unwrap()).unwrap();
++        assert_eq!(read, head);
++        assert_eq!(read.boot, None);
++    }
++
++    /// A head minted on another carries its statement forward, and a merge
++    /// keeps the later of its two parents'.
++    #[test]
++    fn a_boot_statement_travels_with_the_branch() {
++        let issuer = key(1);
++        let setter = key(3);
++        let branch: Entity = "branch:opaque".parse().unwrap();
++        let tree = TreeReference::from([8u8; 32]);
++        let first = statement(&setter, &branch, 1);
++        let second = statement(&setter, &branch, 2);
++
++        let mut head = Revision::new(tree.clone(), branch.clone(), did_of(&issuer));
++        assert_eq!(head.boot, None);
++        head.boot = Some(first.clone());
++
++        let next = head.advance(tree.clone(), branch.clone(), did_of(&issuer));
++        assert_eq!(next.boot, Some(first.clone()), "a commit carries it");
++
++        let mut theirs = head.advance(tree.clone(), branch.clone(), did_of(&key(2)));
++        theirs.boot = Some(second.clone());
++        for (ours, upstream) in [(&next, &theirs), (&theirs, &next)] {
++            let merged = ours.merge(upstream, tree.clone(), branch.clone(), did_of(&issuer));
++            assert_eq!(merged.boot, Some(second.clone()), "a merge keeps the later");
++        }
++
++        let mut bare = head.advance(tree.clone(), branch.clone(), did_of(&key(2)));
++        bare.boot = None;
++        for (ours, upstream) in [(&next, &bare), (&bare, &next)] {
++            let merged = ours.merge(upstream, tree.clone(), branch.clone(), did_of(&issuer));
++            assert_eq!(
++                merged.boot,
++                Some(first.clone()),
++                "a parent from a writer with none does not lose it"
++            );
++        }
++    }
+ }
+diff --git a/rust/dialog-repository/src/repository/branch/pull.rs b/rust/dialog-repository/src/repository/branch/pull.rs
+index 2b1cad2..4377b24 100644
+--- a/rust/dialog-repository/src/repository/branch/pull.rs
++++ b/rust/dialog-repository/src/repository/branch/pull.rs
+@@ -2509,6 +2509,7 @@ mod history_tests {
+             edition: Edition::GENESIS,
+             context: None,
+             signature: Vec::new(),
++            boot: None,
+         };
+         evil.reset(forged).perform(&operator).await?;
+ 
+diff --git a/rust/dialog-repository/src/repository/branch/push.rs b/rust/dialog-repository/src/repository/branch/push.rs
+index 6b41385..38d3629 100644
+--- a/rust/dialog-repository/src/repository/branch/push.rs
++++ b/rust/dialog-repository/src/repository/branch/push.rs
+@@ -1311,6 +1311,96 @@ mod tests {
+         Ok(())
+     }
+ 
++    /// A boot statement set on a branch's head travels with the branch: the
++    /// commits made after carry it, a push publishes it on the upstream's
++    /// head, a branch that pulls adopts it, and one that pulls with work of
++    /// its own keeps it on the merge.
++    #[dialog_common::test]
++    async fn it_carries_a_boot_statement_through_commit_push_and_pull() -> Result<()> {
++        use dialog_capability::identity::Boot;
++
++        let (operator, profile) = test_session_with_peer().await;
++        let repo = test_repo(&operator, &profile).await;
++        let assert = |of: &str, name: &str| -> Result<Instruction> {
++            Ok(Instruction::Assert(Artifact {
++                the: "user/name".parse()?,
++                of: of.parse()?,
++                is: Value::String(name.to_string()),
++                cause: None,
++            }))
++        };
++
++        let main = repo.branch("main").open().perform(&operator).await?;
++        let feature = repo.branch("feature").open().perform(&operator).await?;
++        feature.set_upstream(&main).perform(&operator).await?;
++        feature
++            .commit(stream::iter(vec![assert("user:1", "Alice")?]))
++            .perform(&operator)
++            .await?;
++
++        // The statement is set on the head as it stands.
++        let boot = Boot {
++            v: 1,
++            src: "https://tonk.network/releases/stable/worker.js".into(),
++            pin: Some("https://tonk.network/releases/one/worker.js".into()),
++            seq: 1,
++            issuer: operator.did(),
++            signature: vec![1; 64],
++        };
++        let mut head = feature.revision().expect("feature has a head");
++        head.verify()?;
++        head.boot = Some(boot.clone());
++        feature.reset(head.clone()).perform(&operator).await?;
++        feature.revision().expect("feature has a head").verify()?;
++
++        // A commit after carries it, and a push publishes it.
++        feature
++            .commit(stream::iter(vec![assert("user:2", "Bob")?]))
++            .perform(&operator)
++            .await?;
++        let committed = feature.revision().expect("feature has a head");
++        assert_ne!(committed.tree, head.tree);
++        assert_eq!(
++            committed.boot,
++            Some(boot.clone()),
++            "a commit carries the statement"
++        );
++        feature.push().perform(&operator).await?;
++        let published = repo
++            .branch("main")
++            .load()
++            .perform(&operator)
++            .await?
++            .revision()
++            .expect("main has a head");
++        assert_eq!(published.boot, Some(boot.clone()), "a push publishes it");
++
++        // A branch with nothing of its own adopts it with the head.
++        let follower = repo.branch("follower").open().perform(&operator).await?;
++        follower.set_upstream(&main).perform(&operator).await?;
++        follower.pull().perform(&operator).await?;
++        assert_eq!(
++            follower.revision().expect("follower has a head").boot,
++            Some(boot.clone()),
++            "a pull adopts it"
++        );
++
++        // A branch with work of its own keeps it on the merge.
++        let worker = repo.branch("worker").open().perform(&operator).await?;
++        worker.set_upstream(&main).perform(&operator).await?;
++        worker
++            .commit(stream::iter(vec![assert("user:3", "Carol")?]))
++            .perform(&operator)
++            .await?;
++        assert_eq!(worker.revision().expect("worker has a head").boot, None);
++        worker.pull().perform(&operator).await?;
++        let merged = worker.revision().expect("worker has a head");
++        merged.verify()?;
++        assert_eq!(merged.boot, Some(boot), "a merge keeps it");
++
++        Ok(())
++    }
++
+     /// Pushing a spilling value ships its block to the local upstream, a
+     /// spilled value shared by many facts ships once, and a re-push with
+     /// nothing new is a no-op (no re-upload).
+diff --git a/rust/dialog-repository/src/repository/branch/reset.rs b/rust/dialog-repository/src/repository/branch/reset.rs
+index a803552..9b3008e 100644
+--- a/rust/dialog-repository/src/repository/branch/reset.rs
++++ b/rust/dialog-repository/src/repository/branch/reset.rs
+@@ -86,6 +86,7 @@ mod tests {
+             edition: Edition::GENESIS,
+             context: None,
+             signature: Vec::new(),
++            boot: None,
+         };
+         branch.reset(revision.clone()).perform(&provider).await?;
+ 
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 63d1f38b76582861ed8775c5f17299a543a9d8b3 Mon Sep 17 00:00:00 2001
+From: Irakli Gozalishvili <contact@gozala.io>
+Date: Mon, 12 Oct 2026 22:57:06 -0700
+Subject: [PATCH 2/2] fixup: keep a head small by boxing its statement
+
+---
+ .../src/identity/revision.rs                  | 37 +++++++++++--------
+ .../src/repository/branch/push.rs             | 22 +++++++----
+ 2 files changed, 36 insertions(+), 23 deletions(-)
+
+diff --git a/rust/dialog-capability/src/identity/revision.rs b/rust/dialog-capability/src/identity/revision.rs
+index 6b5cd3d..afdf8d0 100644
+--- a/rust/dialog-capability/src/identity/revision.rs
++++ b/rust/dialog-capability/src/identity/revision.rs
+@@ -139,12 +139,13 @@ impl Boot {
+ 
+     /// The later of two statements a head could carry: the one with the
+     /// higher `seq`, and of two with the same, the one a head already has.
+-    fn later(held: Option<&Boot>, other: Option<&Boot>) -> Option<Boot> {
+-        match (held, other) {
+-            (Some(held), Some(other)) if other.seq > held.seq => Some(other.clone()),
+-            (Some(held), _) => Some(held.clone()),
+-            (None, other) => other.cloned(),
+-        }
++    fn later(held: Option<&Boot>, other: Option<&Boot>) -> Option<Box<Boot>> {
++        let later = match (held, other) {
++            (Some(held), Some(other)) if other.seq > held.seq => Some(other),
++            (Some(held), _) => Some(held),
++            (None, other) => other,
++        };
++        later.cloned().map(Box::new)
+     }
+ }
+ 
+@@ -224,7 +225,7 @@ pub struct Revision {
+     /// What the branch says it is to be run with, when it says. Not
+     /// covered by the head's signature: see [`Boot`].
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+-    pub boot: Option<Boot>,
++    pub boot: Option<Box<Boot>>,
+ }
+ 
+ impl Revision {
+@@ -290,7 +291,7 @@ impl Revision {
+             edition: self.edition.max(upstream.edition).successor(),
+             context: None,
+             signature: Vec::new(),
+-            boot: Boot::later(self.boot.as_ref(), upstream.boot.as_ref()),
++            boot: Boot::later(self.boot.as_deref(), upstream.boot.as_deref()),
+         }
+     }
+ 
+@@ -615,7 +616,7 @@ mod tests {
+         let issuer = key(1);
+         let head = signed_head(&issuer, |_| {});
+         let mut carrying = head.clone();
+-        carrying.boot = Some(statement(&key(3), &head.branch, 1));
++        carrying.boot = Some(Box::new(statement(&key(3), &head.branch, 1)));
+         carrying.verify().unwrap();
+         assert_eq!(carrying.payload(), head.payload());
+ 
+@@ -634,7 +635,7 @@ mod tests {
+         let issuer = key(1);
+         let head = signed_head(&issuer, |_| {});
+         let mut carrying = head.clone();
+-        carrying.boot = Some(statement(&key(3), &head.branch, 1));
++        carrying.boot = Some(Box::new(statement(&key(3), &head.branch, 1)));
+ 
+         let before: HeadBefore =
+             serde_ipld_dagcbor::from_slice(&serde_ipld_dagcbor::to_vec(&carrying).unwrap())
+@@ -666,16 +667,20 @@ mod tests {
+ 
+         let mut head = Revision::new(tree.clone(), branch.clone(), did_of(&issuer));
+         assert_eq!(head.boot, None);
+-        head.boot = Some(first.clone());
++        head.boot = Some(Box::new(first.clone()));
+ 
+         let next = head.advance(tree.clone(), branch.clone(), did_of(&issuer));
+-        assert_eq!(next.boot, Some(first.clone()), "a commit carries it");
++        assert_eq!(next.boot.as_deref(), Some(&first), "a commit carries it");
+ 
+         let mut theirs = head.advance(tree.clone(), branch.clone(), did_of(&key(2)));
+-        theirs.boot = Some(second.clone());
++        theirs.boot = Some(Box::new(second.clone()));
+         for (ours, upstream) in [(&next, &theirs), (&theirs, &next)] {
+             let merged = ours.merge(upstream, tree.clone(), branch.clone(), did_of(&issuer));
+-            assert_eq!(merged.boot, Some(second.clone()), "a merge keeps the later");
++            assert_eq!(
++                merged.boot.as_deref(),
++                Some(&second),
++                "a merge keeps the later"
++            );
+         }
+ 
+         let mut bare = head.advance(tree.clone(), branch.clone(), did_of(&key(2)));
+@@ -683,8 +688,8 @@ mod tests {
+         for (ours, upstream) in [(&next, &bare), (&bare, &next)] {
+             let merged = ours.merge(upstream, tree.clone(), branch.clone(), did_of(&issuer));
+             assert_eq!(
+-                merged.boot,
+-                Some(first.clone()),
++                merged.boot.as_deref(),
++                Some(&first),
+                 "a parent from a writer with none does not lose it"
+             );
+         }
+diff --git a/rust/dialog-repository/src/repository/branch/push.rs b/rust/dialog-repository/src/repository/branch/push.rs
+index 38d3629..0a7c29f 100644
+--- a/rust/dialog-repository/src/repository/branch/push.rs
++++ b/rust/dialog-repository/src/repository/branch/push.rs
+@@ -1349,7 +1349,7 @@ mod tests {
+         };
+         let mut head = feature.revision().expect("feature has a head");
+         head.verify()?;
+-        head.boot = Some(boot.clone());
++        head.boot = Some(Box::new(boot.clone()));
+         feature.reset(head.clone()).perform(&operator).await?;
+         feature.revision().expect("feature has a head").verify()?;
+ 
+@@ -1361,8 +1361,8 @@ mod tests {
+         let committed = feature.revision().expect("feature has a head");
+         assert_ne!(committed.tree, head.tree);
+         assert_eq!(
+-            committed.boot,
+-            Some(boot.clone()),
++            committed.boot.as_deref(),
++            Some(&boot),
+             "a commit carries the statement"
+         );
+         feature.push().perform(&operator).await?;
+@@ -1373,15 +1373,23 @@ mod tests {
+             .await?
+             .revision()
+             .expect("main has a head");
+-        assert_eq!(published.boot, Some(boot.clone()), "a push publishes it");
++        assert_eq!(
++            published.boot.as_deref(),
++            Some(&boot),
++            "a push publishes it"
++        );
+ 
+         // A branch with nothing of its own adopts it with the head.
+         let follower = repo.branch("follower").open().perform(&operator).await?;
+         follower.set_upstream(&main).perform(&operator).await?;
+         follower.pull().perform(&operator).await?;
+         assert_eq!(
+-            follower.revision().expect("follower has a head").boot,
+-            Some(boot.clone()),
++            follower
++                .revision()
++                .expect("follower has a head")
++                .boot
++                .as_deref(),
++            Some(&boot),
+             "a pull adopts it"
+         );
+ 
+@@ -1396,7 +1404,7 @@ mod tests {
+         worker.pull().perform(&operator).await?;
+         let merged = worker.revision().expect("worker has a head");
+         merged.verify()?;
+-        assert_eq!(merged.boot, Some(boot), "a merge keeps it");
++        assert_eq!(merged.boot.as_deref(), Some(&boot), "a merge keeps it");
+ 
+         Ok(())
+     }
+-- 
+2.50.1 (Apple Git-155)
+

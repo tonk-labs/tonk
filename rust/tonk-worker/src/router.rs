@@ -72,8 +72,10 @@ pub(crate) mod custody;
 /// account, then retire it.
 pub(crate) mod rotation;
 
-mod join;
 /// Reaching a space's own worker from the person's profile.
+/// The release a branch's head pins.
+pub(crate) mod boot;
+mod join;
 pub(crate) mod space_directory;
 pub(crate) mod space_reach;
 /// A space's own worker: the delegation it holds, and the space it mounts.

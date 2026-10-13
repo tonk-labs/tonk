@@ -442,14 +442,15 @@ test("the app's page stays put on the app's own origin", () => {
 const PIN = "https://tonk.network/releases/bafkreib7f5smq4ggn5xwqas57gchvhvfry6ym7jbw5h3w4zg7wtwk33l2i/worker.js";
 const OTHER = "https://tonk.network/releases/bafkreiebnz2m3oin767zzlo5idwbljwfe6oakn7nihb2umtqj3c6q4bncm/worker.js";
 
-test("a space registers the bootloader for the release it pins", async () => {
-  const site = boot("space", { controlled: false, served: false, pin: PIN });
+for (const name of ["space", "profile"]) {
+test(`${name}: registers the bootloader for the release it pins`, async () => {
+  const site = boot(name, { controlled: false, served: false, pin: PIN });
   await settle();
   assert.equal(site.container.registered[0][0], `/boot.js?pin=${encodeURIComponent(PIN)}`);
 });
 
-test("a space under the worker of the release it pins is brought up", async () => {
-  const site = boot("space", { pin: PIN, runs: PIN });
+test(`${name}: under the worker of the release it pins, it is brought up`, async () => {
+  const site = boot(name, { pin: PIN, runs: PIN });
   await settle();
   assert.equal(site.registration.unregistered, false);
   assert.deepEqual(site.went, []);
@@ -457,13 +458,13 @@ test("a space under the worker of the release it pins is brought up", async () =
 });
 
 for (const [what, options] of [
-  ["a space that pinned a release since", { pin: PIN, runs: null }],
-  ["a space that pins another release now", { pin: OTHER, runs: PIN }],
-  ["a space that pins none any more", { pin: null, runs: PIN }],
+  ["having pinned a release since", { pin: PIN, runs: null }],
+  ["pinning another release now", { pin: OTHER, runs: PIN }],
+  ["pinning none any more", { pin: null, runs: PIN }],
 ]) {
-  test(`${what} gives up the worker it has and loads again`, async () => {
+  test(`${name}: ${what}, it gives up the worker it has and loads again`, async () => {
     const store = new Map();
-    const site = boot("space", { ...options, store });
+    const site = boot(name, { ...options, store });
     await settle();
     assert.equal(site.registration.unregistered, true, "the worker of the other release is withdrawn");
     assert.deepEqual(site.went, [["reload"]]);
@@ -471,15 +472,10 @@ for (const [what, options] of [
 
     // The same worker is still in control after that load: the release
     // could not be started. Said once, with no second load.
-    const again = boot("space", { ...options, store });
+    const again = boot(name, { ...options, store });
     await settle();
     assert.deepEqual(again.went, []);
-    assert.match(again.failed.join(), /the release this space pins could not be started/);
+    assert.match(again.failed.join(), /the release this (space|profile) pins could not be started/);
   });
 }
-
-test("a profile runs the release its deployment was built with, whatever is written down", async () => {
-  const site = boot("profile", { controlled: false, served: false, pin: PIN });
-  await settle();
-  assert.equal(site.container.registered[0][0], "/boot.js");
-});
+}

@@ -104,6 +104,9 @@ pub use transplant::*;
 
 pub mod command;
 
+pub mod boot;
+pub use boot::Release;
+
 mod branch;
 pub mod directory;
 pub use branch::*;

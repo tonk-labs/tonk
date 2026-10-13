@@ -6853,6 +6853,176 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Run an asynchronous `script` in the space the page shows, on that
+    /// space's own origin, and come back to the page.
+    async fn in_shown_space(
+        driver: &WebDriver,
+        script: &str,
+        arguments: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        enter_space_view(driver).await?;
+        let result = driver.execute_async(script, arguments).await;
+        driver.enter_default_frame().await?;
+        Ok(result?.json().clone())
+    }
+
+    /// What the space the page shows has written down as the release it
+    /// pins, and the worker it runs under.
+    async fn shown_space_boot(driver: &WebDriver) -> Result<serde_json::Value> {
+        in_shown_space(
+            driver,
+            r#"
+            const done = arguments[arguments.length - 1];
+            (async () => {
+                const held = await (await caches.open("tonk-boot")).match("/__boot");
+                const worker = navigator.serviceWorker.controller;
+                const health = worker ? await (await fetch("/api/health")).json() : null;
+                done({
+                    record: held ? await held.json() : null,
+                    worker: worker ? decodeURIComponent(worker.scriptURL) : null,
+                    state: health?.worker ?? null,
+                });
+            })().catch(error => done({ failed: String(error) }));
+            "#,
+            vec![],
+        )
+        .await
+    }
+
+    /// A pin set on one device reaches another device of the account with
+    /// the space: it is stated on the head of the space's branch, the sync
+    /// that brings the head brings the statement, and the worker that holds
+    /// the space there writes it down for its shell, which then registers
+    /// the bootloader for that release.
+    #[dialog_common::test]
+    async fn it_pins_a_space_for_another_device_of_the_account(env: TestEnvironment) -> Result<()> {
+        const EMAIL: &str = "pinner@example.com";
+
+        let (owner, authenticator) = driver_with_prf_authenticator(&env).await?;
+        sign_up(&owner, &env, EMAIL).await?;
+        let key = create_space_awaiting_remote(&owner, "Pinned Garden", true).await?;
+        let shown = env.tonk_web.join(&format!("space/{key}"))?;
+
+        // The release this deployment was built with, as its bootloader
+        // names it, at the address the space is to pin.
+        owner.enter_default_frame().await?;
+        let release = owner
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                fetch("/boot.js")
+                    .then(response => response.text())
+                    .then(text => done(/^const CURRENT_RELEASE = "\/_release\/([a-z2-7]+)\/worker\.js";$/m.exec(text)?.[1] ?? null))
+                    .catch(() => done(null));
+                "#,
+                Vec::new(),
+            )
+            .await?
+            .json()
+            .as_str()
+            .context("the bootloader names no release")?
+            .to_owned();
+        let pin = env
+            .tonk_web
+            .join(&format!("_release/{release}/worker.js"))?
+            .to_string();
+        let src = env.tonk_web.join("_release/stable/worker.js")?.to_string();
+
+        // The space is told to pin, where it is held.
+        owner.goto(shown.as_str()).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let fired = in_shown_space(
+                &owner,
+                r#"
+                const [space, src, pin, done] = arguments;
+                const text = (the) => ({ the, cardinality: "one", as: "Text" });
+                fetch(`/api/repository/${space}/branch/main/transact`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ claims: [{
+                        op: "assert",
+                        application: {
+                            predicate: { kind: "transient", concept: { with: {
+                                src: text("xyz.tonk.command.pin-release/src"),
+                                pin: text("xyz.tonk.command.pin-release/pin"),
+                            } } },
+                            parameters: { src, pin },
+                        },
+                    }] }),
+                }).then(response => done(response.status), error => done(String(error)));
+                "#,
+                vec![key.clone().into(), src.clone().into(), pin.clone().into()],
+            )
+            .await;
+            if matches!(&fired, Ok(status) if status == 200) {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the space never took the command: {fired:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let boot = shown_space_boot(&owner).await?;
+            if boot["record"]["pin"] == pin.as_str() {
+                assert_eq!(boot["record"]["seq"], 1, "the first statement: {boot}");
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the space never wrote its pin down: {boot}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        owner.enter_default_frame().await?;
+        let pushed = post_json(
+            &owner,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("push the pinned space", &pushed);
+
+        // Another device of the account takes the space, and the pin with it.
+        let (other, _) = second_device_with_same_passkey(&env, &owner, &authenticator).await?;
+        wait_for_service_worker(&other).await?;
+        raise_cluster_from_hub(&other, &env).await?;
+        run_cluster_login(&other, EMAIL).await?;
+        enter_hub(&other).await?;
+        wait_for_text_without(&other, "[data-account-trigger]", "add an account").await?;
+        other.enter_default_frame().await?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+        let mut last = serde_json::Value::Null;
+        loop {
+            let _ = post_json(&owner, "/api/sync", serde_json::json!({})).await;
+            let _ = post_json(&other, "/api/sync", serde_json::json!({})).await;
+            other.enter_default_frame().await?;
+            other.goto(shown.as_str()).await?;
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            if let Ok(boot) = shown_space_boot(&other).await {
+                let pinned = boot["worker"].as_str().is_some_and(|worker| {
+                    worker.contains("/boot.js?pin=") && worker.contains(&release)
+                });
+                if boot["record"]["pin"] == pin.as_str() && pinned && boot["state"] == "ok" {
+                    break;
+                }
+                last = boot;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the other device never ran the space under its pin: {last}"
+            );
+        }
+
+        owner.quit().await?;
+        other.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_backs_up_a_claimed_space_for_another_account_device(
         env: TestEnvironment,

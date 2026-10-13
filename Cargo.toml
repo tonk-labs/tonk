@@ -254,3 +254,29 @@ lto = "fat"
 inherits = "release"
 opt-level = "s"
 lto = "fat"
+
+# PROOF OF CONCEPT, not for merging: Dialog with a boot statement on a
+# branch's head, from a scratch clone on this machine.
+[patch."https://github.com/dialog-db/dialog-db.git"]
+dialog-artifacts = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-capability = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-common = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-credentials = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-csv = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-did-web = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-effects = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-identity = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-macros = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-network = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-peer = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-query = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-remote-fs = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-remote-s3 = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-remote-ucan = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-remote-ucan-s3 = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-repository = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-search-tree = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-storage = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-ucan = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-ucan-core = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }
+dialog-varsig = { git = "file:///private/tmp/claude-501/-Users-gozala-Projects-tonk-workers-molly/a9979410-9e0d-4b68-9522-1c87501fce5d/scratchpad/dialog-boot", branch = "poc/boot-head" }

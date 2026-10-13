@@ -195,6 +195,22 @@ pub mod membership_claim {
 /// would list one row per device per space. These attributes hang on
 /// the repository's own entity instead, so all devices converge on
 /// one entry.
+/// What a branch runs: the record, in the branch, of the release its head
+/// pins.
+pub mod boot {
+    use super::Attribute;
+
+    /// The line of releases the pin was taken from.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.boot")]
+    pub struct Src(pub String);
+
+    /// The release pinned: the address `src` led to.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.boot")]
+    pub struct Pin(pub String);
+}
+
 pub mod space {
     use super::{Attribute, Entity};
 
@@ -1463,6 +1479,22 @@ pub mod command {
             #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
             #[domain("xyz.tonk.command.retain-invite")]
             pub struct Open(pub bool);
+        }
+
+        /// `tonk/pin-release` — the branch it fires on is to run this
+        /// release from now on.
+        pub mod pin_release {
+            use dialog_query::Attribute;
+
+            /// The line of releases the pin is taken from.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.pin-release")]
+            pub struct Src(pub String);
+
+            /// The release to pin: the address `src` led to.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.pin-release")]
+            pub struct Pin(pub String);
         }
 
         /// `tonk/admit-member` — a space's own worker admits a member as

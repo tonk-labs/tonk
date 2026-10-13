@@ -828,6 +828,7 @@ pub async fn pull(
                         .await;
                 }
             }
+            super::boot::heed(&tonk_state, &params.repo, after.as_ref());
             announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
@@ -884,6 +885,7 @@ pub async fn push(
         Ok(_) => {
             log!("Push succeeded: {}@{}", params.branch, params.repo);
             let after = session.handle().revision();
+            super::boot::heed(&tonk_state, &params.repo, after.as_ref());
             announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
@@ -1233,6 +1235,7 @@ pub async fn sync(
         Ok(pushed) => {
             log!("Push succeeded: {}@{}", params.branch, params.repo);
             let after = session.handle().revision();
+            super::boot::heed(&tonk_state, &params.repo, after.as_ref());
             announce_head(&params.repo, &params.branch, after.clone());
             // Settle the chip: classify against the upstream and publish the
             // resolved status (e.g. `synced`), or it stays stuck on `pending`/

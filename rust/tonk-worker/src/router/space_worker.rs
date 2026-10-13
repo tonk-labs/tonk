@@ -291,7 +291,20 @@ pub(crate) async fn resume(tonk: &TonkState, space: &Did) -> Result<(), TonkWork
     if acts_for(tonk).await?.is_none() {
         return Ok(());
     }
-    publish_session_account(tonk, space.repo_key(), CONTENT_BRANCH).await
+    publish_session_account(tonk, space.repo_key(), CONTENT_BRANCH).await?;
+    // A worker that starts takes up what its space's head says it is to
+    // run: the head may have moved while no worker was here to see it.
+    let key = space.repo_key();
+    if let Ok(session) = tonk
+        .reactor
+        .repository(&key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        super::boot::heed(tonk, &key, session.handle().revision().as_ref());
+    }
+    Ok(())
 }
 
 /// Put `name` on the roster entry of the account this worker acts for: the
