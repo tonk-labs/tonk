@@ -33,16 +33,25 @@ From `mcp/`, run `npm ci --ignore-scripts`, `npm test`, and
 native integration remains `TONK_WORKER_BINARY=/absolute/path/to/tonk-worker-host
 npm run test:integration` (on one shell line).
 
-`npm run build:chatgpt-assets` assembles public guest assets into ignored
-`chatgpt/public/`. Its manifest pins the guest runtime; `TONK_GUEST_PACK` can name
-a matching cached `space-runtime.json` to build without network downloads. Local
-component sources and fonts come from this repository. Updating the guest pin
-requires checking it with the current frontend/worker before deployment.
+`TONK_UI_DIST=/absolute/path/to/tonk-ui npm run build:chatgpt-assets` assembles
+public guest assets from the matching Tonk build into ignored `chatgpt/public/`.
+`TONK_GUEST_PACK` can instead name a cached `space-runtime.json` for local checks.
+CI always uses the guest manifest from its own frontend build.
 
-See [Cloudflare setup](cloudflare/README.md) for the explicit development
-configuration. Tests and PR creation do not deploy or publish this host.
+## PR acceptance and deployments
 
-## Before landing as a production integration
+The PR gate is automated core/native and hosted MCP tests plus a deployed preview
+whose discovery, authentication challenge and public assets pass smoke checks.
+The reviewer connects that preview in ChatGPT to exercise linking and tools.
+Live ChatGPT acceptance and public distribution are separate from this PR gate.
+
+[Cloudflare deployment](cloudflare/README.md) follows the existing Tonk channels:
+PR preview, main development, prerelease staging and final-tag stable. Each host
+uses its matching Tonk provider and separate credentials and checkpoint bucket.
+CI publishes the MCP URL and public OAuth client ID in its job summary and PR
+preview comment. Leave the OAuth client secret empty.
+
+## Before advertising production readiness
 
 This is a development integration for existing account spaces. Keep these gates
 visible while reviewing it:

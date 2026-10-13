@@ -55,3 +55,20 @@ wrong envelope key and was corrected from `body` to the actual `request`.
 Published PR: https://github.com/tonk-labs/tonk/pull/1091. The independent reviewer
 confirmed the selection guard and its focused test. All 39 hosted tests pass;
 remote CI remains pending. This replaces the older combined PR #1075.
+
+## Deployment follow-up (authorized October 13)
+
+The reviewer changed the PR gate to comprehensive automated MCP tests and a usable
+PR preview; they will connect it in ChatGPT themselves. Deployment is now in scope.
+Development follows main, staging prerelease tags, stable final tags. Desktop stays
+out of scope. The earlier no-deployment extraction boundary is superseded.
+
+- [x] Generate isolated issuer/client/checkpoint configurations per channel and PR.
+- [x] Restrict provisioning and outbound requests to the matching Tonk provider.
+- [x] Package guest assets from the same frontend build in the existing Deploy job.
+- [x] Add a separate Docker runner for MCP, deployment smoke checks and connection settings.
+- [x] Verify 13 core and 42 hosted tests locally; new deployment CLI audit is clean.
+- [ ] Verify CI image build and deployed PR preview, then publish its connection settings.
+
+Wrangler is pinned as a deployment dev dependency. Preview R2 data is retained;
+production durability and capacity policies remain separate readiness limitations.

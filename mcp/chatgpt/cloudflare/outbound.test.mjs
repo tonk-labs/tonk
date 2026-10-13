@@ -11,7 +11,7 @@ test('egress permits only the development service and does not follow redirects'
   };
   const result = await outbound(
     new Request('https://tonk.foundation/object/example'),
-    {},
+    { TONK_PROVIDER_ORIGIN: 'https://tonk.foundation' },
     {},
     forward,
   );
@@ -24,7 +24,17 @@ test('egress permits only the development service and does not follow redirects'
     'https://tonk.foundation:8443/',
     'http://checkpoint.internal/wrong',
   ]) {
-    assert.equal((await outbound(new Request(url), {}, {}, forward)).status, 403);
+    assert.equal(
+      (
+        await outbound(
+          new Request(url),
+          { TONK_PROVIDER_ORIGIN: 'https://tonk.foundation' },
+          {},
+          forward,
+        )
+      ).status,
+      403,
+    );
   }
   assert.equal(calls, 1);
 });
@@ -77,4 +87,32 @@ test('credential state uses a separate private conditional object', async () => 
     { containerId: 'instance' },
   );
   assert.equal(result.status, 200);
+});
+
+test('deployment provider is exact and isolated from other environments', async () => {
+  const env = {
+    TONK_PROVIDER_ORIGIN: 'https://pr-1091-tonk-access-service-preview.tonk.workers.dev',
+  };
+  const forwarded = [];
+  const forward = async (request) => {
+    forwarded.push(request.url);
+    return new Response('ok');
+  };
+  assert.equal(
+    (await outbound(new Request(env.TONK_PROVIDER_ORIGIN + '/ucan/'), env, {}, forward)).status,
+    200,
+  );
+  for (const origin of [
+    'https://tonk.foundation',
+    'https://staging.tonk.xyz',
+    'https://tonk.network',
+    env.TONK_PROVIDER_ORIGIN + '.attacker.test',
+  ]) {
+    assert.equal((await outbound(new Request(origin + '/ucan/'), env, {}, forward)).status, 403);
+  }
+  assert.equal(forwarded.length, 1);
+  assert.equal(
+    (await outbound(new Request('https://tonk.foundation/ucan/'), {}, {}, forward)).status,
+    403,
+  );
 });

@@ -1,8 +1,9 @@
 import { checkpointLimit as limit } from '../checkpoint-limits.mjs';
+import { providerOrigin } from '../provider.mjs';
 // This handler is reached only by the container proxy, never by public routing.
 export async function outbound(request, env, context, forward = fetch) {
   const url = new URL(request.url);
-  if (url.origin === 'https://tonk.foundation') {
+  if (env.TONK_PROVIDER_ORIGIN && url.origin === providerOrigin(env.TONK_PROVIDER_ORIGIN)) {
     // Do not follow a redirect in the Worker: each next destination must pass
     // through the container's deny-by-default network policy again.
     return forward(new Request(request, { redirect: 'manual' }));

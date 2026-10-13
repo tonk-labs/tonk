@@ -1,24 +1,28 @@
 // Pin the public Tonk guest runtime; private space data never enters this build.
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
-const origin = 'https://tonk.foundation';
-const manifest = {
-  js: 'guest-09762df49c1a18fa.js',
-  wasm: 'guest_bg-27f62bbc57e37723.wasm',
-  waJs: 'wa-eb4fe8aa4c918245.js',
-  waCss: 'wa-ec3476116cae89ee.css',
-};
+import { join } from 'node:path';
+// CI consumes the same guest build as its matching Tonk deployment.
+const distribution = process.env.TONK_UI_DIST;
+const cached =
+  !distribution && process.env.TONK_GUEST_PACK
+    ? JSON.parse(await readFile(process.env.TONK_GUEST_PACK, 'utf8'))
+    : null;
+if (!distribution && !cached) throw Error('Set TONK_UI_DIST or TONK_GUEST_PACK.');
+const manifest = distribution
+  ? JSON.parse(await readFile(join(distribution, 'guest/manifest.json'), 'utf8'))
+  : cached.manifest;
+for (const key of ['js', 'wasm', 'waJs', 'waCss']) {
+  if (typeof manifest?.[key] !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(manifest[key]))
+    throw Error('Invalid guest manifest');
+}
 async function get(path, binary = false) {
-  const response = await fetch(origin + path, { redirect: 'error' });
-  if (!response.ok) throw Error(`Asset fetch failed: ${path}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const relative = path.replace(/^\/guest\//, '');
+  if (!distribution || relative.includes('..') || relative.startsWith('/'))
+    throw Error('Invalid local guest asset path');
+  const bytes = await readFile(join(distribution, 'guest', relative));
   if (bytes.length > 20 * 1024 * 1024) throw Error('Asset too large');
   return binary ? bytes.toString('base64') : bytes.toString();
 }
-const cached = process.env.TONK_GUEST_PACK
-  ? JSON.parse(await readFile(process.env.TONK_GUEST_PACK, 'utf8'))
-  : null;
-if (cached && JSON.stringify(cached.manifest) !== JSON.stringify(manifest))
-  throw Error('Runtime manifest mismatch');
 const glue = cached ? cached.glue : await get('/guest/' + manifest.js),
   snippets = [];
 if (glue.trimStart().startsWith('<')) throw Error('Guest glue URL returned HTML');

@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'node:path';
 import { TonkToolError } from '../errors.mjs';
 import { accountSpaces } from '../account-spaces.mjs';
 import { startWorker } from '../worker-process.mjs';
+import { providerOrigin } from './provider.mjs';
 
 async function json(worker, path, body) {
   const response = await worker.request(
@@ -26,7 +27,13 @@ async function json(worker, path, body) {
     );
   return response.json();
 }
-export function workerAccountProvisioner({ binary, dataRoot, start = startWorker }) {
+export function workerAccountProvisioner({
+  binary,
+  dataRoot,
+  start = startWorker,
+  provider = 'https://tonk.foundation',
+}) {
+  provider = providerOrigin(provider);
   return async () => {
     const directory = await mkdtemp(join(dataRoot, 'tenant-'));
     const worker = await start({ binary, dataDirectory: directory });
@@ -40,12 +47,12 @@ export function workerAccountProvisioner({ binary, dataRoot, start = startWorker
       tenantId: basename(directory),
       deviceDid,
       async authorize(authorization) {
-        // This development host only attaches to its configured Tonk provider.
+        // Attach only to the deployment-selected Tonk provider.
         let stage = 'provider';
         let worker;
         try {
           const remote = new URL(authorization.remote);
-          if (remote.origin !== 'https://tonk.foundation' || remote.username || remote.password)
+          if (remote.origin !== provider || remote.username || remote.password)
             throw Error('Unexpected account provider');
           stage = 'worker-start';
           worker = await start({ binary, dataDirectory: directory });

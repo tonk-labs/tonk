@@ -13,3 +13,4 @@
 **/node_modules
 **/*.test.mjs
 mcp/chatgpt/public
+mcp/chatgpt/cloudflare/wrangler.generated.json

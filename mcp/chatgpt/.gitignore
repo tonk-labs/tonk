@@ -1,3 +1,6 @@
 public/
 cloudflare/node_modules/
 cloudflare/.wrangler/
+
+cloudflare/wrangler.generated.json
+build.json

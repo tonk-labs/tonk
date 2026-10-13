@@ -1,6 +1,7 @@
 import { Container, ContainerProxy } from '@cloudflare/containers';
 import { outbound } from './outbound.mjs';
 import { discovery } from './discovery.mjs';
+import { providerOrigin } from '../provider.mjs';
 export { ContainerProxy };
 
 export class TonkRuntime extends Container {
@@ -8,10 +9,14 @@ export class TonkRuntime extends Container {
   sleepAfter = '20m';
   enableInternet = false;
   interceptHttps = true;
-  allowedHosts = ['tonk.foundation', 'checkpoint.internal'];
   constructor(ctx, env) {
     super(ctx, env);
+    this.allowedHosts = [
+      new URL(providerOrigin(env.TONK_PROVIDER_ORIGIN)).hostname,
+      'checkpoint.internal',
+    ];
     this.envVars = {
+      TONK_PROVIDER_ORIGIN: providerOrigin(env.TONK_PROVIDER_ORIGIN),
       TONK_MCP_ISSUER: env.TONK_MCP_ISSUER,
       TONK_MCP_SPACE: env.TONK_MCP_SPACE,
       TONK_MCP_CLIENT_ID: env.TONK_MCP_CLIENT_ID,
@@ -38,12 +43,18 @@ export default {
       response.headers.set('X-Content-Type-Options', 'nosniff');
       return response;
     }
-    if (!env.TONK_MCP_SPACE || !env.TONK_MCP_CLIENT_ID || !env.TONK_MCP_REDIRECT_URI) {
+    if (
+      !env.TONK_PROVIDER_ORIGIN ||
+      !env.TONK_MCP_SPACE ||
+      !env.TONK_MCP_CLIENT_ID ||
+      !env.TONK_MCP_REDIRECT_URI
+    ) {
       return discovery(request, env.TONK_MCP_ISSUER);
     }
     if (
       ![
         '/mcp',
+        '/build.json',
         '/oauth/authorize',
         '/oauth/continue',
         '/oauth/callback',
