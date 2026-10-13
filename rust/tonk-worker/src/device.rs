@@ -149,6 +149,24 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
+    /// Explicit native registries keep content beside their profile, never in
+    /// the hosting process's working directory. Browser storage is unchanged.
+    pub(crate) fn space_location(&self, name: &str) -> Location {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Directory::At(root) = &self.directory {
+            return Location::new(
+                Directory::At(
+                    std::path::Path::new(root)
+                        .join("spaces")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                name,
+            );
+        }
+        space_location(name)
+    }
+
     /// The one this device actually uses.
     pub(crate) fn device() -> Self {
         Self {
@@ -183,7 +201,7 @@ impl Registry {
         let location = Location::new(self.directory.clone(), name);
         let profile = tonk_account::peer::open_peer(
             location.clone(),
-            space_location("").directory,
+            self.space_location("").directory,
             storage.clone(),
             &credentials,
             &system,
@@ -217,7 +235,7 @@ impl Registry {
                 })?;
         tonk_account::peer::open_peer_on(
             Location::new(self.directory.clone(), name),
-            space_location("").directory,
+            self.space_location("").directory,
             storage.clone(),
             &credentials,
             &system,
