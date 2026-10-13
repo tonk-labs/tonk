@@ -454,6 +454,33 @@ pub struct TonkState {
 }
 
 impl TonkState {
+    /// End a native host generation and release its live query subscriptions.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn shutdown(&self) {
+        self.retire();
+    }
+
+    /// Open the ordinary worker runtime in an explicit native storage directory.
+    /// The caller owns authentication, process isolation and the directory's
+    /// lifetime. No default user profile or process working directory is used.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn open_native(directory: &std::path::Path) -> Result<Self, crate::TonkWorkerError> {
+        std::fs::create_dir_all(directory.join("spaces"))
+            .map_err(|error| crate::TonkWorkerError::Internal(error.to_string()))?;
+        let directory = directory
+            .canonicalize()
+            .map_err(|error| crate::TonkWorkerError::Internal(error.to_string()))?;
+        let registry = crate::device::Registry {
+            profile: "hosted".to_owned(),
+            directory: dialog_effects::storage::Directory::At(
+                directory.to_string_lossy().into_owned(),
+            ),
+        };
+        let storage = registry.storage().await?;
+        let profile = registry.open_profile(&storage, "hosted").await?;
+        boot_state(storage, "hosted".to_owned(), profile, registry).await
+    }
+
     /// Enter the one-way retiring state and release every query stream.
     pub(crate) fn retire(&self) {
         self.retiring.store(true, Ordering::Release);
@@ -2649,4 +2676,133 @@ fn event_source_client_id(event: &web_sys::ExtendableMessageEvent) -> Option<Str
     let source = event.source()?;
     let client: web_sys::Client = source.dyn_into().ok()?;
     Some(client.id())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod native_host_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn native_worker_boots_the_shared_router_in_isolated_storage() {
+        let directory =
+            std::env::temp_dir().join(format!("tonk-worker-host-{}", rand::random::<u64>()));
+        let state = TonkState::open_native(&directory)
+            .await
+            .expect("native worker boot");
+        let did = state.profile.did().to_string();
+        assert!(matches!(state.registry.space_location("example").directory,
+            dialog_effects::storage::Directory::At(ref path) if path == &directory.canonicalize().unwrap().join("spaces").to_string_lossy()));
+        let (router, _) = crate::api_router(state);
+        let response = router
+            .clone()
+            .oneshot(
+                ::axum::http::Request::builder()
+                    .uri("/api/profile")
+                    .body(::axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), ::axum::http::StatusCode::OK);
+        let created = router
+            .clone()
+            .oneshot(
+                ::axum::http::Request::builder()
+                    .method("PUT")
+                    .uri("/api/repository/host-test")
+                    .header("content-type", "application/json")
+                    .body(::axum::body::Body::from(r#"{"branch":{"main":{}}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = created.status();
+        let bytes = ::axum::body::to_bytes(created.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            ::axum::http::StatusCode::CREATED,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let repository: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let key = repository["name"].as_str().expect("routing key");
+        let document = "concept!: &host-example\n  with:\n    title: { the: example.host/title, as: text, cardinality: one, description: Test title }\nhost-example!:\n  this: urn:host:record\n  title: Shared worker\n";
+        let evaluated = router
+            .clone()
+            .oneshot(
+                ::axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/repository/{key}/branch/main/evaluate"))
+                    .header("content-type", "text/plain")
+                    .body(::axum::body::Body::from(document))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = evaluated.status();
+        let bytes = ::axum::body::to_bytes(evaluated.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            ::axum::http::StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        for document in [
+            "library/install!:\n  component: tonk:library/notebook\n  time: 1.0\n",
+            "notebook/named!:\n  this: urn:host:notebook\n  title: General commands\nblock/edit!:\n  subject: urn:host:block\n  notebook: urn:host:notebook\n  source: Written through the shared worker\n",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    ::axum::http::Request::builder()
+                        .method("POST")
+                        .uri(format!("/api/repository/{key}/branch/main/evaluate"))
+                        .header("content-type", "text/plain")
+                        .body(::axum::body::Body::from(document))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = ::axum::body::to_bytes(response.into_body(), 1_000_000)
+                .await
+                .unwrap();
+            assert_eq!(
+                status,
+                ::axum::http::StatusCode::OK,
+                "{}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+        drop(router);
+        let reopened = TonkState::open_native(&directory)
+            .await
+            .expect("reopen native worker");
+        assert_eq!(reopened.profile.did().to_string(), did);
+        let (router, _) = crate::api_router(reopened);
+        let read = router
+            .oneshot(
+                ::axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/repository/{key}/branch/main/evaluate?transact=false"
+                    ))
+                    .header("content-type", "text/plain")
+                    .body(::axum::body::Body::from("notebook/block:\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.status(), ::axum::http::StatusCode::OK);
+        let bytes = ::axum::body::to_bytes(read.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("Written through the shared worker"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

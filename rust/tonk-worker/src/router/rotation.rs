@@ -1629,13 +1629,19 @@ mod native_tests {
         signed_in: bool,
     ) -> (crate::router::AppState, Did, Option<Did>, Did) {
         let name = format!("rotation-{label}-{}", rand::random::<u64>());
-        let (storage, profile) =
-            crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
-                .await
-                .unwrap();
+        // Isolate the directory-level system key as well as the profile.
+        let directory = dialog_effects::storage::Directory::At(
+            std::env::temp_dir()
+                .join(&name)
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let (storage, profile) = crate::device::open_profile_at(&name, directory.clone())
+            .await
+            .unwrap();
         let registry = crate::device::Registry {
             profile: name.clone(),
-            directory: dialog_effects::storage::Directory::Profile,
+            directory,
         };
         let state = crate::worker::boot_state(storage, name, profile, registry)
             .await
