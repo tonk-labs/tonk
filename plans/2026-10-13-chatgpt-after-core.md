@@ -19,7 +19,7 @@ The new PR supersedes the older combined #1075 as the second landing slice.
 - [x] Add tool-surface/private-metadata and production-import packaging contracts.
 - [x] Assemble stock frontend assets from the existing pinned public guest cache.
 - [x] Verify final tests, formatting, Worker bundle and available native integration.
-- [ ] Commit, push and open the focused ChatGPT PR with explicit release gates.
+- [x] Commit, push and open the focused ChatGPT PR with explicit release gates.
 
 ## Boundaries
 
@@ -51,3 +51,7 @@ A VM test of the full bootstrap reproduced the unwanted transaction. Restored
 the small opt-out guard; the test checks both suppressed embed transactions and
 unchanged ordinary-guest behavior. An initial default-case assertion used the
 wrong envelope key and was corrected from `body` to the actual `request`.
+
+Published PR: https://github.com/tonk-labs/tonk/pull/1091. The independent reviewer
+confirmed the selection guard and its focused test. All 39 hosted tests pass;
+remote CI remains pending. This replaces the older combined PR #1075.
