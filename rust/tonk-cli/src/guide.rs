@@ -27,8 +27,8 @@ pub const ELEMENT_TONK_TABLE: &str = include_str!("guide-element-tonk-table.md")
 
 /// Every guide name, in the order `tonk help -g` presents it.
 pub const TOPICS: &[&str] = &[
-    "agent",
     "glossary",
+    "agent",
     "notation",
     "spaces",
     "tutorial",
@@ -44,8 +44,8 @@ pub const TOPICS: &[&str] = &[
 /// One-line catalogue description for a guide.
 pub fn description(name: &str) -> Option<&'static str> {
     match name {
-        "agent" => Some("Shared Tonk tools, authoring context and verification"),
         "glossary" => Some("The words Tonk uses for facts, concepts, and writes"),
+        "agent" => Some("Shared Tonk tools, authoring context and verification"),
         "notation" => Some("Notation syntax, queries, assertions, names, and joins"),
         "spaces" => Some("Space selection, directory bindings, and resolution order"),
         "tutorial" => Some("The discover, define, write, view, and share loop"),
@@ -63,8 +63,8 @@ pub fn description(name: &str) -> Option<&'static str> {
 /// Resolve a guide name to its embedded body.
 pub fn topic(name: &str) -> Option<&'static str> {
     match name {
-        "agent" => Some(AGENT),
         "glossary" => Some(GLOSSARY),
+        "agent" => Some(AGENT),
         "notation" => Some(NOTATION),
         "spaces" => Some(SPACES),
         "tutorial" => Some(TUTORIAL),
@@ -81,9 +81,9 @@ pub fn topic(name: &str) -> Option<&'static str> {
 
 /// Every guide concatenated for agent harnesses that prime with `tonk help all`.
 pub const GUIDE: &str = concat!(
-    include_str!("guide-agent.md"),
-    "\n",
     include_str!("guide-glossary.md"),
+    "\n",
+    include_str!("guide-agent.md"),
     "\n",
     include_str!("../../tonk-notation/guide.md"),
     "\n",

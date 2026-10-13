@@ -66,7 +66,8 @@ ordinary MCP client and HTTP handler into the real worker, rather than only
 calling the primitive directly. Running it without `TONK_WORKER_BINARY` was
 verified to fail explicitly. `.github/workflows/mcp.yml` runs the standalone core
 contracts, format/generated checks, worker library suite and native integration.
-It does not depend on ChatGPT or Desktop. Actionlint passes; GitHub CI has not run.
+It does not depend on ChatGPT or Desktop. Actionlint passes; remote CI is tracked
+in the PR checkpoint below.
 
 The first broad worker run found one path regression and eight failures amid
 file-descriptor exhaustion (the local soft limit was 256). The receipt-projection
@@ -92,8 +93,8 @@ Final checks:
 - New main's invite/public-space changes are preserved. Cargo/flake locks are
   unchanged; the MCP lockfile is copied with its existing dependency versions.
 
-The local core branch is ready for PR review and remote CI. It has not been
-pushed or merged. The prior combined branch is preserved only as a reference;
+The core branch is published for PR review and remote CI (see below), and has
+not been merged. The prior combined branch is preserved only as a reference;
 it must not be merged as the core PR or used to reintroduce compatibility tools.
 
 ## Deferred to the second PR
@@ -103,5 +104,22 @@ the restricted runtime. Verify live account linking and rendering, two-account
 isolation, expiry/revocation/reconnect, uncertain writes and container recovery.
 Safe idle-process and disk retention require a durability policy; never discard
 an unpublished replica simply because its connection expired. Public submission
-is a separate launch gate. No branch push, deployment or publication is part of
-this local extraction.
+is a separate launch gate. ChatGPT deployment and publication remain deferred.
+
+
+## PR and independent review
+
+Published core-only PR: https://github.com/tonk-labs/tonk/pull/1089. A reviewer
+started with fresh context inspected the PR, reran all 13 MCP contracts and the
+real-worker integration, and checked account discovery against a disposable
+worker. It found no additional confirmed issues. The existing worker binary was
+used for that independent pass; the fresh build and full worker suite are
+recorded above.
+
+The parent review reproduced a CLI regression: adding the agent manual before
+the glossary broke the existing `tonk help all` contract. The glossary now stays
+first, followed by the agent guide; MCP's generated manuals were refreshed.
+The direct Rust assertion failed before the fix and passes afterward. MCP tests,
+generated-guide parity and Rust/JavaScript formatting pass after the fix.
+All five existing CLI guide tests pass, including executable notation examples.
+Remote CI is running; local validation does not claim completed remote CI.
