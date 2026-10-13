@@ -4,6 +4,7 @@ on:
   pull_request:
     paths: &chatgpt-paths
       - 'mcp/**'
+      - 'rust/tonk-portal/src/bootstrap.js'
       - '.github/workflows/chatgpt.yml'
   push:
     branches: [main]

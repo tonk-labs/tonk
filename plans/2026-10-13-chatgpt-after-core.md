@@ -9,7 +9,7 @@ Working branch: `feat/chatgpt-on-mcp`; original dirty worktrees remain untouched
 Extract only the full-worker hosted ChatGPT integration. Keep OAuth, sessions,
 checkpointing, tenant processes, UI and Cloudflare configuration under
 `mcp/chatgpt/`; reuse the merged core unchanged. No legacy runtime/tools,
-notebook-specific editing adapter, Desktop import or application Rust changes.
+notebook-specific editing adapter, Desktop import or application Rust implementation changes.
 The new PR supersedes the older combined #1075 as the second landing slice.
 
 ## Checkpoints
@@ -31,7 +31,7 @@ assembly is not evidence of live rendering. No dependency versions are changed.
 
 ## Verification
 
-- ChatGPT contracts: 38 passed, zero skips. Core contracts: 13 passed, zero skips.
+- ChatGPT contracts: 39 passed, zero skips. Core contracts: 13 passed, zero skips.
 - Generic MCP/native worker integration: one passed, zero skips. Reused the core
   worker binary after verifying the Rust/Cargo sources match the merged base.
 - Generated guides, formatting, actionlint and whitespace checks pass.
@@ -40,4 +40,14 @@ assembly is not evidence of live rendering. No dependency versions are changed.
 - Cloudflare dry-run bundles the Worker/config/assets successfully without rollout.
 - Docker daemon is unavailable at the configured socket, so this extraction's
   Linux image was not rebuilt. Prior combined-image evidence is not substituted.
-- No Rust, Desktop, dependency version or lockfile modifications in the slice.
+- No Rust implementation, Desktop, dependency version or lockfile modifications.
+  One shared guest-bootstrap JavaScript guard is retained from the source branch.
+
+## Review correction
+
+Independent review found an omitted guest-bootstrap guard: the iframe requests
+`selectionReporting: false`, but main ignored it and transacted text selections.
+A VM test of the full bootstrap reproduced the unwanted transaction. Restored
+the small opt-out guard; the test checks both suppressed embed transactions and
+unchanged ordinary-guest behavior. An initial default-case assertion used the
+wrong envelope key and was corrected from `body` to the actual `request`.
