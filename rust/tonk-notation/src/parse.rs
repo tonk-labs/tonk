@@ -1295,8 +1295,20 @@ fn is_reverse_dotted_domain(text: &str) -> bool {
 }
 
 /// Try to parse `text` as a YAML core-schema typed scalar
-/// (integer, float, bool, null). Returns `None` if the text
-/// doesn't match any of those forms.
+/// (number, bool, null). Returns `None` if the text doesn't match
+/// any of those forms.
+///
+/// A number literal is an optional sign, digits, an optional
+/// fraction and an optional exponent. It names a number, not a
+/// type: `41`, `+41` and `41.0` are one value, and the scalar holds
+/// it in the narrowest form ([`narrow_number`]). The spelling that
+/// used to pick a type (a leading sign for signed, a decimal point
+/// for float) carries nothing now; a field's declared type is a
+/// lens applied where the value is read or written.
+///
+/// `NaN` and the infinities are not number literals: `.nan`, `nan`,
+/// `.inf` and the like read as text (or a symbol), never as a
+/// [`Scalar::Float`], so no document can put a NaN into a value.
 fn parse_typed_scalar(text: &str) -> Option<Scalar> {
     match text {
         "null" | "Null" | "NULL" | "~" => return Some(Scalar::Null),
@@ -1304,20 +1316,85 @@ fn parse_typed_scalar(text: &str) -> Option<Scalar> {
         "false" | "False" | "FALSE" => return Some(Scalar::Boolean(false)),
         _ => {}
     }
-    // Integer spelling picks the type: a leading sign (`+41`, `-7`)
-    // is a signed integer, bare digits (`41`) are unsigned, and a
-    // decimal point (`41.0`) is a float.
-    if text.starts_with('+') || text.starts_with('-') {
-        if let Ok(i) = text.parse::<i128>() {
-            return Some(Scalar::Integer(i));
+    parse_number_literal(text)
+}
+
+/// Read a number literal to the number it names, held as the
+/// narrowest scalar. Whole literals (no fraction, no exponent) are
+/// parsed exactly as integers, so `u128::MAX` and `i128::MIN` stay
+/// exact and never pass through an `f64`.
+fn parse_number_literal(text: &str) -> Option<Scalar> {
+    let (negative, digits) = match text.strip_prefix(['+', '-']) {
+        Some(rest) => (text.starts_with('-'), rest),
+        None => (false, text),
+    };
+    let is_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    // Split `mantissa[e exponent]`, then `whole[.fraction]`.
+    let (mantissa, exponent) = match digits.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, Some(exponent)),
+        None => (digits, None),
+    };
+    let (whole, fraction) = match mantissa.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (mantissa, None),
+    };
+    // At least one digit on one side of the point (`1.`, `.5`, `1.5`).
+    let whole_ok = whole.is_empty() || is_digits(whole);
+    let fraction_ok = fraction.is_none_or(|f| f.is_empty() || is_digits(f));
+    if !whole_ok || !fraction_ok || (whole.is_empty() && fraction.is_none_or(str::is_empty)) {
+        return None;
+    }
+    if let Some(exponent) = exponent {
+        let exponent = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
+        if !is_digits(exponent) {
+            return None;
         }
-    } else if let Ok(u) = text.parse::<u128>() {
-        return Some(Scalar::UnsignedInteger(u));
     }
-    if let Ok(f) = text.parse::<f64>() {
-        return Some(Scalar::Float(f));
+    if fraction.is_none() && exponent.is_none() {
+        // Exact integer path.
+        let magnitude: u128 = whole.parse().ok()?;
+        return Some(if negative {
+            match i128::try_from(magnitude) {
+                Ok(i) => narrow_number(Scalar::Integer(-i)),
+                // `-i128::MIN` overflows `i128` as a magnitude, but the
+                // negated value itself fits.
+                Err(_) if magnitude == i128::MIN.unsigned_abs() => Scalar::Integer(i128::MIN),
+                // Smaller than `i128::MIN`: no integer form holds it.
+                Err(_) => Scalar::Float(-(magnitude as f64)),
+            }
+        } else {
+            Scalar::UnsignedInteger(magnitude)
+        });
     }
-    None
+    // Only a literal already validated against the grammar reaches
+    // the float parser, so this never yields a NaN.
+    let float: f64 = text.parse().ok()?;
+    Some(narrow_number(Scalar::Float(float)))
+}
+
+/// Hold a number in the narrowest scalar: a non-negative whole value
+/// is a [`Scalar::UnsignedInteger`], a negative whole value a
+/// [`Scalar::Integer`], anything else a [`Scalar::Float`].
+///
+/// A whole float is narrowed only up to `2^53`, where every whole float
+/// is the decimal it prints as. Past it a float's binary value and its
+/// shortest decimal part ways (`1e30` as a float is not the integer
+/// 1000000000000000019884624838656 but the number `10^30`), and dialog
+/// keys a float by that decimal, so the float is left for dialog to read
+/// as the number it names.
+fn narrow_number(scalar: Scalar) -> Scalar {
+    const EXACT: f64 = 9_007_199_254_740_992.0;
+    match scalar {
+        Scalar::Integer(i) if i >= 0 => Scalar::UnsignedInteger(i as u128),
+        Scalar::Float(f) if f.fract() == 0.0 && f.abs() <= EXACT => {
+            if f >= 0.0 {
+                Scalar::UnsignedInteger(f as u128)
+            } else {
+                Scalar::Integer(f as i128)
+            }
+        }
+        other => other,
+    }
 }
 
 /// Recognise text that saphyr-parser produces for an empty or
@@ -1382,12 +1459,13 @@ fn scalar_from_saphyr(scalar: &SaphyrScalar<'_>) -> Scalar {
     match scalar {
         SaphyrScalar::Null => Scalar::Null,
         SaphyrScalar::Boolean(b) => Scalar::Boolean(*b),
-        // The sign spelling is lost on this path (saphyr already
-        // typed the scalar), so the value decides: non-negative reads
-        // as unsigned, matching the bare spelling it must have had.
-        SaphyrScalar::Integer(i) if *i >= 0 => Scalar::UnsignedInteger(*i as u128),
-        SaphyrScalar::Integer(i) => Scalar::Integer(i128::from(*i)),
-        SaphyrScalar::FloatingPoint(f) => Scalar::Float(**f),
+        // saphyr already typed the scalar; the number it names is
+        // held in the narrowest form, like a literal the classifier
+        // reads. A `.nan` saphyr produced is not a number: it reads
+        // as the text it was spelled with.
+        SaphyrScalar::Integer(i) => narrow_number(Scalar::Integer(i128::from(*i))),
+        SaphyrScalar::FloatingPoint(f) if f.is_nan() => Scalar::String(".nan".to_owned()),
+        SaphyrScalar::FloatingPoint(f) => narrow_number(Scalar::Float(**f)),
         SaphyrScalar::String(s) => Scalar::String(s.as_ref().to_owned()),
     }
 }
@@ -2064,10 +2142,12 @@ attribute!: &person-name
         assert!(!parsed.diagnostics.is_empty());
     }
 
-    /// Integer spelling picks the type: bare digits are unsigned, a
-    /// leading sign is signed, a decimal point is a float.
+    /// A number literal names a number, not a type: it is held in the
+    /// narrowest scalar whatever its spelling. `41`, `+41` and `41.0`
+    /// are the natural 41; `-7` and `-7.0` the integer -7; only a
+    /// value no integer holds (`41.5`, `1e39`) is a float.
     #[dialog_common::test]
-    fn it_types_integers_by_their_spelling() {
+    fn it_reads_number_literals_as_the_numbers_they_name() {
         let syntax = parse_clean(
             r#"
 person:
@@ -2076,6 +2156,14 @@ person:
   plus: +41
   minus: -7
   real: 41.5
+  whole: 41.0
+  negative-whole: -7.0
+  exponent: 4.1e1
+  huge: 1e39
+  max: 340282366920938463463374607431768211455
+  min: -170141183460469231731687303715884105728
+  nan: .nan
+  inf: .inf
 "#,
         );
         let Expression::Query(q) = &syntax.expressions[0] else {
@@ -2094,13 +2182,46 @@ person:
         ));
         assert!(matches!(
             get("plus"),
-            FieldValue::Literal(Scalar::Integer(41))
+            FieldValue::Literal(Scalar::UnsignedInteger(41))
         ));
         assert!(matches!(
             get("minus"),
             FieldValue::Literal(Scalar::Integer(-7))
         ));
         assert!(matches!(get("real"), FieldValue::Literal(Scalar::Float(f)) if f == 41.5));
+        assert!(matches!(
+            get("whole"),
+            FieldValue::Literal(Scalar::UnsignedInteger(41))
+        ));
+        assert!(matches!(
+            get("negative-whole"),
+            FieldValue::Literal(Scalar::Integer(-7))
+        ));
+        assert!(matches!(
+            get("exponent"),
+            FieldValue::Literal(Scalar::UnsignedInteger(41))
+        ));
+        assert!(matches!(get("huge"), FieldValue::Literal(Scalar::Float(f)) if f == 1e39));
+        // Whole literals parse exactly: the extremes never pass
+        // through an `f64`.
+        assert!(matches!(
+            get("max"),
+            FieldValue::Literal(Scalar::UnsignedInteger(u128::MAX))
+        ));
+        assert!(matches!(
+            get("min"),
+            FieldValue::Literal(Scalar::Integer(i128::MIN))
+        ));
+        // NaN and infinity are not number literals, so no document can
+        // put a NaN into a value; they read as text.
+        assert!(matches!(
+            get("nan"),
+            FieldValue::Literal(Scalar::String(s)) if s == ".nan"
+        ));
+        assert!(matches!(
+            get("inf"),
+            FieldValue::Literal(Scalar::String(s)) if s == ".inf"
+        ));
     }
 
     #[dialog_common::test]

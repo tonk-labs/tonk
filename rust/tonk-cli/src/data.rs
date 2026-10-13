@@ -111,14 +111,10 @@ pub fn render_value(ty: Option<Type>, raw: &str) -> Result<String, DataError> {
             Ok(raw.to_string())
         }
         Some(Type::SignedInt) => {
-            raw.parse::<i128>().map_err(|_| bad("integer"))?;
-            // Spell the signedness: bare digits parse as unsigned, so
-            // a non-negative signed value carries an explicit `+`.
-            if raw.starts_with('+') || raw.starts_with('-') {
-                Ok(raw.to_string())
-            } else {
-                Ok(format!("+{raw}"))
-            }
+            // A literal names a number, not a type: the field's
+            // declared type reads it, so no `+` is spelled.
+            let value: i128 = raw.parse().map_err(|_| bad("integer"))?;
+            Ok(value.to_string())
         }
         Some(Type::Float) => {
             raw.parse::<f64>().map_err(|_| bad("float"))?;
@@ -239,12 +235,14 @@ pub fn build_retract(concept: &str, entity: &str, field: Option<&str>) -> String
 
 #[cfg(test)]
 mod tests {
+    /// A number is spelled plainly whatever the field's type: the
+    /// declared type is the lens, so the literal carries no sign.
     #[test]
-    fn it_spells_signed_values_with_an_explicit_sign() {
+    fn it_spells_signed_values_as_plain_numbers() {
         use dialog_query::artifact::Type;
         assert_eq!(
             super::render_value(Some(Type::SignedInt), "41").unwrap(),
-            "+41"
+            "41"
         );
         assert_eq!(
             super::render_value(Some(Type::SignedInt), "-7").unwrap(),
@@ -252,7 +250,7 @@ mod tests {
         );
         assert_eq!(
             super::render_value(Some(Type::SignedInt), "+8").unwrap(),
-            "+8"
+            "8"
         );
         assert_eq!(
             super::render_value(Some(Type::UnsignedInt), "41").unwrap(),

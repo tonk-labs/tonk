@@ -227,15 +227,9 @@ pub fn format_value(value: &serde_json::Value, type_name: &str) -> String {
             }
             other => other.to_string(),
         },
+        // A number is spelled plainly: its spelling carries no type.
         "SignedInt" | "SignedInteger" | "integer:" => match value {
-            J::Number(n) => {
-                let i = n.as_i64().unwrap_or(0);
-                if i >= 0 {
-                    format!("+{i}")
-                } else {
-                    i.to_string()
-                }
-            }
+            J::Number(n) => n.as_i64().unwrap_or(0).to_string(),
             J::String(s) => s.clone(),
             other => other.to_string(),
         },

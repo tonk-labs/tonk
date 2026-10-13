@@ -94,12 +94,12 @@ pub(crate) fn collection_entry_terms(
 /// `Term::blank()`.
 ///
 /// `expected` carries the field's declared [`Type`] (from the
-/// concept's attribute descriptor) when known. It disambiguates
-/// integer literals: the notation parser always produces a signed
-/// `Scalar::Integer` for a non-negative literal like `1`, so a
-/// field declared `as: unsigned-integer` needs schema-directed
-/// coercion. Pass `None` for slots with no declared type (`this`,
-/// claim attributes, formula operands).
+/// concept's attribute descriptor) when known. It is the lens a
+/// number literal is written through: the parser holds a literal as
+/// the narrowest scalar for the number it names (`1` is the natural
+/// 1), and a field declared `integer:` or `float:` takes that number
+/// as its own type. Pass `None` for slots with no declared type
+/// (`this`, claim attributes, formula operands).
 pub(crate) fn field_value_to_term(
     field_name: &str,
     value: &FieldValue,
@@ -205,26 +205,29 @@ pub(crate) fn field_value_to_term(
 
 /// Translate a parsed [`Scalar`] into a [`Value`].
 ///
-/// `expected` carries the field's declared [`Type`] when known. The
-/// notation parser types a literal only by its lexical form, not by
-/// the field it lands in, so this is where a literal is checked
-/// against the field's declared type:
+/// `expected` carries the field's declared [`Type`] when known. A
+/// number literal carries no type of its own (the parser holds it as
+/// the narrowest scalar for the number it names), so this is where
+/// the field's declared type is applied as a lens:
 ///
-/// - A non-negative `Scalar::Integer` (the parser's default for
-///   `1`, which only falls back to unsigned for values too large
-///   for `i128`) coerces to `Value::UnsignedInt` when the field is
-///   declared `as: unsigned-integer`.
-/// - Otherwise the scalar must already match the declared type. A
-///   mismatch (e.g. a bare integer `3` written into an `as: text`
+/// - A number literal is valid for a number field when the field's
+///   type reads it unchanged ([`read_through`]): `41`, `+41` and
+///   `41.0` all fill `natural:`, `integer:` and `float:` fields, as
+///   the field's own type. A literal the lens would alter — `2.5` or
+///   `-1` into `natural:`, `2.5` into `integer:` — is a
+///   [`TypeMismatch`](AnalyzeErrorKind::TypeMismatch): dialog's
+///   `holds` refuses the write, so refusing it here points at the
+///   value instead.
+/// - Any other scalar must already match the declared type. A
+///   mismatch (e.g. a bare number `3` written into an `as: text`
 ///   field) is a [`TypeMismatch`](AnalyzeErrorKind::TypeMismatch)
-///   error rather than a silently-coerced or
-///   wrong-typed fact: the strict concept query would never match
-///   such a fact, so the entity would vanish from its own concept
-///   with no signal. Surfacing it points at the schema mistake
-///   directly.
+///   error rather than a silently-coerced or wrong-typed fact: the
+///   strict concept query would never match such a fact, so the
+///   entity would vanish from its own concept with no signal.
+///   Surfacing it points at the schema mistake directly.
 ///
 /// A `None` `expected` (untyped slots — `this`, claim attributes,
-/// formula operands) keeps the parsed scalar's natural mapping.
+/// formula operands) keeps the parsed scalar's narrowest mapping.
 /// The declared attribute with its value type stripped: a domain head
 /// takes a declaration's identity and cardinality, but never its type
 /// — raw domains are open-ended and mixed-type attributes are legal.
@@ -238,24 +241,25 @@ pub(crate) fn untyped_descriptor(
     serde_json::from_value(json).expect("a descriptor without `as` deserializes")
 }
 
+/// The value `ty` reads `value` as, when it [`holds`](Type::holds) it.
+///
+/// A number field is a lens: `natural:`, `integer:`, `float:` and the
+/// sized types (`natural:8`, `float:32`) each read a stored number as
+/// their own type, and hold a number only when the read gives the same
+/// number back. So `41` reads through `float:` as `41.0`, but `2.5`
+/// does not read through `integer:` (it would come back as `2`) and
+/// `-1` does not read through `natural:` at all. A non-number type
+/// reads exactly the values it holds, as they are.
+pub(crate) fn read_through(ty: Type, value: &Value) -> Option<Value> {
+    ty.holds(value)
+        .then(|| value.clone().viewed_as(ty))
+        .flatten()
+}
+
 pub(crate) fn scalar_to_value(
     scalar: &Scalar,
     expected: Option<Type>,
 ) -> Result<Value, AnalyzeError> {
-    // Schema-directed integer coercion: a non-negative signed
-    // literal fills an unsigned field.
-    if let (Scalar::Integer(i), Some(Type::UnsignedInt)) = (scalar, expected)
-        && *i >= 0
-    {
-        return Ok(Value::UnsignedInt(*i as u128));
-    }
-    // ...and a bare (unsigned-spelled) literal fills a signed field.
-    if let (Scalar::UnsignedInteger(u), Some(Type::SignedInt)) = (scalar, expected)
-        && *u <= i128::MAX as u128
-    {
-        return Ok(Value::SignedInt(*u as i128));
-    }
-
     let value = match scalar {
         Scalar::String(s) => Value::String(s.clone()),
         Scalar::Boolean(b) => Value::Boolean(*b),
@@ -278,23 +282,24 @@ pub(crate) fn scalar_to_value(
         }
     };
 
-    // Reject a literal whose type contradicts the field's declared
-    // type. `data_type()` is the concrete [`Type`] the value
-    // inhabits; an `expected` that doesn't admit it is a schema
+    // Apply the field's declared type as a lens. A number the lens
+    // reads unchanged becomes the field's own type; a literal whose
+    // type contradicts the declared type (text where a number is
+    // declared, a fraction where a whole number is) is a schema
     // mismatch the user should see at assert time. A `None`
-    // `expected` (untyped slot) admits any type.
-    if let Some(expected) = expected
-        && !expected.holds(&value)
-    {
-        return Err(AnalyzeErrorKind::TypeMismatch {
+    // `expected` (untyped slot) admits any type and keeps the
+    // narrowest mapping.
+    let Some(expected) = expected else {
+        return Ok(value);
+    };
+    read_through(expected, &value).ok_or_else(|| {
+        AnalyzeErrorKind::TypeMismatch {
             field: "<scalar>".into(),
             expected,
             found: value.data_type(),
         }
-        .into());
-    }
-
-    Ok(value)
+        .into()
+    })
 }
 
 pub(crate) fn scalar_to_string(scalar: &Scalar) -> Result<String, AnalyzeError> {

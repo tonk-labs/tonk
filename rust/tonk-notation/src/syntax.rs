@@ -350,13 +350,15 @@ impl IncludeForm {
 pub enum Scalar {
     /// A textual scalar.
     String(String),
-    /// An integer literal.
+    /// A whole negative number, at least `i128::MIN`. A number
+    /// literal is held in the narrowest scalar whatever its spelling:
+    /// `-7` and `-7.0` both land here, `41`, `+41` and `41.0` are all
+    /// an [`UnsignedInteger`](Scalar::UnsignedInteger).
     Integer(i128),
-    /// An unsigned-integer literal too large for `i128`'s
-    /// negative half — preserved so we don't lose precision before
-    /// the analyzer coerces.
+    /// A whole non-negative number, at most `u128::MAX`.
     UnsignedInteger(u128),
-    /// A floating-point literal.
+    /// A number no integer scalar holds: fractional (`2.5`), or whole
+    /// but outside both integer ranges (`1e39`). Never a NaN.
     Float(f64),
     /// A boolean literal.
     Boolean(bool),

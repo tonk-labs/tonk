@@ -201,8 +201,9 @@ pub(crate) fn build_query_application(
                 validate_claim_attribute(domain, &field.name, field.name_range)?;
                 // Domain queries are OPEN-ENDED: a blank or variable
                 // matches every value of the attribute regardless of
-                // type, and a literal matches by its spelled type
-                // (`41` unsigned, `+41` signed). A declared attribute
+                // type, and a number literal matches the number it
+                // names (`41`, `+41` and `41.0` all find the one stored
+                // value, whatever wrote it). A declared attribute
                 // lends only its CARDINALITY (a many-attribute must
                 // enumerate every value, not select a winner) — never
                 // a value type.

@@ -2697,11 +2697,11 @@ person!:
     }
 
     /// A bare integer literal written into an `unsigned-integer`
-    /// field is schema-coerced to `Value::UnsignedInt`. The
-    /// notation parser always parses `0` as a signed
-    /// `Scalar::Integer`; the analyzer knows the field's declared
-    /// type and must produce an unsigned term so induction over
-    /// `math/sum` (unsigned-only) doesn't fail with `TypeMismatch`.
+    /// field is written through the field's type as `Value::UnsignedInt`.
+    /// A literal carries no type of its own; the analyzer knows the
+    /// field's declared type and must produce an unsigned term so
+    /// induction over `math/sum` (unsigned-only) doesn't fail with
+    /// `TypeMismatch`.
     #[dialog_common::test]
     async fn it_coerces_integer_literal_to_unsigned_for_unsigned_field() {
         let syntax = must_parse(
@@ -2732,10 +2732,11 @@ counter!:
         );
     }
 
-    /// A bare integer literal in a `signed-integer` field stays
-    /// signed — the coercion is type-directed, not blanket.
+    /// A bare number literal in a `signed-integer` field is written as
+    /// a signed integer: the field's declared type is the lens, not the
+    /// literal's spelling (the parser holds `7` as the natural 7).
     #[dialog_common::test]
-    async fn it_keeps_integer_literal_signed_for_signed_field() {
+    async fn it_writes_a_number_literal_as_signed_for_signed_field() {
         let syntax = must_parse(
             r#"
 reading!:
@@ -2818,9 +2819,9 @@ person!:
 
     /// A claim head (`squash.bug:`) has no schema, so its fields
     /// carry no declared type. With `expected = None`, any literal
-    /// is accepted, typed by its spelling — bare `3` is unsigned —
-    /// and never raises `TypeMismatch`. Guards the "no type
-    /// specified accepts any type" rule.
+    /// is accepted as the narrowest type holding the number it names
+    /// — `3` is the natural 3 — and never raises `TypeMismatch`.
+    /// Guards the "no type specified accepts any type" rule.
     #[dialog_common::test]
     async fn it_accepts_any_literal_for_untyped_claim_field() {
         let syntax = must_parse(
@@ -2923,10 +2924,10 @@ xyz.tonk.person!:
         );
     }
 
-    /// A raw domain write whose literal diverges from a declared
-    /// attribute's type still analyzes — raw domains are open-ended —
-    /// but carries a warning-severity diagnostic with the spelling
-    /// that would match the declaration.
+    /// A raw domain write whose literal the declared attribute's type
+    /// does not read unchanged still analyzes — raw domains are
+    /// open-ended — but carries a warning-severity diagnostic naming
+    /// the declared type and the kind of number it reads.
     #[dialog_common::test]
     async fn it_warns_when_a_domain_literal_diverges_from_a_declaration() {
         let syntax = must_parse(
@@ -2941,7 +2942,7 @@ concept!: &person
 
 io.test.person!:
   this: test:1
-  age: 41
+  age: 41.5
 "#,
         );
         let tree = analyze_empty(&syntax).await.unwrap();
@@ -2954,8 +2955,12 @@ io.test.person!:
         assert_eq!(warnings.len(), 1, "one divergence warning: {warnings:?}");
         let message = warnings[0].message();
         assert!(
-            message.contains("signed-integer") && message.contains("+41"),
-            "the warning names the declared type and the spelling: {message}"
+            message.contains("signed-integer") && message.contains("whole number"),
+            "the warning names the declared type and what it reads: {message}"
+        );
+        assert!(
+            !message.contains('+'),
+            "no spelling carries a type, so none is suggested: {message}"
         );
         assert!(
             matches!(
@@ -2964,6 +2969,52 @@ io.test.person!:
             ),
             "advisory, not an error",
         );
+    }
+
+    /// A number literal is the number it names, not a type: `41`,
+    /// `+41` and `41.0` written raw under an attribute declared
+    /// `signed-integer` or `float` are what the declaration reads, so
+    /// none of them is a divergence.
+    #[dialog_common::test]
+    async fn it_does_not_warn_when_a_declared_number_type_reads_the_literal() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  description: "A person"
+  with:
+    age:
+      description: "Age"
+      the: io.test.person/age
+      as: signed-integer
+    height:
+      description: "Height"
+      the: io.test.person/height
+      as: float
+
+io.test.person!:
+  this: test:1
+  age: 41
+  height: 180
+
+io.test.person!:
+  this: test:2
+  age: +41
+  height: +180
+
+io.test.person!:
+  this: test:3
+  age: 41.0
+  height: 180.0
+"#,
+        );
+        let tree = analyze_empty(&syntax).await.unwrap();
+        let warnings: Vec<_> = tree
+            .analysis
+            .diagnostics
+            .iter()
+            .filter(|d| d.code() == "W_DECLARED_TYPE_DIVERGENCE")
+            .collect();
+        assert!(warnings.is_empty(), "no divergence: {warnings:?}");
     }
 
     /// Unknown concept in head position → `UnknownConcept`.

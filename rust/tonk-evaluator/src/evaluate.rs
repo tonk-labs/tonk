@@ -1308,20 +1308,22 @@ fn render_resolver_block(
 
 /// Lower a typed [`Value`] into the JSON a match block carries.
 ///
-/// Numbers keep their notation SPELLING: a JSON number cannot tell a
-/// non-negative signed integer from an unsigned one, so a signed
-/// integer rides as an explicitly signed string (`"+41"`, `"-7"`) and
-/// the notation printers emit it bare. Unsigned integers stay bare
-/// JSON numbers; floats stay JSON floats (serde_json prints the
-/// `.0`).
+/// A number prints plainly, as the number it is: a literal's spelling
+/// carries no type (`41`, `+41` and `41.0` name one value), so there
+/// is nothing for a `+` to say. Integers ride as JSON integers and
+/// floats as JSON floats (serde_json prints the `.0`).
 fn value_to_json(value: &Value) -> serde_json::Value {
-    match value {
-        Value::SignedInt(i) if *i >= 0 => serde_json::Value::String(format!("+{i}")),
-        Value::SignedInt(i) => serde_json::Value::String(i.to_string()),
-        // Bare: a match block shows an entity as its URI and text as
-        // text, never a value tagged by its type.
-        other => serde_json::to_value(other.untagged()).unwrap_or(serde_json::Value::Null),
+    // A signed integer rides as a JSON number while one holds it (past
+    // `i64`/`u64` serde_json has no number form, and the untagged path
+    // below spells it as digits).
+    if let Value::SignedInt(i) = value
+        && let Some(number) = serde_json::Number::from_i128(*i)
+    {
+        return serde_json::Value::Number(number);
     }
+    // Bare: a match block shows an entity as its URI and text as text,
+    // never a value tagged by its type.
+    serde_json::to_value(value.untagged()).unwrap_or(serde_json::Value::Null)
 }
 
 #[cfg(test)]
@@ -2025,31 +2027,27 @@ concept!: &note
         Ok(())
     }
 
-    /// Match JSON spells signed integers explicitly, so notation
-    /// printers can tell +41 from 41 (JSON numbers cannot).
+    /// Match JSON prints a number plainly, never with a `+`: a signed
+    /// integer is the number it is, and spelling carries no type.
     #[dialog_common::test]
-    fn it_spells_signed_values_in_match_json() {
-        assert_eq!(
-            value_to_json(&Value::SignedInt(41)),
-            serde_json::json!("+41")
-        );
-        assert_eq!(
-            value_to_json(&Value::SignedInt(-7)),
-            serde_json::json!("-7")
-        );
+    fn it_prints_numbers_plainly_in_match_json() {
+        assert_eq!(value_to_json(&Value::SignedInt(41)), serde_json::json!(41));
+        assert_eq!(value_to_json(&Value::SignedInt(-7)), serde_json::json!(-7));
         assert_eq!(
             value_to_json(&Value::UnsignedInt(41)),
             serde_json::json!(41)
         );
+        assert_eq!(value_to_json(&Value::Float(41.5)), serde_json::json!(41.5));
     }
 
-    /// Integer spelling picks the value type on a raw domain write:
-    /// bare `41` is unsigned, `+41` signed, `41.0` float — no schema
-    /// consulted. The unsigned spelling is what a concept declaring
-    /// the attribute as unsigned reads, so the raw write and the
-    /// typed read agree without the domain head imposing anything.
+    /// A literal on a raw domain write is the number it names, whatever
+    /// its spelling: `41`, `+41` and `41.0` all store the one value,
+    /// and a raw read gives it back as the narrowest type that holds
+    /// it, `UnsignedInt(41)`. That is what a concept declaring the
+    /// attribute as unsigned reads, so the raw write and the typed read
+    /// agree without the domain head imposing anything.
     #[dialog_common::test]
-    async fn it_types_a_domain_write_by_its_spelling() -> anyhow::Result<()> {
+    async fn it_stores_a_domain_literal_as_the_number_it_names() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
@@ -2067,12 +2065,22 @@ concept!: &note
       the: io.test.person/age
       as: unsigned-integer
 "#,
-            // The raw domain write carries a bare literal for the
+            // Three raw domain writes, one spelling each, for the
             // unsigned-declared attribute.
             r#"io.test.person!:
   this: test:1
   name: "Gozala"
   age: 41
+"#,
+            r#"io.test.person!:
+  this: test:2
+  name: "Plus"
+  age: +41
+"#,
+            r#"io.test.person!:
+  this: test:3
+  name: "Point"
+  age: 41.0
 "#,
         ];
         for doc in docs {
@@ -2095,36 +2103,40 @@ concept!: &note
                 .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
         }
 
-        // The stored value carries the DECLARED type, so the concept's
-        // typed read matches it.
-        let entity: dialog_artifacts::Entity = "test:1".parse()?;
+        // Every spelling stored the one number, read back as the
+        // narrowest type that holds it: what the declared reader expects.
         let the: dialog_artifacts::Relation = "io.test.person/age".parse()?;
-        let claims: Vec<dialog_query::Claim> = branch
-            .query()
-            .select(dialog_query::AttributeQuery::new(
-                Term::Constant(dialog_artifacts::Value::Symbol(the)),
-                Term::<dialog_artifacts::Entity>::from(entity),
-                Term::<dialog_query::Any>::var("age"),
-                Term::blank(),
-                None,
-            ))
-            .perform(&operator)
-            .try_vec()
-            .await?;
-        assert_eq!(claims.len(), 1, "one age fact");
-        assert_eq!(
-            claims[0].is,
-            Value::UnsignedInt(41),
-            "the bare spelling is unsigned, which is what the declared reader expects",
-        );
+        for (uri, spelling) in [("test:1", "41"), ("test:2", "+41"), ("test:3", "41.0")] {
+            let entity: dialog_artifacts::Entity = uri.parse()?;
+            let claims: Vec<dialog_query::Claim> = branch
+                .query()
+                .select(dialog_query::AttributeQuery::new(
+                    Term::Constant(dialog_artifacts::Value::Symbol(the.clone())),
+                    Term::<dialog_artifacts::Entity>::from(entity),
+                    Term::<dialog_query::Any>::var("age"),
+                    Term::blank(),
+                    None,
+                ))
+                .perform(&operator)
+                .try_vec()
+                .await?;
+            assert_eq!(claims.len(), 1, "{spelling}: one age fact");
+            assert_eq!(
+                claims[0].is,
+                Value::UnsignedInt(41),
+                "{spelling} is the natural 41, which is what the declared reader expects",
+            );
+        }
         Ok(())
     }
 
-    /// Raw domains are open-ended: every spelling lands, side by side,
+    /// Raw domains are open-ended: every literal lands, side by side,
     /// no declaration anywhere — and a blank in a domain query matches
-    /// values of every type. The store keys every number in one band, so
-    /// a raw read gives the narrowest type that holds the number: `+41`
-    /// reads back as the natural 41, `-7` as an integer, `41.5` as a float.
+    /// values of every type. A literal is the number it names, not a
+    /// type: the store keys every number in one band, so a raw read
+    /// gives the narrowest type that holds the number. `+41` reads back
+    /// as the natural 41 (the `+` says nothing), `-7` as an integer,
+    /// `41.5` as a float.
     #[dialog_common::test]
     async fn it_keeps_raw_domains_open_ended() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
@@ -2956,7 +2968,7 @@ counter!: &counter-demo
     /// The earlier `it_induces_unsigned_sum_from_transient_increment`
     /// injects the increment as a raw `1u128` `Changes` entry and
     /// runs one round — it never exercises the notation literal
-    /// `by: 1` (which parses signed-first) nor the round-2
+    /// `by: 1` (read through the field's declared type) nor the round-2
     /// read-back of `math/sum`'s own output. This test does both:
     /// it is the path the live `/evaluate` bug actually hit.
     #[dialog_common::test]

@@ -2663,10 +2663,9 @@ async fn diagnose_no_entity(
                     .to_owned();
                 // The typed probe missed. Re-probing under the OTHER
                 // value types tells a mistyped fact (present under a
-                // different spelling) from a truly absent one — and
-                // pins which type actually holds it, so the value can
-                // be shown in ITS spelling (`+33`, not a bare `33`
-                // that would read as the very type it is not).
+                // different type) from a truly absent one — and pins
+                // which type actually holds it, so the diagnosis can
+                // name both types next to the value.
                 let declared_wire = spec
                     .get("as")
                     .and_then(|t| t.as_str())
@@ -2752,13 +2751,11 @@ fn first_field_text(value: &JsValue, field: &str) -> Option<String> {
     }
 }
 
-/// Spell a probed value the way its type is written in notation:
-/// signed integers carry an explicit sign, floats their decimal
-/// point, text its quotes.
+/// Spell a probed value as notation: text takes its quotes; a number
+/// is written plainly, since a literal's spelling carries no type (the
+/// diagnosis names the type beside it).
 fn spell_value(value: &str, wire_type: ValueType) -> String {
     match wire_type {
-        ValueType::Integer if !value.starts_with('-') => format!("+{value}"),
-        ValueType::Float if !value.contains('.') => format!("{value}.0"),
         ValueType::Text => format!("{value:?}"),
         _ => value.to_owned(),
     }
@@ -6738,15 +6735,15 @@ mod tests {
                 .await
                 .expect("the mismatch diagnosis renders");
             for _ in 0..200 {
-                if (query.text_content().unwrap_or_default()).contains("+41") {
+                if (query.text_content().unwrap_or_default()).contains("41") {
                     break;
                 }
                 sleep(5).await;
             }
             let text = query.text_content().unwrap_or_default();
             assert!(
-                text.contains("count") && text.contains("+41"),
-                "the stored value shows in ITS spelling, not a blank: {text}"
+                text.contains("count") && text.contains("41"),
+                "the stored value shows as the number it is, not a blank: {text}"
             );
             let notation = display
                 .query_selector("[data-error-2]")

@@ -150,6 +150,18 @@ parsed as a symbol but is meant to be a string MUST be quoted.
 `name: "alice"` is a literal string. The quotes are
 load-bearing.
 
+A **number** is an optional sign, digits, an optional fraction and
+an optional exponent (`41`, `+41`, `-7`, `41.5`, `1e39`). It names
+a number, not a type: `41`, `+41` and `41.0` are one value. A
+field's declared type (`natural`, `integer`, `float`) is a lens
+the number is read and written through, so `age: 41` fills a
+`natural`, an `integer` or a `float` field alike, and a raw read
+gives a number back as the narrowest type that holds it (a whole
+non-negative number as a natural, a whole negative one as an
+integer, anything else as a float). A fraction cannot be written
+into a whole-number field, nor a negative number into a natural
+one. `.nan` and `.inf` are not numbers; they read as text.
+
 A bare symbol is always a **reference**: it resolves to an
 anchor declared in the document, a name published on the
 branch, or a built-in name (the types `text`, `integer`,
