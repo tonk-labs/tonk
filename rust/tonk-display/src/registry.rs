@@ -674,6 +674,16 @@ mod tests {
     /// asserting that it does NOT. Polling a negative with
     /// [`settle_until`] burns its whole budget every time — cheap when
     /// a page is shared, seconds each under one process per test.
+    /// Wait `ms` of real time, for a behaviour that is timed on purpose.
+    async fn sleep_ms(ms: i32) {
+        let promise = js_sys::Promise::new(&mut |resolve, _| {
+            let _ = window()
+                .expect("window")
+                .set_timeout_with_callback_and_timeout_and_arguments_0(resolve.unchecked_ref(), ms);
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+
     async fn settle_briefly() {
         for _ in 0..20 {
             let promise = js_sys::Promise::new(&mut |resolve, _| {
@@ -1404,9 +1414,34 @@ mod tests {
             .unwrap()
             .dyn_into()
             .unwrap();
-        settle_until(|| navigations.length() == 1 && !host.has_attribute("busy")).await;
-        assert!(!host.has_attribute("busy"));
-        assert!(host.query_selector("button[disabled]").unwrap().is_none());
+        // The worker moves the page into the new space (`open`), so the
+        // control does not navigate on `created`: it stays busy, its submit
+        // disabled, waiting to be moved.
+        settle_until(|| {
+            Reflect::get(&fixture, &"cancelled".into())
+                .unwrap()
+                .as_f64()
+                == Some(2.0)
+        })
+        .await;
+        assert_eq!(
+            navigations.length(),
+            0,
+            "the worker moves the page, not the form"
+        );
+        assert!(
+            host.has_attribute("busy"),
+            "a created space is still being landed in"
+        );
+        assert!(
+            host.query_selector("[data-space-create-submit][disabled]")
+                .unwrap()
+                .is_some()
+        );
+        // This page was never moved (the worker's message was lost): after
+        // the grace period it moves itself, once.
+        sleep_ms(2100).await;
+        settle_until(|| navigations.length() == 1).await;
         assert_eq!(navigations.length(), 1);
         assert_eq!(
             navigations.get(0).as_string().as_deref(),
@@ -1420,7 +1455,16 @@ mod tests {
         );
         host.remove();
 
-        let rejected: Element = host.clone_node_with_deep(true).unwrap().dyn_into().unwrap();
+        // A fresh control, not a clone: the one above is still busy landing in
+        // the space it created, and a clone would copy that.
+        let rejected = document().create_element("space-create").unwrap();
+        rejected.set_inner_html(markup);
+        rejected
+            .query_selector("input[name=name]")
+            .unwrap()
+            .unwrap()
+            .set_attribute("value", "Test space")
+            .unwrap();
         let reject = js_sys::Function::new_no_args("return Promise.reject(new Error('offline'));");
         Reflect::set(&host_bridge(), &"transact".into(), &reject).unwrap();
         document().body().unwrap().append_child(&rejected).unwrap();

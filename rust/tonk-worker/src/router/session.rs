@@ -1159,4 +1159,48 @@ mod tests {
              with a named profile, not a repository"
         );
     }
+
+    /// A copy link opens the Hub: `/copy/<slug>` has no page of its own, so
+    /// it mounts the same `tonk:hub` model as `/`, with the slug stamped on
+    /// the site where the Hub's copy dialog can find it.
+    #[dialog_common::test]
+    async fn it_resolves_a_copy_link_to_the_hub() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        {
+            let tonk = state.read().await;
+            crate::router::evaluate::evaluate_profile_body(
+                &tonk,
+                "main",
+                PROFILE_LIBRARY.to_owned(),
+                true,
+            )
+            .await
+            .expect("the profile library installs");
+        }
+
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/repository/profile:tonk/branch/main/site")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"path":"/copy/recipe-box"}"#))
+            .unwrap();
+        request.extensions_mut().insert(ClientId("copy".to_owned()));
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let endpoint = "/api/repository/profile:tonk/branch/main/query";
+        assert_eq!(
+            stamped_field(&app, "copy", "concept", endpoint)
+                .await
+                .as_deref(),
+            Some("tonk:hub"),
+            "a copy link opens the Hub, not a page of its own"
+        );
+        assert_eq!(
+            stamped_field(&app, "copy", "slug", endpoint)
+                .await
+                .as_deref(),
+            Some("recipe-box")
+        );
+    }
 }

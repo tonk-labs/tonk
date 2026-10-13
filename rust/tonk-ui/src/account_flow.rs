@@ -3425,6 +3425,130 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A copy link lands a visitor in a new space made from a Discover
+    /// template with no click. "share a copy" builds the link from the host's
+    /// origin; the Hub's copy dialog starts the copy on arrival; a failed copy
+    /// creates nothing and offers "try again"; and the link leaves no history
+    /// entry, so Back cannot start a second copy.
+    #[dialog_common::test]
+    async fn it_copies_a_template_from_a_copy_link(env: TestEnvironment) -> Result<()> {
+        let catalog = include_str!("../../tonk-worker/tests/fixtures/discover/catalog.json");
+        let base = serve_cross_origin(vec![
+            ("/catalog.json", catalog.to_owned()),
+            ("/model.yaml", include_str!("../../tonk-worker/tests/fixtures/discover/model.yaml").to_owned()),
+            ("/view.yaml", include_str!("../../tonk-worker/tests/fixtures/discover/view.yaml").to_owned()),
+            ("/preview.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"100\"><rect width=\"200\" height=\"100\" fill=\"gray\"/></svg>".to_owned()),
+        ])?;
+        let link = env.tonk_web.join("copy/remote-demo")?.to_string();
+        let driver = driver_with_prf(&env).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        let before = space_keys(&driver).await?;
+
+        // Share: the card's "share a copy" puts the link on the clipboard and
+        // says so, or — where this browser refuses the clipboard — leaves the
+        // link on the button. Either way it is built from the host's origin,
+        // never the guest's about:srcdoc.
+        enter_hub(&driver).await?;
+        driver
+            .execute(
+                "document.querySelector('hub-discover').setAttribute('catalog-url', arguments[0])",
+                vec![serde_json::json!(format!("{base}/catalog.json"))],
+            )
+            .await?;
+        click(&driver, "[data-collection=discover]").await?;
+        let card = "[data-template=remote-demo]";
+        wait_for_displayed(&driver, card).await?;
+        click(&driver, &format!("{card} [data-template-details-open]")).await?;
+        click(&driver, &format!("{card} [data-template-share]")).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let shared = driver
+                .execute(
+                    r#"const button = document.querySelector('[data-template=remote-demo] [data-template-share]');
+                       return button.hasAttribute('data-copied') ? 'copied' : (button.title || '');"#,
+                    Vec::new(),
+                )
+                .await?;
+            match shared.json().as_str() {
+                Some("copied") => {
+                    let label =
+                        wait_for_displayed(&driver, &format!("{card} [data-shared-label]")).await?;
+                    assert_eq!(label.text().await?, "link copied — paste it anywhere");
+                    break;
+                }
+                Some(title) if !title.is_empty() => {
+                    assert_eq!(title, link, "the shared link is the host's /copy/<slug>");
+                    break;
+                }
+                _ if tokio::time::Instant::now() > deadline => {
+                    anyhow::bail!("\"share a copy\" neither copied nor showed the link")
+                }
+                _ => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+
+        // Land on the link. The dialog starts at once against the real
+        // catalog, which has no `remote-demo`: the copy fails, says why, and
+        // creates nothing.
+        goto(&driver, &link).await?;
+        enter_hub(&driver).await?;
+        wait_for_text_containing(
+            &driver,
+            ".copy-link [data-space-create-error]",
+            "Couldn't use those definitions",
+        )
+        .await?;
+        let retry = wait_for_displayed(&driver, ".copy-link [data-copy-retry]").await?;
+        driver.enter_default_frame().await?;
+        assert_eq!(
+            space_keys(&driver).await?,
+            before,
+            "a failed copy creates nothing"
+        );
+
+        // "try again" against the fixture catalog lands in the new space.
+        enter_hub(&driver).await?;
+        driver
+            .execute(
+                "document.querySelector('.copy-link').setAttribute('catalog-url', arguments[0])",
+                vec![serde_json::json!(format!("{base}/catalog.json"))],
+            )
+            .await?;
+        retry.click().await?;
+        driver.enter_default_frame().await?;
+        await_url_containing(&driver, "/space/").await?;
+        let after = space_keys(&driver).await?;
+        let created: Vec<_> = after.iter().filter(|key| !before.contains(key)).collect();
+        assert_eq!(created.len(), 1, "one copy link makes one space");
+        assert!(driver.current_url().await?.path().contains(created[0]));
+        enter_space_view(&driver).await?;
+        wait_for_displayed(&driver, ".remote-copy").await?;
+
+        // The link replaced its own history entry: Back goes to where the
+        // visitor was before it, and no second copy starts.
+        driver.enter_default_frame().await?;
+        driver.back().await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while driver.current_url().await?.path().contains("/space/") {
+            if tokio::time::Instant::now() > deadline {
+                anyhow::bail!("Back did not leave the new space");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            !driver.current_url().await?.path().starts_with("/copy/"),
+            "Back must not return to the copy link"
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(
+            space_keys(&driver).await?.len(),
+            after.len(),
+            "Back starts no second copy"
+        );
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Serve `files` (path → body) over plain HTTP on a loopback port,
     /// as some other site would, and return the base URL. Every response
     /// allows any origin to read it: a seed is fetched by the service

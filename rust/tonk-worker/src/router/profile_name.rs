@@ -255,6 +255,7 @@ mod tests {
         let reactor = crate::Reactor::new(profile.credential().clone());
         TonkState {
             seed_upgrades: Default::default(),
+            copies_in_flight: Default::default(),
             profile,
             operator: session.operator,
             storage,
