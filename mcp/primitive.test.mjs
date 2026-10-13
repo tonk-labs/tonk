@@ -83,6 +83,98 @@ test('lost, malformed and oversized write responses remain uncertain and are nev
   }
 });
 
+test('oversized success and analysis-error streams stop reading and cancel without replay', async () => {
+  for (const status of [200, 400]) {
+    for (const name of ['tonk_query', 'tonk_evaluate']) {
+      let chunks = 0;
+      let cancelled = false;
+      let calls = 0;
+      const backend = workerPrimitive({
+        subject,
+        request: async () => {
+          calls++;
+          return new Response(
+            new ReadableStream(
+              {
+                pull(controller) {
+                  if (chunks === 8) return controller.close();
+                  chunks++;
+                  controller.enqueue(new Uint8Array(1_000_000).fill(32));
+                },
+                cancel() {
+                  cancelled = true;
+                },
+              },
+              { highWaterMark: 0 },
+            ),
+            { status, headers: { 'content-type': 'application/json' } },
+          );
+        },
+      });
+      await assert.rejects(
+        backend.call(name, { document: 'example:' }),
+        name === 'tonk_evaluate' ? /Do not repeat/ : /query/,
+      );
+      assert.equal(calls, 1);
+      assert.equal(cancelled, true);
+      assert.equal(chunks, 3, 'stop at the first chunk exceeding the 2 MB limit');
+    }
+  }
+});
+
+test('response byte boundary preserves split UTF-8 and the unchanged envelope', async () => {
+  const envelope = { data: 'é'.repeat(999_994) + 'a' };
+  const bytes = new TextEncoder().encode(JSON.stringify(envelope));
+  assert.equal(bytes.byteLength, 2_000_000);
+  const backend = workerPrimitive({
+    subject,
+    request: async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(bytes.subarray(0, 10)); // Inside the first UTF-8 character.
+            controller.enqueue(bytes.subarray(10));
+            controller.close();
+          },
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      ),
+  });
+  assert.deepEqual(await backend.call('tonk_query', { document: 'example:' }), envelope);
+});
+
+test('unused response bodies are cancelled and bounded analysis errors stay actionable', async () => {
+  for (const status of [200, 503]) {
+    let cancelled = false;
+    const backend = workerPrimitive({
+      subject,
+      request: async () =>
+        new Response(
+          new ReadableStream(
+            {
+              cancel() {
+                cancelled = true;
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+          { status, headers: { 'content-type': 'text/plain' } },
+        ),
+    });
+    await assert.rejects(backend.call('tonk_evaluate', { document: 'example!:' }), /Do not repeat/);
+    assert.equal(cancelled, true);
+  }
+  const backend = workerPrimitive({
+    subject,
+    request: async () =>
+      Response.json({ error: { kind: 'analyze', message: 'Unknown concept' } }, { status: 400 }),
+  });
+  await assert.rejects(
+    backend.call('tonk_evaluate', { document: 'example!:' }),
+    /Notation rejected: Unknown concept/,
+  );
+});
+
 test('primitive bundles for a browser host without Node or MCP dependencies', async () => {
   const { build } = await import('esbuild');
   const { fileURLToPath } = await import('node:url');

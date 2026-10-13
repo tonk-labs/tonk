@@ -26,7 +26,7 @@ an ordinary consumer of the same core and needs no application integration.
 
 - [x] Extract onto current main, preserving new invite/public-space work; prove
   generic HTTP/browser contracts and native worker authoring; commit separately.
-- [ ] Enforce response byte limits during streaming on success and error paths;
+- [x] Enforce response byte limits during streaming on success and error paths;
   prove bounded consumption/cancellation and no uncertain-write replay; commit.
 - [ ] Add independent core CI and usage/authority documentation. Native integration
   tests must fail, not skip, if their required worker binary is absent.
@@ -49,6 +49,15 @@ No legacy tool definitions or implementations were copied into the extracted PR.
 The dependency is used solely to bundle the primitive in memory in a portability
 test; this package does not run an esbuild development server. No dependency or
 lockfile version changes are included in this extraction.
+
+## Bounded-response checkpoint
+
+The new regressions first failed because oversized streams and unused bodies
+were not cancelled. Response reading now enforces the byte limit before decoding
+each chunk, handles split UTF-8 correctly, and cancels excess/unneeded bodies.
+Success and analysis-error paths share the bound; dispatched writes still have
+an uncertain outcome and are never replayed. All 13 core tests and the native
+authoring integration pass after this change. Extraction commit: `9a07a87b4f`.
 
 ## Deferred to the second PR
 

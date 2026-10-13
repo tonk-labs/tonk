@@ -6,6 +6,28 @@ export const primitiveTools = ['tonk_query', 'tonk_evaluate'];
 const encoder = new TextEncoder();
 const uncertain = 'Evaluation could not be confirmed. Do not repeat it; query the space first.';
 
+async function readWorkerJSON(response) {
+  if (!response.body) throw Error('Missing worker response.');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parts = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 2_000_000) throw Error('Worker response exceeds the tool limit.');
+      parts.push(decoder.decode(value, { stream: true }));
+    }
+    return JSON.parse(parts.join('') + decoder.decode());
+  } finally {
+    // Stop oversized/error streams without masking the original result or error.
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
 export function workerPrimitive({ subject, request, allowsWrites = true }) {
   if (!/^did:key:[A-Za-z0-9]+$/.test(subject)) throw new TonkToolError('Invalid selected space.');
   const base = '/api/repository/' + encodeURIComponent(subject) + '/branch/main';
@@ -37,18 +59,19 @@ export function workerPrimitive({ subject, request, allowsWrites = true }) {
           signal,
         });
         if (!response.ok && response.status === 400) {
-          const error = (await response.json().catch(() => null))?.error;
+          const error = (await readWorkerJSON(response).catch(() => null))?.error;
           if (error?.kind === 'analyze' && typeof error.message === 'string')
             throw new TonkToolError('Notation rejected: ' + error.message.slice(0, 2000));
         }
-        if (!response.ok)
+        if (!response.ok) {
+          await response.body?.cancel().catch(() => {});
           throw new TonkToolError(writing ? uncertain : 'The worker rejected this query.');
-        if (!(response.headers.get('content-type') || '').includes('json'))
+        }
+        if (!(response.headers.get('content-type') || '').includes('json')) {
+          await response.body?.cancel().catch(() => {});
           throw Error('Invalid worker response.');
-        const text = await response.text();
-        if (encoder.encode(text).length > 2000000)
-          throw Error('Worker response exceeds the tool limit.');
-        const value = JSON.parse(text);
+        }
+        const value = await readWorkerJSON(response);
         if (!value || typeof value !== 'object' || Array.isArray(value))
           throw Error('Invalid worker response.');
         // Preserve the worker envelope, including revisions, matches and effects.
