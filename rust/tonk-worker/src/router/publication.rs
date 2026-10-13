@@ -420,6 +420,15 @@ mod tests {
             assert_eq!(recorded.len(), 1, "one publication is recorded");
             assert_eq!(recorded[0].1.kind.0, PUBLIC_KIND);
 
+            // These devices have independent local stores. Publish the content
+            // to the service before the visitor pulls, as the host's sync loop
+            // does; sharing a local repository used to hide this missing step.
+            branch
+                .handle()
+                .push()
+                .perform(&tonk.operator)
+                .await
+                .expect("published content reaches the service");
             drop(branch);
             drop(tonk);
 

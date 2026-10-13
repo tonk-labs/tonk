@@ -123,3 +123,30 @@ The direct Rust assertion failed before the fix and passes afterward. MCP tests,
 generated-guide parity and Rust/JavaScript formatting pass after the fix.
 All five existing CLI guide tests pass, including executable notation examples.
 Remote CI is running; local validation does not claim completed remote CI.
+
+## CI fixture isolation correction
+
+The first remote MCP run on `7e5f877288` failed before account hydration, opening
+its test profile: the system DID that owned storage differed from the system DID
+used to grant the profile access. Four native fixtures randomized profile names
+but still shared `Directory::Profile`. System credentials are directory-scoped;
+concurrent first opens can race through the dependency's load-then-save creation.
+The existing device test fixtures already document and avoid this race.
+
+Account-state, command, rotation and repository native fixtures now use a unique
+explicit temporary directory for both profile opening and the state's registry.
+The other remaining test uses of `Directory::Profile` are Wasm-only. Production
+storage and authority behavior are unchanged; the CI suite retains two threads
+and all existing tests. Independent review found no omissions or regressions.
+
+The isolated account-state run passed all 24 tests. The first full run then
+exposed a publication fixture dependency on shared content storage: a new reader
+could see the publisher's local repository without the test ever pushing it.
+The test now pushes the published branch to its real access service before the
+independently stored visitor joins. It keeps its private/revoked access checks.
+Verifier cleanup also resolves through the fixture's explicit registry root.
+
+Final validation after all fixture changes: the focused publication test passes;
+the full worker suite passes with CI's two-thread setting (244 passed, zero
+failures, three existing ignored tests). Rust formatting and diff whitespace
+checks pass. The fresh GitHub run remains the Linux CI verification boundary.

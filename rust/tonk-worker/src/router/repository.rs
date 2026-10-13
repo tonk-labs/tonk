@@ -9566,10 +9566,16 @@ route!: &foreign-profile-route
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        let (storage, profile) =
-            crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
-                .await
-                .expect("test profile opens");
+        // Isolate the directory-level system key as well as the profile.
+        let directory = dialog_effects::storage::Directory::At(
+            std::env::temp_dir()
+                .join(&name)
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let (storage, profile) = crate::device::open_profile_at(&name, directory.clone())
+            .await
+            .expect("test profile opens");
         let session = crate::session::open(&profile)
             .await
             .expect("test session opens");
@@ -9594,7 +9600,7 @@ route!: &foreign-profile-route
             profile_library: Default::default(),
             registry: crate::device::Registry {
                 profile: name,
-                directory: dialog_effects::storage::Directory::Profile,
+                directory,
             },
             profile_transition: Default::default(),
             context_generation: Default::default(),
