@@ -54,7 +54,7 @@ Implemented in isolated worktree `/tmp/tonk-ci-compile`, branch `perf/ci-compile
 - Archive producers and consumers now share explicit profiles, package selections and features. Test caches compile dev dependencies with `--no-run`.
 - E2E browser/native producers run concurrently. Shards restore outputs through workflow artifacts, including on forks without Cachix upload credentials. Artifact payload sizes and build/pack/restore/E2E timings are logged; producer retries overwrite old artifacts.
 - The CI server launcher has no shipping browser dependency. The local server wrapper preserves its existing optimized default. Recursive CI-shell derivation inspection confirmed no browser build dependency.
-- New `ci-test` and `ci-release` profiles use opt-level 1, dependency opt-level 1, LTO off and 16 codegen units. Correctness tests keep assertions; browser/CLI builds keep release semantics. After the first hosted run, Wasm correctness tests were restored to the established `test` profile (see follow-up below). PR UI/worker/guest skip wasm-opt; shipping profile tables are unchanged. The access-service worker retains its existing release optimization.
+- New `ci-test` and `ci-release` profiles use opt-level 1, dependency opt-level 1, LTO off and 16 codegen units. Correctness tests keep assertions; browser/CLI builds keep release semantics. After the first hosted run, Wasm correctness tests were restored to the established `test` profile (see follow-up below). The initial PR UI/worker/guest optimization reduction was subsequently reverted after hosted E2E failures; PR browser builds now use the shipping profiles and wasm-opt (see follow-up below). Shipping profile tables are unchanged. The access-service worker retains its existing release optimization.
 - Original required check names remain. PR release cells explicitly report deferral in their job summaries; main and tag runs execute all matrix cells. Tag verification uses full history and the same version stamping as publishers. Main/tag E2E and deployment select the same optimized UI package.
 - GitHub release, npm and tagged web publication fail closed unless the latest Test run/attempt matches the exact tag, commit, push event and workflow and succeeds. API failures, failed/cancelled runs and a bounded three-hour wait reject publication. No live publication was attempted.
 
@@ -111,3 +111,51 @@ workflow syntax/expression validation and Nix source-reference checks passed.
 The full hosted Wasm and worker tests still need the PR rerun.
 
 The focused `test`-profile schema Wasm archive also passed its full 95-test suite.
+
+
+## Hosted E2E follow-up: retain optimized browser output
+
+Run `38403375201` restored the exact shared inputs and executed shard 1: 34 of
+39 tests passed, but five account-flow tests failed all three attempts. Shard 3
+also failed six flows. All five shard-1 failures had passed on the first attempt
+in the earlier baseline `38309157303`. The warm-cache browser producer took
+1m40s and the native archive producer 3m03s; native correctness passed in 6m33s.
+These timings describe components, not a green end-to-end speedup result.
+
+Reproduced `it_signs_back_into_the_same_account_after_signing_out` locally with
+the exact downloaded CI browser artifact and the `ci-test` native E2E archive.
+It failed after 38.69s; retained Chrome logs showed repeated worker Wasm
+`RuntimeError: memory access out of bounds` errors. Keeping the same native test
+archive, CLI, browser and runner but selecting the existing optimized `tonk-ui`
+output made the test pass in 7.73s. The lower-level compiler/runtime cause is not
+established; this comparison isolates the browser build configuration, not an
+individual optimization flag.
+
+`tonk-ui-ci` now aliases `tonk-ui`, restoring its existing Cargo profiles and
+wasm-opt passes for PR deployment and E2E. Remove the unused custom browser
+profile dependency-builder branch. Keep matched test caches, the successful
+native CI profile, one browser producer shared by all shards, parallel checks,
+and release publication gates. Test selection, assertions, deadlines and retries
+are unchanged.
+
+Local setup notes: the first replay could not start Chrome because the pinned
+ChromeDriver supports 152 and the installed browser is 155. A matching 155 driver
+was downloaded to `/tmp` for the comparison, without repository changes. One
+subsequent command had an incorrect temporary CLI path and exited in the input
+preflight; the corrected command was used for verification. Full hosted results
+remain necessary before merging.
+
+Additional focused E2E validation after the change: third-device signup
+confirmation, sign-in through another deployment, and rejection of the wrong
+account for an agent handoff all passed with retries disabled (3/3 in 38.14s).
+Together with sign-out/sign-in, four of shard 1's five failing flows are verified
+locally; the copied-agent CLI flow and the full shards await hosted verification.
+Linux and Darwin evaluation confirms `tonk-ui-ci.outPath == tonk-ui.outPath`, with
+the Darwin output identical to the artifact used in those passing tests. Nix
+formatting, workflow syntax, source-reference and whitespace checks passed.
+
+Publication integration: the first push was rejected because the PR had merged
+main at `d6389ce346` during local validation. Rebased the unpublished fix onto
+that merge, preserving the MCP/worker changes. Formatting, workflow and
+source-reference checks passed afterward. The local browser comparison above
+predates that main merge; hosted CI must verify the combined revision.

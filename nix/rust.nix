@@ -210,30 +210,13 @@ let
     craneLib.buildTrunkPackage (
       wasmAttributes
       // {
-        cargoArtifacts =
-          if attributes ? dependencyProfile then
-            craneLib.buildDepsOnly (
-              wasmAttributes
-              // {
-                pname = "${attributes.pname}-deps";
-                CARGO_PROFILE = attributes.dependencyProfile;
-                # Trunk invokes Cargo separately for these packages. Preserve
-                # those feature graphs instead of unifying guest/UI features.
-                buildPhaseCargoCommand = ''
-                  cargoWithProfile build --package tonk-ui --bin ui --features connection-invites
-                  cargoWithProfile build --package tonk-ui --bin worker --features connection-invites
-                  cargoWithProfile build --package tonk-guest --bin guest
-                '';
-              }
-            )
-          else
-            wasmArtifacts;
+        cargoArtifacts = wasmArtifacts;
         preBuild = ''
           cd ${crateRoot}
         '';
         inherit wasm-bindgen-cli;
       }
-      // builtins.removeAttrs attributes [ "dependencyProfile" ]
+      // attributes
     );
 
   # Build cargo-nextest test archive

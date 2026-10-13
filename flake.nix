@@ -691,30 +691,10 @@
             pname = "tonk-ui-preview";
           });
 
-          # Keep Trunk's release mode (and release-only application behavior),
-          # but compile all three binaries with the matched fast profile.
-          tonk-ui-ci =
-            (buildTrunkCrate {
-              pname = "tonk-ui-ci";
-              trunkConfig = "./rust/tonk-ui/Trunk.toml";
-              dependencyProfile = "ci-release";
-              TONK_POSTHOG_KEY = posthogKey;
-              postFixup = ''
-                ${./rust/tonk-ui/scripts/stamp-service-worker.sh} "$out"
-              '';
-            }).overrideAttrs
-              (old: {
-                preBuild = old.preBuild + ''
-                  sed -i \
-                    -e 's/data-bin="ui"/data-bin="ui" data-cargo-features="connection-invites"/' \
-                    -e 's/data-bin="worker"/data-bin="worker" data-cargo-features="connection-invites"/' \
-                    -e 's/wasm-ui-release/ci-release/g' \
-                    -e 's/wasm-worker-release/ci-release/g' \
-                    -e 's/wasm-release/ci-release/g' \
-                    -e 's/data-wasm-opt="z"/data-wasm-opt="0"/g' \
-                    index.html
-                '';
-              });
+          # Reduced browser optimization caused worker Wasm traps in account
+          # flows. Share the established browser output between PR deployment
+          # and E2E; the producer still builds it only once for all shards.
+          tonk-ui-ci = tonk-ui;
 
           tonk-access-service = buildWasmCrate {
             pname = "tonk-access-service";
