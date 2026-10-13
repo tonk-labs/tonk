@@ -295,7 +295,10 @@ pub async fn put_repository(
     // when `tonk` drops at the end of this scope) and re-acquires it.
     drop(tonk);
     let branches: Vec<String> = configuration.branch.keys().cloned().collect();
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     spawn_seed(state, display_name, key, subject, branches);
+    #[cfg(not(target_arch = "wasm32"))]
+    seed_and_initialize(&state, &display_name, None, &key, &subject, &branches).await?;
 
     Ok((StatusCode::CREATED, Json(info)))
 }
@@ -3755,8 +3758,7 @@ where
 /// repository. Returns immediately; the work runs after the PUT
 /// response is sent.
 ///
-/// Native builds have no service-worker scope (and no `spawn_local`
-/// runtime here), so they no-op — the seed/status path is browser-only.
+/// Native hosts await this same seed operation before returning from PUT.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn spawn_seed(
     state: AppState,
@@ -3774,16 +3776,6 @@ fn spawn_seed(
         let tonk = state.read().await;
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     });
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-fn spawn_seed(
-    _state: AppState,
-    _display_name: String,
-    _key: String,
-    _subject: Did,
-    _branches: Vec<String>,
-) {
 }
 
 /// Whether `subject` still has a recorded [`Replica`] on the profile's
@@ -5745,7 +5737,7 @@ pub async fn create_repository(
 
     let space_credential = tonk_account::peer::mount_verifier(
         tonk.profile.storage(),
-        crate::device::space_location(key),
+        tonk.registry.space_location(key),
         &did,
     )
     .await
@@ -9682,10 +9674,16 @@ route!: &foreign-profile-route
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        let (storage, profile) =
-            crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
-                .await
-                .expect("test profile opens");
+        // Isolate the directory-level system key as well as the profile.
+        let directory = dialog_effects::storage::Directory::At(
+            std::env::temp_dir()
+                .join(&name)
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let (storage, profile) = crate::device::open_profile_at(&name, directory.clone())
+            .await
+            .expect("test profile opens");
         let session = crate::session::open(&profile)
             .await
             .expect("test session opens");
@@ -9710,7 +9708,7 @@ route!: &foreign-profile-route
             profile_library: Default::default(),
             registry: crate::device::Registry {
                 profile: name,
-                directory: dialog_effects::storage::Directory::Profile,
+                directory,
             },
             profile_transition: Default::default(),
             context_generation: Default::default(),

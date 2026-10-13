@@ -717,10 +717,16 @@ pub(crate) mod tests {
         /// installed is the REAL one, not a test double.
         pub(crate) async fn test_state() -> AppState {
             let name = format!("command-dispatch-test-{}", rand::random::<u64>());
-            let (storage, profile) =
-                crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
-                    .await
-                    .unwrap();
+            // Isolate the directory-level system key as well as the profile.
+            let directory = dialog_effects::storage::Directory::At(
+                std::env::temp_dir()
+                    .join(&name)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            let (storage, profile) = crate::device::open_profile_at(&name, directory.clone())
+                .await
+                .unwrap();
             let session = crate::session::open(&profile).await.unwrap();
             let reactor = crate::Reactor::new(profile.credential().clone());
             let state = TonkState {
@@ -744,7 +750,7 @@ pub(crate) mod tests {
                 profile_library: Default::default(),
                 registry: crate::device::Registry {
                     profile: name.clone(),
-                    directory: dialog_effects::storage::Directory::Profile,
+                    directory,
                 },
                 profile_transition: Default::default(),
                 context_generation: Default::default(),
