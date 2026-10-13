@@ -1,0 +1,15 @@
+**
+!Cargo.toml
+!Cargo.lock
+!rust
+!rust/**
+!mcp
+!mcp/*.mjs
+!mcp/tools.json
+!mcp/package.json
+!mcp/package-lock.json
+!mcp/chatgpt
+!mcp/chatgpt/**
+**/node_modules
+**/*.test.mjs
+mcp/chatgpt/public
