@@ -40,6 +40,11 @@ pub const SUSPENDED: &str = "case:suspended";
 /// `status` URI for a locally custodied account, held until a real one
 /// replaces it.
 pub const ONBOARDING: &str = "case:onboarding";
+/// `status` URI for an onboarding account a real one replaced: its
+/// `retired-at` is set. Ranked above `onboarding` and below
+/// `registered`, so a retired account that also enrolled reads as
+/// enrolled.
+pub const RETIRED: &str = "case:retired";
 
 /// The account enrolled an address with an access service, keyed by the
 /// immutable account subject.
@@ -563,14 +568,13 @@ impl AccountLink {
 ///
 /// The hub's settings page asserts `tonk:delete-account`,
 /// `tonk:authorize-device`, or `tonk:add-passkey` and then watches this
-/// one row: the worker writes it as the ceremony advances, so the page
+/// status row: the worker writes it as the ceremony advances, so the page
 /// renders progress and failure from facts rather than from a response
-/// body. One row, replaced at each step; `ceremony` says which command
-/// the row is about, so a stale row from an earlier ceremony is
-/// recognisable as such.
+/// body. The row is replaced at each step. Account approvals use a
+/// request-specific entity; other ceremonies use [`CeremonyStatus::ENTITY`].
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CeremonyStatus {
-    /// The entity the page watches, `state:ceremony`.
+    /// The entity the page watches: a request-specific approval or `state:ceremony`.
     pub this: Entity,
     /// Which ceremony: `delete-account`, `authorize-device`, `add-passkey`.
     pub ceremony: crate::domain::ceremony_status::Ceremony,
@@ -582,7 +586,7 @@ pub struct CeremonyStatus {
 }
 
 impl CeremonyStatus {
-    /// The entity every ceremony reports to.
+    /// Default entity for ceremonies without a request-specific progress row.
     pub const ENTITY: &str = "state:ceremony";
 
     /// A report about `ceremony`.

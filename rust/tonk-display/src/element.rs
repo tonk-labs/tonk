@@ -32,6 +32,7 @@ use js_sys::{Array, Function, Promise, Reflect};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
 use tonk_host::error::{ErrorDetail, ErrorKind};
 use tonk_host::install_depth_annotator;
+use tonk_notation::ValueType;
 use tonk_schema::conclusion::Conclusion;
 use tonk_schema::query::Query;
 use wasm_bindgen::JsCast;
@@ -44,6 +45,8 @@ use web_sys::{
 };
 
 use crate::fold::show_template;
+use crate::introspect::recorder::{Arrival, Recorder};
+use crate::introspect::registry;
 use crate::resolve::{
     DETAIL_FACET, DIRECTORY_FACET, TYPE_FACET, entity_query, instances_query, looks_like_uri,
     view_query,
@@ -206,6 +209,23 @@ struct Inner {
     /// The resolved model entity, surfaced to the portal as its `model`
     /// attribute (the bridge's `context.model`).
     portal_model: Option<String>,
+    /// Introspection's hold on this display's entity frames. `None`
+    /// is the ordinary case: no recording, no cost, frames applied as
+    /// they arrive. `Some` only while the display is being observed.
+    recorder: Option<crate::introspect::recorder::Recorder<Vec<Conclusion>>>,
+    /// Every facet the model's `show` dictionary declares. The
+    /// display renders one; the introspection view panel offers the
+    /// rest, since "which views does this model have?" is not
+    /// answerable from the mounted one.
+    facets: BTreeMap<String, String>,
+    /// The bookmark name the `model` attribute resolved through, for
+    /// the declaration's `&anchor`.
+    model_name: Option<String>,
+    /// Command name -> its resolved descriptor, retained from the
+    /// delegate refresh. A name that resolved to nothing is recorded
+    /// as `None` rather than dropped: a template binding a command
+    /// that does not exist is the finding, not the absence of a row.
+    command_descriptors: BTreeMap<String, Option<String>>,
     /// The explicit `view=` facet, when the host names one. `None`
     /// means the mode default (`ui` with an entity, `directory`
     /// without) — see [`effective_facet`]. Explicitness matters when
@@ -265,6 +285,10 @@ impl Inner {
             host_watch: None,
             portal_descriptor: None,
             portal_model: None,
+            recorder: None,
+            facets: BTreeMap::new(),
+            model_name: None,
+            command_descriptors: BTreeMap::new(),
             view_facet: None,
             model_entity: None,
             default_slide: false,
@@ -292,6 +316,211 @@ impl Inner {
         // Disconnect the host-attribute watcher.
         self.host_watch.take();
     }
+}
+
+impl crate::introspect::registry::DisplayFacts for Inner {
+    fn facts(&self, host: &Element) -> crate::introspect::slot::Snapshot {
+        use crate::introspect::slot::{Snapshot, declared_fields};
+        Snapshot {
+            model: host.get_attribute("model").filter(|v| !v.is_empty()),
+            model_entity: self.model_entity.clone(),
+            // `effective_facet` needs the whole `Inner`, and the
+            // mode default it applies is what actually rendered —
+            // reporting the bare attribute would hide the `ui` /
+            // `directory` choice, which is half of what an author
+            // is trying to see.
+            facet: Some(effective_facet(self)),
+            directory: self.directory,
+            entities: self
+                .last_frame
+                .iter()
+                .map(|conclusion| crate::introspect::slot::Entity {
+                    this: conclusion.this.clone(),
+                    fields: conclusion
+                        .fields
+                        .keys()
+                        .map(|name| {
+                            (
+                                name.clone(),
+                                rendered_value(&conclusion.this, &conclusion.fields, name),
+                            )
+                        })
+                        .collect(),
+                    values: conclusion.fields.clone(),
+                })
+                .collect(),
+            // In single-view mode there is exactly one slide. In
+            // carousel mode there are several and the one on screen
+            // is the carousel's business, so report the first
+            // rather than guess.
+            model_name: self.model_name.clone(),
+            descriptor: self.portal_descriptor.clone(),
+            facets: self.facets.clone(),
+            template: self
+                .slides
+                .values()
+                .next()
+                .map(|slide| slide.display.clone()),
+            commands: self
+                .command_descriptors
+                .iter()
+                .map(|(name, descriptor)| crate::introspect::slot::Definition {
+                    name: name.clone(),
+                    descriptor: descriptor.clone(),
+                })
+                .collect(),
+            fields: self
+                .portal_descriptor
+                .as_deref()
+                .map(declared_fields)
+                .unwrap_or_default(),
+            slots: Vec::new(),
+            timeline: self.timeline(),
+        }
+    }
+
+    fn timeline(&self) -> crate::introspect::recorder::Timeline {
+        self.recorder
+            .as_ref()
+            .map(Recorder::timeline)
+            .unwrap_or_default()
+    }
+
+    fn commands(&self, host: &Element) -> Vec<(crate::introspect::command::Command, Element)> {
+        use crate::introspect::command::commands_on;
+        // A display with no bound interactions has no delegate, which
+        // is not the same as one whose declarations failed to resolve:
+        // the first has nothing to show, the second has bindings that
+        // will never fire. Both reach `commands_on`, which reports an
+        // unresolved trigger rather than hiding the binding.
+        let table = self
+            .delegate
+            .as_ref()
+            .map(crate::events::delegate::Delegate::table);
+        let mut next_id = 0;
+        let mut out = Vec::new();
+        let Ok(elements) = host.query_selector_all("*") else {
+            return out;
+        };
+        for index in 0..elements.length() {
+            let Some(element) = elements
+                .item(index)
+                .and_then(|node| node.dyn_into::<Element>().ok())
+            else {
+                continue;
+            };
+            // Markup belonging to a display nested inside this one is
+            // that display's to explain, not ours.
+            if !owned_by(host, &element) {
+                continue;
+            }
+            let attributes = attributes_of(&element);
+            for command in commands_on(
+                &attributes,
+                |declaration| {
+                    table
+                        .and_then(|table| table.get(declaration))
+                        .map(|event| event.event_type.clone())
+                },
+                &mut next_id,
+            ) {
+                out.push((command, element.clone()));
+            }
+        }
+        out
+    }
+}
+
+/// Spell one field's value the way the renderer spelled it into a slot.
+///
+/// Routed through the renderer's own segment substitution rather than
+/// formatted here, so the panel can never report a value in a spelling
+/// the page did not use — which would turn the panel from an answer
+/// into a second question.
+fn rendered_value(this: &str, fields: &BTreeMap<String, Ipld>, name: &str) -> String {
+    tonk_template::render_segments_with_shadow(
+        &[tonk_template::Segment::Field(name.to_owned())],
+        this,
+        fields,
+        &BTreeMap::new(),
+    )
+}
+
+/// Act on an introspection control.
+///
+/// Free function rather than a trait method: seeking re-enters the
+/// frame path, which borrows the state itself, so the caller must not
+/// still be holding a borrow when it runs. The registry hands out a
+/// closure that lands here with nothing borrowed.
+fn apply_control(host: &Element, state: &Rc<RefCell<Inner>>, control: registry::Control) {
+    use registry::Control;
+    let replay = {
+        let mut s = state.borrow_mut();
+        match control {
+            Control::Record(true) => {
+                let mut recorder = Recorder::default();
+                // Seed with what is already on screen, so the first
+                // frame of the history is what the observer was
+                // looking at when they opened the hood.
+                recorder.seed(s.last_frame.clone());
+                s.recorder = Some(recorder);
+                None
+            }
+            Control::Record(false) => {
+                let held = s
+                    .recorder
+                    .take()
+                    .filter(|recorder| recorder.timeline().is_held());
+                // A display released while held has been showing an
+                // old frame; put the current one back before walking
+                // away from it.
+                held.map(|_| s.last_frame.clone()).filter(|_| false)
+            }
+            Control::Seek(position) => s
+                .recorder
+                .as_mut()
+                .and_then(|recorder| recorder.seek(position)),
+            Control::Hold => s.recorder.as_mut().and_then(Recorder::hold),
+            Control::Step(delta) => s
+                .recorder
+                .as_mut()
+                .and_then(|recorder| recorder.step(delta)),
+        }
+    };
+    let Some(frame) = replay else {
+        return;
+    };
+    set_replaying(state, true);
+    apply_entity_frame(host, state, frame, false);
+    set_replaying(state, false);
+}
+
+/// Suppress recording while a recorded frame is being re-applied.
+fn set_replaying(state: &Rc<RefCell<Inner>>, on: bool) {
+    if let Some(recorder) = state.borrow_mut().recorder.as_mut() {
+        recorder.replaying(on);
+    }
+}
+
+/// Whether `host` is the nearest `<tonk-display>` above `element`.
+fn owned_by(host: &Element, element: &Element) -> bool {
+    element
+        .closest("tonk-display")
+        .ok()
+        .flatten()
+        .is_some_and(|nearest| nearest.is_same_node(Some(host.as_ref())))
+}
+
+/// One element's attributes as `(name, value)` pairs.
+fn attributes_of(element: &Element) -> Vec<(String, String)> {
+    let attributes = element.attributes();
+    let mut out = Vec::with_capacity(attributes.length() as usize);
+    for index in 0..attributes.length() {
+        if let Some(attribute) = attributes.item(index) {
+            out.push((attribute.name(), attribute.value()));
+        }
+    }
+    out
 }
 
 /// The custom element.
@@ -330,6 +559,18 @@ impl CustomElement for TonkDisplay {
         // Install reset / update / error JS methods on the host
         // so the tonk-host invokes them by name when frames arrive.
         install_method_delegates(&host, &state);
+        // Let the introspection overlay ask this display what it
+        // resolved. The registry holds a `Weak`, so it neither keeps a
+        // detached display alive nor needs unregistering.
+        registry::register_display(&host, &state, {
+            let host = host.clone();
+            let state = Rc::downgrade(&state);
+            Rc::new(move |control| {
+                if let Some(state) = state.upgrade() {
+                    apply_control(&host, &state, control);
+                }
+            })
+        });
         *self.inner.borrow_mut() = Some(state.clone());
         start_flows(&host, state);
     }
@@ -435,9 +676,14 @@ fn install_method_shims() {
         "payload, opts",
         "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
     );
+    let notice_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkNotice === 'function') this.__tonkNotice(payload, opts);",
+    );
     let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
     let _ = Reflect::set(&proto, &"update".into(), &update_fn);
     let _ = Reflect::set(&proto, &"error".into(), &error_fn);
+    let _ = Reflect::set(&proto, &"notice".into(), &notice_fn);
 }
 
 /// Per-instance: write closures to `__tonkReset` / `__tonkUpdate`
@@ -472,6 +718,27 @@ fn install_method_delegates(host: &Element, state: &Rc<RefCell<Inner>>) {
         }));
     let _ = Reflect::set(host, &"__tonkError".into(), error.as_ref());
     error.forget();
+
+    let host_for_notice = host.clone();
+    let notice: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, opts| {
+            on_notice(&host_for_notice, payload, opts);
+        }));
+    let _ = Reflect::set(host, &"__tonkNotice".into(), notice.as_ref());
+    notice.forget();
+}
+
+/// `notice({ control }, { tag })` — a control frame about the stream
+/// rather than its rows. `upgrading` says the worker is moving the branch
+/// to this release's storage format before it answers: the display shows
+/// so until the rows arrive, in place of a bare loading state.
+fn on_notice(host: &Element, payload: JsValue, _opts: JsValue) {
+    let control = Reflect::get(&payload, &"control".into())
+        .ok()
+        .and_then(|v| v.as_string());
+    if control.as_deref() == Some("upgrading") {
+        state::set_upgrading(host);
+    }
 }
 
 /// `reset(conclusions, { tag })` — first / full-snapshot frame.
@@ -702,11 +969,18 @@ fn on_error(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, _opts:
     // one: it is what separates a retryable hiccup from a settled
     // answer, and rebuilding the detail from `message` alone would
     // discard it and read every failure as `offline`.
+    let kind = Reflect::get(&payload, &"kind".into())
+        .ok()
+        .and_then(|v| v.as_string());
     let err = match Reflect::get(&payload, &"status".into())
         .ok()
         .and_then(|v| v.as_f64())
     {
         Some(status) => ErrorDetail::http(status as u16, message),
+        // The worker could not move the branch to this release's storage
+        // format: a settled answer about this process, not a transport
+        // hiccup, so it is loud and names itself.
+        None if kind.as_deref() == Some("upgrade") => ErrorDetail::new(ErrorKind::Upgrade, message),
         None => ErrorDetail::new(ErrorKind::Network, message),
     };
     if loud_state(&err) == State::Offline {
@@ -1232,6 +1506,10 @@ fn handle_name_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
 ///   downstream view + entity flow against the freshest descriptor, so
 ///   a model (re)definition or a late-landing view is picked up.
 fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
+    // Read the bookmark name before the frame is consumed. It is what
+    // the introspection panel writes as the declaration's `&anchor`,
+    // and nothing else on the display needs it.
+    let name = phase1_name(&conclusions);
     let resolved = extract_phase1_conclusion(conclusions);
     let Some((model_entity, descriptor_json)) = resolved else {
         // The concept is not on the branch yet. Stay subscribed; the
@@ -1254,6 +1532,7 @@ fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: V
         if s.disposed {
             return;
         }
+        s.model_name = name;
         // The model subscription re-pushes on every branch revision,
         // including plain entity-data writes. Restart the downstream
         // flow only when the *resolved concept* actually changed —
@@ -1317,6 +1596,28 @@ fn extract_phase1_conclusion(conclusions: Vec<Conclusion>) -> Option<(String, St
     Some((first.this, source))
 }
 
+/// The concept's bookmark name from a phase-1 frame, for the
+/// declaration's `&anchor`. Absent for a concept addressed by URI.
+fn phase1_name(conclusions: &[Conclusion]) -> Option<String> {
+    ipld_str(conclusions.first()?.fields.get("name")).map(str::to_owned)
+}
+
+/// Every `facet -> template` entry in a folded view conclusion's
+/// `show` dictionary. [`show_template`] reads one; this reads them
+/// all, for the view panel's switcher.
+fn all_facets(conclusion: &Conclusion) -> BTreeMap<String, String> {
+    let Some(Ipld::Map(entries)) = conclusion.fields.get("show") else {
+        return BTreeMap::new();
+    };
+    entries
+        .iter()
+        .filter_map(|(facet, template)| match template {
+            Ipld::String(template) => Some((facet.clone(), template.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The facet this display renders: the explicit `view=` facet, else
 /// the mode default (`ui` with an entity, `directory` without).
 fn effective_facet(s: &Inner) -> String {
@@ -1343,6 +1644,10 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     // `show: {facet: template}` on the model entity's conclusion.
     let facet = effective_facet(&s);
     let folded = crate::fold::select_rows(conclusions);
+    // Retain the whole dictionary, not just the facet being rendered.
+    // "Which views does this model have?" is a question the mounted
+    // one cannot answer, and the frame already carries the answer.
+    s.facets = folded.first().map(all_facets).unwrap_or_default();
     let resolved = folded
         .first()
         .and_then(|c| show_template(c, &facet).map(str::to_owned));
@@ -2018,6 +2323,11 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
     // descriptor JSON is parsed once here so click-time event
     // handlers don't pay the parse cost.
     let mut descriptors: Descriptors = Descriptors::new();
+    // The same resolution, kept for the introspection command panel:
+    // a name that resolved to nothing is recorded as `None` rather
+    // than dropped, since a template binding a command that does not
+    // exist is precisely what a reader needs told.
+    let mut resolved: BTreeMap<String, Option<String>> = BTreeMap::new();
     for name in &concept_names {
         // Bail mid-loop if a newer refresh has started — no point
         // resolving descriptors for a snapshot we won't install.
@@ -2032,6 +2342,7 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
         // pinned-`this` concept resolves via the Name index too.
         match resolve_model(host, name).await {
             Ok((_entity, descriptor_json)) => {
+                resolved.insert(name.clone(), Some(descriptor_json.clone()));
                 match serde_json::from_str::<serde_json::Value>(&descriptor_json) {
                     Ok(value) => {
                         descriptors.insert(name.clone(), value);
@@ -2048,6 +2359,7 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
                 // it will silently no-op on click. Continue with
                 // the rest so partial failures don't break the
                 // whole delegate.
+                resolved.insert(name.clone(), None);
             }
         }
     }
@@ -2086,6 +2398,7 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
         return;
     }
     s.delegate = Some(delegate);
+    s.command_descriptors = resolved;
     drop(s);
 
     // Persist readiness as a queryable marker *before* announcing it, so a
@@ -2120,7 +2433,35 @@ fn handle_entity_frame(
     // Everything is a list of folds: group the flat rows by `this` into
     // one folded conclusion per subject. Cardinality-one is just a
     // one-element frame; the renderer iterates `{this}` over the frame.
-    let frame = crate::fold::select_rows(conclusions);
+    apply_entity_frame(
+        host,
+        state,
+        crate::fold::select_rows(conclusions),
+        reconnect,
+    );
+}
+
+/// Apply an already-folded frame.
+///
+/// Split from [`handle_entity_frame`] so introspection can replay a
+/// recorded frame without folding it a second time. A folded frame is
+/// the whole state, so replaying one is how rewinding works: hand the
+/// renderer frame *i* again and it reconciles back to what frame *i*
+/// looked like. Nothing is inverted and nothing is reconstructed.
+fn apply_entity_frame(
+    host: &Element,
+    state: &Rc<RefCell<Inner>>,
+    frame: Vec<Conclusion>,
+    reconnect: bool,
+) {
+    // Record the arrival, and stop here if the display is being held.
+    // A held frame is still recorded — that is the point of holding,
+    // to be able to step forward into what was missed.
+    if let Some(recorder) = state.borrow_mut().recorder.as_mut()
+        && recorder.arrived(frame.clone()) == Arrival::Hold
+    {
+        return;
+    }
 
     if frame.is_empty() {
         // HOLD a reconnect-empty over previously rendered content: the
@@ -2322,20 +2663,27 @@ async fn diagnose_no_entity(
                     .to_owned();
                 // The typed probe missed. Re-probing under the OTHER
                 // value types tells a mistyped fact (present under a
-                // different spelling) from a truly absent one — and
-                // pins which type actually holds it, so the value can
-                // be shown in ITS spelling (`+33`, not a bare `33`
-                // that would read as the very type it is not).
-                let declared_wire = spec.get("as").and_then(|t| t.as_str());
-                let mut found: Option<(String, &str)> = None;
+                // different type) from a truly absent one — and pins
+                // which type actually holds it, so the diagnosis can
+                // name both types next to the value.
+                let declared_wire = spec
+                    .get("as")
+                    .and_then(|t| t.as_str())
+                    .and_then(ValueType::from_wire);
+                let mut found: Option<(String, ValueType)> = None;
                 if let Some(declared_wire) = declared_wire {
-                    for candidate in ["SignedInteger", "UnsignedInteger", "Float", "Text"] {
+                    for candidate in [
+                        ValueType::Integer,
+                        ValueType::Natural,
+                        ValueType::Float,
+                        ValueType::Text,
+                    ] {
                         if candidate == declared_wire {
                             continue;
                         }
                         let mut probe = spec.clone();
                         if let Some(probe) = probe.as_object_mut() {
-                            probe.insert("as".into(), serde_json::json!(candidate));
+                            probe.insert("as".into(), serde_json::json!(candidate.uri()));
                         }
                         if let Some(value) = probe_field(host, &entity, field, &probe).await {
                             found = Some((spell_value(&value, candidate), candidate));
@@ -2345,11 +2693,16 @@ async fn diagnose_no_entity(
                 }
                 match (found, declared_wire) {
                     (Some((spelled, actual)), Some(declared_wire)) => {
+                        let actual = actual.anchor();
+                        let article = if actual.starts_with(['a', 'e', 'i', 'o', 'u']) {
+                            "an"
+                        } else {
+                            "a"
+                        };
                         let message = format!(
-                            "Attribute {uri} holds {spelled} — a {actual} value; the \
+                            "Attribute {uri} holds {spelled} — {article} {actual} value; the \
                              concept reads it as {declared}",
-                            actual = type_spelling(actual),
-                            declared = type_spelling(declared_wire),
+                            declared = declared_wire.anchor(),
                         );
                         mistyped.push((field.clone(), spelled, message));
                     }
@@ -2398,30 +2751,13 @@ fn first_field_text(value: &JsValue, field: &str) -> Option<String> {
     }
 }
 
-/// Spell a probed value the way its type is written in notation:
-/// signed integers carry an explicit sign, floats their decimal
-/// point, text its quotes.
-fn spell_value(value: &str, wire_type: &str) -> String {
+/// Spell a probed value as notation: text takes its quotes; a number
+/// is written plainly, since a literal's spelling carries no type (the
+/// diagnosis names the type beside it).
+fn spell_value(value: &str, wire_type: ValueType) -> String {
     match wire_type {
-        "SignedInteger" if !value.starts_with('-') => format!("+{value}"),
-        "Float" if !value.contains('.') => format!("{value}.0"),
-        "Text" => format!("{value:?}"),
+        ValueType::Text => format!("{value:?}"),
         _ => value.to_owned(),
-    }
-}
-
-/// The `as:` spelling of a wire descriptor type, for the diagnosis
-/// message.
-fn type_spelling(ty: &str) -> String {
-    match ty {
-        "Text" => "text".into(),
-        "UnsignedInteger" => "unsigned-integer".into(),
-        "SignedInteger" => "signed-integer".into(),
-        "Float" => "float".into(),
-        "Boolean" => "boolean".into(),
-        "Entity" => "entity".into(),
-        "Symbol" => "symbol".into(),
-        other => other.to_owned(),
     }
 }
 
@@ -6379,7 +6715,7 @@ mod tests {
                     rows(&[]),
                     // TYPED probe of `count`: no unsigned value
                     rows(&[]),
-                    // SignedInteger re-probe: the fact lives there
+                    // `integer:` re-probe: the fact lives there
                     rows(&[("id:demo-counter", &[("count", "41")])]),
                 ],
                 Some(model_concept_frame()),
@@ -6399,15 +6735,15 @@ mod tests {
                 .await
                 .expect("the mismatch diagnosis renders");
             for _ in 0..200 {
-                if (query.text_content().unwrap_or_default()).contains("+41") {
+                if (query.text_content().unwrap_or_default()).contains("41") {
                     break;
                 }
                 sleep(5).await;
             }
             let text = query.text_content().unwrap_or_default();
             assert!(
-                text.contains("count") && text.contains("+41"),
-                "the stored value shows in ITS spelling, not a blank: {text}"
+                text.contains("count") && text.contains("41"),
+                "the stored value shows as the number it is, not a blank: {text}"
             );
             let notation = display
                 .query_selector("[data-error-2]")
@@ -6415,7 +6751,7 @@ mod tests {
                 .expect("the mistyped line carries its story");
             let message = notation.get_attribute("data-error-2").unwrap_or_default();
             assert!(
-                message.contains("signed-integer") && message.contains("unsigned-integer"),
+                message.contains("an integer value") && message.contains("reads it as natural"),
                 "the squiggle names both types: {message}"
             );
             let callout = display

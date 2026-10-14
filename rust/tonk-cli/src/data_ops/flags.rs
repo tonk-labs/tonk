@@ -14,7 +14,12 @@ use crate::schema::type_to_notation;
 /// declared on the static subcommand — they are built into the concept's own
 /// command instead, which also puts them in `tonk assert <concept> --help`
 /// beside the fields.
-const WRITE_SWITCHES: [(&str, char, &str); 4] = [
+const WRITE_SWITCHES: [(&str, char, &str); 5] = [
+    (
+        "json",
+        '\0',
+        "Emit a structured local commit, verification, and push receipt",
+    ),
     (
         "notation",
         '\0',
@@ -35,6 +40,8 @@ const WRITE_SWITCHES: [(&str, char, &str); 4] = [
 
 /// What a concept's dynamic command yielded.
 pub struct ParsedFields {
+    /// Opt-in structured assert receipt (unless `json` is a schema field).
+    pub json: bool,
     /// The `(field, value)` pairs actually supplied, in schema field order.
     pub pairs: Vec<(String, String)>,
     /// The shared write switches.
@@ -116,10 +123,18 @@ pub fn parse_field_flags(
         cmd = cmd.arg(arg);
         switches.push(long);
     }
+    if switches.contains(&"json") {
+        for incompatible in ["notation", "quiet"] {
+            if switches.contains(&incompatible) {
+                cmd = cmd.mut_arg("json", |arg| arg.conflicts_with(incompatible));
+            }
+        }
+    }
 
     let matches = cmd.try_get_matches_from(argv)?;
     let flag = |name: &str| switches.contains(&name) && matches.get_flag(name);
     Ok(ParsedFields {
+        json: flag("json"),
         pairs: field_names
             .iter()
             .filter_map(|field| {

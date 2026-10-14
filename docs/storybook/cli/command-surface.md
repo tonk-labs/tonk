@@ -35,6 +35,42 @@ sync modifiers. When a remote is unavailable, local-first commands either
 complete locally with an explicit deferred-sync result or fail before a
 remote-required mutation. A rerun inspects current state and is safe.
 
+For `ACCT-C14`, committed scoped-tool content edits skip account-directory
+recording and do not emit an account-directory update warning. Local write
+verification and remote push reporting still apply. The executable regression
+is `connection_command_imports_bearer_restarts_and_keeps_account_state`.
+
+## Task-focused agent workflow
+
+For `DATA-08`, bare `show` gives a bounded application-concept overview with
+stored descriptions and typed fields. `--all` expands it to runtime concepts
+and all fields; `--notation` exports the full schema. The complete structured
+`--json` shape remains available. Inspect only the concept needed for the task.
+
+For `DATA-05`, `query CONCEPT --where FIELD=VALUE` supports exact text and
+boolean equality. Repeated filters combine with AND; many-valued fields match
+an individual value. Results are not truncated. Resolve ambiguous matches
+before choosing an entity; unsupported types and duplicate fields are errors.
+
+For `DATA-03` / `DATA-04`, assert receipts separate local commit, fresh local
+verification of requested values, and remote push. `--json` returns
+`tonk.assert.v1`; a schema field named `json` retains its field meaning.
+A verified receipt needs no duplicate read for that check. Dry runs report
+verification not run. Failed verification calls for inspection, while a failed
+push calls for retrying `tonk push` without repeating the saved write. UI changes
+still require rendered verification.
+
+For `SPACE-09`, missing `space agents get` instructions are a successful empty
+result, not a reason to create instructions. Real read errors still fail.
+The `ACCT-C14` tool handoff teaches this task-focused workflow after connection.
+
+Local evidence for this change: 458 focused Rust tests, a fresh four-command
+agent trajectory, and independent full-state comparison after replay on the
+final binary. See [workflow validation](../../../plans/2026-10-05-cli-agent-workflow.md)
+for exact commands and limits. This does not establish production timing,
+interrupted-write behavior, or rendered browser coverage. The implementation
+and this contract are delivered together on base `90ba1f90d`.
+
 ## Complete command inventory
 
 ### Root, help, inspection, and selection
@@ -42,7 +78,7 @@ remote-required mutation. A rerun inspects current state and is safe.
 | Entry | Journey IDs | Variants that require coverage |
 | --- | --- | --- |
 | `tonk`, `tonk help`, `help --all`, `help --guides`, `help NAME` | `CLI-01` | TTY/pipe, known/unknown command and guide, hidden commands, width/color, broken pipe. |
-| `show [NAME [ENTITY]]` | `DATA-08` | Schema/concept/view/bookmark/URI, human/JSON/notation, missing/ambiguous target. |
+| `show [NAME [ENTITY]]` | `DATA-08` | Bounded application overview, --all, descriptions, concept/view/bookmark/URI, human/JSON/notation, missing/ambiguous target. |
 | `status` | `SYNC-01` | Human/JSON, every upstream relation, unreachable/revoked/corrupt state. |
 | global `--space NAME` | `SPACE-02` | Precedence over environment and binding, missing name, no persistent mutation. |
 | global `--verbose` | `CLI-02` | Full error chain on stderr without changing exit class or machine output. |
@@ -54,10 +90,10 @@ remote-required mutation. A rerun inspects current state and is safe.
 | `concept`, `concept --json`, `concept add` | `DATA-01` | Empty/list, typed fields/cardinality, optional description, notation, write modifiers. |
 | `view`, `view --json`, `view add` | `DATA-02` | Detail/directory/label/title, inline/file template, explicit/default anchor and derived entity, entity-like anchor rejection, home, notation, write modifiers. |
 | `element`, `element --json`, `element add` | `DATA-12` | Empty/list, inline/file method source, attribute defaults, description required, re-authoring one method or one default, legacy `component` rows alongside, notation, write modifiers. |
-| `assert [CONCEPT] [ENTITY] ...` | `DATA-03`, `DATA-04` | Dynamic help, create/update/no-op, schema flags, notation/dry-run/no-sync/quiet. |
-| `query CONCEPT` | `DATA-05` | Empty/many, human/JSON, invalid/missing concept, broken pipe. |
+| `assert [CONCEPT] [ENTITY] ...` | `DATA-03`, `DATA-04` | Dynamic help, create/update/no-op, schema flags, JSON commit/verification/push receipt, notation/dry-run/no-sync/quiet. |
+| `query CONCEPT [--where FIELD=VALUE]` | `DATA-05` | Empty/many/ambiguous, typed equality and repeated AND filters, human/JSON, invalid/missing concept or field, broken pipe. |
 | `retract CONCEPT ENTITY [--field]` | `DATA-06` | Whole/field/many field, notation/dry-run/no-sync/quiet, already retracted. |
-| `eval` | `DATA-07` | `-c`, file, explicit `-`, implicit piped stdin, query/write/mixed, JSON/quiet/home/dry-run/no-sync; a file resolves `!include` / `!include/text` next to itself, other sources refuse them. |
+| `eval` | `DATA-07` | `-c`, one file or several (evaluated in the order given as one commit; a later file sees an earlier one's declarations; a rejected file named, nothing committed; `-` refused among paths), explicit `-`, implicit piped stdin, query/write/mixed, JSON/quiet/home/dry-run/no-sync; a file resolves `!include` / `!include/text` / `!include/asset` next to itself, other sources refuse them. |
 | `render ROUTE [--out PATH]` | `DATA-09` | Directory/detail/explicit view, every matching view once in entity order, frame-wide portal mode, default fallback only for an empty renderable match, stdout/file, missing route/view, output failure. |
 
 ### Collaboration and sync
@@ -65,8 +101,8 @@ remote-required mutation. A rerun inspects current state and is safe.
 | Entry | Journey IDs | Variants that require coverage |
 | --- | --- | --- |
 | `invite` | `COLLAB-01`, `COLLAB-02` | Default/base URL, remote/no-remote, recipient root, shorten/no-shorten/env, zero/one/many remotes. |
-| `join TOOL_URL [--name NAME] [--agent-name LABEL] [--via ORIGIN]`, `--space NAME join` | `COLLAB-03`, `COLLAB-05`, `ACCT-C14` | Scoped v1/v2 full/short, default/explicit/environment deployment selection, route mismatch, malformed/mixed/expired/revoked/already imported, ordinary-link rejection, scoped resume, persisted legacy-person resume, name/site collision; bounded self-reported agent labels remain separate from local aliases and persist across setup retries. |
-| `push` | `SYNC-02` | `R0`–`R6`, timeout/lost response/concurrent push, account/invite authority. |
+| `join TOOL_URL [--name NAME] [--agent-name LABEL] [--installation ID] [--via ORIGIN]`, `--space NAME join` | `COLLAB-03`, `COLLAB-05`, `ACCT-C14` | Scoped v1/v2 full/short, default/explicit/environment deployment selection, route mismatch, malformed/mixed/expired/revoked/already imported, ordinary-link rejection, scoped resume, persisted legacy-person resume, name/site collision; bounded self-reported agent labels remain separate from local aliases and persist across setup retries; a caller-chosen installation identity (hidden, for CI) persists the same way and makes repeated from-scratch joins confirm one installation. |
+| `push` | `SYNC-02` | `R0`–`R6`, timeout/lost response/concurrent push, account/invite authority; the push after a committing write pulls and retries when the upstream moved. |
 | `pull` | `SYNC-03` | `R0`–`R6`, divergence, concurrent local/remote change, restart before ref update. |
 | `remote`, `remote --json` | `CLI-03` | Empty/many, stable JSON, malformed registry. |
 | `remote add NAME URL [--revocation-url] [--subject]` | `CLI-03` | Invalid/conflicting values, existing upstream preserved, partial meta write. |
@@ -80,7 +116,7 @@ remote-required mutation. A rerun inspects current state and is safe.
 | `space new NAME [--site PATH]` | `SPACE-03`, `SPACE-04`, `SPACE-05` | Signed out/in, canonical/custom/adopt, collisions, customer/provider states, crash stages. |
 | `space use NAME` | `SPACE-02`, `SPACE-06` | Current/nested directory, missing name, write failure, symlink/platform path. |
 | `space home CONCEPT...` | `SPACE-09`, `DATA-02` | Blank/existing, ordered models, notation/dry-run/no-sync/quiet, invalid model. |
-| `space agents`, `space agents get [--json]` | `SPACE-09` | Missing/present claim, Markdown/JSON, revision metadata. |
+| `space agents`, `space agents get [--json]` | `SPACE-09` | Missing claim succeeds with empty output data; present claim, Markdown/JSON, revision metadata, real read errors. |
 | `space agents set [PATH|-]` | `SPACE-09` | Default/file/stdin, empty/invalid encoding/large input, write modifiers. |
 | `space link SPACE` | `SPACE-10` | Signed out, local-only/already owned/joined/foreign, activation/offline/crash/retry. |
 | `space rm NAME [--keep-data] [--yes]` | `SPACE-07`, `SPACE-08` | TTY/non-TTY, confirm/decline, owned/listed/local-only, missing/partial data. |
@@ -106,8 +142,8 @@ remote-required mutation. A rerun inspects current state and is safe.
 
 | Entry | Journey IDs | Variants that require coverage |
 | --- | --- | --- |
-| `blob`, `blob --json` | `DATA-10` | Empty/many, human/JSON, corrupt/missing metadata. |
-| `blob add FILE [--type]` | `DATA-10`, `SYNC-04` | Inferred/explicit type, dry-run/no-sync/quiet, changed/large/unreadable file, disk full. |
+| `blob`, `blob --json` | `DATA-10` | Empty/many, human/JSON, corrupt/missing metadata; assets described with `tonk.dialog.asset/*` and legacy blobs with `xyz.tonk.blob/*` both list. |
+| `blob add FILE [--type]` | `DATA-10`, `SYNC-04` | Inferred/explicit type recorded as `tonk.dialog.asset/media-type` (with `/name`), dry-run/no-sync/quiet, changed/large/unreadable file, disk full. |
 | `blob cat BLOB_URI` | `DATA-10` | Valid/missing/malformed/corrupt blob, binary stdout/broken pipe. |
 | `export [--out] [--branch]` | `DATA-11` | Empty/many, stdout/file, escaping, branch missing, atomic output. |
 | `import PATH [--branch]` | `DATA-11`, `SYNC-04` | Empty/malformed/partial CSV, duplicates, write modifiers, retry after row failure. |

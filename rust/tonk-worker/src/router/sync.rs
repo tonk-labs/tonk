@@ -750,6 +750,7 @@ pub async fn pull(
             // and a view left waiting repainted only on its next
             // unrelated poll (or a manual refresh).
             if after != before {
+                migrate_adopted_head(&tonk_state, &params.repo, &params.branch).await;
                 let session = tonk_state
                     .reactor
                     .repository(&params.repo)
@@ -783,6 +784,22 @@ pub async fn pull(
             Err(error)
         }
     }
+}
+
+/// Move a head a pull just adopted to this release's layout before the
+/// views over it are polled. The head an earlier release pushed, the
+/// profile an account links for instance, is laid out the earlier way;
+/// a view polled against it before the move reads definitions and rules
+/// this release does not match and shows them missing until a later
+/// commit or a newly opened query runs the move. Nothing to move, or a
+/// move this process already ran, is one root read; a failure is logged
+/// by the gate and the poll proceeds on what the earlier release left.
+async fn migrate_adopted_head(tonk_state: &crate::worker::TonkState, repo: &str, branch: &str) {
+    let _ = super::query::migrate_while_opening(
+        tonk_state,
+        tonk_state.reactor.repository(repo).branch(branch),
+    )
+    .await;
 }
 
 /// Push local changes to the upstream remote.
@@ -1145,6 +1162,7 @@ pub async fn sync(
     // a refused or empty push left views waiting on a repaint that only
     // a manual refresh provided.
     if after_pull.is_some() && after_pull != before {
+        migrate_adopted_head(&tonk_state, &params.repo, &params.branch).await;
         tonk_state
             .reactor
             .schedule_poll(std::sync::Arc::clone(&session.state));

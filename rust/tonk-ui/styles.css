@@ -2205,29 +2205,61 @@ account-settings .link-foot .m-cancel { box-shadow: 0 0 0 1px var(--ring); }
 account-settings [data-ceremony-status] { color: var(--ink); }
 account-settings [data-ceremony-status][hidden] { display: none; }
 
-/* CLI approval follows the Hub's row stack rather than the settings sheet. */
+/* Device approval uses the account page's spacious card and inset facts.
+   Keep the shared ceremony status and custody seat outside the card: the
+   host passkey surface replaces this pane while a ceremony is open. */
 account-settings .s-body:has([data-link-approval]:not([hidden])) {
     min-height: 0; max-height: none; overflow: visible; padding: 0;
     background: none; border: 0; position: relative;
+    width: 100%; max-width: 720px;
 }
 account-settings [data-link-approval]:not([hidden]) {
-    display: flex; flex-direction: column; gap: 7px;
+    display: flex; flex-direction: column; gap: 24px;
+    padding: 28px; background: var(--card); color: var(--ink);
 }
-account-settings [data-link-approval] > :is(.sect, .srowd, .expl),
-account-settings .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) {
-    box-sizing: border-box; margin: 0; padding: 10px 16px;
-    min-height: 36px; max-width: none; background: var(--card);
-    border: 0; box-shadow: 0 0 0 1px var(--ring);
+account-settings .link-heading {
+    margin: 0; font: 600 22px/1.25 var(--cond); text-wrap: balance;
 }
-account-settings [data-link-approval] .srowd b {
-    min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: right;
+account-settings .link-details { display: grid; gap: 8px; margin: 0; }
+account-settings .link-details > div {
+    display: grid; grid-template-columns: 88px minmax(0, 1fr);
+    align-items: baseline; gap: 16px; padding: 16px;
+    background: var(--wash);
 }
-account-settings [data-link-approval] .link-foot { margin: 0; }
+account-settings .link-details dt { font: 500 15px/1.4 var(--cond); color: var(--soft); }
+account-settings .link-details dd {
+    min-width: 0; margin: 0; font: 600 16px/1.4 var(--cond);
+    overflow-wrap: anywhere; text-transform: none;
+}
+.hub-page account-settings [data-link-approval] .expl {
+    max-width: 60ch; margin: 0; font: 400 15px/1.6 var(--sans);
+    color: var(--soft); text-wrap: pretty;
+}
+account-settings [data-link-approval] .link-foot {
+    display: grid; grid-template-columns: 1fr 1fr; margin: 0;
+}
 account-settings [data-link-approval] .link-foot button {
-    font: 600 13px/1 var(--cond); letter-spacing: 0.02em;
+    min-width: 0; min-height: 48px; width: auto; padding: 14px 16px;
+    font: 600 16px/1.25 var(--cond); letter-spacing: 0;
+    white-space: normal; height: auto;
 }
-account-settings .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) {
-    margin-top: 7px;
+account-settings [data-link-approval] .m-cancel {
+    background: var(--wash); box-shadow: none; text-align: left; justify-content: flex-start;
+}
+account-settings [data-link-approval] .m-cancel:hover { background: var(--wash-2); }
+account-settings [data-link-approval] button:focus-visible {
+    outline: 2px solid var(--ink); outline-offset: -4px; box-shadow: none;
+}
+account-settings [data-link-approval] .m-go:focus-visible { outline-color: var(--on-ink); }
+.hub-page account-settings .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) {
+    box-sizing: border-box; max-width: none; margin: 16px 0 0; padding: 20px 28px;
+    background: var(--card); font: 400 15px/1.6 var(--sans);
+}
+@media (max-width: 600px) {
+    account-settings [data-link-approval]:not([hidden]) { padding: 22px 20px; gap: 20px; }
+    account-settings .link-details > div { grid-template-columns: 1fr; gap: 4px; }
+    account-settings [data-link-approval] .link-foot button { padding: 14px 12px; }
+    .hub-page account-settings .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) { padding: 20px; }
 }
 account-settings [data-custody-seat] { display: none; }
 account-settings[data-passkey-screen] [data-link-approval],

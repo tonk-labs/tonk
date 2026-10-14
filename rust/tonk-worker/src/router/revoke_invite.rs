@@ -33,9 +33,13 @@ use crate::{TonkState, TonkWorkerError};
 /// `/use`, so this is the level a proof search has to aim at; a `/` chain
 /// (the founder's, an admin's) covers it too.
 fn space_scope(subject: &Did) -> Scope {
+    scope_at(subject, "/use")
+}
+
+fn scope_at(subject: &Did, command: &str) -> Scope {
     Scope {
         subject: UcanSubject::Specific(subject.clone()),
-        command: Command::parse("/use").expect("the use command always parses"),
+        command: Command::parse(command).expect("the scopes searched here are fixed commands"),
         parameters: Parameters::default(),
     }
 }
@@ -55,9 +59,31 @@ pub(super) async fn prove_path(
     subject: &Did,
     audience: &Did,
 ) -> Result<DelegationChain, TonkWorkerError> {
+    prove_path_with(branch, tonk, audience, space_scope(subject)).await
+}
+
+/// [`prove_path`] for a grant narrower than `/use`: a publication grants
+/// the public principal `/use/get`, which a search aimed at `/use` never
+/// reaches.
+pub(super) async fn prove_path_at(
+    branch: &dialog_repository::Branch,
+    tonk: &TonkState,
+    subject: &Did,
+    audience: &Did,
+    command: &str,
+) -> Result<DelegationChain, TonkWorkerError> {
+    prove_path_with(branch, tonk, audience, scope_at(subject, command)).await
+}
+
+async fn prove_path_with(
+    branch: &dialog_repository::Branch,
+    tonk: &TonkState,
+    audience: &Did,
+    scope: Scope,
+) -> Result<DelegationChain, TonkWorkerError> {
     let proof = branch
         .delegations()
-        .prove(audience.clone(), space_scope(subject))
+        .prove(audience.clone(), scope)
         .perform(&tonk.operator)
         .await
         .map_err(|error| {

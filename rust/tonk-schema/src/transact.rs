@@ -82,7 +82,7 @@ pub fn application_plan_from_predicate(application: PredicateApplication) -> App
 pub fn derive_this(predicate: &Entity, payload: &ValueMap) -> Entity {
     Entity::of(&DigestInput {
         assert: predicate,
-        payload,
+        payload: Untagged(payload),
     })
 }
 
@@ -96,7 +96,24 @@ pub fn derive_this(predicate: &Entity, payload: &ValueMap) -> Entity {
 struct DigestInput<'a, P: Serialize> {
     assert: &'a P,
     #[serde(rename = "where")]
-    payload: &'a IndexMap<String, Value>,
+    payload: Untagged<'a>,
+}
+
+/// The payload with each value written bare ([`Value::untagged`]), as
+/// every release before dialog tagged values in binary encodings wrote
+/// it, so an entity derived from the same payload stays the same
+/// entity across the upgrade.
+struct Untagged<'a>(&'a IndexMap<String, Value>);
+
+impl Serialize for Untagged<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (key, value) in self.0 {
+            map.serialize_entry(key, &value.untagged())?;
+        }
+        map.end()
+    }
 }
 
 /// One lowered write — an assertion or a retraction of an
@@ -359,7 +376,6 @@ impl From<DomainApplication> for ConceptQuery {
     fn from(d: DomainApplication) -> Self {
         use dialog_query::{
             AttributeDescriptor, Cardinality as DialogCardinality, ConceptDescriptor,
-            attribute::The,
         };
 
         let mut entries: Vec<(String, AttributeDescriptor)> = Vec::new();
@@ -372,7 +388,7 @@ impl From<DomainApplication> for ConceptQuery {
                 continue;
             }
             let uri = format!("{}/{}", d.domain, name);
-            let the: The = uri
+            let the: Relation = uri
                 .parse()
                 .expect("DomainApplication parameters were validated at analysis time");
             entries.push((
@@ -385,7 +401,7 @@ impl From<DomainApplication> for ConceptQuery {
         // set, so fall back to a single placeholder field — the
         // predicate is unused for matching in that degenerate case.
         if entries.is_empty() {
-            let the: The = format!("{}/_", d.domain)
+            let the: Relation = format!("{}/_", d.domain)
                 .parse()
                 .expect("domain is a valid attribute prefix");
             entries.push((
@@ -638,8 +654,6 @@ fn collect_variable_names(params: &Parameters, out: &mut HashSet<String>) {
 /// skipped on assert and skipped on retract — retract treats
 /// only fields with concrete values as targets.
 fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert: bool) {
-    use dialog_query::Cardinality;
-
     let Some(this) = query.terms.get("this") else {
         return;
     };
@@ -657,10 +671,12 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
         // A collection entry is written under `domain/key`; the key is
         // the literal the assertion named, carried in the field's key
         // operand. An entry with no key has no fact to write.
-        let the: dialog_artifacts::Attribute = match attribute.the().attribute() {
+        let the: dialog_artifacts::Relation = match attribute.the().attribute() {
             Some(the) => the,
             None => {
-                let key = query.terms.get(&Relation::key_operand(field_name));
+                let key = query
+                    .terms
+                    .get(&dialog_query::attribute::The::key_operand(field_name));
                 let Some(Term::Constant(Value::String(key))) = key else {
                     continue;
                 };
@@ -671,19 +687,15 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
             }
         };
         if assert {
-            // Cardinality-one fields use `associate_unique` so a
-            // re-assert of the same attribute on the same entity
-            // *replaces* the prior value rather than accumulating
-            // multiple claims. Cardinality-many fields stay
-            // additive (the whole point is multiple values).
-            match attribute.cardinality() {
-                Cardinality::One => {
-                    update.associate_unique(the, this_entity.clone(), value.clone());
-                }
-                Cardinality::Many => {
-                    update.associate(the, this_entity.clone(), value.clone());
-                }
-            }
+            // A write follows the field's policy: `all` appends, and a
+            // choosing policy (`last`, `max`, `min`, `top`) succeeds the
+            // claim it elects, which dialog resolves at commit.
+            update.associate(
+                the,
+                this_entity.clone(),
+                value.clone(),
+                attribute.descriptor().pick().clone(),
+            );
         } else {
             update.dissociate(the, this_entity.clone(), value.clone());
         }
@@ -756,10 +768,10 @@ mod tests {
         let mut changes = Changes::new();
         plan.assert(&mut changes);
 
-        let width_attr: dialog_artifacts::Attribute = "xyz.tonk.column/width".parse().unwrap();
+        let width_attr: dialog_artifacts::Relation = "xyz.tonk.column/width".parse().unwrap();
         let saw_width = changes.into_instructions().into_iter().any(|inst| {
             let artifact = match &inst {
-                Instruction::Assert(a) | Instruction::Replace(a) => a,
+                Instruction::Assert(a, _) => a,
                 Instruction::Retract(_) => return false,
             };
             artifact.the == width_attr
@@ -780,7 +792,7 @@ mod tests {
 
         let id_alice: Entity = "id:alice".parse().unwrap();
         let target: Entity = target_uri.parse().unwrap();
-        let meta_name: dialog_artifacts::Attribute = "db.name/referent".parse().unwrap();
+        let meta_name: dialog_artifacts::Relation = "db.name/referent".parse().unwrap();
 
         let mut id_alice_name_claim_count = 0;
         let mut wrong_direction_count = 0;
@@ -791,7 +803,7 @@ mod tests {
             // the desugared `name!` lands as a Replace, not an
             // Assert.
             let artifact = match &inst {
-                Instruction::Assert(a) | Instruction::Replace(a) => a,
+                Instruction::Assert(a, _) => a,
                 Instruction::Retract(_) => continue,
             };
             if artifact.the == meta_name {
@@ -824,7 +836,7 @@ mod tests {
 
         let id_alice: Entity = "id:alice".parse().unwrap();
         let target: Entity = target_uri.parse().unwrap();
-        let meta_name: dialog_artifacts::Attribute = "db.name/referent".parse().unwrap();
+        let meta_name: dialog_artifacts::Relation = "db.name/referent".parse().unwrap();
 
         let saw_dissociate = changes.into_instructions().into_iter().any(|inst| {
             matches!(
@@ -865,11 +877,11 @@ mod tests {
         let mut changes = Changes::new();
         plan.assert(&mut changes);
 
-        let meta_name: dialog_artifacts::Attribute = "db.name/referent".parse().unwrap();
+        let meta_name: dialog_artifacts::Relation = "db.name/referent".parse().unwrap();
         let saw_meta_name = changes
             .into_instructions()
             .into_iter()
-            .any(|inst| matches!(inst, Instruction::Assert(a) if a.the == meta_name));
+            .any(|inst| matches!(inst, Instruction::Assert(a, dialog_artifacts::Pick::All) if a.the == meta_name));
         assert!(
             !saw_meta_name,
             "anonymous bindings should not emit any db.meta/name claim"

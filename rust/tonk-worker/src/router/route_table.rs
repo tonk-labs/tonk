@@ -53,6 +53,7 @@ const ROUTES: &[&str] = &[
     "/api/repository/{repo}/branch/{branch}/claim/retract/{entity}/{attr_ns}/{attr_name}",
     "/api/repository/{repo}/branch/{branch}/claim/select",
     "/api/repository/{repo}/branch/{branch}/evaluate",
+    "/api/repository/{repo}/branch/{branch}/evaluate/conditional",
     "/api/repository/{repo}/branch/{branch}/export",
     "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
     "/api/repository/{repo}/branch/{branch}/import",

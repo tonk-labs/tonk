@@ -465,7 +465,13 @@ fn upstream_target(branch: &Branch) -> String {
 fn map_push_error(error: PushError) -> SyncError {
     match error {
         PushError::BranchHasNoUpstream { branch } => SyncError::UpstreamNotConfigured { branch },
-        PushError::NonFastForward { .. } => SyncError::NonFastForward,
+        // A push that loses the race for the upstream head after the
+        // fast-forward check passed is refused by the conditional head
+        // write instead. Either way the upstream moved: pull and retry.
+        PushError::NonFastForward { .. }
+        | PushError::Publish(dialog_repository::PublishError::VersionMismatch { .. }) => {
+            SyncError::NonFastForward
+        }
         other => classify_failure(&other),
     }
 }

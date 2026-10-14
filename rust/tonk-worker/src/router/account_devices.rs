@@ -129,7 +129,9 @@ pub async fn register(
     State(state): State<AppState>,
     Json(request): Json<RegisterDeviceRequest>,
 ) -> Result<Json<serde_json::Value>, TonkWorkerError> {
+    let mut timing = super::link_timing::LinkTiming::new("registration", "state-lock");
     let state = state.read().await;
+    timing.next("decode-grant");
     let bytes = hex::decode(&request.delegation_hex).map_err(|error| {
         TonkWorkerError::Conflict(format!("device delegation is not valid hex: {error}"))
     })?;
@@ -145,12 +147,15 @@ pub async fn register(
             request.did
         )));
     }
+    timing.next("describe-device");
     crate::onboarding::describe_device_link(&state, &chain, request.name)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("describe the registered device: {error}"))
         })?;
+    timing.next("push-account");
     if let Err(push_error) = super::account_state::push_account_main(&state).await {
+        timing.next("fallback-sweep");
         let (status, swept) = super::account_state::ensure_account_state_swept(&state).await;
         match status {
             tonk_account::AccountStateStatus::Unconfigured => {
@@ -170,6 +175,7 @@ pub async fn register(
     }
     // The delegation CID is the attachment id now: it names the exact
     // grant this registration described, which is what the id was for.
+    timing.next("reply");
     let attachment_id = chain.proof_cids()[0].to_string();
     Ok(Json(serde_json::json!({ "attachmentId": attachment_id })))
 }

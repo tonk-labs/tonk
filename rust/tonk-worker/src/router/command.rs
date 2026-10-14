@@ -217,6 +217,8 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<super::repository::EnableSyncRequest>()
         .command::<tonk_schema::command::Load>()
         .command::<tonk_schema::command::PromoteMember>()
+        .command::<tonk_schema::command::PublishSpace>()
+        .command::<tonk_schema::command::UnpublishSpace>()
         .command::<tonk_schema::command::EnrollCustomer>()
         .command::<tonk_schema::command::ResendActivation>()
         .command::<tonk_schema::command::DeleteAccount>()
@@ -249,6 +251,9 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::ViewMembers>()
         .command::<tonk_schema::command::ConnectAgent>()
         .command::<tonk_schema::command::ConnectSpace>()
+        // Opens the introspection overlay; the same site-request shape,
+        // answered by the overlay rather than the bar.
+        .command::<tonk_schema::command::Inspect>()
         // What the page in a tab has selected, recorded on its site.
         .command::<tonk_schema::command::SiteSelect>()
         // What was typed in the command palette, interpreted.
@@ -338,8 +343,7 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
                     .into_instructions()
                     .into_iter()
                     .map(|instruction| match instruction {
-                        dialog_artifacts::Instruction::Assert(artifact)
-                        | dialog_artifacts::Instruction::Replace(artifact)
+                        dialog_artifacts::Instruction::Assert(artifact, _)
                         | dialog_artifacts::Instruction::Retract(artifact) => {
                             artifact.the.to_string()
                         }
@@ -627,8 +631,7 @@ pub(crate) mod tests {
                     .assert(&mut changes);
                 // One entity → its facts.
                 match changes.into_instructions().into_iter().next().unwrap() {
-                    dialog_artifacts::Instruction::Assert(a)
-                    | dialog_artifacts::Instruction::Replace(a)
+                    dialog_artifacts::Instruction::Assert(a, _)
                     | dialog_artifacts::Instruction::Retract(a) => vec![a],
                 }
             };
@@ -714,10 +717,16 @@ pub(crate) mod tests {
         /// installed is the REAL one, not a test double.
         pub(crate) async fn test_state() -> AppState {
             let name = format!("command-dispatch-test-{}", rand::random::<u64>());
-            let (storage, profile) =
-                crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
-                    .await
-                    .unwrap();
+            // Isolate the directory-level system key as well as the profile.
+            let directory = dialog_effects::storage::Directory::At(
+                std::env::temp_dir()
+                    .join(&name)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            let (storage, profile) = crate::device::open_profile_at(&name, directory.clone())
+                .await
+                .unwrap();
             let session = crate::session::open(&profile).await.unwrap();
             let reactor = crate::Reactor::new(profile.credential().clone());
             let state = TonkState {
@@ -741,7 +750,7 @@ pub(crate) mod tests {
                 profile_library: Default::default(),
                 registry: crate::device::Registry {
                     profile: name.clone(),
-                    directory: dialog_effects::storage::Directory::Profile,
+                    directory,
                 },
                 profile_transition: Default::default(),
                 context_generation: Default::default(),

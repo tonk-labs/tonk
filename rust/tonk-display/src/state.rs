@@ -62,6 +62,14 @@ pub enum State {
     /// Author/protocol error — a bad `model`/`entity` attribute or a
     /// decode failure. Recovers when the author fixes the attribute.
     Malformed,
+    /// The worker is moving the branch to this release's storage format
+    /// before it answers; the rows follow when it is done. Quiet, like
+    /// `loading`, but says what is taking the time.
+    Upgrading,
+    /// The worker could not move the branch to this release's storage
+    /// format. Loud: what the page then reads is what the earlier release
+    /// left, and a reload retries the move.
+    UpgradeFailed,
 }
 
 impl State {
@@ -80,6 +88,8 @@ impl State {
             State::Unknown => "unknown",
             State::Offline => "offline",
             State::Malformed => "malformed",
+            State::Upgrading => "upgrading",
+            State::UpgradeFailed => "upgrade-failed",
         }
     }
 
@@ -93,7 +103,11 @@ impl State {
     pub(crate) fn is_loud(self) -> bool {
         matches!(
             self,
-            State::Unauthorized | State::Offline | State::Malformed | State::Unknown
+            State::Unauthorized
+                | State::Offline
+                | State::Malformed
+                | State::Unknown
+                | State::UpgradeFailed
         )
     }
 }
@@ -108,6 +122,7 @@ pub fn state_title(state: State, kind: ErrorKind) -> &'static str {
     match state {
         State::Unknown => "Not here",
         State::Unauthorized => "No access",
+        State::UpgradeFailed => "Upgrade failed",
         _ => error_title(kind),
     }
 }
@@ -122,6 +137,7 @@ pub fn error_title(kind: ErrorKind) -> &'static str {
         ErrorKind::Network => "Connection failed",
         ErrorKind::Parse => "Couldn't read response",
         ErrorKind::Descriptor => "Invalid configuration",
+        ErrorKind::Upgrade => "Upgrade failed",
     }
 }
 
@@ -136,6 +152,7 @@ pub fn state_for(kind: ErrorKind) -> State {
     match kind {
         ErrorKind::Network => State::Offline,
         ErrorKind::Parse | ErrorKind::Descriptor | ErrorKind::UnknownSource => State::Malformed,
+        ErrorKind::Upgrade => State::UpgradeFailed,
     }
 }
 
@@ -324,6 +341,53 @@ fn remove_error_callout(host: &Element) {
 /// fallback and a loud error never clobber each other's sentinel.
 #[cfg(target_arch = "wasm32")]
 const ABSENCE_CALLOUT_ATTR: &str = "data-tonk-display-absence";
+
+/// What the built-in `upgrading` notice says, when the embedder slots
+/// nothing for the state.
+#[cfg(target_arch = "wasm32")]
+pub const UPGRADING_TITLE: &str = "Upgrading this space";
+/// Its one line of explanation.
+#[cfg(target_arch = "wasm32")]
+pub const UPGRADING_MESSAGE: &str =
+    "Your data is being moved to this release's format. This takes a moment.";
+
+/// Enter the quiet [`State::Upgrading`]: the worker is moving the branch
+/// to this release's storage format before it answers. Shows the
+/// embedder's `slot="upgrading"` child when there is one, else a neutral
+/// callout saying so. The next row frame moves the display on, as from
+/// `loading`.
+#[cfg(target_arch = "wasm32")]
+pub fn set_upgrading(host: &Element) {
+    let state = State::Upgrading;
+    let _ = host.set_attribute("data-state", state.as_str());
+    remove_error_callout(host);
+    remove_absence_callout(host);
+    if update_slot_children(host, Some(state)) {
+        return;
+    }
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Ok(callout) = document.create_element("wa-callout") else {
+        return;
+    };
+    let _ = callout.set_attribute("variant", "neutral");
+    let _ = callout.set_attribute(ABSENCE_CALLOUT_ATTR, "");
+    if let Ok(icon) = document.create_element("wa-icon") {
+        let _ = icon.set_attribute("slot", "icon");
+        let _ = icon.set_attribute("name", "arrows-rotate");
+        let _ = callout.append_child(&icon);
+    }
+    if let Ok(strong) = document.create_element("strong") {
+        strong.set_text_content(Some(UPGRADING_TITLE));
+        let _ = callout.append_child(&strong);
+    }
+    if let Ok(br) = document.create_element("br") {
+        let _ = callout.append_child(&br);
+    }
+    let _ = callout.append_child(&document.create_text_node(UPGRADING_MESSAGE));
+    let _ = host.append_child(&callout);
+}
 
 /// Enter a recoverable-absence `state` (`no-model` / `no-view` /
 /// `no-entity`), naming what was missing: a prose `label` plus a
@@ -607,6 +671,8 @@ pub(crate) const ALL: &[State] = &[
     State::Unknown,
     State::Offline,
     State::Malformed,
+    State::Upgrading,
+    State::UpgradeFailed,
 ];
 
 /// True if `slot` names a lifecycle [`State`] (so it is a slot
@@ -656,6 +722,8 @@ mod tests {
         assert_eq!(State::Unauthorized.as_str(), "unauthorized");
         assert_eq!(State::Offline.as_str(), "offline");
         assert_eq!(State::Malformed.as_str(), "malformed");
+        assert_eq!(State::Upgrading.as_str(), "upgrading");
+        assert_eq!(State::UpgradeFailed.as_str(), "upgrade-failed");
     }
 
     #[test]
@@ -671,12 +739,21 @@ mod tests {
         assert!(State::Malformed.is_loud());
         assert!(State::Offline.is_loud());
         assert!(State::Unauthorized.is_loud());
+        // An upgrade in progress is as quiet as loading; one that failed
+        // is as loud as any other settled failure.
+        assert!(!State::Upgrading.is_loud());
+        assert!(State::UpgradeFailed.is_loud());
     }
 
     #[test]
     fn it_classifies_error_kinds_into_loud_states() {
         assert_eq!(state_for(ErrorKind::Network), State::Offline);
         assert_eq!(state_for(ErrorKind::Parse), State::Malformed);
+        assert_eq!(state_for(ErrorKind::Upgrade), State::UpgradeFailed);
+        assert_eq!(
+            state_title(State::UpgradeFailed, ErrorKind::Upgrade),
+            "Upgrade failed"
+        );
         assert_eq!(state_for(ErrorKind::Descriptor), State::Malformed);
         assert_eq!(state_for(ErrorKind::UnknownSource), State::Malformed);
     }
@@ -1084,7 +1161,9 @@ mod tests {
                 | State::Unauthorized
                 | State::Unknown
                 | State::Offline
-                | State::Malformed => {}
+                | State::Malformed
+                | State::Upgrading
+                | State::UpgradeFailed => {}
             }
         }
         let mut names: Vec<&str> = ALL.iter().map(|s| s.as_str()).collect();

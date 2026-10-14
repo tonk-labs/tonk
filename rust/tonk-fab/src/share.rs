@@ -913,7 +913,7 @@ fn dispatch_enable_sync(space: &str, remote: &str, share: bool, time: f64) {
 
 /// Hand a claim to `window.tonk.transact`. A no-op wherever the bridge is not
 /// installed, rather than an error the user would see.
-fn dispatch_claim(claim: &serde_json::Value) {
+pub(crate) fn dispatch_claim(claim: &serde_json::Value) {
     let json_str = match serde_json::to_string(claim) {
         Ok(s) => s,
         Err(_) => return,

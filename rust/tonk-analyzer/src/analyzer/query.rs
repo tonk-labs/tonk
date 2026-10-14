@@ -16,7 +16,7 @@ use super::field::{
 use super::resolver_registry::{ResolverInfo, lookup_resolver};
 use super::scope::Scope;
 use crate::analyzer::Working;
-use dialog_query::attribute::Relation;
+use dialog_query::attribute::The;
 use tonk_schema::transact::{Application, DomainApplication, ThisIntent};
 
 pub(crate) fn build_query_application(
@@ -29,6 +29,17 @@ pub(crate) fn build_query_application(
     // is always `None` here.
     let (this, _name) = derive_head_intent(&query.fields, None, scope)?;
     let head_range = query.predicate.range;
+    // `..: _` retracts; a query has nothing to retract. Skipping it
+    // as a meta-key would leave a mistyped deletion (`head:` for
+    // `head!:`) silently reading instead of failing.
+    if let Some(rest) = query.fields.iter().find(|f| f.name == "..") {
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::RestRetractionInQuery {
+                head: query.predicate.source.clone(),
+            },
+            rest.name_range,
+        ));
+    }
     match &query.predicate.name {
         HeadName::Concept(concept_name) => {
             // A `tree/*` resolver reads the store's own structure, so it
@@ -99,7 +110,7 @@ pub(crate) fn build_query_application(
                     let (key, value) = entries
                         .next()
                         .expect("collection_entry_terms yields at least one entry");
-                    terms.insert(Relation::key_operand(field_name), key);
+                    terms.insert(The::key_operand(field_name), key);
                     terms.insert(field_name.into(), value);
                     // A `Parameters` map holds one `(key, value)`
                     // slot pair per field, so every further entry
@@ -109,7 +120,7 @@ pub(crate) fn build_query_application(
                     for (key, value) in entries {
                         let mut satellite = Parameters::new();
                         satellite.insert("this".into(), this_term.clone());
-                        satellite.insert(Relation::key_operand(field_name), key);
+                        satellite.insert(The::key_operand(field_name), key);
                         satellite.insert(field_name.into(), value);
                         join.push(ConceptQuery {
                             terms: satellite,
@@ -190,8 +201,9 @@ pub(crate) fn build_query_application(
                 validate_claim_attribute(domain, &field.name, field.name_range)?;
                 // Domain queries are OPEN-ENDED: a blank or variable
                 // matches every value of the attribute regardless of
-                // type, and a literal matches by its spelled type
-                // (`41` unsigned, `+41` signed). A declared attribute
+                // type, and a number literal matches the number it
+                // names (`41`, `+41` and `41.0` all find the one stored
+                // value, whatever wrote it). A declared attribute
                 // lends only its CARDINALITY (a many-attribute must
                 // enumerate every value, not select a winner) — never
                 // a value type.

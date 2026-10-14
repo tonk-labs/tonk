@@ -54,6 +54,7 @@ mod account_deletion;
 mod ceremony;
 pub(crate) mod customer;
 mod email_status;
+mod link_timing;
 mod sign_in_via;
 
 pub(crate) mod account_state;
@@ -69,6 +70,8 @@ pub(crate) mod custody;
 pub(crate) mod rotation;
 
 mod join;
+pub(crate) mod public_access;
+mod publication;
 pub use join::{JoinRequest, JoinResponse};
 mod local_space_link;
 
@@ -437,6 +440,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/branch/{branch}/evaluate",
             post(evaluate::evaluate),
         )
+        .route(
+            "/api/repository/{repo}/branch/{branch}/evaluate/conditional",
+            post(evaluate::evaluate_conditional),
+        )
         // CSV export / import — stream the branch's artifacts out as
         // `text/csv`, or commit a CSV body's rows as assertions. See
         // `router/transfer.rs`.
@@ -479,8 +486,9 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // Content-addressed blob bytes: GET serves an entity's bytes; POST
         // ingests a new blob into the branch store and returns its ref.
         // `<tonk-display>` points `<img src>` at the GET form for
-        // `tonk:blob` models; `Content-Type` there comes from the blob's
-        // `xyz.tonk.blob/content-type` fact, which POST asserts.
+        // `tonk:blob` models; `Content-Type` there comes from the asset's
+        // `tonk.dialog.asset/media-type` fact, which POST asserts, or the
+        // legacy `xyz.tonk.blob/content-type` one older blobs carry.
         // The upload body is buffered whole in the service worker (no
         // streaming yet), so the limit is a deliberate ceiling rather than
         // axum's 2 MiB default — which real image files routinely exceed.
@@ -1504,7 +1512,7 @@ pub mod tests {
                     "predicate": { "kind": "transient", "concept": {
                         "description": "Mint a repo invite — generates a membership keypair and delegation.",
                         "with": {
-                            "time": { "as": "Float", "cardinality": "one", "description": "",
+                            "time": { "as": "float:64", "cardinality": "one", "description": "",
                                 "the": "dom.event/time-stamp" },
                             "marker": { "as": "Entity", "cardinality": "one", "description": "",
                                 "the": "dom.event.current-target.dataset/invite" },
@@ -1536,8 +1544,12 @@ pub mod tests {
         // Dispatch runs post-commit; poll the `tonk:invitation` join keyed
         // by the repo subject — `access`/`remote` from the durable
         // authorization, `code` (the seed) and `link` (the assembled URL)
-        // from the session overlay.
-        for _ in 0..50 {
+        // from the session overlay. Bounded by time, not by a count of
+        // yields: an open invite first tries to leave its ticket at the
+        // remote, and how long an unreachable one takes to fail (this
+        // fixture's is) varies run to run.
+        let deadline = js_sys::Date::now() + 30_000.0;
+        while js_sys::Date::now() < deadline {
             let q = serde_json::json!({
                 "terms": {
                     "this": subject,
@@ -1641,7 +1653,7 @@ pub mod tests {
                     "predicate": { "kind": "transient", "concept": {
                         "description": "Attach a remote and mint an invite.",
                         "with": {
-                            "time": { "the": "dom.event/time-stamp", "as": "Float" },
+                            "time": { "the": "dom.event/time-stamp", "as": "float:64" },
                             "marker": { "the": "dom.event.current-target.dataset/enable-sync", "as": "Entity" },
                             "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
                             "remote": { "the": "xyz.tonk.enable-sync/remote", "as": "Text" },
@@ -2619,14 +2631,14 @@ pub mod tests {
         let body = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -2678,7 +2690,7 @@ concept!: &person
         let body = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 "#;
 
@@ -2759,7 +2771,7 @@ concept!: &person
         let first = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 "#;
         let response = app
@@ -2782,7 +2794,7 @@ concept!: &person
         let second = r#"attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -2835,7 +2847,7 @@ concept!: &person
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 concept!: &person
@@ -2931,7 +2943,7 @@ person!: &alice
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 concept!: &person
@@ -3037,13 +3049,13 @@ person!: &alice
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -3209,13 +3221,13 @@ person!:
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -3278,7 +3290,7 @@ person!: &alice
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 concept!: &person
@@ -3334,13 +3346,13 @@ concept!: &person
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -3395,13 +3407,13 @@ concept!: &person
         let setup = r#"attribute!: &tagged-name
   the:         io.gozala.tagged/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: Name of the tagged item
 
 attribute!: &tagged-tag
   the:         io.gozala.tagged/tag
   as:          text
-  cardinality: many
+  cardinality: :many
   description: Tags applied to the item
 
 concept!: &tagged
@@ -3455,13 +3467,13 @@ tagged!: &dave
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &person-age
   the:         io.gozala.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: The person's age
 
 concept!: &person
@@ -3515,7 +3527,7 @@ person!: &erin
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 concept!: &person
@@ -3571,13 +3583,13 @@ person!:
         let setup = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 
 attribute!: &employee-id
   the:         io.gozala.employee/id
   as:          text
-  cardinality: one
+  cardinality: :one
   description: Employee identifier
 
 concept!: &person
@@ -3677,7 +3689,7 @@ employee:
             r#"attribute!: &{name}
   the:         {the}
   as:          text
-  cardinality: one
+  cardinality: :one
   description: A test attribute
 "#
         );
@@ -4657,6 +4669,75 @@ employee:
         assert_eq!(levels, vec![3]);
     }
 
+    /// A subscription to a branch laid out the way an earlier release wrote
+    /// opens with the `upgrading` control frame, before anything else, so
+    /// the page can say an upgrade is taking place; the rows follow once
+    /// the branch is moved to this release's format, and a later request
+    /// finds nothing left to move.
+    #[dialog_common::test]
+    async fn a_subscription_to_a_branch_an_earlier_release_wrote_opens_with_the_upgrading_frame() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+        let repo = "test-upgrading-frame";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        // Lay the branch out the way the earlier release wrote it.
+        {
+            let guard = app_state.read().await;
+            let branch = guard.reactor.repository(repo).branch("main");
+            let handle = branch
+                .acquire(&guard.operator)
+                .await
+                .expect("acquire")
+                .handle()
+                .clone();
+            handle
+                .rekey_storage(0)
+                .perform(&guard.operator)
+                .await
+                .expect("the branch is laid out the earlier way");
+            assert!(
+                branch
+                    .migration_pending(&guard.operator)
+                    .await
+                    .expect("the layout is read"),
+                "the branch needs migrating"
+            );
+        }
+
+        let mut body =
+            open_subscription_with_query(&app, repo, "main", named_concept_wire_query()).await;
+        let first = body.next_event().await.expect("a first frame");
+        assert_eq!(
+            first,
+            serde_json::json!({ "control": "upgrading" }),
+            "the stream opens with the upgrading notice"
+        );
+        let snapshot = read_sse_frame(&mut body).await;
+        let rows = snapshot["conclusions"]
+            .as_array()
+            .expect("a snapshot follows the notice");
+        assert_eq!(rows.len(), 1, "the rows follow the move: {snapshot}");
+
+        let guard = app_state.read().await;
+        assert!(
+            !guard
+                .reactor
+                .repository(repo)
+                .branch("main")
+                .migration_pending(&guard.operator)
+                .await
+                .expect("the layout is read"),
+            "the branch is migrated"
+        );
+    }
+
     /// One-shot `/query` projects every term named in the
     /// query's `terms` map into [`Conclusion::fields`]. The
     /// `Name` view binds `this` (the `id:<n>` name entity) and
@@ -4883,7 +4964,7 @@ employee:
         let body = r#"attribute!: &person-name
   the:         io.gozala.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: "name"
 "#;
 
@@ -4997,13 +5078,13 @@ employee:
         let seed = r#"attribute!: &person-name
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: "name"
 
 attribute!: &person-age
   the:         xyz.tonk.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: "age"
 
 concept!: &person
@@ -5078,13 +5159,13 @@ concept!: &person
         let seed = r#"attribute!: &person-name
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
   description: "name"
 
 attribute!: &person-age
   the:         xyz.tonk.person/age
   as:          unsigned-integer
-  cardinality: one
+  cardinality: :one
   description: "age"
 
 concept!: &person

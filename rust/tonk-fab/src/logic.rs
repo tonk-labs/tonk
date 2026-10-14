@@ -553,6 +553,48 @@ pub fn collapsed_claim_json(collapsed: bool) -> Value {
     })
 }
 
+/// Build a `TransactRequest` JSON body for `space/publish` (`publish`
+/// true) or `space/unpublish`. Routeless like `promote_claim_json`: the
+/// worker reads `space` off the command, and `time` makes each press a
+/// new transient.
+pub fn publication_claim_json(space: &str, publish: bool, time: f64) -> Value {
+    let (verb, description) = if publish {
+        ("publish", "Make a space readable by anyone.")
+    } else {
+        ("unpublish", "Make a published space private again.")
+    };
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": description,
+                        "with": {
+                            "space": { "the": format!("xyz.tonk.{verb}/space"), "cardinality": "one", "as": "Entity" },
+                            "time": { "the": format!("xyz.tonk.{verb}/time"), "cardinality": "one", "as": "float:64" }
+                        }
+                    }
+                },
+                "parameters": { "space": space, "time": time }
+            }
+        }]
+    })
+}
+
+/// The subscribe body for whether a space is published: the invitations
+/// on its branch recorded with kind `public`. Any row means published.
+pub fn publication_query_body() -> String {
+    json!({
+        "predicate": { "with": { "kind": {
+            "the": "xyz.tonk.invitation-execution/kind", "as": "Text", "cardinality": "one"
+        } } },
+        "terms": { "this": { "?": { "name": "this" } }, "kind": "public" }
+    })
+    .to_string()
+}
+
 /// Build a `TransactRequest` JSON body for the `member/promote` command.
 ///
 /// Asserted once the page has minted the admin hop under the passkey:
@@ -608,7 +650,7 @@ pub fn pause_claim_json(space: &str, time: f64) -> Value {
                     "concept": {
                         "description": "Toggle auto-sync (pause ⇄ resume) for a space.",
                         "with": {
-                            "time":  { "the": "xyz.tonk.command.pause-sync/time", "as": "Float" },
+                            "time":  { "the": "xyz.tonk.command.pause-sync/time", "as": "float:64" },
                             "space": { "the": "xyz.tonk.pause-sync/space", "as": "Entity" }
                         }
                     }
@@ -1418,6 +1460,31 @@ pub fn repo_name_query_body(subject: &str) -> Result<String, String> {
 }
 
 #[cfg(test)]
+mod publication {
+    use super::*;
+
+    /// The worker decodes `space/publish` and `space/unpublish` from their
+    /// own attribute namespaces; a claim in the other's would publish a
+    /// space someone meant to make private.
+    #[test]
+    fn it_names_each_verb_in_its_own_namespace() {
+        let publish = publication_claim_json("did:key:z6Mk", true, 1.0).to_string();
+        assert!(publish.contains("xyz.tonk.publish/space"));
+        assert!(!publish.contains("xyz.tonk.unpublish"));
+        let unpublish = publication_claim_json("did:key:z6Mk", false, 1.0).to_string();
+        assert!(unpublish.contains("xyz.tonk.unpublish/space"));
+        assert!(unpublish.contains("xyz.tonk.unpublish/time"));
+    }
+
+    #[test]
+    fn it_reads_publication_from_the_public_invitation_kind() {
+        let body = publication_query_body();
+        assert!(body.contains("xyz.tonk.invitation-execution/kind"));
+        assert!(body.contains(r#""kind":"public""#));
+    }
+}
+
+#[cfg(test)]
 mod space_name {
     use super::*;
 
@@ -1544,7 +1611,7 @@ pub fn agent_receipts_query_body() -> String {
 /// Build the inline transient understood by the worker's agent handoff provider.
 pub fn agent_handoff_claim_json(space: &str, time: f64, fresh: bool) -> serde_json::Value {
     let mut with = json!({
-        "time": { "the": "xyz.tonk.agent-handoff/time", "as": "Float" },
+        "time": { "the": "xyz.tonk.agent-handoff/time", "as": "float:64" },
         "space": { "the": "xyz.tonk.agent-handoff/space", "as": "Entity" }
     });
     let mut parameters = json!({ "time": time, "space": space });
@@ -1638,6 +1705,19 @@ pub fn self_member_did_from_repository(info: &Value) -> Option<String> {
     })
 }
 
+/// Whether the viewer only observes the space: it has members, and none of
+/// them is this account. That is a reader of a published space, who
+/// opened it from its address with the public ticket rather than an
+/// invite. A space with no members yet (its roster still arriving) is not
+/// read as observed, so a member never sees "observing" while loading.
+pub fn observes_from_repository(info: &Value) -> bool {
+    let members = info
+        .get("members")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    !members.is_empty() && self_member_did_from_repository(info).is_none()
+}
+
 /// Whether a member holding `role` runs the space: founders and admins
 /// may promote (and expel) other members; the worker refuses everyone
 /// else, so the roster offers those controls only to them.
@@ -1663,6 +1743,19 @@ mod self_member_did {
             self_member_did_from_repository(&json!({ "members": [] })),
             None
         );
+    }
+
+    #[test]
+    fn it_observes_a_space_whose_members_do_not_include_the_viewer() {
+        assert!(observes_from_repository(&json!({ "members": [
+            { "did": "did:key:zFounder", "is_self": false }
+        ] })));
+        assert!(!observes_from_repository(&json!({ "members": [
+            { "did": "did:key:zFounder", "is_self": false },
+            { "did": "did:key:zAccount", "is_self": true }
+        ] })));
+        assert!(!observes_from_repository(&json!({ "members": [] })));
+        assert!(!observes_from_repository(&json!({})));
     }
 
     #[test]
@@ -2059,7 +2152,7 @@ pub fn forget_invite_claim_json(space: &str, time: f64) -> Value {
                     "concept": {
                         "description": "Drop a space's invite row once its link has been copied.",
                         "with": {
-                            "time":  { "the": "xyz.tonk.command.forget-invite/time", "as": "Float" },
+                            "time":  { "the": "xyz.tonk.command.forget-invite/time", "as": "float:64" },
                             "space": { "the": "xyz.tonk.command.forget-invite/space", "as": "Entity" }
                         }
                     }
@@ -2088,7 +2181,7 @@ pub fn tool_connection_claim_json(space: &str, time: f64) -> Value {
                     "concept": {
                         "description": "Create a separate scoped invitation for a tool.",
                         "with": {
-                            "time":  { "the": "xyz.tonk.agent-handoff/time", "as": "Float" },
+                            "time":  { "the": "xyz.tonk.agent-handoff/time", "as": "float:64" },
                             "fresh": { "the": "xyz.tonk.agent-handoff/fresh", "as": "Text" },
                             "space": { "the": "xyz.tonk.agent-handoff/space", "as": "Entity" }
                         }
@@ -2157,7 +2250,7 @@ pub fn tool_connection_prompt(link: &str, origin: &str) -> String {
         format!(" --via \"{origin}\"")
     };
     format!(
-        "Connect to this Tonk space with the scoped tool link below:\n\n  {executable} join{via} '{link}'\n\nKeep the link private. Only report connected after the command prints \"Agent connection confirmed\". If interrupted, resume with `{executable} --space NAME join`."
+        "Connect to this Tonk space with the scoped tool link below:\n\n  {executable} join{via} '{link}'\n\nKeep the link private. Only report connected after the command prints \"Agent connection confirmed\". If interrupted, resume with `{executable} --space NAME join`.\n\nAfter connecting, work from the user's task. Use the space name printed by join as NAME in subsequent commands. Read `{executable} --space NAME space agents get` for shared space instructions. Run `{executable} --space NAME show` once if you need the schema. Inspect only the relevant concept or entity: `{executable} --space NAME query CONCEPT --where FIELD=VALUE` to find an instance (text/boolean equality), or `{executable} --space NAME show CONCEPT ENTITY` for a known instance. Once the target and fields are clear, make the requested change and check its local verification and push status. If the receipt says verification: verified, no extra show is needed for that check; otherwise inspect the entity with show. UI changes still need rendering. Missing space instructions are normal; continue with the task. Do not query every concept, enumerate all views, or read every guide before acting; expand discovery only to answer a specific question blocking the task. For workflow help, use `{executable} help tutorial`. If no task was supplied, report connected and ask what to do next."
     )
 }
 
@@ -2171,7 +2264,7 @@ pub fn invite_claim_json(space: &str, time: f64) -> Value {
                     "concept": {
                         "description": "Mint a repo invite — generates a membership keypair and delegation.",
                         "with": {
-                            "time":  { "the": "xyz.tonk.command.invite/time", "as": "Float" },
+                            "time":  { "the": "xyz.tonk.command.invite/time", "as": "float:64" },
                             "space": { "the": "xyz.tonk.invite/space", "as": "Entity" }
                         }
                     }
@@ -2194,7 +2287,7 @@ pub fn invite_claim_json(space: &str, time: f64) -> Value {
 /// the assert incomplete, so the transient would commit and match nothing.
 pub fn enable_sync_claim_json(space: &str, remote: &str, share: bool, time: f64) -> Value {
     let mut with = json!({
-        "time":  { "the": "xyz.tonk.command.enable-sync/time", "as": "Float" },
+        "time":  { "the": "xyz.tonk.command.enable-sync/time", "as": "float:64" },
         "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" }
     });
     let mut parameters = json!({
@@ -2356,7 +2449,7 @@ pub fn account_customer_query_body() -> String {
     json!({
         "predicate": { "with": {
             "registered_at": {
-                "the": "xyz.tonk.account/registered-at", "as": "UnsignedInteger",
+                "the": "xyz.tonk.account/registered-at", "as": "natural:64",
                 "cardinality": "one"
             },
             "email": {
@@ -2393,7 +2486,7 @@ pub fn account_active_query_body() -> String {
     json!({
         "predicate": { "with": {
             ACTIVATION_FIELD: {
-                "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
+                "the": "xyz.tonk.account/activated-at", "as": "natural:64",
                 "cardinality": "one"
             }
         } },
@@ -2468,7 +2561,7 @@ pub fn share_blocked_query_body(subject: &str) -> Result<String, String> {
         "predicate": { "with": {
             "blocked": { "the": "xyz.tonk.share/blocked", "as": "Text", "cardinality": "one" },
             "detail":  { "the": "xyz.tonk.share/detail",  "as": "Text", "cardinality": "one" },
-            "time":    { "the": "xyz.tonk.share/time",    "as": "Float", "cardinality": "one" }
+            "time":    { "the": "xyz.tonk.share/time",    "as": "float:64", "cardinality": "one" }
         } },
         "terms": {
             "this": subject,
@@ -2681,7 +2774,16 @@ mod share_state_blocked {
 /// Asserting a body *contains* an attribute URI does not catch this — the
 /// body is well-formed JSON either way. Only the variant name matters.
 #[cfg(test)]
-const WIRE_TYPES: [&str; 6] = ["Text", "Entity", "Float", "Integer", "Bytes", "Boolean"];
+const WIRE_TYPES: [&str; 8] = [
+    "Text",
+    "Entity",
+    "Float",
+    "Integer",
+    "Bytes",
+    "Boolean",
+    "float:64",
+    "natural:64",
+];
 
 #[cfg(test)]
 mod wire_types {

@@ -195,24 +195,24 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
 
 [profile.dev]
 opt-level = 1
@@ -234,10 +234,14 @@ codegen-units = 1
 # The release test archive: release optimizations without link-time
 # optimization. LTO re-optimizes every crate a binary pulls in at each
 # link, and the archive links one binary per test target, which put the
-# release test build past CI's time limit. Shipped builds keep `release`.
+# release test build past CI's time limit. The one codegen unit `release`
+# compiles each crate in serializes the optimizer over the archive's many
+# test targets, and put the build past the limit again; the default count
+# lets them compile in parallel. Shipped builds keep `release`.
 [profile.release-test]
 inherits = "release"
 lto = false
+codegen-units = 16
 
 [profile.wasm-release]
 inherits = "release"

@@ -70,6 +70,13 @@ mod embed;
 mod fallback;
 #[cfg(target_arch = "wasm32")]
 mod font;
+/// The `<tonk-introspect>` overlay: run `inspect` from the command
+/// palette, pick a `<tonk-display>`, and see the slots its template
+/// filled, which concept fed them, and which of them just changed. The state machine and the slot
+/// description types are target-independent so they test natively;
+/// the overlay element itself is wasm-only.
+#[cfg(any(target_arch = "wasm32", test))]
+pub mod introspect;
 #[cfg(target_arch = "wasm32")]
 mod notation;
 #[cfg(target_arch = "wasm32")]
@@ -101,6 +108,7 @@ pub fn register() {
     // listener has to exist before the first sweep.
     registry::install();
     view::register();
+    introspect::register();
     notation::register();
     element::register();
     fallback::register();

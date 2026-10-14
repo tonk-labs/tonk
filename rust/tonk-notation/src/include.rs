@@ -7,7 +7,8 @@
 //! that runs between parsing and analysis. It resolves each
 //! reference against the document's [`Syntax::base`], asks a
 //! [`Load`] implementation for the bytes, and replaces the node with
-//! the literal they spell.
+//! the literal they spell, or, for `!include/asset`, with the
+//! `asset:` reference [`Load::store`] filed them under.
 //!
 //! Included content is inlined as a value, never parsed as notation,
 //! so an included file cannot include anything in turn.
@@ -34,6 +35,22 @@ use crate::syntax::{Expression, Field, FieldValue, Include, IncludeForm, Scalar,
 pub trait Load {
     /// Load the resource at `uri`.
     fn load(&self, uri: &Url) -> impl Future<Output = Result<Vec<u8>, String>> + ConditionalSend;
+
+    /// File the `bytes` loaded from `uri` as a content-addressed asset
+    /// and return the reference a field holds for it, for
+    /// `!include/asset`. The host may store them right away or with the
+    /// commit that refers to them.
+    ///
+    /// A host that cannot store assets keeps the default, which refuses, so
+    /// the include is reported rather than silently inlined.
+    fn store(
+        &self,
+        uri: &Url,
+        bytes: Vec<u8>,
+    ) -> impl Future<Output = Result<String, String>> + ConditionalSend {
+        let _ = (uri, bytes);
+        std::future::ready(Err("assets cannot be stored here".to_owned()))
+    }
 }
 
 /// Replace every `!include` in `syntax` with the content it names.
@@ -59,7 +76,7 @@ pub async fn expand<L: Load>(syntax: &mut Syntax, loader: &L) -> Vec<Diagnostic>
             unreachable!("collect only gathers includes");
         };
         match inline(include, &syntax.base, loader).await {
-            Ok(scalar) => *value = FieldValue::Literal(scalar),
+            Ok(expanded) => *value = expanded,
             Err(message) => diagnostics.push(Diagnostic {
                 range,
                 severity: Some(DiagnosticSeverity::ERROR),
@@ -99,7 +116,7 @@ fn collect<'a>(fields: &'a mut [Field], out: &mut Vec<(&'a mut FieldValue, Range
     }
 }
 
-async fn inline<L: Load>(include: &Include, base: &Url, loader: &L) -> Result<Scalar, String> {
+async fn inline<L: Load>(include: &Include, base: &Url, loader: &L) -> Result<FieldValue, String> {
     let tag = include.form.tag();
     let uri = include.resolve(base).map_err(|failure| {
         format!(
@@ -112,13 +129,20 @@ async fn inline<L: Load>(include: &Include, base: &Url, loader: &L) -> Result<Sc
         .await
         .map_err(|failure| format!("`!{tag}` could not load `{uri}`: {failure}"))?;
     match include.form {
-        IncludeForm::Bytes => Ok(Scalar::Included(bytes)),
-        IncludeForm::Text => String::from_utf8(bytes).map(Scalar::String).map_err(|_| {
-            format!(
-                "`!{tag}` content of `{uri}` is not UTF-8 text; use `!{}` to keep its bytes",
-                IncludeForm::Bytes.tag()
-            )
-        }),
+        IncludeForm::Bytes => Ok(FieldValue::Literal(Scalar::Included(bytes))),
+        IncludeForm::Text => String::from_utf8(bytes)
+            .map(|text| FieldValue::Literal(Scalar::String(text)))
+            .map_err(|_| {
+                format!(
+                    "`!{tag}` content of `{uri}` is not UTF-8 text; use `!{}` to keep its bytes",
+                    IncludeForm::Bytes.tag()
+                )
+            }),
+        IncludeForm::Asset => loader
+            .store(&uri, bytes)
+            .await
+            .map(FieldValue::Uri)
+            .map_err(|failure| format!("`!{tag}` could not store `{uri}`: {failure}")),
     }
 }
 
@@ -152,6 +176,20 @@ mod tests {
                 .get(uri.as_str())
                 .cloned()
                 .ok_or_else(|| "not found".to_owned())
+        }
+    }
+
+    /// A loader that also stores assets, naming each by its length so a
+    /// test can see which bytes went in.
+    struct Stored(Fixtures);
+
+    impl Load for Stored {
+        async fn load(&self, uri: &Url) -> Result<Vec<u8>, String> {
+            self.0.load(uri).await
+        }
+
+        async fn store(&self, _uri: &Url, bytes: Vec<u8>) -> Result<String, String> {
+            Ok(format!("asset:len{}", bytes.len()))
         }
     }
 
@@ -251,5 +289,42 @@ mod tests {
         assert_eq!(messages.len(), 2, "{messages:#?}");
         assert!(messages[0].contains("could not load `file:///d/gone.md`"));
         assert!(messages[1].contains("not UTF-8"));
+    }
+
+    #[dialog_common::test]
+    async fn it_replaces_an_asset_include_with_the_stored_reference() {
+        let mut syntax = at(
+            "file:///site/page.yaml",
+            "note!:\n  this: id:page\n  image: !include/asset ./assets/hero.webp\n",
+        );
+        let loader = Stored(Fixtures::new(&[(
+            "file:///site/assets/hero.webp",
+            &[0xff, 0x00, 0x7f],
+        )]));
+        let diagnostics = expand(&mut syntax, &loader).await;
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(
+            field(&syntax, "image"),
+            &FieldValue::Uri("asset:len3".into())
+        );
+    }
+
+    /// A host that cannot store assets reports the include instead of
+    /// quietly inlining the bytes, and leaves it for analysis to reject.
+    #[dialog_common::test]
+    async fn it_refuses_an_asset_include_where_assets_cannot_be_stored() {
+        let mut syntax = at(
+            "file:///site/page.yaml",
+            "note!:\n  this: id:page\n  image: !include/asset ./hero.webp\n",
+        );
+        let loader = Fixtures::new(&[("file:///site/hero.webp", &[0x01])]);
+        let diagnostics = expand(&mut syntax, &loader).await;
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("cannot be stored"),
+            "{}",
+            diagnostics[0].message
+        );
+        assert!(matches!(field(&syntax, "image"), FieldValue::Include(_)));
     }
 }

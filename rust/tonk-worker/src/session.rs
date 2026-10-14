@@ -139,21 +139,45 @@ mod tests {
 
     use crate::worker::{DefaultOperator, DefaultProfile};
 
-    /// A throwaway profile in a scratch directory, plus the storage it
-    /// is mounted in. Names are unique per call so tests never share a
-    /// profile key or a certificate store.
-    ///
-    /// The name must be unique across PROCESSES, not just within one: the
-    /// runner starts a process per test, so a bare per-process counter
-    /// hands two concurrent tests the same name — and therefore the same
-    /// profile directory, whose writer lock one of them then loses.
-    /// `unique_name` folds in the pid for exactly this reason.
+    /// A native credential directory belonging only to this fixture. Reusing
+    /// the name reopens the same durable keys; other fixtures use other names.
+    fn scratch_directory(name: &str) -> Directory {
+        // A unique profile name does not isolate the directory's tonk-system
+        // key. Parallel native tests must not race to create that shared key
+        // between opening storage and granting the profile access to it.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Directory::At(
+                std::env::temp_dir()
+                    .join(name)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = name;
+            Directory::Temp
+        }
+    }
+
+    /// Open a throwaway profile, unique across calls and test processes.
     async fn scratch() -> DefaultProfile {
         let name = dialog_peer::helpers::unique_name("session-test");
-        crate::device::open_profile_at(&name, Directory::Temp)
+        crate::device::open_profile_at(&name, scratch_directory(&name))
             .await
             .expect("profile opens")
             .1
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_isolates_scratch_profile_storage_owners() {
+        let first = scratch().await;
+        let second = scratch().await;
+        assert!(first.storage().system().is_some());
+        assert!(second.storage().system().is_some());
+        assert_ne!(first.storage().system(), second.storage().system());
     }
 
     #[dialog_common::test]
@@ -250,7 +274,7 @@ mod tests {
     async fn it_ignores_legacy_sessions_and_reopens_durable_storage() {
         let name = dialog_peer::helpers::unique_name("session-reopen");
         let (profile_did, old_operator, space, revision, legacy) = {
-            let (_, profile) = crate::device::open_profile_at(&name, Directory::Temp)
+            let (_, profile) = crate::device::open_profile_at(&name, scratch_directory(&name))
                 .await
                 .unwrap();
             // Simulate Safari's saved grant naming an audience unrelated
@@ -294,7 +318,7 @@ mod tests {
         };
         // All prior operators, profiles, branches and the storage pool have
         // been released. Reopen the same durable profile with a new pool.
-        let (_, profile) = crate::device::open_profile_at(&name, Directory::Temp)
+        let (_, profile) = crate::device::open_profile_at(&name, scratch_directory(&name))
             .await
             .unwrap();
         let session = open(&profile).await.unwrap();

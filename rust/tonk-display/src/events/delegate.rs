@@ -52,6 +52,12 @@ pub struct Delegate {
     /// Dropped on `Delegate::drop`, which also calls
     /// `removeEventListener`.
     listeners: Vec<ListenerEntry>,
+    /// The resolved declarations, retained so something other than a
+    /// fired event can ask what an `on:<name>` binding listens for.
+    /// Introspection needs it: the attribute names a declaration, and
+    /// only the table says which platform event that declaration
+    /// reads — or that it resolved to nothing and is inert.
+    table: Rc<EventTable>,
 }
 
 impl Delegate {
@@ -104,7 +110,17 @@ impl Delegate {
             listeners.push((event_type, closure));
         }
 
-        Self { host, listeners }
+        Self {
+            host,
+            listeners,
+            table,
+        }
+    }
+
+    /// The resolved event declarations behind this delegate's
+    /// `on:<name>` bindings.
+    pub fn table(&self) -> &EventTable {
+        &self.table
     }
 }
 
@@ -272,6 +288,13 @@ fn try_binding(
                      fired without them; a rule premise naming them will not match",
                     built.blank_fields.join(", "),
                 ));
+            }
+            // The winning binding, and the only place it is known.
+            // An open introspection overlay bounces the element that
+            // actually posted, which is not always the one clicked:
+            // dispatch walks up until a binding resolves.
+            if crate::introspect::armed() {
+                crate::introspect::note_dispatch(bound, &concept);
             }
             Some(built.body)
         }
