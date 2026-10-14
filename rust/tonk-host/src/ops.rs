@@ -113,17 +113,81 @@ fn retry_held_ms() -> i32 {
     20_000 + (js_sys::Math::random() * 10_000.0) as i32
 }
 
+/// The control frame the worker sends first when the branch a page asked
+/// for is being moved to this release's storage format: the rows follow
+/// once the move is done. Delivered to the consumer's `notice` method.
+const UPGRADING_CONTROL: &str = "upgrading";
+
+/// The control frame the worker sends when that move failed: the rows
+/// that follow are what the earlier release left. Delivered to the
+/// consumer's `error` method as an `upgrade` error, with the reason.
+const UPGRADE_FAILED_CONTROL: &str = "upgrade-failed";
+
 /// Handle a control frame on a subscription stream. Returns `true` when the
-/// frame was a control message (consumed here, not delivered).
-fn handle_control_frame(state: &Rc<RefCell<HostState>>, entry_id: EntryId, frame: &str) -> bool {
-    if frame.trim() != UPDATE_PENDING_FRAME {
-        return false;
+/// frame was a control message (consumed here, not delivered as rows).
+///
+/// `{"control":"update-pending"}` holds the entry's reconnect for the
+/// controller change. `{"control":"upgrading"}` and
+/// `{"control":"upgrade-failed","reason":…}` reach the consumer as a
+/// notice and an error, so a page shows that an upgrade is taking place
+/// or failed instead of an empty loading state.
+fn handle_control_frame(
+    state: &Rc<RefCell<HostState>>,
+    entry_id: EntryId,
+    frame: &str,
+    consumer: &Element,
+) -> bool {
+    let trimmed = frame.trim();
+    if trimmed == UPDATE_PENDING_FRAME {
+        let mut s = state.borrow_mut();
+        if let Some(entry) = s.registry.entries_mut().get_mut(&entry_id) {
+            entry.awaiting_controller = true;
+        }
+        return true;
     }
-    let mut s = state.borrow_mut();
-    if let Some(entry) = s.registry.entries_mut().get_mut(&entry_id) {
-        entry.awaiting_controller = true;
+    let Some(control) = control_frame(trimmed) else {
+        return false;
+    };
+    if !consumer.is_connected() {
+        return true;
+    }
+    match control.name.as_str() {
+        UPGRADING_CONTROL => {
+            let payload = js_sys::Object::new();
+            let _ = Reflect::set(&payload, &"control".into(), &UPGRADING_CONTROL.into());
+            invoke_method(consumer, "notice", &payload, None);
+        }
+        UPGRADE_FAILED_CONTROL => {
+            let detail = ErrorDetail::new(
+                ErrorKind::Upgrade,
+                control
+                    .reason
+                    .unwrap_or_else(|| "the upgrade failed".to_string()),
+            );
+            invoke_method(consumer, "error", &error_to_js(&detail), None);
+        }
+        _ => {}
     }
     true
+}
+
+/// A control frame's fields: its name and, for a failure, the reason.
+#[derive(serde::Deserialize)]
+struct ControlFrame {
+    #[serde(rename = "control")]
+    name: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// The control frame `frame` carries, if it is one: a JSON object whose
+/// `control` field names it. A row frame (an array, or a `kind`-tagged
+/// object) is not.
+fn control_frame(frame: &str) -> Option<ControlFrame> {
+    if !frame.starts_with('{') || !frame.contains("\"control\"") {
+        return None;
+    }
+    serde_json::from_str(frame).ok()
 }
 
 /// The close-side reconnect delay for `entry_id`: held entries wait the
@@ -559,7 +623,7 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
                 if !state_frame.borrow().registry.is_current(entry_id, attempt) {
                     return;
                 }
-                if handle_control_frame(&state_frame, entry_id, frame) {
+                if handle_control_frame(&state_frame, entry_id, frame, &consumer_frame) {
                     return;
                 }
                 if !consumer_frame.is_connected() {
@@ -801,7 +865,7 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
             if !state_frame.borrow().registry.is_current(entry_id, attempt) {
                 return;
             }
-            if handle_control_frame(&state_frame, entry_id, frame) {
+            if handle_control_frame(&state_frame, entry_id, frame, &consumer_frame) {
                 return;
             }
             if !consumer_frame.is_connected() {

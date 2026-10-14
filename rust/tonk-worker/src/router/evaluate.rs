@@ -406,13 +406,12 @@ pub(super) async fn stage_and_publish(
     let mut next = batch.transaction();
     for instruction in instructions {
         next = match instruction {
-            dialog_artifacts::Instruction::Assert(artifact)
-            | dialog_artifacts::Instruction::Replace(artifact) => {
+            dialog_artifacts::Instruction::Assert(artifact, _) => {
                 next.assert(crate::router::claim::RawClaim {
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    unique: false,
+                    policy: dialog_artifacts::Pick::All,
                 })
             }
             dialog_artifacts::Instruction::Retract(artifact) => {
@@ -420,7 +419,7 @@ pub(super) async fn stage_and_publish(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    unique: false,
+                    policy: dialog_artifacts::Pick::All,
                 })
             }
         };
@@ -609,6 +608,14 @@ async fn evaluate_on_branch_with<'a>(
     let exprs = syntax.expressions.len();
     log!("Evaluating {exprs} expression(s)");
 
+    // The document's commits write through the session's handle, not
+    // the reactor's commit, so the once-per-process move of a branch an
+    // earlier release wrote runs here: a commit into the earlier layout
+    // is refused.
+    tonk_branch
+        .migrate_once(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("migrating the branch failed: {e}")))?;
     let session = tonk_branch
         .acquire(&tonk_state.operator)
         .await
@@ -679,17 +686,68 @@ async fn evaluate_on_branch_with<'a>(
         // overlay is session-only). Match queries resolve stored `db.rule/*`
         // rules automatically via the branch query's layer stack.
         let mut txn = branch.transaction();
+        let desired = match &retract {
+            Retractions::Planned { desired, .. } => *desired,
+            Retractions::Fixed(_) => &[],
+        };
+        let identity = |claim: &crate::router::claim::RawClaim| {
+            (claim.the.clone(), claim.of.clone(), claim.is.clone())
+        };
+        let kept: std::collections::HashSet<_> = desired.iter().map(identity).collect();
+        // A claim the plan retracts and the desired manifest asserts again
+        // stays as it is: an unchanged definition is no part of the
+        // install's delta, so its record and standing are left alone
+        // rather than retracted and asserted afresh in one commit.
         for claim in retract.resolve().await? {
-            txn = txn.retract(claim);
-        }
-        if let Retractions::Planned { desired, .. } = &retract {
-            // The library was analyzed in isolation. Seed its complete desired
-            // schema into this same transaction before resolving the document
-            // against the branch: legacy schemas otherwise validate new views
-            // against old fields and prevent the migration from committing.
-            for claim in *desired {
-                txn = txn.assert(claim.clone());
+            if !kept.contains(&identity(&claim)) {
+                txn = txn.retract(claim);
             }
+        }
+        // A desired claim under a choosing policy owns its cell: every
+        // other value the branch holds there is a competitor an earlier
+        // install or a stale writer left. Each is retracted, so the cell
+        // comes to the desired value alone, whatever a read elects today:
+        // a write of a value the cell already holds writes nothing.
+        for claim in desired.iter().filter(|claim| claim.policy.elects()) {
+            use dialog_artifacts::ArtifactSelector;
+            use futures_util::StreamExt as _;
+
+            let competing = |error: &dyn std::fmt::Display| {
+                TonkWorkerError::Internal(format!("read competing claims: {error}"))
+            };
+            let stream = branch
+                .claims()
+                .select(
+                    ArtifactSelector::new()
+                        .the(claim.the.clone())
+                        .of(claim.of.clone()),
+                )
+                .perform(&tonk_state.operator)
+                .await
+                .map_err(|error| competing(&error))?;
+            tokio::pin!(stream);
+            while let Some(found) = stream.next().await {
+                let found = found
+                    .map_err(|error| competing(&error))?
+                    .to_owned()
+                    .map_err(|error| competing(&format!("{error:?}")))?;
+                let stale = crate::router::claim::RawClaim {
+                    the: found.the,
+                    of: found.of,
+                    is: found.is,
+                    policy: dialog_artifacts::Pick::All,
+                };
+                if !kept.contains(&identity(&stale)) {
+                    txn = txn.retract(stale);
+                }
+            }
+        }
+        // The library was analyzed in isolation. Seed its complete desired
+        // schema into this same transaction before resolving the document
+        // against the branch: legacy schemas otherwise validate new views
+        // against old fields and prevent the migration from committing.
+        for claim in desired {
+            txn = txn.assert(claim.clone());
         }
         let t_eval = web_time::Instant::now();
         let evaluated = syntax
@@ -825,7 +883,7 @@ async fn evaluate_on_branch_with<'a>(
                         the: "xyz.tonk.test/raced-head".parse().expect("test attribute"),
                         of: "test:evaluate-race".parse().expect("test entity"),
                         is: dialog_artifacts::Value::String("advanced".to_owned()),
-                        unique: false,
+                        policy: dialog_artifacts::Pick::All,
                     })
                     .commit()
                     .perform(&tonk_state.operator)
@@ -1768,25 +1826,25 @@ mod tests {
     name:
       the: xyz.tonk.env/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
     age:
       the: xyz.tonk.env/age
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "age"
 
 attribute!: &person-name
   description: The person's name
   the: xyz.tonk.person/name
   as: text
-  cardinality: one
+  cardinality: :one
 
 attribute!: &person-age
   description: The person's age
   the: xyz.tonk.person/age
   as: unsigned-integer
-  cardinality: one
+  cardinality: :one
 
 concept!: &person
   description: "A person"

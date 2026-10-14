@@ -1282,7 +1282,7 @@ fn account_query_body() -> String {
     serde_json::json!({
         "predicate": { "with": {
             "activated_at": {
-                "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
+                "the": "xyz.tonk.account/activated-at", "as": "natural:64",
                 "cardinality": "one"
             }
         } },
@@ -2823,7 +2823,7 @@ pub(crate) fn enable_sync_claim(space: &str, time: f64) -> serde_json::Value {
                     "concept": {
                         "description": "Attach a sync remote to a space, and share it.",
                         "with": {
-                            "time": { "the": "xyz.tonk.command.enable-sync/time", "as": "Float" },
+                            "time": { "the": "xyz.tonk.command.enable-sync/time", "as": "float:64" },
                             "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" },
                             "share": { "the": "xyz.tonk.enable-sync/share", "as": "Entity" }
                         }

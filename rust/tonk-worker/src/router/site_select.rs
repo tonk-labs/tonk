@@ -50,7 +50,7 @@ async fn record(
         .iter()
         .filter(|(entity, attribute, _)| *entity == site && attribute.to_string() == SELECTION)
         .filter_map(|(_, _, change)| match change {
-            Change::Assert(value) | Change::Replace(value) => Some(value.clone()),
+            Change::Assert(value, _) => Some(value.clone()),
             Change::Retract(_) => None,
         })
         .collect();
@@ -60,7 +60,7 @@ async fn record(
             the: SELECTION.parse().expect("the selection attribute parses"),
             of: site.clone(),
             is: value,
-            unique: true,
+            policy: dialog_artifacts::Pick::Last,
         });
     }
     if !text.is_empty() {
@@ -68,7 +68,7 @@ async fn record(
             the,
             of: site.clone(),
             is: Value::String(text.to_owned()),
-            unique: true,
+            policy: dialog_artifacts::Pick::Last,
         });
     }
     if let Err(error) = overlay.write().perform(&tonk.operator).await {

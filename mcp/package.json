@@ -11,9 +11,12 @@
     "pretest": "npm run check:generated",
     "build:guides": "node scripts/build-authoring-guides.mjs",
     "check:generated": "node scripts/build-authoring-guides.mjs --check",
-    "format": "npm exec --yes --package=prettier@3.6.2 -- prettier --write \"*.mjs\" \"scripts/*.mjs\" \"integration/*.mjs\" \"tools.json\"",
-    "check:format": "npm exec --yes --package=prettier@3.6.2 -- prettier --check \"*.mjs\" \"scripts/*.mjs\" \"integration/*.mjs\" \"tools.json\"",
-    "test:integration": "npm run check:generated && node --test integration/*.test.mjs"
+    "format": "npm exec --yes --package=prettier@3.6.2 -- prettier --write \"*.mjs\" \"scripts/*.mjs\" \"integration/*.mjs\" \"tools.json\" \"chatgpt/*.mjs\" \"chatgpt/cloudflare/*.mjs\" \"chatgpt/ui/*.{js,html}\"",
+    "check:format": "npm exec --yes --package=prettier@3.6.2 -- prettier --check \"*.mjs\" \"scripts/*.mjs\" \"integration/*.mjs\" \"tools.json\" \"chatgpt/*.mjs\" \"chatgpt/cloudflare/*.mjs\" \"chatgpt/ui/*.{js,html}\"",
+    "test:integration": "npm run check:generated && node --test integration/*.test.mjs",
+    "test:chatgpt": "node --test chatgpt/*.test.mjs chatgpt/cloudflare/*.test.mjs",
+    "start:chatgpt": "node chatgpt/server.mjs",
+    "build:chatgpt-assets": "node chatgpt/build-assets.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.0",

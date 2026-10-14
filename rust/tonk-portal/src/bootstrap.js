@@ -437,7 +437,10 @@
       selectionTimer=null;
       var active=document.activeElement;
       if(active&&(active.tagName==="INPUT"||active.tagName==="TEXTAREA")) return;
-      var site=((window.tonk&&window.tonk.context)||{}).site;
+      var context=(window.tonk&&window.tonk.context)||{};
+      // Some embedded hosts do not consume transient selection commands.
+      if(context.selectionReporting===false) return;
+      var site=context.site;
       if(!site) return;
       var text=String(document.getSelection()||"").trim().slice(0,4096);
       if(text===reportedSelection) return;
