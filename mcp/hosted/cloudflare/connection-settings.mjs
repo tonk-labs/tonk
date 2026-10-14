@@ -25,7 +25,5 @@ export function connectionSettings(config) {
     '| Client | Client ID | Callback |',
     '| --- | --- | --- |',
     ...rows,
-    '',
-    'Claude Code and URL-only registration aren’t supported yet. Automated smoke checks passed; live client connections remain unverified.',
   ].join('\n');
 }
