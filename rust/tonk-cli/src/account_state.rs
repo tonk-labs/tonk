@@ -545,6 +545,12 @@ async fn mount(
         .perform(operator)
         .await
         .context("failed to open local account branch")?;
+    // The mount and the hydrate after it commit into this branch directly:
+    // a branch an earlier release wrote is moved to this release's format
+    // first.
+    dialog_reactor::migrate(&branch, operator)
+        .await
+        .context("failed to migrate the local account branch")?;
     trace("mount: account branch open");
     // A branch not yet tracking the linked account's main does now, in
     // place of what it tracked before: with a linked account, the account

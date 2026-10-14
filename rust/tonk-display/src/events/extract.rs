@@ -286,9 +286,15 @@ pub(super) fn read_path_and_coerce(
 /// populated from a DOM event provided the JS path produces a
 /// shape that fits.
 pub(super) fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
+    // A sized number type (`float:64`) takes the shape of the numbers
+    // it stores; `number` takes any. Anything else is matched as
+    // spelled, legacy names included.
+    let as_type = tonk_notation::type_storage(as_type)
+        .map(tonk_notation::ValueType::uri)
+        .unwrap_or(as_type);
     match as_type {
-        "Text" | "String" | "text" | "string" => value.as_string().map(Value::String),
-        "Entity" | "entity" => {
+        "text:" | "Text" | "String" | "text" | "string" => value.as_string().map(Value::String),
+        "entity:" | "Entity" | "entity" => {
             // Entities are URIs encoded as strings on the wire.
             let s = value.as_string()?;
             // Cheap sanity-check: a URI has a `:`. If a binding
@@ -300,9 +306,10 @@ pub(super) fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
                 None
             }
         }
-        "Boolean" | "boolean" => value.as_bool().map(Value::Bool),
-        "UnsignedInt" | "SignedInt" | "Integer" | "integer" | "unsigned-integer"
-        | "signed-integer" | "UnsignedInteger" | "SignedInteger" => {
+        "boolean:" | "Boolean" | "boolean" => value.as_bool().map(Value::Bool),
+        "integer:" | "natural:" | "UnsignedInt" | "SignedInt" | "Integer" | "integer"
+        | "natural" | "unsigned-integer" | "signed-integer" | "UnsignedInteger"
+        | "SignedInteger" => {
             let n = value.as_f64()?;
             if n.is_finite() && n.fract() == 0.0 {
                 serde_json::Number::from_f64(n).map(Value::Number)
@@ -310,14 +317,14 @@ pub(super) fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
                 None
             }
         }
-        "Float" | "float" | "Number" | "number" => {
+        "float:" | "Float" | "float" | "Number" | "number" => {
             let n = value.as_f64()?;
             serde_json::Number::from_f64(n).map(Value::Number)
         }
         // Bytes / Record both deserialize from JSON arrays of u8.
         // Accept a JS `Uint8Array` or any array-like whose entries
         // are numbers in 0..=255.
-        "Bytes" | "bytes" | "Record" | "record" => js_to_bytes_array(value),
+        "bytes:" | "record:" | "Bytes" | "bytes" | "Record" | "record" => js_to_bytes_array(value),
         // Symbol is dialog's `Attribute` value — domain/name. On the
         // wire it deserializes as a JSON string, but server-side it
         // collides with Entity (Entity::try_from runs first on string
@@ -326,7 +333,9 @@ pub(super) fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
         // the consumer expects Symbol it has to use a non-URI form;
         // otherwise the deserializer picks Entity. Documented as a
         // gotcha rather than re-encoded here.
-        "Symbol" | "symbol" | "Attribute" | "attribute" => value.as_string().map(Value::String),
+        "symbol:" | "Symbol" | "symbol" | "Attribute" | "attribute" => {
+            value.as_string().map(Value::String)
+        }
         _ => None,
     }
 }
@@ -571,6 +580,43 @@ mod tests {
         // the integer value. Compare as f64 since the coerced number is
         // built via `Number::from_f64`.
         assert_eq!(params["time"].as_f64(), Some(1_780_982_815_290.0));
+    }
+
+    /// A field declared with a sized number type (`as: float:64`, what
+    /// a command's `time` declares since the library spells the widths
+    /// its Rust fields have) coerces a numeric event property. Regression
+    /// for sign-out: with no arm for `float:64` the binding fell through,
+    /// the command never fired, and the page never reloaded.
+    #[dialog_common::test]
+    fn it_coerces_a_sized_number_typed_field() {
+        let event = synthetic_event(&[]);
+        let event_js: &JsValue = event.as_ref();
+        Reflect::set(
+            event_js,
+            &JsValue::from_str("time"),
+            &JsValue::from_f64(1_780_982_815_290.0),
+        )
+        .unwrap();
+
+        for as_type in ["float:64", "natural:64"] {
+            let descriptor = descriptor(&format!(
+                r#"{{
+                    "with": {{
+                        "time": {{ "the": "dom.event/time", "as": "{as_type}", "cardinality": "one" }}
+                    }}
+                }}"#
+            ));
+            let binding = binding_element(&[]);
+            let body = build_transact_body(&descriptor, "noop", &event, &binding)
+                .expect("build_transact_body")
+                .body;
+            let params = &body["claims"][0]["application"]["parameters"];
+            assert_eq!(
+                params["time"].as_f64(),
+                Some(1_780_982_815_290.0),
+                "a field declared {as_type} resolves"
+            );
+        }
     }
 
     #[dialog_common::test]

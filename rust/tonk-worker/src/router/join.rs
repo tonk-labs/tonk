@@ -56,7 +56,7 @@
 
 use ::axum::{Json, extract::State, http::StatusCode};
 use axum_wasm_macros::wasm_compat;
-use dialog_artifacts::{ArtifactSelector, Attribute, Changes, Entity, Statement as _, Value};
+use dialog_artifacts::{ArtifactSelector, Changes, Entity, Relation, Statement as _, Value};
 use dialog_capability::access::{AuthorizeError, Prove, Retain};
 use dialog_capability::{Fork, Provider};
 use dialog_credentials::Credential;
@@ -902,6 +902,24 @@ async fn perform_join(
         validate_content(&branch, &tonk.operator, &prepared.subject).await?;
     }
 
+    // The claim below commits into the content branch directly, not
+    // through the reactor: a branch an earlier release wrote (a renewal,
+    // or a head the pull just adopted) is moved to this release's format
+    // first, once per process, as every reactor commit is. A failure is
+    // logged; the commit reports the refusal.
+    if let Err(error) = tonk
+        .reactor
+        .repository(prepared.subject.repo_key())
+        .branch(DEFAULT_BRANCH)
+        .migrate_once(&tonk.operator)
+        .await
+    {
+        log!(
+            "join: migrating '{}' failed: {error}",
+            prepared.subject.repo_key()
+        );
+    }
+
     // Every claim, including a renewal, lands its roster/provenance/name
     // facts as an ordinary commit; the next sync tick pushes them.
     let (changes, _already_claimed) = claim_changes(
@@ -1210,7 +1228,7 @@ async fn first_value<Env: BranchEnv>(
     entity: Entity,
     attribute: &str,
 ) -> Result<Option<Value>, JoinFailure> {
-    let attribute: Attribute = attribute
+    let attribute: Relation = attribute
         .parse()
         .map_err(|error| JoinFailure::claim_failed(format!("bad validation attribute: {error}")))?;
     let claims = branch
@@ -3528,7 +3546,7 @@ pub(crate) mod tests {
     subject:
       the: xyz.tonk.replica/subject
       as: entity
-      cardinality: one
+      cardinality: :one
       description: The space this canvas belongs to
 
 name!:

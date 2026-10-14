@@ -220,7 +220,9 @@ fn walk_value(
                 }
             }
         }
-        // A list's items are literals (`action:` names), painted as text.
+        // A list's items share the list's range (a ranked `the:` or
+        // `as:`, a command's `action:` names): the list paints as one
+        // value.
         FieldValue::Literal(_) | FieldValue::List(_) => {}
     }
 }

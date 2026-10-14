@@ -573,7 +573,7 @@ pub fn publication_claim_json(space: &str, publish: bool, time: f64) -> Value {
                         "description": description,
                         "with": {
                             "space": { "the": format!("xyz.tonk.{verb}/space"), "cardinality": "one", "as": "Entity" },
-                            "time": { "the": format!("xyz.tonk.{verb}/time"), "cardinality": "one", "as": "Float" }
+                            "time": { "the": format!("xyz.tonk.{verb}/time"), "cardinality": "one", "as": "float:64" }
                         }
                     }
                 },
@@ -650,7 +650,7 @@ pub fn pause_claim_json(space: &str, time: f64) -> Value {
                     "concept": {
                         "description": "Toggle auto-sync (pause ⇄ resume) for a space.",
                         "with": {
-                            "time":  { "the": "xyz.tonk.command.pause-sync/time", "as": "Float" },
+                            "time":  { "the": "xyz.tonk.command.pause-sync/time", "as": "float:64" },
                             "space": { "the": "xyz.tonk.pause-sync/space", "as": "Entity" }
                         }
                     }
@@ -1611,7 +1611,7 @@ pub fn agent_receipts_query_body() -> String {
 /// Build the inline transient understood by the worker's agent handoff provider.
 pub fn agent_handoff_claim_json(space: &str, time: f64, fresh: bool) -> serde_json::Value {
     let mut with = json!({
-        "time": { "the": "xyz.tonk.agent-handoff/time", "as": "Float" },
+        "time": { "the": "xyz.tonk.agent-handoff/time", "as": "float:64" },
         "space": { "the": "xyz.tonk.agent-handoff/space", "as": "Entity" }
     });
     let mut parameters = json!({ "time": time, "space": space });
@@ -2152,7 +2152,7 @@ pub fn forget_invite_claim_json(space: &str, time: f64) -> Value {
                     "concept": {
                         "description": "Drop a space's invite row once its link has been copied.",
                         "with": {
-                            "time":  { "the": "xyz.tonk.command.forget-invite/time", "as": "Float" },
+                            "time":  { "the": "xyz.tonk.command.forget-invite/time", "as": "float:64" },
                             "space": { "the": "xyz.tonk.command.forget-invite/space", "as": "Entity" }
                         }
                     }
@@ -2181,7 +2181,7 @@ pub fn tool_connection_claim_json(space: &str, time: f64) -> Value {
                     "concept": {
                         "description": "Create a separate scoped invitation for a tool.",
                         "with": {
-                            "time":  { "the": "xyz.tonk.agent-handoff/time", "as": "Float" },
+                            "time":  { "the": "xyz.tonk.agent-handoff/time", "as": "float:64" },
                             "fresh": { "the": "xyz.tonk.agent-handoff/fresh", "as": "Text" },
                             "space": { "the": "xyz.tonk.agent-handoff/space", "as": "Entity" }
                         }
@@ -2264,7 +2264,7 @@ pub fn invite_claim_json(space: &str, time: f64) -> Value {
                     "concept": {
                         "description": "Mint a repo invite — generates a membership keypair and delegation.",
                         "with": {
-                            "time":  { "the": "xyz.tonk.command.invite/time", "as": "Float" },
+                            "time":  { "the": "xyz.tonk.command.invite/time", "as": "float:64" },
                             "space": { "the": "xyz.tonk.invite/space", "as": "Entity" }
                         }
                     }
@@ -2287,7 +2287,7 @@ pub fn invite_claim_json(space: &str, time: f64) -> Value {
 /// the assert incomplete, so the transient would commit and match nothing.
 pub fn enable_sync_claim_json(space: &str, remote: &str, share: bool, time: f64) -> Value {
     let mut with = json!({
-        "time":  { "the": "xyz.tonk.command.enable-sync/time", "as": "Float" },
+        "time":  { "the": "xyz.tonk.command.enable-sync/time", "as": "float:64" },
         "space": { "the": "xyz.tonk.enable-sync/space", "as": "Entity" }
     });
     let mut parameters = json!({
@@ -2449,7 +2449,7 @@ pub fn account_customer_query_body() -> String {
     json!({
         "predicate": { "with": {
             "registered_at": {
-                "the": "xyz.tonk.account/registered-at", "as": "UnsignedInteger",
+                "the": "xyz.tonk.account/registered-at", "as": "natural:64",
                 "cardinality": "one"
             },
             "email": {
@@ -2486,7 +2486,7 @@ pub fn account_active_query_body() -> String {
     json!({
         "predicate": { "with": {
             ACTIVATION_FIELD: {
-                "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
+                "the": "xyz.tonk.account/activated-at", "as": "natural:64",
                 "cardinality": "one"
             }
         } },
@@ -2561,7 +2561,7 @@ pub fn share_blocked_query_body(subject: &str) -> Result<String, String> {
         "predicate": { "with": {
             "blocked": { "the": "xyz.tonk.share/blocked", "as": "Text", "cardinality": "one" },
             "detail":  { "the": "xyz.tonk.share/detail",  "as": "Text", "cardinality": "one" },
-            "time":    { "the": "xyz.tonk.share/time",    "as": "Float", "cardinality": "one" }
+            "time":    { "the": "xyz.tonk.share/time",    "as": "float:64", "cardinality": "one" }
         } },
         "terms": {
             "this": subject,
@@ -2774,7 +2774,16 @@ mod share_state_blocked {
 /// Asserting a body *contains* an attribute URI does not catch this — the
 /// body is well-formed JSON either way. Only the variant name matters.
 #[cfg(test)]
-const WIRE_TYPES: [&str; 6] = ["Text", "Entity", "Float", "Integer", "Bytes", "Boolean"];
+const WIRE_TYPES: [&str; 8] = [
+    "Text",
+    "Entity",
+    "Float",
+    "Integer",
+    "Bytes",
+    "Boolean",
+    "float:64",
+    "natural:64",
+];
 
 #[cfg(test)]
 mod wire_types {

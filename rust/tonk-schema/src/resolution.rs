@@ -335,7 +335,7 @@ impl ListConcepts<'_> {
         self,
         env: &Env,
     ) -> Result<Vec<ConceptDefinition>, ResolveError> {
-        use dialog_query::{AttributeQuery, Output as _, Term, attribute::The};
+        use dialog_query::{AttributeQuery, Output as _, Term};
 
         let marker: Entity = "db:concept"
             .parse()
@@ -343,9 +343,9 @@ impl ListConcepts<'_> {
         let claims: Vec<dialog_query::Claim> = self
             .source
             .select(AttributeQuery::from(
-                Term::<The>::from(
+                Term::<dialog_query::Relation>::from(
                     "db.meta/concept"
-                        .parse::<The>()
+                        .parse::<dialog_query::Relation>()
                         .expect("`db.meta/concept` is a valid attribute"),
                 )
                 .of(Term::<Entity>::var("concept"))
@@ -405,7 +405,6 @@ mod tests {
     use crate::concept::{AnonymousConcept, TransientConcept};
     use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
-    use dialog_query::the;
     use tonk_core::meta::name;
 
     /// Assert a concept's backing attribute facts plus the concept
@@ -428,28 +427,11 @@ mod tests {
         let txn = branch.transaction();
         let mut txn = txn;
         for (_, attr) in descriptor.with().iter() {
-            let attr_entity: Entity = attr.to_uri().parse()?;
-            txn = txn
-                .assert(
-                    the!("db.attribute/id")
-                        .of(attr_entity.clone())
-                        .is(attr.the().to_string()),
-                )
-                .assert(
-                    the!("db.attribute/type")
-                        .of(attr_entity.clone())
-                        .is("Text".to_string()),
-                )
-                .assert(
-                    the!("db.attribute/cardinality")
-                        .of(attr_entity.clone())
-                        .is("one".to_string()),
-                )
-                .assert(
-                    the!("db.meta/description")
-                        .of(attr_entity)
-                        .is(String::new()),
-                );
+            for statement in
+                crate::concept::attribute_statements(attr.descriptor()).expect("attribute facts")
+            {
+                txn = txn.assert(statement);
+            }
         }
 
         let entity = descriptor.this();

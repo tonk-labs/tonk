@@ -320,7 +320,7 @@ fn example_value(field: &FieldSummary) -> &'static str {
     match field.value_type.as_str() {
         "boolean" => "true",
         "text" => "\"example\"",
-        "unsigned-integer" | "signed-integer" | "float" => "1",
+        "natural" | "integer" | "unsigned-integer" | "signed-integer" | "float" => "1",
         "entity" => "<ENTITY>",
         _ => "<VALUE>",
     }
