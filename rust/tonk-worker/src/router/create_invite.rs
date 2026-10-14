@@ -1316,7 +1316,7 @@ mod live_tests {
             .copied()
             .expect("the chain has a leaf");
 
-        crate::router::revoke_invite::revoke(
+        let Json(_receipt) = crate::router::revoke_invite::revoke(
             State(state.clone()),
             Path((key.clone(), target.to_string())),
         )
@@ -1352,6 +1352,7 @@ mod live_tests {
         crate::router::repository::run_invite_for_test(&env, &key, 1.0)
             .await
             .expect("the command mints");
+        drop(env);
 
         let tonk = state.read().await;
         let branch = tonk
@@ -1413,7 +1414,20 @@ mod live_tests {
         );
 
         // The founder opening its own link renews; the load-bearing part
-        // is that the link it was handed claims and redeems.
+        // is that the link it was handed claims and redeems. The service
+        // shortens it, and a pasted short link resolves before it joins,
+        // as the `tonk:join` command does.
+        let link = if tonk_invite::shortcut::is_shortcut(&link) {
+            crate::router::join::resolve_shortcut(&link)
+                .await
+                .expect("the short link resolves")
+        } else {
+            link
+        };
+        let ticket = tonk_invite::Ticket::parse_url(&link)
+            .expect("the link parses")
+            .expect("the resolved link is a ticket link");
+        assert_eq!(ticket.subject().as_str(), key);
         // The credential write leaves the topbar's `state:self` in place.
         let here: dialog_artifacts::Entity = tonk_schema::Replica::SELF_STATE_HERE
             .parse()
