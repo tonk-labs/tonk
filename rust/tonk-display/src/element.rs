@@ -32,6 +32,7 @@ use js_sys::{Array, Function, Promise, Reflect};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
 use tonk_host::error::{ErrorDetail, ErrorKind};
 use tonk_host::install_depth_annotator;
+use tonk_notation::ValueType;
 use tonk_schema::conclusion::Conclusion;
 use tonk_schema::query::Query;
 use wasm_bindgen::JsCast;
@@ -674,9 +675,14 @@ fn install_method_shims() {
         "payload, opts",
         "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
     );
+    let notice_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkNotice === 'function') this.__tonkNotice(payload, opts);",
+    );
     let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
     let _ = Reflect::set(&proto, &"update".into(), &update_fn);
     let _ = Reflect::set(&proto, &"error".into(), &error_fn);
+    let _ = Reflect::set(&proto, &"notice".into(), &notice_fn);
 }
 
 /// Per-instance: write closures to `__tonkReset` / `__tonkUpdate`
@@ -711,6 +717,27 @@ fn install_method_delegates(host: &Element, state: &Rc<RefCell<Inner>>) {
         }));
     let _ = Reflect::set(host, &"__tonkError".into(), error.as_ref());
     error.forget();
+
+    let host_for_notice = host.clone();
+    let notice: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, opts| {
+            on_notice(&host_for_notice, payload, opts);
+        }));
+    let _ = Reflect::set(host, &"__tonkNotice".into(), notice.as_ref());
+    notice.forget();
+}
+
+/// `notice({ control }, { tag })` — a control frame about the stream
+/// rather than its rows. `upgrading` says the worker is moving the branch
+/// to this release's storage format before it answers: the display shows
+/// so until the rows arrive, in place of a bare loading state.
+fn on_notice(host: &Element, payload: JsValue, _opts: JsValue) {
+    let control = Reflect::get(&payload, &"control".into())
+        .ok()
+        .and_then(|v| v.as_string());
+    if control.as_deref() == Some("upgrading") {
+        state::set_upgrading(host);
+    }
 }
 
 /// `reset(conclusions, { tag })` — first / full-snapshot frame.
@@ -941,11 +968,18 @@ fn on_error(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, _opts:
     // one: it is what separates a retryable hiccup from a settled
     // answer, and rebuilding the detail from `message` alone would
     // discard it and read every failure as `offline`.
+    let kind = Reflect::get(&payload, &"kind".into())
+        .ok()
+        .and_then(|v| v.as_string());
     let err = match Reflect::get(&payload, &"status".into())
         .ok()
         .and_then(|v| v.as_f64())
     {
         Some(status) => ErrorDetail::http(status as u16, message),
+        // The worker could not move the branch to this release's storage
+        // format: a settled answer about this process, not a transport
+        // hiccup, so it is loud and names itself.
+        None if kind.as_deref() == Some("upgrade") => ErrorDetail::new(ErrorKind::Upgrade, message),
         None => ErrorDetail::new(ErrorKind::Network, message),
     };
     if loud_state(&err) == State::Offline {
@@ -2621,20 +2655,27 @@ async fn diagnose_no_entity(
                     .to_owned();
                 // The typed probe missed. Re-probing under the OTHER
                 // value types tells a mistyped fact (present under a
-                // different spelling) from a truly absent one — and
-                // pins which type actually holds it, so the value can
-                // be shown in ITS spelling (`+33`, not a bare `33`
-                // that would read as the very type it is not).
-                let declared_wire = spec.get("as").and_then(|t| t.as_str());
-                let mut found: Option<(String, &str)> = None;
+                // different type) from a truly absent one — and pins
+                // which type actually holds it, so the diagnosis can
+                // name both types next to the value.
+                let declared_wire = spec
+                    .get("as")
+                    .and_then(|t| t.as_str())
+                    .and_then(ValueType::from_wire);
+                let mut found: Option<(String, ValueType)> = None;
                 if let Some(declared_wire) = declared_wire {
-                    for candidate in ["SignedInteger", "UnsignedInteger", "Float", "Text"] {
+                    for candidate in [
+                        ValueType::Integer,
+                        ValueType::Natural,
+                        ValueType::Float,
+                        ValueType::Text,
+                    ] {
                         if candidate == declared_wire {
                             continue;
                         }
                         let mut probe = spec.clone();
                         if let Some(probe) = probe.as_object_mut() {
-                            probe.insert("as".into(), serde_json::json!(candidate));
+                            probe.insert("as".into(), serde_json::json!(candidate.uri()));
                         }
                         if let Some(value) = probe_field(host, &entity, field, &probe).await {
                             found = Some((spell_value(&value, candidate), candidate));
@@ -2644,11 +2685,16 @@ async fn diagnose_no_entity(
                 }
                 match (found, declared_wire) {
                     (Some((spelled, actual)), Some(declared_wire)) => {
+                        let actual = actual.anchor();
+                        let article = if actual.starts_with(['a', 'e', 'i', 'o', 'u']) {
+                            "an"
+                        } else {
+                            "a"
+                        };
                         let message = format!(
-                            "Attribute {uri} holds {spelled} — a {actual} value; the \
+                            "Attribute {uri} holds {spelled} — {article} {actual} value; the \
                              concept reads it as {declared}",
-                            actual = type_spelling(actual),
-                            declared = type_spelling(declared_wire),
+                            declared = declared_wire.anchor(),
                         );
                         mistyped.push((field.clone(), spelled, message));
                     }
@@ -2697,30 +2743,13 @@ fn first_field_text(value: &JsValue, field: &str) -> Option<String> {
     }
 }
 
-/// Spell a probed value the way its type is written in notation:
-/// signed integers carry an explicit sign, floats their decimal
-/// point, text its quotes.
-fn spell_value(value: &str, wire_type: &str) -> String {
+/// Spell a probed value as notation: text takes its quotes; a number
+/// is written plainly, since a literal's spelling carries no type (the
+/// diagnosis names the type beside it).
+fn spell_value(value: &str, wire_type: ValueType) -> String {
     match wire_type {
-        "SignedInteger" if !value.starts_with('-') => format!("+{value}"),
-        "Float" if !value.contains('.') => format!("{value}.0"),
-        "Text" => format!("{value:?}"),
+        ValueType::Text => format!("{value:?}"),
         _ => value.to_owned(),
-    }
-}
-
-/// The `as:` spelling of a wire descriptor type, for the diagnosis
-/// message.
-fn type_spelling(ty: &str) -> String {
-    match ty {
-        "Text" => "text".into(),
-        "UnsignedInteger" => "unsigned-integer".into(),
-        "SignedInteger" => "signed-integer".into(),
-        "Float" => "float".into(),
-        "Boolean" => "boolean".into(),
-        "Entity" => "entity".into(),
-        "Symbol" => "symbol".into(),
-        other => other.to_owned(),
     }
 }
 
@@ -6671,7 +6700,7 @@ mod tests {
                     rows(&[]),
                     // TYPED probe of `count`: no unsigned value
                     rows(&[]),
-                    // SignedInteger re-probe: the fact lives there
+                    // `integer:` re-probe: the fact lives there
                     rows(&[("id:demo-counter", &[("count", "41")])]),
                 ],
                 Some(model_concept_frame()),
@@ -6691,15 +6720,15 @@ mod tests {
                 .await
                 .expect("the mismatch diagnosis renders");
             for _ in 0..200 {
-                if (query.text_content().unwrap_or_default()).contains("+41") {
+                if (query.text_content().unwrap_or_default()).contains("41") {
                     break;
                 }
                 sleep(5).await;
             }
             let text = query.text_content().unwrap_or_default();
             assert!(
-                text.contains("count") && text.contains("+41"),
-                "the stored value shows in ITS spelling, not a blank: {text}"
+                text.contains("count") && text.contains("41"),
+                "the stored value shows as the number it is, not a blank: {text}"
             );
             let notation = display
                 .query_selector("[data-error-2]")
@@ -6707,7 +6736,7 @@ mod tests {
                 .expect("the mistyped line carries its story");
             let message = notation.get_attribute("data-error-2").unwrap_or_default();
             assert!(
-                message.contains("signed-integer") && message.contains("unsigned-integer"),
+                message.contains("an integer value") && message.contains("reads it as natural"),
                 "the squiggle names both types: {message}"
             );
             let callout = display

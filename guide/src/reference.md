@@ -41,8 +41,8 @@ A head ending in `!` writes; without `!` it queries.
 | Field         | Values                                         |
 |---------------|------------------------------------------------|
 | `the`         | `domain/name` URI, the attribute's identity.   |
-| `as`          | `text`, `entity`, `unsigned-integer`, `float`. |
-| `cardinality` | `one` (default) or `many`.                     |
+| `as`          | `text`, `entity`, `natural`, `integer`, `float`, `boolean`. |
+| `pick`        | `last` (default), `all`, `top`, `max` or `min`. |
 | `description` | Required.                                      |
 
 ## `<tonk-display>`

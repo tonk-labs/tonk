@@ -999,7 +999,7 @@ mod tests {
     #[dialog_common::test]
     fn it_reconstructs_the_fact_a_history_record_carries() {
         let of: dialog_artifacts::Entity = "test:subject".parse().expect("entity parses");
-        let the: dialog_artifacts::Attribute = "test/name".parse().expect("attribute parses");
+        let the: dialog_artifacts::Relation = "test/name".parse().expect("attribute parses");
         let is = Value::String("Zaphod".into());
         let key = dialog_artifacts::history_key(
             &version(7),
@@ -1025,7 +1025,7 @@ mod tests {
     #[dialog_common::test]
     fn it_reconstructs_a_coverage_record_without_inventing_a_value() {
         let of: dialog_artifacts::Entity = "test:subject".parse().expect("entity parses");
-        let the: dialog_artifacts::Attribute = "test/age".parse().expect("attribute parses");
+        let the: dialog_artifacts::Relation = "test/age".parse().expect("attribute parses");
         let key = dialog_artifacts::coverage_key(&version(3), &of, &the, &Value::UnsignedInt(42));
 
         let fields = fact_fields(key.as_ref(), &key_components(key.as_ref()), true);
@@ -1162,7 +1162,7 @@ mod tests {
         use dialog_artifacts::{KeyType as _, State};
         let manifest = dialog_search_tree::Manifest::default();
         let of: dialog_artifacts::Entity = "test:subject".parse().expect("entity parses");
-        let the: dialog_artifacts::Attribute = "test/name".parse().expect("attribute parses");
+        let the: dialog_artifacts::Relation = "test/name".parse().expect("attribute parses");
         let is = Value::String("Ford".into());
         let at = version(9);
 

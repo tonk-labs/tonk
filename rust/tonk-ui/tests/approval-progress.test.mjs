@@ -105,3 +105,11 @@ test('approval entity uses the worker encoding and changes with either request f
   assert.notEqual(self.approvalEntity(request), self.approvalEntity({ ...request, audience: 'did:key:other' }));
   assert.notEqual(self.approvalEntity(request), self.approvalEntity({ ...request, callback: request.callback + '2' }));
 });
+
+// Before approval there is no request-specific row. That is an expected
+// absence, not a malformed ceremony that should expose schema diagnostics.
+test('an approval without a ceremony row has a quiet absence fallback', () => {
+  const display = library.match(/<tonk-display model="state:ceremony"[^>]*>([\s\S]*?)<\/tonk-display>/);
+  assert.ok(display, 'settings contains its ceremony display');
+  assert.match(display[1], /<span slot="no-entity" hidden><\/span>/);
+});

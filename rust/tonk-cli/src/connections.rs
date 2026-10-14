@@ -848,7 +848,7 @@ mod tests {
         };
         import_at(&root, &retained, store.clone()).await?;
         let site = open_bound(&root, &binding, store.clone()).await?;
-        crate::eval::run_against_site(&site, crate::eval::Source::Inline("attribute!: &offline-title\n  description: \"Offline title\"\n  the: xyz.test/offline-title\n  as: text\n  cardinality: one\n".into()), crate::eval::Options::default()).await?;
+        crate::eval::run_against_site(&site, crate::eval::Source::Inline("attribute!: &offline-title\n  description: \"Offline title\"\n  the: xyz.test/offline-title\n  as: text\n  cardinality: :one\n".into()), crate::eval::Options::default()).await?;
         let tree = site.branch().await?.handle().revision().unwrap().tree;
         let denied = crate::sync::push(&site).await.unwrap_err();
         assert!(
