@@ -480,3 +480,13 @@ After rebasing, all 78 tests passed again (13 core, 60 hosted, 3 Apps, 2 native
 SDK integration tests using the existing local worker binary). Repository
 formatting and `git diff --check` passed. Live-client acceptance gaps remain
 unchanged; the rebase does not establish hosted CI or deployment success.
+
+## CI connection instructions
+
+The MCP preview comment and job summary now share generated connection settings
+from the deployment registry: shared Streamable HTTP URL, each client's ID and
+callbacks, public OAuth/PKCE instructions, native loopback-port handling, and the
+Claude Code/DCR/CIMD limits. Live client acceptance remains explicitly unverified.
+Checked generated Markdown for PR 1096, passed both focused deployment tests,
+repository formatting, and `git diff --check`. The updated bot comment requires
+the next successful preview deployment; no live client acceptance is inferred.

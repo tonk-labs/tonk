@@ -399,15 +399,11 @@ jobs:
           BUILD_COMMIT: ${{ github.sha }}
       - name: Record connection settings
         env:
-          MCP_URL: ${{ steps.config.outputs.url }}
-          CLIENT_ID: ${{ steps.config.outputs.client_id }}
+          CONNECTION_SETTINGS: ${{ steps.config.outputs.connection_settings }}
         run: |
           {
             echo '### Tonk MCP'
-            echo "MCP URL: $MCP_URL"
-            echo "OAuth client ID: $CLIENT_ID"
-            echo 'OAuth client secret: leave empty (public client with PKCE).'
-            echo 'Callback: https://chatgpt.com/connector_platform_oauth_redirect'
+            printf '%s\n' "$CONNECTION_SETTINGS"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: mshick/add-pr-comment@v2
         if: github.event_name == 'pull_request'
@@ -416,12 +412,7 @@ jobs:
           message: |
             **MCP preview** · [run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
-            MCP URL: `${{ steps.config.outputs.url }}`
-            OAuth client ID: `${{ steps.config.outputs.client_id }}`
-            OAuth client secret: leave empty (public client with PKCE).
-            Callback: `https://chatgpt.com/connector_platform_oauth_redirect`
-
-            Automated discovery, authentication challenge and asset checks passed. Connect this server in ChatGPT to test linking and tools manually.
+            ${{ steps.config.outputs.connection_settings }}
 
   cleanup-preview-databases:
     if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
