@@ -190,8 +190,12 @@ pub(crate) async fn complete(
             "local-space provisioning receipt has the wrong stage".into(),
         ));
     }
+    // Nothing is held across the join: where the space's own worker commits
+    // the claim, it asks this worker for its delegation meanwhile.
+    drop(tonk);
     let outcome =
-        super::join::join_for_local_space_link(&tonk, &body.invite, &request.space).await?;
+        super::join::join_for_local_space_link(&state, &body.invite, &request.space).await?;
+    let tonk = state.read().await;
     let device = tonk.profile.credential().signer().clone();
     let completion = local_space_link::LocalSpaceLinkCompletion::issue_from_device(
         &approval,

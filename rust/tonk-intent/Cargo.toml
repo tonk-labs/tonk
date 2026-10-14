@@ -12,4 +12,5 @@ ipld-core = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tonk-template = { workspace = true }
+tonk-notation = { workspace = true }
 

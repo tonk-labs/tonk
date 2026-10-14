@@ -196,6 +196,12 @@ while IFS= read -r FILE; do
             .tonk-stamp.lock | .tonk-stamp.lock/* | *.tmp.* | *.stamp-backup.*)
             continue
             ;;
+        # The vendored icons: thousands of files that change only when the
+        # icon set is bumped, each read on its own when something shows it.
+        # They are no part of what a page needs to load.
+        webawesome/icons/*)
+            continue
+            ;;
     esac
     case "$REL" in
         *'"'* | *'\\'* | *'|'*)

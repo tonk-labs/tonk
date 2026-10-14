@@ -35,4 +35,15 @@ jq -e '
   and .journey.class_counts == {"orient": 1, "other": 1, "write": 1}
 ' "$RUN_DIR/metrics.json" >/dev/null
 
+cp "$ROOT/bench/testdata/codex-current-first-use-episode.jsonl" "$RUN_DIR/episode.jsonl"
+"$ROOT/bench/bin/metrics.sh" >/dev/null
+jq -e '
+  .journey.cmds_before_first_read == 0
+  and .journey.cmds_before_first_data_read == 2
+  and .journey.cmds_before_first_write == 3
+  and .journey.tonk_calls == 5
+  and .journey.orientation_calls == 2
+  and .journey.class_counts == {"orient": 2, "read": 2, "write": 1}
+' "$RUN_DIR/metrics.json" >/dev/null
+
 echo "metrics: trajectory classifier passed" >&2

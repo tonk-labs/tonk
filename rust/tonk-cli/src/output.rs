@@ -21,6 +21,7 @@ use anyhow::{Context, Result};
 use dialog_repository::Revision;
 use serde::{Deserialize, Serialize};
 use tonk_evaluator::evaluate::{CommitSummary, QueryMatchBlock, QueryResult};
+use tonk_notation::spell_uri;
 
 /// JSON wire shape returned by both tonk and the worker's
 /// `/evaluate` route. Tonk owns its own copy so the JSON
@@ -158,7 +159,7 @@ fn render_matches(blocks: &[QueryMatchBlock]) -> String {
 /// re-submittable notation document.
 fn render_one(out: &mut String, label: &str, result: &QueryResult) {
     let _ = writeln!(out, "{label}:");
-    let _ = writeln!(out, "  this: {this}", this = result.this);
+    let _ = writeln!(out, "  this: {this}", this = spell_uri(&result.this));
     for (field, value) in &result.fields {
         if field.ends_with("/key") {
             continue;
@@ -197,25 +198,14 @@ fn render_value(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Null => "~".into(),
         serde_json::Value::Bool(b) => b.to_string(),
+        // Every number rides the wire as a JSON number and prints
+        // plainly: a literal's spelling carries no type.
         serde_json::Value::Number(n) => n.to_string(),
-        // A signed integer rides the wire as an explicitly signed
-        // string (JSON numbers can't tell +41 from 41); it prints
-        // bare, as the author spells it.
-        serde_json::Value::String(s) if is_signed_literal(s) => s.clone(),
         serde_json::Value::String(s) => quote_string(s),
         // Arrays / objects shouldn't normally appear here —
         // dialog attribute values are scalars — but fall back to
         // JSON if they do, so the output is at least lossless.
         other => other.to_string(),
-    }
-}
-
-/// `+41` / `-7`: an explicitly signed integer literal — the wire
-/// spelling of a SignedInteger value.
-fn is_signed_literal(s: &str) -> bool {
-    match s.strip_prefix(['+', '-']) {
-        Some(rest) => !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()),
-        None => false,
     }
 }
 
@@ -348,6 +338,7 @@ mod tests {
                         m.insert("age".into(), serde_json::json!(28));
                         m
                     },
+                    transient: false,
                 }],
             }],
             commits: CommitSummary {
@@ -420,6 +411,7 @@ mod value_spelling_tests {
         let mut result = QueryResult {
             this: "concept:zX".into(),
             fields: Default::default(),
+            transient: false,
         };
         result
             .fields
@@ -437,16 +429,15 @@ mod value_spelling_tests {
 
     #[test]
     fn it_renders_number_spellings() {
-        // Bare digits are unsigned; the wire spells signed integers
-        // as explicitly signed strings, printed bare; floats keep
+        // Every number prints plainly, never with a `+`; floats keep
         // their decimal point.
         assert_eq!(render_value(&serde_json::json!(41u64)), "41");
-        assert_eq!(render_value(&serde_json::json!("+41")), "+41");
-        assert_eq!(render_value(&serde_json::json!("-7")), "-7");
+        assert_eq!(render_value(&serde_json::json!(-7)), "-7");
         assert_eq!(render_value(&serde_json::json!(41.5)), "41.5");
         assert_eq!(render_value(&serde_json::json!(41.0)), "41.0");
-        // Ordinary strings still quote — including number-adjacent text.
+        // Strings quote — including number-shaped text, which is text.
         assert_eq!(render_value(&serde_json::json!("41a")), "\"41a\"");
+        assert_eq!(render_value(&serde_json::json!("+41")), "\"+41\"");
         assert_eq!(render_value(&serde_json::json!("+")), "\"+\"");
     }
 }

@@ -286,9 +286,12 @@ pub enum FieldValue {
     /// [`Literal`](FieldValue::Literal). An include that survives to
     /// analysis was never expanded and is rejected there.
     Include(Include),
-    /// A list of values. Only a command's `action:` takes one (the
-    /// several names a command answers to); everywhere else a list is
-    /// rejected, and a cardinality-many write repeats the assertion.
+    /// A YAML sequence of scalars. An attribute's `as:` or `the:` lists
+    /// a ranked choice (values or relations, best first); a command's
+    /// `action:` lists the several names it answers to. Each item is a
+    /// scalar form (literal, symbol, URI); a nested mapping or sequence
+    /// is not an item. Everywhere else a list is rejected, and a
+    /// cardinality-many write repeats the assertion.
     List(Vec<FieldValue>),
 }
 
@@ -311,7 +314,7 @@ impl Include {
     }
 }
 
-/// How an included resource's bytes become a literal.
+/// How an included resource's bytes become a field value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IncludeForm {
     /// `!include` — the content as it is, a [`Scalar::Included`]. The
@@ -322,6 +325,12 @@ pub enum IncludeForm {
     /// [`Scalar::String`] wherever it is written. For an untyped field
     /// that should hold text.
     Text,
+    /// `!include/asset` — the content is stored as an asset, in the
+    /// space's blob store under its content address, and the field holds
+    /// the asset's `asset:<hash>` reference, a [`FieldValue::Uri`]. For
+    /// media and files a view renders from the blob store rather than
+    /// from the fact itself.
+    Asset,
 }
 
 impl IncludeForm {
@@ -330,6 +339,7 @@ impl IncludeForm {
         match self {
             IncludeForm::Bytes => "include",
             IncludeForm::Text => "include/text",
+            IncludeForm::Asset => "include/asset",
         }
     }
 }
@@ -340,13 +350,15 @@ impl IncludeForm {
 pub enum Scalar {
     /// A textual scalar.
     String(String),
-    /// An integer literal.
+    /// A whole negative number, at least `i128::MIN`. A number
+    /// literal is held in the narrowest scalar whatever its spelling:
+    /// `-7` and `-7.0` both land here, `41`, `+41` and `41.0` are all
+    /// an [`UnsignedInteger`](Scalar::UnsignedInteger).
     Integer(i128),
-    /// An unsigned-integer literal too large for `i128`'s
-    /// negative half — preserved so we don't lose precision before
-    /// the analyzer coerces.
+    /// A whole non-negative number, at most `u128::MAX`.
     UnsignedInteger(u128),
-    /// A floating-point literal.
+    /// A number no integer scalar holds: fractional (`2.5`), or whole
+    /// but outside both integer ranges (`1e39`). Never a NaN.
     Float(f64),
     /// A boolean literal.
     Boolean(bool),

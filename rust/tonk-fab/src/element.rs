@@ -113,6 +113,7 @@ impl CustomElement for TonkFab {
             "up",
             "flip",
             "data-sync-status",
+            "data-observer",
         ]
     }
 
@@ -203,7 +204,7 @@ impl CustomElement for TonkFab {
         }
         match name.as_str() {
             "flip" => bar::apply_flip(this),
-            "data-sync-status" => bar::update(this),
+            "data-sync-status" | "data-observer" => bar::update(this),
             // The space is what every subscription is addressed to. The
             // subtree is authored ONCE, so a bar whose `space` was blank at
             // authoring time — an unsubstituted first projection — carries

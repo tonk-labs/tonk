@@ -911,7 +911,7 @@ fn dispatch_enable_sync(space: &str, remote: &str, share: bool, time: f64) {
 }
 
 /// Claim on the profile branch.
-fn dispatch_claim(claim: &serde_json::Value) {
+pub(crate) fn dispatch_claim(claim: &serde_json::Value) {
     crate::profile::transact(claim);
 }
 

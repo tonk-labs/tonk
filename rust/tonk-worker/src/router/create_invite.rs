@@ -24,13 +24,13 @@ use axum_wasm_macros::wasm_compat;
 use dialog_capability::Subject;
 use dialog_credentials::{Ed25519Signer, key::KeyExport};
 use dialog_effects::Use;
-use dialog_repository::{RepositoryExt as _, SiteAddress, Upstream};
+use dialog_repository::{SiteAddress, Upstream};
 use dialog_ucan::UcanDelegation;
 use dialog_varsig::Principal;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_invite::{Invite, InviteAudience, home_address_meta, shortcut::ShortcutRequest};
+use tonk_invite::{Invite, InviteAudience, Ticket, home_address_meta, shortcut::ShortcutRequest};
 use tonk_schema::{Invitation, InvitationExecution};
 use url::Url;
 
@@ -155,15 +155,7 @@ async fn mint_invite(
         ));
     }
 
-    let repository = tonk
-        .profile
-        .space(&repo_name)
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", repo_name, e))
-        })?;
+    let repository = super::repository::space_named(&tonk, &repo_name).await?;
 
     let (audience_did, audience) = match request.recipient_root {
         Some(did) => (did, InviteAudience::Scoped),
@@ -254,22 +246,54 @@ async fn mint_invite(
         InviteAudience::Scoped => "scoped",
     };
     let execution = InvitationExecution::new(&invitation, kind);
-    tonk.reactor
-        .repository(&repo_name)
-        .branch(CONTENT_BRANCH)
-        .transaction()
-        .assert(invitation)
-        .assert(execution)
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
+    // The record is the space's to keep. Where a worker of its own holds
+    // it, that worker is handed the chain and writes what this would.
+    if tonk.spaces_elsewhere() {
+        let union = account_union(&tonk).await;
+        // Nothing is held while that worker is asked: it may be starting,
+        // and asks this one for its delegation as it does.
+        drop(tonk);
+        let claim = retain_invite_claim(&invite.chain, union.as_ref(), kind == "open")?;
+        let peer = super::space_reach::peer(&repo_name);
+        super::space_reach::run(peer, peer.content(), claim).await?;
+        // The command runs after its commit answers. An invitation handed
+        // out is one that can be listed and revoked, so wait for the record.
+        recorded(peer, &invitation).await?;
+    } else {
+        tonk.reactor
+            .repository(&repo_name)
+            .branch(CONTENT_BRANCH)
+            .transaction()
+            .assert(invitation)
+            .assert(execution)
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
 
-    retain_invite_authority(&tonk, &repo_name, &invite.chain).await?;
+        retain_invite_authority(&tonk, &repo_name, &invite.chain).await?;
+        drop(tonk);
+    }
 
-    let url_str = invite
-        .to_url(base_url.as_str())
-        .map_err(|e| TonkWorkerError::Router(format!("failed to serialize invite URL: {e}")))?;
+    // An open invite's grant waits in the space as the ephemeral key's
+    // ticket, and the link names only the space and the key's seed, on
+    // the host serving the space: that is where the recipient claims it.
+    // A scoped invite is addressed to a principal the recipient already
+    // holds, so its chain rides in `access=`, and so does an open one
+    // whose ticket the space did not keep (see `issue_ticket`).
+    let ticket_link = match &invite.audience {
+        InviteAudience::Open { seed } => {
+            let tonk = state.read().await;
+            issue_ticket(&tonk, &remote.access_url, &invite.chain, *seed).await
+        }
+        InviteAudience::Scoped => None,
+    };
+    let url_str = match ticket_link {
+        Some(link) => link,
+        None => invite
+            .to_url(base_url.as_str())
+            .map_err(|e| TonkWorkerError::Router(format!("failed to serialize invite URL: {e}")))?,
+    };
     let url_str =
         tonk_analytics::launch::space_referral_url(&url_str, &repo_name).map_err(|e| {
             TonkWorkerError::Internal(format!("failed to add invite referral attribution: {e}"))
@@ -312,6 +336,40 @@ async fn mint_invite(
         },
     };
     Ok(Json(response))
+}
+
+/// Leave an open invite's `chain` in its space as the ticket of the key
+/// `seed` derives, and answer the ticket link that redeems it:
+/// `{origin}/space/{did}#{seed}` on the host serving the space.
+///
+/// `None` when the space's service did not keep the ticket — unreachable,
+/// refusing, or not a service at all. The caller then hands out the
+/// `access=` link, which carries the same chain and redeems the same way:
+/// a share never fails because its grant could not be left in the space.
+pub(super) async fn issue_ticket(
+    tonk: &crate::worker::TonkState,
+    access_url: &Url,
+    chain: &dialog_ucan_core::DelegationChain,
+    seed: [u8; 32],
+) -> Option<String> {
+    let subject = chain.subject()?.clone();
+    if let Err(error) = tonk_account::ticket::issue(
+        SiteAddress::from(dialog_remote_ucan::UcanAddress::new(access_url.as_str())),
+        chain,
+        &tonk.operator,
+    )
+    .await
+    {
+        log!("invite: the space did not keep the ticket; sharing the full link: {error}");
+        return None;
+    }
+    match Ticket::new(subject, seed, access_url).and_then(|ticket| ticket.to_url()) {
+        Ok(link) => Some(link),
+        Err(error) => {
+            log!("invite: the ticket link did not assemble; sharing the full link: {error}");
+            None
+        }
+    }
 }
 
 /// Retain an invite's delegation chain, plus the profile-to-account union,
@@ -362,6 +420,137 @@ pub(super) async fn account_union(
         Err(e) => {
             log!("no account root on this profile, minting invite without a union: {e}");
             None
+        }
+    }
+}
+
+/// How long the space's own worker is given to record an invitation.
+const RECORD_WAIT: web_time::Duration = web_time::Duration::from_secs(20);
+
+/// Wait until the space's own worker lists `invitation`, which it does once
+/// it has retained the chain and recorded the invitation, in that order.
+async fn recorded(
+    peer: super::space_reach::SpacePeer<'_>,
+    invitation: &Invitation,
+) -> Result<(), TonkWorkerError> {
+    use dialog_query::{ConceptQuery, Query, Term};
+    use tonk_schema::query::Query as WireQuery;
+
+    let listed = WireQuery::from(&ConceptQuery::from(Query::<Invitation> {
+        this: Term::from(invitation.this.clone()),
+        subject: Term::var("subject"),
+        inviter: Term::var("inviter"),
+        audience: Term::var("audience"),
+    }));
+    let started = web_time::Instant::now();
+    loop {
+        let rows = peer
+            .content()
+            .query(listed.clone())
+            .perform(&peer)
+            .await
+            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+        if !rows.is_empty() {
+            return Ok(());
+        }
+        if started.elapsed() >= RECORD_WAIT {
+            return Err(TonkWorkerError::Internal(
+                "the space's own worker did not record the invitation in time".into(),
+            ));
+        }
+        crate::r#async::sleep(web_time::Duration::from_millis(100))
+            .await
+            .map_err(|_| TonkWorkerError::Internal("the wait was interrupted".into()))?;
+    }
+}
+
+/// The [`RetainInvite`] command as a claim, for the space's own worker to run
+/// on the space's branch.
+///
+/// [`RetainInvite`]: tonk_schema::command::RetainInvite
+fn retain_invite_claim(
+    chain: &dialog_ucan_core::DelegationChain,
+    union: Option<&dialog_ucan_core::DelegationChain>,
+    open: bool,
+) -> Result<tonk_schema::claim::SourceClaim, TonkWorkerError> {
+    let encode = |chain: &dialog_ucan_core::DelegationChain| {
+        chain
+            .to_bytes()
+            .map(|bytes| bs58::encode(bytes).into_string())
+            .map_err(|e| TonkWorkerError::Internal(format!("failed to serialize a chain: {e}")))
+    };
+    super::space_reach::command(
+        &[
+            ("proof", "xyz.tonk.command.retain-invite/proof", "Text"),
+            ("union", "xyz.tonk.command.retain-invite/union", "Text"),
+            ("open", "xyz.tonk.command.retain-invite/open", "Boolean"),
+        ],
+        serde_json::json!({
+            "proof": encode(chain)?,
+            "union": union.map(encode).transpose()?.unwrap_or_default(),
+            "open": open,
+        }),
+    )
+}
+
+/// Run the [`RetainInvite`] command: keep, in the space this worker holds,
+/// the record of an invitation the person's profile issued. The chain says
+/// which space it is for, and one for any other than the branch it fired on
+/// is refused.
+///
+/// [`RetainInvite`]: tonk_schema::command::RetainInvite
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::RetainInvite> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::RetainInvite) {
+        let repo = self.origin().repo.clone();
+        let retained = async {
+            let decode = |text: &str| {
+                let bytes = bs58::decode(text)
+                    .into_vec()
+                    .map_err(|e| TonkWorkerError::Router(format!("not base58: {e}")))?;
+                dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
+                    .map_err(|e| TonkWorkerError::Router(format!("malformed delegation: {e}")))
+            };
+            let chain = decode(&command.proof.0)?;
+            if chain.subject().map(|subject| subject.to_string()) != Some(repo.clone()) {
+                return Err(TonkWorkerError::Forbidden(format!(
+                    "the invite is not for '{repo}'"
+                )));
+            }
+            let union = match command.union.0.as_str() {
+                "" => None,
+                union => Some(decode(union)?),
+            };
+            let invitation = Invitation::from_chain(&chain).ok_or_else(|| {
+                TonkWorkerError::Router("an invite delegation names the space it is for".into())
+            })?;
+            let execution = InvitationExecution::new(
+                &invitation,
+                if command.open.0 { "open" } else { "scoped" },
+            );
+            let tonk = self.state().read().await;
+            // The chain first: the record is what says the invitation is
+            // there to be listed and revoked, which takes the chain.
+            retain_invite_chains(&tonk, &repo, &chain, union).await?;
+            tonk.reactor
+                .repository(&repo)
+                .branch(CONTENT_BRANCH)
+                .transaction()
+                .assert(invitation)
+                .assert(execution)
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .map_err(|e| {
+                    TonkWorkerError::Internal(format!("failed to record invitation: {e}"))
+                })?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            Ok(())
+        };
+        match retained.await {
+            Ok(()) => log!("Retained an invite to '{repo}'"),
+            Err(error) => log!("RetainInvite for '{repo}' failed: {error}"),
         }
     }
 }
@@ -798,19 +987,7 @@ pub(crate) async fn resolve_remote_url<'a, R>(
 where
     R: Principal + Clone,
 {
-    resolve_remote_url_with(repository, &tonk.operator).await
-}
-
-/// [`resolve_remote_url`] against a bare operator rather than the whole
-/// [`TonkState`] — for callers that must not hold state across this await.
-pub(crate) async fn resolve_remote_url_with<R>(
-    repository: &dialog_repository::Repository<R>,
-    operator: &crate::worker::DefaultOperator,
-) -> Result<RemoteRequirement, TonkWorkerError>
-where
-    R: Principal + Clone,
-{
-    match resolve_configured_remote_url_with(repository, operator).await? {
+    match resolve_configured_remote_url(tonk, repository).await? {
         ConfiguredRemoteRequirement::Refused(reason) => Ok(RemoteRequirement::Refused(reason)),
         ConfiguredRemoteRequirement::Ready(remote) => {
             Ok(RemoteRequirement::Ready(RemoteExecutionUrls {
@@ -818,6 +995,26 @@ where
             }))
         }
     }
+}
+
+/// Where `repository` syncs. Where each space has a worker of its own, the
+/// profile mounts nothing of a space and reads this from the account's
+/// directory, which records it for every space the person has. A host with
+/// one database reads it from the space it has mounted.
+pub(crate) async fn resolve_configured_remote_url<R>(
+    tonk: &crate::worker::TonkState,
+    repository: &dialog_repository::Repository<R>,
+) -> Result<ConfiguredRemoteRequirement, TonkWorkerError>
+where
+    R: Principal + Clone,
+{
+    if tonk.spaces_elsewhere() && repository.did() != tonk.profile.did() {
+        let configuration = super::space_directory::configuration(tonk, &repository.did())
+            .await?
+            .unwrap_or_default();
+        return super::space_directory::endpoint(&configuration);
+    }
+    resolve_configured_remote_url_with(repository, &tonk.operator).await
 }
 
 #[cfg(test)]

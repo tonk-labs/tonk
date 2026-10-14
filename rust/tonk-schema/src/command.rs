@@ -527,6 +527,102 @@ impl Command for RecordInvite {
     type Output = ();
 }
 
+/// Keep, in a space, the record of an invitation the person's profile
+/// issued: the roster's invitation, and the delegation retained so the
+/// invitation can be found again and revoked.
+///
+/// [`RecordInvite`] is what the share control's own mint leaves, link and
+/// seed included. This is the rest of it: an invitation issued for someone
+/// else to carry (a named root, an agent), of which the space keeps only
+/// what the chain says. It fires on the space's own branch and records for
+/// that space only.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RetainInvite {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The delegation chain the invitation grants.
+    pub proof: crate::domain::command::current::retain_invite::Proof,
+    /// The `profile -> account` union edge, or empty.
+    pub union: crate::domain::command::current::retain_invite::Union,
+    /// Whether the invitation is open.
+    pub open: crate::domain::command::current::retain_invite::Open,
+}
+
+impl Command for RetainInvite {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Admit a member of a space as admin, in the space's own worker.
+///
+/// [`PromoteMember`] is what the bar fires, on the person's profile, naming
+/// the space. Where each space is held by a worker of its own, the chains
+/// the promotion composes onto and the roster it stamps are in that
+/// worker's hands, so the profile passes the promotion on as this. It fires
+/// on the space's own branch and admits to that space only. The gate is the
+/// same cryptographic one: the hop has to be the promoter's account's `/`
+/// over this space to the member.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AdmitMember {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The DID the member's membership is keyed on.
+    pub member: crate::domain::command::current::admit_member::Member,
+    /// The page-minted `promoter-account -> member` hop, base58.
+    pub hop: crate::domain::command::current::admit_member::Hop,
+}
+
+impl Command for AdmitMember {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Commit, in a space, a claim on it that the person's profile prepared.
+///
+/// Where each space is held by a worker on the space's own origin, joining
+/// one takes two workers. The profile's parses the invitation, extends its
+/// chain to the claiming account and keeps that authority. The space's
+/// worker, which is delegated to out of it, does what touches the space: it
+/// pulls it (the remote honouring the chain is the authorization check),
+/// validates what the pull brought, and commits the roster claim. This is
+/// how the first hands the second the claim. It fires on the space's own
+/// branch and claims for that space only; what came of it is said in a
+/// [`MembershipClaimed`] at this command's entity.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ClaimMembership {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The invitation's chain as issued.
+    pub invitation: crate::domain::command::current::claim_membership::Invitation,
+    /// The chain extended to the claiming account.
+    pub chain: crate::domain::command::current::claim_membership::Chain,
+    /// Whether the invitation is open.
+    pub open: crate::domain::command::current::claim_membership::Open,
+    /// The account the claim is for.
+    pub member: crate::domain::command::current::claim_membership::Member,
+    /// The name the member goes by.
+    pub name: crate::domain::command::current::claim_membership::Name,
+    /// Whether the remote has to honour the chain first.
+    pub authorize: crate::domain::command::current::claim_membership::Authorize,
+}
+
+impl Command for ClaimMembership {
+    type Input = Self;
+    type Output = ();
+}
+
+/// What came of a [`ClaimMembership`], at that command's entity: overlay
+/// only, in the space the claim was for.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MembershipClaimed {
+    /// The entity of the command that asked.
+    pub this: Entity,
+    /// `claimed`, or the kind of failure.
+    pub outcome: crate::domain::membership_claim::Outcome,
+    /// Operator-facing context for a failure.
+    pub detail: crate::domain::membership_claim::Detail,
+}
+
 /// Move a space's roster entry from one account to the account that took it
 /// over, in the space's own worker.
 ///
@@ -957,6 +1053,48 @@ pub struct PromoteMember {
 }
 
 impl Command for PromoteMember {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Make a space readable by anyone.
+///
+/// Delegates `/use/get` on the space to the public principal, records it
+/// as an invitation of kind `public`, and leaves the chain in the space as
+/// that principal's ticket, so the space's bare address opens it for
+/// whoever visits. Only someone holding `/` on the space may, since only
+/// they could take it back.
+///
+/// Routeless like `tonk:pause-sync`: the command names its `space`.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct PublishSpace {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The space to publish.
+    pub space: crate::domain::command::publish::Space,
+    /// The press's timestamp.
+    pub time: crate::domain::command::publish::Time,
+}
+
+impl Command for PublishSpace {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Make a published space private again: take its public ticket back so
+/// the next visitor finds none, and revoke the delegation so a reader who
+/// already claimed it stops reading.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct UnpublishSpace {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The space to unpublish.
+    pub space: crate::domain::command::unpublish::Space,
+    /// The press's timestamp.
+    pub time: crate::domain::command::unpublish::Time,
+}
+
+impl Command for UnpublishSpace {
     type Input = Self;
     type Output = ();
 }

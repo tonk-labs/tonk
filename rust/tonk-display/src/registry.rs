@@ -2436,7 +2436,7 @@ mod tests {
             ("hash", ""),
         ]);
         let host = account_settings(
-            r#"<div class="pane" data-pane="account"></div><div class="pane" data-pane="link" hidden><b data-link-name></b><b data-link-account></b><b data-link-did></b><button type="button" data-link-decline>decline</button><button type="button" data-link-approve data-audience="" data-callback="" data-name="" data-expected-account="">approve</button></div><p data-ceremony-status hidden></p>"#,
+            r#"<div class="pane" data-pane="account"></div><div class="pane" data-pane="link" hidden><b data-link-name></b><b data-link-account>person@example.com</b><button type="button" data-link-decline>decline</button><button type="button" data-link-approve data-audience="" data-callback="" data-name="" data-expected-account="">approve</button></div><p data-ceremony-status hidden></p>"#,
         );
         settle_until(|| defined("account-settings")).await;
         settle_briefly().await;
@@ -2455,10 +2455,10 @@ mod tests {
             "and the account pane is not"
         );
         assert_eq!(text_of(&host, "[data-link-name]"), "e2e terminal");
-        assert_eq!(text_of(&host, "[data-link-did]"), "did:key:zTerminal");
         assert_eq!(
             text_of(&host, "[data-link-account]"),
-            "your signed-in account"
+            "person@example.com",
+            "refresh preserves the email rendered by the registered account view"
         );
         let approve = host
             .query_selector("[data-link-approve]")
@@ -2505,11 +2505,10 @@ mod tests {
     }
 
     /// A page on another deployment asks the way a terminal does, with an
-    /// https callback. The pane names that page, so approving is a
-    /// decision about where the grant goes, and declining answers the page
-    /// on its own callback.
+    /// https callback. The pane uses the shared Tonk connection wording
+    /// and request name; declining still answers the page on its own callback.
     #[dialog_common::test]
-    async fn it_names_the_page_a_web_request_would_sign_in() {
+    async fn it_describes_a_web_connection_and_declines_on_its_callback() {
         let navigations = record_bridge_calls("navigate");
         let callback = "https://tonk.host/settings/link?via=https%3A%2F%2Ftonk.test&request=r1";
         let search = format!(
@@ -2523,20 +2522,20 @@ mod tests {
             ("hash", ""),
         ]);
         let host = account_settings(
-            r#"<div class="pane" data-pane="account"></div><div class="pane" data-pane="link" hidden><b data-link-heading></b><b data-link-name></b><b data-link-return></b><b data-link-account></b><b data-link-did></b><p data-link-explanation></p><button type="button" data-link-decline>decline</button><button type="button" data-link-approve data-audience="" data-callback="" data-name="" data-expected-account="">approve</button></div><p data-ceremony-status hidden></p>"#,
+            r#"<div class="pane" data-pane="account"></div><div class="pane" data-pane="link" hidden><b data-link-heading></b><b data-link-name></b><b data-link-account>person@example.com</b><p data-link-explanation></p><button type="button" data-link-decline>decline</button><button type="button" data-link-approve data-audience="" data-callback="" data-name="" data-expected-account="">approve</button></div><p data-ceremony-status hidden></p>"#,
         );
         settle_until(|| defined("account-settings")).await;
         settle_briefly().await;
 
         assert_eq!(
             text_of(&host, "[data-link-heading]"),
-            "tonk.host is asking for access"
+            "connect to your Tonk account"
         );
-        assert_eq!(text_of(&host, "[data-link-return]"), "https://tonk.host");
-        assert!(
-            text_of(&host, "[data-link-explanation]")
-                .contains("decline if you did not ask tonk.host to sign in yourself"),
-            "the warning names the page, not a terminal"
+        assert_eq!(text_of(&host, "[data-link-name]"), "tonk.host");
+        assert_eq!(text_of(&host, "[data-link-account]"), "person@example.com");
+        assert_eq!(
+            text_of(&host, "[data-link-explanation]"),
+            "approving gives this connection the same access to your account as this browser: every space, on every device. only approve if you started this connection yourself."
         );
 
         let decline = host
@@ -2741,8 +2740,16 @@ mod tests {
             .expect("query")
             .expect("the status line");
 
+        // WEB-10: a result belonging to another approval must not be worded.
         rows.set_inner_html(
-            r#"<span data-ceremony-row data-ceremony="add-passkey" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
+            r#"<span data-ceremony-row data-of="urn:tonk:approval:previous" data-ceremony="authorize-device" data-ceremony-state="done" data-ceremony-detail="" hidden></span>"#,
+        );
+        settle_briefly().await;
+        assert!(status.has_attribute("hidden"));
+        assert_eq!(text_of(&host, "[data-ceremony-status]"), "");
+
+        rows.set_inner_html(
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
         );
         settle_until(|| !status.has_attribute("hidden")).await;
         assert_eq!(
@@ -2755,7 +2762,7 @@ mod tests {
         );
 
         rows.set_inner_html(
-            r#"<span data-ceremony-row data-ceremony="add-passkey" data-ceremony-state="refused" data-ceremony-detail="no passkey" hidden></span>"#,
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="refused" data-ceremony-detail="no passkey" hidden></span>"#,
         );
         settle_until(|| text_of(&host, "[data-ceremony-status]").contains("did not finish")).await;
         assert_eq!(

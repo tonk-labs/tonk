@@ -155,7 +155,7 @@ concept!: &blank
     subject:
       description: The repository's subject DID (the replica's subject).
       the: dialog.replica/subject
-      cardinality: one
+      cardinality: :one
       as: entity
 
 view!:
@@ -316,7 +316,7 @@ concept!: &authorization
     proof:
       description: base58 delegation chain — the `?access=` part of the invite URL.
       the: xyz.tonk.authorization/proof
-      cardinality: one
+      cardinality: :one
       as: text
     remote:
       description: >
@@ -324,7 +324,7 @@ concept!: &authorization
         the endpoint moved into the delegation chain's signed
         `home.address` meta.
       the: xyz.tonk.authorization/remote
-      cardinality: one
+      cardinality: :one
       as: text
 
 # The private, ephemeral half of an invite: the membership keypair's seed
@@ -341,12 +341,12 @@ concept!: &credential
     seed:
       description: base58 keypair seed — the `#` fragment of the invite URL.
       the: xyz.tonk.credential/seed
-      cardinality: one
+      cardinality: :one
       as: text
     link:
       description: The complete invite URL, shortened when the shortcut service answered.
       the: xyz.tonk.credential/link
-      cardinality: one
+      cardinality: :one
       as: text
 
 # The invite, as a join of the public `tonk:authorization` and the
@@ -365,12 +365,12 @@ concept!: &invitation
     link:
       description: The complete invite URL — what a view renders and copies.
       the: xyz.tonk.credential/link
-      cardinality: one
+      cardinality: :one
       as: text
     access:
       description: base58 delegation chain — the `?access=` part of the invite URL.
       the: xyz.tonk.authorization/proof
-      cardinality: one
+      cardinality: :one
       as: text
     remote:
       description: >
@@ -378,12 +378,12 @@ concept!: &invitation
         the endpoint moved into the delegation chain's signed
         `home.address` meta.
       the: xyz.tonk.authorization/remote
-      cardinality: one
+      cardinality: :one
       as: text
     code:
       description: base58 keypair seed — the `#` fragment of the invite URL.
       the: xyz.tonk.credential/seed
-      cardinality: one
+      cardinality: :one
       as: text
 
 # The invite-link view — the default view for the `invitation` model, so
@@ -430,7 +430,7 @@ concept!:
       description: The time this handoff was requested.
       the: xyz.tonk.agent-handoff/time
       as: float
-      cardinality: one
+      cardinality: :one
 
 concept!: &tonk/agent-handoff-state
   this: tonk:agent-handoff-state
@@ -440,17 +440,17 @@ concept!: &tonk/agent-handoff-state
       description: Ready marker or a pending or failure explanation.
       the: xyz.tonk.agent-handoff/status
       as: text
-      cardinality: one
+      cardinality: :one
     link:
       description: Scoped invitation URL when ready, otherwise empty.
       the: xyz.tonk.agent-handoff/link
       as: text
-      cardinality: one
+      cardinality: :one
     account:
       description: Required account when ready; a device placeholder while unavailable.
       the: xyz.tonk.agent-handoff/account
       as: entity
-      cardinality: one
+      cardinality: :one
 
 view!:
   this: tonk:agent-handoff-state
@@ -465,17 +465,17 @@ concept!: &tonk/agent-invite
     name:
       description: The repository's display name.
       the: xyz.tonk.repo/name
-      cardinality: one
+      cardinality: :one
       as: text
     link:
       description: The complete account-scoped handoff URL.
       the: xyz.tonk.agent-invite/link
-      cardinality: one
+      cardinality: :one
       as: text
     account:
       description: The browser account the agent must connect as.
       the: xyz.tonk.agent-invite/account
-      cardinality: one
+      cardinality: :one
       as: entity
 
 # A refused invite mint, asserted into the session overlay by the worker.
@@ -490,17 +490,17 @@ concept!: &share/blocked
     blocked:
       description: Stable refusal class.
       the: xyz.tonk.share/blocked
-      cardinality: one
+      cardinality: :one
       as: text
     detail:
       description: Human-readable refusal reason.
       the: xyz.tonk.share/detail
-      cardinality: one
+      cardinality: :one
       as: text
     time:
       description: Timestamp of the invite request this refusal answers.
       the: xyz.tonk.share/time
-      cardinality: one
+      cardinality: :one
       as: float
 
 view!:
@@ -659,7 +659,7 @@ concept!: &agent-connection
     status:
       description: Human-readable acknowledgement of a completed agent connection.
       the: xyz.tonk.agent-connection/status
-      cardinality: one
+      cardinality: :one
       as: text
 
 view!:
@@ -755,17 +755,17 @@ concept!: &member
     member:
       description: The member account's DID (the `member` of the Membership)
       the: xyz.tonk.membership/member
-      cardinality: one
+      cardinality: :one
       as: entity
     role:
       description: "The member's role: tonk:founder (creator) or tonk:member (joiner)"
       the: xyz.tonk.membership/role
-      cardinality: one
+      cardinality: :one
       as: entity
     name:
       description: The member's self-asserted display name for this space
       the: xyz.tonk.membership/name
-      cardinality: one
+      cardinality: :one
       as: text
 
 # A single roster row — the default view for `model: tonk:member`. Each
@@ -965,7 +965,7 @@ concept!:
     origin:
       description: The subject DID the history was adopted from
       the: xyz.tonk.transplant/origin
-      cardinality: one
+      cardinality: :one
       as: entity
     revision:
       description: >
@@ -973,12 +973,12 @@ concept!:
         is operator-signed, so the endpoint of the adopted history stays
         verifiable after the origin's own stores are gone.
       the: xyz.tonk.transplant/revision
-      cardinality: one
+      cardinality: :one
       as: bytes
     tree:
       description: The tree root the transplant adopted
       the: xyz.tonk.transplant/tree
-      cardinality: one
+      cardinality: :one
       as: text
 
 # The repository's own name, stored in its content branch so the repo
@@ -1002,7 +1002,7 @@ concept!: &tonk/repository
         always has one; the banner still falls back to "Untitled" if a
         read races ahead of the fact.
       the: xyz.tonk.repo/name
-      cardinality: one
+      cardinality: :one
       as: text
 
 # Agent working context carried by the repository itself. The instance is keyed
@@ -1014,7 +1014,7 @@ attribute!: &tonk/agents-markdown
     Markdown working context for agents using this repository.
     Keep durable concepts, workflows, decisions, and recurring pitfalls here;
     omit credentials, invite links, transient status, and one-off completions.
-  cardinality: one
+  cardinality: :one
   as: text
 
 concept!: &tonk/agents
@@ -1101,12 +1101,12 @@ concept!: &tonk/identity
     did:
       description: The self profile DID (feeds the sigil glyph).
       the: xyz.tonk.identity/did
-      cardinality: one
+      cardinality: :one
       as: entity
     name:
       description: The self display name shown (and edited) in the chip.
       the: xyz.tonk.identity/name
-      cardinality: one
+      cardinality: :one
       as: text
 
 # Rename the signed-in member (set their display name). The editable chip
@@ -1164,12 +1164,12 @@ concept!: &board
     name:
       description: Display name
       the: xyz.tonk.board/name
-      cardinality: one
+      cardinality: :one
       as: text
     column:
       description: Columns in this board
       the: xyz.tonk.board/column
-      cardinality: many
+      cardinality: :many
       as: entity
 
 concept!: &column-view
@@ -1178,17 +1178,17 @@ concept!: &column-view
     order:
       description: LexoRank-style order key within the board
       the: xyz.tonk.column/order
-      cardinality: one
+      cardinality: :one
       as: text
     width:
       description: Column width in grid units (1 unit is 64px)
       the: xyz.tonk.column/width
-      cardinality: one
+      cardinality: :one
       as: unsigned-integer
     tile:
       description: Tiles in this column
       the: xyz.tonk.column/tile
-      cardinality: many
+      cardinality: :many
       as: entity
 
 concept!: &tile
@@ -1197,17 +1197,17 @@ concept!: &tile
     order:
       description: Order key within the column
       the: xyz.tonk.tile/order
-      cardinality: one
+      cardinality: :one
       as: text
     model:
       description: Concept the tile body renders
       the: xyz.tonk.tile/model
-      cardinality: one
+      cardinality: :one
       as: entity
     entity:
       description: Entity the tile body renders
       the: xyz.tonk.tile/entity
-      cardinality: one
+      cardinality: :one
       as: entity
 
 concept!: &inspector
@@ -1216,7 +1216,7 @@ concept!: &inspector
     source:
       description: Space name to inspect (passed through as the source attribute)
       the: xyz.tonk.inspector/source
-      cardinality: one
+      cardinality: :one
       as: text
 
 # The imperative escape hatch: `<tonk-portal>` writes an
@@ -1230,7 +1230,7 @@ concept!: &portal
     content:
       description: HTML document written into the portal iframe
       the: xyz.tonk.portal/content
-      cardinality: one
+      cardinality: :one
       as: text
 
 # One view per concept, keyed by `model`. Each nested
@@ -1495,7 +1495,7 @@ concept!: &element
         their description are two different values. That is the right
         reading: the description is part of what the definition says.
       the: xyz.tonk.element/description
-      cardinality: one
+      cardinality: :one
       as: text
     method:
       description: |
@@ -1533,9 +1533,9 @@ concept!: &element
         every attribute; `attributeChangedCallback`'s list is read once
         when the tag is registered and so could never grow with an
         edited method.
-      the: xyz.tonk.element.method
+      the: "xyz.tonk.element.method"
       as: {[symbol]: text}
-      cardinality: one
+      cardinality: :one
     getter:
       description: |
         Property reads, keyed by property name, each `(self) => …`.
@@ -1555,9 +1555,9 @@ concept!: &element
 
         A key that would shadow a member every element already has is
         refused, the same as a method key.
-      the: xyz.tonk.element.getter
+      the: "xyz.tonk.element.getter"
       as: {[symbol]: text}
-      cardinality: one
+      cardinality: :one
     setter:
       description: |
         Property writes, keyed by property name, each
@@ -1568,9 +1568,9 @@ concept!: &element
         alone makes it write-only — which is a real shape (a sink that
         takes a value and renders it) rather than a mistake, so it is
         allowed.
-      the: xyz.tonk.element.setter
+      the: "xyz.tonk.element.setter"
       as: {[symbol]: text}
-      cardinality: one
+      cardinality: :one
     attribute:
       description: |
         Default values for the element's attributes, keyed by
@@ -1606,9 +1606,9 @@ concept!: &element
         Fixing it properly means teaching the query layer to widen an
         empty collection, which is a dialog-query change rather than a
         schema one.
-      the: xyz.tonk.element.attribute
+      the: "xyz.tonk.element.attribute"
       as: {[symbol]: text}
-      cardinality: one
+      cardinality: :one
 
 # The older shape: one anonymous JS module that calls
 # `customElements.define` itself. Superseded by `element` for new work
@@ -1638,7 +1638,7 @@ concept!: &component
         `customElements.get(name) ||` since a name can't be redefined
         (replacing a component takes effect on the next page load).
       the: xyz.tonk.component/module
-      cardinality: one
+      cardinality: :one
       as: text
 
 # The bridge from the `component` concept to the `<tonk-component>`
@@ -1679,7 +1679,7 @@ concept!: &db/session:
           Active branch(es) in this session. Can be multiple when overlays are used.
       the: dialog.session/branch
       as: entity
-      cardinality: many
+      cardinality: :many
 
 concept!: &db/branch:
   this: concept:branch
@@ -1720,12 +1720,12 @@ concept!: &space
     name:
       description: Local name of the space, used in its `/space/{name}` URL
       the: xyz.tonk.replica/name
-      cardinality: one
+      cardinality: :one
       as: text
     subject:
       description: The repository's subject DID (stable identity)
       the: xyz.tonk.replica/subject
-      cardinality: one
+      cardinality: :one
       as: entity
     kind:
       description: >
@@ -1733,7 +1733,7 @@ concept!: &space
         profile's own self-replica. The Hub view hides the latter
         in CSS via [data-kind].
       the: xyz.tonk.replica/kind
-      cardinality: one
+      cardinality: :one
       as: entity
 
 # The space's default content: the blank canvas. The space route mounts
@@ -1777,7 +1777,7 @@ concept!: &tonk/sync
       description: |
           Live observation — sync:idle | sync:pending | sync:offline | sync:local | sync:paused.
       the: xyz.tonk.sync/status
-      cardinality: one
+      cardinality: :one
       as: entity
 
 # ============================================================
@@ -1796,37 +1796,37 @@ concept!: &site
     path:
       description: Currently active path on this site.
       the: xyz.tonk.site/path
-      cardinality: one
+      cardinality: :one
       as: text
     anchor:
       description: Currently active anchor (URL hash) on this site.
       the: xyz.tonk.site/anchor
-      cardinality: one
+      cardinality: :one
       as: text
     space:
       description: The space (repository name) on this site.
       the: xyz.tonk.site/space
-      cardinality: one
+      cardinality: :one
       as: text
     branch:
       description: The active branch name on this site (defaults to "main").
       the: xyz.tonk.site/branch
-      cardinality: one
+      cardinality: :one
       as: text
     replica:
       description: Currently active replica on this site.
       the: xyz.tonk.site/replica
-      cardinality: one
+      cardinality: :one
       as: entity
     route:
       description: Matched route of this site.
       the: xyz.tonk.site/route
-      cardinality: one
+      cardinality: :one
       as: entity
     concept:
       description: Matched route's concept (the model the shell mounts).
       the: xyz.tonk.site/concept
-      cardinality: one
+      cardinality: :one
       as: entity
 
 # A site renders the route model it matched. The shell mounts a fixed
@@ -1865,12 +1865,12 @@ concept!: &route
     path:
       description: The axum/matchit path pattern.
       the: xyz.tonk.route/path
-      cardinality: one
+      cardinality: :one
       as: text
     concept:
       description: The route model to render when this path matches.
       the: xyz.tonk.route/concept
-      cardinality: one
+      cardinality: :one
       as: entity
 
 # A seed that EXISTS and where its bytes came from — global, durable,
@@ -1892,7 +1892,7 @@ concept!: &seed/available
         hash alone, so the source rides alongside because a custom seed
         is a different URL at the same shape.
       the: xyz.tonk.seed/source
-      cardinality: one
+      cardinality: :one
       as: text
     replaces:
       description: >
@@ -1901,7 +1901,7 @@ concept!: &seed/available
         update to what you are running") rather than only by joining it
         against the space's install record.
       the: xyz.tonk.seed/replaces
-      cardinality: one
+      cardinality: :one
       as: entity
 
 # The seed a space is RUNNING — the install-specific half, asserted on
@@ -1916,7 +1916,7 @@ concept!: &seed/installed
         present on every seed rather than absent on the first, so the
         chain reads uniformly.
       the: xyz.tonk.seed/prior
-      cardinality: one
+      cardinality: :one
       as: entity
     version:
       description: >
@@ -1929,7 +1929,7 @@ concept!: &seed/installed
         It is also the record of WHAT the seed installed, since a
         commit's history lists every claim it wrote.
       the: xyz.tonk.seed/version
-      cardinality: one
+      cardinality: :one
       as: text
 
 
@@ -1946,17 +1946,17 @@ concept!: &space/route
     replica:
       description: The tab's active replica, picked off the site entity.
       the: xyz.tonk.site/replica
-      cardinality: one
+      cardinality: :one
       as: entity
     repo:
       description: The space repository, picked off the site entity.
       the: xyz.tonk.site/repo
-      cardinality: one
+      cardinality: :one
       as: text
     branch:
       description: The space branch, picked off the site entity.
       the: xyz.tonk.site/branch
-      cardinality: one
+      cardinality: :one
       as: text
 
 # `with=` here, like every other route view: the space view's own content
@@ -1985,22 +1985,22 @@ concept!: &workspace/shell
     space:
       description: The active space (repository name), picked off the site.
       the: xyz.tonk.site/space
-      cardinality: one
+      cardinality: :one
       as: text
     branch:
       description: The active branch name, picked off the site.
       the: xyz.tonk.site/branch
-      cardinality: one
+      cardinality: :one
       as: text
     replica:
       description: The active replica, picked off the site.
       the: xyz.tonk.site/replica
-      cardinality: one
+      cardinality: :one
       as: entity
     repo:
       description: The space repository, picked off the site entity.
       the: xyz.tonk.site/repo
-      cardinality: one
+      cardinality: :one
       as: text
 
 # The shell mounts the space's content via the `tonk/space` alias on the active
@@ -2039,17 +2039,17 @@ concept!: &directory/route
     model:
       description: The model name from the path, picked off the site entity.
       the: xyz.tonk.site/model
-      cardinality: one
+      cardinality: :one
       as: text
     repo:
       description: The space repository, picked off the site entity.
       the: xyz.tonk.site/repo
-      cardinality: one
+      cardinality: :one
       as: text
     branch:
       description: The space branch, picked off the site entity.
       the: xyz.tonk.site/branch
-      cardinality: one
+      cardinality: :one
       as: text
 
 # The directory display carries its own `with` so its view's content
@@ -2071,22 +2071,22 @@ concept!: &artifact/route
     entity:
       description: The target entity from the path, picked off the site entity.
       the: xyz.tonk.site/entity
-      cardinality: one
+      cardinality: :one
       as: entity
     model:
       description: The model name from the path, picked off the site entity.
       the: xyz.tonk.site/model
-      cardinality: one
+      cardinality: :one
       as: text
     repo:
       description: The space repository, picked off the site entity.
       the: xyz.tonk.site/repo
-      cardinality: one
+      cardinality: :one
       as: text
     branch:
       description: The space branch, picked off the site entity.
       the: xyz.tonk.site/branch
-      cardinality: one
+      cardinality: :one
       as: text
 
 view!:
@@ -2105,27 +2105,27 @@ concept!: &adhoc/route
     entity:
       description: The target entity from the path, picked off the site entity.
       the: xyz.tonk.site/entity
-      cardinality: one
+      cardinality: :one
       as: entity
     model:
       description: The model name from the path, picked off the site entity.
       the: xyz.tonk.site/model
-      cardinality: one
+      cardinality: :one
       as: text
     view:
       description: The show facet from the path, picked off the site entity.
       the: xyz.tonk.site/view
-      cardinality: one
+      cardinality: :one
       as: text
     repo:
       description: The space repository, picked off the site entity.
       the: xyz.tonk.site/repo
-      cardinality: one
+      cardinality: :one
       as: text
     branch:
       description: The space branch, picked off the site entity.
       the: xyz.tonk.site/branch
-      cardinality: one
+      cardinality: :one
       as: text
 
 view!:
@@ -2183,7 +2183,7 @@ concept!: &diagnose
     name:
       description: A label for the inspector (unused; satisfies the concept shape).
       the: db.diagnose/name
-      cardinality: one
+      cardinality: :one
       as: text
 
 # A directory-kind view (not a plain `view!`): a `/space/{repo}/dialog:diagnose`
@@ -2210,12 +2210,12 @@ concept!: &blob
     content-type:
       description: MIME type of the blob's content
       the: xyz.tonk.blob/content-type
-      cardinality: one
+      cardinality: :one
       as: text
     name:
       description: Human-readable file name
       the: xyz.tonk.blob/name
-      cardinality: one
+      cardinality: :one
       as: text
 
 # ============================================================

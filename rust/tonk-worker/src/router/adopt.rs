@@ -59,6 +59,12 @@ pub(crate) async fn ensure_space_mounted(
     {
         return Ok(false);
     }
+    // Where each space has a worker of its own, that worker mounts it, and
+    // this one, the person's profile's, mounts none: what it keeps of a space
+    // is in its directory (see [`space_directory`](super::space_directory)).
+    if tonk.spaces_elsewhere() {
+        return Ok(false);
+    }
     let key = subject.as_str();
     let entry = tonk.admission.entry(key);
     if entry.valid(tonk, key) {
@@ -256,6 +262,23 @@ impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
             return;
         }
         let tonk = self.state().read().await;
+        // The space's own worker is the one that pulls it: reaching that
+        // worker brings it up, and it takes the space up from there.
+        if tonk.spaces_elsewhere() {
+            let listed = super::space_directory::held(&tonk, &key).await.is_ok();
+            drop(tonk);
+            if !listed {
+                log!("ReplicateSpace '{key}': nothing to mount");
+                return;
+            }
+            match super::space_reach::ask(&key, "GET", &format!("/api/repository/{key}"), None)
+                .await
+            {
+                Ok(_) => log!("ReplicateSpace '{key}': its own worker holds it"),
+                Err(error) => log!("ReplicateSpace '{key}': {error}"),
+            }
+            return;
+        }
         match ensure_space_mounted(&tonk, &key).await {
             Ok(true) => {
                 schedule_seed_upgrade(&tonk, self.state().clone(), &key).await;
@@ -334,7 +357,7 @@ pub(crate) async fn schedule_seed_upgrade(
 }
 
 /// Parse either the canonical full repository key or the legacy bare suffix.
-fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
+pub(super) fn space_subject(key: &str) -> Option<dialog_varsig::Did> {
     if key.starts_with("did:key:") {
         key.parse().ok()
     } else {
@@ -623,6 +646,25 @@ pub(crate) async fn reconcile_account_spaces(tonk: &TonkState) {
                 continue;
             }
         };
+
+        // The space's own worker holds it, and is told where it syncs with
+        // its delegation: there is no mount here to bring up to date, only
+        // a space the directory names no remote for to attach one to.
+        if tonk.spaces_elsewhere() {
+            let Some(remote) = account_remote.as_deref() else {
+                continue;
+            };
+            match super::repository::attach_account_remote_if_local(tonk, &key, remote).await {
+                Ok(true) => {
+                    log!("space reconcile: attached account remote to local space '{subject}'")
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    log!("space reconcile: attach account remote to '{subject}': {error}")
+                }
+            }
+            continue;
+        }
 
         let repository = match tonk
             .profile
@@ -1678,7 +1720,7 @@ pub(crate) async fn stamp_local_spaces(tonk: &TonkState) {
 /// Rebuild a space's configuration from the account directory — the
 /// shared `tonk_schema::directory` reader, converted into the worker's
 /// [`RepositoryConfiguration`].
-async fn directory_configuration_strict(
+pub(super) async fn directory_configuration_strict(
     tonk: &TonkState,
     subject: &dialog_varsig::Did,
 ) -> Result<Option<RepositoryConfiguration>, crate::TonkWorkerError> {

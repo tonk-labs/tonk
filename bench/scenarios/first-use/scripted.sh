@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Known-good three-call trajectory: orient, live read, precise update.
+# Current agent workflow; the write receipt supplies local verification.
 set -euo pipefail
 
-"${TONK:?}" guide
-"$TONK" query task
-"$TONK" assert task launch-email --done true
+"${TONK:?}" space agents get
+"$TONK" show
+"$TONK" query task --where 'title=Draft launch email' --where done=false --json
+"$TONK" assert task launch-email --done true --json

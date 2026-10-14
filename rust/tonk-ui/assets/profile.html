@@ -193,9 +193,19 @@
                     });
                     if (container.controller) return;
                     say("waiting for its worker");
-                    await new Promise(function (resolve) {
+                    var claimed = new Promise(function (resolve) {
                         container.addEventListener("controllerchange", resolve, { once: true });
                     });
+                    // A worker takes the documents open when it starts. One
+                    // that loads just after is left with a worker that is
+                    // running and does not answer it: ask that worker to
+                    // take this document too.
+                    container.ready.then(function (registration) {
+                        if (!container.controller && registration.active) {
+                            registration.active.postMessage({ type: "claim" });
+                        }
+                    });
+                    await claimed;
                 }
 
                 // What this document runs was served by the worker it loaded
@@ -218,7 +228,13 @@
                 // does it carry the site's policy: the server hands the shell
                 // out bare, to any path, so that an origin with no worker
                 // yet can start one.
+                //
+                // The worker says so in the shell it serves, with a mark the
+                // server's copy does not carry. The browser's own account of
+                // the load is asked too, where it gives one: not every
+                // browser says a worker answered a frame's navigation.
                 function servedByWorker() {
+                    if (document.querySelector('meta[name="tonk-shell"][content="worker"]')) return true;
                     var navigation = performance.getEntriesByType("navigation")[0];
                     return !!navigation && navigation.workerStart > 0;
                 }
@@ -239,12 +255,34 @@
                 }
 
                 // Opened on its own, not framed by the app: there is no one to
-                // ask for a document. Say what this address is.
+                // ask for a document, and the app is where this site is
+                // shown. Go there; where that cannot be worked out, say what
+                // this address is.
                 if (parent === window) {
-                    document.addEventListener("DOMContentLoaded", function () {
-                        document.body.textContent =
-                            "This address serves a Tonk site. Open it from Tonk.";
-                    });
+                    var say = function (app) {
+                        var tell = function () {
+                            document.body.textContent = "This address serves a Tonk site. ";
+                            var link = document.createElement("a");
+                            link.textContent = "Open it from Tonk.";
+                            if (app) link.href = app;
+                            document.body.appendChild(link);
+                        };
+                        if (document.body) tell();
+                        else document.addEventListener("DOMContentLoaded", tell);
+                    };
+                    fetch("/.well-known/tonk")
+                        .then(function (answer) { return answer.json(); })
+                        .then(function (config) {
+                            var app = config && config.sites && config.sites.app;
+                            if (typeof app !== "string") throw new Error("no app is named");
+                            return app;
+                        })
+                        // The app shows the profile at the app's own
+                        // addresses, path for path.
+                        .then(function (app) {
+                            location.replace(app + location.pathname + location.search + location.hash);
+                        })
+                        .catch(function () { say(null); });
                     return;
                 }
 
