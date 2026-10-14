@@ -490,3 +490,9 @@ Claude Code/DCR/CIMD limits. Live client acceptance remains explicitly unverifie
 Checked generated Markdown for PR 1096, passed both focused deployment tests,
 repository formatting, and `git diff --check`. The updated bot comment requires
 the next successful preview deployment; no live client acceptance is inferred.
+
+The CI connection comment was shortened to the user-approved server URL,
+transport/auth line, three-client callback table, and one acceptance-limit line.
+Native callback examples show the allowed variable port. Generated PR 1096
+Markdown was inspected, both deployment tests passed, and the changed module
+was formatted with pinned Prettier 3.6.2; `git diff --check` passed.
