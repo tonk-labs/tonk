@@ -27,20 +27,28 @@ final class RuntimeBuildTests: XCTestCase {
       """
     for tool in ["tonk_query", "tonk_evaluate"] {
       for lost in [false, true] {
-        let result = try await webView.callAsyncJavaScript(
-          script, arguments: ["subject": "did:key:z123", "tool": tool,
-            "argumentsJSON": "{\"document\":\"concept:\"}", "lost": lost],
-          in: nil, contentWorld: .page) as! [String: Any]
+        let result =
+          try await webView.callAsyncJavaScript(
+            script,
+            arguments: [
+              "subject": "did:key:z123", "tool": tool,
+              "argumentsJSON": "{\"document\":\"concept:\"}", "lost": lost,
+            ],
+            in: nil, contentWorld: .page) as! [String: Any]
         let requests = result["requests"] as! [[String: Any]]
         XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests[0]["path"] as? String,
-          "/api/repository/did%3Akey%3Az123/branch/main/evaluate?transact=\(tool == "tonk_evaluate")")
+        XCTAssertEqual(
+          requests[0]["path"] as? String,
+          "/api/repository/did%3Akey%3Az123/branch/main/evaluate?transact=\(tool == "tonk_evaluate")"
+        )
         XCTAssertEqual(requests[0]["body"] as? String, "concept:")
         XCTAssertEqual(result["draft"] as? String, "keep")
         let outcome = result["result"] as! [String: Any]
         if lost && tool == "tonk_evaluate" {
           XCTAssertTrue((outcome["error"] as? String)?.contains("Do not repeat") == true)
-        } else if !lost { XCTAssertNotNil(outcome["response"]) }
+        } else if !lost {
+          XCTAssertNotNil(outcome["response"])
+        }
       }
     }
   }

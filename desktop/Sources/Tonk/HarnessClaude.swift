@@ -76,7 +76,8 @@ extension HarnessModel {
           "inputSchema": tool["inputSchema"],
         ])
       }
-      let bridge = LocalRuntimeBridge(allowsWrites: true, agentTools: tools) { [weak self] name, arguments in
+      let bridge = LocalRuntimeBridge(allowsWrites: true, agentTools: tools) {
+        [weak self] name, arguments in
         guard let self else { return SpaceTools.response("Conversation closed.", success: false) }
         return await self.callSpaceTool(
           .object([

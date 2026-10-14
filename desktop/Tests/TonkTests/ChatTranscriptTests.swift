@@ -26,15 +26,20 @@ final class ChatTranscriptTests: XCTestCase {
 
   func testLateErrorsAndCancellationRemainOnOriginatingTurn() throws {
     var conversation = Conversation()
-    conversation.messages = [ChatMessage(id: "a", role: "user", text: "First"),
-      ChatMessage(id: "b", role: "user", text: "Second")]
-    conversation.appendToolActivity("Cancelled; write outcome unknown. Query first.", messageID: "a")
+    conversation.messages = [
+      ChatMessage(id: "a", role: "user", text: "First"),
+      ChatMessage(id: "b", role: "user", text: "Second"),
+    ]
+    conversation.appendToolActivity(
+      "Cancelled; write outcome unknown. Query first.", messageID: "a")
     conversation.appendToolActivity("Late tool error", messageID: "a")
     conversation.appendToolActivity("Wrong conversation", messageID: "missing")
     XCTAssertEqual(conversation.messages[0].toolActivity?.count, 2)
     XCTAssertNil(conversation.messages[1].toolActivity)
-    XCTAssertEqual(try JSONDecoder().decode(Conversation.self,
-      from: JSONEncoder().encode(conversation)), conversation)
+    XCTAssertEqual(
+      try JSONDecoder().decode(
+        Conversation.self,
+        from: JSONEncoder().encode(conversation)), conversation)
   }
 
   func testHistoryWithoutActivityStillDecodes() throws {

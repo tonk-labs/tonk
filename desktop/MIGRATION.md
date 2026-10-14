@@ -14,9 +14,14 @@ storage locations are unchanged.
 `mcp/scripts/sync-desktop.mjs` projects current canonical catalog and guides and
 bundles `mcp/browser.mjs`. Desktop owns its private transport, inspection and
 space-proposal controls. Retired preview/apply/CLI/metadata tool calls are rejected
-without execution. Historical text remains readable. Existing native creation
+without execution. Historical text remains readable. New native creation
 proposals retain their receipt context and explicit acceptance; submitted proposals
-only check their original receipt and never resubmit. Metadata/schema reads and
+only check their original receipt and never resubmit. Legacy proposals without the
+current protocol marker remain saved but require dismissal and a fresh proposal
+before any new operation. Metadata/schema reads and
 renames use canonical query/evaluate notation.
 
 See `plans/009-rescue-desktop-on-main.md` for current evidence and limitations.
+
+Historical experiment Rust sources and patches are omitted from recovery; they
+are not prerequisites and remain available in the source commit.

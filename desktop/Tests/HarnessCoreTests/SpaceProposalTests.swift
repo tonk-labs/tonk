@@ -56,6 +56,22 @@ final class SpaceProposalTests: XCTestCase {
     XCTAssertNil(try JSONDecoder().decode(Conversation.self, from: legacy).spaceProposal)
   }
 
+  func testLegacyProposalIsPreservedButCannotExecute() throws {
+    let data = Data(
+      #"{"id":"old","name":"Keep me","reason":"Existing draft","submitted":true,"branch":"main","account":"did:key:zAccount"}"#
+        .utf8)
+    let legacy = try JSONDecoder().decode(SpaceProposal.self, from: data)
+    XCTAssertNil(legacy.protocolVersion)
+    XCTAssertThrowsError(try legacy.requireCurrentProtocol()) { error in
+      XCTAssertTrue(error.localizedDescription.contains("preserved and was not executed"))
+    }
+    XCTAssertEqual(
+      try JSONDecoder().decode(
+        SpaceProposal.self,
+        from: JSONEncoder().encode(legacy)), legacy)
+    XCTAssertNoThrow(try makeProposal().requireCurrentProtocol())
+  }
+
   private func makeProposal() throws -> SpaceProposal {
     try SpaceProposal(
       arguments: .object(["name": .string(" Dinner "), "reason": .string("Keep our plan")]))

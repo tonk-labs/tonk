@@ -14,6 +14,10 @@ struct TonkApp: App {
         .frame(minWidth: 850, minHeight: 580)
         .background(WindowAppearance())
         .task {
+          if ProcessInfo.processInfo.arguments.contains("--activity-fixture") {
+            ActivityFixture.prepare(model: model, runtime: runtime)
+            return
+          }
           runtime.prepareCatalogCache(directory: model.root)
           delegate.model = model
           delegate.runtime = runtime

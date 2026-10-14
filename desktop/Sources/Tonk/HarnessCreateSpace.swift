@@ -22,6 +22,7 @@ extension HarnessModel {
     spaceCreationError = nil
     defer { creatingSpace = false }
     do {
+      try proposal.requireCurrentProtocol()
       let submit = !proposal.submitted
       if submit {
         proposal = try await runtime.prepareSpaceCreation(proposal)

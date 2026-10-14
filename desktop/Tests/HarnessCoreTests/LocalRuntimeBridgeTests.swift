@@ -4,6 +4,38 @@ import XCTest
 
 @MainActor
 final class LocalRuntimeBridgeTests: XCTestCase {
+  func testReadOnlyMCPRejectsWriteEvenWhenHostAdvertisesItAndStopRevokesConnection() async throws {
+    var calls = 0
+    let bridge = LocalRuntimeBridge(agentTools: [TonkToolCatalog.definition("tonk_evaluate")]) {
+      _, _ in
+      calls += 1
+      return SpaceTools.response("Unexpected write", success: true)
+    }
+    let descriptor = try await bridge.start()
+    var request = URLRequest(url: URL(string: descriptor["url"].string! + "/mcp")!)
+    request.httpMethod = "POST"
+    request.timeoutInterval = 2
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer " + descriptor["token"].string!, forHTTPHeaderField: "Authorization")
+    request.httpBody = try JSONEncoder().encode(
+      JSONValue.object([
+        "jsonrpc": .string("2.0"), "id": .number(1), "method": .string("tools/call"),
+        "params": .object([
+          "name": .string("tonk_evaluate"),
+          "arguments": .object(["document": .string("concept:")]),
+        ]),
+      ]))
+    let (data, _) = try await URLSession.shared.data(for: request)
+    let result = try JSONDecoder().decode(JSONValue.self, from: data)
+    XCTAssertEqual(result["error"]["code"], .number(-32602))
+    XCTAssertEqual(calls, 0)
+    bridge.stop()
+    do {
+      _ = try await URLSession.shared.data(for: request)
+      XCTFail("Closed connection must fail")
+    } catch { XCTAssertEqual(calls, 0) }
+  }
+
   func testInspectionCapabilityRejectsTargetOverrides() async throws {
     var calls = 0
     for enabled in [false, true] {

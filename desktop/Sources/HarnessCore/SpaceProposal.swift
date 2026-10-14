@@ -7,6 +7,15 @@ public struct SpaceProposal: Codable, Equatable, Identifiable, Sendable {
   public var branch: String?
   public var account: String?
   public var submitted = false
+  public var protocolVersion: Int?
+
+  public func requireCurrentProtocol() throws {
+    guard protocolVersion == 1 else {
+      throw HarnessError.message(
+        "This saved proposal predates the current runtime. It has been preserved and was not executed. Check your spaces, then dismiss it and request a new proposal if needed."
+      )
+    }
+  }
 
   public init(arguments: JSONValue) throws {
     guard case .object(let fields) = arguments,
@@ -19,6 +28,7 @@ public struct SpaceProposal: Codable, Equatable, Identifiable, Sendable {
       throw HarnessError.message(
         "Provide a space name (1–80 characters) and reason (1–300 characters).")
     }
+    self.protocolVersion = 1
     self.id = "urn:uuid:" + UUID().uuidString
     self.name = name
     self.reason = reason
@@ -26,36 +36,38 @@ public struct SpaceProposal: Codable, Equatable, Identifiable, Sendable {
 
   // Desktop-only presentation control, outside the canonical MCP catalog.
   public static let definition: JSONValue = try! JSONDecoder().decode(
-    JSONValue.self, from: Data(#"""
-{
-  "description": "Offer to create a space for durable work in this conversation. Creates only a native proposal; the user must accept before any space is created. Use only when no space is attached. After proposing, stop and wait for acceptance.",
-  "inputSchema": {
-    "additionalProperties": false,
-    "properties": {
-      "name": {
-        "maxLength": 80,
-        "type": "string"
-      },
-      "reason": {
-        "maxLength": 300,
-        "type": "string"
+    JSONValue.self,
+    from: Data(
+      #"""
+      {
+        "description": "Offer to create a space for durable work in this conversation. Creates only a native proposal; the user must accept before any space is created. Use only when no space is attached. After proposing, stop and wait for acceptance.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "maxLength": 80,
+              "type": "string"
+            },
+            "reason": {
+              "maxLength": 300,
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "name": "tonk_propose_space",
+        "annotations": {
+          "readOnlyHint": false,
+          "openWorldHint": false,
+          "destructiveHint": false,
+          "idempotentHint": false
+        }
       }
-    },
-    "required": [
-      "name",
-      "reason"
-    ],
-    "type": "object"
-  },
-  "name": "tonk_propose_space",
-  "annotations": {
-    "readOnlyHint": false,
-    "openWorldHint": false,
-    "destructiveHint": false,
-    "idempotentHint": false
-  }
-}
-"""#.utf8))
+      """#.utf8))
 
   public func createdSpace(status: String, detail: String) throws -> TonkSpace? {
     if status == "failed" { throw HarnessError.message(detail) }

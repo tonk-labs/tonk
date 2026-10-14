@@ -15,7 +15,9 @@ extension HarnessModel {
     let cli = cliAdapter(for: space)
     if cli.pendingLink != nil || !cli.isConnected {
       activity = "Connecting to space"
-      recordToolActivity("Preparing space tools", messageID: saved.conversation.messages.last(where: { $0.role == "user" })?.id)
+      recordToolActivity(
+        "Preparing space tools",
+        messageID: saved.conversation.messages.last(where: { $0.role == "user" })?.id)
     }
     try await cli.ensureConnected { try await runtime.createCLILink(space) }
     try Task.checkCancellation()

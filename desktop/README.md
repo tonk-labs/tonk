@@ -93,3 +93,12 @@ This artifact is signed and provisioned, but is not notarized or published as a
 release. Direct passkeys are enabled for `https://tonk.network`; that domain
 must serve an AASA `webcredentials` entry for `8WVKS2F24C.xyz.tonk`. CI does not
 perform a real passkey ceremony or prove recovery of an existing account.
+
+## Activity layout fixture
+
+After an ad-hoc build, a disposable copy can be launched with `--local-runtime
+--data-dir /absolute/path/to/fresh-data --web-data-id NEW-UUID --activity-fixture`.
+Give the copy a unique bundle identifier and ad-hoc signature, as the workflow
+runner does. This renders the actual ContentView with two activity-bearing turns
+without connecting a model or loading account data. It requires empty chat state;
+it is layout-only evidence, never live provider proof.

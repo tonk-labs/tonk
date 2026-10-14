@@ -388,3 +388,21 @@ copy launched at `desktop/artifacts/activity-fixture/Tonk Activity Fixture.app`.
 Computer Use denied access (`Computer Use was not approved to use Tonk`). Actual
 ContentView/dropdown/narrow-window inspection remains unverified; no alternate
 UI automation used to bypass that denial.
+
+### Increment 4 — saved-state and authority safeguards
+
+Legacy space proposals decode and round-trip unchanged, but proposals without the
+current protocol marker now fail explicitly before execution. The message tells
+the user the proposal is preserved, to check spaces, then dismiss/request a new
+proposal if needed. New submitted proposals retain receipt-only retries. Added a
+private-MCP regression proving a read-only connection rejects even a write tool
+supplied by its host, and a stopped bridge cannot execute requests.
+
+Final full native run after these changes: `bash desktop/scripts/dev.sh test:unit`
+exit 0; 54 TonkTests (2 optional diagnostic skips), 70 HarnessCoreTests (2 optional
+live-provider skips), zero failures. Swift-format applied only to recovery edits;
+generated files still pass generator check. Historical Rust experiment sources
+and patches removed from the Desktop subtree (not applied anywhere). Cargo,
+Rust source trees, Nix lock and canonical tools.json remain identical to baseline.
+The visual fixture is compiled but has no visual acceptance evidence due to the
+Computer Use denial documented above.
