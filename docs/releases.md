@@ -12,11 +12,15 @@ candidate preparation deliberately fails until staging receipts are implemented.
 The selected source must contain the new release test launcher.
 
 The workflow builds version-stamped Linux/macOS CLI and browser artifacts,
-runs regression/MCP/packaging checks, and runs three browser E2E shards against
+runs regression/MCP/packaging checks and ChatGPT authorization/session/packaging
+contracts (`chatgpt`), and runs three browser E2E shards against
 the selected CLI and browser bytes with retries disabled. The report is pinned
 to source, controller, policy, run, attempt, version and artifact digests. It
 rejects missing tests/shards, flakes, skipped checks and mismatched identities.
-Native Desktop and real ChatGPT connectivity are outside this initial contract.
+The required automated checks table reports ChatGPT contracts separately; missing
+or failed contracts block readiness. This runs for every candidate at its exact
+source SHA, independently of PR path filters. Native Desktop and real ChatGPT
+connectivity remain outside the required manual checklist.
 
 Open the Actions summary or download `release-candidate-<attempt>` and open
 `index.html`. JSON records accompany the report. Initial runs remain blocked

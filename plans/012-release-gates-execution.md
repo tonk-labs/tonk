@@ -77,3 +77,18 @@ preparation, serialize resumable deliveries, close legacy publisher/cli-pin
 bypasses, test the full permission matrix and perform an authorized staging
 pilot. Do not enable enforcement by simply filling in policy.json or treating
 this synthetic approval probe as cutover evidence.
+
+## ChatGPT contract coverage follow-up, 2026-10-14
+
+After #1091 landed, main was merged into this PR without conflicts. Candidate
+readiness now calls the reusable ChatGPT contract workflow at the selected source
+SHA, independent of its PR path filters. The `chatgpt` check is required and is
+visible in a separate automated-checks table. Missing, skipped, cancelled and
+failed contract results block readiness. Real ChatGPT linking/tool use remains
+outside the required manual checklist; MCP container/artifact/deployment receipts
+remain part of the later enforcement work. The policy digest changes, so earlier
+candidate evidence cannot satisfy the new contract.
+
+Focused verification: 48 release-tool tests and actionlint pass. The landed
+ChatGPT contract suite passes all 42 tests locally with no skips; hosted checks rerun on the
+updated PR. Earlier PR results above apply to their recorded revision.

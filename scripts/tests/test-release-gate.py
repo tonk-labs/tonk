@@ -86,6 +86,18 @@ class GateTests(unittest.TestCase):
         del self.candidate["artifacts"]["macos-cli"]
         self.blocked("missing or unknown artifact")
 
+    def test_chatgpt_contracts_are_required_without_manual_chatgpt_group(self):
+        self.assertIn("chatgpt", self.policy["checks"])
+        self.assertNotIn("chatgpt", self.policy["manual_groups"])
+        for status in ("failed", "skipped", "cancelled", "missing"):
+            with self.subTest(status=status):
+                self.evidence["checks"] = [c for c in self.evidence["checks"] if c["id"] != "chatgpt"]
+                if status != "missing":
+                    self.evidence["checks"].append({"id": "chatgpt", "status": status})
+                self.blocked("chatgpt:")
+                row = next(c for c in self.result()["checks"] if c["id"] == "chatgpt")
+                self.assertNotEqual(row["status"], "passed")
+
     def test_missing_check(self):
         self.evidence["checks"].pop()
         self.blocked("e2e: missing")

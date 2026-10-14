@@ -22,6 +22,9 @@ def markdown(report):
              "", "| Flow | Automated candidate | Human verification |", "| --- | --- | --- |"]
     lines += [f"| {text(row['title'])} | {text(row['automated'])} | {text(row['manual'])} |"
               for row in report["flows"]]
+    lines += ["", "## Required automated checks", "", "| Check | Status |", "| --- | --- |"]
+    lines += [f"| {text(row['id'])} | {text(row['status'])} |" for row in report.get("checks", [])]
+    lines += ["", "chatgpt covers automated authorization, session and packaging contracts; actual ChatGPT linking and tool use are not verified here."]
     if report["blockers"]:
         lines += ["", "## Blockers", ""] + ["- " + text(reason) for reason in report["blockers"]]
     return "\n".join(lines) + "\n"
@@ -36,6 +39,8 @@ def render_html(report):
         rows.append(f"<tr><th scope='row'>{esc(row['title'])}<details><summary>Evidence mapping</summary>"
                     f"<p>{esc(', '.join(row['journeys']))}</p><code>{details}</code></details></th>"
                     f"<td>{esc(row['automated'])}</td><td>{esc(row['manual'])}</td></tr>")
+    checks = "".join(f"<tr><th scope='row'>{esc(row['id'])}</th><td>{esc(row['status'])}</td></tr>"
+                     for row in report.get("checks", []))
     blockers = "".join(f"<li>{esc(value)}</li>" for value in report["blockers"])
     status = "Ready for approval" if report["ready"] else "Promotion blocked"
     fixture = "<p><strong>Synthetic fixture preview; these are not product test results.</strong></p>" if report.get("synthetic") else ""
@@ -61,6 +66,9 @@ Run {esc(context.get('run_id', '?'))}, attempt {esc(context.get('run_attempt', '
 <p>Required browser and CLI release flows. Source fixtures and historical screenshots do not count as verification.</p>
 <div class="table"><table><thead><tr><th scope="col">Flow</th><th scope="col">Automated candidate</th>
 <th scope="col">Human verification</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>
+<h2>Required automated checks</h2>
+<table><thead><tr><th scope="col">Check</th><th scope="col">Status</th></tr></thead><tbody>{checks}</tbody></table>
+<p>chatgpt covers automated authorization, session and packaging contracts; actual ChatGPT linking and tool use are not verified here.</p>
 <h2>Blockers ({len(report['blockers'])})</h2><ul>{blockers}</ul>
 <p>Generated {esc(report['evaluated_at'])}. Approval and publication happen through GitHub Actions.
 This report cannot approve a release.</p></main></html>\n"""

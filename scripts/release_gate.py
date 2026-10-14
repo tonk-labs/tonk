@@ -104,11 +104,12 @@ def evaluate(candidate, policy, evidence, *, now=None):
     This evaluator checks content/identity; release_evidence verifies provenance.
     """
     now = now or datetime.now(timezone.utc)
-    blockers, rows = [], []
+    blockers, rows, check_rows = [], [], []
     try:
         flows = validate_policy(policy)
         rows = [{"id": flow["id"], "title": flow["title"], "automated": "blocked", "manual": "missing",
                  "journeys": flow["journeys"], "tests": flow["tests"]} for flow in flows.values()]
+        check_rows = [{"id": name, "status": "blocked"} for name in policy["checks"]]
         context = candidate["context"]
         validate_context(context, policy)
         require(evidence.get("context") == context, "evidence candidate identity mismatch")
@@ -120,6 +121,8 @@ def evaluate(candidate, policy, evidence, *, now=None):
         require(evidence.get("candidate_digest") == candidate_digest, "artifact identity mismatch")
         checks = indexed(evidence.get("checks", []), "check")
         require(set(checks) <= set(policy["checks"]), "unknown check")
+        check_rows = [{"id": name, "status": summary_status([checks.get(name, {}).get("status", "missing")])}
+                      for name in policy["checks"]]
         for name in policy["checks"]:
             if checks.get(name, {}).get("status") != "passed":
                 blockers.append(f"{name}: {checks.get(name, {}).get('status', 'missing')}")
@@ -202,7 +205,7 @@ def evaluate(candidate, policy, evidence, *, now=None):
                          "journeys": flow["journeys"], "tests": flow["tests"]})
     except (InvalidEvidence, KeyError, TypeError, ValueError, AttributeError) as error:
         blockers.append(f"Invalid evidence: {error}")
-    return {"schema": 1, "ready": not blockers, "blockers": blockers, "flows": rows,
+    return {"schema": 1, "ready": not blockers, "blockers": blockers, "flows": rows, "checks": check_rows,
             "candidate": candidate, "evaluated_at": now.isoformat()}
 
 

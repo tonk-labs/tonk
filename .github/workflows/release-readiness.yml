@@ -65,6 +65,12 @@ jobs:
       version: ${{ needs.prepare.outputs.version }}
     secrets: inherit
 
+  chatgpt:
+    needs: prepare
+    uses: ./.github/workflows/chatgpt.yml
+    with:
+      source-sha: ${{ needs.prepare.outputs.source-sha }}
+
   cli-smoke:
     needs: prepare
     uses: ./.github/workflows/cli.yml
@@ -206,7 +212,7 @@ jobs:
 
   report:
     if: always() && needs.prepare.result == 'success'
-    needs: [prepare, tests, mcp, cli-smoke, web-build, e2e]
+    needs: [prepare, tests, mcp, chatgpt, cli-smoke, web-build, e2e]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

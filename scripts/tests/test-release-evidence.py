@@ -68,6 +68,9 @@ class EvidenceTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", rendered)
         self.assertIn("&#124;", report.markdown(result))
         self.assertIn("default-src 'none'", rendered)
+        self.assertIn("Required automated checks", rendered)
+        self.assertIn("chatgpt", report.markdown(result))
+        self.assertIn("actual ChatGPT linking and tool use are not verified here", rendered)
 
     def test_artifact_tree_sensitive_to_names_and_bytes(self):
         with tempfile.TemporaryDirectory() as folder:

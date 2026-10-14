@@ -11,6 +11,7 @@
   "checks": [
     "tests",
     "mcp",
+    "chatgpt",
     "cli-smoke",
     "web-build",
     "e2e"
