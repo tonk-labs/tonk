@@ -272,18 +272,34 @@ pub(crate) async fn authorize_device(
 ) -> Result<String, String> {
     let mut timing = super::link_timing::LinkTiming::new("approval", "authorize");
     let outcome = authorize_device_inner(state, custodian, &authorization).await;
-    timing.next("status-lock");
-    let tonk = state.read().await;
-    timing.next("publish-status");
-    match &outcome {
-        Ok(target) => {
-            report_authorization(&tonk, &authorization, ceremony_state::DONE, target).await
-        }
-        Err(error) => {
-            report_authorization(&tonk, &authorization, ceremony_state::FAILED, error).await
-        }
-    }
     timing.next("reply");
+    finish_authorization(state, authorization, outcome)
+}
+
+/// Deliver the completed custody result independently of its UI projection.
+/// Registration must finish before this is called. A busy application lock or
+/// subscription poll must not turn an already-published grant into a timeout.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+pub(super) fn finish_authorization(
+    state: &crate::router::AppState,
+    authorization: tonk_worker_api::DeviceAuthorization,
+    outcome: Result<String, String>,
+) -> Result<String, String> {
+    let state = state.clone();
+    let report = outcome.clone();
+    crate::detach(async move {
+        let mut timing = super::link_timing::LinkTiming::new("approval-status", "state-lock");
+        let tonk = state.read().await;
+        timing.next("publish-status");
+        match report {
+            Ok(target) => {
+                report_authorization(&tonk, &authorization, ceremony_state::DONE, &target).await;
+            }
+            Err(error) => {
+                report_authorization(&tonk, &authorization, ceremony_state::FAILED, &error).await;
+            }
+        }
+    });
     outcome
 }
 

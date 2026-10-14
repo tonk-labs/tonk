@@ -5436,4 +5436,89 @@ mod approval_stall_diagnosis {
             "queued writer behind remote sync blocks local identity reads"
         );
     }
+
+    #[dialog_common::test]
+    async fn completed_authorization_returns_before_the_status_lock_is_available() {
+        use dialog_query::{Output as _, Query};
+        use std::time::Duration;
+        use tonk_schema::{CeremonyStatus, ceremony_state};
+
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        put_repo(&app, "terminal-approval").await;
+        let (session, operator) = {
+            let tonk = state.read().await;
+            (
+                tonk.reactor
+                    .profile_repository()
+                    .branch(&tonk.active_branch)
+                    .acquire(&tonk.operator)
+                    .await
+                    .unwrap(),
+                tonk.operator.clone(),
+            )
+        };
+        for (index, result) in [
+            Ok("http://127.0.0.1:1234/?fixture=grant".to_owned()),
+            Err("registration refused".to_owned()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let request = tonk_worker_api::DeviceAuthorization {
+                audience: "did:key:test".into(),
+                callback: format!("http://127.0.0.1:1234/?attempt={index}"),
+                name: "test Desktop".into(),
+                expected_account: None,
+            };
+            let entity = super::ceremony::authorization_entity(&request);
+            let locked = state.write().await;
+            let returned = super::ceremony::finish_authorization(&state, request, result.clone());
+            assert_eq!(
+                returned, result,
+                "custody receives the original terminal result"
+            );
+            tokio::task::yield_now().await;
+            let before: Vec<CeremonyStatus> = session
+                .handle()
+                .query()
+                .select(Query::<CeremonyStatus>::default())
+                .perform(&operator)
+                .try_vec()
+                .await
+                .unwrap();
+            assert!(
+                !before.iter().any(|row| row.this.to_string() == entity),
+                "the terminal result returned while publication was still blocked"
+            );
+            drop(locked);
+            let row = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let rows: Vec<CeremonyStatus> = session
+                        .handle()
+                        .query()
+                        .select(Query::<CeremonyStatus>::default())
+                        .perform(&operator)
+                        .try_vec()
+                        .await
+                        .unwrap();
+                    if let Some(row) = rows.into_iter().find(|row| row.this.to_string() == entity) {
+                        break row;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("terminal status is eventually published after releasing the lock");
+            match result {
+                Ok(target) => {
+                    assert_eq!(row.state.0, ceremony_state::DONE);
+                    assert_eq!(row.detail.0, target);
+                }
+                Err(error) => {
+                    assert_eq!(row.state.0, ceremony_state::FAILED);
+                    assert_eq!(row.detail.0, error);
+                }
+            }
+        }
+    }
 }
