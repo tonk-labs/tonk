@@ -22,6 +22,8 @@ export async function createHostedService({
   redirectUri,
   clients,
   dynamicRegistration = false,
+  resourceMetadata = openAIResourceMetadata(issuer),
+  now = Date.now,
   dataRoot,
   checkpoint,
   durable,
@@ -37,6 +39,7 @@ export async function createHostedService({
   provision ??= workerAccountProvisioner({ binary, dataRoot, provider });
   const oauth = createTonkOAuth({
     issuer,
+    now,
     dynamicRegistration: dynamicRegistration,
     clientId: clientId,
     redirectUris: [redirectUri],
@@ -53,14 +56,16 @@ export async function createHostedService({
   tenants ??= createWorkerTenants({ binary, dataRoot });
   const sessions = createSpaceSessions({
     saved: durable.state?.sessions,
+    now,
     isPrincipalActive: (principal) => oauth.isPrincipalActive(principal),
     resolveWorker: (principal, selected) => tenants.resolve(principal, selected),
   });
   const http = createAuthenticatedTonkHTTP({
     oauth,
+    now,
     registerUI: createWorkerUI({
       origin: issuer,
-      resourceMetadata: openAIResourceMetadata(issuer),
+      resourceMetadata,
     }),
     resolveBackend: async (principal) => ({
       ...accountBackend({ principal, tenants }),

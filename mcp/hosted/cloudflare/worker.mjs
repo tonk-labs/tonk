@@ -61,6 +61,7 @@ export default {
         '/oauth/continue',
         '/oauth/callback',
         '/oauth/token',
+        '/oauth/revoke',
         ...(env.TONK_MCP_DCR === 'true' ? ['/oauth/register'] : []),
         '/.well-known/oauth-protected-resource/mcp',
         '/.well-known/oauth-authorization-server',

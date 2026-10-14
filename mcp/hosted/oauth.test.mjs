@@ -728,3 +728,36 @@ test('opt-in DCR persists bounded registrations; deletion and expiry invalidate 
     404,
   );
 });
+
+test('public-client revocation targets one family and cannot revoke another client', async () => {
+  const f = fixture({ clients });
+  const flow = await f.begin(),
+    code = await f.code(flow);
+  const token = await (await f.exchange(flow, code)).json();
+  const revoke = (clientId) =>
+    f.oauth.fetch(
+      new Request(issuer + '/oauth/revoke', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: clientId, token: token.refresh_token }),
+      }),
+    );
+  assert.equal((await revoke('native-test')).status, 200);
+  assert.ok(f.oauth.authenticate(bearer(token.access_token)));
+  assert.equal((await revoke('chatgpt-test')).status, 200);
+  assert.equal(f.oauth.authenticate(bearer(token.access_token)), undefined);
+  assert.equal((await revoke('chatgpt-test')).status, 200);
+  assert.equal((await renew(f.oauth, token.refresh_token, 'chatgpt-test')).status, 400);
+});
+
+test('checked-in legacy snapshot fixture restores without deleting stored credentials', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const saved = JSON.parse(
+    await readFile(new URL('../fixtures/oauth/single-client-v1.json', import.meta.url), 'utf8'),
+  );
+  const f = fixture({ clients, saved });
+  const syntheticToken = Buffer.alloc(32).toString('base64url');
+  assert.equal(f.oauth.authenticate(bearer(syntheticToken)).tenantId, 'legacy-fixture');
+  assert.deepEqual(f.oauth.snapshot().credentials[0].accesses, saved.credentials[0].accesses);
+  assert.equal(f.oauth.snapshot().credentials[0].value.clientId, 'chatgpt-test');
+});

@@ -33,6 +33,7 @@ test(
     const workers = [],
       spaces = [],
       wire = [];
+    let time = 1000000;
     let service,
       server,
       base,
@@ -55,6 +56,7 @@ test(
     };
     const options = {
       issuer,
+      now: () => time,
       subject: 'fixture',
       provider: 'https://tonk.foundation',
       clientId: 'node',
@@ -185,7 +187,7 @@ test(
               ...(['GET', 'HEAD'].includes(req.method) ? {} : { body: Buffer.concat(chunks) }),
             }),
           );
-          wire.push(response.headers.get('content-type'));
+          if (req.url === '/mcp') wire.push(response.headers.get('content-type'));
           res.writeHead(response.status, Object.fromEntries(response.headers));
           if (response.body) Readable.fromWeb(response.body).pipe(res);
           else res.end();
@@ -242,6 +244,17 @@ test(
       );
       assert.equal((await once(python, 'exit'))[0], 0, errors);
       assert.match(output, /readback passed/);
+      time += 600001;
+      assert.equal(
+        (
+          await request('/mcp', {
+            method: 'POST',
+            headers: { authorization: 'Bearer ' + b.access_token },
+            body: '{}',
+          })
+        ).status,
+        401,
+      );
       await service.close();
       service = await createHostedService({
         ...options,

@@ -141,6 +141,7 @@ export function createTonkOAuth({
       ...(dynamicRegistration ? { registration_endpoint: `${origin}/oauth/register` } : {}),
       authorization_endpoint: `${origin}/oauth/authorize`,
       token_endpoint: `${origin}/oauth/token`,
+      revocation_endpoint: `${origin}/oauth/revoke`,
       response_types_supported: ['code'],
       grant_types_supported: ['authorization_code', 'refresh_token'],
       code_challenge_methods_supported: ['S256'],
@@ -447,6 +448,29 @@ export function createTonkOAuth({
           },
         });
         return json({ redirect: redirectFor(entry, { code }) }, 200, clearCookie);
+      }
+      if (url.pathname === '/oauth/revoke' && request.method === 'POST') {
+        if (
+          request.headers.has('origin') ||
+          request.headers.has('authorization') ||
+          request.headers.get('content-type')?.split(';')[0] !== 'application/x-www-form-urlencoded'
+        )
+          return error('invalid_request');
+        const p = parameters(new URLSearchParams(await body(request, 8192)));
+        if (
+          !registry.get(p.client_id) ||
+          p.client_secret !== undefined ||
+          p.client_assertion !== undefined
+        )
+          return error('invalid_client');
+        if (p.resource !== undefined && p.resource !== resource) return error('invalid_request');
+        credentials.revokeToken(
+          p.token,
+          (value) => value.clientId === p.client_id && value.resource === resource,
+        );
+        // Unknown and other-client tokens are indistinguishable; revoke only the
+        // supplied family, never every connection belonging to this account.
+        return new Response(null, { status: 200, headers: secureHeaders });
       }
       if (url.pathname === '/oauth/token' && request.method === 'POST') {
         if (

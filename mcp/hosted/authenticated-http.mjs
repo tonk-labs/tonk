@@ -114,7 +114,7 @@ export function createAuthenticatedTonkHTTP({
         sessions.set(newId, session); // Reserve before resolving the backend.
         try {
           const backend = await resolveBackend(principal);
-          if (closed) {
+          if (closed || !sessions.has(newId)) {
             await drop(newId);
             return new Response(null, { status: 503 });
           }

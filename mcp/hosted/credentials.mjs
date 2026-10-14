@@ -120,6 +120,10 @@ export function createCredentials({
       }
       return rotate(family);
     },
+    revokeToken(token, accepts = () => true) {
+      const family = access.get(key(token)) ?? refresh.get(key(token));
+      if (family && accepts(family.value)) revoke(family);
+    },
     revokeHash(hash) {
       const family = access.get(hash);
       if (family) revoke(family);

@@ -382,3 +382,19 @@ executed for this plan, and the wider worker/Desktop codebase was not audited.
   `mcp/hosted/public`; Docker build cannot connect to the absent OrbStack socket.
   Wrangler's initial log-path permission error was avoided with a /tmp log path;
   missing assets remains the blocker. No substitute assets or deployment used.
+- Final authority/lifecycle slice: RFC-style `/oauth/revoke` discovery and endpoint
+  revoke only the supplied client-bound token family (access or refresh). Unknown
+  or wrong-client tokens return the same success response without affecting the
+  rightful client. Internal account-wide/client-wide APIs remain distinct. Added
+  a checked-in legacy snapshot containing synthetic hashes only.
+- Disconnect test exposed the old core reading `context.signal`; SDK 2.3.0 exposes
+  `context.mcpReq.signal`. Corrected that field and combined it with the SDK's
+  original HTTP request signal. Backend cancellation and exactly one dispatch
+  now pass for an aborted write; oversized replies also never replay writes.
+  An initial implementation using the old field caused the focused test to time
+  out; inspecting the installed SDK types identified the corrected field.
+- Latest checks: 58 hosted tests, 13 core tests, 3 Apps tests and both native
+  integration tests passed. Real HTTP integration now explicitly advances the
+  fixture clock past token expiry, observes 401, restores durable state, refreshes
+  and reads back Python-authored native data. MCP-only wire responses include
+  JSON and finite SSE (OAuth JSON is excluded from that assertion).

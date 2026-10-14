@@ -214,3 +214,61 @@ test('oversized evaluate response fails once without replaying the write', async
     await app.close();
   }
 });
+
+test(
+  'aborted HTTP write reaches backend cancellation and is never replayed',
+  { timeout: 3000 },
+  async () => {
+    let enter,
+      writes = 0,
+      cancelled = false;
+    const entered = new Promise((resolve) => (enter = resolve));
+    const app = fixture({
+      resolveBackend: async () => ({
+        capabilities: ['tonk_evaluate'],
+        async call(_name, _args, signal) {
+          writes++;
+          enter();
+          await new Promise((resolve) => {
+            signal.addEventListener(
+              'abort',
+              () => {
+                cancelled = true;
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          throw Error('uncertain write');
+        },
+      }),
+    });
+    const abort = new AbortController();
+    const pending = app.fetch(
+      new Request(url, {
+        method: 'POST',
+        signal: abort.signal,
+        headers: {
+          authorization: 'a',
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'tonk_evaluate', arguments: { document: 'book:\n' } },
+        }),
+      }),
+    );
+    try {
+      await entered;
+      abort.abort();
+      await pending;
+      assert.equal(cancelled, true);
+      assert.equal(writes, 1);
+    } finally {
+      await app.close();
+    }
+  },
+);
