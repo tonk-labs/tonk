@@ -1,6 +1,6 @@
 # Plan 009: Recover Tonk Desktop on current main
 
-Status: IN PROGRESS. Priority: P1. Effort: L, delivered as tested increments.
+Status: STOPPED — source inventory changed; acceptance incomplete. Priority: P1. Effort: L, delivered as tested increments.
 Planning baseline: `origin/main` at `55af716ef5`, fetched during this planning pass.
 Source: `feat/desktop` at `28f1f72212`, plus the working changes inventoried below.
 This plan interprets “rescue Desktop over the latest” as preserving the existing
@@ -252,14 +252,14 @@ Open the Desktop PR only when the first increment works; stack follow-ups if the
 remain independently reviewable. Do not merge or deploy as part of merely executing
 this plan without the applicable user authorization.
 
-- [ ] Original Desktop branch and dirty work preserved and inventoried.
-- [ ] Recovery branch is based on freshly fetched main and carries no legacy MCP/Rust import.
+- [x] Original Desktop branch and dirty work preserved and inventoried (new external note detected later; see stop condition).
+- [x] Recovery branch is based on freshly fetched main; final tree has no legacy MCP implementation or old Rust/patch import.
 - [ ] Canonical tools/guides generated deterministically; native read/write/readback passes.
 - [ ] Old chats and proposals handled without lost data or replayed writes.
-- [ ] Activity UI changes recovered, tested and separately reviewable.
+- [x] Activity UI changes recovered, unit-tested and separately reviewable; visual/live acceptance remains open.
 - [ ] Current root commands and ad-hoc CI pass; release gates remain correctly scoped.
-- [ ] Local workflow, live model, remote sync and signed passkey evidence distinguished.
-- [ ] Remaining failures/unverified cases and exact revisions recorded in this plan.
+- [x] Local workflow, live model, remote sync and signed passkey evidence distinguished.
+- [x] Remaining failures/unverified cases and exact revisions recorded in this plan.
 
 Stop and report if source changes during recovery, an adaptation requires restoring
 removed core tools, stored-state migration is destructive, or source/runtime formats
@@ -406,3 +406,53 @@ and patches removed from the Desktop subtree (not applied anywhere). Cargo,
 Rust source trees, Nix lock and canonical tools.json remain identical to baseline.
 The visual fixture is compiled but has no visual acceptance evidence due to the
 Computer Use denial documented above.
+
+## Stop condition detected — 2026-10-14
+
+Final preservation verification detected a new untracked source file:
+`plans/2026-10-14-desktop-browser-approval-stall.md`. Per this plan's explicit
+"Stop and report if source changes during recovery" instruction, implementation
+stopped. This file was not read, copied or altered. No source mutations were made
+by this recovery. Source HEAD, index checksum, Desktop binary diff checksum and
+both originally backed-up untracked notes still exactly match the initial capture.
+The protected backup remains at `/private/tmp/tonk-desktop-rescue-20261014-152458/`.
+Reconcile/recapture the new source inventory before resuming selective recovery.
+
+Completed commits:
+- `96365df1fa`: recovery inventory and backup evidence.
+- `a1d46f6493`: native import and canonical MCP adaptation.
+- `80faa1213e`: activity recovery with originating-turn attribution.
+- `cb45cd48ad`: macOS root commands and ad-hoc/optional-signing CI.
+- `c8ecfc19c4`: stale-proposal guards, authority coverage and isolated layout fixture.
+
+Final ad-hoc build after code changes: `TONK_SIGN_IDENTITY=- nix develop .#ci -c
+build:desktop` passed; `codesign --verify --strict desktop/.build/Tonk.app` passed.
+Executable SHA-256: `889e8c4085cb39ba7d29765121e2b16f507755acf055a199af709ee46edebb48`.
+Attempted runtime build used baseline Rust/UI at
+`55af716ef5d4c026a1578c4dc4b06a8067225133` (unchanged throughout), derivation
+`vnhr0m0qk1qcxjqfrzawd70v4pl4zkbd-tonk-ui-trunk-0.6.16-rc.1.drv`.
+It was still compiling and was cancelled on this stop condition: no complete
+runtime artifact/hash, local native workflow or current CLI build is claimed.
+
+| Acceptance | Evidence / remaining work |
+| --- | --- |
+| Backup / source safety | Original HEAD/index/diff/notes unchanged; new untracked note requires reconciliation |
+| Native build | Root build and strict ad-hoc signature verification passed |
+| Swift tests | 54 app + 70 core cases, 4 opt-in skips, zero failures |
+| Canonical generation | Determinism/staleness/dispatch test passed; check mode passed |
+| MCP / ChatGPT | 14 / 42 tests passed; formatting passed |
+| Signing validators | 8 Python tests passed; real identity/profile not exercised |
+| CI definition | actionlint + Nix format passed; hosted PR CI not run |
+| Local native worker workflow | Runtime build cancelled at source-change stop; read/write/readback/restart not run |
+| Activity UI | Unit/persistence/legacy/late-result tests passed; actual visual inspection denied by Computer Use |
+| Live provider | Model discovery passed; live Claude tool/resume failed authentication |
+| Account flows / remote sync | New/existing-account, cancellation/timeout/wrong-account, foreground/background callback and second-replica readback unverified |
+| Signed passkeys | No signing material copied; signed-app/AASA/passkey callback acceptance unverified |
+| Production profiles | No production app launch, profile copy/migration, clearing or store downgrade performed |
+
+No merge, deployment, release publication, PR publication, production runtime
+change or edits to other worktrees. Source worktree was only inventoried/read;
+client-neutral-mcp was not accessed. Local logs are
+`/private/tmp/desktop-rescue-{mcp,chatgpt,format,activity,final-unit,final-build,nix-tests,actionlint,live-provider,runtime-build}.log`.
+A separately identified disposable activity fixture was launched under
+`desktop/artifacts/activity-fixture/`; visual acceptance is not claimed.
