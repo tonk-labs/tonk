@@ -37,6 +37,7 @@ jobs:
     timeout-minutes: 45
     env:
       # nothing-but-nix gives reclaimed disk space to /nix, not the checkout.
+      # Its background cleanup also removes ~/.cargo during later build steps.
       CARGO_HOME: /nix/var/tonk-mcp-cargo
       CARGO_TARGET_DIR: /nix/var/tonk-mcp-target
       CARGO_INCREMENTAL: '0'
@@ -66,7 +67,7 @@ jobs:
       - name: Prepare Cargo build storage
         run: |
           sudo install -d -o "$(id -u)" -g "$(id -g)" "$CARGO_TARGET_DIR" "$CARGO_HOME"
-          df -h / "$CARGO_TARGET_DIR"
+          df -h / "$CARGO_HOME" "$CARGO_TARGET_DIR"
       # Cachix caches Nix outputs, not the direct Cargo builds below. Keep
       # compatible dependency artifacts across source edits; Cargo still checks
       # fingerprints and both test commands always execute.

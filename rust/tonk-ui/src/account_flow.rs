@@ -2175,12 +2175,12 @@ pub(crate) mod tests {
         assert_eq!(desktop["hostDisplay"], "grid");
         assert_eq!(desktop["hostHeight"], desktop["viewportHeight"]);
         assert_eq!(desktop["page"], "rgb(232, 230, 228)");
-        assert_eq!(desktop["mainWidth"], 576);
+        assert_eq!(desktop["mainWidth"], 360);
         assert_eq!(desktop["mainCenter"], desktop["viewportCenter"]);
-        assert_eq!(desktop["ceremonyWidth"], 576);
+        assert_eq!(desktop["ceremonyWidth"], 360);
         assert_eq!(desktop["ceremonyTop"], 148);
         assert_eq!(desktop["logoWidth"], 132);
-        assert_eq!(desktop["actionHeight"], 36);
+        assert_eq!(desktop["actionHeight"], 48);
         assert_eq!(desktop["heading"], "activate your account");
         assert_eq!(desktop["overflow"], false);
 
@@ -2237,7 +2237,7 @@ pub(crate) mod tests {
             driver.quit().await?;
             return Ok(());
         }
-        let available = viewport - 32;
+        let available = (viewport - 32).min(360);
         assert_eq!(compact["mainWidth"], available);
         assert_eq!(compact["ceremonyWidth"], available);
         assert_eq!(compact["logoWidth"], 98);
@@ -5190,7 +5190,7 @@ pub(crate) mod tests {
                     r##"
                     const done = arguments[arguments.length - 1];
                     const [noun, value] = [arguments[0], arguments[1]];
-                    const contained = !!document.querySelector('#tonk-register[data-fabb-task]');
+                    const contained = !!document.querySelector('#tonk-register:is([data-fabb-task], [data-account-task])');
                     for (const row of document.querySelectorAll("#tonk-register .orow")) {
                         const k = row.querySelector(".k");
                         const label = k?.textContent.trim();
@@ -9155,8 +9155,41 @@ pub(crate) mod tests {
         goto(&driver, url_line.trim()).await?;
         driver.enter_default_frame().await?;
         await_register_dialog(&driver).await?;
+        let presentation = driver
+            .execute(
+                r#"
+            const host = document.querySelector('#tonk-register');
+            const card = host.querySelector('.ocol');
+            return { task: host.hasAttribute('data-account-task'),
+                radius: getComputedStyle(card).borderRadius,
+                width: Math.round(card.getBoundingClientRect().width),
+                body: !!host.querySelector('.account-task-body') };
+        "#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(presentation.json()["task"], true, "{presentation:?}");
+        assert_eq!(presentation.json()["radius"], "25px", "{presentation:?}");
+        assert_eq!(presentation.json()["width"], 360, "{presentation:?}");
+        assert_eq!(presentation.json()["body"], true, "{presentation:?}");
         let email = "local-space-link-fresh-account@example.com";
         run_cluster_ceremony(&driver, email).await?;
+        wait_for_displayed(&driver, "#tonk-register-resend").await?;
+        enter_hub(&driver).await?;
+        let toast = driver
+            .execute(
+                r#"
+            return !!document.querySelector('.account-email-notice')?.getClientRects().length;
+        "#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            toast.json(),
+            &serde_json::json!(false),
+            "duplicate email reminder"
+        );
+        driver.enter_default_frame().await?;
         activate_in_another_tab(&driver, &env, email).await?;
 
         let continuation_deadline = tokio::time::Instant::now() + Duration::from_secs(45);
