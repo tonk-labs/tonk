@@ -478,3 +478,33 @@ Resumed `nix build .#tonk-ui --out-link /private/tmp/desktop-rescue-runtime` usi
 the same runtime derivation and unchanged baseline Rust/UI sources. FlakeHub
 again returned a cache 401; local build continued. Next gate is the real native
 workflow against this matching build, with disposable app and data identifiers.
+
+### Resumed increment — remove remaining dead legacy references
+
+The legacy inventory found an unused `CLITools.definition` lookup for retired
+`tonk_cli`, plus an unreachable rename branch in the metadata helper. Removed
+both rather than keeping a dormant trap or an unverified alternate rename recipe.
+Metadata now has a read-only `readSpaceInfo` helper. Agent renames use canonical
+evaluate with the tested spaces-guide recipe, exercised by the workflow runner.
+Generic transport tests now use `tonk_query`; remaining retired-name references
+are rejection tests only. Native inspection/proposal schemas stay Desktop-owned.
+
+- `bash desktop/scripts/dev.sh test:unit --filter 'HarnessCoreTests|SpaceToolsTests'`:
+  exit 0, 70 core cases, 2 opt-in live-provider skips, zero failures.
+- `TONK_SIGN_IDENTITY=- nix develop .#ci -c build:desktop`: exit 0.
+  Strict codesign verification passed. Executable SHA-256:
+  `efb31ebb099230cdf73edb9a6407dee55201a3f97b31920ef377dd39156fa54e`.
+- Generator check and `git diff --check`: exit 0.
+- Isolated stream fixture served on 127.0.0.1:4191. `TONK_STREAM_PROBE=1
+  TONK_COLD_LOAD_EVIDENCE=/private/tmp/desktop-rescue-stream-evidence.json bash
+  desktop/scripts/dev.sh test:unit --filter
+  ColdStreamDiagnosticTests.testInitialServiceWorkerFrames`: 1 passed, no skips.
+  All four combined-frame trials passed. Diagnostic-only separate-frame trials
+  passed 1/4 and pull0 trials 0/4; these are WebKit fixture observations, not a
+  runtime fix or real-worker acceptance. No old Rust patch was applied.
+- Matching CLI: `nix build .#tonk-cli-ci --out-link /private/tmp/desktop-rescue-cli`
+  exit 0, output `/nix/store/m59aifiahnfyk4vzccbd54zjy3ll77g3-tonk-cli-ci-0.1.0`.
+  `TONK_NO_UPDATE_CHECK=1 /private/tmp/desktop-rescue-cli/bin/tonk --version`
+  reports `tonk 0.6.16-rc.1`; executable SHA-256
+  `93536fb6cbbecd4775f0fa78fefd66678a77ef27c7b548337cfe965b295c7cd2`.
+  No installed CLI or its profiles changed.

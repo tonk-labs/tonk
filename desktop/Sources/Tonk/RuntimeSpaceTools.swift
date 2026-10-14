@@ -16,20 +16,10 @@ extension RuntimeModel {
     }
   }
 
-  func performSpaceTool(space: TonkSpace, name: String?) async throws -> String {
-    let document: String
-    if let name {
-      // JSON strings are valid YAML scalars; no interpolation can add notation.
-      let quoted = String(decoding: try JSONEncoder().encode(name), as: UTF8.self)
-      document = "tonk/rename-repository!:\n  subject: \(space.subject)\n  name: \(quoted)\n"
-      _ = try await performBuildTool(
-        space, tool: "tonk_evaluate",
-        arguments: .object(["document": .string(document)]))
-    }
+  func readSpaceInfo(_ space: TonkSpace) async throws -> String {
     let result = try await performBuildTool(
       space, tool: "tonk_query",
       arguments: .object(["document": .string("tonk/repository:\n  this: \(space.subject)\n")]))
-    if name != nil { await refreshSpaces() }
     return String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
   }
 

@@ -1,8 +1,6 @@
 import Foundation
 
 public enum CLITools {
-  public static let definition = TonkToolCatalog.definition("tonk_cli")
-
   public static func arguments(_ value: JSONValue) throws -> [String] {
     guard case .object(let fields) = value, let operation = fields["operation"]?.string else {
       throw HarnessError.message("Provide a CLI operation.")

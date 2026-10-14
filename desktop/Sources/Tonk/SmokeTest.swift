@@ -168,7 +168,7 @@ enum SmokeTest {
             domain: "SmokeTest", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "Requested space is not in the catalog"])
         }
-        report["spaceInspection"] = try await runtime.performSpaceTool(space: space, name: nil)
+        report["spaceInspection"] = try await runtime.readSpaceInfo(space)
         if arguments.contains("--inspect-sync") {
           report["syncDiagnostic"] = try await runtime.accountScript(
             """
