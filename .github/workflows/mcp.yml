@@ -37,9 +37,9 @@ jobs:
     timeout-minutes: 45
     env:
       # nothing-but-nix gives reclaimed disk space to /nix, not the checkout.
+      CARGO_HOME: /nix/var/tonk-mcp-cargo
       CARGO_TARGET_DIR: /nix/var/tonk-mcp-target
       CARGO_INCREMENTAL: '0'
-      CARGO_PROFILE_DEV_DEBUG: '0'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,8 +65,21 @@ jobs:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
       - name: Prepare Cargo build storage
         run: |
-          sudo install -d -o "$(id -u)" -g "$(id -g)" "$CARGO_TARGET_DIR"
+          sudo install -d -o "$(id -u)" -g "$(id -g)" "$CARGO_TARGET_DIR" "$CARGO_HOME"
           df -h / "$CARGO_TARGET_DIR"
+      # Cachix caches Nix outputs, not the direct Cargo builds below. Keep
+      # compatible dependency artifacts across source edits; Cargo still checks
+      # fingerprints and both test commands always execute.
+      - name: Cache Cargo build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CARGO_TARGET_DIR }}
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+          key: mcp-cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', 'flake.lock', 'flake.nix', 'nix/**', '.cargo/**', '.github/workflows/mcp.yml') }}-${{ github.sha }}
+          restore-keys: |
+            mcp-cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', 'flake.lock', 'flake.nix', 'nix/**', '.cargo/**', '.github/workflows/mcp.yml') }}-
       - name: Install locked MCP dependencies
         run: nix --accept-flake-config develop .#ci -c npm --prefix mcp ci --ignore-scripts
       - name: Check formatting, generated guides and core contracts
@@ -75,9 +88,17 @@ jobs:
           nix --accept-flake-config develop .#ci -c npm --prefix mcp run check:format
           nix --accept-flake-config develop .#ci -c npm --prefix mcp test
       - name: Test worker behavior, storage isolation and restart
-        run: nix --accept-flake-config develop .#ci -c cargo test --locked -p tonk-worker --lib -- --test-threads=2
+        run: nix --accept-flake-config develop .#ci -c cargo test --locked --profile ci-test --timings -p tonk-worker --lib -- --test-threads=2
       - name: Build ordinary worker and test through MCP
         run: |
-          nix --accept-flake-config develop .#ci -c cargo build --locked -p tonk-worker --features native-host --bin tonk-worker-host
-          export TONK_WORKER_BINARY="$CARGO_TARGET_DIR/debug/tonk-worker-host"
+          nix --accept-flake-config develop .#ci -c cargo build --locked --profile ci-test --timings -p tonk-worker --features native-host --bin tonk-worker-host
+          export TONK_WORKER_BINARY="$CARGO_TARGET_DIR/ci-test/tonk-worker-host"
           nix --accept-flake-config develop .#ci -c npm --prefix mcp run test:integration
+      - name: Upload Cargo timing reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-cargo-timings
+          path: ${{ env.CARGO_TARGET_DIR }}/cargo-timings
+          if-no-files-found: ignore
+          retention-days: 7

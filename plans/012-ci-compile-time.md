@@ -259,3 +259,31 @@ test library compilation took 308.73s, and the late CLI `site` integration binar
 211.86s. Web worker tests took 456.06s, its library 332s, schema tests 188.5s and
 analyzer tests 165.8s. Compilation remains the main target for future work.
 The final single-pass change still requires hosted full-workspace verification.
+
+## MCP core follow-up
+
+Hosted MCP run `38550432785` spent 1,038s in worker tests (993s compiling,
+44s executing) and 676s building/testing the native host (673s compiling).
+The workflow used direct Cargo builds in a fresh `/nix/var/tonk-mcp-target`;
+Cachix did not persist these artifacts. Both default profiles retained the
+workspace's dependency optimization level 3.
+
+Use the existing `ci-test` profile for both direct Cargo commands, preserving
+package selection, feature flags, assertions and the two-test-thread limit.
+Resolve the integration binary from `ci-test/tonk-worker-host`. Persist Cargo
+artifacts and registry/git sources with Actions cache, keyed by platform,
+manifests, locks, toolchain and build configuration, with a per-commit suffix
+and a compatible-prefix fallback. Never skip compilation or tests on a cache
+hit. Keep Cargo sources on the reclaimed Nix filesystem as well as artifacts.
+Upload Cargo timing reports to measure both builds. The initial hosted run
+will populate the new cache; subsequent source-edit runs measure reuse.
+
+Local validation: workflow syntax and whitespace checks passed. After
+installing the locked dependencies, all 13 MCP contract tests passed. The first
+local contract attempt lacked installed MCP packages (including esbuild); this
+was a setup failure. All 250 worker tests passed under `ci-test`, with 3 existing ignored tests
+(10m56s cold build, 95.79s test execution on Darwin while the host build also
+ran). The native host built successfully and the MCP integration test passed in
+2.06s, including generated-guide verification. Host build elapsed time included
+waiting for the earlier Cargo build lock and is not a standalone timing result. Hosted cache restore and end-to-end latency still
+require CI evidence; no speedup percentage is claimed for this change.
