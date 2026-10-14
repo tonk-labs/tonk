@@ -402,22 +402,23 @@ executed for this plan, and the wider worker/Desktop codebase was not audited.
 
 ## Current completion and resume state
 
-Local implementation is committed through `579bdff1c4`. The copied plan remains
+Local implementation is committed through `49cde56d50`. The copied plan remains
 in this worktree and its README entry was appended without replacing entries.
 See [compatibility and exact resume steps](../mcp/hosted/COMPATIBILITY.md) for the
 client matrix, current source paths, commands, authority boundaries and blockers.
 
 - Explicit multi-client OAuth and SDK native read/write/readback: verified locally
   with fixture account approval; actual external login remains unverified.
-- Shared hosting/Apps extraction: implemented and locally tested; packaged image,
-  deployed checkpoint restore and reconnect remain unverified.
+- Shared hosting/Apps extraction: implemented and locally tested; packaged image
+  and Worker dry-run pass. Deployed checkpoint restore/reconnect remain unverified.
 - Two independent SDK implementations and headless/UI capability isolation: pass.
 - Actual ChatGPT, hosted Claude and Claude Code acceptance: unverified. Claude
   Code additionally needs resolution of its localhost-versus-literal callback.
 - Bounded opt-in DCR: implemented and negative-tested; live URL-only onboarding
   unverified, default remains off. CIMD explicitly deferred, not advertised.
 - Documentation/operational limits: recorded. No public availability claim.
-- Docker/asset/preview checks: blocked by missing daemon and matching guest assets.
+- Packaging: matching frontend/guest assets, Docker build/import and Wrangler
+  dry-run pass. Actual preview remains unverified.
   No push, PR, development/staging/stable deployment or stored-data reset occurred.
 
 Tested increments:
@@ -430,6 +431,7 @@ Tested increments:
 | `8d7d30b6bf` | Production composition and independent SDKs | 57 hosted + 2 native integration tests |
 | `89c17c783a` | Hosted/Apps source extraction | 13 core + 55 hosted + 3 Apps + 2 native integration tests |
 | `579bdff1c4` | Revocation, checked-in migration fixture, cancellation, expiry | 13 core + 58 hosted + 3 Apps + 2 native integration tests |
+| `49cde56d50` | Redirect/private-address and malformed-RPC boundaries | 60 hosted + 2 native integration tests |
 
 - Final redirect review tightened remote HTTPS callbacks to DNS hostnames,
   rejecting IP/private-name forms and empty fragments as well as nonempty ones.
@@ -443,3 +445,27 @@ Tested increments:
   backend resolution; 60 hosted tests and both native SDK integration tests pass
   after these last source changes. Core (13) and Apps (3) remain passing from the
   preceding source checkpoint. Formatting and diff checks remain required below.
+
+- Packaging recovery evidence: started installed OrbStack; built the repository
+  frontend with `nix build --accept-flake-config .#tonk-ui-preview --out-link
+  /tmp/tonk-mcp-ui-preview`. Output:
+  `/nix/store/lfhi4b6bgcqcaym1zahlb05s3j1f04f6-tonk-ui-preview-0.6.16-rc.1`.
+  `TONK_UI_DIST=/tmp/tonk-mcp-ui-preview npm --prefix mcp run build:hosted-assets`
+  passed using real guest assets. `space-runtime.json` SHA-256:
+  `17aee7233117dba79581356c8523b447bfeae037b7a81b1eda7c2584da8b5b9f`.
+  Wrangler 4.150.0 dry-run passed with two asset files and 62.08 KiB Worker bundle.
+  No actual upload/deployment occurred. The FlakeHub cache returned 401 during
+  Nix evaluation; the normal Cachix/build path still completed successfully.
+
+- Final packaging evidence: linux/amd64 Docker build passed. Refreshed cached
+  source-copy layers after the final implementation changes, then imported
+  `hosted/service.mjs` inside the image with `--network none`; exit 0.
+  Image `tonk-mcp:interop` identity:
+  `sha256:b85c2b789b8cfc242287a8ba52d943522994033166e90c5b717352e358e0517f`.
+  This is a local worktree image, not a deployment or release candidate claim.
+  Final repository `check:format` and `git diff --check` passed. Total automated
+  checks: 13 core + 60 hosted + 3 Apps + 2 native integration tests, no skips.
+  All independently executable implementation and local packaging checks are
+  complete. Remaining live-client/preview acceptance, Claude Code callback policy,
+  CIMD resolver and production durability/capacity gates are detailed in the
+  compatibility document. No push, PR, merge or deployment was performed.

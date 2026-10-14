@@ -1,7 +1,8 @@
-# ChatGPT integration
+# Hosted MCP service
 
 This host composes the general [Tonk MCP core](../README.md) with OAuth and an
-embedded Tonk frontend. It exposes the four core tools plus `tonk_open_space`.
+embedded Tonk frontend. It exposes four core/account tools and negotiates optional `tonk_open_space` for
+MCP Apps-capable clients. See the [tested compatibility matrix](COMPATIBILITY.md).
 Queries and evaluations use the ordinary native worker; there is no separate
 language, restricted runtime, legacy tool adapter or Desktop dependency.
 
@@ -9,13 +10,13 @@ language, restricted runtime, legacy tool adapter or Desktop dependency.
 
 | Module | Responsibility |
 | --- | --- |
-| `server.mjs` | HTTP startup, composition and shutdown |
+| `server.mjs`, `service.mjs` | HTTP startup, reusable composition and shutdown |
 | `oauth.mjs`, `authenticated-http.mjs` | PKCE account linking, discovery, per-request authentication |
 | `credentials.mjs`, `durable-state.mjs` | Bounded credential families, rotation/replay checks, conditional persistence |
 | `worker-tenants.mjs` | Account provisioning, per-call space selection, isolated worker processes |
 | `checkpoint.mjs`, `checkpoint-limits.mjs`, `provisioning.mjs` | Closed authorization-seed recovery and serialized checkpointing |
 | `space-session.mjs` | Space-scoped browser authority and direct worker HTTP/SSE |
-| `ui.mjs`, `ui/` | ChatGPT resource registration, private session metadata, sandboxed stock frontend |
+| `../apps/`, `../chatgpt/metadata.mjs` | Standard Apps presentation and optional OpenAI metadata |
 | `build-assets.mjs` | Public guest asset packaging; never includes account data |
 | `cloudflare/` | Development host, outbound allowlist, private R2 proxy and container image |
 
@@ -28,12 +29,11 @@ replay an evaluation. A failed remote push reports an uncertain local change.
 
 ## Local checks
 
-From `mcp/`, run `npm ci --ignore-scripts`, `npm test`, and
-`npm run test:chatgpt`. Run `npm run check:format` for source formatting. The core
-native integration remains `TONK_WORKER_BINARY=/absolute/path/to/tonk-worker-host
-npm run test:integration` (on one shell line).
+Run the exact Node/Python/native-worker commands in
+[local evidence](COMPATIBILITY.md#reproduce-local-evidence). `test:hosted` and
+`test:apps` have explicit coverage; `test:chatgpt` remains a compatibility alias.
 
-`TONK_UI_DIST=/absolute/path/to/tonk-ui npm run build:chatgpt-assets` assembles
+`TONK_UI_DIST=/absolute/path/to/tonk-ui npm run build:hosted-assets` assembles
 public guest assets from the matching Tonk build into ignored `hosted/public/`.
 `TONK_GUEST_PACK` can instead name a cached `space-runtime.json` for local checks.
 CI always uses the guest manifest from its own frontend build.

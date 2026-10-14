@@ -19,8 +19,8 @@ export function createTonkServer({ capabilities, call, spaceSelection }, { regis
       },
       async (args, context) => {
         try {
-          // A legacy SDK transport close does not abort its tool signal. Include
-          // the actual HTTP request when present; other hosts keep their signal.
+          // Propagate both protocol cancellation and HTTP disconnects. Other
+          // hosts use the SDK request signal without an HTTP dependency.
           const signal = context.http?.req?.signal
             ? AbortSignal.any([context.mcpReq.signal, context.http.req.signal])
             : context.mcpReq.signal;
