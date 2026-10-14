@@ -809,7 +809,8 @@ view!:
         padding:16px 20px; background:var(--ink); color:var(--on-ink);
         font:400 17px/1.45 var(--cond); }
       .account-email-notice[data-account-status="case:registered"] { display:flex; }
-      .hub-page:has(hub-bar[path="/account"]) .account-email-notice { display:none; }
+      .hub-page:has(hub-bar[path="/account"]) .account-email-notice,
+      .hub-page:has(hub-bar[path="/settings/link"]) .account-email-notice { display:none; }
       .account-email-notice button { min-height:44px; padding:10px 12px; color:inherit;
         font:600 15px/1.15 var(--cond); text-decoration:underline;
         text-underline-offset:3px; white-space:nowrap; }
