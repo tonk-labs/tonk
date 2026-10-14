@@ -902,3 +902,36 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
         animation: none;
     }
 }
+
+/* Activation is the standalone face of the current account task, not the
+   legacy stack of individually framed blocks. Keep status/error visible even
+   when a malformed link cannot show the confirmation panel. */
+tonk-activate .account { width: min(360px, calc(100vw - 32px)); }
+tonk-activate .account__ceremony {
+    border: 1.5px solid var(--ring); border-radius: 25px;
+    background: var(--modal, var(--card)); overflow: hidden;
+}
+tonk-activate .account__stack { gap: 0; }
+tonk-activate .account__ceremony-head {
+    min-height: 48px; height: auto; padding: 14px 18px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    font: 600 17px/1.1 var(--cond); text-align: right; letter-spacing: 0;
+    box-shadow: none; background: var(--wash);
+}
+tonk-activate .account__ceremony-head::before {
+    content: ""; width: 18px; height: 18px; flex: 0 0 18px;
+    border-radius: 50%; background: var(--ink);
+}
+tonk-activate .account__narrator,
+tonk-activate .account__working,
+tonk-activate .account__error {
+    margin: 0; padding: 16px 18px 24px; box-shadow: none;
+    background: var(--wash); font: 400 18px/1.5 var(--cond);
+    letter-spacing: 0; color: var(--ink);
+}
+tonk-activate .account__run {
+    width: 100%; min-height: 48px; height: auto; padding: 12px 18px;
+    align-items: center; box-shadow: none;
+    font: 600 17px/1.1 var(--cond); letter-spacing: 0;
+}
+tonk-activate .account__run:active:not(:disabled) { scale: none; }

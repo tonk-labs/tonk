@@ -1,0 +1,63 @@
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@400;600&display=swap">
+<div id="tonk-link-current">
+ <label class="preview-control">Preview screen <select aria-label="Preview screen"><option value="email">Email entry</option><option value="waiting" selected>Waiting for email</option><option value="activation">Email activation</option><option value="name">Display name</option><option value="passkey">Create passkey</option><option value="login">Returning account</option><option value="approve">Connection approval</option></select></label>
+ <div class="viz-dotted-background preview-stage"><section class="task" aria-label="Connect Tonk MCP prototype"><header><span class="disc" aria-hidden="true"></span><h2>connect Tonk MCP</h2></header><div class="records"></div><div class="task-body" aria-live="polite"></div><footer></footer></section></div>
+</div>
+<style>
+#tonk-link-current{--ink:light-dark(#38182a,#e2dfdd);--soft:light-dark(#5b4953,#c8c3bf);--panel:light-dark(#f5f2f3,#261f20);--body:light-dark(#ede8eb,#30282c);--wash:light-dark(rgb(56 24 42 / 6%),rgb(226 223 221 / 9%));--on:light-dark(#f7f6f5,#221c1d);--edge:light-dark(rgb(56 24 42 / 85%),rgb(226 223 221 / 55%));color:var(--ink);font:400 18px/1.5 'IBM Plex Sans Condensed','Arial Narrow',sans-serif}
+#tonk-link-current *{box-sizing:border-box}
+#tonk-link-current .preview-control{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font:400 14px/1.4 sans-serif;margin-bottom:16px}
+#tonk-link-current select{max-width:100%;padding:8px;font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--edge)}
+#tonk-link-current .preview-stage{padding:28px 16px;min-height:530px;display:flex;align-items:flex-start;justify-content:center}
+#tonk-link-current .task{width:360px;max-width:100%;border:1.5px solid var(--edge);border-radius:25px;overflow:hidden;background:var(--body)}
+#tonk-link-current header{height:48px;display:flex;align-items:center;gap:16px;padding:0 18px}
+#tonk-link-current h2,#tonk-link-current h3{font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Narrow',sans-serif;margin:0}
+#tonk-link-current h2{flex:1;text-align:right}
+#tonk-link-current h3{margin-bottom:16px}
+#tonk-link-current .disc{width:18px;height:18px;border-radius:50%;background:var(--ink);flex:none}
+#tonk-link-current .task-body{padding:16px 18px 24px}
+#tonk-link-current p{margin:0 0 16px;overflow-wrap:anywhere}
+#tonk-link-current p:last-child{margin-bottom:0}
+#tonk-link-current .hint{color:var(--soft)}
+#tonk-link-current button{font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Narrow',sans-serif;color:var(--ink);background:transparent;border:0;min-height:48px}
+#tonk-link-current button:hover{background:var(--wash)}
+#tonk-link-current button:focus-visible,#tonk-link-current input:focus-visible{outline:2px solid currentColor;outline-offset:-2px}
+#tonk-link-current .record{width:100%;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 18px;background:var(--wash);text-align:left}
+#tonk-link-current .record span{font-weight:400;font-size:18px;line-height:1.5;text-align:right;overflow-wrap:anywhere;min-width:0}
+#tonk-link-current label.field{display:grid;gap:8px;margin-bottom:16px;font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Narrow',sans-serif}
+#tonk-link-current input{width:100%;min-width:0;min-height:48px;padding:12px 14px 9px;border:0;border-radius:0;background:var(--wash);color:inherit;font:400 18px/1.5 'IBM Plex Sans Condensed','Arial Narrow',sans-serif}
+#tonk-link-current .inline{padding:10px 0;text-decoration:underline;text-underline-offset:4px;min-height:44px}
+#tonk-link-current footer{display:flex;background:var(--panel);min-height:48px}
+#tonk-link-current footer button{flex:1;min-width:0;padding:12px 18px;text-align:left}
+#tonk-link-current footer button:last-child{background:var(--ink);color:var(--on);text-align:right}
+#tonk-link-current footer button:last-child:hover{background:color-mix(in srgb,var(--on) 12%,var(--ink))}
+#tonk-link-current footer button:disabled{opacity:.45}
+#tonk-link-current a{color:inherit;text-decoration:underline}
+#tonk-link-current [hidden]{display:none}
+@media(max-width:380px){#tonk-link-current .preview-stage{padding:24px 8px}#tonk-link-current .record{flex-wrap:wrap}#tonk-link-current .record span{width:100%;text-align:left}}
+</style>
+<script>
+(()=>{
+const root=document.getElementById('tonk-link-current'),picker=root.querySelector('select'),body=root.querySelector('.task-body'),records=root.querySelector('.records'),footer=root.querySelector('footer');
+let address='jack@example.com',name='Jack',current='waiting';
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const record=(label,value,next)=>`<button type="button" class="record" data-next="${next}" aria-label="edit ${label}">${label}<span>${esc(value)}</span></button>`;
+function render(state){current=state;records.innerHTML='';root.querySelector('h2').textContent=state==='activation'?'activate your account':'connect Tonk MCP';let primary='continue',next='waiting',secondary='cancel';
+if(['waiting','name','passkey','login'].includes(state))records.innerHTML=record('email',address,'email');
+if(state==='passkey')records.innerHTML+=record('display name',name,'name');
+if(state==='email'){body.innerHTML=`<label class="field">email address<input type="email" required value="${esc(address)}" autocomplete="off"></label><p class="hint">Enter your email to continue. We’ll check whether you already have a Tonk account.</p>`;}
+if(state==='waiting'){body.innerHTML=`<h3>check your email</h3><p class="hint">We’ve sent a verification link to ${esc(address)}.</p><p class="hint">Click the link in your email to verify your address and continue connecting Tonk MCP.</p><button type="button" class="inline" data-resend>resend link</button><p data-status role="status"></p>`;primary='waiting for link…';next='';}
+if(state==='activation'){body.innerHTML='<p>Confirm your email address to activate your account and sync your data across browsers and devices.</p><p>By selecting accept and activate, you agree to the <a href="#" data-terms>terms of service</a>.</p>';primary='accept and activate';next='activated';secondary='';}
+if(state==='name'){body.innerHTML=`<label class="field">what should people call you?<input value="${esc(name)}" required autocomplete="off"></label><p class="hint">This name appears to other people in your spaces.</p>`;next='passkey';}
+if(state==='passkey'||state==='login'){body.innerHTML='<h3>passkey</h3><p class="hint">'+(state==='login'?'Use your existing passkey on your device or in your password manager.':'Create a passkey on your device or in your password manager to sign in next time.')+'</p>';primary=state==='login'?'sign in with passkey':'create passkey';next='approve';}
+if(state==='approve'){body.innerHTML=`<p>Connect <strong>Tonk MCP</strong> to ${esc(address)}.</p><p class="hint">This gives the connection the same access as this browser: every space, on every device.</p><p class="hint">Only approve if you started this connection yourself.</p>`;primary='approve with passkey';secondary='decline';next='done';}
+if(state==='activated'){body.innerHTML='<p>Your email is verified.</p><p class="hint">Return to the tab where you started to finish adding your account.</p>';primary='got it';secondary='';next='email';}
+if(state==='done'||state==='cancelled'){body.innerHTML=state==='done'?'<p>Tonk MCP is connected.</p>':'<p>No connection was approved.</p>';primary='got it';secondary='';next='email';}
+footer.innerHTML=(secondary?`<button type="button" data-next="cancelled">${secondary}</button>`:'')+`<button type="button" data-next="${next}" ${next?'':'disabled'}>${primary}</button>`;
+if([...picker.options].some(o=>o.value===state))picker.value=state;
+}
+picker.addEventListener('change',()=>render(picker.value));
+root.addEventListener('click',e=>{const b=e.target.closest('button,a');if(!b)return;if(b.hasAttribute('data-terms')){e.preventDefault();return;}if(b.hasAttribute('data-resend')){body.querySelector('[data-status]').textContent='A new verification link has been sent. (Preview)';return;}if(!b.dataset.next)return;const input=body.querySelector('input');if(input&&b.dataset.next!=='cancelled'){if(!input.reportValidity())return;if(current==='email'){address=input.value;render(address.toLowerCase()==='alex@example.com'?'login':'waiting');return;}if(current==='name')name=input.value;}render(b.dataset.next);});
+render('waiting');
+})();
+</script>
