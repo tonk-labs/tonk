@@ -54,8 +54,8 @@ function fixture(options = {}) {
       location: response.headers.get('location'),
     };
   }
-  async function begin() {
-    const flow = await start();
+  async function begin(overrides = {}) {
+    const flow = await start(overrides);
     assert.equal(flow.response.status, 303);
     assert.match(flow.response.headers.get('set-cookie'), /Secure; HttpOnly; SameSite=Lax/);
     const response = await oauth.fetch(
@@ -65,6 +65,8 @@ function fixture(options = {}) {
     const approval = new URL(response.headers.get('location'));
     return {
       ...flow,
+      clientId: overrides.client_id ?? 'chatgpt-test',
+      redirect: overrides.redirect_uri ?? redirect,
       deviceDid: approval.searchParams.get('audience'),
       callback: approval.searchParams.get('callback'),
       approval,
@@ -94,7 +96,7 @@ function fixture(options = {}) {
     const response = await callback(flow);
     assert.equal(response.status, 200);
     const target = new URL((await response.json()).redirect);
-    assert.equal(target.origin + target.pathname, redirect);
+    assert.equal(target.origin + target.pathname, flow.redirect);
     assert.equal(target.searchParams.get('state'), 'original-client-state');
     assert.equal(target.searchParams.get('iss'), issuer);
     return target.searchParams.get('code');
@@ -106,8 +108,8 @@ function fixture(options = {}) {
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           grant_type: 'authorization_code',
-          client_id: 'chatgpt-test',
-          redirect_uri: redirect,
+          client_id: flow.clientId,
+          redirect_uri: flow.redirect,
           resource,
           code,
           code_verifier: flow.verifier,
@@ -538,4 +540,131 @@ test('recovery retains pending approvals, unexchanged codes and live credential 
   assert.deepEqual([...f.oauth.retainedTenants()], ['tenant-1']);
   f.advance(8 * 60 * 60_000);
   assert.deepEqual([...f.oauth.retainedTenants()], []);
+});
+
+const clients = [
+  {
+    clientId: 'chatgpt-test',
+    displayName: 'Tonk for ChatGPT',
+    type: 'public',
+    applicationType: 'web',
+    enabled: true,
+    redirectUris: [redirect],
+  },
+  {
+    clientId: 'native-test',
+    displayName: 'Native test client',
+    type: 'public',
+    applicationType: 'native',
+    enabled: true,
+    redirectUris: ['http://127.0.0.1/callback'],
+  },
+];
+const native = { client_id: 'native-test', redirect_uri: 'http://127.0.0.1:3456/callback' };
+const bearer = (token) => new Request(resource, { headers: { authorization: 'Bearer ' + token } });
+const renew = (oauth, token, clientId) =>
+  oauth.fetch(
+    new Request(issuer + '/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: clientId,
+        refresh_token: token,
+      }),
+    }),
+  );
+
+test('two registered clients cannot consume codes or rotate/revoke each other, including spent tokens', async () => {
+  const f = fixture({ clients });
+  const a = await f.begin(),
+    b = await f.begin(native);
+  assert.equal(b.approval.searchParams.get('name'), 'Native test client');
+  const ac = await f.code(a),
+    bc = await f.code(b);
+  assert.equal((await f.exchange(a, ac, { client_id: 'native-test' })).status, 400);
+  const at = await (await f.exchange(a, ac)).json(),
+    bt = await (await f.exchange(b, bc)).json();
+  assert.equal(f.oauth.authenticate(bearer(at.access_token)).clientId, 'chatgpt-test');
+  assert.equal(f.oauth.authenticate(bearer(bt.access_token)).tenantId, 'tenant-2');
+  assert.equal((await renew(f.oauth, at.refresh_token, 'native-test')).status, 400);
+  const next = await (await renew(f.oauth, at.refresh_token, 'chatgpt-test')).json();
+  assert.equal((await renew(f.oauth, at.refresh_token, 'native-test')).status, 400);
+  assert.equal((await f.exchange(a, ac, { client_id: 'native-test' })).status, 400);
+  assert.ok(f.oauth.authenticate(bearer(next.access_token)));
+  assert.ok(f.oauth.authenticate(bearer(bt.access_token)));
+  assert.equal((await renew(f.oauth, at.refresh_token, 'chatgpt-test')).status, 400);
+  assert.equal(f.oauth.authenticate(bearer(next.access_token)), undefined);
+  assert.ok(f.oauth.authenticate(bearer(bt.access_token)));
+});
+
+test('legacy single-client snapshot migrates without changing token hashes or granting a second client access', async () => {
+  const f = fixture(),
+    flow = await f.begin(),
+    code = await f.code(flow);
+  const token = await (await f.exchange(flow, code)).json();
+  const saved = f.oauth.snapshot();
+  delete saved.version;
+  delete saved.resource;
+  saved.clientId = 'chatgpt-test';
+  for (const item of saved.credentials) {
+    delete item.value.clientId;
+    delete item.value.resource;
+    delete item.value.redirect;
+  }
+  for (const [, item] of saved.spent) {
+    delete item.clientId;
+    delete item.resource;
+  }
+  const restored = fixture({ clients, saved });
+  assert.equal(restored.oauth.snapshot().version, 2);
+  assert.deepEqual(
+    restored.oauth.snapshot().credentials[0].accesses,
+    saved.credentials[0].accesses,
+  );
+  assert.equal(restored.oauth.authenticate(bearer(token.access_token)).clientId, 'chatgpt-test');
+  assert.equal((await renew(restored.oauth, token.refresh_token, 'native-test')).status, 400);
+  assert.equal((await renew(restored.oauth, token.refresh_token, 'chatgpt-test')).status, 200);
+  assert.throws(
+    () => fixture({ clients, saved: { ...saved, clientId: 'unknown' } }),
+    /configuration mismatch/,
+  );
+});
+
+test('disabled and removed registrations reject restored access and refresh without dropping stored families', async () => {
+  const f = fixture({ clients }),
+    flow = await f.begin(native),
+    code = await f.code(flow);
+  const token = await (await f.exchange(flow, code)).json(),
+    saved = f.oauth.snapshot();
+  for (const configured of [
+    clients.slice(0, 1),
+    clients.map((c) => ({ ...c, enabled: c.clientId !== 'native-test' })),
+  ]) {
+    const restored = fixture({ clients: configured, saved });
+    assert.equal(restored.oauth.authenticate(bearer(token.access_token)), undefined);
+    assert.equal((await renew(restored.oauth, token.refresh_token, 'native-test')).status, 400);
+    assert.equal(restored.oauth.snapshot().credentials.length, 1);
+  }
+});
+
+test('client-grant revocation preserves other clients; account revocation removes every grant', async () => {
+  const f = fixture({
+    clients,
+    provisionAccount: async () => ({
+      tenantId: 'same',
+      deviceDid: 'did:key:same',
+      authorize: async () => ({ deviceDid: 'did:key:same', rootDid: 'did:key:account' }),
+    }),
+  });
+  const tokens = [];
+  for (const params of [{}, native]) {
+    const flow = await f.begin(params);
+    tokens.push(await (await f.exchange(flow, await f.code(flow))).json());
+  }
+  f.oauth.revokeClientGrant('did:key:account', 'native-test');
+  assert.ok(f.oauth.authenticate(bearer(tokens[0].access_token)));
+  assert.equal(f.oauth.authenticate(bearer(tokens[1].access_token)), undefined);
+  f.oauth.revokeAccount('did:key:account');
+  assert.equal(f.oauth.authenticate(bearer(tokens[0].access_token)), undefined);
 });

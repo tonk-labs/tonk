@@ -57,6 +57,32 @@ export function deployment({ channel, pullRequest, provider, subdomain, accountI
       TONK_BUILD_SHA: commit,
       TONK_MCP_CLIENT_ID: `${name}-chatgpt`,
       TONK_MCP_REDIRECT_URI: 'https://chatgpt.com/connector_platform_oauth_redirect',
+      TONK_MCP_CLIENTS: JSON.stringify([
+        {
+          clientId: `${name}-chatgpt`,
+          displayName: 'Tonk for ChatGPT',
+          type: 'public',
+          applicationType: 'web',
+          enabled: true,
+          redirectUris: ['https://chatgpt.com/connector_platform_oauth_redirect'],
+        },
+        {
+          clientId: `${name}-claude`,
+          displayName: 'Tonk for Claude',
+          type: 'public',
+          applicationType: 'web',
+          enabled: true,
+          redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
+        },
+        {
+          clientId: `${name}-native`,
+          displayName: 'Tonk native client',
+          type: 'public',
+          applicationType: 'native',
+          enabled: true,
+          redirectUris: ['http://127.0.0.1/callback', 'http://[::1]/callback'],
+        },
+      ]),
     },
   };
 }

@@ -39,6 +39,7 @@ const oauth = createTonkOAuth({
   issuer,
   clientId: required('TONK_MCP_CLIENT_ID'),
   redirectUris: [required('TONK_MCP_REDIRECT_URI')],
+  clients: process.env.TONK_MCP_CLIENTS ? JSON.parse(process.env.TONK_MCP_CLIENTS) : undefined,
   linkPage: provider + '/settings/link',
   saved: durable.state?.oauth,
   onRevoke: (principal) => sessions.revokePrincipal(principal),
@@ -51,6 +52,7 @@ const oauth = createTonkOAuth({
 const tenants = createWorkerTenants({ binary, dataRoot });
 const sessions = createSpaceSessions({
   saved: durable.state?.sessions,
+  isPrincipalActive: (principal) => oauth.isPrincipalActive(principal),
   resolveWorker: (principal, selected) => tenants.resolve(principal, selected),
 });
 const http = createAuthenticatedTonkHTTP({

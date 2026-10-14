@@ -5,6 +5,7 @@ import { randomBytes, createHash } from 'node:crypto';
 // host. Renderer requests use HTTP directly, not tools/call or its write queue.
 export function createSpaceSessions({
   resolveWorker,
+  isPrincipalActive = () => true,
   now = Date.now,
   lifetime = 10 * 60_000,
   maxLifetime = 8 * 60 * 60_000,
@@ -40,6 +41,7 @@ export function createSpaceSessions({
     );
   return {
     issue(principal, subject) {
+      if (!isPrincipalActive(principal)) throw Error('Connection revoked');
       if (!/^did:key:[A-Za-z0-9]+$/.test(subject)) throw Error('Invalid space');
       const until = Math.min(now() + maxLifetime, principal.connectionExpiresAt ?? Infinity);
       if (until <= now()) throw Error('Connection expired');
@@ -74,19 +76,21 @@ export function createSpaceSessions({
         if (request.method !== 'POST') return new Response(null, { status: 405, headers: cors });
         prune();
         const grant = grants.get(hash(token));
-        if (!grant) return new Response(null, { status: 401, headers: cors });
+        if (!grant || !isPrincipalActive(grant.principal))
+          return new Response(null, { status: 401, headers: cors });
         return Response.json(issueSession(grant), { headers: cors });
       }
       if (url.pathname === '/space-api/session/renew') {
         if (request.method !== 'POST') return new Response(null, { status: 405, headers: cors });
-        const renewed = credentials.renew(token);
+        const renewed = credentials.renew(token, (session) => isPrincipalActive(session.principal));
         return Response.json(renewed ?? { error: 'invalid_token' }, {
           status: renewed ? 200 : 401,
           headers: cors,
         });
       }
       const session = credentials.get(token);
-      if (!session) return new Response(null, { status: 401, headers: cors });
+      if (!session || !isPrincipalActive(session.principal))
+        return new Response(null, { status: 401, headers: cors });
       // Decode components independently; encoded slashes cannot change scope.
       let parts;
       try {
@@ -148,7 +152,9 @@ export function createSpaceSessions({
     revokePrincipal(principal) {
       const matches = (session) =>
         session.principal.tenantId === principal.tenantId &&
-        session.principal.deviceDid === principal.deviceDid;
+        session.principal.deviceDid === principal.deviceDid &&
+        (session.principal.clientId === undefined ||
+          session.principal.clientId === principal.clientId);
       credentials.revokeWhere(matches);
       for (const [key, grant] of grants) if (matches(grant)) grants.delete(key);
     },

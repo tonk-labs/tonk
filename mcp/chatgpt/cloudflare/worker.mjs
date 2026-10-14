@@ -21,6 +21,7 @@ export class TonkRuntime extends Container {
       TONK_MCP_SPACE: env.TONK_MCP_SPACE,
       TONK_MCP_CLIENT_ID: env.TONK_MCP_CLIENT_ID,
       TONK_MCP_REDIRECT_URI: env.TONK_MCP_REDIRECT_URI,
+      ...(env.TONK_MCP_CLIENTS ? { TONK_MCP_CLIENTS: env.TONK_MCP_CLIENTS } : {}),
     };
   }
 }
