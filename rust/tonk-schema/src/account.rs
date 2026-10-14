@@ -40,6 +40,11 @@ pub const SUSPENDED: &str = "case:suspended";
 /// `status` URI for a locally custodied account, held until a real one
 /// replaces it.
 pub const ONBOARDING: &str = "case:onboarding";
+/// `status` URI for an onboarding account a real one replaced: its
+/// `retired-at` is set. Ranked above `onboarding` and below
+/// `registered`, so a retired account that also enrolled reads as
+/// enrolled.
+pub const RETIRED: &str = "case:retired";
 
 /// The account enrolled an address with an access service, keyed by the
 /// immutable account subject.

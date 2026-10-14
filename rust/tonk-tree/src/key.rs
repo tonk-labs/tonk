@@ -197,12 +197,26 @@ pub fn pivot_byte(key: &str, prev: Option<&str>, next: Option<&str>) -> Option<u
 /// its dialog `ValueDataType` name.
 pub fn format_value(value: &serde_json::Value, type_name: &str) -> String {
     use serde_json::Value as J;
+    // A sized number type (`natural:64`, `float:32`) formats as the
+    // numbers it stores.
+    let type_name = match type_name.split_once(':') {
+        Some((kind @ ("natural" | "integer" | "float"), width))
+            if !width.is_empty() && width.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            match kind {
+                "natural" => "natural:",
+                "integer" => "integer:",
+                _ => "float:",
+            }
+        }
+        _ => type_name,
+    };
     match type_name {
-        "Text" => match value {
+        "Text" | "text:" => match value {
             J::String(s) => format!("\"{s}\""),
             other => other.to_string(),
         },
-        "Float" => match value {
+        "Float" | "float:" => match value {
             J::Number(n) => {
                 let f = n.as_f64().unwrap_or(0.0);
                 if f.fract() == 0.0 {
@@ -213,19 +227,13 @@ pub fn format_value(value: &serde_json::Value, type_name: &str) -> String {
             }
             other => other.to_string(),
         },
-        "SignedInt" => match value {
-            J::Number(n) => {
-                let i = n.as_i64().unwrap_or(0);
-                if i >= 0 {
-                    format!("+{i}")
-                } else {
-                    i.to_string()
-                }
-            }
+        // A number is spelled plainly: its spelling carries no type.
+        "SignedInt" | "SignedInteger" | "integer:" => match value {
+            J::Number(n) => n.as_i64().unwrap_or(0).to_string(),
             J::String(s) => s.clone(),
             other => other.to_string(),
         },
-        "Bytes" => match value {
+        "Bytes" | "bytes:" => match value {
             J::String(s) => s.clone(),
             J::Array(a) => a
                 .iter()

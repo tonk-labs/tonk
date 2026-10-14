@@ -30,7 +30,7 @@ async fn ask(env: &CommandEnv, request: &str, time: f64) {
             the: format!("xyz.tonk.site/{name}").parse().ok()?,
             of: site.clone(),
             is,
-            unique: true,
+            policy: dialog_artifacts::Pick::Last,
         })
     };
     let (Some(request_claim), Some(time_claim)) = (

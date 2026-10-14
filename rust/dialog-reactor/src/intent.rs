@@ -168,8 +168,8 @@ pub async fn interpret<Env: SelectProvider>(
     // text there ("install notebook") as possibly naming one; `suggest`
     // then fills the field from what was derived, or leaves it empty.
     for attribute in &mut source.attributes {
-        if attribute.fields.get("type").and_then(Json::as_str) == Some("Entity") {
-            attribute.fields.insert("type".to_owned(), json!("Text"));
+        if attribute.fields.get("type").and_then(Json::as_str) == Some("entity:") {
+            attribute.fields.insert("type".to_owned(), json!("text:"));
         }
     }
     let selection = match site {
@@ -382,27 +382,25 @@ async fn fragments<Env: SelectProvider>(
                 continue;
             };
             let kind = attribute.fields.get("type").and_then(Json::as_str);
-            let (Some(selector), Some("Entity")) =
+            let (Some(selector), Some("entity:")) =
                 (attribute.fields.get("id").and_then(Json::as_str), kind)
             else {
                 continue;
             };
-            let cardinality = attribute
-                .fields
-                .get("cardinality")
-                .and_then(Json::as_str)
-                .unwrap_or("one");
             // A rule binds its conclusion's fields by name, so the field is
             // read under the attribute's own name: a fragment concept names
             // its one field after the attribute (`subject` for
-            // `…retitle/subject`).
+            // `…retitle/subject`). The field's candidates are a set, so
+            // the read selects `all`: under the attribute's own policy a
+            // read would elect one of them and the palette would offer
+            // one component to install, whichever the election picked.
             let name = selector.rsplit('/').next().unwrap_or(selector);
             let values = rows(
                 branch,
                 env,
                 json!({
                     "predicate": { "with": { name: {
-                        "the": selector, "as": "Entity", "cardinality": cardinality
+                        "the": selector, "as": "Entity", "select": "all"
                     } } },
                     "terms": { "this": intent, name: var(name) }
                 }),
@@ -536,13 +534,9 @@ fn attributes() -> Json {
     json!({
         "predicate": { "with": {
             "id": text("db.attribute/id", "one"),
-            "type": text("db.attribute/type", "one"),
-            "cardinality": text("db.attribute/cardinality", "one")
+            "type": entity("db.attribute/as", true)
         } },
-        "terms": {
-            "this": var("this"), "id": var("id"), "type": var("type"),
-            "cardinality": var("cardinality")
-        }
+        "terms": { "this": var("this"), "id": var("id"), "type": var("type") }
     })
 }
 

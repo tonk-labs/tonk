@@ -60,7 +60,7 @@ use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
 use dialog_effects::memory::{Publish, Resolve};
-use dialog_query::attribute::Relation;
+use dialog_query::attribute::The;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::{ConceptDescriptor, ConceptQuery, Output as _, Parameters, Term};
 use dialog_repository::{Branch, Hydrate, RemoteSite, Transaction};
@@ -713,14 +713,14 @@ fn merge_frames(a: &Parameters, b: &Parameters) -> Option<Parameters> {
 /// Wraps dialog's `Statement` trait so retraction targets land
 /// in the transaction the same way an `ApplicationPlan` does.
 struct RawClaim {
-    the: dialog_artifacts::Attribute,
+    the: dialog_artifacts::Relation,
     of: Entity,
     is: Value,
 }
 
 impl dialog_artifacts::Statement for RawClaim {
     fn assert(self, update: &mut impl dialog_artifacts::Update) {
-        update.associate(self.the, self.of, self.is);
+        update.associate(self.the, self.of, self.is, dialog_artifacts::Pick::All);
     }
     fn retract(self, update: &mut impl dialog_artifacts::Update) {
         update.dissociate(self.the, self.of, self.is);
@@ -772,7 +772,7 @@ async fn resolve_retraction_targets<Env: EvaluateEnv>(
         let the = match attribute.the().attribute() {
             Some(the) => the,
             None => {
-                let key = plan.statement.terms.get(&Relation::key_operand(field_name));
+                let key = plan.statement.terms.get(&The::key_operand(field_name));
                 let Some(Term::Constant(Value::String(key))) = key else {
                     continue;
                 };
@@ -1216,7 +1216,7 @@ fn render_one_result(
         // a multi-entry query ride satellite `join` terms — fold
         // them into the same object.
         if attr.the().attribute().is_none() {
-            let key_operand = dialog_query::attribute::Relation::key_operand(field_name);
+            let key_operand = dialog_query::attribute::The::key_operand(field_name);
             let mut entry = serde_json::Map::new();
             for terms in std::iter::once(terms).chain(satellite_terms.iter().copied()) {
                 let Some(value) = resolve(terms.get(field_name)) else {
@@ -1308,18 +1308,22 @@ fn render_resolver_block(
 
 /// Lower a typed [`Value`] into the JSON a match block carries.
 ///
-/// Numbers keep their notation SPELLING: a JSON number cannot tell a
-/// non-negative signed integer from an unsigned one, so a signed
-/// integer rides as an explicitly signed string (`"+41"`, `"-7"`) and
-/// the notation printers emit it bare. Unsigned integers stay bare
-/// JSON numbers; floats stay JSON floats (serde_json prints the
-/// `.0`).
+/// A number prints plainly, as the number it is: a literal's spelling
+/// carries no type (`41`, `+41` and `41.0` name one value), so there
+/// is nothing for a `+` to say. Integers ride as JSON integers and
+/// floats as JSON floats (serde_json prints the `.0`).
 fn value_to_json(value: &Value) -> serde_json::Value {
-    match value {
-        Value::SignedInt(i) if *i >= 0 => serde_json::Value::String(format!("+{i}")),
-        Value::SignedInt(i) => serde_json::Value::String(i.to_string()),
-        other => serde_json::to_value(other).unwrap_or(serde_json::Value::Null),
+    // A signed integer rides as a JSON number while one holds it (past
+    // `i64`/`u64` serde_json has no number form, and the untagged path
+    // below spells it as digits).
+    if let Value::SignedInt(i) = value
+        && let Some(number) = serde_json::Number::from_i128(*i)
+    {
+        return serde_json::Value::Number(number);
     }
+    // Bare: a match block shows an entity as its URI and text as text,
+    // never a value tagged by its type.
+    serde_json::to_value(value.untagged()).unwrap_or(serde_json::Value::Null)
 }
 
 #[cfg(test)]
@@ -1371,29 +1375,11 @@ mod tests {
         descriptor: &ConceptDescriptor,
     ) -> Transaction<&'a Branch> {
         for (_, attr) in descriptor.with().iter() {
-            let attr_entity: dialog_artifacts::Entity =
-                attr.to_uri().parse().expect("attribute URI");
-            txn = txn
-                .assert(
-                    the!("db.attribute/id")
-                        .of(attr_entity.clone())
-                        .is(attr.the().to_string()),
-                )
-                .assert(
-                    the!("db.attribute/type")
-                        .of(attr_entity.clone())
-                        .is("Text".to_string()),
-                )
-                .assert(
-                    the!("db.attribute/cardinality")
-                        .of(attr_entity.clone())
-                        .is("one".to_string()),
-                )
-                .assert(
-                    the!("db.meta/description")
-                        .of(attr_entity)
-                        .is(String::new()),
-                );
+            for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
+                .expect("attribute facts")
+            {
+                txn = txn.assert(statement);
+            }
         }
         txn
     }
@@ -1440,13 +1426,13 @@ mod tests {
   description: "an attr"
   the: io.foo/bar
   as: text
-  cardinality: one
+  cardinality: :one
 
 attribute!: &foo/title
   description: "title"
   the: io.foo/title
   as: text
-  cardinality: one
+  cardinality: :one
 "#,
             // Commit 2: reference foo/bar by NAME under `maybe:`.
             r#"concept!: &by-name
@@ -1507,14 +1493,14 @@ attribute!: &foo/title
     message:
       the: xyz.tonk.ping/message
       as: text
-      cardinality: one
+      cardinality: :one
       description: "message"
 
 attribute!: &note-body
   description: "body"
   the: xyz.tonk.note/body
   as: text
-  cardinality: one
+  cardinality: :one
 
 concept!: &note
   description: "A note"
@@ -1596,7 +1582,7 @@ concept!: &note
   description: "A many-valued entity edge"
   the: repro.demo/edge
   as: entity
-  cardinality: many
+  cardinality: :many
 "#,
             // Two domain-head writes against the same entity, in
             // separate commits.
@@ -1634,7 +1620,7 @@ concept!: &note
         let claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("repro.demo/edge"))
+                Term::<dialog_query::attribute::Relation>::from(the!("repro.demo/edge"))
                     .of(Term::<dialog_artifacts::Entity>::from(a))
                     .is(Term::<dialog_artifacts::Entity>::var("edge")),
             ))
@@ -1669,8 +1655,8 @@ concept!: &note
   with:
     card:
       description: "Cards by facet"
-      the: io.test.deck
-      cardinality: one
+      the: "io.test.deck"
+      cardinality: :one
       as: {[symbol]: text}
 "#,
             r#"deck!:
@@ -1768,8 +1754,8 @@ concept!: &note
   with:
     card:
       description: "Cards by facet"
-      the: io.test.deck
-      cardinality: one
+      the: "io.test.deck"
+      cardinality: :one
       as: {[symbol]: text}
 "#,
             // Two entries in ONE assertion.
@@ -1941,8 +1927,9 @@ concept!: &note
 
     /// The read side of the open-ended ruling: a domain query's `_`
     /// matches a value of ANY type — a branch-declared attribute
-    /// imposes nothing on reads — and a literal matches by its own
-    /// spelling (`+41` finds the signed fact, bare `41` does not).
+    /// imposes nothing on reads. A number is one value whatever spelling
+    /// wrote it (the store keys every number in one band), so `+41`
+    /// comes back as the number 41, and both `+41` and bare `41` find it.
     #[dialog_common::test]
     async fn it_reads_raw_domains_untyped() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
@@ -2018,52 +2005,49 @@ concept!: &note
             }
         };
 
-        // `_` matches the signed value despite the unsigned
-        // declaration — and it comes back spelled.
+        // `_` matches the value despite the unsigned declaration — and
+        // it comes back as the number it is: the store holds 41, not the
+        // `+` the write spelled it with.
         let (blank_matches, age) =
             ask(query("io.test.person:\n  this: test:q\n  age: _\n")).await?;
         assert_eq!(blank_matches, 1, "a blank matches any value type");
         assert_eq!(
             age,
-            Some(serde_json::json!("+41")),
-            "and the value rides out in its spelling",
+            Some(serde_json::json!(41)),
+            "and the value rides out as the number it is",
         );
 
-        // A literal matches by its own spelling.
+        // Either spelling of 41 finds the fact: they name one number.
         let (signed_matches, _) =
             ask(query("io.test.person:\n  this: test:q\n  age: +41\n")).await?;
-        assert_eq!(signed_matches, 1, "+41 finds the signed fact");
+        assert_eq!(signed_matches, 1, "+41 finds the fact");
         let (unsigned_matches, _) =
             ask(query("io.test.person:\n  this: test:q\n  age: 41\n")).await?;
-        assert_eq!(unsigned_matches, 0, "bare 41 (unsigned) does not");
+        assert_eq!(unsigned_matches, 1, "and so does bare 41");
         Ok(())
     }
 
-    /// Match JSON spells signed integers explicitly, so notation
-    /// printers can tell +41 from 41 (JSON numbers cannot).
+    /// Match JSON prints a number plainly, never with a `+`: a signed
+    /// integer is the number it is, and spelling carries no type.
     #[dialog_common::test]
-    fn it_spells_signed_values_in_match_json() {
-        assert_eq!(
-            value_to_json(&Value::SignedInt(41)),
-            serde_json::json!("+41")
-        );
-        assert_eq!(
-            value_to_json(&Value::SignedInt(-7)),
-            serde_json::json!("-7")
-        );
+    fn it_prints_numbers_plainly_in_match_json() {
+        assert_eq!(value_to_json(&Value::SignedInt(41)), serde_json::json!(41));
+        assert_eq!(value_to_json(&Value::SignedInt(-7)), serde_json::json!(-7));
         assert_eq!(
             value_to_json(&Value::UnsignedInt(41)),
             serde_json::json!(41)
         );
+        assert_eq!(value_to_json(&Value::Float(41.5)), serde_json::json!(41.5));
     }
 
-    /// Integer spelling picks the value type on a raw domain write:
-    /// bare `41` is unsigned, `+41` signed, `41.0` float — no schema
-    /// consulted. The unsigned spelling is what a concept declaring
-    /// the attribute as unsigned reads, so the raw write and the
-    /// typed read agree without the domain head imposing anything.
+    /// A literal on a raw domain write is the number it names, whatever
+    /// its spelling: `41`, `+41` and `41.0` all store the one value,
+    /// and a raw read gives it back as the narrowest type that holds
+    /// it, `UnsignedInt(41)`. That is what a concept declaring the
+    /// attribute as unsigned reads, so the raw write and the typed read
+    /// agree without the domain head imposing anything.
     #[dialog_common::test]
-    async fn it_types_a_domain_write_by_its_spelling() -> anyhow::Result<()> {
+    async fn it_stores_a_domain_literal_as_the_number_it_names() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
@@ -2081,12 +2065,22 @@ concept!: &note
       the: io.test.person/age
       as: unsigned-integer
 "#,
-            // The raw domain write carries a bare literal for the
+            // Three raw domain writes, one spelling each, for the
             // unsigned-declared attribute.
             r#"io.test.person!:
   this: test:1
   name: "Gozala"
   age: 41
+"#,
+            r#"io.test.person!:
+  this: test:2
+  name: "Plus"
+  age: +41
+"#,
+            r#"io.test.person!:
+  this: test:3
+  name: "Point"
+  age: 41.0
 "#,
         ];
         for doc in docs {
@@ -2109,34 +2103,40 @@ concept!: &note
                 .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
         }
 
-        // The stored value carries the DECLARED type, so the concept's
-        // typed read matches it.
-        let entity: dialog_artifacts::Entity = "test:1".parse()?;
-        let the: dialog_artifacts::Attribute = "io.test.person/age".parse()?;
-        let claims: Vec<dialog_query::Claim> = branch
-            .query()
-            .select(dialog_query::AttributeQuery::new(
-                Term::Constant(dialog_artifacts::Value::Symbol(the)),
-                Term::<dialog_artifacts::Entity>::from(entity),
-                Term::<dialog_query::Any>::var("age"),
-                Term::blank(),
-                None,
-            ))
-            .perform(&operator)
-            .try_vec()
-            .await?;
-        assert_eq!(claims.len(), 1, "one age fact");
-        assert_eq!(
-            claims[0].is,
-            Value::UnsignedInt(41),
-            "the bare spelling is unsigned, which is what the declared reader expects",
-        );
+        // Every spelling stored the one number, read back as the
+        // narrowest type that holds it: what the declared reader expects.
+        let the: dialog_artifacts::Relation = "io.test.person/age".parse()?;
+        for (uri, spelling) in [("test:1", "41"), ("test:2", "+41"), ("test:3", "41.0")] {
+            let entity: dialog_artifacts::Entity = uri.parse()?;
+            let claims: Vec<dialog_query::Claim> = branch
+                .query()
+                .select(dialog_query::AttributeQuery::new(
+                    Term::Constant(dialog_artifacts::Value::Symbol(the.clone())),
+                    Term::<dialog_artifacts::Entity>::from(entity),
+                    Term::<dialog_query::Any>::var("age"),
+                    Term::blank(),
+                    None,
+                ))
+                .perform(&operator)
+                .try_vec()
+                .await?;
+            assert_eq!(claims.len(), 1, "{spelling}: one age fact");
+            assert_eq!(
+                claims[0].is,
+                Value::UnsignedInt(41),
+                "{spelling} is the natural 41, which is what the declared reader expects",
+            );
+        }
         Ok(())
     }
 
-    /// Raw domains are open-ended: every spelling lands with its own
-    /// type, side by side, no declaration anywhere — and a blank in a
-    /// domain query matches values of every type.
+    /// Raw domains are open-ended: every literal lands, side by side,
+    /// no declaration anywhere — and a blank in a domain query matches
+    /// values of every type. A literal is the number it names, not a
+    /// type: the store keys every number in one band, so a raw read
+    /// gives the narrowest type that holds the number. `+41` reads back
+    /// as the natural 41 (the `+` says nothing), `-7` as an integer,
+    /// `41.5` as a float.
     #[dialog_common::test]
     async fn it_keeps_raw_domains_open_ended() -> anyhow::Result<()> {
         let (operator, profile) = test_session_with_peer().await;
@@ -2172,7 +2172,7 @@ concept!: &note
         let entity: dialog_artifacts::Entity = "test:raw".parse()?;
         let mut by_field = std::collections::BTreeMap::new();
         for field in ["bare", "signed", "negative", "float"] {
-            let the: dialog_artifacts::Attribute = format!("io.test.raw/{field}").parse()?;
+            let the: dialog_artifacts::Relation = format!("io.test.raw/{field}").parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
@@ -2189,7 +2189,7 @@ concept!: &note
             by_field.insert(field, claims[0].is.clone());
         }
         assert_eq!(by_field["bare"], Value::UnsignedInt(41));
-        assert_eq!(by_field["signed"], Value::SignedInt(41));
+        assert_eq!(by_field["signed"], Value::UnsignedInt(41));
         assert_eq!(by_field["negative"], Value::SignedInt(-7));
         assert_eq!(by_field["float"], Value::Float(41.5));
         Ok(())
@@ -2215,7 +2215,7 @@ concept!: &note
       as: text
     block:
       description: "The notebook's blocks, in document order"
-      the: xyz.test.notebook
+      the: "xyz.test.notebook"
       as: {[position]: entity}
 "#,
             r#"notebook!:
@@ -2253,7 +2253,7 @@ concept!: &note
         for key in ["N", "N5"] {
             // A position-named attribute is not a `The` (those are the
             // symbol-named half), so the lookup pins the raw attribute.
-            let the: dialog_artifacts::Attribute = format!("xyz.test.notebook/{key}").parse()?;
+            let the: dialog_artifacts::Relation = format!("xyz.test.notebook/{key}").parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
@@ -2309,7 +2309,7 @@ concept!: &note
       as: text
     block:
       description: "The notebook's blocks, in document order"
-      the: xyz.test.notebook
+      the: "xyz.test.notebook"
       as: {[position]: entity}
 "#,
             r#"notebook!:
@@ -2350,7 +2350,7 @@ concept!: &note
         let nb: dialog_artifacts::Entity = "id:nb".parse()?;
         let mut counts = Vec::new();
         for key in ["N", "N5"] {
-            let the: dialog_artifacts::Attribute = format!("xyz.test.notebook/{key}").parse()?;
+            let the: dialog_artifacts::Relation = format!("xyz.test.notebook/{key}").parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
@@ -2433,7 +2433,7 @@ concept!: &note
             refused.err()
         );
 
-        let the: dialog_artifacts::Attribute = "xyz.test.ticket/queue".parse()?;
+        let the: dialog_artifacts::Relation = "xyz.test.ticket/queue".parse()?;
         let queues: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::new(
@@ -2523,7 +2523,7 @@ name!:
         let claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("db.name/referent"))
+                Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::<dialog_artifacts::Entity>::from(id_copy))
                     .is(Term::<dialog_artifacts::Entity>::var("referent")),
             ))
@@ -2590,7 +2590,7 @@ name!:
         let effect_source_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.rule/source"))
+                Term::<dialog_query::attribute::Relation>::from(the!("dialog.rule/source"))
                     .of(Term::<dialog_artifacts::Entity>::var("effect"))
                     .is(Term::<Vec<u8>>::var("source")),
             ))
@@ -2691,7 +2691,7 @@ name!:
     tag:
       the: io.gozala.ping/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 concept!: &pong
@@ -2699,7 +2699,7 @@ concept!: &pong
     tag:
       the: io.gozala.pong/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 rule!:
@@ -2734,7 +2734,7 @@ rule!:
         let marker_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.concept/transient"))
+                Term::<dialog_query::attribute::Relation>::from(the!("dialog.concept/transient"))
                     .of(Term::from(ping_entity.clone()))
                     .is(Term::from(true)),
             ))
@@ -2753,7 +2753,7 @@ rule!:
         let pong_marker_claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.concept/transient"))
+                Term::<dialog_query::attribute::Relation>::from(the!("dialog.concept/transient"))
                     .of(Term::from(pong_entity))
                     .is(Term::from(true)),
             ))
@@ -2842,7 +2842,7 @@ rule!:
     count:
       the: xyz.tonk.counter/count
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "count"
 
 concept!: &increment
@@ -2851,7 +2851,7 @@ concept!: &increment
     by:
       the: xyz.tonk.command/increment
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "by"
 
 rule!:
@@ -2894,7 +2894,7 @@ counter!: &counter-demo
         let referent: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("db.name/referent"))
+                Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
                     .is(Term::<dialog_artifacts::Entity>::var("e")),
             ))
@@ -2968,7 +2968,7 @@ counter!: &counter-demo
     /// The earlier `it_induces_unsigned_sum_from_transient_increment`
     /// injects the increment as a raw `1u128` `Changes` entry and
     /// runs one round — it never exercises the notation literal
-    /// `by: 1` (which parses signed-first) nor the round-2
+    /// `by: 1` (read through the field's declared type) nor the round-2
     /// read-back of `math/sum`'s own output. This test does both:
     /// it is the path the live `/evaluate` bug actually hit.
     #[dialog_common::test]
@@ -2985,7 +2985,7 @@ counter!: &counter-demo
     count:
       the: xyz.tonk.counter/count
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "count"
 
 concept!: &increment
@@ -2994,7 +2994,7 @@ concept!: &increment
     by:
       the: xyz.tonk.command/increment
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "by"
 
 rule!:
@@ -3065,7 +3065,7 @@ counter!: &counter-demo
         let referent: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("db.name/referent"))
+                Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
                     .is(Term::<dialog_artifacts::Entity>::var("e")),
             ))
@@ -3117,7 +3117,7 @@ counter!: &counter-demo
     count:
       the: xyz.tonk.counter/count
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "count"
 
 concept!: &increment
@@ -3126,7 +3126,7 @@ concept!: &increment
     by:
       the: xyz.tonk.command/increment
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "by"
 
 rule!:
@@ -3186,7 +3186,7 @@ counter!: &counter-demo
         let referent: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("db.name/referent"))
+                Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
                     .is(Term::<dialog_artifacts::Entity>::var("e")),
             ))
@@ -3238,7 +3238,7 @@ counter!: &counter-demo
     tag:
       the: io.gozala.ping/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 concept!: &pong
@@ -3246,7 +3246,7 @@ concept!: &pong
     tag:
       the: io.gozala.pong/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 "#;
         parse(concepts)
@@ -3317,7 +3317,7 @@ concept!: &pong
     tag:
       the: io.gozala.ping/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 concept!: &pong
@@ -3325,7 +3325,7 @@ concept!: &pong
     tag:
       the: io.gozala.pong/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 "#;
         parse(concepts)
@@ -3387,7 +3387,7 @@ concept!: &pong
     tag:
       the: io.gozala.ping/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 concept!: &pong
@@ -3395,7 +3395,7 @@ concept!: &pong
     tag:
       the: io.gozala.pong/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 "#;
         parse(concepts)
@@ -3436,7 +3436,7 @@ concept!: &pong
         let installed: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.rule/source"))
+                Term::<dialog_query::attribute::Relation>::from(the!("dialog.rule/source"))
                     .of(Term::<Entity>::var("rule"))
                     .is(Term::<Vec<u8>>::var("source")),
             ))
@@ -3450,7 +3450,7 @@ concept!: &pong
         );
         let chosen = installed[0].of.clone();
         let source_query = dialog_query::AttributeQuery::from(
-            Term::<dialog_query::attribute::The>::from(the!("dialog.rule/source"))
+            Term::<dialog_query::attribute::Relation>::from(the!("dialog.rule/source"))
                 .of(Term::<Entity>::from(chosen.clone()))
                 .is(Term::<Vec<u8>>::var("source")),
         );
@@ -3585,7 +3585,7 @@ concept!: &pong
         let installed: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the!("dialog.rule/source"))
+                Term::<dialog_query::attribute::Relation>::from(the!("dialog.rule/source"))
                     .of(Term::<dialog_artifacts::Entity>::var("rule"))
                     .is(Term::<Vec<u8>>::var("source")),
             ))
@@ -3665,25 +3665,25 @@ concept!: &pong
     name:
       the: xyz.tonk.env/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
     age:
       the: xyz.tonk.env/age
       as: unsigned-integer
-      cardinality: one
+      cardinality: :one
       description: "age"
 
 attribute!: &person-name
   description: The person's name
   the: xyz.tonk.person/name
   as: text
-  cardinality: one
+  cardinality: :one
 
 attribute!: &person-age
   description: The person's age
   the: xyz.tonk.person/age
   as: unsigned-integer
-  cardinality: one
+  cardinality: :one
 
 concept!: &person
   description: "A person"
@@ -3772,7 +3772,7 @@ concept!: &person
     tag:
       the: io.gozala.ping/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 concept!: &pong
@@ -3780,7 +3780,7 @@ concept!: &pong
     tag:
       the: io.gozala.pong/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 rule!:
@@ -3879,7 +3879,7 @@ rule!:
     tag:
       the: io.gozala.ping/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 concept!: &pong
@@ -3887,7 +3887,7 @@ concept!: &pong
     tag:
       the: io.gozala.pong/tag
       as: text
-      cardinality: one
+      cardinality: :one
       description: "tag"
 
 rule!:
@@ -3983,17 +3983,17 @@ concept!: &workspace
     name:
       the: xyz.tonk.workspace/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/active-sheet
@@ -4001,7 +4001,7 @@ concept!: &workspace/active-sheet
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
 
 concept!: &workspace/sheet-member
@@ -4009,7 +4009,7 @@ concept!: &workspace/sheet-member
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/activate-sheet
@@ -4197,12 +4197,12 @@ concept!: &workspace
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/active-sheet
@@ -4210,7 +4210,7 @@ concept!: &workspace/active-sheet
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
 
 concept!: &workspace/sheet-member
@@ -4218,7 +4218,7 @@ concept!: &workspace/sheet-member
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/close-sheet
@@ -4347,17 +4347,17 @@ concept!: &workspace
     name:
       the: xyz.tonk.workspace/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/sheet
@@ -4365,12 +4365,12 @@ concept!: &workspace/sheet
     title:
       the: xyz.tonk.artifact/title
       as: text
-      cardinality: one
+      cardinality: :one
       description: "title"
     order:
       the: xyz.tonk.sheet/order
       as: text
-      cardinality: one
+      cardinality: :one
       description: "order"
 
 concept!: &workspace/active-sheet
@@ -4378,7 +4378,7 @@ concept!: &workspace/active-sheet
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
 
 concept!: &workspace/sheet-member
@@ -4386,7 +4386,7 @@ concept!: &workspace/sheet-member
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/create-sheet
@@ -4580,17 +4580,17 @@ concept!: &workspace
     name:
       the: xyz.tonk.workspace/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
     active:
       the: xyz.tonk.workspace/active
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "active"
     sheet:
       the: xyz.tonk.workspace/sheet
       as: entity
-      cardinality: many
+      cardinality: :many
       description: "sheet"
 
 concept!: &workspace/sheet
@@ -4598,22 +4598,22 @@ concept!: &workspace/sheet
     title:
       the: xyz.tonk.artifact/title
       as: text
-      cardinality: one
+      cardinality: :one
       description: "title"
     entity:
       the: xyz.tonk.artifact/entity
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "entity"
     model:
       the: xyz.tonk.artifact/model
       as: entity
-      cardinality: one
+      cardinality: :one
       description: "model"
     order:
       the: xyz.tonk.sheet/order
       as: text
-      cardinality: one
+      cardinality: :one
       description: "order"
 
 concept!: &empty-artifact
@@ -4622,7 +4622,7 @@ concept!: &empty-artifact
     title:
       the: xyz.tonk.artifact/title
       as: text
-      cardinality: one
+      cardinality: :one
       description: "title"
 
 concept!: &workspace/create-sheet
@@ -4858,13 +4858,13 @@ workspace!:
     name:
       the: io.gozala.person/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
   maybe:
     nickname:
       the: io.gozala.person/nickname
       as: text
-      cardinality: one
+      cardinality: :one
       description: "nickname"
 "#;
         let parsed = parse(doc);
@@ -4910,12 +4910,12 @@ workspace!:
         ])?;
         let entity = descriptor.this();
 
-        let nickname_the: dialog_query::attribute::The =
+        let nickname_the: dialog_query::attribute::Relation =
             "db.concept.optional/nickname".parse().unwrap();
         let nickname_markers: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(nickname_the)
+                Term::<dialog_query::attribute::Relation>::from(nickname_the)
                     .of(Term::from(entity.clone()))
                     .is(Term::<bool>::var("v")),
             ))
@@ -4929,11 +4929,12 @@ workspace!:
         );
         assert_eq!(nickname_markers[0].is, Value::Boolean(true));
 
-        let name_the: dialog_query::attribute::The = "db.concept.optional/name".parse().unwrap();
+        let name_the: dialog_query::attribute::Relation =
+            "db.concept.optional/name".parse().unwrap();
         let name_markers: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(name_the)
+                Term::<dialog_query::attribute::Relation>::from(name_the)
                     .of(Term::from(entity.clone()))
                     .is(Term::<bool>::var("v")),
             ))
@@ -4972,13 +4973,13 @@ workspace!:
     name:
       the: io.gozala.person/name
       as: text
-      cardinality: one
+      cardinality: :one
       description: "name"
   maybe:
     nickname:
       the: io.gozala.person/nickname
       as: text
-      cardinality: one
+      cardinality: :one
       description: "nickname"
 
 person!:

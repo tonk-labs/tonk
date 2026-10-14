@@ -72,6 +72,21 @@ async fn assert_library_lowers(label: &str, file: &str, document: &str) {
     );
 }
 
+/// The policy a field's declaration reads under: its `select`, or the
+/// one its `cardinality` implies in the older spelling (`many` is
+/// `all`, `one` and an unsaid cardinality are `last`). A built-in
+/// serializes only a `select` that says more than the default, so a
+/// query written in either spelling compares by policy.
+fn policy_of(spec: &serde_json::Value) -> &str {
+    if let Some(select) = spec.get("select").and_then(serde_json::Value::as_str) {
+        return select;
+    }
+    match spec.get("cardinality").and_then(serde_json::Value::as_str) {
+        Some("many") => "all",
+        _ => "last",
+    }
+}
+
 fn css_rule<'a>(document: &'a str, selector: &str) -> &'a str {
     document
         .split(selector)
@@ -1389,13 +1404,13 @@ command!: &bump
       description: The thing being bumped
       the: io.gozala.bump/subject
       as: entity
-      cardinality: one
+      cardinality: :one
   maybe:
     time:
       description: A per-event nonce
       the: io.gozala.bump/time
       as: float
-      cardinality: one
+      cardinality: :one
 "#;
     assert_library_lowers("a bare `event!:` document", "event.yaml", document).await;
 }
@@ -1454,9 +1469,9 @@ fn the_event_query_predicate_matches_the_builtin() {
             "`{field}`: the query and the built-in disagree on `the`",
         );
         assert_eq!(
-            ours.get("cardinality"),
-            theirs.get("cardinality"),
-            "`{field}`: the query and the built-in disagree on cardinality",
+            policy_of(ours),
+            policy_of(theirs),
+            "`{field}`: the query and the built-in disagree on the select policy",
         );
     }
     assert!(
@@ -1484,16 +1499,23 @@ fn the_event_query_predicate_matches_the_builtin() {
 fn the_element_method_query_matches_the_library() {
     // Pull the declaration straight out of the seeded document rather
     // than restating it here — restating is how the copies drift.
-    let declared = STANDARD_LIBRARY
-        .split("concept!: &element")
+    let after = STANDARD_LIBRARY
+        .split("concept!: &element\n")
         .nth(1)
         .expect("the library declares `element`");
+    // The declaration ends at the next head: the first line at column
+    // zero that is not a comment.
+    let declared: String = after
+        .lines()
+        .take_while(|line| line.is_empty() || line.starts_with(' ') || line.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
     // Built from the constant, not written out again: a literal here
     // would match the library whatever the constant said, and the test
     // would pass through exactly the drift it exists to catch.
     let domain = tonk_template::resolve::ELEMENT_METHOD_DOMAIN;
     assert!(
-        declared.contains(&format!("the: {domain}")),
+        declared.contains(&format!("the: \"{domain}\"")),
         "the wire predicate's domain ({domain}) is not what the library \
          declares for `element.method`",
     );
@@ -1502,10 +1524,15 @@ fn the_element_method_query_matches_the_library() {
         "the library declares `method` as something other than a keyed \
          dictionary of text",
     );
+    // The predicate reads `method` under the default pick, `last`, which
+    // the library spells by declaring no pick at all (the older
+    // `cardinality: one` said the same). A `pick: :all` or a
+    // `cardinality: many` on the element would be a set the predicate
+    // does not mirror.
     assert!(
-        declared.contains("cardinality: one"),
-        "the library declares `method` at a cardinality the predicate \
-         does not mirror",
+        !declared.contains("pick:") && !declared.contains("cardinality:"),
+        "the library declares `element` with a pick the predicate does not \
+         mirror: {declared}",
     );
 
     let predicate = tonk_template::resolve::element_method_predicate();
@@ -1605,9 +1632,9 @@ fn the_view_queries_match_the_builtin() {
             "`{field}`: the query and the built-in disagree on `the`",
         );
         assert_eq!(
-            ours.get("cardinality"),
-            theirs.get("cardinality"),
-            "`{field}`: the query and the built-in disagree on cardinality",
+            policy_of(ours),
+            policy_of(theirs),
+            "`{field}`: the query and the built-in disagree on the select policy",
         );
     }
     assert!(
