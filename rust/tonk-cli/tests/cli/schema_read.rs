@@ -2,8 +2,6 @@
 //! (`tonk_cli::schema::find_concept`): looking up a single named
 //! concept's fields, types, and cardinalities off the branch.
 
-mod common;
-
 use anyhow::Result;
 
 use crate::common::{ATTRIBUTE_DECL, CONCEPT_DECL, TestSite};

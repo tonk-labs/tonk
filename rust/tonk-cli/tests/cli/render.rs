@@ -4,8 +4,6 @@
 //! exercise the resolve / render / recurse / fallback paths that need
 //! real branch data.
 
-mod common;
-
 use anyhow::Result;
 use tonk_cli::render::{self, RenderRoute};
 

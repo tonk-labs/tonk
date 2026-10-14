@@ -1,7 +1,6 @@
 //! Live coverage for authorizing a space's remote under an account.
 
-mod common;
-
+use crate::common;
 use anyhow::{Context, Result};
 use tonk_access_service::helpers::AccessServiceAddress;
 use tonk_account::prefix::space_root_site;

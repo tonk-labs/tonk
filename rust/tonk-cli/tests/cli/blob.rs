@@ -1,7 +1,5 @@
 //! `tonk blob` — ingest, read back, list.
 
-mod common;
-
 use anyhow::Result;
 use tonk_cli::blob;
 

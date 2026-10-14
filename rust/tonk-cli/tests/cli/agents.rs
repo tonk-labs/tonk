@@ -1,7 +1,5 @@
 //! Behavioural tests for claim-backed space agent context.
 
-mod common;
-
 use anyhow::Result;
 use tonk_cli::agents;
 

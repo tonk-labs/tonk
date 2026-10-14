@@ -12,8 +12,7 @@
 //! - the profile-to-account union makes the path reachable from the
 //!   account, so a second device can revoke what this one minted.
 
-mod common;
-
+use crate::common;
 use anyhow::Result;
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan::{Parameters, Scope, UcanDelegation};

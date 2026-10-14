@@ -1,8 +1,7 @@
 //! Account-spaces coverage against the account directory — the plain
 //! facts in the account DB that replaced the space-backup escrow.
 
-mod common;
-
+use crate::common;
 use anyhow::Result;
 use dialog_query::{Output as _, Query, Term};
 use tonk_access_service::helpers::AccessServiceAddress;

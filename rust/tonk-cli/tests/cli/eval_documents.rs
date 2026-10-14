@@ -4,8 +4,6 @@
 //! the push after the write pulls and pushes again when another writer
 //! moved the upstream.
 
-mod common;
-
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;

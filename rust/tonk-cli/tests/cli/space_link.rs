@@ -1,8 +1,7 @@
 //! Linking a local-only space into the signed-in account, live against an
 //! account service and an access service.
 
-mod common;
-
+use crate::common;
 use anyhow::Result;
 use tonk_access_service::helpers::AccessServiceAddress;
 use tonk_cli::inventory::SpaceRole;
