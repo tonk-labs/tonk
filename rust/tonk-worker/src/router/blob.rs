@@ -8,7 +8,7 @@ use ::axum::{
     response::{IntoResponse, Response},
 };
 use axum_wasm_macros::wasm_compat;
-use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Value};
+use dialog_artifacts::{ArtifactSelector, Entity, Relation, Value};
 use dialog_effects::blob::BlobError;
 use dialog_repository::{Blob, CommitError, RepositoryExt as _};
 use futures_util::{StreamExt as _, stream};
@@ -148,7 +148,7 @@ async fn first_text(
     attribute: &str,
     entity: &Entity,
 ) -> Result<Option<String>, TonkWorkerError> {
-    let attribute: Attribute = attribute
+    let attribute: Relation = attribute
         .parse()
         .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
     let stream = branch
@@ -169,6 +169,22 @@ async fn first_text(
         }
         None => None,
     })
+}
+
+/// Move `branch` of the space at `repo` to this release's storage format,
+/// once per process, before a blob import: the import commits the asset
+/// fact into the branch directly, not through the reactor, and a commit
+/// into a branch an earlier release wrote is refused.
+async fn migrate_once(tonk: &TonkState, repo: &str, branch: &str) -> Result<(), TonkWorkerError> {
+    tonk.reactor
+        .repository(repo)
+        .branch(branch)
+        .migrate_once(&tonk.operator)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("migrating '{repo}/{branch}' failed: {error}"))
+        })
 }
 
 /// Handler for `POST /api/repository/{repo}/branch/{branch}/blob`.
@@ -228,6 +244,7 @@ pub async fn upload(
         .map_err(|e| {
             TonkWorkerError::NotFound(format!("Repository '{}' not found: {e}", path.repo))
         })?;
+    migrate_once(&tonk, &path.repo, path.branch.as_str()).await?;
     let branch_handle = repository
         .branch(path.branch.as_str())
         .open()
@@ -248,10 +265,10 @@ pub async fn upload(
     // mirroring `tonk blob add`. Committed through the reactor (like
     // `claim::assert_claim`), then drain the scheduled poll so subscribers
     // on this branch see the new facts.
-    let media_type_attr: Attribute = MEDIA_TYPE
+    let media_type_attr: Relation = MEDIA_TYPE
         .parse()
         .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
-    let name_attr: Attribute = NAME
+    let name_attr: Relation = NAME
         .parse()
         .map_err(|e| TonkWorkerError::Internal(format!("bad attribute: {e}")))?;
 
@@ -280,13 +297,13 @@ pub async fn upload(
             the: media_type_attr,
             of: entity.clone(),
             is: Value::String(content_type.clone()),
-            unique: true,
+            policy: dialog_artifacts::Pick::Last,
         })
         .assert(RawClaim {
             the: name_attr,
             of: entity.clone(),
             is: Value::String(name.clone()),
-            unique: true,
+            policy: dialog_artifacts::Pick::Last,
         });
     tx.commit()
         .perform(&tonk.operator)
@@ -841,6 +858,7 @@ async fn hydrate_media(
         .perform(&tonk.operator)
         .await
         .map_err(internal)?;
+    migrate_once(&tonk, key, branch_name).await?;
     let branch = repository
         .branch(branch_name)
         .open()

@@ -218,6 +218,19 @@ pub enum AnalyzeDiagnosticKind {
         /// The field where the variable appears.
         field: String,
     },
+    /// An anchor is declared under the name of a built-in anchor: a
+    /// type (`text`, `integer`, ...) or a pick (`last`, `all`, ...).
+    /// Within the document the name means the declaration, so `as:
+    /// text` or `pick: all` there no longer names the built-in.
+    #[error(
+        "`&{name}` shadows the built-in `{name}` in this document — \
+         `{name}` here means this declaration, not the built-in; choose another \
+         name to keep using the built-in"
+    )]
+    ShadowsBuiltin {
+        /// The anchor name.
+        name: String,
+    },
     /// A raw domain write's literal carries a different value type
     /// than a branch-declared attribute advertises. The write still
     /// commits — raw domains are open-ended — but typed readers (a
@@ -246,6 +259,31 @@ pub enum AnalyzeDiagnosticKind {
         /// than a list so the type stays small enough to return by
         /// value.
         known: String,
+    },
+    /// An attribute body writes `cardinality:`, the spelling earlier
+    /// releases used for what is now the attribute's pick. It is read
+    /// (`one` is `pick: :last`, the default; `many` is `pick: :all`) so
+    /// the templates and notebooks those releases published still
+    /// evaluate, and warned about so new documents write the pick.
+    #[error("`cardinality: {value}` is deprecated — {advice}")]
+    DeprecatedCardinality {
+        /// The value as written (`one`, `:one`, `"one"`).
+        value: String,
+        /// What to write instead.
+        advice: String,
+    },
+    /// A keyword-valued field (`pick:`, `role:`) writes the bare or
+    /// quoted word earlier releases used instead of the keyword. It is
+    /// read as the keyword, and warned about so the document moves to
+    /// the spelling the guide teaches.
+    #[error("`{field}: {word}` is the older spelling of the keyword `{field}: :{keyword}`")]
+    OlderKeywordSpelling {
+        /// The field name.
+        field: String,
+        /// The value as written.
+        word: String,
+        /// The keyword it reads as.
+        keyword: String,
     },
     /// the author gets a heads-up with the spelling that would.
     #[error("{attribute} is declared {declared}, this literal stores {found} — {hint}")]
@@ -277,6 +315,9 @@ impl AnalyzeDiagnosticKind {
             Self::SingleOccurrenceVariableAssertionField { .. } => {
                 "E_SINGLE_OCCURRENCE_VARIABLE_ASSERTION_FIELD"
             }
+            Self::ShadowsBuiltin { .. } => "W_SHADOWS_BUILTIN",
+            Self::DeprecatedCardinality { .. } => "W_DEPRECATED_CARDINALITY",
+            Self::OlderKeywordSpelling { .. } => "W_OLDER_KEYWORD_SPELLING",
             Self::DeclaredTypeDivergence { .. } => "W_DECLARED_TYPE_DIVERGENCE",
             Self::UnknownEmbed { .. } => "W_UNKNOWN_EMBED",
         }
