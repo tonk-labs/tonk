@@ -250,7 +250,7 @@ fn query_doc(
 ) -> String {
     let mut doc = format!("{concept}:\n");
     match entity {
-        Some(e) => doc.push_str(&format!("  this: {e}\n")),
+        Some(e) => doc.push_str(&format!("  this: {}\n", tonk_notation::spell_uri(e))),
         None => doc.push_str("  this: ?e\n"),
     }
     for (field, _) in descriptor.with().iter() {

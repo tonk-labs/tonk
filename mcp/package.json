@@ -1,0 +1,26 @@
+{
+  "name": "@tonk/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test *.test.mjs",
+    "pretest": "npm run check:generated",
+    "build:guides": "node scripts/build-authoring-guides.mjs",
+    "check:generated": "node scripts/build-authoring-guides.mjs --check",
+    "format": "npm exec --yes --package=prettier@3.6.2 -- prettier --write \"*.mjs\" \"scripts/*.mjs\" \"integration/*.mjs\" \"tools.json\"",
+    "check:format": "npm exec --yes --package=prettier@3.6.2 -- prettier --check \"*.mjs\" \"scripts/*.mjs\" \"integration/*.mjs\" \"tools.json\"",
+    "test:integration": "npm run check:generated && node --test integration/*.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.0",
+    "esbuild": "0.24.2"
+  }
+}

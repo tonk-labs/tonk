@@ -12,12 +12,12 @@ use tonk_notation::{
 
 use super::error::{AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind};
 use super::field::{
-    collection_entry_terms, field_value_to_term, is_meta_field, untyped_descriptor,
+    collection_entry_terms, field_value_to_term, is_meta_field, read_through, untyped_descriptor,
     validate_claim_attribute,
 };
 use super::scope::Scope;
 use crate::analyzer::Working;
-use dialog_query::attribute::Relation;
+use dialog_query::attribute::The;
 use tonk_core::claim::ValueMap;
 use tonk_core::meta::AnchorName;
 use tonk_schema::prelude::EntityExt;
@@ -38,20 +38,21 @@ fn type_spelling(ty: dialog_query::artifact::Type) -> String {
     }
 }
 
-/// How to spell a literal so it carries the declared type.
+/// What literal the declared type would read. A number literal's
+/// spelling carries no type, so the hint names a number the lens
+/// reads unchanged, never a sign or a decimal point.
 fn divergence_hint(expected: dialog_query::artifact::Type, value: &Value) -> String {
     use dialog_query::artifact::Type;
-    match (expected, value) {
-        (Type::UnsignedInt, Value::SignedInt(i)) if *i >= 0 => {
-            format!("write bare digits ({i}) for an unsigned integer")
+    match (expected.storage(), value) {
+        (Type::UnsignedInt, Value::SignedInt(_) | Value::Float(_)) => {
+            "write a non-negative whole number for a natural".into()
         }
-        (Type::SignedInt, Value::UnsignedInt(u)) => {
-            format!("write +{u} for a signed integer")
+        (Type::SignedInt, Value::Float(_)) => "write a whole number for an integer".into(),
+        (Type::UnsignedInt | Type::SignedInt | Type::Float, _) if value.data_type().is_number() => {
+            "write a number the declared size holds".into()
         }
-        (Type::Float, Value::SignedInt(i)) => format!("write {i}.0 for a float"),
-        (Type::Float, Value::UnsignedInt(u)) => format!("write {u}.0 for a float"),
         (Type::String, _) => "quote the value for text".into(),
-        _ => "spell the literal for that type, or align the attribute's `as:`".into(),
+        _ => "write a literal of that type, or align the attribute's `as:`".into(),
     }
 }
 
@@ -244,7 +245,7 @@ pub(crate) fn build_assertion_application(
                             assert_entries.push((key, value));
                         }
                     }
-                    let key_operand = Relation::key_operand(field_name);
+                    let key_operand = The::key_operand(field_name);
                     match assert_entries.split_first() {
                         Some(((key, value), rest)) => {
                             assert_terms.insert(key_operand.clone(), key.clone());
@@ -466,7 +467,7 @@ pub(crate) fn build_assertion_application(
             for (field_name, key, value) in extra_asserts {
                 let mut t = Parameters::new();
                 t.insert("this".into(), this_term.clone());
-                t.insert(Relation::key_operand(&field_name), key);
+                t.insert(The::key_operand(&field_name), key);
                 t.insert(field_name, value);
                 asserts.push(Application::Concept {
                     query: ConceptQuery {
@@ -482,7 +483,7 @@ pub(crate) fn build_assertion_application(
             for (field_name, key) in extra_retracts {
                 let mut t = Parameters::new();
                 t.insert("this".into(), this_term.clone());
-                t.insert(Relation::key_operand(&field_name), key);
+                t.insert(The::key_operand(&field_name), key);
                 t.insert(field_name, Term::<dialog_query::Any>::blank());
                 retracts.push(Application::Concept {
                     query: ConceptQuery {
@@ -539,8 +540,9 @@ pub(crate) fn build_assertion_application(
                 }
                 validate_claim_attribute(domain, &field.name, field.name_range)?;
                 // Domain heads are OPEN-ENDED: no schema is imposed.
-                // A literal keeps the type its spelling gives it
-                // (`41` unsigned, `+41` signed, `41.0` float) and a
+                // A literal is the number it names, held as the
+                // narrowest type (`41`, `+41` and `41.0` are all the
+                // natural 41; `-7` an integer; `41.5` a float), and a
                 // mixed-type attribute is legal. A branch-declared
                 // `<domain>/<field>` attribute still lends its
                 // CARDINALITY (accumulate-vs-replace), but never its
@@ -556,12 +558,14 @@ pub(crate) fn build_assertion_application(
                 )?;
                 if let Some(declared) = scope.attribute_by_id(&format!("{domain}/{}", field.name)) {
                     // The declaration never blocks a raw write, but a
-                    // literal whose spelled type diverges from it is
-                    // worth a heads-up: the declaring concept will
-                    // not see this fact.
+                    // literal the declared type does not read unchanged
+                    // is worth a heads-up: the declaring concept will
+                    // not see this fact, or will see another number. A
+                    // number any number type reads (`41` under
+                    // `integer:` or `float:`) is no divergence.
                     if let (Some(expected), Term::Constant(value)) =
                         (declared.descriptor.content_type(), &term)
-                        && value.data_type() != expected
+                        && read_through(expected, value).is_none()
                     {
                         analysis.warnings.push(AnalyzeDiagnostic::warning(
                             AnalyzeDiagnosticKind::DeclaredTypeDivergence {
@@ -934,7 +938,7 @@ fn digest_into(
                 return Err(AnalyzeError::at(
                     AnalyzeErrorKind::UnsupportedFieldValue {
                         field: field.name.clone(),
-                        form: "a list (only a command's `action:` takes one)",
+                        form: "a list (only an attribute's `the:` or `as:` and a command's `action:` take one)",
                     },
                     field.value_range,
                 ));

@@ -519,6 +519,55 @@ test("the Rust worker opens a subscription with a space's worker, and ends it by
   assert.ok(sent.some((said) => said.cancel === call), "the space's worker is told the subscription ended");
 });
 
+test("what a space's worker was still answering when it restarted is asked again where that is safe", async () => {
+  const { worker, message } = site({ host: "profile.tonk.test", lingers: true });
+  const opened = (asked) => {
+    const port = {
+      onmessage: null,
+      postMessage(said) {
+        if (typeof said.ping === "number") queueMicrotask(() => port.onmessage({ data: { pong: said.ping } }));
+        if (said.request) asked.push(said);
+      },
+    };
+    return port;
+  };
+  const before = [];
+  const first = opened(before);
+  message({ type: "space-port", repo: SPACE, branch: "main" }, [first]);
+
+  const branch = `/api/repository/${SPACE}/branch/main`;
+  const pushing = worker.tonkAskSpace(SPACE, "POST", `${branch}/sync/push`, "{}");
+  const writing = worker.tonkAskSpace(SPACE, "POST", `${branch}/transact`, "{}");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(before.length, 2, "both are passed to the space's worker");
+
+  // The space's worker restarts, and its pages hand over a new port.
+  const after = [];
+  const second = opened(after);
+  message({ type: "space-port", repo: SPACE, branch: "main" }, [second]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(
+    after.map(({ request }) => request.path),
+    [`${branch}/sync/push`],
+    "a push is asked again of the new worker",
+  );
+  const [{ call }] = after;
+  second.onmessage({ data: { call, head: { status: 200, headers: [] } } });
+  second.onmessage({ data: { call, chunk: new TextEncoder().encode("{}").buffer } });
+  second.onmessage({ data: { call, end: true } });
+  assert.equal((await pushing).status, 200);
+
+  const refused = await writing.then(
+    (answer) => answer,
+    (error) => ({ error: String(error) }),
+  );
+  assert.ok(
+    refused.status >= 500 || /restarted/.test(refused.error ?? ""),
+    `a write is not asked twice: ${JSON.stringify(refused)}`,
+  );
+});
+
 test("a page's icon is read from this origin, and kept for when there is no network", async () => {
   const { answer, stores } = site();
 

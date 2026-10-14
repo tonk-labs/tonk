@@ -28,13 +28,13 @@ attribute!: &rename-repository/subject
   description: The repository being renamed.
   the: xyz.tonk.rename-repository/subject
   as: entity
-  role: object
+  role: :object
 
 attribute!: &rename-repository/name
   description: The new name.
   the: xyz.tonk.rename-repository/name
   as: text
-  role: goal
+  role: :goal
 
 intent/action!:
   this: tonk/rename-repository
@@ -202,7 +202,7 @@ command!: &test/retitle
       description: "The new title"
       the: io.test.retitle/title
       as: text
-      role: goal
+      role: :goal
 
 intent/action!:
   this: test/retitle
@@ -286,7 +286,7 @@ fn select(site: &str, text: &str, time: f64) -> String {
                         "with": {
                             "site": { "the": "xyz.tonk.command.site-select/site", "as": "Entity" },
                             "text": { "the": "xyz.tonk.command.site-select/text", "as": "Text" },
-                            "time": { "the": "xyz.tonk.command.site-select/time", "as": "Float" }
+                            "time": { "the": "xyz.tonk.command.site-select/time", "as": "float:64" }
                         }
                     }
                 },
@@ -424,7 +424,7 @@ fn interpret(expression: &str, input: &str, site: &str, time: f64) -> String {
                             "expression": { "the": "tonk.dialog.intent.interpret/expression", "as": "Entity" },
                             "input": { "the": "tonk.dialog.intent.interpret/input", "as": "Text" },
                             "site": { "the": "tonk.dialog.intent.interpret/site", "as": "Entity" },
-                            "time": { "the": "tonk.dialog.intent.interpret/time", "as": "Float" }
+                            "time": { "the": "tonk.dialog.intent.interpret/time", "as": "float:64" }
                         }
                     }
                 },
@@ -706,6 +706,100 @@ async fn it_runs_every_menu_act_from_the_palette() {
         }
         assert_eq!(seen, request, "{said:?} asks the tab for {request:?}");
     }
+}
+
+/// "make space public" and "make space private" are palette verbs on the
+/// profile, each taking the space it is said of as its object: the same
+/// `space/publish` and `space/unpublish` the bar's actions dispatch. Which
+/// space fills the object is the parser's (see `tonk-intent`'s tests).
+#[dialog_common::test]
+async fn it_says_publishing_in_the_palette() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let branch = state.read().await.active_branch.clone();
+    let profile = format!("/api/repository/profile:tonk/branch/{branch}");
+    for library in [CORE, PROFILE] {
+        send(
+            &app,
+            "POST",
+            &format!("{profile}/evaluate"),
+            "application/yaml",
+            library.into(),
+        )
+        .await;
+    }
+    for said in [
+        "make space public",
+        "publish space",
+        "make space private",
+        "unpublish space",
+    ] {
+        let rows = send(
+            &app,
+            "POST",
+            &format!("{profile}/query"),
+            "application/json",
+            json!({
+                "predicate": "intent/suggest",
+                "terms": { "input": said, "now": 1.0 }
+            })
+            .to_string(),
+        )
+        .await;
+        let rows = rows.as_array().cloned().unwrap_or_default();
+        let top = rows
+            .first()
+            .unwrap_or_else(|| panic!("{said:?} is suggested: {rows:?}"));
+        assert_eq!(
+            field(top, "text").as_str(),
+            Some(format!("{said} (space)").as_str()),
+            "{rows:?}"
+        );
+        assert_eq!(field(top, "nouns"), r#"{"object":"space"}"#, "{rows:?}");
+    }
+}
+
+/// A space the palette offers is shown by its `label` facet, `{name}`,
+/// even when the directory row carries a description too: the space
+/// commands' object reads "little writer", not the space's blurb.
+#[dialog_common::test]
+async fn it_labels_a_space_by_its_name_not_its_description() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let branch = state.read().await.active_branch.clone();
+    let profile = format!("/api/repository/profile:tonk/branch/{branch}");
+    for library in [CORE, PROFILE] {
+        send(
+            &app,
+            "POST",
+            &format!("{profile}/evaluate"),
+            "application/yaml",
+            library.into(),
+        )
+        .await;
+    }
+    let subject = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    send(
+        &app,
+        "POST",
+        &format!("{profile}/evaluate"),
+        "application/yaml",
+        format!(
+            "space!:\n  this: {subject}\n  subject: {subject}\n  kind: tonk:repository\n  name: \"little writer\"\n  description: \"A shared Markdown editor\"\n"
+        ),
+    )
+    .await;
+
+    let expression = "intent:test-space-label";
+    let site = "site:2f4c1b7e-9a3d-4e6f-8b1c-5d7e9f0a2b3c";
+    interpreted(&app, &profile, expression, "make space public", site, 1.0).await;
+    let rows = readings(&app, &profile, expression, subject).await;
+    let top = rows
+        .first()
+        .unwrap_or_else(|| panic!("make space public is suggested: {rows:?}"));
+    assert_eq!(
+        field(top, "text"),
+        "make space public [little writer]",
+        "{rows:?}"
+    );
 }
 
 /// How `intent/suggest` scales with a noun's rows, store reads included.
