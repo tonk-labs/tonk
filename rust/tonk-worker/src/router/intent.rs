@@ -758,6 +758,50 @@ async fn it_says_publishing_in_the_palette() {
     }
 }
 
+/// A space the palette offers is shown by its `label` facet, `{name}`,
+/// even when the directory row carries a description too: the space
+/// commands' object reads "little writer", not the space's blurb.
+#[dialog_common::test]
+async fn it_labels_a_space_by_its_name_not_its_description() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let branch = state.read().await.active_branch.clone();
+    let profile = format!("/api/repository/profile:tonk/branch/{branch}");
+    for library in [CORE, PROFILE] {
+        send(
+            &app,
+            "POST",
+            &format!("{profile}/evaluate"),
+            "application/yaml",
+            library.into(),
+        )
+        .await;
+    }
+    let subject = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    send(
+        &app,
+        "POST",
+        &format!("{profile}/evaluate"),
+        "application/yaml",
+        format!(
+            "space!:\n  this: {subject}\n  subject: {subject}\n  kind: tonk:repository\n  name: \"little writer\"\n  description: \"A shared Markdown editor\"\n"
+        ),
+    )
+    .await;
+
+    let expression = "intent:test-space-label";
+    let site = "site:2f4c1b7e-9a3d-4e6f-8b1c-5d7e9f0a2b3c";
+    interpreted(&app, &profile, expression, "make space public", site, 1.0).await;
+    let rows = readings(&app, &profile, expression, subject).await;
+    let top = rows
+        .first()
+        .unwrap_or_else(|| panic!("make space public is suggested: {rows:?}"));
+    assert_eq!(
+        field(top, "text"),
+        "make space public [little writer]",
+        "{rows:?}"
+    );
+}
+
 /// How `intent/suggest` scales with a noun's rows, store reads included.
 /// Run with `cargo test --release -p tonk-worker --lib -- --ignored
 /// --nocapture intent::it_scales`.
