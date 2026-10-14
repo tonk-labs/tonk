@@ -1,0 +1,249 @@
+name: Release readiness
+run-name: Candidate ${{ inputs.version }} at ${{ inputs.source-sha || github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source-sha:
+        description: 'Full commit SHA on main (empty selects the workflow commit)'
+        type: string
+      version:
+        description: 'Candidate version, e.g. 0.7.0-rc.1'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# Candidate runs do not cancel each other or ordinary main CI. Each report is
+# pinned to one attempt; re-run all jobs, not only failed jobs, to replace it.
+concurrency:
+  group: release-candidate-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      source-sha: ${{ steps.context.outputs.source-sha }}
+      version: ${{ steps.context.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Freeze candidate identity
+        id: context
+        env:
+          SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 scripts/release_evidence.py context --source "$SOURCE_SHA" \
+            --version "$VERSION" --output .release-context/context.json
+          echo "source-sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-context-${{ github.run_attempt }}
+          path: .release-context/context.json
+          retention-days: 30
+
+  tests:
+    needs: prepare
+    uses: ./.github/workflows/test.yml
+    with:
+      source-sha: ${{ needs.prepare.outputs.source-sha }}
+      version: ${{ needs.prepare.outputs.version }}
+    secrets: inherit
+
+  mcp:
+    needs: prepare
+    uses: ./.github/workflows/mcp.yml
+    with:
+      source-sha: ${{ needs.prepare.outputs.source-sha }}
+      version: ${{ needs.prepare.outputs.version }}
+    secrets: inherit
+
+  chatgpt:
+    needs: prepare
+    uses: ./.github/workflows/chatgpt.yml
+    with:
+      source-sha: ${{ needs.prepare.outputs.source-sha }}
+
+  cli-smoke:
+    needs: prepare
+    uses: ./.github/workflows/cli.yml
+    with:
+      source-sha: ${{ needs.prepare.outputs.source-sha }}
+      version: ${{ needs.prepare.outputs.version }}
+    secrets: inherit
+
+  web-build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source-sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .release-controller
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-context-${{ github.run_attempt }}
+          path: .release-context
+      - name: Stamp the candidate
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: python3 .release-controller/scripts/release_stamp.py "$VERSION"
+      - uses: wimpysworld/nothing-but-nix@main
+        with:
+          root-safe-haven: 40960
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build the candidate and its test archive
+        run: |
+          nix build --accept-flake-config .#tonk-cloudflare-preview-artifacts .#tests-e2e --no-link
+          built=$(nix eval --raw .#tonk-cloudflare-preview-artifacts.outPath)
+          mkdir -p candidate-web
+          cp -RL "$built"/. candidate-web/
+          python3 .release-controller/scripts/release_evidence.py identity \
+            --context .release-context/context.json --name web --tree \
+            --path candidate-web/tonk-ui --output release-identity/identity.json
+          tar -czf candidate-web.tar.gz -C candidate-web .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-web-${{ github.run_attempt }}
+          path: candidate-web.tar.gz
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-web-${{ github.run_attempt }}
+          path: release-identity/identity.json
+          retention-days: 30
+
+  e2e:
+    needs: [prepare, web-build, cli-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source-sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .release-controller
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-context-${{ github.run_attempt }}
+          path: .release-context
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-linux-x86_64
+          path: candidate-cli
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-web-${{ github.run_attempt }}
+          path: candidate-web-download
+      - name: Prepare selected artifacts
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python3 .release-controller/scripts/release_stamp.py "$VERSION"
+          chmod 0755 candidate-cli/tonk
+          mkdir -p candidate-web release-e2e
+          tar -xzf candidate-web-download/candidate-web.tar.gz -C candidate-web
+      - uses: wimpysworld/nothing-but-nix@main
+        with:
+          root-safe-haven: 40960
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Run the candidate's browser and CLI journeys once
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          echo '127.0.0.1 tonk.network' | sudo tee -a /etc/hosts
+          nix build --accept-flake-config .#tests-e2e --no-link
+          export TONK_RELEASE_TEST_ARCHIVE="$(nix eval --raw .#tests-e2e.outPath)/tests-e2e.tar.zst"
+          export TONK_BIN="$PWD/candidate-cli/tonk"
+          export TONK_UI_TEST_ARTIFACT="$PWD/candidate-web/tonk-ui"
+          export TONK_RELEASE_CONTROLLER="$PWD/.release-controller"
+          export TONK_RELEASE_CLI_SHA256="$(python3 .release-controller/scripts/release_artifacts.py "$TONK_BIN")"
+          export TONK_RELEASE_WEB_SHA256="$(python3 .release-controller/scripts/release_artifacts.py "$TONK_UI_TEST_ARTIFACT" --tree)"
+          export TONK_RELEASE_INVENTORY="$PWD/release-e2e/inventory.json"
+          export TONK_RELEASE_PARTITION="count:$SHARD/3"
+          nix develop --accept-flake-config .#ci --command test:release-e2e
+      - name: Collect structured results even after a test failure
+        if: always()
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python3 .release-controller/scripts/release_evidence.py shard \
+            --context .release-context/context.json --number "$SHARD" \
+            --inventory release-e2e/inventory.json \
+            --junit target/nextest/release-gate/junit.xml \
+            --cli candidate-cli/tonk --web candidate-web/tonk-ui \
+            --output release-e2e/shard.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-evidence-e2e-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: release-e2e/shard.json
+          if-no-files-found: error
+          retention-days: 30
+
+  report:
+    if: always() && needs.prepare.result == 'success'
+    needs: [prepare, tests, mcp, chatgpt, cli-smoke, web-build, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-context-${{ github.run_attempt }}
+          path: .release-context
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-evidence-*-${{ github.run_attempt }}
+          path: evidence
+      - name: Assemble candidate evidence
+        env:
+          CHECKS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s\n' "$CHECKS" > checks.json
+          python3 scripts/release_evidence.py assemble --context .release-context/context.json \
+            --policy release/flows.json --artifacts evidence --checks checks.json --output readiness
+      - name: Evaluate required flows
+        run: |
+          python3 scripts/release_report.py --candidate readiness/candidate.json \
+            --evidence readiness/evidence.json --output readiness
+      - name: Publish the report summary
+        if: always()
+        run: cat readiness/readiness.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-candidate-${{ github.run_attempt }}
+          path: readiness/
+          if-no-files-found: error
+          retention-days: 30

@@ -1,6 +1,11 @@
 name: ChatGPT integration
 
 on:
+  workflow_call:
+    inputs:
+      source-sha:
+        type: string
+        required: true
   pull_request:
     paths: &chatgpt-paths
       - 'mcp/**'
@@ -12,7 +17,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: chatgpt-${{ github.ref }}
+  group: chatgpt-${{ github.workflow }}-${{ inputs.source-sha != '' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -22,6 +27,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24'

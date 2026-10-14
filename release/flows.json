@@ -1,0 +1,196 @@
+{
+  "schema": 1,
+  "repository": "tonk-labs/tonk",
+  "e2e_shards": 3,
+  "manual_max_age_hours": 24,
+  "artifacts": [
+    "linux-cli",
+    "macos-cli",
+    "web"
+  ],
+  "checks": [
+    "tests",
+    "mcp",
+    "chatgpt",
+    "cli-smoke",
+    "web-build",
+    "e2e"
+  ],
+  "manual_groups": {
+    "accounts": "Create/activate/login/logout/switch; cancel and retry; delete only the disposable account.",
+    "spaces": "Create/edit/reload offline; sync to a second actor; share/join/revoke and public/private; preserve unrelated data.",
+    "cli": "Install and update on Linux and macOS; link approval, decline and timeout; tool join/read/write/restart and revoke.",
+    "visual": "Compare signup, activation, settings, hub, sharing and linking in the running candidate on desktop and narrow screens."
+  },
+  "flows": [
+    {
+      "id": "signup",
+      "title": "Create and activate an account",
+      "journeys": [
+        "ACCT-B02",
+        "ACCT-B04",
+        "ACCT-B05"
+      ],
+      "manual_group": "accounts",
+      "tests": [
+        "tonk-ui::account_flow::tests::it_finishes_signup_in_the_original_tab",
+        "tonk-ui::account_flow::tests::it_begins_only_one_registration_action_per_offered_step",
+        "tonk-ui::account_flow::tests::it_retries_the_committed_address_after_a_failed_passkey_ceremony"
+      ],
+      "checks": [
+        "tests",
+        "web-build"
+      ]
+    },
+    {
+      "id": "account-session",
+      "title": "Sign in, sign out and switch accounts",
+      "journeys": [
+        "ACCT-B07",
+        "ACCT-B08"
+      ],
+      "manual_group": "accounts",
+      "tests": [
+        "tonk-ui::account_flow::tests::it_signs_back_into_the_same_account_after_signing_out",
+        "tonk-ui::account_flow::tests::it_adds_a_second_account_and_switches_between_disjoint_space_lists"
+      ],
+      "checks": [
+        "tests",
+        "web-build"
+      ]
+    },
+    {
+      "id": "local-work",
+      "title": "Create and retain local spaces",
+      "journeys": [
+        "SPACE-03",
+        "SPACE-07"
+      ],
+      "manual_group": "spaces",
+      "tests": [
+        "tonk-ui::account_flow::tests::it_creates_a_local_only_space_from_the_hub_wizard",
+        "tonk-ui::account_flow::tests::it_removes_a_space_without_letting_focus_escape_the_sealed_guest"
+      ],
+      "checks": [
+        "tests",
+        "web-build"
+      ]
+    },
+    {
+      "id": "sync",
+      "title": "Sync spaces across devices",
+      "journeys": [
+        "SYNC-01",
+        "SYNC-02",
+        "SYNC-03",
+        "SYNC-04"
+      ],
+      "manual_group": "spaces",
+      "tests": [
+        "tonk-ui::account_flow::tests::it_syncs_a_local_only_space_once_the_account_reconciles",
+        "tonk-ui::account_flow::tests::it_backs_up_a_claimed_space_for_another_account_device"
+      ],
+      "checks": [
+        "tests",
+        "web-build"
+      ]
+    },
+    {
+      "id": "sharing",
+      "title": "Share, join, revoke and publish",
+      "journeys": [
+        "COLLAB-01",
+        "COLLAB-03",
+        "COLLAB-04",
+        "COLLAB-06"
+      ],
+      "manual_group": "spaces",
+      "tests": [
+        "tonk-ui::account_flow::tests::it_signs_up_to_share_and_hands_over_the_link",
+        "tonk-ui::account_flow::tests::it_cuts_off_storage_access_when_an_invite_is_revoked",
+        "tonk-ui::account_flow::tests::it_opens_a_published_space_to_a_visitor_as_an_observer"
+      ],
+      "checks": [
+        "tests",
+        "web-build"
+      ]
+    },
+    {
+      "id": "cli-link",
+      "title": "Approve or decline a waiting CLI",
+      "journeys": [
+        "ACCT-C02",
+        "ACCT-C04"
+      ],
+      "manual_group": "cli",
+      "tests": [
+        "tonk-ui::account_flow::tests::it_authorizes_a_waiting_cli_from_the_browser",
+        "tonk-ui::account_flow::tests::it_declines_a_waiting_cli_from_the_browser"
+      ],
+      "checks": [
+        "tests",
+        "web-build"
+      ]
+    },
+    {
+      "id": "tool-connection",
+      "title": "Connect a tool and preserve its authority",
+      "journeys": [
+        "ACCT-C14"
+      ],
+      "manual_group": "cli",
+      "tests": [
+        "tonk-ui::account_flow::tests::it_connects_with_an_ordinary_bearer_after_the_issuer_closes",
+        "tonk-ui::account_flow::tests::it_keeps_copied_agent_grants_independent_of_cli_accounts"
+      ],
+      "checks": [
+        "tests",
+        "web-build"
+      ]
+    },
+    {
+      "id": "deletion",
+      "title": "Delete the intended account safely",
+      "journeys": [
+        "AUTH-05",
+        "AUTH-06"
+      ],
+      "manual_group": "accounts",
+      "tests": [
+        "tonk-ui::account_flow::tests::it_deletes_the_account_and_releases_its_email_and_profile"
+      ],
+      "checks": [
+        "tests",
+        "web-build"
+      ]
+    },
+    {
+      "id": "cli-distribution",
+      "title": "Install and update the packaged CLI",
+      "journeys": [
+        "CLI-08"
+      ],
+      "manual_group": "cli",
+      "tests": [],
+      "checks": [
+        "cli-smoke"
+      ]
+    },
+    {
+      "id": "browser-lifecycle",
+      "title": "Review browser updates and visual consistency",
+      "journeys": [
+        "ACCT-B01"
+      ],
+      "manual_group": "visual",
+      "tests": [
+        "tonk-ui::account_flow::tests::it_renders_the_responsive_hub_collection",
+        "tonk-ui::account_flow::tests::it_styles_account_activation_as_a_fabb_ceremony"
+      ],
+      "checks": [
+        "tests",
+        "web-build"
+      ]
+    }
+  ]
+}

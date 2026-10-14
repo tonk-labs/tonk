@@ -1,6 +1,14 @@
 name: MCP core
 
 on:
+  workflow_call:
+    inputs:
+      source-sha:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
   workflow_dispatch:
   pull_request:
     paths: &mcp-paths
@@ -19,7 +27,7 @@ on:
     paths: *mcp-paths
 
 concurrency:
-  group: mcp-core-${{ github.ref }}
+  group: mcp-core-${{ github.workflow }}-${{ inputs.version != '' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -34,6 +42,19 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
+      - uses: actions/checkout@v4
+        if: inputs.version != ''
+        with:
+          ref: ${{ github.sha }}
+          path: .release-controller
+          persist-credentials: false
+      - name: Stamp the selected candidate
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python3 .release-controller/scripts/release_stamp.py "$VERSION"
       - uses: wimpysworld/nothing-but-nix@main
       - uses: cachix/install-nix-action@v31
         with:

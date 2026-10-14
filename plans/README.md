@@ -1,5 +1,19 @@
 # Implementation plans
 
+## Release gates
+
+| Plan | Priority | Status | Execution order |
+| --- | --- | --- | --- |
+| [012: Promote verified candidates through staging to stable](012-release-gates.md) | P1 | READINESS IMPLEMENTED LOCALLY; enforcement deferred | Candidate reports and manual verification; hosted product validation and channel migration remain |
+
+Browser and CLI first. Prepared at `e7388a98f7` on 2026-10-13 using current
+workflow source and read-only GitHub policy inspection. Checkpoints depend on
+the preceding checkpoint; no other plan is a prerequisite. Existing release
+workflows and remote settings remain unchanged. The plan records rejected
+branch-promotion and mutable-checklist alternatives, plus the GitHub Release
+metadata/CLI channel boundary that must be resolved before enforcement is
+claimed complete.
+
 ## Agent access management
 
 | Plan | Priority | Status | Execution order |
