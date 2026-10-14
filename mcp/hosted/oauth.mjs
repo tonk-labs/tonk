@@ -1,3 +1,5 @@
+import { createRegistrations } from './registration.mjs';
+import { createClientRegistry } from './clients.mjs';
 import { createCredentials } from './credentials.mjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { oauthMetadataResponse } from '@modelcontextprotocol/server';
@@ -28,7 +30,7 @@ history.replaceState(null, '', location.pathname + location.search);
 const request = new URLSearchParams(location.search).get('request');
 const status = document.getElementById('status');
 if (!request || fields.has('authorize') === fields.has('deny')) {
-  status.textContent = 'This authorization link is incomplete. Start again from ChatGPT.';
+  status.textContent = 'This authorization link is incomplete. Start again from your client.';
 } else {
   fetch('/oauth/callback', {
     method: 'POST', credentials: 'same-origin',
@@ -42,7 +44,7 @@ if (!request || fields.has('authorize') === fields.has('deny')) {
       return;
     }
     location.replace(result.redirect);
-  }).catch(() => { status.textContent = 'Authorization could not be completed. Start again from ChatGPT.'; });
+  }).catch(() => { status.textContent = 'Authorization could not be completed. Start again from your client.'; });
 }`;
 const callbackHTML = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect Tonk</title><body><p id="status" role="status">Completing Tonk authorization…</p><script>${callbackScript}</script></body></html>`;
 
@@ -82,14 +84,16 @@ async function body(request, limit) {
   }
 }
 
-// Bounded, single-process authorization-code spike. All OAuth state is ephemeral:
-// restart invalidates codes and tokens. Native tenant authority stays on disk.
+// Bounded, single-process authorization service. Codes and ceremonies are ephemeral;
+// credential families survive through the versioned durable snapshot.
 // provisionAccount returns { tenantId, deviceDid, authorize(payload) } and must
 // not retain a running process while waiting for browser approval.
 export function createTonkOAuth({
   issuer,
   clientId,
   redirectUris,
+  clients,
+  dynamicRegistration = false,
   provisionAccount,
   linkPage = 'https://tonk.network/settings/link',
   now = Date.now,
@@ -98,15 +102,35 @@ export function createTonkOAuth({
   saved,
 }) {
   const origin = httpsURL(issuer).origin;
-  if (issuer !== origin || !clientId || !Number.isSafeInteger(capacity) || capacity < 1)
+  if (
+    issuer !== origin ||
+    (!clientId && !clients) ||
+    !Number.isSafeInteger(capacity) ||
+    capacity < 1
+  )
     throw new Error('Invalid OAuth configuration.');
-  const redirects = new Set(
-    redirectUris.map((uri) => {
-      httpsURL(uri);
-      return uri;
-    }),
+  const configured = createClientRegistry(
+    clients ?? [
+      {
+        clientId,
+        displayName: 'Tonk for ChatGPT',
+        redirectUris,
+        type: 'public',
+        applicationType: 'web',
+        enabled: true,
+      },
+    ],
   );
-  if (!redirects.size) throw new Error('Register at least one exact redirect URI.');
+  const registrations = createRegistrations({ now, saved: saved?.registrations });
+  const registry = {
+    get(id) {
+      return configured.get(id) ?? (dynamicRegistration ? registrations.get(id) : undefined);
+    },
+    accepts(id, uri) {
+      const client = this.get(id);
+      return client ? createClientRegistry([client]).accepts(id, uri) : false;
+    },
+  };
   const approvalPage = httpsURL(linkPage);
   const resource = `${origin}/mcp`;
   const metadataURL = `${origin}/.well-known/oauth-protected-resource/mcp`;
@@ -114,8 +138,10 @@ export function createTonkOAuth({
   const metadata = {
     oauthMetadata: {
       issuer,
+      ...(dynamicRegistration ? { registration_endpoint: `${origin}/oauth/register` } : {}),
       authorization_endpoint: `${origin}/oauth/authorize`,
       token_endpoint: `${origin}/oauth/token`,
+      revocation_endpoint: `${origin}/oauth/revoke`,
       response_types_supported: ['code'],
       grant_types_supported: ['authorization_code', 'refresh_token'],
       code_challenge_methods_supported: ['S256'],
@@ -130,12 +156,24 @@ export function createTonkOAuth({
   const pending = new Map(),
     codes = new Map(),
     spent = new Map();
-  const credentials = createCredentials({ now, capacity, onRevoke, saved: saved?.credentials });
-  if (saved) {
-    if (saved.issuer !== issuer || saved.clientId !== clientId)
-      throw Error('OAuth snapshot configuration mismatch');
-    for (const [key, entry] of saved.spent ?? []) spent.set(key, entry);
-  }
+  if (
+    saved &&
+    (saved.issuer !== issuer ||
+      (saved.version !== undefined && saved.version !== 2) ||
+      (saved.version === 2 ? saved.resource !== resource : saved.clientId !== clientId))
+  )
+    throw Error('OAuth snapshot configuration mismatch');
+  const bindLegacy = (value) => (saved?.version === 2 ? value : { ...value, clientId, resource });
+  const credentials = createCredentials({
+    now,
+    capacity,
+    onRevoke,
+    saved: saved?.credentials?.map((item) => ({
+      ...item,
+      value: { ...bindLegacy(item.value), grantId: item.value.grantId ?? item.accesses?.[0] },
+    })),
+  });
+  for (const [key, entry] of saved?.spent ?? []) spent.set(key, bindLegacy(entry));
   let closed = false;
   const cleanup = () => {
     for (const collection of [pending, codes, spent]) {
@@ -155,7 +193,9 @@ export function createTonkOAuth({
     if (!authorization?.startsWith('Bearer ') || !validOpaque(authorization.slice(7)))
       return undefined;
     const principal = credentials.get(authorization.slice(7));
-    return principal ? Object.freeze({ ...principal, resource, scope }) : undefined;
+    return principal && registry.get(principal.clientId) && principal.resource === resource
+      ? Object.freeze({ ...principal, resource, scope })
+      : undefined;
   }
   async function fetch(request) {
     cleanup();
@@ -165,12 +205,52 @@ export function createTonkOAuth({
     const discovery = oauthMetadataResponse(request, metadata);
     if (discovery) return discovery;
     try {
+      if (dynamicRegistration && url.pathname === '/oauth/register' && request.method === 'POST') {
+        if (
+          request.headers.has('origin') ||
+          request.headers.has('authorization') ||
+          request.headers.get('content-type')?.split(';')[0] !== 'application/json'
+        )
+          return error('invalid_request');
+        const result = registrations.register(JSON.parse(await body(request, 8192)));
+        if (result.error) return error(result.error, result.status);
+        return json(
+          {
+            client_id: result.client.clientId,
+            client_name: result.client.displayName,
+            redirect_uris: result.client.redirectUris,
+            token_endpoint_auth_method: 'none',
+            grant_types: ['authorization_code', 'refresh_token'],
+            response_types: ['code'],
+            scope,
+            client_id_issued_at: Math.floor(now() / 1000),
+            client_secret_expires_at: 0,
+            registration_access_token: result.managementToken,
+            registration_client_uri: `${origin}/oauth/register/${result.client.clientId}`,
+            registration_expires_at: Math.floor(result.expires / 1000),
+          },
+          201,
+        );
+      }
+      if (
+        dynamicRegistration &&
+        url.pathname.startsWith('/oauth/register/') &&
+        request.method === 'DELETE'
+      ) {
+        if (request.headers.has('origin') || url.search) return error('invalid_request');
+        const id = url.pathname.slice('/oauth/register/'.length);
+        const token = request.headers
+          .get('authorization')
+          ?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
+        if (!registrations.remove(id, token)) return error('invalid_token', 401);
+        credentials.revokeWhere((value) => value.clientId === id);
+        return new Response(null, { status: 204, headers: secureHeaders });
+      }
       if (url.pathname === '/oauth/authorize' && request.method === 'GET') {
         if (url.search.length > 8192) return error('invalid_request');
         const p = parameters(url.searchParams);
         // Never redirect an invalid client/redirect pair.
-        if (p.client_id !== clientId || !redirects.has(p.redirect_uri))
-          return error('invalid_client');
+        if (!registry.accepts(p.client_id, p.redirect_uri)) return error('invalid_client');
         if (!p.state || p.state.length > 2048) return error('invalid_request');
         if (
           p.response_type !== 'code' ||
@@ -196,6 +276,8 @@ export function createTonkOAuth({
           browser = random();
         // Reserve before any async work; concurrent starts obey the capacity.
         const entry = {
+          clientId: p.client_id,
+          resource,
           redirect: p.redirect_uri,
           state: p.state,
           challenge: p.code_challenge,
@@ -244,18 +326,18 @@ export function createTonkOAuth({
         };
         if (!validOpaque(requestId) || !pending.has(requestId))
           return recover(
-            'This connection attempt expired or the service restarted. Close this tab and start a new connection from ChatGPT.',
+            'This connection attempt expired or the service restarted. Close this tab and start a new connection from your client.',
           );
         if (!validOpaque(browser))
           return recover(
-            'The connection cookie is missing. Start a new connection from ChatGPT in this browser.',
+            'The connection cookie is missing. Start a new connection from your client in this browser.',
           );
         if (request.method === 'GET') {
           const id = parameters(url.searchParams).request;
           const entry = pending.get(id);
           if (entry.browser !== hash(browser))
             return recover(
-              'This connection belongs to a different browser session. Start a new connection from ChatGPT.',
+              'This connection belongs to a different browser session. Start a new connection from your client.',
             );
           if (url.pathname === '/oauth/continue') {
             if (entry.started) return error('invalid_request');
@@ -275,7 +357,11 @@ export function createTonkOAuth({
             const approval = new URL(approvalPage);
             approval.searchParams.set('audience', account.deviceDid);
             approval.searchParams.set('callback', `${origin}/oauth/callback?request=${id}`);
-            approval.searchParams.set('name', 'Tonk for ChatGPT');
+            approval.searchParams.set(
+              'name',
+              (entry.clientId.startsWith('dynamic-') ? 'Unverified client: ' : '') +
+                (registry.get(entry.clientId)?.displayName ?? 'Tonk client'),
+            );
             return new Response(null, {
               status: 303,
               headers: { ...secureHeaders, location: approval.href },
@@ -363,6 +449,29 @@ export function createTonkOAuth({
         });
         return json({ redirect: redirectFor(entry, { code }) }, 200, clearCookie);
       }
+      if (url.pathname === '/oauth/revoke' && request.method === 'POST') {
+        if (
+          request.headers.has('origin') ||
+          request.headers.has('authorization') ||
+          request.headers.get('content-type')?.split(';')[0] !== 'application/x-www-form-urlencoded'
+        )
+          return error('invalid_request');
+        const p = parameters(new URLSearchParams(await body(request, 8192)));
+        if (
+          !registry.get(p.client_id) ||
+          p.client_secret !== undefined ||
+          p.client_assertion !== undefined
+        )
+          return error('invalid_client');
+        if (p.resource !== undefined && p.resource !== resource) return error('invalid_request');
+        credentials.revokeToken(
+          p.token,
+          (value) => value.clientId === p.client_id && value.resource === resource,
+        );
+        // Unknown and other-client tokens are indistinguishable; revoke only the
+        // supplied family, never every connection belonging to this account.
+        return new Response(null, { status: 200, headers: secureHeaders });
+      }
       if (url.pathname === '/oauth/token' && request.method === 'POST') {
         if (
           request.headers.has('authorization') ||
@@ -371,7 +480,7 @@ export function createTonkOAuth({
           return error('invalid_request');
         const p = parameters(new URLSearchParams(await body(request, 8192)));
         if (
-          p.client_id !== clientId ||
+          !registry.get(p.client_id) ||
           p.client_secret !== undefined ||
           p.client_assertion !== undefined
         )
@@ -390,7 +499,10 @@ export function createTonkOAuth({
             scope,
           });
         if (p.grant_type === 'refresh_token') {
-          const renewed = credentials.renew(p.refresh_token);
+          const renewed = credentials.renew(
+            p.refresh_token,
+            (value) => value.clientId === p.client_id && value.resource === resource,
+          );
           return renewed ? tokenResponse(renewed) : error('invalid_grant');
         }
         if (p.grant_type !== 'authorization_code' || p.resource !== resource)
@@ -398,6 +510,8 @@ export function createTonkOAuth({
         const used = validOpaque(p.code) ? spent.get(hash(p.code)) : undefined;
         if (
           used &&
+          used.clientId === p.client_id &&
+          used.resource === resource &&
           used.redirect === p.redirect_uri &&
           hash(p.code_verifier ?? '') === used.challenge
         ) {
@@ -407,6 +521,8 @@ export function createTonkOAuth({
         const entry = validOpaque(p.code) ? codes.get(hash(p.code)) : undefined;
         if (
           !entry ||
+          entry.clientId !== p.client_id ||
+          entry.resource !== resource ||
           entry.redirect !== p.redirect_uri ||
           !/^[A-Za-z0-9._~-]{43,128}$/.test(p.code_verifier ?? '') ||
           hash(p.code_verifier) !== entry.challenge
@@ -415,9 +531,15 @@ export function createTonkOAuth({
         codes.delete(hash(p.code));
         const value = credentials.issue({
           ...entry.principal,
+          grantId: random(),
+          clientId: entry.clientId,
+          resource,
+          redirect: entry.redirect,
           connectionExpiresAt: now() + 8 * 60 * 60_000,
         });
         spent.set(hash(p.code), {
+          clientId: entry.clientId,
+          resource,
           tokenHash: createHash('sha256').update(value.token).digest('hex'),
           redirect: entry.redirect,
           challenge: entry.challenge,
@@ -434,6 +556,24 @@ export function createTonkOAuth({
     fetch,
     authenticate,
     resource,
+    isPrincipalActive(principal) {
+      const boundClient = principal.clientId ?? clientId;
+      return (
+        !closed &&
+        !!registry.get(boundClient) &&
+        credentials
+          .snapshot()
+          .some(
+            ({ value }) =>
+              value.clientId === boundClient &&
+              value.resource === resource &&
+              value.tenantId === principal.tenantId &&
+              value.deviceDid === principal.deviceDid &&
+              (principal.grantId === undefined || value.grantId === principal.grantId) &&
+              value.rootDid === principal.rootDid,
+          )
+      );
+    },
     retainedTenants() {
       cleanup();
       return new Set(
@@ -448,7 +588,20 @@ export function createTonkOAuth({
     },
     snapshot() {
       cleanup();
-      return { issuer, clientId, credentials: credentials.snapshot(), spent: [...spent] };
+      return {
+        version: 2,
+        issuer,
+        resource,
+        credentials: credentials.snapshot(),
+        registrations: registrations.snapshot(),
+        spent: [...spent],
+      };
+    },
+    revokeClientGrant(rootDid, client) {
+      credentials.revokeWhere((value) => value.rootDid === rootDid && value.clientId === client);
+    },
+    revokeAccount(rootDid) {
+      credentials.revokeWhere((value) => value.rootDid === rootDid);
     },
     challenge: () => json({ error: 'invalid_token' }, 401, { 'www-authenticate': challenge }),
     close() {

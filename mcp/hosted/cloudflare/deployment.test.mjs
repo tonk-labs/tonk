@@ -24,6 +24,15 @@ test('deployment channels bind distinct issuers, OAuth clients, storage and matc
     new Set(configs.map((config) => config.r2_buckets[0].bucket_name)).size,
     configs.length,
   );
+  for (const config of configs) {
+    assert.equal(config.containers[0].class_name, 'TonkRuntime');
+    assert.deepEqual(config.migrations, [{ tag: 'v1', new_sqlite_classes: ['TonkRuntime'] }]);
+    const clients = JSON.parse(config.vars.TONK_MCP_CLIENTS);
+    assert.equal(clients[0].clientId, config.vars.TONK_MCP_CLIENT_ID);
+    assert.deepEqual(clients[0].redirectUris, [config.vars.TONK_MCP_REDIRECT_URI]);
+    assert.equal(clients[2].applicationType, 'native');
+    assert.equal(config.vars.TONK_MCP_DCR, undefined);
+  }
   assert.ok(configs.every((config) => config.routes.length === 0));
   assert.equal(configs.at(-1).vars.TONK_MCP_ISSUER, 'https://tonk-mcp.tonk.workers.dev');
 });

@@ -92,12 +92,12 @@ jobs:
       - name: Assemble MCP browser assets from this build
         run: |
           TONK_UI_DIST="$PWD/result/tonk-ui" nix --accept-flake-config develop .#ci --command \
-            node mcp/chatgpt/build-assets.mjs
+            node mcp/hosted/build-assets.mjs
 
       - uses: actions/upload-artifact@v4
         with:
           name: mcp-browser-assets
-          path: mcp/chatgpt/public
+          path: mcp/hosted/public
           if-no-files-found: error
           retention-days: 3
 
@@ -374,40 +374,36 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: mcp-browser-assets
-          path: mcp/chatgpt/public
+          path: mcp/hosted/public
       - name: Install and test MCP
         run: |
           npm ci --prefix mcp --ignore-scripts
-          npm ci --prefix mcp/chatgpt/cloudflare
+          npm ci --prefix mcp/hosted/cloudflare
           npm test --prefix mcp
           npm run test:chatgpt --prefix mcp
       - name: Prepare isolated deployment
         id: config
-        run: node mcp/chatgpt/cloudflare/prepare-deployment.mjs
+        run: node mcp/hosted/cloudflare/prepare-deployment.mjs
         env:
           DEPLOY_CHANNEL: ${{ needs.deploy.outputs.channel }}
           PULL_REQUEST: ${{ github.event.pull_request.number }}
           TONK_PROVIDER_ORIGIN: ${{ needs.deploy.outputs.provider }}
           BUILD_COMMIT: ${{ github.sha }}
       - name: Deploy MCP worker and container
-        working-directory: mcp/chatgpt/cloudflare
+        working-directory: mcp/hosted/cloudflare
         run: npx --no-install wrangler deploy --config wrangler.generated.json
       - name: Check deployed MCP
-        run: node mcp/chatgpt/cloudflare/smoke.mjs
+        run: node mcp/hosted/cloudflare/smoke.mjs
         env:
           MCP_ISSUER: ${{ steps.config.outputs.issuer }}
           BUILD_COMMIT: ${{ github.sha }}
       - name: Record connection settings
         env:
-          MCP_URL: ${{ steps.config.outputs.url }}
-          CLIENT_ID: ${{ steps.config.outputs.client_id }}
+          CONNECTION_SETTINGS: ${{ steps.config.outputs.connection_settings }}
         run: |
           {
             echo '### Tonk MCP'
-            echo "MCP URL: $MCP_URL"
-            echo "OAuth client ID: $CLIENT_ID"
-            echo 'OAuth client secret: leave empty (public client with PKCE).'
-            echo 'Callback: https://chatgpt.com/connector_platform_oauth_redirect'
+            printf '%s\n' "$CONNECTION_SETTINGS"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: mshick/add-pr-comment@v2
         if: github.event_name == 'pull_request'
@@ -416,12 +412,7 @@ jobs:
           message: |
             **MCP preview** · [run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
-            MCP URL: `${{ steps.config.outputs.url }}`
-            OAuth client ID: `${{ steps.config.outputs.client_id }}`
-            OAuth client secret: leave empty (public client with PKCE).
-            Callback: `https://chatgpt.com/connector_platform_oauth_redirect`
-
-            Automated discovery, authentication challenge and asset checks passed. Connect this server in ChatGPT to test linking and tools manually.
+            ${{ steps.config.outputs.connection_settings }}
 
   cleanup-preview-databases:
     if: github.event_name == 'pull_request_target' && github.event.action == 'closed'

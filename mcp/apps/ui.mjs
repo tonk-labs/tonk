@@ -15,7 +15,7 @@ export function renderWorkerUI({ origin }) {
   return template.replace('__TONK_MCP_ORIGIN__', JSON.stringify(origin));
 }
 
-export function createWorkerUI({ origin }) {
+export function createWorkerUI({ origin, resourceMetadata = {} }) {
   const html = renderWorkerUI({ origin });
   // Include deployment configuration in the cache key as well as the source.
   const digest = createHash('sha256').update(html).digest('hex').slice(0, 16);
@@ -35,11 +35,7 @@ export function createWorkerUI({ origin }) {
             text: html,
             _meta: {
               ui: { csp: { connectDomains: [origin], frameDomains: [origin] } },
-              'openai/widgetCSP': {
-                connect_domains: [origin],
-                frame_domains: [origin],
-                resource_domains: [],
-              },
+              ...resourceMetadata,
             },
           },
         ],

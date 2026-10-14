@@ -109,16 +109,20 @@ export function createCredentials({
         ? family.value
         : undefined;
     },
-    renew(token) {
+    renew(token, accepts = () => true) {
       prune();
       const hash = key(token),
         family = refresh.get(hash);
-      if (!family) return;
+      if (!family || !accepts(family.value)) return;
       if (family.current !== hash) {
         revoke(family);
         return;
       }
       return rotate(family);
+    },
+    revokeToken(token, accepts = () => true) {
+      const family = access.get(key(token)) ?? refresh.get(key(token));
+      if (family && accepts(family.value)) revoke(family);
     },
     revokeHash(hash) {
       const family = access.get(hash);
