@@ -240,12 +240,69 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
             .map(with_cors_headers);
     }
 
+    // A ticket claim carries no proof, so it never reaches the chain walk:
+    // it is answered here, with the ticket itself.
+    #[cfg(target_arch = "wasm32")]
+    if tonk_account::ticket::is_claim(&body_bytes) {
+        return serve_claim(&body_bytes, &env).await.map(with_cors_headers);
+    }
+
     let origin = match origin(&req) {
         Ok(origin) => origin,
         Err(refusal) => return Ok(with_cors_headers(refusal.to_response()?)),
     };
     let served = presign(&body_bytes, &origin, &env).await;
     answer(served, &body_bytes, &env, &ctx).map(with_cors_headers)
+}
+
+/// Answer a `/use/get/ticket/claim` with the ticket the space it names
+/// keeps for its subject (see [`tonk_account::ticket`]), or 404 when it
+/// keeps none. The claim is verified as any invocation is, chain and
+/// revocations included, so the holder's delegates claim for it; the
+/// space, not the holder, is screened, since that is what is served.
+#[cfg(target_arch = "wasm32")]
+async fn serve_claim(body_bytes: &[u8], env: &Env) -> Result<Response> {
+    use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
+
+    let container = match dialog_ucan_core::Container::from_bytes(body_bytes) {
+        Ok(container) => container,
+        Err(error) => {
+            return Refusal::Authorization(AuthorizeError::Malformed {
+                detail: error.to_string(),
+            })
+            .to_response();
+        }
+    };
+    let revocations = match env.kv("REVOCATIONS_KV") {
+        Ok(store) => IndexedRevocations(KvRevocationIndex::new(store)),
+        Err(_) => return unavailable().to_response(),
+    };
+    let claim = match dialog_remote_ucan_s3::verify_invocation(
+        container,
+        shared_resolver().as_ref(),
+        &revocations,
+    )
+    .await
+    .and_then(|chain| tonk_account::ticket::claimed(&chain))
+    {
+        Ok(claim) => claim,
+        Err(reason) => return Refusal::Authorization(reason).to_response(),
+    };
+    if let Err(failure) = screen_subject(claim.space.as_ref(), env).await {
+        failure.emit();
+        return failure.refusal.to_response();
+    }
+    let bucket = match env.bucket("BUCKET") {
+        Ok(bucket) => bucket,
+        Err(error) => {
+            return Refusal::unclassified(format!("Missing BUCKET: {error}")).to_response();
+        }
+    };
+    match crate::objects::read(&bucket, &claim.object_key()).await {
+        Ok(Some((bytes, _))) => Response::from_bytes(bytes),
+        Ok(None) => Ok(Response::empty()?.with_status(404)),
+        Err(error) => Refusal::unclassified(error).to_response(),
+    }
 }
 
 /// Serve an invocation that arrived in `Authorization`: verify it and
@@ -670,7 +727,6 @@ async fn screen_provisioning(
     body_bytes: &[u8],
     env: &Env,
 ) -> std::result::Result<(), PresignFailure> {
-    use crate::provisioning::cache::{self, CachedVerdict};
     use crate::provisioning::container_subject;
 
     let Some(subject) = container_subject(body_bytes) else {
@@ -684,6 +740,16 @@ async fn screen_provisioning(
             crate::observability::AccessSite::Provisioning,
         ));
     };
+    screen_subject(&subject, env).await
+}
+
+/// Screen `subject` against the control store, through the isolate's
+/// cache of recent verdicts.
+#[cfg(target_arch = "wasm32")]
+async fn screen_subject(subject: &str, env: &Env) -> std::result::Result<(), PresignFailure> {
+    use crate::provisioning::cache::{self, CachedVerdict};
+
+    let subject = subject.to_owned();
     let now = Date::now().as_millis() / 1_000;
 
     if let Some(cached) = cache::isolate_lookup(&subject, now) {

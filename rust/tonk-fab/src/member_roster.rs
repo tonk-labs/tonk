@@ -24,11 +24,14 @@ use std::rc::Rc;
 
 use custom_elements::CustomElement;
 use js_sys::Reflect;
+use tonk_common::log;
 use wasm_bindgen::prelude::*;
-use web_sys::{HtmlElement, window};
+use wasm_bindgen_futures::{JsFuture, spawn_local};
+use web_sys::{HtmlElement, Response, window};
 
 use crate::logic::{
-    member_invitations_query_body, member_roster_query_body, session_account_query_body,
+    member_invitations_query_body, member_roster_query_body, observes_from_repository,
+    repository_endpoint, role_manages_members, session_account_query_body,
 };
 use crate::member_graph::{self, Member};
 use crate::shadow::{self, Bound};
@@ -93,6 +96,8 @@ impl CustomElement for UiMemberRosterElement {
                 }),
             ],
         );
+        // Whether the viewer only observes is said by the space's worker.
+        resolve_observer(this);
         // Light children connect before the bar builds its shadow buttons.
         // Delegate through the stable host so reconnects cannot leave dead controls.
         if let Some(bar) = this.closest("tonk-fab").ok().flatten() {
@@ -210,6 +215,8 @@ impl CustomElement for UiMemberRosterElement {
                 }),
             ],
         );
+        // Whether the viewer only observes is said by the space's worker.
+        resolve_observer(this);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
@@ -451,6 +458,7 @@ fn render_rows(
     viewer: Option<&str>,
     invitations: &BTreeMap<String, String>,
 ) {
+    stamp_manages(host, members, viewer);
     let Some(panel) = member_panel(host) else {
         return;
     };
@@ -954,6 +962,79 @@ fn show_member_detail(panel: &HtmlElement, description: Option<&str>) {
         let _ = detail.toggle_attribute_with_force("hidden", description.is_none());
         apply_fisheye(panel);
     }
+}
+
+/// Stamp the bar with whether the viewer runs the space (`data-manages`),
+/// which is what offers it publishing: the worker refuses anyone else, and a
+/// reader of a published space must not be offered to make it private.
+fn stamp_manages(host: &HtmlElement, members: &[Member], viewer: Option<&str>) {
+    let Some(bar) = host.closest("tonk-fab").ok().flatten() else {
+        return;
+    };
+    let manages = viewer.is_some_and(|viewer| {
+        members
+            .iter()
+            .any(|member| member.did == viewer && role_manages_members(&member.role))
+    });
+    if manages {
+        let _ = bar.set_attribute("data-manages", "");
+    } else {
+        let _ = bar.remove_attribute("data-manages");
+    }
+}
+
+/// Stamp the bar with whether the viewer only observes the space
+/// (`data-observer`): the bar says so beside the space's name, and leaves
+/// out what a reader cannot do.
+fn stamp_observer(host: &HtmlElement, observes: bool) {
+    if let Some(bar) = host.closest("tonk-fab").ok().flatten() {
+        let _ = bar.toggle_attribute_with_force("data-observer", observes);
+    }
+}
+
+/// Stamp the bar with whether the viewer only observes the space, as the
+/// space's own worker says in what it answers about the repository.
+fn resolve_observer(host: &HtmlElement) {
+    let Some(win) = window() else { return };
+    let Some(space) = host.get_attribute("space") else {
+        return;
+    };
+    let Ok(endpoint) = repository_endpoint(&space) else {
+        return;
+    };
+    stamp_observer(host, false);
+    let host = host.clone();
+    spawn_local(async move {
+        let response = match JsFuture::from(win.fetch_with_str(&endpoint)).await {
+            Ok(response) => response.dyn_into::<Response>().ok(),
+            Err(error) => {
+                log!("ui-member-roster repository lookup failed: {error:?}");
+                return;
+            }
+        };
+        let Some(response) = response.filter(Response::ok) else {
+            return;
+        };
+        let Ok(promise) = response.json() else {
+            return;
+        };
+        let Ok(info) = JsFuture::from(promise).await else {
+            return;
+        };
+        let Some(json) = js_sys::JSON::stringify(&info)
+            .ok()
+            .and_then(|json| json.as_string())
+        else {
+            return;
+        };
+        let Ok(info) = serde_json::from_str::<serde_json::Value>(&json) else {
+            return;
+        };
+        if !host.is_connected() || host.get_attribute("space").as_deref() != Some(space.as_str()) {
+            return;
+        }
+        stamp_observer(&host, observes_from_repository(&info));
+    });
 }
 
 /// Register `<ui-member-roster>`. Idempotent.

@@ -89,9 +89,16 @@ jobs:
           name: ${{ matrix.artifact-name }}
           path: artifacts/tonk
 
+  artifact-smoke:
+    needs: ['prepare', 'build']
+    uses: ./.github/workflows/cli-smoke.yml
+    with:
+      release-signed: true
+      expected-version: ${{ needs.prepare.outputs.version }}
+
   publish:
     name: 'Publish to npm'
-    needs: ['prepare', 'build']
+    needs: ['prepare', 'build', 'artifact-smoke']
     runs-on: ubuntu-latest
 
     # `id-token: write` allows GitHub to mint the OIDC token that npm

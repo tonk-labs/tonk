@@ -25,7 +25,7 @@
 use anyhow::{Context, Result, anyhow};
 use std::collections::BTreeMap;
 
-use dialog_artifacts::{Attribute, Entity};
+use dialog_artifacts::{Entity, Relation};
 use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 use tonk_render::QueryBackend as _;
 
@@ -89,10 +89,10 @@ pub async fn list(site: &TonkSite) -> Result<Vec<ElementSummary>> {
 
 /// Every claim on the branch carrying `uri`, subject left open.
 async fn claims_for_attribute(site: &TonkSite, uri: &str) -> Result<Vec<dialog_query::Claim>> {
-    let the: Attribute = uri
+    let the: Relation = uri
         .parse()
         .map_err(|e| anyhow!("{uri} should be a valid attribute URI: {e:?}"))?;
-    let the_term: attribute::The = the.into();
+    let the_term: attribute::Relation = the.into();
     let session = site.branch().await?;
     session
         .handle()

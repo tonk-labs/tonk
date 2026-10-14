@@ -6,7 +6,7 @@ concept!: &remote-demo
       description: The displayed title.
       the: xyz.test.remote-demo/title
       as: text
-      cardinality: one
+      cardinality: :one
 
 remote-demo!:
   this: id:remote-demo
