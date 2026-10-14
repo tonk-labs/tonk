@@ -1,6 +1,6 @@
 # Plan 009: Recover Tonk Desktop on current main
 
-Status: STOPPED — source inventory changed; acceptance incomplete. Priority: P1. Effort: L, delivered as tested increments.
+Status: IN PROGRESS — resumed after reconciling source inventory; acceptance incomplete. Priority: P1. Effort: L, delivered as tested increments.
 Planning baseline: `origin/main` at `55af716ef5`, fetched during this planning pass.
 Source: `feat/desktop` at `28f1f72212`, plus the working changes inventoried below.
 This plan interprets “rescue Desktop over the latest” as preserving the existing
@@ -456,3 +456,25 @@ client-neutral-mcp was not accessed. Local logs are
 `/private/tmp/desktop-rescue-{mcp,chatgpt,format,activity,final-unit,final-build,nix-tests,actionlint,live-provider,runtime-build}.log`.
 A separately identified disposable activity fixture was launched under
 `desktop/artifacts/activity-fixture/`; visual acceptance is not claimed.
+
+## Resumed recovery — 2026-10-14
+
+User explicitly requested continuation. Reconciled the new browser-approval note:
+it documents independent lock/status-publication investigation and PR #1097,
+not Desktop edits to import. Its claims are historical source-note evidence,
+not validation of this branch or deployed behavior. The associated regression
+patch is also new; it is backed up but not applied. No Rust prerequisite is
+assumed from this separate investigation.
+
+Fresh protected backup: `/private/tmp/tonk-desktop-rescue-resume-20261014-164936/`
+(directory 0700, files 0600). `inventory.json` records HEAD, status, index, binary
+diff and all four untracked planning files. Capture verified stable before/after.
+Original source HEAD/index/Desktop diff and original two notes still match the
+initial capture exactly. Added backup checksums:
+- Browser approval note: `2d114d7a8280b5b333ee480308dac4750517e094ca48e20ab8766546954c763a`
+- Regression patch: `e52e162e713a9ceb05bd353a9c78c2ce84be64c21f61067a299f13bf99a8bc84`
+
+Resumed `nix build .#tonk-ui --out-link /private/tmp/desktop-rescue-runtime` using
+the same runtime derivation and unchanged baseline Rust/UI sources. FlakeHub
+again returned a cache 401; local build continued. Next gate is the real native
+workflow against this matching build, with disposable app and data identifiers.
