@@ -153,6 +153,8 @@ export function createSpaceSessions({
       const matches = (session) =>
         session.principal.tenantId === principal.tenantId &&
         session.principal.deviceDid === principal.deviceDid &&
+        (session.principal.grantId === undefined ||
+          session.principal.grantId === principal.grantId) &&
         (session.principal.clientId === undefined ||
           session.principal.clientId === principal.clientId);
       credentials.revokeWhere(matches);

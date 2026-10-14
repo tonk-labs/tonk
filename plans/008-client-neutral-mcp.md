@@ -337,3 +337,14 @@ executed for this plan, and the wider worker/Desktop codebase was not audited.
   only. A restricted resolver enforcing address policy at connection time,
   response/timeout limits, no redirects, and metadata cache expiry is prerequisite.
   CIMD is neither fetched nor advertised. No fallback to unrestricted fetch.
+- Checkpoint 3 capability slice: SDK 2.3.0 test reproduces lost initialization
+  capabilities in the old request-scoped legacy factory. Apps clients now use
+  supported SDK sessions, maximum 32 and ten-minute lifetime, bound to a unique
+  authenticated OAuth grant on every request. Session IDs are never authority.
+  Modern 2026-07-28 SDK requests negotiate capabilities in each request envelope;
+  headless clients expose four tools and no UI/session issuance. Origin rejection
+  and POST-only transport remain; request/response limits are 200 KB / 4 MiB.
+  Oversized evaluate replies fail without replay. All 57 hosted tests pass.
+  SDK tests use fixture authority/backends, not live client or native-worker proof.
+  MCP Apps capability reference checked 2026-10-14:
+  https://apps.extensions.modelcontextprotocol.io/api/interfaces/app.McpUiClientCapabilities.html

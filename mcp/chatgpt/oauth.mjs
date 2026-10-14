@@ -167,7 +167,10 @@ export function createTonkOAuth({
     now,
     capacity,
     onRevoke,
-    saved: saved?.credentials?.map((item) => ({ ...item, value: bindLegacy(item.value) })),
+    saved: saved?.credentials?.map((item) => ({
+      ...item,
+      value: { ...bindLegacy(item.value), grantId: item.value.grantId ?? item.accesses?.[0] },
+    })),
   });
   for (const [key, entry] of saved?.spent ?? []) spent.set(key, bindLegacy(entry));
   let closed = false;
@@ -504,6 +507,7 @@ export function createTonkOAuth({
         codes.delete(hash(p.code));
         const value = credentials.issue({
           ...entry.principal,
+          grantId: random(),
           clientId: entry.clientId,
           resource,
           redirect: entry.redirect,
@@ -541,6 +545,7 @@ export function createTonkOAuth({
               value.resource === resource &&
               value.tenantId === principal.tenantId &&
               value.deviceDid === principal.deviceDid &&
+              (principal.grantId === undefined || value.grantId === principal.grantId) &&
               value.rootDid === principal.rootDid,
           )
       );
