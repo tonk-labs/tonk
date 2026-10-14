@@ -33,7 +33,7 @@ final class HarnessProviderTests: XCTestCase {
     XCTAssertEqual(requests, 1)
     XCTAssertNil(model.error)
     XCTAssertTrue(model.cliAdapters.isEmpty)
-    XCTAssertTrue(model.toolActivity.isEmpty)
+    XCTAssertTrue(model.saved.conversation.messages.allSatisfy { ($0.toolActivity ?? []).isEmpty })
   }
 
   @MainActor

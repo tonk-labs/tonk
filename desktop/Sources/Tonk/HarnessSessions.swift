@@ -36,7 +36,6 @@ extension HarnessModel {
       try next.restoreChat(id)
       try store.save(next)
       saved = next
-      toolActivity = []
       spaceCreationError = nil
       if connectInBackground { self.connectInBackground() } else { await connect() }
       return true

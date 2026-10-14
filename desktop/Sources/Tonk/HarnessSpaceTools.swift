@@ -3,6 +3,12 @@ import HarnessCore
 
 @MainActor
 extension HarnessModel {
+  func recordToolActivity(_ entry: String, messageID: String?) {
+    guard let messageID else { return }
+    saved.conversation.appendToolActivity(entry, messageID: messageID)
+    persist()
+  }
+
   var spaceInstructions: String {
     guard let space = saved.conversation.space else {
       return TonkAgentContext.instructions + "\n\n" + """
@@ -30,12 +36,15 @@ extension HarnessModel {
   }
 
   func callSpaceTool(_ params: JSONValue) async -> JSONValue {
+    // Capture before any suspension. Late results never attach to a later turn.
+    var origin: String?
     do {
       guard busy, params["threadId"].string == saved.conversation.threadID,
         let requestTurn = params["turnId"].string, requestTurn == activeTurnID,
         params["namespace"] == .null,
         let tool = params["tool"].string
       else { throw HarnessError.message("No matching active turn.") }
+      origin = saved.conversation.messages.last(where: { $0.role == "user" })?.id
       if tool == "tonk_guide" {
         let result = try TonkAgentContext.guide(params["arguments"])
         return SpaceTools.response(
@@ -68,20 +77,20 @@ extension HarnessModel {
           tool == "tonk_evaluate"
           ? "Updating local space"
           : (tool == "tonk_query" ? "Reading local space" : "Validating notation")
-        toolActivity.append(activity)
+        recordToolActivity(activity, messageID: origin)
         let result = try await runtime.performBuildTool(
           space, tool: tool, arguments: params["arguments"])
         let data = try JSONEncoder().encode(result)
-        activity = "Thinking"
+        if activeTurnID == params["turnId"].string { activity = "Thinking" }
         return SpaceTools.response(String(decoding: data, as: UTF8.self), success: true)
       }
       _ = try SpaceTools.validate(tool: tool, arguments: params["arguments"])
       try Task.checkCancellation()
       if tool == "tonk_inspect_view" {
         activity = "Inspecting space preview"
-        toolActivity.append("Inspecting attached space preview")
+        recordToolActivity("Inspecting attached space preview", messageID: origin)
         let text = try await runtime.inspectView(space)
-        activity = "Thinking"
+        if activeTurnID == params["turnId"].string { activity = "Thinking" }
         return SpaceTools.response(text, success: true)
       }
       throw HarnessError.message("Unavailable tool. No saved operation was replayed.")
@@ -89,7 +98,7 @@ extension HarnessModel {
       let detail =
         (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String
         ?? error.localizedDescription
-      toolActivity.append("Space tool failed: \(detail)")
+      recordToolActivity("Space tool failed: \(detail)", messageID: origin)
       return SpaceTools.response(detail, success: false)
     }
   }

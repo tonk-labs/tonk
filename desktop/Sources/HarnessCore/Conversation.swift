@@ -4,6 +4,7 @@ public struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
   public let id: String
   public let role: String
   public var text: String
+  public var toolActivity: [String]?
   public init(id: String = UUID().uuidString, role: String, text: String) {
     self.id = id
     self.role = role
@@ -31,6 +32,11 @@ public struct Conversation: Codable, Equatable, Sendable {
     }
     self.space = space
     spaceProposal = nil
+  }
+
+  public mutating func appendToolActivity(_ entry: String, messageID: String) {
+    guard let index = messages.firstIndex(where: { $0.id == messageID && $0.role == "user" }) else { return }
+    messages[index].toolActivity = (messages[index].toolActivity ?? []) + [entry]
   }
 
   public mutating func appendDelta(itemID: String, text: String) {

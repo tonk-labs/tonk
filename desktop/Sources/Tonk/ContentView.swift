@@ -70,7 +70,8 @@ struct ContentView: View {
                 showingChat = false
               }
             }
-          }.disabled(model.busy || model.connecting || model.creatingSpace || runtime.pendingSpace != nil)
+          }.disabled(
+            model.busy || model.connecting || model.creatingSpace || runtime.pendingSpace != nil)
         }
       }
     }
@@ -116,47 +117,47 @@ struct ContentView: View {
 
   var body: some View {
     windowContent
-    .alert(
-      "Couldn’t sign out",
-      isPresented: Binding(
-        get: { accountError != nil }, set: { if !$0 { accountError = nil } }
-      )
-    ) {
-      Button("OK") { accountError = nil }
-    } message: {
-      Text(accountError ?? "")
-    }
-    .sheet(isPresented: $showProviderSettings) {
-      ProviderSettingsView(model: model)
-    }
-    .sheet(item: $syncStatusSpace) { space in
-      SyncStatusView(runtime: runtime, space: space)
-    }
-    .sheet(item: $sharingSpace) { space in
-      ShareSpaceView(runtime: runtime, space: space)
-    }
-    .sheet(isPresented: $showHistory) {
-      ChatHistoryView(
-        model: model, space: model.openedSpace
-      ) { session in
-        Task {
-          if await model.openChat(session.id) {
-            if let space = model.saved.conversation.space {
-              runtime.openSpace(space)
-              model.openedSpace = space
-            } else {
-              runtime.showSpaces()
+      .alert(
+        "Couldn’t sign out",
+        isPresented: Binding(
+          get: { accountError != nil }, set: { if !$0 { accountError = nil } }
+        )
+      ) {
+        Button("OK") { accountError = nil }
+      } message: {
+        Text(accountError ?? "")
+      }
+      .sheet(isPresented: $showProviderSettings) {
+        ProviderSettingsView(model: model)
+      }
+      .sheet(item: $syncStatusSpace) { space in
+        SyncStatusView(runtime: runtime, space: space)
+      }
+      .sheet(item: $sharingSpace) { space in
+        ShareSpaceView(runtime: runtime, space: space)
+      }
+      .sheet(isPresented: $showHistory) {
+        ChatHistoryView(
+          model: model, space: model.openedSpace
+        ) { session in
+          Task {
+            if await model.openChat(session.id) {
+              if let space = model.saved.conversation.space {
+                runtime.openSpace(space)
+                model.openedSpace = space
+              } else {
+                runtime.showSpaces()
+              }
+              showingChat = true
+              showHistory = false
             }
-            showingChat = true
-            showHistory = false
           }
         }
       }
-    }
-    .onChange(of: showingChat) { _, visible in
-      if !visible { composing = false }
-    }
-    .onChange(of: model.saved.activeSessionID) { _, _ in composing = showingChat }
+      .onChange(of: showingChat) { _, visible in
+        if !visible { composing = false }
+      }
+      .onChange(of: model.saved.activeSessionID) { _, _ in composing = showingChat }
   }
 
   private var accountActionsDisabled: Bool {
@@ -338,13 +339,14 @@ struct ContentView: View {
                     .allowsHitTesting(false)
                 }
               }
-            }
-            if !model.toolActivity.isEmpty {
-              DisclosureGroup("Space activity (\(model.toolActivity.count))") {
-                ForEach(Array(model.toolActivity.enumerated()), id: \.offset) { _, entry in
-                  Text(entry).font(.caption).foregroundStyle(.secondary)
-                }
-              }.font(.caption)
+              if let entries = message.toolActivity, !entries.isEmpty {
+                DisclosureGroup("Space activity (\(entries.count))") {
+                  ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+                    Text(entry).font(.caption).foregroundStyle(.secondary)
+                      .frame(maxWidth: .infinity, alignment: .leading)
+                  }
+                }.font(.caption)
+              }
             }
             if let proposal = model.saved.conversation.spaceProposal {
               VStack(alignment: .leading, spacing: 10) {

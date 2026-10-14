@@ -332,3 +332,19 @@ Actual matching worker workflow remains pending: `nix build .#tonk-ui --out-link
 /private/tmp/desktop-rescue-runtime` running. FlakeHub cache returned 401; Nix
 continued with available Cachix and local builds. This commit establishes native
 build and fixture contracts, not real-worker or signed-account acceptance.
+
+### Increment 2 — activity recovery
+
+Reviewed the protected eight-file patch and applied seven files directly; manually
+reconciled HarnessSpaceTools against canonical dispatch without resurrecting old
+tools. Activity is persisted on the originating user message. Invocation captures
+that message before suspension; late errors/results cannot attach to a later turn
+or a different conversation. Older messages decode with nil activity.
+`bash desktop/scripts/dev.sh test:unit --filter 'ChatTranscriptTests|HarnessProviderTests'`:
+11 passed, no skips. Includes round-trip persistence, old history decoding,
+per-turn separation and late error/cancellation attribution. UI/live provider
+acceptance remains separate and pending.
+
+Correction to prior full-suite summary: TonkTests had 51 cases, 2 opt-in runtime
+diagnostics skipped; HarnessCoreTests had 68 cases, 2 opt-in live Claude tests
+skipped. Zero failures; skipped cases are not acceptance proof.

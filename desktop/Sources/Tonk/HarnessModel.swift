@@ -23,7 +23,6 @@ final class HarnessModel: ObservableObject {
   var cliAdapters: [String: TonkCLI] = [:]
   @Published var creatingSpace = false
   @Published var spaceCreationError: String?
-  @Published var toolActivity: [String] = []
   let client = AppServerClient()
   let claudeClient: ClaudeCodeClient
   @Published var claudeModels: [ClaudeModel] = []
@@ -91,7 +90,8 @@ final class HarnessModel: ObservableObject {
   }
 
   var canSend: Bool {
-    connected && signedIn && !connecting && !busy && !creatingSpace && !loginPending && storageAvailable
+    connected && signedIn && !connecting && !busy && !creatingSpace && !loginPending
+      && storageAvailable
   }
 
   func connect() async {
@@ -329,7 +329,6 @@ final class HarnessModel: ObservableObject {
       next.checkpointChat()
       try store.save(next)
       saved = next
-      toolActivity = []
       resumed = false
       error = nil
     } catch { self.error = error.localizedDescription }
