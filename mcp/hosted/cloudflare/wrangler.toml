@@ -24,7 +24,7 @@ new_sqlite_classes = ["TonkRuntime"]
 binding = "CHECKPOINTS"
 bucket_name = "tonk-mcp-test-checkpoints"
 
-# Set these through `wrangler secret put --config mcp/chatgpt/cloudflare/wrangler.toml`:
+# Set these through `wrangler secret put --config mcp/hosted/cloudflare/wrangler.toml`:
 # TONK_MCP_ISSUER, TONK_MCP_SPACE, TONK_MCP_CLIENT_ID, TONK_MCP_REDIRECT_URI.
 # Use the exact callback displayed by ChatGPT. No guessed redirect or default
 # space is accepted. Logs are disabled to avoid recording OAuth callback URLs.

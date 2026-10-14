@@ -7,7 +7,8 @@ import { createTonkOAuth } from './oauth.mjs';
 import { createAuthenticatedTonkHTTP } from './authenticated-http.mjs';
 import { workerAccountProvisioner, createWorkerTenants } from './worker-tenants.mjs';
 import { accountBackend } from '../account-backend.mjs';
-import { createWorkerUI } from './ui.mjs';
+import { openAIResourceMetadata } from '../chatgpt/metadata.mjs';
+import { createWorkerUI } from '../apps/ui.mjs';
 import { createSpaceSessions } from './space-session.mjs';
 import { checkpointedProvisioner } from './provisioning.mjs';
 import { providerOrigin } from './provider.mjs';
@@ -57,7 +58,10 @@ export async function createHostedService({
   });
   const http = createAuthenticatedTonkHTTP({
     oauth,
-    registerUI: createWorkerUI({ origin: issuer }),
+    registerUI: createWorkerUI({
+      origin: issuer,
+      resourceMetadata: openAIResourceMetadata(issuer),
+    }),
     resolveBackend: async (principal) => ({
       ...accountBackend({ principal, tenants }),
       async openSpace(space) {

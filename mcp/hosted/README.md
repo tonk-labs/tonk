@@ -34,7 +34,7 @@ native integration remains `TONK_WORKER_BINARY=/absolute/path/to/tonk-worker-hos
 npm run test:integration` (on one shell line).
 
 `TONK_UI_DIST=/absolute/path/to/tonk-ui npm run build:chatgpt-assets` assembles
-public guest assets from the matching Tonk build into ignored `chatgpt/public/`.
+public guest assets from the matching Tonk build into ignored `hosted/public/`.
 `TONK_GUEST_PACK` can instead name a cached `space-runtime.json` for local checks.
 CI always uses the guest manifest from its own frontend build.
 

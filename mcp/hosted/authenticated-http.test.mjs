@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createAuthenticatedTonkHTTP } from './authenticated-http.mjs';
-import { createWorkerUI } from './ui.mjs';
+import { createWorkerUI } from '../apps/ui.mjs';
 import { createTonkHTTP } from '../http.mjs';
 const url = 'https://mcp.example/mcp';
 const apps = {

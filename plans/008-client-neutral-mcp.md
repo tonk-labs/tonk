@@ -366,3 +366,19 @@ executed for this plan, and the wider worker/Desktop codebase was not audited.
   now executable and proven. Per the implementation request, unavailable external
   client/deployment acceptance will remain unverified while independently safe
   source extraction proceeds. No claim that the original live preview gate passed.
+- Checkpoint 2 source extraction: shared service, OAuth/state, worker tenancy,
+  provisioning and Cloudflare packaging moved to `mcp/hosted/`; standard UI and
+  assets moved to `mcp/apps/`; `mcp/chatgpt/metadata.mjs` is the optional OpenAI CSP
+  adapter. Existing npm ChatGPT script names remain intentional aliases. CI now
+  explicitly runs `test:hosted` and `test:apps`; publish paths point to the moved
+  production modules. Core has no hosting or provider imports. Import-graph tests
+  exercise the actual executable/service. Worker names, issuer URLs, DO class and
+  migration tag, container instance name, R2 keys and legacy client IDs unchanged.
+- Post-extraction checks: 13 core + 55 hosted + 3 Apps tests passed; both native
+  integration tests passed again; formatting and diff checks passed. Restore is
+  covered by the same versioned credential tests and actual HTTP reconnect test.
+- Packaging limitations (not product failures): `build:hosted-assets` reports
+  `Set TONK_UI_DIST or TONK_GUEST_PACK.`; Wrangler 4.150.0 dry-run reports missing
+  `mcp/hosted/public`; Docker build cannot connect to the absent OrbStack socket.
+  Wrangler's initial log-path permission error was avoided with a /tmp log path;
+  missing assets remains the blocker. No substitute assets or deployment used.
