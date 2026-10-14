@@ -19,6 +19,7 @@ export class TonkRuntime extends Container {
       TONK_PROVIDER_ORIGIN: providerOrigin(env.TONK_PROVIDER_ORIGIN),
       TONK_MCP_ISSUER: env.TONK_MCP_ISSUER,
       TONK_MCP_SPACE: env.TONK_MCP_SPACE,
+      TONK_MCP_DCR: env.TONK_MCP_DCR === 'true' ? 'true' : 'false',
       TONK_MCP_CLIENT_ID: env.TONK_MCP_CLIENT_ID,
       TONK_MCP_REDIRECT_URI: env.TONK_MCP_REDIRECT_URI,
       ...(env.TONK_MCP_CLIENTS ? { TONK_MCP_CLIENTS: env.TONK_MCP_CLIENTS } : {}),
@@ -60,10 +61,15 @@ export default {
         '/oauth/continue',
         '/oauth/callback',
         '/oauth/token',
+        ...(env.TONK_MCP_DCR === 'true' ? ['/oauth/register'] : []),
         '/.well-known/oauth-protected-resource/mcp',
         '/.well-known/oauth-authorization-server',
       ].includes(url.pathname) &&
-      !url.pathname.startsWith('/space-api/')
+      !url.pathname.startsWith('/space-api/') &&
+      !(
+        env.TONK_MCP_DCR === 'true' &&
+        /^\/oauth\/register\/dynamic-[A-Za-z0-9_-]{43}$/.test(url.pathname)
+      )
     ) {
       return new Response(null, { status: 404 });
     }

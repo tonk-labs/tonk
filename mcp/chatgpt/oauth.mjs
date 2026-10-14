@@ -1,3 +1,4 @@
+import { createRegistrations } from './registration.mjs';
 import { createClientRegistry } from './clients.mjs';
 import { createCredentials } from './credentials.mjs';
 import { createHash, randomBytes } from 'node:crypto';
@@ -92,6 +93,7 @@ export function createTonkOAuth({
   clientId,
   redirectUris,
   clients,
+  dynamicRegistration = false,
   provisionAccount,
   linkPage = 'https://tonk.network/settings/link',
   now = Date.now,
@@ -107,7 +109,7 @@ export function createTonkOAuth({
     capacity < 1
   )
     throw new Error('Invalid OAuth configuration.');
-  const registry = createClientRegistry(
+  const configured = createClientRegistry(
     clients ?? [
       {
         clientId,
@@ -119,6 +121,16 @@ export function createTonkOAuth({
       },
     ],
   );
+  const registrations = createRegistrations({ now, saved: saved?.registrations });
+  const registry = {
+    get(id) {
+      return configured.get(id) ?? (dynamicRegistration ? registrations.get(id) : undefined);
+    },
+    accepts(id, uri) {
+      const client = this.get(id);
+      return client ? createClientRegistry([client]).accepts(id, uri) : false;
+    },
+  };
   const approvalPage = httpsURL(linkPage);
   const resource = `${origin}/mcp`;
   const metadataURL = `${origin}/.well-known/oauth-protected-resource/mcp`;
@@ -126,6 +138,7 @@ export function createTonkOAuth({
   const metadata = {
     oauthMetadata: {
       issuer,
+      ...(dynamicRegistration ? { registration_endpoint: `${origin}/oauth/register` } : {}),
       authorization_endpoint: `${origin}/oauth/authorize`,
       token_endpoint: `${origin}/oauth/token`,
       response_types_supported: ['code'],
@@ -146,9 +159,7 @@ export function createTonkOAuth({
     saved &&
     (saved.issuer !== issuer ||
       (saved.version !== undefined && saved.version !== 2) ||
-      (saved.version === 2
-        ? saved.resource !== resource
-        : saved.clientId !== clientId))
+      (saved.version === 2 ? saved.resource !== resource : saved.clientId !== clientId))
   )
     throw Error('OAuth snapshot configuration mismatch');
   const bindLegacy = (value) => (saved?.version === 2 ? value : { ...value, clientId, resource });
@@ -190,6 +201,47 @@ export function createTonkOAuth({
     const discovery = oauthMetadataResponse(request, metadata);
     if (discovery) return discovery;
     try {
+      if (dynamicRegistration && url.pathname === '/oauth/register' && request.method === 'POST') {
+        if (
+          request.headers.has('origin') ||
+          request.headers.has('authorization') ||
+          request.headers.get('content-type')?.split(';')[0] !== 'application/json'
+        )
+          return error('invalid_request');
+        const result = registrations.register(JSON.parse(await body(request, 8192)));
+        if (result.error) return error(result.error, result.status);
+        return json(
+          {
+            client_id: result.client.clientId,
+            client_name: result.client.displayName,
+            redirect_uris: result.client.redirectUris,
+            token_endpoint_auth_method: 'none',
+            grant_types: ['authorization_code', 'refresh_token'],
+            response_types: ['code'],
+            scope,
+            client_id_issued_at: Math.floor(now() / 1000),
+            client_secret_expires_at: 0,
+            registration_access_token: result.managementToken,
+            registration_client_uri: `${origin}/oauth/register/${result.client.clientId}`,
+            registration_expires_at: Math.floor(result.expires / 1000),
+          },
+          201,
+        );
+      }
+      if (
+        dynamicRegistration &&
+        url.pathname.startsWith('/oauth/register/') &&
+        request.method === 'DELETE'
+      ) {
+        if (request.headers.has('origin') || url.search) return error('invalid_request');
+        const id = url.pathname.slice('/oauth/register/'.length);
+        const token = request.headers
+          .get('authorization')
+          ?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
+        if (!registrations.remove(id, token)) return error('invalid_token', 401);
+        credentials.revokeWhere((value) => value.clientId === id);
+        return new Response(null, { status: 204, headers: secureHeaders });
+      }
       if (url.pathname === '/oauth/authorize' && request.method === 'GET') {
         if (url.search.length > 8192) return error('invalid_request');
         const p = parameters(url.searchParams);
@@ -303,7 +355,8 @@ export function createTonkOAuth({
             approval.searchParams.set('callback', `${origin}/oauth/callback?request=${id}`);
             approval.searchParams.set(
               'name',
-              registry.get(entry.clientId)?.displayName ?? 'Tonk client',
+              (entry.clientId.startsWith('dynamic-') ? 'Unverified client: ' : '') +
+                (registry.get(entry.clientId)?.displayName ?? 'Tonk client'),
             );
             return new Response(null, {
               status: 303,
@@ -511,6 +564,7 @@ export function createTonkOAuth({
         issuer,
         resource,
         credentials: credentials.snapshot(),
+        registrations: registrations.snapshot(),
         spent: [...spent],
       };
     },

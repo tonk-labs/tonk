@@ -324,3 +324,16 @@ executed for this plan, and the wider worker/Desktop codebase was not audited.
   includes that registration and a literal-loopback native SDK registration.
   https://claude.com/docs/connectors/building (checked 2026-10-14).
   This is configured support, not a live Claude authorization result.
+- Checkpoint 4 independent increment: opt-in DCR (`TONK_MCP_DCR=true`), 32 durable
+  registrations, 8 successful enrollments/minute across restarts, 24-hour expiry,
+  8 KiB request limit, PKCE public clients only, hashed management tokens and
+  authenticated deletion. Discovery and edge routes are enabled only with the
+  complete implementation. Dynamic names are labeled unverified at approval.
+  All 52 hosted tests pass, including quota/restart/deletion/negative metadata.
+  DCR is not enabled in generated deployment configurations yet; URL-only live
+  onboarding remains unverified. Existing explicit clients remain supported.
+- CIMD deferred: no actual-fetch DNS/address pinning boundary exists in the
+  current container/edge adapter. Container egress remains provider/checkpoint
+  only. A restricted resolver enforcing address policy at connection time,
+  response/timeout limits, no redirects, and metadata cache expiry is prerequisite.
+  CIMD is neither fetched nor advertised. No fallback to unrestricted fetch.

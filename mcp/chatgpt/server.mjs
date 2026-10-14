@@ -37,6 +37,7 @@ if (durable.state && (durable.state.version !== 1 || durable.state.subject !== s
 const provision = workerAccountProvisioner({ binary, dataRoot, provider });
 const oauth = createTonkOAuth({
   issuer,
+  dynamicRegistration: process.env.TONK_MCP_DCR === 'true',
   clientId: required('TONK_MCP_CLIENT_ID'),
   redirectUris: [required('TONK_MCP_REDIRECT_URI')],
   clients: process.env.TONK_MCP_CLIENTS ? JSON.parse(process.env.TONK_MCP_CLIENTS) : undefined,

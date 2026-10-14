@@ -668,3 +668,63 @@ test('client-grant revocation preserves other clients; account revocation remove
   f.oauth.revokeAccount('did:key:account');
   assert.equal(f.oauth.authenticate(bearer(tokens[0].access_token)), undefined);
 });
+
+test('opt-in DCR persists bounded registrations; deletion and expiry invalidate grants', async () => {
+  const f = fixture({ dynamicRegistration: true });
+  const metadata = await (
+    await f.oauth.fetch(new Request(issuer + '/.well-known/oauth-authorization-server'))
+  ).json();
+  assert.equal(metadata.registration_endpoint, issuer + '/oauth/register');
+  assert.equal(metadata.client_id_metadata_document_supported, undefined);
+  const enroll = () =>
+    f.oauth.fetch(
+      new Request(issuer + '/oauth/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          client_name: 'Untrusted SDK',
+          redirect_uris: [redirect],
+          token_endpoint_auth_method: 'none',
+        }),
+      }),
+    );
+  const registration = await (await enroll()).json();
+  const flow = await f.begin({ client_id: registration.client_id });
+  assert.equal(flow.approval.searchParams.get('name'), 'Unverified client: Untrusted SDK');
+  const token = await (await f.exchange(flow, await f.code(flow))).json();
+  const saved = f.oauth.snapshot();
+  assert.ok(!JSON.stringify(saved).includes(registration.registration_access_token));
+  const restored = fixture({ dynamicRegistration: true, saved });
+  assert.ok(restored.oauth.authenticate(bearer(token.access_token)));
+  assert.equal((await renew(restored.oauth, token.refresh_token, 'chatgpt-test')).status, 400);
+  const remove = (secret) =>
+    restored.oauth.fetch(
+      new Request(registration.registration_client_uri, {
+        method: 'DELETE',
+        headers: { authorization: 'Bearer ' + secret },
+      }),
+    );
+  assert.equal((await remove('wrong')).status, 401);
+  assert.ok(restored.oauth.authenticate(bearer(token.access_token)));
+  assert.equal((await remove(registration.registration_access_token)).status, 204);
+  assert.equal(restored.oauth.authenticate(bearer(token.access_token)), undefined);
+  assert.equal(
+    (await renew(restored.oauth, token.refresh_token, registration.client_id)).status,
+    400,
+  );
+  f.advance(86400001);
+  assert.equal((await f.start({ client_id: registration.client_id })).response.status, 400);
+  const off = fixture();
+  assert.equal(
+    (
+      await (
+        await off.oauth.fetch(new Request(issuer + '/.well-known/oauth-authorization-server'))
+      ).json()
+    ).registration_endpoint,
+    undefined,
+  );
+  assert.equal(
+    (await off.oauth.fetch(new Request(issuer + '/oauth/register', { method: 'POST' }))).status,
+    404,
+  );
+});
