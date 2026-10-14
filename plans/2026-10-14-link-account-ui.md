@@ -25,3 +25,9 @@ missing borrow caught by the first check. Existing unrelated dead-code warnings
 remain. Extended service-backed integration and Wasm DOM tests were not executed:
 this checkout has no built UI deployment. Live passkey/email/cross-tab behavior
 and production rendering remain unverified; fixtures prove presentation only.
+
+CI follow-up: MCP run 38560408358 failed before worker tests because
+ptr_meta/example.md disappeared from ~/.cargo. The runner logs show
+nothing-but-nix deletes that directory in an asynchronous cleanup. Move this
+job's CARGO_HOME to /nix/var/tonk-mcp-cargo alongside its existing target directory
+and create both with runner ownership before entering the Nix shell.
