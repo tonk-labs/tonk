@@ -1,6 +1,6 @@
 # Plan 008: Make hosted Tonk MCP usable across agent clients
 
-Status: TODO. Priority: P1. Effort: L, split into reviewable PRs below.
+Status: IMPLEMENTED LOCALLY; external acceptance and CIMD blocked/deferred. Priority: P1. Effort: L, split into reviewable PRs below.
 Risk: high for authorization/state migration; medium for transport and packaging.
 Planned at `4f1c6060ec`, 2026-10-14, in `feat/chatgpt-on-mcp`.
 Depends on the core MCP and hosted ChatGPT integration landing first (#1089, #1091).
@@ -262,12 +262,12 @@ checks if implementation unexpectedly requires a separately approved Rust change
 
 - [ ] Explicit-client non-ChatGPT login and read succeed before refactoring.
 - [ ] Shared host extraction preserves existing deployments and persisted authority.
-- [ ] Two independent SDK clients pass authenticated HTTP read/write/readback.
-- [ ] Headless clients neither need UI nor receive browser-session credentials.
+- [x] Two independent SDK clients pass authenticated HTTP read/write/readback (fixture account approval).
+- [x] Headless clients neither need UI nor receive browser-session credentials.
 - [ ] ChatGPT, hosted Claude and Claude Code have recorded live acceptance results.
 - [ ] Self-service registration mechanisms pass negative tests and match discovery.
-- [ ] Documentation states exact supported modes and operational limits.
-- [ ] Update this plan and its README index entry with evidence; do not claim broad
+- [x] Documentation states exact supported modes and operational limits.
+- [x] Update this plan and its README index entry with evidence; do not claim broad
       availability from discovery or mock tests alone.
 
 Stop and report if migration requires resetting account storage, compatibility
@@ -398,3 +398,48 @@ executed for this plan, and the wider worker/Desktop codebase was not audited.
   fixture clock past token expiry, observes 401, restores durable state, refreshes
   and reads back Python-authored native data. MCP-only wire responses include
   JSON and finite SSE (OAuth JSON is excluded from that assertion).
+
+
+## Current completion and resume state
+
+Local implementation is committed through `579bdff1c4`. The copied plan remains
+in this worktree and its README entry was appended without replacing entries.
+See [compatibility and exact resume steps](../mcp/hosted/COMPATIBILITY.md) for the
+client matrix, current source paths, commands, authority boundaries and blockers.
+
+- Explicit multi-client OAuth and SDK native read/write/readback: verified locally
+  with fixture account approval; actual external login remains unverified.
+- Shared hosting/Apps extraction: implemented and locally tested; packaged image,
+  deployed checkpoint restore and reconnect remain unverified.
+- Two independent SDK implementations and headless/UI capability isolation: pass.
+- Actual ChatGPT, hosted Claude and Claude Code acceptance: unverified. Claude
+  Code additionally needs resolution of its localhost-versus-literal callback.
+- Bounded opt-in DCR: implemented and negative-tested; live URL-only onboarding
+  unverified, default remains off. CIMD explicitly deferred, not advertised.
+- Documentation/operational limits: recorded. No public availability claim.
+- Docker/asset/preview checks: blocked by missing daemon and matching guest assets.
+  No push, PR, development/staging/stable deployment or stored-data reset occurred.
+
+Tested increments:
+
+| Commit | Scope | Evidence |
+| --- | --- | --- |
+| `b5cfc1cc76` | Registry, migration, cross-client bindings | 49 hosted tests |
+| `03d9372b5e` | Durable opt-in DCR | 52 hosted tests |
+| `053c13faf0` | Capability sessions and transport limits | 57 hosted tests |
+| `8d7d30b6bf` | Production composition and independent SDKs | 57 hosted + 2 native integration tests |
+| `89c17c783a` | Hosted/Apps source extraction | 13 core + 55 hosted + 3 Apps + 2 native integration tests |
+| `579bdff1c4` | Revocation, checked-in migration fixture, cancellation, expiry | 13 core + 58 hosted + 3 Apps + 2 native integration tests |
+
+- Final redirect review tightened remote HTTPS callbacks to DNS hostnames,
+  rejecting IP/private-name forms and empty fragments as well as nonempty ones.
+  Native literal-loopback HTTP remains the sole port exception. All 26 focused
+  registry/OAuth/DCR tests passed. This does not add callback DNS fetching.
+- Packaging follow-through: OrbStack was installed and successfully started.
+  Docker build and the repository `nix build .#tonk-ui-preview` are now running;
+  earlier missing-daemon/assets observations above are superseded where these
+  subsequent checks succeed. No deployment command without `--dry-run` was run.
+- Final boundary checks: malformed JSON-RPC primitives/arrays are rejected before
+  backend resolution; 60 hosted tests and both native SDK integration tests pass
+  after these last source changes. Core (13) and Apps (3) remain passing from the
+  preceding source checkpoint. Formatting and diff checks remain required below.

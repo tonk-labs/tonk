@@ -272,3 +272,29 @@ test(
     }
   },
 );
+
+test('non-object RPC input is rejected without backend resolution', async () => {
+  const app = fixture({
+    resolveBackend: async () => {
+      throw Error('must not resolve');
+    },
+  });
+  try {
+    for (const value of [null, 1, true, [], 'message']) {
+      assert.equal(
+        (
+          await app.fetch(
+            new Request(url, {
+              method: 'POST',
+              headers: { authorization: 'a', 'content-type': 'application/json' },
+              body: JSON.stringify(value),
+            }),
+          )
+        ).status,
+        400,
+      );
+    }
+  } finally {
+    await app.close();
+  }
+});

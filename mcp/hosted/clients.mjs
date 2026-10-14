@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 // Registrations identify redirect policy, not trusted software. Public clients
 // still need user approval and S256 PKCE for every new grant.
 export function createClientRegistry(clients) {
@@ -56,8 +57,22 @@ export function createClientRegistry(clients) {
 function validateRedirect(uri, applicationType) {
   if (typeof uri !== 'string' || uri.length > 2048) throw Error('Invalid redirect');
   const url = new URL(uri);
-  if (url.username || url.password || url.hash || url.href !== uri) throw Error('Invalid redirect');
-  if (url.protocol === 'https:') return;
+  if (url.username || url.password || uri.includes('#') || url.href !== uri)
+    throw Error('Invalid redirect');
+  if (url.protocol === 'https:') {
+    const host = url.hostname;
+    // Remote callbacks use DNS HTTPS names. Reject IP/private-name forms;
+    // no server-side DNS lookup or metadata fetching is performed here.
+    if (
+      isIP(host) ||
+      host.startsWith('[') ||
+      !host.includes('.') ||
+      host.endsWith('.') ||
+      /\.(?:localhost|local|internal|home|home\.arpa)$/.test(host)
+    )
+      throw Error('Invalid redirect');
+    return;
+  }
   // Literal addresses only; do not allow URL parser aliases such as 127.1.
   if (
     applicationType === 'native' &&

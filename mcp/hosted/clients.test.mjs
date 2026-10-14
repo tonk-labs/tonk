@@ -42,3 +42,23 @@ test('registry validates bounds, duplicates, client type and web redirects', () 
   assert.ok(registry.accepts('native', 'https://a.test/callback'));
   assert.equal(registry.accepts('native', 'https://a.test:444/callback'), false);
 });
+
+test('remote callbacks reject IP/private-name forms and even empty fragments', () => {
+  for (const uri of [
+    'https://127.0.0.1/callback',
+    'https://192.168.1.1/callback',
+    'https://169.254.169.254/callback',
+    'https://[::1]/callback',
+    'https://[fd00::1]/callback',
+    'https://localhost/callback',
+    'https://host.local/callback',
+    'https://host.internal/callback',
+    'https://host.home.arpa/callback',
+    'https://client.example/callback#',
+  ]) {
+    assert.throws(
+      () => createClientRegistry([{ ...native, applicationType: 'web', redirectUris: [uri] }]),
+      /Invalid redirect/,
+    );
+  }
+});

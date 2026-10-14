@@ -79,6 +79,8 @@ export function createAuthenticatedTonkHTTP({
       }
       try {
         message = JSON.parse(Buffer.from(bytes).toString('utf8'));
+        if (!message || typeof message !== 'object' || Array.isArray(message))
+          throw Error('Invalid RPC object');
       } catch {
         return new Response(null, { status: 400 });
       }
