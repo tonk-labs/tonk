@@ -5299,3 +5299,141 @@ person!:
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod approval_stall_diagnosis {
+    use super::repository::profile_library_tests::test_state;
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    pub(crate) async fn put_repo(app: &Router, label: &str) -> String {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}", label))
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "expected 201 from PUT /api/repository/{label}, got {status}",
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let info: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        info.name
+    }
+    #[test]
+    fn local_identity_remains_responsive_during_stalled_sync_and_pull() {
+        // Unoptimized native network/authority futures need more stack than
+        // the test harness default. Keep this fixture independent of CI env.
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(stalled_sync_and_pull());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn stalled_sync_and_pull() {
+        use super::repository::{
+            BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
+        };
+        use dialog_remote_ucan::UcanAddress;
+        use dialog_repository::SiteAddress;
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/ucan/", listener.local_addr().unwrap());
+        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
+        let repo = put_repo(&app, "approval-stall").await;
+        let config = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(&endpoint))),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/remote"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let syncing = super::sync::sync(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(super::sync::SyncPath {
+                repo: repo.clone(),
+                branch: "main".into(),
+            }),
+        );
+        tokio::pin!(syncing);
+        let socket = tokio::select! {
+            accepted = listener.accept() => accepted.unwrap().0,
+            result = &mut syncing => panic!("sync returned before reaching remote: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("sync did not reach remote"),
+        };
+        // Keep the accepted connection open without answering: remote IO is pending.
+        assert!(state.try_read().is_ok(), "sync alone allows local readers");
+        let mut pulling = Box::pin(super::sync::pull(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(super::sync::SyncPath {
+                repo,
+                branch: "main".into(),
+            }),
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut pulling)
+                .await
+                .is_err()
+        );
+        let identity = super::identity::get(axum::extract::State(state.clone()));
+        let outcome = tokio::time::timeout(Duration::from_millis(100), identity).await;
+        let blocked = outcome.is_err();
+        drop(pulling);
+        let recovered = tokio::time::timeout(
+            Duration::from_secs(1),
+            super::identity::get(axum::extract::State(state.clone())),
+        )
+        .await;
+        assert!(
+            recovered.is_ok(),
+            "identity recovers after cancelling only the queued pull"
+        );
+        eprintln!(
+            "remote sync pending; concurrent pull blocked identity={blocked}; identity after cancellation=true"
+        );
+        drop(socket);
+        assert!(
+            !blocked,
+            "queued writer behind remote sync blocks local identity reads"
+        );
+    }
+}

@@ -295,10 +295,11 @@ async fn authorize_device_inner(
 ) -> Result<String, String> {
     use dialog_varsig::Principal as _;
 
-    let mut timing = super::link_timing::LinkTiming::new("approval-work", "start-status");
+    let mut timing = super::link_timing::LinkTiming::new("approval-work", "start-status-lock");
 
     {
         let tonk = state.read().await;
+        timing.next("start-status-publish");
         report_authorization(&tonk, authorization, ceremony_state::WORKING, "").await;
     }
     timing.next("custody-read");
@@ -308,9 +309,10 @@ async fn authorize_device_inner(
         .signer()
         .await
         .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
-    timing.next("local-root");
+    timing.next("local-root-lock");
     let linked = {
         let tonk = state.read().await;
+        timing.next("local-root-read");
         super::identity::local_root(&tonk)
             .await
             .map_err(|error| format!("no account is signed in on this profile: {error}"))?
