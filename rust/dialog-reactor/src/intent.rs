@@ -168,8 +168,8 @@ pub async fn interpret<Env: SelectProvider>(
     // text there ("install notebook") as possibly naming one; `suggest`
     // then fills the field from what was derived, or leaves it empty.
     for attribute in &mut source.attributes {
-        if attribute.fields.get("type").and_then(Json::as_str) == Some("Entity") {
-            attribute.fields.insert("type".to_owned(), json!("Text"));
+        if attribute.fields.get("type").and_then(Json::as_str) == Some("entity:") {
+            attribute.fields.insert("type".to_owned(), json!("text:"));
         }
     }
     let selection = match site {
@@ -267,7 +267,7 @@ async fn labelled<Env: SelectProvider>(
 ) -> Result<BTreeMap<String, ConceptRows>, FormulaError> {
     // A view's facets are a dictionary under `xyz.tonk.view`: the `label`
     // facet is the `xyz.tonk.view/label` attribute on the concept.
-    let concepts: BTreeSet<String> = rows(
+    let concepts: BTreeMap<String, String> = rows(
         branch,
         env,
         json!({
@@ -277,12 +277,21 @@ async fn labelled<Env: SelectProvider>(
     )
     .await?
     .into_iter()
-    .map(|row| row.this)
+    .filter_map(|row| {
+        let label = row.fields.get("label")?.as_str()?.to_owned();
+        Some((row.this, label))
+    })
     .collect();
     let mut labelled = BTreeMap::new();
-    for concept in concepts {
+    for (concept, label) in concepts {
         let rows = noun(branch, env, &concept).await?;
-        labelled.insert(concept, rows);
+        labelled.insert(
+            concept,
+            ConceptRows {
+                label: Some(label),
+                rows,
+            },
+        );
     }
     Ok(labelled)
 }
@@ -382,27 +391,25 @@ async fn fragments<Env: SelectProvider>(
                 continue;
             };
             let kind = attribute.fields.get("type").and_then(Json::as_str);
-            let (Some(selector), Some("Entity")) =
+            let (Some(selector), Some("entity:")) =
                 (attribute.fields.get("id").and_then(Json::as_str), kind)
             else {
                 continue;
             };
-            let cardinality = attribute
-                .fields
-                .get("cardinality")
-                .and_then(Json::as_str)
-                .unwrap_or("one");
             // A rule binds its conclusion's fields by name, so the field is
             // read under the attribute's own name: a fragment concept names
             // its one field after the attribute (`subject` for
-            // `…retitle/subject`).
+            // `…retitle/subject`). The field's candidates are a set, so
+            // the read selects `all`: under the attribute's own policy a
+            // read would elect one of them and the palette would offer
+            // one component to install, whichever the election picked.
             let name = selector.rsplit('/').next().unwrap_or(selector);
             let values = rows(
                 branch,
                 env,
                 json!({
                     "predicate": { "with": { name: {
-                        "the": selector, "as": "Entity", "cardinality": cardinality
+                        "the": selector, "as": "Entity", "select": "all"
                     } } },
                     "terms": { "this": intent, name: var(name) }
                 }),
@@ -536,13 +543,9 @@ fn attributes() -> Json {
     json!({
         "predicate": { "with": {
             "id": text("db.attribute/id", "one"),
-            "type": text("db.attribute/type", "one"),
-            "cardinality": text("db.attribute/cardinality", "one")
+            "type": entity("db.attribute/as", true)
         } },
-        "terms": {
-            "this": var("this"), "id": var("id"), "type": var("type"),
-            "cardinality": var("cardinality")
-        }
+        "terms": { "this": var("this"), "id": var("id"), "type": var("type") }
     })
 }
 
@@ -651,13 +654,13 @@ fn choices() -> Json {
     })
 }
 
-/// A noun concept's rows and its `label` facet, resolved the way
-/// `<tonk-display>` resolves a model: the descriptor from `db.meta/source`.
+/// A noun concept's rows, resolved the way `<tonk-display>` resolves a
+/// model: the descriptor from `db.meta/source`.
 async fn noun<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
     concept: &str,
-) -> Result<ConceptRows, FormulaError> {
+) -> Result<Vec<Row>, FormulaError> {
     let described = rows(
         branch,
         env,
@@ -678,7 +681,7 @@ async fn noun<Env: SelectProvider>(
         .find_map(|row| row.fields.get("source")?.as_str())
         .and_then(|source| serde_json::from_str::<Json>(source).ok())
     else {
-        return Ok(ConceptRows::default());
+        return Ok(Vec::new());
     };
     let mut terms = json!({ "this": var("this") });
     if let Some(fields) = descriptor["with"].as_object() {
@@ -686,30 +689,10 @@ async fn noun<Env: SelectProvider>(
             terms[field] = var(field);
         }
     }
-    let instances = rows(
+    rows(
         branch,
         env,
         json!({ "predicate": descriptor, "terms": terms }),
     )
-    .await?;
-    let facets = rows(
-        branch,
-        env,
-        json!({
-            "predicate": { "with": { "show": {
-                "the": { "domain": "xyz.tonk.view", "keyed": "dictionary" },
-                "as": "Text", "cardinality": "one"
-            } } },
-            "terms": { "this": concept, "show": var("show"), "show/key": var("show/key") }
-        }),
-    )
-    .await?;
-    let label = facets
-        .iter()
-        .find(|row| row.fields.get("show/key").and_then(Json::as_str) == Some("label"))
-        .and_then(|row| row.fields.get("show")?.as_str().map(str::to_owned));
-    Ok(ConceptRows {
-        label,
-        rows: instances,
-    })
+    .await
 }

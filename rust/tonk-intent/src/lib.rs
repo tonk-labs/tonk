@@ -421,7 +421,9 @@ fn registry(sources: &[Source]) -> (Registry, Fields) {
                     .collect();
                 // An entity field takes only what rules derive for it:
                 // typed text is no entity. Its candidates are its own noun.
-                let noun = if field.kind == "Entity" {
+                let noun = if tonk_notation::ValueType::from_wire(&field.kind)
+                    == Some(tonk_notation::ValueType::Entity)
+                {
                     let key = format!("{id}{JOIN}{}", field.selector);
                     if !derived.is_empty() {
                         derivations.push((key.clone(), derived));

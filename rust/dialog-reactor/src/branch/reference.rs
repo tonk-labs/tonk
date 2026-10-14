@@ -13,7 +13,7 @@ use dialog_artifacts::Exporter;
 use dialog_common::ConditionalSend;
 use dialog_repository::Importer;
 
-use crate::env::{BranchOpenProvider, LoadProvider};
+use crate::env::{BranchOpenProvider, CommitProvider, LoadProvider};
 use crate::error::ReactorError;
 use crate::export::Export;
 use crate::import::Import;
@@ -33,6 +33,76 @@ pub struct BranchReference<'a> {
     pub repository: RepositoryReference<'a>,
     /// Branch name within the repository.
     pub name: &'a str,
+}
+
+/// What [`BranchReference::migrate_once`] moved.
+#[derive(Debug, Clone)]
+pub struct Upgraded {
+    /// The revision the storage rewrite published: the head's tree laid
+    /// out in the number band this release writes.
+    pub storage: Option<dialog_repository::Revision>,
+    /// The attribute and concept definitions written again.
+    pub definitions: tonk_schema::upgrade::DefinitionsUpgraded,
+    /// The rules re-installed.
+    pub rules: dialog_repository::RulesUpgraded,
+}
+
+/// Move what an earlier release stored in `branch` to the shape this
+/// release reads and writes, if its head is laid out the earlier way: the
+/// storage rewrite under the number band ([`Branch::migrate_storage`]),
+/// then the attribute and concept definitions recorded the earlier way
+/// ([`tonk_schema::upgrade::upgrade_definitions`]), then the rules stored
+/// under an identity an earlier dialog release gave them
+/// ([`Branch::upgrade_rules`]). `None` when the head is already in this
+/// release's layout, after one root read ([`Branch::needs_migration`]).
+///
+/// For a write into a branch opened outside the reactor (a meta branch a
+/// repository route records into, a blob import, the CLI's account branch),
+/// which the gate in [`BranchReference::migrate_once`] does not cover: a
+/// commit into a tree laid out the earlier way is refused, so run this
+/// first. Through the reactor, prefer `migrate_once`, which also runs once
+/// per process and tells pages that the upgrade is taking place.
+///
+/// [`Branch::migrate_storage`]: dialog_repository::Branch::migrate_storage
+/// [`Branch::needs_migration`]: dialog_repository::Branch::needs_migration
+/// [`Branch::upgrade_rules`]: dialog_repository::Branch::upgrade_rules
+pub async fn migrate<Env>(
+    branch: &dialog_repository::Branch,
+    env: &Env,
+) -> Result<Option<Upgraded>, ReactorError>
+where
+    Env: LoadProvider + BranchOpenProvider + CommitProvider,
+{
+    let needed = branch
+        .needs_migration(env)
+        .await
+        .map_err(|error| ReactorError::Upgrade {
+            reason: error.to_string(),
+        })?;
+    if !needed {
+        return Ok(None);
+    }
+    migrate_branch(branch, env).await.map(Some)
+}
+
+/// The three steps of a migration, unconditionally.
+async fn migrate_branch<Env>(
+    branch: &dialog_repository::Branch,
+    env: &Env,
+) -> Result<Upgraded, ReactorError>
+where
+    Env: LoadProvider + BranchOpenProvider + CommitProvider,
+{
+    let storage = branch.migrate_storage().perform(env).await?;
+    let definitions = tonk_schema::upgrade::upgrade_definitions(branch, env)
+        .await
+        .map_err(|reason| ReactorError::Upgrade { reason })?;
+    let rules = branch.upgrade_rules().perform(env).await?;
+    Ok(Upgraded {
+        storage,
+        definitions,
+        rules,
+    })
 }
 
 /// Move every subscription waiting on this branch out of the reactor's
@@ -103,6 +173,100 @@ impl<'a> BranchReference<'a> {
 
         adopt_waiting(self, &state, name);
         Ok(BranchSession { state })
+    }
+
+    /// Move what an earlier release stored to the shape this one reads
+    /// and writes, once per branch while the reactor holds it open: the
+    /// storage rewrite under the number band
+    /// ([`Branch::migrate_storage`]), then the attribute and concept
+    /// definitions recorded the earlier way
+    /// ([`tonk_schema::upgrade::upgrade_definitions`]), then the rules
+    /// stored under an identity an earlier dialog release gave them
+    /// ([`Branch::upgrade_rules`]). Everything runs under the branch's
+    /// transactor lock, as a commit does, so a write that reaches the
+    /// branch meanwhile waits for it.
+    ///
+    /// Gated on the head's storage layout ([`Branch::needs_migration`]):
+    /// a branch this release wrote has nothing an earlier release left, so
+    /// the gate is one root read, paid by every call while nothing has
+    /// run, so a head laid out the earlier way that a pull adopts later in
+    /// the process is still moved. Once a migration has run, a later call
+    /// returns `None` at once; a second caller during the migration waits
+    /// for it and then returns `None`. A failed migration is not retried
+    /// until the branch is opened again (the next worker or CLI start): a
+    /// cause like an unreachable remote would otherwise repeat on every
+    /// read. Schedules a poll when it commits.
+    ///
+    /// Every commit through the reactor runs this first (see
+    /// [`crate::transaction::Commit`]), since a commit into a tree laid
+    /// out the earlier way is refused; a read does not need it, and the
+    /// worker's query route runs it to tell the page what is happening.
+    ///
+    /// [`Branch::migrate_storage`]: dialog_repository::Branch::migrate_storage
+    /// [`Branch::needs_migration`]: dialog_repository::Branch::needs_migration
+    /// [`Branch::upgrade_rules`]: dialog_repository::Branch::upgrade_rules
+    pub async fn migrate_once<Env>(&self, env: &Env) -> Result<Option<Upgraded>, ReactorError>
+    where
+        Env: LoadProvider + BranchOpenProvider + CommitProvider,
+    {
+        let session = self.acquire(env).await?;
+        let branch = &session.state.branch;
+        let needs_migration = || async {
+            branch
+                .needs_migration(env)
+                .await
+                .map_err(|error| ReactorError::Upgrade {
+                    reason: error.to_string(),
+                })
+        };
+        // Without the lock first: a branch already moved, or one with
+        // nothing to move, is the common case, and a read that only
+        // asks must not wait on a writer holding the lock.
+        if session.state.migration_claimed() || !needs_migration().await? {
+            return Ok(None);
+        }
+        // Under the lock: a caller arriving while the migration runs
+        // waits here, and then finds it has run.
+        let _transacting = session.state.transactor().lock().await;
+        if session.state.migration_claimed() || !needs_migration().await? {
+            return Ok(None);
+        }
+        // Claimed only now: a branch with nothing to move stays open to a
+        // later head that has.
+        session.state.claim_migration();
+        session.state.set_migrating(true);
+        let outcome = migrate_branch(branch, env).await;
+        session.state.set_migrating(false);
+        let upgraded = outcome?;
+        self.reactor().schedule_poll(Arc::clone(&session.state));
+        Ok(Some(upgraded))
+    }
+
+    /// Whether [`migrate_once`](Self::migrate_once) would move anything,
+    /// or is moving it now: the branch's head is laid out the way an
+    /// earlier release wrote and nothing has migrated it yet in this
+    /// process. One root read when the branch is open; `false` once the
+    /// migration has run. A page reads this to show that an upgrade is
+    /// taking place before it waits for its rows.
+    pub async fn migration_pending<Env>(&self, env: &Env) -> Result<bool, ReactorError>
+    where
+        Env: LoadProvider + BranchOpenProvider + CommitProvider,
+    {
+        let session = self.acquire(env).await?;
+        if session.state.is_migrating() {
+            return Ok(true);
+        }
+        if session.state.migration_claimed() {
+            return Ok(false);
+        }
+        session
+            .state
+            .branch
+            .needs_migration(env)
+            .await
+            .map_err(|error| ReactorError::Upgrade {
+                reason: error.to_string(),
+            })
     }
 
     /// The reactor that owns this branch's cache — so leaf effects can

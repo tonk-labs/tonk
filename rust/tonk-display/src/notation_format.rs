@@ -22,6 +22,7 @@
 use std::collections::BTreeMap;
 
 use ipld_core::ipld::Ipld;
+use tonk_notation::spell_uri;
 
 /// Render an entity as a notation document. `this` is the entity
 /// URI and `fields` its projected values — the two pieces a
@@ -46,7 +47,7 @@ pub fn format(
     }
     out.push('\n');
     out.push_str("  this: ");
-    out.push_str(this);
+    out.push_str(&spell_uri(this));
     out.push('\n');
 
     for (name, value) in fields {
@@ -131,7 +132,7 @@ fn write_string(out: &mut String, s: &str, indent: usize) {
     // anything with a `:` and no whitespace — that catches `did:`,
     // `id:`, `db:`, attribute URIs, etc.
     if looks_like_uri(s) {
-        out.push_str(s);
+        out.push_str(&spell_uri(s));
         return;
     }
     // A string that would need escaping inside a double-quoted
@@ -269,6 +270,13 @@ mod tests {
         let f = fields(&[("model", json!("xyz.tonk.view/greeting"))]);
         let out = format("did:key:zX", &f, "view", None);
         assert!(out.contains("model: xyz.tonk.view/greeting\n"));
+    }
+
+    #[test]
+    fn it_spells_a_bare_scheme_uri_as_a_keyword() {
+        let f = fields(&[("target", json!("tonk:"))]);
+        let out = format("keyword:", &f, "link", None);
+        assert_eq!(out, "link!:\n  this: :keyword\n  target: :tonk\n");
     }
 
     #[test]

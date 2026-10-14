@@ -49,6 +49,8 @@ pub mod transact;
 pub mod concept;
 
 pub mod resolution;
+/// Moving definitions an earlier release wrote to their current shape.
+pub mod upgrade;
 
 pub mod rule_query;
 

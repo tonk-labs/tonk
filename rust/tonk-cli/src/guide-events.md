@@ -25,13 +25,28 @@ the worker is the transient assertion, posted by the runtime
 when the event fires; you describe the projection, not the wire
 call.
 
+### Checkbox state is separate from the change event
+
+For a boolean `done` field, use `checked={done}` to render stored state,
+for example `<input type="checkbox" checked={done} onchange=toggle-task
+ data-task={this}>`. Define `toggle-task` before using that handler. Its
+command can read identity from `dom.event.current-target.dataset/task` and
+the boolean from `dom.event.current-target/checked`; a rule must persist the
+new boolean on the existing task. Use verb-specific event attributes when
+multiple commands could share a shape (see below).
+
+A bare `{done}` inside the tag does not initialize or update the checkbox's
+checked property. A visual click alone proves neither persistence nor sync.
+Read back the record, reload, and check a second client before claiming both.
+See the views guide for the directory and home-page recipe.
+
 ### Wiring a click
 
 ```yaml tonk=eval
 attribute!: &count
   description: The counter's current value
   the: xyz.tonk.counter/count
-  as:  unsigned-integer
+  as:  natural
 
 concept!: &counter
   with:
@@ -147,7 +162,7 @@ Rules of the translation:
   (e.g. `<br>` for empty rich text) rather than `""`.
 - The `as:` type drives coercion: `text` → string, `entity` →
   string parsed as a URI (rejected if it has no `:`),
-  `unsigned-integer` / `signed-integer` / `float` → number,
+  `natural` / `integer` / `float` → number,
   `boolean` → the JS value must already be a boolean (e.g.
   `event.shiftKey`); a non-boolean fails to resolve rather than
   being coerced.

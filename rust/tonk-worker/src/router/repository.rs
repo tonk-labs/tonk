@@ -45,6 +45,7 @@ use super::AppState;
 use super::space_reach;
 
 mod duplication;
+mod identity;
 use crate::reactor::BranchReference;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
 
@@ -297,7 +298,10 @@ pub async fn put_repository(
     // when `tonk` drops at the end of this scope) and re-acquires it.
     drop(tonk);
     let branches: Vec<String> = configuration.branch.keys().cloned().collect();
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     spawn_seed(state, display_name, key, subject, branches);
+    #[cfg(not(target_arch = "wasm32"))]
+    seed_and_initialize(&state, &display_name, None, &key, &subject, &branches).await?;
 
     Ok((StatusCode::CREATED, Json(info)))
 }
@@ -2277,14 +2281,32 @@ async fn run_invite(
     // of an invite URL, and so it can be shortened — an async round-trip a
     // template can't make. The display name needs no URL carrier: it
     // rides in the chain's signed `space.name` meta, inside `access=`.
-    let link = invite_url(
-        &proof,
-        &remote,
-        &seed,
-        repo_name,
+    //
+    // The grant waits in the space as the membership key's ticket, and the
+    // link names only the space and the key's seed; the recipient claims
+    // the ticket with that key. When the space's service does not keep the
+    // ticket, the link carries the chain in `access=` instead, which
+    // redeems the same way (see `issue_ticket`).
+    let link = match super::create_invite::issue_ticket(
+        &tonk,
         &remote_execution.access_url,
+        &chain,
+        seed_bytes,
     )
-    .await?;
+    .await
+    {
+        Some(link) => with_referral(link, repo_name),
+        None => {
+            invite_url(
+                &proof,
+                &remote,
+                &seed,
+                repo_name,
+                &remote_execution.access_url,
+            )
+            .await?
+        }
+    };
 
     // Attempt the shortcut HERE, before the credential overlay and the
     // share control's row are written. Both are read for the first url
@@ -2828,14 +2850,19 @@ pub(super) fn app_origin() -> Option<String> {
 /// The space's display name needs no slot here: it rides in the chain's
 /// signed `space.name` meta, inside the `access=` parameter itself.
 fn long_invite_url(base: &str, proof: &str, remote: &str, seed: &str, space_key: &str) -> String {
-    let base = format!("{base}?access={proof}{remote}#{seed}");
-    match tonk_analytics::launch::space_referral_url(&base, space_key) {
+    with_referral(format!("{base}?access={proof}{remote}#{seed}"), space_key)
+}
+
+/// Add the referral attribution a shared link carries: the organic
+/// channel and the hashed space token.
+fn with_referral(link: String, space_key: &str) -> String {
+    match tonk_analytics::launch::space_referral_url(&link, space_key) {
         Ok(url) => url,
         Err(error) => {
             // Referral metadata must never turn a valid authority grant into
-            // a failed share. The base above is still a complete invite.
+            // a failed share. The link is still a complete invite.
             log!("invite: could not add referral attribution: {error}");
-            base
+            link
         }
     }
 }
@@ -3514,7 +3541,7 @@ async fn remove_replica_from_profile(
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                unique: false,
+                policy: dialog_artifacts::Pick::All,
             });
         }
     }
@@ -3545,7 +3572,7 @@ async fn remove_replica_from_profile(
             the: artifact.the,
             of: artifact.of,
             is: artifact.is,
-            unique: false,
+            policy: dialog_artifacts::Pick::All,
         });
     }
     if !found {
@@ -3646,13 +3673,13 @@ pub(crate) async fn carry_replica_rows(
             the: artifact.the.clone(),
             of: artifact.of.clone(),
             is: artifact.is.clone(),
-            unique: false,
+            policy: dialog_artifacts::Pick::All,
         });
         there = there.retract(super::claim::RawClaim {
             the: artifact.the,
             of: artifact.of,
             is: artifact.is,
-            unique: false,
+            policy: dialog_artifacts::Pick::All,
         });
     }
     let revision = here
@@ -4043,7 +4070,7 @@ async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
 /// A sync remote is never wired here — it would make a remote/auth
 /// failure abort the whole create, so the space never appears.
 /// [`CreateSpaceHandler`] attaches the remote separately, after this.
-async fn create_space_inner(
+pub(super) async fn create_space_inner(
     state: &AppState,
     name: &str,
     description: Option<&str>,
@@ -4080,7 +4107,7 @@ async fn create_space_inner(
 /// sync" forms. A missing repository or empty URL is a no-op (logged),
 /// not an error.
 ///
-async fn enable_sync_inner(
+pub(super) async fn enable_sync_inner(
     state: &AppState,
     key: &str,
     remote: &str,
@@ -4270,8 +4297,7 @@ where
 /// repository. Returns immediately; the work runs after the PUT
 /// response is sent.
 ///
-/// Native builds have no service-worker scope (and no `spawn_local`
-/// runtime here), so they no-op — the seed/status path is browser-only.
+/// Native hosts await this same seed operation before returning from PUT.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn spawn_seed(
     state: AppState,
@@ -4289,16 +4315,6 @@ fn spawn_seed(
         let tonk = state.read().await;
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     });
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-fn spawn_seed(
-    _state: AppState,
-    _display_name: String,
-    _key: String,
-    _subject: Did,
-    _branches: Vec<String>,
-) {
 }
 
 /// Whether `subject` still has a recorded [`Replica`] on the profile's
@@ -4781,7 +4797,7 @@ async fn live_install_records_in(
                 the: claim.the,
                 of: claim.of,
                 is: claim.is,
-                unique: false,
+                policy: dialog_artifacts::Pick::All,
             }),
             _ => None,
         })
@@ -5269,6 +5285,18 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
     let Some((key, session, current)) = installed_seed(tonk, key).await? else {
         return Ok(false);
     };
+    // The install commits below write into the branch directly; a branch
+    // an earlier release wrote is moved to this release's format first,
+    // once per process, as every read and commit through the reactor does.
+    if let Err(error) = tonk
+        .reactor
+        .repository(&key)
+        .branch(CONTENT_BRANCH)
+        .migrate_once(&tonk.operator)
+        .await
+    {
+        log!("seed upgrade: migrating '{key}' failed: {error}");
+    }
 
     // Re-fetch the space's OWN source, not the shipped one. A space on a
     // custom seed follows that seed; comparing against `core.yaml` would
@@ -5460,12 +5488,14 @@ async fn install_seed(
             installed_seed_facts(&shipped, &source, &prior, installed)
         };
         match stage_reinstall(tonk, session, &uninstall, &install, &record, &[]).await {
-            Ok(()) => {
+            Ok(moves) => {
                 log!(
-                    "seed upgrade: '{key}' moves from {prior} to {shipped}: reverted {}, installed {}",
+                    "seed upgrade: '{key}' moves from {prior} to {shipped}: reverted {}, installed {}, re-keyed {} identities",
                     uninstall.len(),
-                    install.durable.len()
+                    install.durable.len(),
+                    moves.len()
                 );
+                rekey_sites(tonk, session, &moves).await;
                 break;
             }
             Err(error) => {
@@ -5514,10 +5544,14 @@ pub(super) async fn install_fresh_from(
 ) -> Result<(), RepositoryError> {
     let install = install_claims_for(source, library).await?;
     let seed = seed_version(library);
-    let session = tonk
-        .reactor
-        .repository(key)
-        .branch(branch)
+    let reference = tonk.reactor.repository(key).branch(branch);
+    // The install commits through the session's handle, not the reactor's
+    // commit, so the once-per-process move of a branch an earlier release
+    // wrote runs here.
+    reference.migrate_once(&tonk.operator).await.map_err(|e| {
+        RepositoryError::Internal(format!("migrate '{key}' branch '{branch}': {e}"))
+    })?;
+    let session = reference
         .acquire(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("open '{key}' branch '{branch}': {e}")))?;
@@ -5537,7 +5571,10 @@ pub(super) async fn install_fresh_from(
 /// install's version together with `own`, and publish the three at once.
 ///
 /// The uninstall commit is skipped when there is nothing to revert, as on a
-/// space's first install.
+/// space's first install. An upgrade also re-keys, in the record's commit,
+/// what the space wrote itself about an attribute or concept the library
+/// declared under an earlier identity (see [`identity`]), and returns each
+/// identity it moved.
 async fn stage_reinstall(
     tonk: &TonkState,
     session: &crate::reactor::BranchSession,
@@ -5545,7 +5582,8 @@ async fn stage_reinstall(
     install: &LibraryClaims,
     record: super::evaluate::SeedRecord<'_>,
     own: &[super::claim::RawClaim],
-) -> Result<(), dialog_repository::CommitError> {
+) -> Result<Vec<(dialog_artifacts::Entity, dialog_artifacts::Entity)>, dialog_repository::CommitError>
+{
     let operator = &tonk.operator;
     let mut first = session.handle().transaction();
     let installed = if uninstall.is_empty() {
@@ -5564,16 +5602,33 @@ async fn stage_reinstall(
             .await?
     };
     let version = installed.version();
+    let rekey = if uninstall.is_empty() {
+        None
+    } else {
+        let declared: std::collections::HashSet<dialog_artifacts::Entity> = install
+            .durable
+            .iter()
+            .map(|claim| claim.of.clone())
+            .collect();
+        let rekeyed = match identity::moves(tonk, &installed, &declared).await {
+            Ok(moves) if moves.is_empty() => Ok(None),
+            Ok(moves) => identity::rekey(tonk, &installed, moves).await.map(Some),
+            Err(error) => Err(error),
+        };
+        rekeyed.unwrap_or_else(|error| {
+            log!("seed upgrade: re-keying earlier identities skipped: {error}");
+            None
+        })
+    };
     let mut last = installed.transaction();
     for instruction in record(&version) {
         last = match instruction {
-            dialog_artifacts::Instruction::Assert(artifact)
-            | dialog_artifacts::Instruction::Replace(artifact) => {
+            dialog_artifacts::Instruction::Assert(artifact, _) => {
                 last.assert(super::claim::RawClaim {
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    unique: false,
+                    policy: dialog_artifacts::Pick::All,
                 })
             }
             dialog_artifacts::Instruction::Retract(artifact) => {
@@ -5581,7 +5636,7 @@ async fn stage_reinstall(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    unique: false,
+                    policy: dialog_artifacts::Pick::All,
                 })
             }
         };
@@ -5589,13 +5644,72 @@ async fn stage_reinstall(
     for claim in own {
         last = last.assert(claim.clone());
     }
+    let mut moves = Vec::new();
+    if let Some(rekey) = rekey {
+        for claim in rekey.retract {
+            last = last.retract(claim);
+        }
+        for claim in rekey.assert {
+            last = last.assert(claim);
+        }
+        moves = rekey.moves;
+    }
     last.commit()
         .perform(operator)
         .await?
         .publish()
         .perform(operator)
         .await?;
-    Ok(())
+    Ok(moves)
+}
+
+/// Point every open tab on `session` whose route concept an upgrade moved at
+/// the concept's current identity. A tab stamped before the upgrade names the
+/// concept the uninstall withdrew, and would report it missing until reload.
+async fn rekey_sites(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+    moves: &[(dialog_artifacts::Entity, dialog_artifacts::Entity)],
+) {
+    if moves.is_empty() {
+        return;
+    }
+    let current: HashMap<_, _> = moves.iter().cloned().collect();
+    let sites: Vec<tonk_schema::Site> = match session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::Site> {
+            this: Term::var("this"),
+            path: Term::var("path"),
+            anchor: Term::var("anchor"),
+            space: Term::var("space"),
+            branch: Term::var("branch"),
+            branch_entity: Term::var("branch_entity"),
+            replica: Term::var("replica"),
+            route: Term::var("route"),
+            concept: Term::var("concept"),
+            profile_branch: Term::var("profile_branch"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+    {
+        Ok(sites) => sites,
+        Err(error) => {
+            log!("seed upgrade: open tabs not re-keyed: {error:?}");
+            return;
+        }
+    };
+    for site in sites {
+        if let Some(now) = current.get(&site.concept.0) {
+            session.state.assert_overlay(super::claim::RawClaim {
+                the: dialog_query::the!("xyz.tonk.site/concept").into(),
+                of: site.this,
+                is: dialog_artifacts::Value::Entity(now.clone()),
+                policy: dialog_artifacts::Pick::Last,
+            });
+        }
+    }
 }
 
 /// `transaction` with `install`'s claims asserted and its commands
@@ -5788,7 +5902,7 @@ async fn live_claims(
                 the: found.the,
                 of: found.of,
                 is: found.is,
-                unique: false,
+                policy: dialog_artifacts::Pick::All,
             });
         }
     }
@@ -5816,21 +5930,21 @@ fn repository_name_claims(
         .parse()
         .map_err(|e| RepositoryError::Internal(format!("space subject: {e}")))?;
     let attribute = |name: &str| {
-        name.parse::<dialog_artifacts::Attribute>()
+        name.parse::<dialog_artifacts::Relation>()
             .map_err(|e| RepositoryError::Internal(format!("attribute '{name}': {e}")))
     };
     let mut claims = vec![super::claim::RawClaim {
         the: attribute("xyz.tonk.repo/name")?,
         of: of.clone(),
         is: dialog_artifacts::Value::String(display_name.to_owned()),
-        unique: true,
+        policy: dialog_artifacts::Pick::Last,
     }];
     if let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) {
         claims.push(super::claim::RawClaim {
             the: attribute("xyz.tonk.repo/description")?,
             of,
             is: dialog_artifacts::Value::String(description.to_owned()),
-            unique: true,
+            policy: dialog_artifacts::Pick::Last,
         });
     }
     Ok(claims)
@@ -5923,7 +6037,7 @@ async fn assertions_at_version(
             the: claim.the.clone(),
             of: claim.of.clone(),
             is: claim.is.clone(),
-            unique: false,
+            policy: dialog_artifacts::Pick::All,
         });
     }
     Ok(claims)
@@ -6313,7 +6427,7 @@ pub async fn create_repository(
     } else {
         let space_credential = tonk_account::peer::mount_verifier(
             tonk.profile.storage(),
-            crate::device::space_location(key),
+            tonk.registry.space_location(key),
             &did,
         )
         .await
@@ -6877,6 +6991,25 @@ pub(crate) async fn space_root_prefix_of(
     })
 }
 
+/// Move `meta`, the meta branch of the space at `key` opened for a direct
+/// write, to this release's storage format when an earlier release laid it
+/// out. The meta commits in this module go through dialog's `Branch`
+/// directly rather than the reactor, so they run the migration every
+/// reactor commit runs first ([`BranchReference::migrate_once`]); a commit
+/// into a branch an earlier release wrote is refused otherwise. It runs on
+/// the handle the write uses, not the reactor's cached one: a cached entry
+/// made here would hold a head the write then moves past, and the
+/// admission cache stamps that head. The reactor learns the head on its
+/// next refresh. A failure is logged, and the commit that follows reports
+/// the refusal.
+///
+/// [`BranchReference::migrate_once`]: dialog_reactor::BranchReference::migrate_once
+async fn migrate_meta(meta: &dialog_repository::Branch, key: &str, tonk: &TonkState) {
+    if let Err(error) = dialog_reactor::migrate(meta, &tonk.operator).await {
+        log!("migrating the meta branch of '{key}' failed: {error}");
+    }
+}
+
 /// Lay down the meta-branch facts and profile-side index for an
 /// already-opened repository.
 ///
@@ -6917,13 +7050,13 @@ where
     // Seed it with the replica record and the meta branch's own
     // `Branch` fact — the meta branch is a real branch of this
     // replica, so it belongs in the enumeration like any other.
-
     let meta = repository
         .branch(META_BRANCH)
         .open()
         .perform(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to open meta branch: {}", e)))?;
+    migrate_meta(&meta, key, tonk).await;
 
     // Local replica of this repository. The display name is not stored
     // here — it lives in the repository's own `tonk/repository` concept
@@ -7853,17 +7986,11 @@ async fn library_claims_after(
             .into_instructions()
             .into_iter()
             .filter_map(|instruction| match instruction {
-                Instruction::Assert(artifact) => Some(super::claim::RawClaim {
+                Instruction::Assert(artifact, policy) => Some(super::claim::RawClaim {
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    unique: false,
-                }),
-                Instruction::Replace(artifact) => Some(super::claim::RawClaim {
-                    the: artifact.the,
-                    of: artifact.of,
-                    is: artifact.is,
-                    unique: true,
+                    policy,
                 }),
                 Instruction::Retract(_) => None,
             })
@@ -7943,14 +8070,14 @@ async fn assertions_are_current(
     use futures_util::StreamExt as _;
 
     let mut grouped: HashMap<
-        (dialog_artifacts::Entity, dialog_artifacts::Attribute),
+        (dialog_artifacts::Entity, dialog_artifacts::Relation),
         (bool, Vec<dialog_artifacts::Value>),
     > = HashMap::new();
     for expected in assertions {
         let entry = grouped
             .entry((expected.of.clone(), expected.the.clone()))
             .or_insert_with(|| (false, Vec::new()));
-        entry.0 |= expected.unique;
+        entry.0 |= expected.policy.elects();
         if !entry.1.contains(&expected.is) {
             entry.1.push(expected.is.clone());
         }
@@ -8030,15 +8157,14 @@ fn raw_seed_metadata(installation: &ProfileInstallation) -> Vec<super::claim::Ra
         .into_iter()
         .map(|instruction| {
             let artifact = match instruction {
-                dialog_artifacts::Instruction::Assert(artifact)
-                | dialog_artifacts::Instruction::Replace(artifact)
+                dialog_artifacts::Instruction::Assert(artifact, _)
                 | dialog_artifacts::Instruction::Retract(artifact) => artifact,
             };
             super::claim::RawClaim {
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                unique: false,
+                policy: dialog_artifacts::Pick::All,
             }
         })
         .collect()
@@ -8918,6 +9044,7 @@ where
         .perform(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to open meta branch: {}", e)))?;
+    migrate_meta(&meta, repository.did().repo_key(), tonk).await;
 
     let replica = Replica::new(tonk.profile.did(), repository.did());
     let mut transaction = meta.transaction().assert(replica.clone());
@@ -9508,9 +9635,7 @@ mod remote_from_facts_tests {
             .into_instructions()
             .into_iter()
             .map(|instruction| match instruction {
-                Instruction::Assert(artifact)
-                | Instruction::Replace(artifact)
-                | Instruction::Retract(artifact) => artifact,
+                Instruction::Assert(artifact, _) | Instruction::Retract(artifact) => artifact,
             })
             .collect()
     }
@@ -9717,9 +9842,7 @@ mod invite_space_from_facts_tests {
             .into_instructions()
             .into_iter()
             .map(|instruction| match instruction {
-                Instruction::Assert(artifact)
-                | Instruction::Replace(artifact)
-                | Instruction::Retract(artifact) => artifact,
+                Instruction::Assert(artifact, _) | Instruction::Retract(artifact) => artifact,
             })
             .collect()
     }
@@ -10335,10 +10458,9 @@ mod invite_chain_tests {
             }
         }
 
-        // The minted link carries the space's display name as the
-        // advisory `name` parameter, read back through the overlay
-        // `Credential` the share view renders — so the recipient's Hub
-        // row is labeled before the space's content syncs.
+        // The minted link, read back through the overlay `Credential` the
+        // share view renders, opens the space and redeems the chain above
+        // through the ticket the space keeps for the membership key.
         {
             use tonk_schema::command::Credential;
             let tonk = state.read().await;
@@ -10407,17 +10529,47 @@ mod invite_chain_tests {
             } else {
                 link
             };
-            let minted = tonk_invite::Invite::parse_url(&resolved)
+            // The link is the space's address with the membership key's
+            // seed; the grant itself waits in the space as that key's
+            // ticket, which the key claims from the serving host.
+            let ticket = tonk_invite::Ticket::parse_url(&resolved)
+                .unwrap_or_else(|e| panic!("link {resolved} did not parse: {e}"))
+                .unwrap_or_else(|| panic!("link {resolved} is not a ticket link"));
+            assert_eq!(
+                ticket.subject().to_string(),
+                key,
+                "the link opens the space it invites into"
+            );
+            let holder = ticket.holder().await.expect("the seed survives shortening");
+            assert_eq!(
+                holder.did().to_string(),
+                membership,
+                "the link's seed derives the membership key"
+            );
+            let holder_did = holder.did();
+            let claimed = tonk_account::ticket::claim(
+                ticket.remote(),
+                holder,
+                &holder_did,
+                None,
+                ticket.subject(),
+            )
+            .await
+            .expect("the serving host answers the claim")
+            .expect("the space keeps the membership key's ticket");
+            assert_eq!(claimed, bytes, "the ticket is the chain the mint recorded");
+            let minted = ticket
+                .redeem(&claimed)
                 .await
-                .unwrap_or_else(|e| panic!("link {resolved} did not parse: {e}"));
+                .expect("the ticket redeems as an invite");
             assert_eq!(
                 minted.space_name.as_deref(),
                 Some("Invite Chain"),
-                "the minted link names the space it invites into"
+                "the ticket names the space it invites into"
             );
             assert!(
                 matches!(minted.audience, tonk_invite::InviteAudience::Open { .. }),
-                "the seed fragment survives shortening and resolution"
+                "a ticket redeems as an audience-open invite"
             );
         }
 
@@ -10677,7 +10829,7 @@ concept!: &space
     subject:
       description: The repository subject.
       the: xyz.tonk.space/subject
-      cardinality: one
+      cardinality: :one
       as: entity
 
 view!:
@@ -10693,12 +10845,12 @@ concept!: &route
     path:
       description: The path pattern.
       the: xyz.tonk.route/path
-      cardinality: one
+      cardinality: :one
       as: text
     concept:
       description: The model rendered for the path.
       the: xyz.tonk.route/concept
-      cardinality: one
+      cardinality: :one
       as: entity
 
 route!: &obsolete-profile-library
@@ -10731,10 +10883,16 @@ route!: &foreign-profile-route
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        let (storage, profile) =
-            crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
-                .await
-                .expect("test profile opens");
+        // Isolate the directory-level system key as well as the profile.
+        let directory = dialog_effects::storage::Directory::At(
+            std::env::temp_dir()
+                .join(&name)
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let (storage, profile) = crate::device::open_profile_at(&name, directory.clone())
+            .await
+            .expect("test profile opens");
         let session = crate::session::open(&profile)
             .await
             .expect("test session opens");
@@ -10759,7 +10917,7 @@ route!: &foreign-profile-route
             profile_library: Default::default(),
             registry: crate::device::Registry {
                 profile: name,
-                directory: dialog_effects::storage::Directory::Profile,
+                directory,
                 standing: Default::default(),
             },
             profile_transition: Default::default(),
@@ -11167,7 +11325,7 @@ route!: &foreign-profile-route
             .await
             .expect("installation history resolves");
 
-        let the: dialog_artifacts::Attribute = "db.meta/description"
+        let the: dialog_artifacts::Relation = "db.meta/description"
             .parse()
             .expect("description attribute parses");
         let of: dialog_artifacts::Entity = "tonk:space".parse().expect("space entity parses");
@@ -11186,13 +11344,13 @@ route!: &foreign-profile-route
                 the: the.clone(),
                 of: of.clone(),
                 is: desired.clone(),
-                unique: false,
+                policy: dialog_artifacts::Pick::All,
             })
             .assert(super::super::claim::RawClaim {
                 the: the.clone(),
                 of: of.clone(),
                 is: dialog_artifacts::Value::String("stale account writer".to_owned()),
-                unique: false,
+                policy: dialog_artifacts::Pick::All,
             })
             .commit()
             .publish()
@@ -11233,7 +11391,7 @@ route!: &foreign-profile-route
                 .assertions
                 .into_iter()
                 .find(|claim| {
-                    claim.unique
+                    claim.policy.elects()
                         && claim.of.to_string() == "tonk:space"
                         && claim.the.to_string() == "xyz.tonk.view/directory"
                 })
@@ -11244,7 +11402,7 @@ route!: &foreign-profile-route
                 is: dialog_artifacts::Value::String(
                     "<div data-stale-profile-library></div>".to_owned(),
                 ),
-                unique: false,
+                policy: dialog_artifacts::Pick::All,
             };
             let session = tonk
                 .reactor
@@ -11257,7 +11415,7 @@ route!: &foreign-profile-route
             if stale_first {
                 txn = txn.retract(expected.clone()).assert(stale.clone()).assert(
                     super::super::claim::RawClaim {
-                        unique: false,
+                        policy: dialog_artifacts::Pick::All,
                         ..expected.clone()
                     },
                 );
@@ -14645,6 +14803,65 @@ block/insert!:
             "the name rides in the chain meta, never as a loose parameter: {url}"
         );
     }
+
+    /// The ticket link is the space's address on the host serving it,
+    /// with the membership key's seed in the fragment.
+    ///
+    /// The fragment split is the load-bearing part. The seed must never
+    /// reach a server, and shortening PUTs only the path + query — so a
+    /// seed that slipped into the query would be uploaded to the shortcut
+    /// service in plaintext.
+    #[dialog_common::test]
+    async fn it_builds_the_ticket_link_on_the_serving_host() {
+        let subject: dialog_varsig::Did =
+            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                .parse()
+                .unwrap();
+        let seed = [6u8; 32];
+        let encoded = bs58::encode(seed).into_string();
+        let link = tonk_invite::Ticket::new(
+            subject.clone(),
+            seed,
+            &url::Url::parse("https://tonk.example/ucan/").unwrap(),
+        )
+        .and_then(|ticket| ticket.to_url())
+        .expect("the link assembles");
+        let url = super::with_referral(link, subject.as_str());
+
+        let parsed = url::Url::parse(&url).expect("ticket link parses");
+        assert_eq!(
+            parsed.origin().ascii_serialization(),
+            "https://tonk.example"
+        );
+        assert_eq!(parsed.path(), format!("/space/{subject}"));
+        assert_eq!(parsed.fragment(), Some(encoded.as_str()));
+        assert!(parsed.query_pairs().any(|(key, value)| {
+            key == tonk_analytics::launch::CHANNEL_PARAMETER && value == "reshare"
+        }));
+        assert!(parsed.query_pairs().any(|(key, value)| {
+            key == tonk_analytics::launch::SPACE_PARAMETER
+                && value == tonk_analytics::anonymize(subject.as_str())
+        }));
+        assert!(
+            !parsed.query_pairs().any(|(key, _)| key == "access"),
+            "the grant waits in the space, never in the link: {url}"
+        );
+
+        // The secret is the fragment, never the query — everything before
+        // `#` is what a shortcut PUT would upload.
+        let (sent, fragment) = url.split_once('#').expect("the seed must be a fragment");
+        assert_eq!(fragment, encoded);
+        assert!(
+            !sent.contains(&encoded),
+            "the seed must not appear in the path or query: {sent}",
+        );
+
+        let ticket = tonk_invite::Ticket::parse_url(&url)
+            .unwrap()
+            .expect("the link reads back as a ticket");
+        assert_eq!(ticket.subject(), &subject);
+        assert_eq!(ticket.remote().as_str(), "https://tonk.example/ucan/");
+    }
 }
 
 #[cfg(test)]
@@ -14656,8 +14873,7 @@ mod seed_tests {
         facts
             .iter()
             .map(|instruction| match instruction {
-                dialog_artifacts::Instruction::Assert(artifact)
-                | dialog_artifacts::Instruction::Replace(artifact)
+                dialog_artifacts::Instruction::Assert(artifact, _)
                 | dialog_artifacts::Instruction::Retract(artifact) => artifact.the.to_string(),
             })
             .collect()
@@ -14822,8 +15038,7 @@ mod seed_tests {
         let attributes: Vec<String> = facts
             .iter()
             .map(|instruction| match instruction {
-                dialog_artifacts::Instruction::Assert(artifact)
-                | dialog_artifacts::Instruction::Replace(artifact)
+                dialog_artifacts::Instruction::Assert(artifact, _)
                 | dialog_artifacts::Instruction::Retract(artifact) => artifact.the.to_string(),
             })
             .collect();
@@ -15952,7 +16167,7 @@ concept!: &plot
       description: "What is planted."
       the: xyz.example.plot/label
       as: text
-      cardinality: one
+      cardinality: :one
 
 concept!: &space-home
   this: space:home
@@ -16310,7 +16525,7 @@ name!:
         );
         for field in fields {
             text.push_str(&format!(
-                "    {field}:\n      description: \"{field}\"\n      the: probe.thing/{field}\n      as: text\n      cardinality: one\n"
+                "    {field}:\n      description: \"{field}\"\n      the: probe.thing/{field}\n      as: text\n      cardinality: :one\n"
             ));
         }
         text
@@ -16443,6 +16658,318 @@ name!:
             "left over from earlier libraries: {left:?}"
         );
         assert!(lacking.is_empty(), "missing after the upgrade: {lacking:?}");
+    }
+
+    /// A library of one unnamed concept over one attribute.
+    const NOTES: &str = r#"
+concept!: &note
+  description: A note.
+  with:
+    title:
+      description: The note's title.
+      the: xyz.example.note/title
+      as: text
+"#;
+
+    /// What a template writes over the library, the way the discovery
+    /// installer's home recipe does: a home concept of its own whose field
+    /// reads the library's attribute, and the space's `/` routed to the
+    /// library's concept.
+    const TEMPLATE: &str = r#"
+concept!: &space-home
+  this: space:home
+  description: The space home page.
+  with:
+    title:
+      description: The home's title.
+      the: xyz.example.note/title
+      as: text
+
+route!:
+  path: "/"
+  concept: note
+"#;
+
+    /// `claims` under the identities `earlier` maps each current one to.
+    fn under_earlier_identities(
+        claims: Vec<super::super::claim::RawClaim>,
+        earlier: &HashMap<dialog_artifacts::Entity, dialog_artifacts::Entity>,
+    ) -> Vec<super::super::claim::RawClaim> {
+        claims
+            .into_iter()
+            .map(|mut claim| {
+                if let Some(then) = earlier.get(&claim.of) {
+                    claim.of = then.clone();
+                }
+                if let dialog_artifacts::Value::Entity(entity) = &claim.is
+                    && let Some(then) = earlier.get(entity)
+                {
+                    claim.is = dialog_artifacts::Value::Entity(then.clone());
+                }
+                claim
+            })
+            .collect()
+    }
+
+    /// A space the release before select policies seeded with `library` and
+    /// then `template`: what this release writes for both, under the
+    /// identities that release gave the library's attributes and unnamed
+    /// concepts. Returns the space and each `(identity then, identity now)`.
+    async fn earlier_template_space(
+        tonk: &TonkState,
+        library: &str,
+        template: &str,
+    ) -> (
+        String,
+        Vec<(dialog_artifacts::Entity, dialog_artifacts::Entity)>,
+    ) {
+        let (key, subject) = empty_space(tonk, "Template").await;
+        let install = library_claims(library, "library")
+            .await
+            .expect("the library analyzes");
+        let mut facts: identity::Facts = HashMap::new();
+        for claim in &install.durable {
+            facts
+                .entry(claim.of.clone())
+                .or_default()
+                .push((claim.the.clone(), claim.is.clone()));
+        }
+        let moves = identity::moves_in(&facts);
+        let earlier: HashMap<_, _> = moves
+            .iter()
+            .map(|(then, now)| (now.clone(), then.clone()))
+            .collect();
+        let install = LibraryClaims {
+            durable: under_earlier_identities(install.durable, &earlier),
+            transient: install.transient,
+        };
+        let seed = seed_version(&format!(
+            "{library}\n# the release before select policies\n"
+        ));
+        let record = |installed: &dialog_artifacts::history::Version| {
+            installed_seed_facts(&seed, STANDARD_LIBRARY_URL, SEED_NONE, installed)
+        };
+        let own = repository_name_claims(&subject, "Template", None).expect("the name encodes");
+        let session = content(tonk, &key).await;
+        stage_reinstall(tonk, &session, &[], &install, &record, &own)
+            .await
+            .expect("the library installs");
+
+        let seeded = library_claims_after(Some(library), template, "template")
+            .await
+            .expect("the template analyzes");
+        let mut transaction = session.handle().transaction();
+        for claim in under_earlier_identities(seeded.durable, &earlier) {
+            transaction = transaction.assert(claim);
+        }
+        transaction
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .expect("the template commits")
+            .publish()
+            .perform(&tonk.operator)
+            .await
+            .expect("the template publishes");
+        (key, moves)
+    }
+
+    /// Every live claim on the space whose value is `entity`.
+    async fn naming(tonk: &TonkState, key: &str, entity: &dialog_artifacts::Entity) -> Vec<Triple> {
+        use futures_util::StreamExt as _;
+        let session = content(tonk, key).await;
+        let stream = session
+            .handle()
+            .claims()
+            .select(
+                dialog_artifacts::ArtifactSelector::new()
+                    .is(dialog_artifacts::Value::Entity(entity.clone())),
+            )
+            .perform(&tonk.operator)
+            .await
+            .expect("the claims read");
+        futures_util::pin_mut!(stream);
+        let mut claims = Vec::new();
+        while let Some(claim) = stream.next().await {
+            let claim = claim
+                .expect("a claim")
+                .to_owned()
+                .expect("the claim decodes");
+            claims.push((
+                claim.the.to_string(),
+                claim.of.to_string(),
+                format!("{:?}", claim.is),
+            ));
+        }
+        claims
+    }
+
+    /// A space seeded by the release before select policies keeps what its
+    /// template built on the library through the upgrade that moves the
+    /// library to the identities this release gives it: the `/` it routed
+    /// to a library concept mounts that concept, and its home concept's
+    /// field reads the library's attribute. Nothing on the branch names an
+    /// identity the upgrade withdrew.
+    #[dialog_common::test]
+    async fn an_upgrade_keeps_what_a_template_built_on_the_library() {
+        let tonk = test_state().await;
+        let library = format!("{CORE}\n{NOTES}");
+        let (key, moves) = earlier_template_space(&tonk, &library, TEMPLATE).await;
+        let notes = library_claims(NOTES, "notes")
+            .await
+            .expect("the notes analyze");
+        let declaring = |the: &str| {
+            notes
+                .durable
+                .iter()
+                .find(|claim| claim.the.to_string() == the)
+                .map(|claim| claim.of.clone())
+                .expect("the notes declare it")
+        };
+        let moved = |now: dialog_artifacts::Entity| {
+            moves
+                .iter()
+                .find(|(_, current)| *current == now)
+                .cloned()
+                .expect("its identity moved")
+        };
+        let concept = moved(declaring("db.concept.with/title"));
+        let attribute = moved(declaring("db.attribute/id"));
+        assert!(
+            routes_at(&tonk, &key, "/")
+                .await
+                .contains(&concept.0.to_string()),
+            "before the upgrade the template's route names the earlier identity"
+        );
+
+        assert!(install(&tonk, &key, &library).await, "the space is behind");
+
+        assert_eq!(
+            routes_at(&tonk, &key, "/").await,
+            [concept.1.to_string()],
+            "the template's route follows the concept to its current identity"
+        );
+        assert_eq!(
+            resolved(&tonk, &key, "/").await.as_deref(),
+            Some(concept.1.as_str()),
+            "the router mounts the concept the library now declares"
+        );
+        let concept_now = concept.1.to_string();
+        let home = state_of(&tonk, &key, &[concept_now.as_str(), "space:home"]).await;
+        let reads = |of: &str| {
+            (
+                "db.concept.with/title".to_owned(),
+                of.to_owned(),
+                format!("{:?}", dialog_artifacts::Value::Entity(attribute.1.clone())),
+            )
+        };
+        assert!(
+            home.contains(&reads(&concept_now)),
+            "the library's concept is defined at its current identity: {home:?}"
+        );
+        assert!(
+            home.contains(&reads("space:home")),
+            "the template's home reads the library's attribute at its current identity: {home:?}"
+        );
+        for (then, _) in &moves {
+            assert_eq!(
+                naming(&tonk, &key, then).await,
+                Vec::<Triple>::new(),
+                "nothing names the withdrawn identity {then}"
+            );
+        }
+    }
+
+    /// A template's app: one concept of its own, which its home renders.
+    const APP: &str = r#"
+concept!: &writer-app
+  description: The app.
+  with:
+    title:
+      description: The app's title.
+      the: xyz.example.app/title
+      as: text
+"#;
+
+    /// The attribute the concept `of` reads its `field` through.
+    async fn field_attribute(
+        tonk: &TonkState,
+        key: &str,
+        of: &str,
+        field: &str,
+    ) -> Option<dialog_artifacts::Entity> {
+        use futures_util::StreamExt as _;
+        let session = content(tonk, key).await;
+        let stream = session
+            .handle()
+            .claims()
+            .select(
+                dialog_artifacts::ArtifactSelector::new()
+                    .the(
+                        format!("db.concept.with/{field}")
+                            .parse()
+                            .expect("an attribute"),
+                    )
+                    .of(of.parse().expect("an entity")),
+            )
+            .perform(&tonk.operator)
+            .await
+            .expect("the claims read");
+        futures_util::pin_mut!(stream);
+        let claim = stream.next().await?.expect("a claim");
+        match claim.to_owned().expect("the claim decodes").is {
+            dialog_artifacts::Value::Entity(attribute) => Some(attribute),
+            _ => None,
+        }
+    }
+
+    /// Whether `attribute` is declared on the space.
+    async fn declared(tonk: &TonkState, key: &str, attribute: &dialog_artifacts::Entity) -> bool {
+        state_of(tonk, key, &[attribute.as_str()])
+            .await
+            .iter()
+            .any(|(the, _, _)| the == "db.attribute/id")
+    }
+
+    /// A space a discovery template seeded under the release before select
+    /// policies keeps the home the installer wrote for it through the upgrade
+    /// that moves core to this release's identities: `tonk/space` still names
+    /// `space:home`, and the home's `subject` field reads
+    /// `dialog.replica/subject`, which core declares, where core declares it
+    /// now. Before re-keying, the field named the identity the upgrade
+    /// withdrew, so the home concept could not be rebuilt and the space
+    /// rendered "Model not found".
+    #[dialog_common::test]
+    async fn an_upgrade_keeps_the_home_the_discovery_installer_wrote() {
+        let tonk = test_state().await;
+        let template = format!("{APP}\n{}", super::super::seed::home_recipe("writer-app"));
+        let (key, _) = earlier_template_space(&tonk, CORE, &template).await;
+        let earlier = field_attribute(&tonk, &key, "space:home", "subject")
+            .await
+            .expect("the home reads the subject");
+        assert!(declared(&tonk, &key, &earlier).await);
+        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["space:home"]);
+
+        assert!(install(&tonk, &key, CORE).await, "the space is behind");
+
+        assert_eq!(
+            referents(&tonk, &key, "tonk/space").await,
+            ["space:home"],
+            "the home the installer wrote is still the space's home"
+        );
+        let now = field_attribute(&tonk, &key, "space:home", "subject")
+            .await
+            .expect("the home still reads the subject");
+        assert_ne!(now, earlier, "the field follows the attribute's identity");
+        assert!(
+            declared(&tonk, &key, &now).await,
+            "the attribute the home reads is declared"
+        );
+        assert_eq!(
+            naming(&tonk, &key, &earlier).await,
+            Vec::<Triple>::new(),
+            "nothing names the identity the upgrade withdrew"
+        );
     }
 
     /// B-09: a space an agent built is upgraded from production's library to
@@ -17037,6 +17564,184 @@ attribute!: &probe/next
             "the component lost {} claims: {:?}",
             missing.len(),
             missing.iter().take(5).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod library_quarantine_tests {
+    use super::*;
+
+    /// The rules `branch` of `repo` sets aside, read as
+    /// `dialog.rule/quarantined`.
+    async fn quarantined(tonk: &TonkState, repo: &str, branch: &str) -> Vec<String> {
+        let predicate: dialog_query::ConceptDescriptor =
+            serde_json::from_value(serde_json::json!({ "with": {
+                "concept": { "the": "dialog.rule/quarantined", "as": "Entity" }
+            }}))
+            .expect("a descriptor");
+        let mut terms = dialog_query::Parameters::new();
+        terms.insert("this".into(), dialog_query::Term::var("this"));
+        terms.insert("concept".into(), dialog_query::Term::var("concept"));
+        tonk.reactor
+            .repository(repo)
+            .branch(branch)
+            .query(dialog_query::ConceptQuery { predicate, terms })
+            .perform(&tonk.operator)
+            .await
+            .expect("the quarantine reads")
+            .iter()
+            .map(|row| format!("{row:?}"))
+            .collect()
+    }
+
+    /// dialog sets aside a rule that closes a cycle through an absence
+    /// test, so a library rule that does is silently left out. None of
+    /// the standard libraries may: each is installed onto a space, and
+    /// the profile library onto the profile branch, and neither sets any
+    /// rule aside.
+    ///
+    /// Native only: it needs a whole worker state, which the native test
+    /// fixture builds. dialog's quarantine runs the same on wasm, covered
+    /// by dialog-repository's `transaction::quarantine` tests.
+    #[dialog_common::test]
+    async fn no_standard_library_rule_is_set_aside() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let key = create_space_inner(&state, "Library audit", None)
+            .await
+            .expect("the space creates");
+        let tonk = state.read().await;
+        for (name, body) in [
+            (
+                "issue",
+                include_str!("../../../tonk-core/assets/library/issue.yaml"),
+            ),
+            (
+                "meta",
+                include_str!("../../../tonk-core/assets/library/meta.yaml"),
+            ),
+            (
+                "notebook",
+                include_str!("../../../tonk-core/assets/library/notebook.yaml"),
+            ),
+            (
+                "prose",
+                include_str!("../../../tonk-core/assets/library/prose.yaml"),
+            ),
+            (
+                "table",
+                include_str!("../../../tonk-core/assets/library/table.yaml"),
+            ),
+        ] {
+            super::super::evaluate::evaluate_body(
+                &tonk,
+                &key,
+                CONTENT_BRANCH,
+                body.to_owned(),
+                true,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("the {name} library installs: {error}"));
+        }
+        assert_eq!(
+            quarantined(&tonk, &key, CONTENT_BRANCH).await,
+            Vec::<String>::new(),
+            "no space library rule is set aside"
+        );
+
+        reconcile_profile_library_from(
+            &tonk,
+            include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned(),
+        )
+        .await
+        .expect("the profile library installs");
+        let profile = tonk.reactor.profile_repository().name().to_owned();
+        assert_eq!(
+            quarantined(&tonk, &profile, &tonk.active_branch).await,
+            Vec::<String>::new(),
+            "no profile library rule is set aside"
+        );
+    }
+}
+
+#[cfg(test)]
+mod meta_migration_tests {
+    use super::*;
+
+    /// A space an earlier release wrote has its meta branch laid out the
+    /// earlier way too. The writes into it from this module (an upstream
+    /// recorded on `PUT /api/repository/{key}`, a join renewed) go through
+    /// dialog's `Branch` directly, not the reactor, so they move the branch
+    /// to this release's format first; a commit into the earlier layout is
+    /// refused.
+    ///
+    /// Native only: it needs a whole worker state, which the native test
+    /// fixture builds. The refusal itself is pinned on both targets by
+    /// dialog-repository's `a_branch_an_earlier_release_wrote_is_migrated_once`.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn a_meta_branch_an_earlier_release_wrote_is_migrated_before_it_is_written() {
+        use dialog_credentials::ed25519::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+
+        let state = crate::router::command::tests::native::test_state().await;
+        let tonk = state.read().await;
+        let subject = Ed25519Signer::generate().await.unwrap().did();
+        let key = subject.repo_key().to_owned();
+        let repository = super::super::join::mount_replica_with_configuration(
+            &tonk,
+            &subject,
+            RepositoryConfiguration::default(),
+        )
+        .await
+        .expect("the replica mounts");
+
+        let meta = tonk.reactor.repository(&key).branch(META_BRANCH);
+        let handle = meta
+            .acquire(&tonk.operator)
+            .await
+            .expect("the meta branch opens")
+            .handle()
+            .clone();
+        // The reactor opened this branch while the mount was recording
+        // into it directly; read the head the mount left.
+        handle
+            .refresh(&tonk.operator)
+            .await
+            .expect("the meta branch head is read");
+        handle
+            .rekey_storage(0)
+            .perform(&tonk.operator)
+            .await
+            .expect("the meta branch is laid out the earlier way");
+        assert!(
+            meta.migration_pending(&tonk.operator)
+                .await
+                .expect("the layout is read"),
+            "a meta branch the earlier release laid out needs migrating"
+        );
+
+        let configuration = RepositoryConfiguration::default().remote(
+            "origin",
+            RemoteConfiguration::new(dialog_repository::SiteAddress::from(
+                dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
+            )),
+        );
+        ensure_remote_config(&tonk, &repository, &key, &configuration)
+            .await
+            .expect("the write moves the meta branch to this release's format first");
+        // The write moved the branch through its own handle; the reactor's
+        // cached handle learns the head on its next refresh.
+        handle
+            .refresh(&tonk.operator)
+            .await
+            .expect("the cached handle reads the moved head");
+        assert!(
+            !meta
+                .migration_pending(&tonk.operator)
+                .await
+                .expect("the layout is read"),
+            "the meta branch is in this release's format"
         );
     }
 }

@@ -45,7 +45,7 @@ Produces, in `domain.rs` `pub mod account`:
     /// a deterministic winner rather than accumulating.
     #[derive(Attribute, Clone, PartialEq, PartialOrd)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct PasskeyCreatedAt(pub f64);
 
     /// The browser and operating system where passkey creation ran, e.g.
@@ -53,7 +53,7 @@ Produces, in `domain.rs` `pub mod account`:
     /// WebAuthn does not expose those reliably.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct PasskeyCreatedOn(pub String);
 ```
 
