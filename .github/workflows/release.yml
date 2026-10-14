@@ -101,13 +101,17 @@ jobs:
     name: 'Publish GitHub release'
     needs: ['resolve', 'build-cli', 'artifact-smoke']
     runs-on: ubuntu-latest
+    timeout-minutes: 200
     permissions:
+      actions: read
       contents: write
     env:
       VERSION: ${{ needs.resolve.outputs.version }}
       CHANNEL: ${{ needs.resolve.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/require-tag-verification
+
       - uses: actions/download-artifact@v4
         with:
           name: tonk-macos-arm64

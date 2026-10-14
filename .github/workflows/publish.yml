@@ -30,8 +30,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       deployments: write
       pull-requests: write
+    timeout-minutes: 240
     name: Cloudflare Artifacts
     outputs:
       channel: ${{ github.event_name == 'pull_request' && 'preview' || github.ref == 'refs/heads/main' && 'dev' || steps.release.outputs.channel }}
@@ -80,12 +82,10 @@ jobs:
       - name: Build assets
         env:
           DEPLOY_EVENT: ${{ github.event_name }}
-          DEPLOY_REF: ${{ github.ref }}
-          DEPLOY_CHANNEL: ${{ steps.release.outputs.channel }}
         run: |
           artifact=tonk-cloudflare-artifacts
-          if [ "$DEPLOY_EVENT" = pull_request ] || [ "$DEPLOY_REF" = refs/heads/main ] || [ "$DEPLOY_CHANNEL" = staging ]; then
-            artifact=tonk-cloudflare-preview-artifacts
+          if [ "$DEPLOY_EVENT" = pull_request ]; then
+            artifact=tonk-cloudflare-ci-artifacts
           fi
           nix build --accept-flake-config ".#$artifact"
 
@@ -100,6 +100,10 @@ jobs:
           path: mcp/chatgpt/public
           if-no-files-found: error
           retention-days: 3
+
+      - name: Require full tag verification before release side effects
+        if: github.ref_type == 'tag'
+        uses: ./.github/actions/require-tag-verification
 
       # A pull request gets its own deployment in the disposable
       # `preview` environment.

@@ -12,12 +12,17 @@ on:
   push:
     branches:
       - main
+    tags: ['v*']
 
 name: 'Test'
 
+env:
+  CI_SUFFIX: ${{ github.event_name == 'pull_request' && '-ci' || '' }}
+  UI_PACKAGE: ${{ github.event_name == 'pull_request' && 'tonk-ui-ci' || 'tonk-ui' }}
+
 concurrency:
   group: tests-${{ github.workflow }}-${{ inputs.version != '' && github.run_id || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   release-tools:
@@ -42,6 +47,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source-sha || github.sha }}
+          fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
       - uses: actions/checkout@v4
         if: inputs.version != ''
         with:
@@ -53,6 +59,8 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: python3 .release-controller/scripts/release_stamp.py "$VERSION"
+      - uses: ./.github/actions/resolve-release
+        if: github.ref_type == 'tag' && inputs.version == ''
       - uses: wimpysworld/nothing-but-nix@main
       - uses: cachix/install-nix-action@v31
         with:
@@ -65,6 +73,8 @@ jobs:
         with:
           send-statistics: false
           ignore-missing-flake-lock: false
+      - name: Test release gate selection
+        run: python3 -B scripts/tests/test-tag-verification.py
       - name: 'Run lints'
         shell: bash
         run: |
@@ -75,15 +85,17 @@ jobs:
     name: 'Build end-to-end test archive'
     runs-on: 'ubuntu-latest'
     # Build the source-dependent archive once. The shards below realize these
-    # exact store paths from Cachix instead of racing three identical cold
-    # builds on separate runners. This is independent of lint, so overlap the
-    # two expensive prerequisites; shards still require both to succeed.
+    # exact store paths via workflow artifacts, including for forks without
+    # Cachix write credentials. Browser assets build independently in parallel.
     # Cold native archive builds can exceed 30 minutes before tests start.
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source-sha || github.sha }}
+          fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
+      - uses: ./.github/actions/resolve-release
+        if: github.ref_type == 'tag' && inputs.version == ''
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -100,12 +112,64 @@ jobs:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
       - name: 'Build end-to-end test inputs'
         shell: bash
-        run: nix build --accept-flake-config .#tonk-cli .#tests-e2e
+        run: |
+          time nix build --accept-flake-config --print-build-logs --no-link ".#tonk-cli$CI_SUFFIX" ".#tests-e2e$CI_SUFFIX"
+          cli="$(nix eval --raw ".#tonk-cli$CI_SUFFIX.outPath")"
+          archive="$(nix eval --raw ".#tests-e2e$CI_SUFFIX.outPath")"
+          mkdir -p e2e-native/cargo-timings
+          cp -r "$archive/cargo-timings/." e2e-native/cargo-timings/
+          printf '%s\n' "$archive" > e2e-native/cargo-timings/store-path.txt
+          mapfile -t closure < <(nix-store --query --requisites "$cli" "$archive")
+          time nix-store --export "${closure[@]}" | gzip -1 > e2e-native/closure.nar.gz
+          printf 'TONK_BIN=%s/bin/tonk\nTONK_E2E_ARCHIVE=%s/tests-e2e%s.tar.zst\n' "$cli" "$archive" "$CI_SUFFIX" > e2e-native/paths.env
+          du -h e2e-native/closure.nar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-native
+          path: e2e-native/
+          compression-level: 0
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 1
+
+  e2e-browser-build:
+    if: inputs.version == ''
+    name: 'Build end-to-end browser assets'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
+      - uses: ./.github/actions/resolve-release
+        if: github.ref_type == 'tag'
+      - uses: wimpysworld/nothing-but-nix@main
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: Build and pack browser assets
+        run: |
+          time nix build --accept-flake-config --no-link ".#$UI_PACKAGE"
+          ui="$(nix eval --raw ".#$UI_PACKAGE.outPath")"
+          time tar -czf e2e-browser.tar.gz -C "$ui" .
+          du -h e2e-browser.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-browser
+          path: e2e-browser.tar.gz
+          compression-level: 0
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 1
 
   e2e-shard:
     if: inputs.version == ''
     name: 'End-to-end shard ${{ matrix.shard }}/3'
-    needs: ['lints', 'e2e-build']
+    needs: ['e2e-build', 'e2e-browser-build']
     runs-on: 'ubuntu-latest'
     timeout-minutes: 45
     strategy:
@@ -116,6 +180,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source-sha || github.sha }}
+          fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
+      - uses: ./.github/actions/resolve-release
+        if: github.ref_type == 'tag' && inputs.version == ''
       - uses: wimpysworld/nothing-but-nix@main
         with:
           root-safe-haven: 40960
@@ -126,6 +193,22 @@ jobs:
         with:
           name: tonk-test-cache
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-native
+          path: e2e-native
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-browser
+          path: e2e-browser
+      - name: Restore exact end-to-end inputs
+        shell: bash
+        run: |
+          time gzip -dc e2e-native/closure.nar.gz | nix-store --import
+          mkdir -p "$RUNNER_TEMP/tonk-e2e-ui"
+          tar -xzf e2e-browser/e2e-browser.tar.gz -C "$RUNNER_TEMP/tonk-e2e-ui"
+          cat e2e-native/paths.env >> "$GITHUB_ENV"
+          echo "TONK_UI_TEST_ARTIFACT=$RUNNER_TEMP/tonk-e2e-ui" >> "$GITHUB_ENV"
       - name: 'Map tonk.network to loopback'
         # The harness serves the app at https://tonk.network:{port} and
         # maps the name inside Chrome via --host-resolver-rules. Native
@@ -139,7 +222,7 @@ jobs:
         env:
           TONK_E2E_DIAGNOSTICS_DIR: '${{ runner.temp }}/tonk-e2e-diagnostics'
         run: |
-          nix develop --accept-flake-config .#ci --command test:e2e \
+          time nix develop --accept-flake-config .#ci --command test:e2e \
             --partition 'count:${{ matrix.shard }}/3'
       - name: 'Upload end-to-end timing diagnostics'
         if: always()
@@ -165,13 +248,13 @@ jobs:
 
   service-worker:
     name: 'Service-worker lifecycle tests'
-    needs: ['lints']
     runs-on: 'ubuntu-latest'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source-sha || github.sha }}
+          fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
       - uses: actions/checkout@v4
         if: inputs.version != ''
         with:
@@ -183,6 +266,8 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: python3 .release-controller/scripts/release_stamp.py "$VERSION"
+      - uses: ./.github/actions/resolve-release
+        if: github.ref_type == 'tag' && inputs.version == ''
       - uses: wimpysworld/nothing-but-nix@main
       - uses: cachix/install-nix-action@v31
         with:
@@ -198,7 +283,6 @@ jobs:
 
   tests:
     name: 'Tests'
-    needs: ['lints']
     runs-on: 'ubuntu-latest'
     timeout-minutes: 75
     strategy:
@@ -208,9 +292,16 @@ jobs:
         platform: ["native", "web"]
         profile: ["debug", "release"]
     steps:
-      - uses: actions/checkout@v4
+      # Keep branch-protection contexts stable and state plainly that optimized
+      # suites are deferred. Main/tag runs execute every matrix cell below.
+      - name: Defer optimized tests to main and release tags
+        if: github.event_name == 'pull_request' && matrix.profile == 'release'
+        run: echo 'Optimized tests were not run on this PR. They run on main and v* release tags; PR correctness coverage runs in the debug context.' | tee -a "$GITHUB_STEP_SUMMARY"
+      - if: github.event_name != 'pull_request' || matrix.profile != 'release'
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source-sha || github.sha }}
+          fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
       - uses: actions/checkout@v4
         if: inputs.version != ''
         with:
@@ -222,18 +313,24 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: python3 .release-controller/scripts/release_stamp.py "$VERSION"
+      - uses: ./.github/actions/resolve-release
+        if: github.ref_type == 'tag' && inputs.version == ''
       - name: Free disk space
+        if: github.event_name != 'pull_request' || matrix.profile != 'release'
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: false
-      - uses: wimpysworld/nothing-but-nix@main
+      - if: github.event_name != 'pull_request' || matrix.profile != 'release'
+        uses: wimpysworld/nothing-but-nix@main
         with:
           # Reserve ~40 GB on / so the web test leg has temp headroom.
           root-safe-haven: 40960
-      - uses: cachix/install-nix-action@v31
+      - if: github.event_name != 'pull_request' || matrix.profile != 'release'
+        uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@v16
+      - if: github.event_name != 'pull_request' || matrix.profile != 'release'
+        uses: cachix/cachix-action@v16
         # Cache uploads are an optimization. A post-job upload timeout must
         # not turn passing tests red; the Run tests step still fails normally.
         continue-on-error: true
@@ -241,10 +338,22 @@ jobs:
           name: tonk-test-cache
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
       - name: 'Run tests'
+        if: github.event_name != 'pull_request' || matrix.profile != 'release'
+        env:
+          TEST_PROFILE: ${{ github.event_name == 'pull_request' && 'ci' || matrix.profile }}
+          TONK_BUILD_TIMINGS_DIR: ${{ runner.temp }}/cargo-timings
         shell: bash
         run: |
           nix develop \
             --accept-flake-config \
             --set-env-var TMPDIR "$RUNNER_TEMP" \
             .#ci \
-            --command test:${{matrix.platform}}:${{matrix.profile}}
+            --command test:${{matrix.platform}}:"$TEST_PROFILE"
+      - name: Upload Cargo build timings
+        if: always() && (github.event_name != 'pull_request' || matrix.profile != 'release')
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-timings-${{ matrix.platform }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/cargo-timings/
+          if-no-files-found: ignore
+          retention-days: 14

@@ -103,12 +103,16 @@ jobs:
 
     # `id-token: write` allows GitHub to mint the OIDC token that npm
     # exchanges for a short-lived publishing credential.
+    timeout-minutes: 200
     permissions:
+      actions: read
       contents: read
       id-token: write
 
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/require-tag-verification
+
 
       - uses: actions/setup-node@v4
         with:
