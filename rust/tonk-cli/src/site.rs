@@ -384,25 +384,67 @@ impl TonkSite {
 
     /// Acquire the site's `main` branch, naming the remedy when the data
     /// predates this build's format.
+    ///
+    /// The first acquisition in a process also moves what an earlier
+    /// release stored to the shape this one reads and writes
+    /// ([`BranchReference::migrate_once`]): the storage rewrite under the
+    /// number band, definitions recorded the earlier way, and rules stored
+    /// under an identity an earlier dialog release gave them, which would
+    /// otherwise be inert. The move is announced on stderr before it runs
+    /// and summed up after; a failed one is reported and the command
+    /// proceeds on what the earlier release left.
+    ///
+    /// [`BranchReference::migrate_once`]: dialog_reactor::BranchReference::migrate_once
     pub async fn branch(&self) -> Result<BranchSession, ReactorError> {
-        self.reactor
-            .repository(REPO_NAME)
-            .branch(BRANCH_NAME)
-            .acquire(&self.operator)
+        let branch = self.reactor.repository(REPO_NAME).branch(BRANCH_NAME);
+        let session = branch.acquire(&self.operator).await.map_err(|error| {
+            let text = error.to_string();
+            if tonk_account::is_legacy_format(&text) {
+                // `reason` carries the remedy, so it travels with the
+                // existing variant rather than needing a new one here.
+                return ReactorError::BranchNotFound {
+                    repo: REPO_NAME.to_owned(),
+                    branch: BRANCH_NAME.to_owned(),
+                    reason: tonk_account::LEGACY_FORMAT_REMEDY.to_owned(),
+                };
+            }
+            error
+        })?;
+        if branch
+            .migration_pending(&self.operator)
             .await
-            .map_err(|error| {
-                let text = error.to_string();
-                if tonk_account::is_legacy_format(&text) {
-                    // `reason` carries the remedy, so it travels with the
-                    // existing variant rather than needing a new one here.
-                    return ReactorError::BranchNotFound {
-                        repo: REPO_NAME.to_owned(),
-                        branch: BRANCH_NAME.to_owned(),
-                        reason: tonk_account::LEGACY_FORMAT_REMEDY.to_owned(),
-                    };
+            .unwrap_or(false)
+        {
+            eprintln!("note: moving this space to this release's storage format…");
+        }
+        match branch.migrate_once(&self.operator).await {
+            Ok(Some(upgraded)) => {
+                if upgraded.storage.is_some() {
+                    eprintln!("note: rewrote the space's storage under one number band");
                 }
-                error
-            })
+                if !upgraded.definitions.is_empty() {
+                    eprintln!(
+                        "note: moved {} definition(s) to their current identity",
+                        upgraded.definitions.moves.len() + upgraded.definitions.rewritten.len()
+                    );
+                }
+                if !upgraded.rules.reinstalled.is_empty() {
+                    eprintln!(
+                        "note: re-installed {} rule(s) under their current identity",
+                        upgraded.rules.reinstalled.len()
+                    );
+                }
+                if !upgraded.rules.rewritten.is_empty() {
+                    eprintln!(
+                        "note: rewrote {} rule body(ies) in the current format",
+                        upgraded.rules.rewritten.len()
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("warning: upgrade failed: {error}"),
+        }
+        Ok(session)
     }
 }
 

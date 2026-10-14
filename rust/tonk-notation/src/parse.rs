@@ -12,6 +12,8 @@
 //!
 //! [analyze]: https://github.com/dialog-db/tonk-workers/tree/main/rust/tonk-schema/src/interpret.rs
 
+use std::borrow::Cow;
+
 use base64::Engine as _;
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 use saphyr::{MarkedYaml, Scalar as SaphyrScalar, ScanError, YamlData, YamlLoader};
@@ -857,7 +859,9 @@ fn parse_head(
 ///   a name a URI; only a `:` (or a dotted domain before the `/`)
 ///   does, so concept names may contain `/`.
 fn classify_head_name(name: &str) -> HeadName {
-    if name.contains(':') || is_attribute_identifier(name) {
+    if let Some(uri) = keyword_uri(name) {
+        HeadName::Uri(uri)
+    } else if name.contains(':') || is_attribute_identifier(name) {
         HeadName::Uri(name.to_owned())
     } else if name.contains('.') {
         HeadName::Claim(name.to_owned())
@@ -974,6 +978,10 @@ fn byte_offset_to_position(source: &str, offset: usize) -> Position {
 /// claim is over the `rule` predicate, in which case `when:` and
 /// `unless:` field values are parsed as premise lists rather than
 /// rejected as generic sequences.
+/// The fields whose value may be a list: an attribute's ranked
+/// relations or values, and a command's several names.
+const LISTING_FIELDS: [&str; 3] = ["the", "as", "action"];
+
 fn walk_field(
     key: &MarkedYaml<'_>,
     value: &MarkedYaml<'_>,
@@ -990,13 +998,17 @@ fn walk_field(
     let value_range = range_of(value);
     let field_value = if rule_body && (name == "when" || name == "unless") {
         Some(FieldValue::Premises(parse_premise_list(value, out)))
-    } else if let (true, YamlData::Sequence(items)) = (name == "action", &value.data) {
-        // A command's several names: `action: ["home", "go home"]`.
-        let items = items
-            .iter()
-            .map(|item| walk_field_value(item, rule_body, out))
-            .collect::<Option<Vec<_>>>()?;
-        Some(FieldValue::List(items))
+    } else if matches!(value.data, YamlData::Sequence(_))
+        && !LISTING_FIELDS.contains(&name.as_str())
+    {
+        // A list is a ranked choice (`the:`, `as:`) or a command's
+        // several names (`action:`); nowhere else, and a
+        // cardinality-many write repeats the assertion.
+        out.push(error(
+            value_range,
+            r#"Sequence values are not supported in this notation outside an attribute's `the:` or `as:` and a command's `action:`. Use repeated assertions for cardinality-many writes."#,
+        ));
+        return None;
     } else {
         walk_field_value(value, rule_body, out)
     }?;
@@ -1093,12 +1105,26 @@ fn walk_field_value(
             }
             Some(FieldValue::Nested(nested))
         }
-        YamlData::Sequence(_) => {
-            out.push(error(
-                range_of(value),
-                r#"Sequence values are not supported in this notation. Use repeated assertions for cardinality-many writes."#,
-            ));
-            None
+        YamlData::Sequence(items) => {
+            // A sequence lists scalars: the values or relations an
+            // attribute's `as:` or `the:` ranks, or the several names a
+            // command's `action:` answers to. A `select: all` write is
+            // still repeated assertions, not a sequence.
+            let mut listed = Vec::with_capacity(items.len());
+            for item in items {
+                match &item.data {
+                    YamlData::Mapping(_) | YamlData::Sequence(_) => {
+                        out.push(error(
+                            range_of(item),
+                            r#"A sequence lists scalars only. Use repeated assertions for cardinality-many writes."#,
+                        ));
+                        return None;
+                    }
+                    _ => {}
+                }
+                listed.push(walk_field_value(item, rule_body, out)?);
+            }
+            Some(FieldValue::List(listed))
         }
         YamlData::Tagged(tag, _) if include_form(Some(tag)).is_some() => {
             let form = include_form(Some(tag)).expect("guarded");
@@ -1149,6 +1175,9 @@ pub fn classify_plain_value(text: &str) -> FieldValue {
     if let Some(rest) = text.strip_prefix('?') {
         return FieldValue::Variable(rest.to_owned());
     }
+    if let Some(uri) = keyword_uri(text) {
+        return FieldValue::Uri(uri);
+    }
     if looks_like_uri(text) {
         return FieldValue::Uri(text.to_owned());
     }
@@ -1176,6 +1205,31 @@ pub fn classify_plain_value(text: &str) -> FieldValue {
 /// written, not later where it is used.
 pub fn is_reference_name(name: &str) -> bool {
     matches!(classify_plain_value(name), FieldValue::Symbol(_))
+}
+
+/// Read the keyword spelling `:keyword` as the URI `keyword:`.
+///
+/// A URI that is a bare scheme (`keyword:`) can't be written as a
+/// plain YAML scalar: a trailing `:` makes YAML read a mapping key.
+/// The notation spells it with the colon in front instead, so
+/// `:keyword` means the entity `keyword:`. Only a bare scheme after
+/// the colon qualifies; anything else (`:Foo`, `:a:b`, `:`) stays
+/// what it was.
+fn keyword_uri(text: &str) -> Option<String> {
+    let scheme = text.strip_prefix(':')?;
+    is_uri_scheme(scheme).then(|| format!("{scheme}:"))
+}
+
+/// Spell `uri` as notation source: the inverse of the `:keyword`
+/// reading. A bare-scheme URI (`keyword:`) comes back as `:keyword`,
+/// which YAML reads as a plain scalar; every other URI is returned
+/// as written. Use it wherever an entity is emitted into a notation
+/// document.
+pub fn spell_uri(uri: &str) -> Cow<'_, str> {
+    match uri.strip_suffix(':') {
+        Some(scheme) if is_uri_scheme(scheme) => Cow::Owned(format!(":{scheme}")),
+        _ => Cow::Borrowed(uri),
+    }
 }
 
 /// Does `text` look like a notation URI?
@@ -1241,8 +1295,20 @@ fn is_reverse_dotted_domain(text: &str) -> bool {
 }
 
 /// Try to parse `text` as a YAML core-schema typed scalar
-/// (integer, float, bool, null). Returns `None` if the text
-/// doesn't match any of those forms.
+/// (number, bool, null). Returns `None` if the text doesn't match
+/// any of those forms.
+///
+/// A number literal is an optional sign, digits, an optional
+/// fraction and an optional exponent. It names a number, not a
+/// type: `41`, `+41` and `41.0` are one value, and the scalar holds
+/// it in the narrowest form ([`narrow_number`]). The spelling that
+/// used to pick a type (a leading sign for signed, a decimal point
+/// for float) carries nothing now; a field's declared type is a
+/// lens applied where the value is read or written.
+///
+/// `NaN` and the infinities are not number literals: `.nan`, `nan`,
+/// `.inf` and the like read as text (or a symbol), never as a
+/// [`Scalar::Float`], so no document can put a NaN into a value.
 fn parse_typed_scalar(text: &str) -> Option<Scalar> {
     match text {
         "null" | "Null" | "NULL" | "~" => return Some(Scalar::Null),
@@ -1250,20 +1316,85 @@ fn parse_typed_scalar(text: &str) -> Option<Scalar> {
         "false" | "False" | "FALSE" => return Some(Scalar::Boolean(false)),
         _ => {}
     }
-    // Integer spelling picks the type: a leading sign (`+41`, `-7`)
-    // is a signed integer, bare digits (`41`) are unsigned, and a
-    // decimal point (`41.0`) is a float.
-    if text.starts_with('+') || text.starts_with('-') {
-        if let Ok(i) = text.parse::<i128>() {
-            return Some(Scalar::Integer(i));
+    parse_number_literal(text)
+}
+
+/// Read a number literal to the number it names, held as the
+/// narrowest scalar. Whole literals (no fraction, no exponent) are
+/// parsed exactly as integers, so `u128::MAX` and `i128::MIN` stay
+/// exact and never pass through an `f64`.
+fn parse_number_literal(text: &str) -> Option<Scalar> {
+    let (negative, digits) = match text.strip_prefix(['+', '-']) {
+        Some(rest) => (text.starts_with('-'), rest),
+        None => (false, text),
+    };
+    let is_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    // Split `mantissa[e exponent]`, then `whole[.fraction]`.
+    let (mantissa, exponent) = match digits.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, Some(exponent)),
+        None => (digits, None),
+    };
+    let (whole, fraction) = match mantissa.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (mantissa, None),
+    };
+    // At least one digit on one side of the point (`1.`, `.5`, `1.5`).
+    let whole_ok = whole.is_empty() || is_digits(whole);
+    let fraction_ok = fraction.is_none_or(|f| f.is_empty() || is_digits(f));
+    if !whole_ok || !fraction_ok || (whole.is_empty() && fraction.is_none_or(str::is_empty)) {
+        return None;
+    }
+    if let Some(exponent) = exponent {
+        let exponent = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
+        if !is_digits(exponent) {
+            return None;
         }
-    } else if let Ok(u) = text.parse::<u128>() {
-        return Some(Scalar::UnsignedInteger(u));
     }
-    if let Ok(f) = text.parse::<f64>() {
-        return Some(Scalar::Float(f));
+    if fraction.is_none() && exponent.is_none() {
+        // Exact integer path.
+        let magnitude: u128 = whole.parse().ok()?;
+        return Some(if negative {
+            match i128::try_from(magnitude) {
+                Ok(i) => narrow_number(Scalar::Integer(-i)),
+                // `-i128::MIN` overflows `i128` as a magnitude, but the
+                // negated value itself fits.
+                Err(_) if magnitude == i128::MIN.unsigned_abs() => Scalar::Integer(i128::MIN),
+                // Smaller than `i128::MIN`: no integer form holds it.
+                Err(_) => Scalar::Float(-(magnitude as f64)),
+            }
+        } else {
+            Scalar::UnsignedInteger(magnitude)
+        });
     }
-    None
+    // Only a literal already validated against the grammar reaches
+    // the float parser, so this never yields a NaN.
+    let float: f64 = text.parse().ok()?;
+    Some(narrow_number(Scalar::Float(float)))
+}
+
+/// Hold a number in the narrowest scalar: a non-negative whole value
+/// is a [`Scalar::UnsignedInteger`], a negative whole value a
+/// [`Scalar::Integer`], anything else a [`Scalar::Float`].
+///
+/// A whole float is narrowed only up to `2^53`, where every whole float
+/// is the decimal it prints as. Past it a float's binary value and its
+/// shortest decimal part ways (`1e30` as a float is not the integer
+/// 1000000000000000019884624838656 but the number `10^30`), and dialog
+/// keys a float by that decimal, so the float is left for dialog to read
+/// as the number it names.
+fn narrow_number(scalar: Scalar) -> Scalar {
+    const EXACT: f64 = 9_007_199_254_740_992.0;
+    match scalar {
+        Scalar::Integer(i) if i >= 0 => Scalar::UnsignedInteger(i as u128),
+        Scalar::Float(f) if f.fract() == 0.0 && f.abs() <= EXACT => {
+            if f >= 0.0 {
+                Scalar::UnsignedInteger(f as u128)
+            } else {
+                Scalar::Integer(f as i128)
+            }
+        }
+        other => other,
+    }
 }
 
 /// Recognise text that saphyr-parser produces for an empty or
@@ -1328,12 +1459,13 @@ fn scalar_from_saphyr(scalar: &SaphyrScalar<'_>) -> Scalar {
     match scalar {
         SaphyrScalar::Null => Scalar::Null,
         SaphyrScalar::Boolean(b) => Scalar::Boolean(*b),
-        // The sign spelling is lost on this path (saphyr already
-        // typed the scalar), so the value decides: non-negative reads
-        // as unsigned, matching the bare spelling it must have had.
-        SaphyrScalar::Integer(i) if *i >= 0 => Scalar::UnsignedInteger(*i as u128),
-        SaphyrScalar::Integer(i) => Scalar::Integer(i128::from(*i)),
-        SaphyrScalar::FloatingPoint(f) => Scalar::Float(**f),
+        // saphyr already typed the scalar; the number it names is
+        // held in the narrowest form, like a literal the classifier
+        // reads. A `.nan` saphyr produced is not a number: it reads
+        // as the text it was spelled with.
+        SaphyrScalar::Integer(i) => narrow_number(Scalar::Integer(i128::from(*i))),
+        SaphyrScalar::FloatingPoint(f) if f.is_nan() => Scalar::String(".nan".to_owned()),
+        SaphyrScalar::FloatingPoint(f) => narrow_number(Scalar::Float(**f)),
         SaphyrScalar::String(s) => Scalar::String(s.as_ref().to_owned()),
     }
 }
@@ -1493,7 +1625,7 @@ mod tests {
     #[dialog_common::test]
     fn it_parses_a_bracketed_key_kind() {
         let syntax = parse_clean(
-            "concept!: &x\n  with:\n    block:\n      the: xyz.test\n      as: {[position]: entity}\n",
+            "concept!: &x\n  with:\n    block:\n      the: \"xyz.test\"\n      as: {[position]: entity}\n",
         );
         let text = format!("{syntax:?}");
         assert!(
@@ -1639,7 +1771,7 @@ attribute!: &person-name
   description: "name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
+  cardinality: :one
 "#,
         );
         let Expression::Claim(Effectful { anchor, inner: _a }) = &syntax.expressions[0] else {
@@ -1926,13 +2058,70 @@ name!:
     }
 
     #[dialog_common::test]
+    fn it_reads_a_keyword_as_a_bare_scheme_uri() {
+        let syntax = parse_clean(
+            r#"
+link!:
+  this:   :keyword
+  target: :tonk
+  label:  ":quoted"
+  other:  :Upper
+"#,
+        );
+        let Expression::Claim(Effectful { inner: a, .. }) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let value = |name: &str| &a.fields.iter().find(|f| f.name == name).unwrap().value;
+        assert!(matches!(value("this"), FieldValue::Uri(u) if u == "keyword:"));
+        assert!(matches!(value("target"), FieldValue::Uri(u) if u == "tonk:"));
+        // Quoting keeps a keyword-shaped string a string, and a
+        // colon before something that is not a scheme is not a
+        // keyword.
+        assert!(matches!(
+            value("label"),
+            FieldValue::Literal(Scalar::String(s)) if s == ":quoted"
+        ));
+        assert!(matches!(
+            value("other"),
+            FieldValue::Literal(Scalar::String(s)) if s == ":Upper"
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_reads_a_keyword_head_as_a_bare_scheme_uri() {
+        let syntax = parse_clean(
+            r#"
+:keyword!:
+  description: "x"
+"#,
+        );
+        let Expression::Claim(Effectful { inner: a, .. }) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert!(matches!(&a.predicate.name, HeadName::Uri(u) if u == "keyword:"));
+    }
+
+    #[dialog_common::test]
+    fn it_spells_a_bare_scheme_uri_as_a_keyword() {
+        assert_eq!(spell_uri("keyword:"), ":keyword");
+        assert_eq!(spell_uri("did:key:zHjKf"), "did:key:zHjKf");
+        assert_eq!(spell_uri("id:alice"), "id:alice");
+        assert_eq!(spell_uri("Weird:"), "Weird:");
+        // The spelling reads back as the URI it came from.
+        assert!(matches!(
+            classify_plain_value(&spell_uri("keyword:")),
+            FieldValue::Uri(u) if u == "keyword:"
+        ));
+    }
+
+    #[dialog_common::test]
     fn it_accepts_attribute_uri_in_field_position() {
         let syntax = parse_clean(
             r#"
 attribute!: &person-name
   the: xyz.tonk.person/name
   as: text
-  cardinality: one
+  cardinality: :one
   description: "name"
 "#,
         );
@@ -1953,10 +2142,12 @@ attribute!: &person-name
         assert!(!parsed.diagnostics.is_empty());
     }
 
-    /// Integer spelling picks the type: bare digits are unsigned, a
-    /// leading sign is signed, a decimal point is a float.
+    /// A number literal names a number, not a type: it is held in the
+    /// narrowest scalar whatever its spelling. `41`, `+41` and `41.0`
+    /// are the natural 41; `-7` and `-7.0` the integer -7; only a
+    /// value no integer holds (`41.5`, `1e39`) is a float.
     #[dialog_common::test]
-    fn it_types_integers_by_their_spelling() {
+    fn it_reads_number_literals_as_the_numbers_they_name() {
         let syntax = parse_clean(
             r#"
 person:
@@ -1965,6 +2156,14 @@ person:
   plus: +41
   minus: -7
   real: 41.5
+  whole: 41.0
+  negative-whole: -7.0
+  exponent: 4.1e1
+  huge: 1e39
+  max: 340282366920938463463374607431768211455
+  min: -170141183460469231731687303715884105728
+  nan: .nan
+  inf: .inf
 "#,
         );
         let Expression::Query(q) = &syntax.expressions[0] else {
@@ -1983,13 +2182,46 @@ person:
         ));
         assert!(matches!(
             get("plus"),
-            FieldValue::Literal(Scalar::Integer(41))
+            FieldValue::Literal(Scalar::UnsignedInteger(41))
         ));
         assert!(matches!(
             get("minus"),
             FieldValue::Literal(Scalar::Integer(-7))
         ));
         assert!(matches!(get("real"), FieldValue::Literal(Scalar::Float(f)) if f == 41.5));
+        assert!(matches!(
+            get("whole"),
+            FieldValue::Literal(Scalar::UnsignedInteger(41))
+        ));
+        assert!(matches!(
+            get("negative-whole"),
+            FieldValue::Literal(Scalar::Integer(-7))
+        ));
+        assert!(matches!(
+            get("exponent"),
+            FieldValue::Literal(Scalar::UnsignedInteger(41))
+        ));
+        assert!(matches!(get("huge"), FieldValue::Literal(Scalar::Float(f)) if f == 1e39));
+        // Whole literals parse exactly: the extremes never pass
+        // through an `f64`.
+        assert!(matches!(
+            get("max"),
+            FieldValue::Literal(Scalar::UnsignedInteger(u128::MAX))
+        ));
+        assert!(matches!(
+            get("min"),
+            FieldValue::Literal(Scalar::Integer(i128::MIN))
+        ));
+        // NaN and infinity are not number literals, so no document can
+        // put a NaN into a value; they read as text.
+        assert!(matches!(
+            get("nan"),
+            FieldValue::Literal(Scalar::String(s)) if s == ".nan"
+        ));
+        assert!(matches!(
+            get("inf"),
+            FieldValue::Literal(Scalar::String(s)) if s == ".inf"
+        ));
     }
 
     #[dialog_common::test]
@@ -2266,8 +2498,12 @@ note!: &n2
         );
     }
 
+    /// A sequence of scalars is a value only where a field lists: an
+    /// attribute's `the:` or `as:` and a command's `action:`. On a
+    /// fact's field the parser refuses it, since a cardinality-many
+    /// write repeats the assertion.
     #[dialog_common::test]
-    fn it_rejects_sequence_value() {
+    fn it_refuses_a_sequence_outside_the_listing_fields() {
         let parsed = parse(
             r#"
 person!:
@@ -2276,12 +2512,12 @@ person!:
     - Bob
 "#,
         );
-        assert!(!parsed.diagnostics.is_empty());
         assert!(
-            parsed.diagnostics[0]
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic
                 .message
-                .to_lowercase()
-                .contains("sequence")
+                .contains("Sequence values are not supported")),
+            "diagnostics: {:#?}",
+            parsed.diagnostics
         );
     }
 
@@ -3125,6 +3361,49 @@ page!:
         assert_eq!(premises.len(), 2);
         assert_eq!(premises[0].concept.value, "ack");
         assert_eq!(premises[1].bindings.len(), 2);
+    }
+
+    /// A sequence of scalars parses to [`FieldValue::List`]: the
+    /// values or relations an attribute ranks among. A sequence
+    /// holding a mapping is refused.
+    #[dialog_common::test]
+    fn it_parses_a_sequence_of_scalars() {
+        let syntax = parse_clean(
+            r#"attribute!: &status
+  description: "where it stands"
+  the: "job/status"
+  as:
+    - case:suspended
+    - case:active
+    - "plain"
+"#,
+        );
+        let Expression::Claim(Effectful { inner: app, .. }) = &syntax.expressions[0] else {
+            panic!("expected Claim");
+        };
+        let FieldValue::List(items) = &app.fields.iter().find(|f| f.name == "as").unwrap().value
+        else {
+            panic!("as value must be a List");
+        };
+        assert_eq!(items.len(), 3);
+        assert!(matches!(&items[0], FieldValue::Uri(uri) if uri == "case:suspended"));
+        assert!(matches!(&items[2], FieldValue::Literal(Scalar::String(s)) if s == "plain"));
+
+        let parsed = parse(
+            r#"attribute!: &status
+  the: "job/status"
+  as:
+    - case: nested
+"#,
+        );
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("lists scalars only")),
+            "a mapping inside a sequence is refused: {:?}",
+            parsed.diagnostics
+        );
     }
 
     /// `unless:` parses to a premise list too, and `description:`

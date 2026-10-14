@@ -768,9 +768,15 @@ function holdSpacePort(repo, port) {
 }
 
 // Whether a request passed on can be asked again without doing anything
-// twice: a read, or a query however it is sent.
+// twice: a read, a query however it is sent, or a sync, which moves the
+// branch towards the remote and finds nothing to do the second time.
 function repeatable({ method, path }) {
-    return method === "GET" || method === "HEAD" || /\/(query|claim\/select)(\?|$)/.test(path);
+    return (
+        method === "GET" ||
+        method === "HEAD" ||
+        /\/(query|claim\/select)(\?|$)/.test(path) ||
+        /\/sync(\/(push|pull))?(\?|$)/.test(path)
+    );
 }
 
 // The port to the worker of the space `key`, asking the pages to open one

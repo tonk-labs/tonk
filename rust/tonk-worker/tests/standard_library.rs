@@ -73,6 +73,21 @@ async fn assert_library_lowers(label: &str, file: &str, document: &str) {
     );
 }
 
+/// The policy a field's declaration reads under: its `select`, or the
+/// one its `cardinality` implies in the older spelling (`many` is
+/// `all`, `one` and an unsaid cardinality are `last`). A built-in
+/// serializes only a `select` that says more than the default, so a
+/// query written in either spelling compares by policy.
+fn policy_of(spec: &serde_json::Value) -> &str {
+    if let Some(select) = spec.get("select").and_then(serde_json::Value::as_str) {
+        return select;
+    }
+    match spec.get("cardinality").and_then(serde_json::Value::as_str) {
+        Some("many") => "all",
+        _ => "last",
+    }
+}
+
 fn css_rule<'a>(document: &'a str, selector: &str) -> &'a str {
     document
         .split(selector)
@@ -547,13 +562,40 @@ fn it_keeps_keyboard_focus_visible_on_inverted_hub_controls() {
     );
 }
 
+/// The body of the `<tonk-display>` opened by `opening`, up to the close
+/// that matches it rather than the first close of a display nested in it.
+fn display_body<'a>(source: &'a str, opening: &str) -> Option<&'a str> {
+    let body = source.split_once(opening)?.1;
+    let mut depth = 1usize;
+    let mut at = 0;
+    while depth > 0 {
+        let rest = &body[at..];
+        let open = rest.find("<tonk-display");
+        let close = rest.find("</tonk-display>")?;
+        match open {
+            Some(open) if open < close => {
+                depth += 1;
+                at += open + "<tonk-display".len();
+            }
+            _ => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&body[..at + close]);
+                }
+                at += close + "</tonk-display>".len();
+            }
+        }
+    }
+    None
+}
+
 #[dialog_common::test]
 fn it_hides_space_absence_slots_before_display_initialization() {
-    let chrome = PROFILE_LIBRARY
-        .split("<tonk-display with={id} entity={id} model=tonk:repository view=title>")
-        .nth(1)
-        .and_then(|source| source.split("</tonk-display>").next())
-        .expect("space chrome must contain its repository title display");
+    let chrome = display_body(
+        PROFILE_LIBRARY,
+        "<tonk-display with={id} entity={id} model=tonk:repository view=title>",
+    )
+    .expect("space chrome must contain its repository title display");
     for slot in ["no-model", "no-entity", "no-view"] {
         let marker = format!("slot=\"{slot}\"");
         let attributes = chrome
@@ -570,11 +612,11 @@ fn it_hides_space_absence_slots_before_display_initialization() {
 
 #[dialog_common::test]
 fn it_recovers_from_every_absent_space_directory_state() {
-    let directory_probe = PROFILE_LIBRARY
-        .split("<tonk-display with=\"{profile-branch}@profile:tonk\" entity={id} model=space view=downloading>")
-        .nth(1)
-        .and_then(|source| source.split("</tonk-display>").next())
-        .expect("absent-space chrome must consult the profile directory");
+    let directory_probe = display_body(
+        PROFILE_LIBRARY,
+        "<tonk-display with=\"{profile-branch}@profile:tonk\" entity={id} model=space view=downloading>",
+    )
+    .expect("absent-space chrome must consult the profile directory");
 
     for state in ["no-model", "no-entity"] {
         assert!(
@@ -583,11 +625,16 @@ fn it_recovers_from_every_absent_space_directory_state() {
         );
     }
     assert_eq!(
-        directory_probe
-            .matches("New to this space? Ask someone in it to send you an invite link")
-            .count(),
+        directory_probe.matches("New to this space?").count(),
         2,
         "both absence states must explain how to obtain an invite link"
+    );
+    assert_eq!(
+        directory_probe
+            .matches("from <strong>share</strong>")
+            .count(),
+        2,
+        "both absence states must say where an invite link comes from"
     );
     assert_eq!(
         directory_probe
@@ -647,6 +694,8 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         "class=\"space-unknown-mast\"",
         "class=\"space-unknown-wall\"",
         "open this space",
+        // What a visit to a space that keeps no public ticket ends on.
+        "this space is private",
         "class=\"space-unknown-back\" href=\"/\">go to home",
         "<button type=\"button\" class=\"space-unknown-home\" on:retry-registration=tonk:open-registration>",
     ] {
@@ -1378,13 +1427,13 @@ command!: &bump
       description: The thing being bumped
       the: io.gozala.bump/subject
       as: entity
-      cardinality: one
+      cardinality: :one
   maybe:
     time:
       description: A per-event nonce
       the: io.gozala.bump/time
       as: float
-      cardinality: one
+      cardinality: :one
 "#;
     assert_library_lowers("a bare `event!:` document", "event.yaml", document).await;
 }
@@ -1443,9 +1492,9 @@ fn the_event_query_predicate_matches_the_builtin() {
             "`{field}`: the query and the built-in disagree on `the`",
         );
         assert_eq!(
-            ours.get("cardinality"),
-            theirs.get("cardinality"),
-            "`{field}`: the query and the built-in disagree on cardinality",
+            policy_of(ours),
+            policy_of(theirs),
+            "`{field}`: the query and the built-in disagree on the select policy",
         );
     }
     assert!(
@@ -1473,16 +1522,23 @@ fn the_event_query_predicate_matches_the_builtin() {
 fn the_element_method_query_matches_the_library() {
     // Pull the declaration straight out of the seeded document rather
     // than restating it here — restating is how the copies drift.
-    let declared = STANDARD_LIBRARY
-        .split("concept!: &element")
+    let after = STANDARD_LIBRARY
+        .split("concept!: &element\n")
         .nth(1)
         .expect("the library declares `element`");
+    // The declaration ends at the next head: the first line at column
+    // zero that is not a comment.
+    let declared: String = after
+        .lines()
+        .take_while(|line| line.is_empty() || line.starts_with(' ') || line.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
     // Built from the constant, not written out again: a literal here
     // would match the library whatever the constant said, and the test
     // would pass through exactly the drift it exists to catch.
     let domain = tonk_template::resolve::ELEMENT_METHOD_DOMAIN;
     assert!(
-        declared.contains(&format!("the: {domain}")),
+        declared.contains(&format!("the: \"{domain}\"")),
         "the wire predicate's domain ({domain}) is not what the library \
          declares for `element.method`",
     );
@@ -1491,10 +1547,15 @@ fn the_element_method_query_matches_the_library() {
         "the library declares `method` as something other than a keyed \
          dictionary of text",
     );
+    // The predicate reads `method` under the default pick, `last`, which
+    // the library spells by declaring no pick at all (the older
+    // `cardinality: one` said the same). A `pick: :all` or a
+    // `cardinality: many` on the element would be a set the predicate
+    // does not mirror.
     assert!(
-        declared.contains("cardinality: one"),
-        "the library declares `method` at a cardinality the predicate \
-         does not mirror",
+        !declared.contains("pick:") && !declared.contains("cardinality:"),
+        "the library declares `element` with a pick the predicate does not \
+         mirror: {declared}",
     );
 
     let predicate = tonk_template::resolve::element_method_predicate();
@@ -1594,9 +1655,9 @@ fn the_view_queries_match_the_builtin() {
             "`{field}`: the query and the built-in disagree on `the`",
         );
         assert_eq!(
-            ours.get("cardinality"),
-            theirs.get("cardinality"),
-            "`{field}`: the query and the built-in disagree on cardinality",
+            policy_of(ours),
+            policy_of(theirs),
+            "`{field}`: the query and the built-in disagree on the select policy",
         );
     }
     assert!(

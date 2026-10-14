@@ -7,7 +7,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorDetail {
     /// Stable kind identifier — `unknown-source`, `network`,
-    /// `parse`, `descriptor`.
+    /// `parse`, `descriptor`, `upgrade`.
     pub kind: ErrorKind,
     /// Human-readable description.
     pub message: String,
@@ -37,6 +37,9 @@ pub enum ErrorKind {
     /// Descriptor reconstruction or `phase2_query` rejected the
     /// descriptor.
     Descriptor,
+    /// The worker could not move the branch to this release's storage
+    /// format, so what the page reads is what the earlier release left.
+    Upgrade,
 }
 
 impl ErrorDetail {

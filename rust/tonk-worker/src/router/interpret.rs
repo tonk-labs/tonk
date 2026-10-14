@@ -31,7 +31,7 @@ fn claim(the: &str, of: &Entity, is: Value) -> Option<RawClaim> {
         the: the.parse().ok()?,
         of: of.clone(),
         is,
-        unique: true,
+        policy: dialog_artifacts::Pick::Last,
     })
 }
 
@@ -94,8 +94,7 @@ impl dialog_capability::Provider<tonk_schema::command::Interpret> for CommandEnv
                 attribute.to_string() == INTENT_EXPRESSION
                     && matches!(
                         change,
-                        dialog_artifacts::Change::Assert(Value::Entity(of))
-                            | dialog_artifacts::Change::Replace(Value::Entity(of))
+                        dialog_artifacts::Change::Assert(Value::Entity(of), _)
                             if *of == expression
                     )
             })
