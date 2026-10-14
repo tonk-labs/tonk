@@ -1,0 +1,60 @@
+--- a/rust/tonk-worker/src/router/query.rs
++++ b/rust/tonk-worker/src/router/query.rs
+@@ -287,11 +287,19 @@
+ /// pending subscription is indistinguishable on the wire from a live
+ /// one — same content type, same framing, same open stream.
+ fn sse_response(receiver: tokio::sync::mpsc::UnboundedReceiver<Bytes>) -> Response {
+-    let body_stream = UnboundedReceiverStream::new(receiver).map(|bytes: Bytes| {
+-        let mut framed = Vec::with_capacity(bytes.len() + 8);
+-        framed.extend_from_slice(b"data: ");
+-        framed.extend_from_slice(&bytes);
+-        framed.extend_from_slice(b"\n\n");
++    // WebKit can leave the tail of an idle service-worker response buffered
++    // when already-queued SSE events are emitted as separate body chunks.
++    // Drain only immediately-ready events, so the initial snapshot and its
++    // checkpoint cross that boundary together. The cap bounds each batch;
++    // ready_chunks never waits to fill it and preserves individual SSE events.
++    let batches = futures_util::StreamExt::ready_chunks(UnboundedReceiverStream::new(receiver), 32);
++    let body_stream = batches.map(|batch| {
++        let mut framed = Vec::with_capacity(batch.iter().map(|bytes| bytes.len() + 8).sum());
++        for bytes in batch {
++            framed.extend_from_slice(b"data: ");
++            framed.extend_from_slice(&bytes);
++            framed.extend_from_slice(b"\n\n");
++        }
+         Ok::<_, std::io::Error>(Bytes::from(framed))
+     });
+     Response::builder()
+@@ -334,6 +342,32 @@
+     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+     wasm_bindgen_test_configure!(run_in_service_worker);
+ 
++    #[dialog_common::test]
++    async fn it_flushes_queued_sse_frames_together_without_waiting_for_more() {
++        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
++        sender
++            .send(Bytes::from_static(
++                br#"{"kind":"snapshot","conclusions":[]}"#,
++            ))
++            .unwrap();
++        sender
++            .send(Bytes::from_static(br#"{"kind":"checkpoint"}"#))
++            .unwrap();
++        let mut body = sse_response(receiver).into_body().into_data_stream();
++        let chunk = body.next().await.unwrap().unwrap();
++        assert_eq!(chunk.as_ref(), b"data: {\"kind\":\"snapshot\",\"conclusions\":[]}\n\ndata: {\"kind\":\"checkpoint\"}\n\n");
++        // Keeping the sender alive must not delay an already-ready batch.
++        sender
++            .send(Bytes::from_static(br#"{"kind":"checkpoint","next":true}"#))
++            .unwrap();
++        assert_eq!(
++            body.next().await.unwrap().unwrap().as_ref(),
++            b"data: {\"kind\":\"checkpoint\",\"next\":true}\n\n"
++        );
++        drop(sender);
++        assert!(body.next().await.is_none());
++    }
++
+     /// A repository or branch this device has not replicated is an
+     /// ABSENCE, not a failure. Classifying it as one is what lets the
+     /// query paths answer with the empty set and park the subscription

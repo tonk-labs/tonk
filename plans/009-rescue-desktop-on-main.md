@@ -302,3 +302,33 @@ for this worktree's Git metadata and then succeeded.
 
 Next: current-core generation and native dispatch adaptation, focused tests and
 actual isolated worker workflow before activity recovery and root CI increments.
+
+### Increment 1 — current-core Desktop adaptation
+
+Implemented the Desktop-only generator against `mcp/browser.mjs`, canonical
+catalog and authoring guides. It generates Swift catalog/context only; the native
+bridge is Desktop-owned. Removed legacy preview/apply implementation and retired
+agent dispatch (including CLI/metadata/schema/rename tools). Inspection and space
+proposal controls remain native-only. Metadata/schema reads and rename use
+query/evaluate notation. Production identifiers and saved-state storage unchanged.
+
+Fresh checks before commit:
+- `node --test mcp/desktop-generation.test.mjs`: 1 passed, covering deterministic
+  generation, drift detection, actual generated JS execution, target override
+  rejection and exactly-once unknown-write behavior.
+- `bash desktop/scripts/dev.sh test:unit --filter 'LocalRuntimeBridgeTests|SpaceToolsTests|RuntimeBuildTests'`:
+  8 passed, including generated JS in WebKit (fixture fetch, not actual worker).
+- `npm --prefix mcp test`: 14 passed; `npm --prefix mcp run test:chatgpt`: 42 passed.
+- `bash desktop/scripts/dev.sh test:unit`: full native suite passed; opt-in live
+  provider tests skipped (see subsequent execution evidence for counts).
+- `python3 -m unittest discover -s desktop/scripts/tests -p 'test_*.py'`: 8 passed.
+- `TONK_SIGN_IDENTITY=- bash desktop/scripts/build-app.sh`: passed using host
+  Xcode; `codesign --verify --strict desktop/.build/Tonk.app`: passed. No install.
+- Initial native test failed on sandbox compiler-cache access; scoped retry worked.
+  Old conditional-write tests failed after that implementation was removed; replaced
+  with current canonical adapter tests, then focused and full tests passed.
+
+Actual matching worker workflow remains pending: `nix build .#tonk-ui --out-link
+/private/tmp/desktop-rescue-runtime` running. FlakeHub cache returned 401; Nix
+continued with available Cachix and local builds. This commit establishes native
+build and fixture contracts, not real-worker or signed-account acceptance.

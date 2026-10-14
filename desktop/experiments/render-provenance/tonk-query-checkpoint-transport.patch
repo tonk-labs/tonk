@@ -1,0 +1,631 @@
+diff --git a/rust/dialog-reactor/src/branch/state.rs b/rust/dialog-reactor/src/branch/state.rs
+index 91cff5937..60df849fe 100644
+--- a/rust/dialog-reactor/src/branch/state.rs
++++ b/rust/dialog-reactor/src/branch/state.rs
+@@ -152,9 +152,21 @@ impl BranchState {
+         client: Option<String>,
+         level: u32,
+         sender: mpsc::UnboundedSender<Bytes>,
++    ) -> QueryHash {
++        self.adopt_subscriber_with_checkpoints(query, client, level, sender, false)
++    }
++
++    /// Adopt a waiting subscriber while preserving its checkpoint capability.
++    pub fn adopt_subscriber_with_checkpoints(
++        &self,
++        query: ConceptQuery,
++        client: Option<String>,
++        level: u32,
++        sender: mpsc::UnboundedSender<Bytes>,
++        checkpoints: bool,
+     ) -> QueryHash {
+         let hash = QueryHash::from(&query);
+-        self.install_subscriber(query, client, level, sender);
++        self.install_subscriber(query, client, level, sender, checkpoints);
+         hash
+     }
+ 
+@@ -163,10 +175,22 @@ impl BranchState {
+         query: ConceptQuery,
+         client: Option<String>,
+         level: u32,
++    ) -> Result<Subscriber, ReactorError> {
++        self.subscribe_with_checkpoints(query, client, level, false)
++    }
++
++    /// Subscribe with opt-in query-state watermarks; ordinary subscribers keep
++    /// receiving only row snapshots/deltas.
++    pub fn subscribe_with_checkpoints(
++        &self,
++        query: ConceptQuery,
++        client: Option<String>,
++        level: u32,
++        checkpoints: bool,
+     ) -> Result<Subscriber, ReactorError> {
+         let hash = QueryHash::from(&query);
+         let (sender, receiver) = mpsc::unbounded_channel();
+-        self.install_subscriber(query, client, level, sender);
++        self.install_subscriber(query, client, level, sender, checkpoints);
+         Ok(Subscriber { hash, receiver })
+     }
+ 
+@@ -180,6 +204,7 @@ impl BranchState {
+         client: Option<String>,
+         level: u32,
+         sender: mpsc::UnboundedSender<Bytes>,
++        checkpoints: bool,
+     ) {
+         let hash = QueryHash::from(&query);
+ 
+@@ -204,6 +229,8 @@ impl BranchState {
+             status: Status::Pending,
+             client,
+             level,
++            checkpoints,
++            last_checkpoint: None,
+         });
+     }
+ 
+diff --git a/rust/dialog-reactor/src/lib.rs b/rust/dialog-reactor/src/lib.rs
+index d345556fb..272b14102 100644
+--- a/rust/dialog-reactor/src/lib.rs
++++ b/rust/dialog-reactor/src/lib.rs
+@@ -124,6 +124,8 @@ pub struct PendingSubscription {
+     pub client: Option<String>,
+     /// The consumer's nesting level — see [`Subscription::level`](crate::Subscription::level).
+     pub level: u32,
++    /// Whether the waiting subscriber requested checkpoint frames.
++    pub checkpoints: bool,
+     /// Sender the adopted subscription broadcasts into — already wired
+     /// to the consumer's open SSE stream, which is why the hand-off is
+     /// invisible to the page: it just starts receiving frames.
+@@ -207,9 +209,14 @@ impl Reactor {
+         query: dialog_query::ConceptQuery,
+         client: Option<String>,
+         level: u32,
++        checkpoints: bool,
+     ) -> Result<Subscriber, ReactorError> {
+         self.subscription_lifecycle
+-            .register(|| session.subscribe(query, client, level))
++            .register(|| {
++                session
++                    .state
++                    .subscribe_with_checkpoints(query, client, level, checkpoints)
++            })
+             .ok_or(ReactorError::Shutdown)?
+     }
+ 
+@@ -228,11 +235,12 @@ impl Reactor {
+                 return;
+             }
+             for pending in pending {
+-                state.adopt_subscriber(
++                state.adopt_subscriber_with_checkpoints(
+                     pending.query,
+                     pending.client,
+                     pending.level,
+                     pending.sender,
++                    pending.checkpoints,
+                 );
+             }
+             // Evaluate once so adopted subscribers get a real frame now.
+diff --git a/rust/dialog-reactor/src/subscribe.rs b/rust/dialog-reactor/src/subscribe.rs
+index 8b439a3ce..b6c20c905 100644
+--- a/rust/dialog-reactor/src/subscribe.rs
++++ b/rust/dialog-reactor/src/subscribe.rs
+@@ -22,6 +22,8 @@ pub struct Subscribe<'a> {
+     /// Consumer nesting level, notified outermost first — see
+     /// [`BranchState::poll`](crate::BranchState::poll).
+     pub level: u32,
++    /// Opt into query-state checkpoint frames.
++    pub checkpoints: bool,
+ }
+ 
+ impl<'a> Subscribe<'a> {
+@@ -32,6 +34,7 @@ impl<'a> Subscribe<'a> {
+             query,
+             client: None,
+             level: 0,
++            checkpoints: false,
+         }
+     }
+ 
+@@ -49,6 +52,12 @@ impl<'a> Subscribe<'a> {
+         self
+     }
+ 
++    /// Receive checkpoint-only frames when read state advances without new rows.
++    pub fn checkpoints(mut self, enabled: bool) -> Self {
++        self.checkpoints = enabled;
++        self
++    }
++
+     /// Resolve the branch (opening it if needed), attach a
+     /// fresh subscriber to the subscription, and poll so the
+     /// new subscriber's first message is the current snapshot.
+@@ -62,6 +71,7 @@ impl<'a> Subscribe<'a> {
+             self.query,
+             self.client,
+             self.level,
++            self.checkpoints,
+         )?;
+         session
+             .subscription(subscriber.hash.clone())
+diff --git a/rust/dialog-reactor/src/subscription/reference.rs b/rust/dialog-reactor/src/subscription/reference.rs
+index 4a57e4ef8..7a73b9baa 100644
+--- a/rust/dialog-reactor/src/subscription/reference.rs
++++ b/rust/dialog-reactor/src/subscription/reference.rs
+@@ -144,13 +144,24 @@ impl SubscriptionPoll<'_> {
+             .map(|c| project(c, &terms))
+             .collect();
+ 
+-        // Put the engine back before handling the poll outcome so the
+-        // slot is never left empty on an early return.
+-        *slot.lock().await = Some(engine);
+-
++        let checkpoint_bytes = engine.checkpoint().and_then(|checkpoint| {
++            let hash: &[u8] = checkpoint.overlay.hash.as_ref();
++            let revision = checkpoint
++                .revision
++                .as_ref()
++                .map(serde_json::to_value)
++                .transpose()
++                .ok()?;
++            serialize(&Frame::Checkpoint {
++                revision,
++                overlay_sequence: checkpoint.overlay.sequence,
++                overlay_hash: hash.to_vec(),
++            })
++        });
+         let delta = match poll_result {
+             Ok(delta) => delta,
+             Err(err) => {
++                *slot.lock().await = Some(engine);
+                 log!("[reactor] subscription poll failed: {err:?}");
+                 return;
+             }
+@@ -178,14 +189,29 @@ impl SubscriptionPoll<'_> {
+         // than off a flag captured before the poll `await` — a subscriber
+         // that attached during the poll is served its first snapshot now
+         // instead of hanging until some later write schedules another poll.
+-        let mut subs = self.state.subscriptions().lock();
+-        let Some(subscription) = subs.get_mut(&self.hash) else {
+-            return;
+-        };
+-        subscription.deliver(&snapshot_conclusions, delta_bytes.as_ref());
+-        if subscription.subscribers.is_empty() {
+-            subs.shift_remove(&self.hash);
++        {
++            let mut subs = self.state.subscriptions().lock();
++            if let Some(subscription) = subs.get_mut(&self.hash) {
++                // If a changed row frame could not be encoded, its consumers
++                // must receive a fresh snapshot before any new watermark.
++                if delta.as_ref().is_some_and(|delta| !delta.is_empty()) && delta_bytes.is_none() {
++                    for subscriber in &mut subscription.subscribers {
++                        subscriber.status = crate::subscription::Status::Pending;
++                        subscriber.last_checkpoint = None;
++                    }
++                }
++                subscription.deliver(&snapshot_conclusions, delta_bytes.as_ref());
++                if let Some(checkpoint) = checkpoint_bytes.as_ref() {
++                    subscription.deliver_checkpoint(checkpoint);
++                }
++                if subscription.subscribers.is_empty() {
++                    subs.shift_remove(&self.hash);
++                }
++            }
+         }
++        // Release the engine only after its frames: a concurrent poll must not
++        // publish a newer watermark before this poll's rows reach subscribers.
++        *slot.lock().await = Some(engine);
+     }
+ }
+ 
+diff --git a/rust/dialog-reactor/src/subscription/state.rs b/rust/dialog-reactor/src/subscription/state.rs
+index c801bccf3..a5819a70e 100644
+--- a/rust/dialog-reactor/src/subscription/state.rs
++++ b/rust/dialog-reactor/src/subscription/state.rs
+@@ -119,6 +119,9 @@ pub struct SubscriberSession {
+     /// and the default for a subscriber that isn't a display. A branch
+     /// notifies lower levels first. See [`Subscription::level`].
+     pub level: u32,
++    /// Opt-in wire capability and last successfully delivered watermark.
++    pub checkpoints: bool,
++    pub last_checkpoint: Option<Bytes>,
+ }
+ 
+ /// One subscription, shared by every subscriber that opened the
+@@ -180,6 +183,27 @@ impl Subscription {
+     pub fn deliver(&mut self, snapshot_conclusions: &[Conclusion], delta_bytes: Option<&Bytes>) {
+         fan_out(&mut self.subscribers, snapshot_conclusions, delta_bytes);
+     }
++    /// Send checkpoint-only frames after data delivery. No new frame when the
++    /// watermark is unchanged, and never send one to an older subscriber.
++    pub fn deliver_checkpoint(&mut self, checkpoint: &Bytes) {
++        checkpoint_fan_out(&mut self.subscribers, checkpoint);
++    }
++}
++
++fn checkpoint_fan_out(subscribers: &mut Vec<SubscriberSession>, checkpoint: &Bytes) {
++    subscribers.retain_mut(|subscriber| {
++        if !subscriber.checkpoints
++            || subscriber.status != Status::Established
++            || subscriber.last_checkpoint.as_ref() == Some(checkpoint)
++        {
++            return true;
++        }
++        if subscriber.sender.send(checkpoint.clone()).is_err() {
++            return false;
++        }
++        subscriber.last_checkpoint = Some(checkpoint.clone());
++        true
++    });
+ }
+ 
+ /// Deliver a poll's result to a subscriber set (see
+@@ -245,6 +269,55 @@ mod tests {
+ 
+     use super::*;
+ 
++    #[dialog_common::test]
++    fn it_delivers_opt_in_checkpoints_after_rows_without_repainting_or_duplicates() {
++        let (mut modern, mut modern_rx) = subscriber(Status::Pending);
++        modern.checkpoints = true;
++        let (legacy, mut legacy_rx) = subscriber(Status::Pending);
++        let mut subscribers = vec![modern, legacy];
++        let checkpoint = Bytes::from(
++            serde_json::to_vec(&Frame::Checkpoint {
++                revision: None,
++                overlay_sequence: 0,
++                overlay_hash: vec![0; 32],
++            })
++            .unwrap(),
++        );
++        // No watermark before a snapshot has established the rows.
++        checkpoint_fan_out(&mut subscribers, &checkpoint);
++        assert!(modern_rx.try_recv().is_err());
++        fan_out(&mut subscribers, &[conclusion("id:first")], None);
++        checkpoint_fan_out(&mut subscribers, &checkpoint);
++        assert!(matches!(recv(&mut modern_rx), Some(Frame::Snapshot { .. })));
++        assert!(matches!(
++            recv(&mut modern_rx),
++            Some(Frame::Checkpoint { revision: None, .. })
++        ));
++        assert!(matches!(recv(&mut legacy_rx), Some(Frame::Snapshot { .. })));
++        assert!(legacy_rx.try_recv().is_err());
++        checkpoint_fan_out(&mut subscribers, &checkpoint);
++        assert!(modern_rx.try_recv().is_err());
++        let next = Bytes::from(
++            serde_json::to_vec(&Frame::Checkpoint {
++                revision: None,
++                overlay_sequence: 1,
++                overlay_hash: vec![1; 32],
++            })
++            .unwrap(),
++        );
++        fan_out(&mut subscribers, &[conclusion("id:first")], None);
++        checkpoint_fan_out(&mut subscribers, &next);
++        assert!(matches!(
++            recv(&mut modern_rx),
++            Some(Frame::Checkpoint {
++                overlay_sequence: 1,
++                ..
++            })
++        ));
++        assert!(modern_rx.try_recv().is_err());
++        assert!(legacy_rx.try_recv().is_err());
++    }
++
+     /// One row of a snapshot.
+     fn conclusion(this: &str) -> Conclusion {
+         Conclusion {
+@@ -262,6 +335,8 @@ mod tests {
+                 status,
+                 client: None,
+                 level: 0,
++                checkpoints: false,
++                last_checkpoint: None,
+             },
+             receiver,
+         )
+diff --git a/rust/tonk-display/src/element.rs b/rust/tonk-display/src/element.rs
+index 3f014ec99..626b775db 100644
+--- a/rust/tonk-display/src/element.rs
++++ b/rust/tonk-display/src/element.rs
+@@ -156,6 +156,8 @@ struct Inner {
+     /// wrong (or empty) set — the "Model not found" after an empty
+     /// snapshot then a stamping delta.
+     retained: BTreeMap<String, Vec<Conclusion>>,
++    /// Delivered query watermarks only; async rendering may still be pending.
++    query_checkpoints: BTreeMap<String, serde_json::Value>,
+     /// `<wa-carousel>` element when in carousel mode, `None` in
+     /// single mode.
+     carousel: Option<Element>,
+@@ -273,6 +275,7 @@ impl Inner {
+             entity_sub: None,
+             last_frame: Vec::new(),
+             retained: BTreeMap::new(),
++            query_checkpoints: BTreeMap::new(),
+             carousel: None,
+             slides: BTreeMap::new(),
+             notation_source: None,
+@@ -300,6 +303,7 @@ impl Inner {
+     fn abort_all(&mut self) {
+         // Dropping the subscriptions cancels via the host and
+         // dispatches `tonk-unsubscribe`.
++        self.query_checkpoints.clear();
+         self.name_sub.take();
+         self.name_target = None;
+         self.model_sub.take();
+@@ -321,6 +325,7 @@ impl crate::introspect::registry::DisplayFacts for Inner {
+     fn facts(&self, host: &Element) -> crate::introspect::slot::Snapshot {
+         use crate::introspect::slot::{Snapshot, declared_fields};
+         Snapshot {
++            query_checkpoints: self.query_checkpoints.clone(),
+             model: host.get_attribute("model").filter(|v| !v.is_empty()),
+             model_entity: self.model_entity.clone(),
+             // `effective_facet` needs the whole `Inner`, and the
+@@ -626,6 +631,7 @@ impl CustomElement for TonkDisplay {
+             // the first frame per tag is a fresh snapshot, so stale rows
+             // from the prior context must not survive as a delta base.
+             s.retained.clear();
++            s.query_checkpoints.clear();
+             // Tear down any mounted slide / carousel chrome so the
+             // restart starts from a clean host.
+             clear_host(&host, &mut s);
+@@ -663,6 +669,11 @@ fn install_method_shims() {
+     let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
+         return;
+     };
++    let checkpoint_fn = Function::new_with_args(
++        "payload, opts",
++        "if (typeof this.__tonkCheckpoint === 'function') this.__tonkCheckpoint(payload, opts);",
++    );
++    let _ = Reflect::set(&proto, &"checkpoint".into(), &checkpoint_fn);
+     let reset_fn = Function::new_with_args(
+         "payload, opts",
+         "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
+@@ -686,6 +697,13 @@ fn install_method_shims() {
+ /// right handler.
+ fn install_method_delegates(host: &Element, state: &Rc<RefCell<Inner>>) {
+     use wasm_bindgen::closure::Closure;
++    let state_for_checkpoint = state.clone();
++    let checkpoint: Closure<dyn FnMut(JsValue, JsValue)> =
++        Closure::wrap(Box::new(move |payload, opts| {
++            on_checkpoint(&state_for_checkpoint, payload, opts);
++        }));
++    let _ = Reflect::set(host, &"__tonkCheckpoint".into(), checkpoint.as_ref());
++    checkpoint.forget();
+     let host_for_reset = host.clone();
+     let state_for_reset = state.clone();
+     let reset: Closure<dyn FnMut(JsValue, JsValue)> =
+@@ -714,11 +732,33 @@ fn install_method_delegates(host: &Element, state: &Rc<RefCell<Inner>>) {
+     error.forget();
+ }
+ 
++/// Record delivery for debugging; this deliberately does not certify rendering.
++fn on_checkpoint(state: &Rc<RefCell<Inner>>, payload: JsValue, opts: JsValue) {
++    let Some(tag) = read_tag(&opts) else {
++        return;
++    };
++    let Ok(frame @ tonk_schema::conclusion::Frame::Checkpoint { .. }) =
++        serde_wasm_bindgen::from_value(payload)
++    else {
++        return;
++    };
++    let mut state = state.borrow_mut();
++    if state.disposed || !state.retained.contains_key(&tag) {
++        return;
++    }
++    if let Ok(value) = serde_json::to_value(frame) {
++        state.query_checkpoints.insert(tag, value);
++    }
++}
++
+ /// `reset(conclusions, { tag })` — first / full-snapshot frame.
+ /// V1 SW always emits `reset`; deltas (`update`) come later with
+ /// DBSP integration.
+ fn on_reset(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: JsValue) {
+     let tag = read_tag(&opts);
++    if let Some(tag) = &tag {
++        state.borrow_mut().query_checkpoints.remove(tag);
++    }
+     let conclusions: Vec<Conclusion> = match serde_wasm_bindgen::from_value(payload) {
+         Ok(v) => v,
+         Err(e) => {
+@@ -763,6 +803,9 @@ fn on_reset(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts:
+ /// rendering logic is duplicated.
+ fn on_update(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: JsValue) {
+     let tag = read_tag(&opts);
++    if let Some(tag) = &tag {
++        state.borrow_mut().query_checkpoints.remove(tag);
++    }
+     let asserted = read_conclusions(&payload, "asserted");
+     let retracted = read_conclusions(&payload, "retracted");
+     let (asserted, retracted) = match (asserted, retracted) {
+@@ -934,6 +977,7 @@ fn read_conclusions(payload: &JsValue, field: &str) -> Result<Vec<Conclusion>, S
+ /// real refusal (HTTP 403 → `unauthorized`) replaces content via the loud
+ /// path.
+ fn on_error(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, _opts: JsValue) {
++    state.borrow_mut().query_checkpoints.clear();
+     let message = Reflect::get(&payload, &"message".into())
+         .ok()
+         .and_then(|v| v.as_string())
+@@ -1454,6 +1498,7 @@ fn handle_name_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
+         s.downstream_generation = s.downstream_generation.wrapping_add(1);
+         s.last_frame.clear();
+         s.retained.clear();
++        s.query_checkpoints.clear();
+         clear_host(host, &mut s);
+     }
+     state::set(host, State::Loading);
+@@ -3329,6 +3374,32 @@ mod tests {
+     #[cfg(target_arch = "wasm32")]
+     wasm_bindgen_test_configure!(run_in_browser);
+ 
++    #[cfg(target_arch = "wasm32")]
++    #[dialog_common::test]
++    fn it_records_query_delivery_without_claiming_or_changing_render_state() {
++        let state = Rc::new(RefCell::new(Inner::new()));
++        let payload = event_detail(&serde_json::json!({
++            "kind": "checkpoint", "revision": null,
++            "overlay_sequence": 3, "overlay_hash": [1, 2, 3]
++        }));
++        let opts = event_detail(&serde_json::json!({"tag": "entity"}));
++        on_checkpoint(&state, payload.clone(), opts.clone());
++        assert!(
++            state.borrow().query_checkpoints.is_empty(),
++            "no rows received yet"
++        );
++        state.borrow_mut().retained.insert("entity".into(), vec![]);
++        let generation = state.borrow().generation;
++        on_checkpoint(&state, payload, opts);
++        assert_eq!(state.borrow().query_checkpoints.len(), 1);
++        assert_eq!(state.borrow().generation, generation);
++        assert!(state.borrow().slides.is_empty());
++        assert!(state.borrow().last_frame.is_empty());
++        assert!(!state.borrow().view_settled);
++        state.borrow_mut().abort_all();
++        assert!(state.borrow().query_checkpoints.is_empty());
++    }
++
+     /// A `<tonk-display>` stand-in mounted in the document, optionally
+     /// with a `tonk-query` host behind it.
+     ///
+diff --git a/rust/tonk-display/src/introspect/slot.rs b/rust/tonk-display/src/introspect/slot.rs
+index eaacbaf60..173c76c44 100644
+--- a/rust/tonk-display/src/introspect/slot.rs
++++ b/rust/tonk-display/src/introspect/slot.rs
+@@ -172,6 +172,9 @@ fn elide(value: &str) -> String {
+ /// Everything the overlay knows about one observed `<tonk-display>`.
+ #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+ pub struct Snapshot {
++    /// Last delivered watermark per query input, not DOM completion evidence.
++    #[serde(default)]
++    pub query_checkpoints: BTreeMap<String, serde_json::Value>,
+     /// The `model` attribute as the author wrote it.
+     pub model: Option<String>,
+     /// The concept URI that attribute resolved to.
+diff --git a/rust/tonk-host/src/ops.rs b/rust/tonk-host/src/ops.rs
+index 4003f3949..a48c75bf4 100644
+--- a/rust/tonk-host/src/ops.rs
++++ b/rust/tonk-host/src/ops.rs
+@@ -867,6 +867,11 @@ fn deliver_frame(consumer: &Element, frame_js: &JsValue, tag: Option<&JsValue>,
+         .ok()
+         .and_then(|v| v.as_string());
+     match kind.as_deref() {
++        Some("checkpoint") => {
++            // Watermarks do not reset/update rows or imply DOM completion.
++            // Consumers opt into interpreting these via an optional method.
++            invoke_method(consumer, "checkpoint", frame_js, tag);
++        }
+         Some("snapshot") => {
+             let conclusions = Reflect::get(frame_js, &JsValue::from_str("conclusions"))
+                 .unwrap_or(JsValue::UNDEFINED);
+@@ -995,7 +1000,7 @@ mod tests {
+ 
+             let calls = Array::new();
+             let mut closures = Vec::new();
+-            for method in ["reset", "update", "error"] {
++            for method in ["reset", "update", "error", "checkpoint"] {
+                 let calls_for_method = calls.clone();
+                 let method_name = method.to_owned();
+                 let closure = Closure::wrap(Box::new(move |payload: JsValue, opts: JsValue| {
+@@ -1088,6 +1093,26 @@ mod tests {
+         frame.into()
+     }
+ 
++    #[dialog_common::test]
++    async fn it_routes_checkpoint_without_reset_or_update() {
++        let consumer = FakeConsumer::new();
++        let frame = js_sys::JSON::parse(
++            r#"{"kind":"checkpoint","revision":null,"overlay_sequence":1,"overlay_hash":[]}"#,
++        )
++        .unwrap();
++        deliver_frame(&consumer.element, &frame, Some(&"entity".into()), false);
++        assert_eq!(consumer.len(), 1);
++        assert_eq!(method_of(&consumer.call(0)), "checkpoint");
++        assert_eq!(
++            field(&opts_of(&consumer.call(0)), "tag"),
++            JsValue::from_str("entity")
++        );
++        // Old consumers without the optional method receive nothing.
++        Reflect::delete_property(&consumer.element, &"checkpoint".into()).unwrap();
++        deliver_frame(&consumer.element, &frame, Some(&"entity".into()), false);
++        assert_eq!(consumer.len(), 1);
++    }
++
+     /// A snapshot frame routes to `reset` with the tag forwarded on opts.
+     #[dialog_common::test]
+     async fn it_routes_a_snapshot_frame_to_reset_with_the_tag() {
+diff --git a/rust/tonk-host/src/url.rs b/rust/tonk-host/src/url.rs
+index 49659fff0..c09e2c75b 100644
+--- a/rust/tonk-host/src/url.rs
++++ b/rust/tonk-host/src/url.rs
+@@ -45,7 +45,10 @@ pub(crate) fn subscribe_url(
+     profile: bool,
+     level: u32,
+ ) -> String {
+-    format!("{}?level={level}", query_url(space, branch, profile))
++    format!(
++        "{}?level={level}&checkpoints=true",
++        query_url(space, branch, profile)
++    )
+ }
+ 
+ /// Build the `/transact` URL for `tonk-claim`.
+diff --git a/rust/tonk-worker-api/src/conclusion.rs b/rust/tonk-worker-api/src/conclusion.rs
+index 3ddf70d83..916987e4f 100644
+--- a/rust/tonk-worker-api/src/conclusion.rs
++++ b/rust/tonk-worker-api/src/conclusion.rs
+@@ -46,6 +46,16 @@ pub struct Conclusion {
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ #[serde(tag = "kind", rename_all = "snake_case")]
+ pub enum Frame {
++    /// Query-state watermark. Only sent to subscribers that explicitly opt in.
++    /// Does not instruct consumers to repaint and is not a render acknowledgment.
++    Checkpoint {
++        /// The exact durable head, or null for an evaluated empty branch.
++        revision: Option<serde_json::Value>,
++        /// The session overlay sequence represented by the retained query rows.
++        overlay_sequence: u64,
++        /// Identity of that session overlay, including its history.
++        overlay_hash: Vec<u8>,
++    },
+     /// The full current result set. First frame per subscriber and
+     /// after a reconnect.
+     Snapshot {
+diff --git a/rust/tonk-worker/src/router/query.rs b/rust/tonk-worker/src/router/query.rs
+index 23b547037..a01d0c7bd 100644
+--- a/rust/tonk-worker/src/router/query.rs
++++ b/rust/tonk-worker/src/router/query.rs
+@@ -53,6 +53,9 @@ pub struct QueryParams {
+     /// change before the displays nested inside it.
+     #[serde(default)]
+     pub level: u32,
++    /// Opt into query checkpoint frames; absent means legacy row-only delivery.
++    #[serde(default)]
++    pub checkpoints: bool,
+ }
+ 
+ /// Handler. Reads body, decides one-shot vs subscription based on
+@@ -184,7 +187,10 @@ async fn query_on_branch<'a>(
+             return Ok(retry_later(snapshot));
+         }
+ 
+-        let mut subscribe = branch.subscribe(query.clone()).level(params.level);
++        let mut subscribe = branch
++            .subscribe(query.clone())
++            .level(params.level)
++            .checkpoints(params.checkpoints);
+         if let Some(client) = client.clone() {
+             subscribe = subscribe.client(client);
+         }
+@@ -226,6 +232,7 @@ async fn query_on_branch<'a>(
+                             query,
+                             client,
+                             level: params.level,
++                            checkpoints: params.checkpoints,
+                             sender,
+                         },
+                     )

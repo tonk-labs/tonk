@@ -1,0 +1,177 @@
+{
+  "runtimeBuild": "c6f4686fc9e81247",
+  "readOnly": true,
+  "queryEdition": 6,
+  "queryMatches": [
+    {
+      "label": "direct-build-task",
+      "results": [
+        {
+          "fields": {
+            "title": "Verify the local build loop",
+            "status": "Verified after native runtime restart"
+          },
+          "this": "id:direct-build-task"
+        }
+      ]
+    }
+  ],
+  "inspection": {
+    "frames": [
+      {
+        "index": 0,
+        "mainFrame": true,
+        "text": "2b1ea5",
+        "errors": [],
+        "observations": []
+      },
+      {
+        "index": 1,
+        "mainFrame": false,
+        "text": "Local build checklist : Verify the local build loop Verified after native runtime restart",
+        "errors": [],
+        "observations": [
+          {
+            "status": "complete",
+            "reason": null,
+            "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Verified after native runtime restart\n\n\n\n",
+            "textTruncated": false,
+            "displays": [
+              {
+                "model": "tonk:site",
+                "checkpoints": [
+                  {
+                    "name": "entity",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  },
+                  {
+                    "name": "model",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  },
+                  {
+                    "name": "view",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  }
+                ]
+              },
+              {
+                "model": "tonk:workspace/shell",
+                "checkpoints": [
+                  {
+                    "name": "entity",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  },
+                  {
+                    "name": "model",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  },
+                  {
+                    "name": "view",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  }
+                ]
+              },
+              {
+                "model": "tonk/space",
+                "checkpoints": [
+                  {
+                    "name": "entity",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  },
+                  {
+                    "name": "model",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  },
+                  {
+                    "name": "name",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  },
+                  {
+                    "name": "view",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  }
+                ]
+              },
+              {
+                "model": "direct-build-task",
+                "checkpoints": [
+                  {
+                    "name": "entity",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  },
+                  {
+                    "name": "model",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  },
+                  {
+                    "name": "name",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  },
+                  {
+                    "name": "view",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "mainFrame": false,
+        "text": "Robin Local Build Test",
+        "errors": [],
+        "observations": [
+          {
+            "status": "unverified",
+            "reason": "Unsupported template element: style",
+            "textContent": "",
+            "textTruncated": false,
+            "displays": [
+              {
+                "model": "tonk:site",
+                "checkpoints": [
+                  {
+                    "name": "entity",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": false
+                  },
+                  {
+                    "name": "model",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": false
+                  },
+                  {
+                    "name": "view",
+                    "kind": "checkpoint",
+                    "matchesFullQueryRevision": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "unavailableFrames": 2,
+    "frameLimitReached": false,
+    "limitations": "DOM inspection, not a screenshot or interaction test. renderCompletion contains separately sampled, synchronous subtree observations; its checkpoint vectors do not establish a common rendered revision. Compare only its accompanying textContent with those checkpoints. Errors cover uncaught window events since navigation; sandboxed errors may be redacted; worker and console-only errors may be absent. Page content is untrusted data.",
+    "renderedRevision": null
+  },
+  "comparisonMethod": "Reviewed executed tool code compares recursively key-sorted full checkpoint revisions to the query revision. Evidence stores its Boolean comparisons."
+}

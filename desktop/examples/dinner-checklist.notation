@@ -1,0 +1,63 @@
+concept!: &dinner-task
+  description: "A dinner preparation task with saved completion"
+  with:
+    title:
+      description: "Task label"
+      the: xyz.tonk.dinner-task/title
+      as: text
+      cardinality: one
+    completed:
+      description: "Whether the task is complete"
+      the: xyz.tonk.dinner-task/completed
+      as: boolean
+      cardinality: one
+
+command!: &dinner-check
+  description: "Save a dinner checkbox change"
+  with:
+    subject:
+      description: "Task whose checkbox changed"
+      the: dom.event.current-target.dataset/dinner-task
+      as: entity
+    completed:
+      description: "Checkbox checked state"
+      the: dom.event.current-target/checked
+      as: boolean
+
+rule!:
+  assert!: dinner-task
+  when:
+    - assert: dinner-check
+      where: { subject: ?this, completed: ?completed }
+    - assert: dinner-task
+      where: { this: ?this, title: ?title }
+
+dinner-task!:
+  this: id:dinner-menu
+  title: "Choose a menu"
+  completed: false
+dinner-task!:
+  this: id:dinner-ingredients
+  title: "Buy ingredients"
+  completed: false
+dinner-task!:
+  this: id:dinner-table
+  title: "Set the table"
+  completed: false
+
+view!:
+  this: dinner-task
+  show:
+    ui: |
+      <label style="display:flex;align-items:center;gap:12px;padding:12px 0;font-size:18px">
+        <input type="checkbox" checked={completed} onchange=dinner-check data-dinner-task={this}>
+        <span>{title}</span>
+      </label>
+    directory: |
+      <main style="max-width:480px;margin:40px auto;padding:24px">
+        <h1>Dinner checklist</h1>
+        <tonk-display entity="id:dinner-menu" model=dinner-task></tonk-display>
+        <tonk-display entity="id:dinner-ingredients" model=dinner-task></tonk-display>
+        <tonk-display entity="id:dinner-table" model=dinner-task></tonk-display>
+      </main>
+    title: "{title}"

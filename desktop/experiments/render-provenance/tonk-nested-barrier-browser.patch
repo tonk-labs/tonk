@@ -1,0 +1,497 @@
+diff --git a/rust/tonk-display/src/element.rs b/rust/tonk-display/src/element.rs
+index 626b775db..645c1f310 100644
+--- a/rust/tonk-display/src/element.rs
++++ b/rust/tonk-display/src/element.rs
+@@ -114,6 +114,8 @@ struct Inner {
+     /// scoped to the model→downstream restart so a late model frame
+     /// doesn't race an in-flight downstream setup.
+     downstream_generation: u64,
++    #[cfg(test)]
++    installed_downstream: Option<u64>,
+     /// The `(model_entity, descriptor_json)` the current downstream flow
+     /// was started for, recorded **synchronously** in `handle_model_frame`
+     /// before the async `start_downstream` spawns. The model subscription
+@@ -270,6 +272,8 @@ impl Inner {
+             name_sub: None,
+             name_target: None,
+             downstream_generation: 0,
++            #[cfg(test)]
++            installed_downstream: None,
+             resolved_model: None,
+             view_sub: None,
+             entity_sub: None,
+@@ -304,6 +308,10 @@ impl Inner {
+         // Dropping the subscriptions cancels via the host and
+         // dispatches `tonk-unsubscribe`.
+         self.query_checkpoints.clear();
++        #[cfg(test)]
++        {
++            self.installed_downstream = None;
++        }
+         self.name_sub.take();
+         self.name_target = None;
+         self.model_sub.take();
+@@ -326,6 +334,12 @@ impl crate::introspect::registry::DisplayFacts for Inner {
+         use crate::introspect::slot::{Snapshot, declared_fields};
+         Snapshot {
+             query_checkpoints: self.query_checkpoints.clone(),
++            #[cfg(test)]
++            setup_complete: !self.disposed
++                && self.installed_downstream == Some(self.downstream_generation)
++                && self.model_sub.is_some()
++                && self.view_sub.is_some()
++                && self.entity_sub.is_some(),
+             model: host.get_attribute("model").filter(|v| !v.is_empty()),
+             model_entity: self.model_entity.clone(),
+             // `effective_facet` needs the whole `Inner`, and the
+@@ -1372,6 +1386,10 @@ async fn start_downstream(
+         }
+         s.view_sub = view_sub;
+         s.entity_sub = Some(entity_sub);
++        #[cfg(test)]
++        {
++            s.installed_downstream = Some(downstream_generation);
++        }
+     }
+     dispatch_event(host, "tonk-display:connected", None);
+     Ok(())
+@@ -5581,6 +5599,8 @@ mod tests {
+             /// model subscription stay empty (the `no-model` state).
+             model_frame: Option<JsValue>,
+             initial_frames: BTreeMap<String, JsValue>,
++            models: BTreeMap<String, JsValue>,
++            consumers: Vec<(String, Element)>,
+         }
+ 
+         impl FakeHost {
+@@ -5606,6 +5626,8 @@ mod tests {
+                     model_queries: Vec::new(),
+                     model_frame,
+                     initial_frames: BTreeMap::new(),
++                    models: BTreeMap::new(),
++                    consumers: Vec::new(),
+                 }));
+                 let mut listeners = Vec::new();
+ 
+@@ -5649,6 +5671,7 @@ mod tests {
+                                 let mut s = state.borrow_mut();
+                                 s.subscribe_tags.push(tag.clone());
+                                 s.subs.insert(tag.clone(), consumer.clone());
++                                s.consumers.push((tag.clone(), consumer.clone()));
+                                 // Auto-push the model concept frame as
+                                 // soon as the model subscription opens, so
+                                 // the downstream flow starts the way a live
+@@ -5657,7 +5680,10 @@ mod tests {
+                                     let query = Reflect::get(&detail, &"query".into()).unwrap();
+                                     s.model_queries
+                                         .push(serde_wasm_bindgen::from_value(query).unwrap());
+-                                    s.model_frame.clone()
++                                    s.models
++                                        .get(&consumer.get_attribute("model").unwrap_or_default())
++                                        .cloned()
++                                        .or_else(|| s.model_frame.clone())
+                                 } else {
+                                     s.initial_frames.get(&tag).cloned()
+                                 }
+@@ -5800,6 +5826,164 @@ mod tests {
+             ]
+         }
+ 
++        /// Test-only adapter over real renderer state, for the static inline
++        /// light-DOM subset in this fixture. Not a public render receipt API.
++        fn capture_nested_barrier(root: &Element) -> Option<usize> {
++            use crate::render_barrier::{Barrier, Checkpoint, Ticket};
++            fn visit(b: &mut Barrier, id: Ticket, el: &Element) -> Option<()> {
++                let facts = registry::display_facts(el)?;
++                if !el.is_connected()
++                    || !facts.setup_complete
++                    || el.get_attribute("data-state").as_deref() != Some("ready")
++                    || facts.timeline.is_held()
++                    || el.query_selector("tonk-portal").ok()?.is_some()
++                {
++                    return None;
++                }
++                // This fixture uses directly addressed models, three subscribed inputs,
++                // no fallback query, no commands and no arbitrary custom components.
++                for tag in ["model", "view", "entity"] {
++                    let checkpoint = facts.query_checkpoints.get(tag)?;
++                    let input = b.input(id, None)?;
++                    b.acknowledge(
++                        id,
++                        input,
++                        Checkpoint {
++                            scope: format!("{}:{tag}", el.get_attribute("model")?),
++                            durable: checkpoint
++                                .get("revision")
++                                .filter(|v| !v.is_null())
++                                .map(ToString::to_string),
++                            overlay: checkpoint.to_string(),
++                        },
++                    );
++                }
++                let children = el.query_selector_all("tonk-display").ok()?;
++                for index in 0..children.length() {
++                    let child: Element = children.item(index)?.dyn_into().ok()?;
++                    let nearest = child.parent_element()?.closest("tonk-display").ok()??;
++                    if nearest.is_same_node(Some(el.as_ref())) {
++                        let child_id = b.child(id)?;
++                        visit(b, child_id, &child)?;
++                    }
++                }
++                b.seal(id);
++                Some(())
++            }
++            let mut b = Barrier::new();
++            let id = b.root;
++            visit(&mut b, id, root)?;
++            Some(b.receipt()?.inputs.len())
++        }
++
++        fn deliver_to(consumer: &Element, method: &str, tag: &str, payload: &JsValue) {
++            let opts = Object::new();
++            Reflect::set(&opts, &"tag".into(), &tag.into()).unwrap();
++            let callback: Function = Reflect::get(consumer, &method.into())
++                .unwrap()
++                .dyn_into()
++                .unwrap();
++            callback.call2(consumer, payload, &opts).unwrap();
++        }
++
++        fn checkpoint_to(consumer: &Element, tag: &str) {
++            deliver_to(
++                consumer,
++                "checkpoint",
++                tag,
++                &event_detail(&serde_json::json!({
++                    "kind": "checkpoint", "revision": null, "overlay_sequence": 1,
++                    "overlay_hash": [1, 2, 3]
++                })),
++            );
++        }
++
++        #[dialog_common::test]
++        async fn it_blocks_the_browser_barrier_until_nested_data_and_checkpoint_arrive() {
++            crate::view::register();
++            let host = FakeHost::install_with_model(vec![], None);
++            let descriptor = r#"{"with":{"count":{"the":"counter/count","as":"UnsignedInteger","cardinality":"one"}}}"#;
++            for model in ["did:key:zParent", "did:key:zChild"] {
++                host.state
++                    .borrow_mut()
++                    .models
++                    .insert(model.into(), rows(&[(model, &[("source", descriptor)])]));
++            }
++            let parent = mount_display(&host, "", "did:key:zParent", "id:parent");
++            async fn subscribed(host: &FakeHost, consumer: &Element) {
++                for _ in 0..200 {
++                    if host.state.borrow().consumers.iter().any(|(tag, el)| {
++                        tag == "entity" && el.is_same_node(Some(consumer.as_ref()))
++                    }) {
++                        return;
++                    }
++                    sleep(5).await;
++                }
++                panic!("entity subscription did not open");
++            }
++            subscribed(&host, &parent).await;
++            deliver_to(
++                &parent,
++                "reset",
++                "view",
++                &show_rows(
++                    "did:key:zParent",
++                    &[(
++                        "ui",
++                        r#"<p>Parent {count}</p><tonk-display model="did:key:zChild" entity="id:child"></tonk-display>"#,
++                    )],
++                ),
++            );
++            deliver_to(
++                &parent,
++                "reset",
++                "entity",
++                &rows(&[("id:parent", &[("count", "1")])]),
++            );
++            for tag in ["model", "view", "entity"] {
++                checkpoint_to(&parent, tag);
++            }
++            let child = parent
++                .query_selector("tonk-display")
++                .unwrap()
++                .expect("real nested display mounted");
++            subscribed(&host, &child).await;
++            deliver_to(
++                &child,
++                "reset",
++                "view",
++                &show_rows("did:key:zChild", &[("ui", "<p>Child {count}</p>")]),
++            );
++            for tag in ["model", "view"] {
++                checkpoint_to(&child, tag);
++            }
++            sleep(0).await;
++            assert!(parent.text_content().unwrap().contains("Parent 1"));
++            assert_eq!(parent.get_attribute("data-state").as_deref(), Some("ready"));
++            assert!(
++                capture_nested_barrier(&parent).is_none(),
++                "parent ready is insufficient while child delivery is paused"
++            );
++            deliver_to(
++                &child,
++                "reset",
++                "entity",
++                &rows(&[("id:child", &[("count", "2")])]),
++            );
++            assert!(parent.text_content().unwrap().contains("Child 2"));
++            assert!(
++                capture_nested_barrier(&parent).is_none(),
++                "DOM text alone is insufficient before the checkpoint"
++            );
++            checkpoint_to(&child, "entity");
++            assert_eq!(capture_nested_barrier(&parent), Some(6));
++            // Restart while the replacement child data is held back.
++            child.set_attribute("entity", "id:replacement").unwrap();
++            assert!(capture_nested_barrier(&parent).is_none());
++            parent.remove();
++            assert!(capture_nested_barrier(&parent).is_none());
++        }
++
+         #[dialog_common::test]
+         async fn it_follows_the_space_home_alias_without_a_reload() {
+             crate::view::register();
+diff --git a/rust/tonk-display/src/introspect/slot.rs b/rust/tonk-display/src/introspect/slot.rs
+index 173c76c44..dbcc43422 100644
+--- a/rust/tonk-display/src/introspect/slot.rs
++++ b/rust/tonk-display/src/introspect/slot.rs
+@@ -172,6 +172,9 @@ fn elide(value: &str) -> String {
+ /// Everything the overlay knows about one observed `<tonk-display>`.
+ #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+ pub struct Snapshot {
++    /// Test-only lifecycle probe for the supported nested barrier fixture.
++    #[cfg(test)]
++    pub setup_complete: bool,
+     /// Last delivered watermark per query input, not DOM completion evidence.
+     #[serde(default)]
+     pub query_checkpoints: BTreeMap<String, serde_json::Value>,
+diff --git a/rust/tonk-display/src/lib.rs b/rust/tonk-display/src/lib.rs
+index 260311676..54cbf9a52 100644
+--- a/rust/tonk-display/src/lib.rs
++++ b/rust/tonk-display/src/lib.rs
+@@ -116,3 +116,6 @@ pub fn register() {
+     component::register();
+     upload::register();
+ }
++
++#[cfg(all(test, target_arch = "wasm32"))]
++mod render_barrier;
+diff --git a/rust/tonk-display/src/render_barrier.rs b/rust/tonk-display/src/render_barrier.rs
+new file mode 100644
+index 000000000..d222bac72
+--- /dev/null
++++ b/rust/tonk-display/src/render_barrier.rs
+@@ -0,0 +1,206 @@
++#![allow(dead_code)]
++// Executable completion-contract spike, not connected to the renderer.
++// Register work before awaiting or scheduling it. Seal only after synchronous
++// reconciliation has registered every input, child and asynchronous task.
++use std::collections::{BTreeMap, BTreeSet};
++use std::sync::atomic::{AtomicU64, Ordering};
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
++pub(crate) struct Ticket(u64);
++
++fn ticket() -> Ticket {
++    static NEXT: AtomicU64 = AtomicU64::new(0);
++    Ticket(
++        NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
++            .expect("ticket exhaustion"),
++    )
++}
++
++/// Opaque identities supplied by the existing query-checkpoint protocol.
++/// Different input scopes need not have the same durable or overlay revision.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub(crate) struct Checkpoint {
++    pub(crate) scope: String,
++    pub(crate) durable: Option<String>,
++    pub(crate) overlay: String,
++}
++
++#[derive(Default)]
++struct Node {
++    parent: Option<Ticket>,
++    children: BTreeSet<Ticket>,
++    pub(crate) inputs: BTreeMap<Ticket, Option<Checkpoint>>,
++    work: BTreeSet<Ticket>,
++    sealed: bool,
++    unsupported: bool,
++}
++
++pub(crate) struct Barrier {
++    owner: Ticket,
++    pub(crate) root: Ticket,
++    version: u64,
++    nodes: BTreeMap<Ticket, Node>,
++}
++
++#[derive(Debug)]
++pub(crate) struct Receipt {
++    owner: Ticket,
++    version: u64,
++    /// A vector of input identities, deliberately not one renderedRevision.
++    pub(crate) inputs: BTreeMap<Ticket, Checkpoint>,
++}
++
++impl Barrier {
++    pub(crate) fn new() -> Self {
++        let root = ticket();
++        Self {
++            owner: ticket(),
++            root,
++            version: 0,
++            nodes: BTreeMap::from([(root, Node::default())]),
++        }
++    }
++
++    pub(crate) fn changed(&mut self) {
++        self.version = self.version.checked_add(1).expect("generation exhaustion");
++    }
++
++    pub(crate) fn child(&mut self, parent: Ticket) -> Option<Ticket> {
++        let node = self.nodes.get_mut(&parent)?;
++        let id = ticket();
++        node.children.insert(id);
++        node.sealed = false;
++        self.nodes.insert(
++            id,
++            Node {
++                parent: Some(parent),
++                ..Node::default()
++            },
++        );
++        self.changed();
++        Some(id)
++    }
++
++    /// Restart invalidates the entire subtree and all of its in-flight tickets.
++    pub(crate) fn restart(&mut self, id: Ticket) -> Option<Ticket> {
++        let parent = self.nodes.get(&id)?.parent;
++        self.remove(id);
++        let fresh = if let Some(parent) = parent {
++            self.child(parent)?
++        } else {
++            let fresh = ticket();
++            self.root = fresh;
++            self.nodes.insert(fresh, Node::default());
++            fresh
++        };
++        self.changed();
++        Some(fresh)
++    }
++
++    pub(crate) fn remove(&mut self, id: Ticket) {
++        if let Some(node) = self.nodes.remove(&id) {
++            for child in node.children {
++                self.remove(child);
++            }
++            if let Some(parent) = node.parent.and_then(|p| self.nodes.get_mut(&p)) {
++                parent.children.remove(&id);
++                parent.sealed = false;
++            }
++            self.changed();
++        }
++    }
++
++    /// Start/restart an input on subscription replacement or a new row frame.
++    /// `old` is retired so its delayed checkpoint cannot acknowledge new rows.
++    pub(crate) fn input(&mut self, id: Ticket, old: Option<Ticket>) -> Option<Ticket> {
++        let node = self.nodes.get_mut(&id)?;
++        if let Some(old) = old {
++            node.inputs.remove(&old)?;
++        }
++        let input = ticket();
++        node.inputs.insert(input, None);
++        node.sealed = false;
++        self.changed();
++        Some(input)
++    }
++
++    pub(crate) fn acknowledge(
++        &mut self,
++        id: Ticket,
++        input: Ticket,
++        checkpoint: Checkpoint,
++    ) -> bool {
++        let Some(slot) = self
++            .nodes
++            .get_mut(&id)
++            .and_then(|n| n.inputs.get_mut(&input))
++        else {
++            return false;
++        };
++        if slot.as_ref() != Some(&checkpoint) {
++            *slot = Some(checkpoint);
++            self.changed();
++        }
++        true
++    }
++
++    pub(crate) fn begin_work(&mut self, id: Ticket) -> Option<Ticket> {
++        let node = self.nodes.get_mut(&id)?;
++        let work = ticket();
++        node.work.insert(work);
++        node.sealed = false;
++        self.changed();
++        Some(work)
++    }
++
++    pub(crate) fn finish_work(&mut self, id: Ticket, work: Ticket) -> bool {
++        if self
++            .nodes
++            .get_mut(&id)
++            .is_some_and(|n| n.work.remove(&work))
++        {
++            self.changed();
++            true
++        } else {
++            false
++        }
++    }
++
++    pub(crate) fn seal(&mut self, id: Ticket) {
++        if let Some(node) = self.nodes.get_mut(&id) {
++            node.sealed = true;
++            self.changed();
++        }
++    }
++
++    /// Error, untracked fallback, held history or opaque portal: fail closed.
++    /// Only restarting the node can restore eligibility.
++    pub(crate) fn unsupported(&mut self, id: Ticket) {
++        if let Some(node) = self.nodes.get_mut(&id) {
++            node.unsupported = true;
++            self.changed();
++        }
++    }
++
++    pub(crate) fn receipt(&self) -> Option<Receipt> {
++        self.nodes.get(&self.root)?;
++        let mut inputs = BTreeMap::new();
++        for node in self.nodes.values() {
++            if !node.sealed || node.unsupported || !node.work.is_empty() || node.inputs.is_empty() {
++                return None;
++            }
++            for (id, checkpoint) in &node.inputs {
++                inputs.insert(*id, checkpoint.clone()?);
++            }
++        }
++        Some(Receipt {
++            owner: self.owner,
++            version: self.version,
++            inputs,
++        })
++    }
++
++    pub(crate) fn is_current(&self, receipt: &Receipt) -> bool {
++        receipt.owner == self.owner && receipt.version == self.version && self.receipt().is_some()
++    }
++}
