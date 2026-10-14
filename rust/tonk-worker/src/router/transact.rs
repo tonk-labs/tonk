@@ -534,6 +534,7 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         | ReactorError::Commit(_)
         | ReactorError::Pull(_)
         | ReactorError::Download(_)
-        | ReactorError::Push(_) => TonkWorkerError::Internal(err.to_string()),
+        | ReactorError::Push(_)
+        | ReactorError::Upgrade { .. } => TonkWorkerError::Internal(err.to_string()),
     }
 }

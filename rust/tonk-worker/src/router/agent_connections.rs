@@ -890,12 +890,9 @@ mod tests {
         let signer =
             <Ed25519Signer<Extractable> as ExtractableKey>::import(&rand::random::<[u8; 32]>())
                 .await?;
-        // Worker operators resolve named spaces from cwd on native targets.
-        // Keep the replica, as well as the profile, inside this fixture's directory.
-        let repo = directory
-            .join("reported-space")
-            .to_string_lossy()
-            .into_owned();
+        // The explicit native registry resolves names below its own spaces
+        // directory. The repository name is an identifier, not an absolute path.
+        let repo = "reported-space".to_owned();
         Subject::from(tonk.profile.did())
             .attenuate(Space::new(&repo))
             .create_with(signer.clone())

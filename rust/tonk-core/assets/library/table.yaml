@@ -272,7 +272,7 @@ command!: &table/create-sheet
     time:
       description: A monotonic integer nonce from the element
       the: xyz.tonk.table.create-sheet/time
-      as: unsigned-integer
+      as: natural
 
 command!: &table/rename-sheet
   description: Rename `sheet` to `name`.
@@ -304,7 +304,7 @@ command!: &table/create-cell
     time:
       description: A monotonic integer nonce from the element
       the: xyz.tonk.table.create-cell/time
-      as: unsigned-integer
+      as: natural
 
 command!: &table/edit-cell
   description: Replace `cell`'s raw input.
@@ -344,7 +344,7 @@ command!: &table/create-column
     time:
       description: A monotonic integer nonce from the element
       the: xyz.tonk.table.create-column/time
-      as: unsigned-integer
+      as: natural
 
 command!: &table/resize-column
   description: Change `column`'s width.
@@ -376,7 +376,7 @@ command!: &table/create-row
     time:
       description: A monotonic integer nonce from the element
       the: xyz.tonk.table.create-row/time
-      as: unsigned-integer
+      as: natural
 
 command!: &table/resize-row
   description: Change `row`'s height.

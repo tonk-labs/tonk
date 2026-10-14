@@ -475,6 +475,24 @@ async fn retract_library_before_first_contact(tonk: &TonkState) {
     }
 }
 
+/// Move the head a pull just gave profile main to this release's layout,
+/// before the views over it are polled. The account's head was pushed by
+/// the release the other devices run, so on first contact with an account
+/// that has content, and on a sweep that adopts what another device
+/// pushed since, profile main is laid out the earlier way until something
+/// moves it; a display polled against it meanwhile reads definitions this
+/// release does not match and shows its model missing. Nothing to move is
+/// one root read; a failure is logged by the gate and the sweep goes on.
+async fn migrate_adopted_profile_head(tonk: &TonkState) {
+    let _ = super::query::migrate_while_opening(
+        tonk,
+        tonk.reactor
+            .profile_repository()
+            .branch(&tonk.active_branch),
+    )
+    .await;
+}
+
 async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
     let session = tonk
         .reactor
@@ -525,6 +543,7 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
                         "failed to hydrate the account into profile main: {error}"
                     ))
                 })?;
+            migrate_adopted_profile_head(tonk).await;
         }
         Ok(RemotePresence::Absent) => {
             tonk.reactor
@@ -564,13 +583,20 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
                                 "failed to adopt winning account genesis: {error}"
                             ))
                         })?;
+                    migrate_adopted_profile_head(tonk).await;
                 }
                 Err(error) => return Err(TonkWorkerError::Internal(error.to_string())),
             }
         }
         Err(error) => return Err(TonkWorkerError::Internal(error.to_string())),
     }
-    Ok(())
+    // First contact can adopt the remote tree, including an obsolete grant
+    // for this device that persist_root already removed locally. Restore the
+    // canonical local grant before marking this base trusted or using it to
+    // authorize convergence and publication. This also covers a lost genesis
+    // race, where the winning account becomes our first trusted base.
+    let root = super::identity::local_root(tonk).await?;
+    super::identity::reconcile_root_delegation(tonk, &root.delegation).await
 }
 
 /// Reconcile profile main against the account upstream: pull, project,
@@ -786,6 +812,7 @@ async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<()
         .perform(&tonk.operator)
         .await
         .map_err(|error| format!("account pull failed: {error}"))?;
+    migrate_adopted_profile_head(tonk).await;
     // The account's own sync is not enough on its own: the operator proves
     // from the PROFILE's access branch, so authority that arrived in the
     // account above is present but unusable until the access branch adopts
@@ -1984,7 +2011,7 @@ pub(crate) mod tests {
             let tonk = state.read().await;
             let credential = tonk_account::peer::mount_verifier(
                 tonk.profile.storage(),
-                crate::device::space_location(&missing_key),
+                tonk.registry.space_location(&missing_key),
                 &missing,
             )
             .await
@@ -2158,10 +2185,18 @@ pub(crate) mod tests {
         passkey: Option<tonk_worker_api::PasskeyMetadata>,
     ) -> TonkState {
         let name = format!("account-state-worker-test-{}", rand::random::<u64>());
-        let (storage, profile) =
-            crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
-                .await
-                .unwrap();
+        // The system key belongs to the directory, not the profile name.
+        // Keep each device in its own directory so parallel first boots cannot
+        // create different system keys in the shared native profile store.
+        let directory = dialog_effects::storage::Directory::At(
+            std::env::temp_dir()
+                .join(&name)
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let (storage, profile) = crate::device::open_profile_at(&name, directory.clone())
+            .await
+            .unwrap();
         let session = crate::session::open(&profile).await.unwrap();
         let reactor = crate::Reactor::new(profile.credential().clone());
         let state = TonkState {
@@ -2185,7 +2220,7 @@ pub(crate) mod tests {
             profile_library: Default::default(),
             registry: crate::device::Registry {
                 profile: name.clone(),
-                directory: dialog_effects::storage::Directory::Profile,
+                directory,
                 standing: Default::default(),
             },
             profile_transition: Default::default(),
@@ -2254,11 +2289,16 @@ pub(crate) mod tests {
         read_passkeys(state, ready).await.unwrap()
     }
 
-    /// Remove the on-disk verifier repository `NativeSpace` rooted in the
-    /// package working directory for one randomized fixture.
+    /// Remove the on-disk verifier repository from this fixture's isolated
+    /// native storage.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn discard(state: TonkState, key: &str) {
-        let local = std::env::current_dir().unwrap().join(key);
+        let dialog_effects::storage::Directory::At(root) =
+            state.registry.space_location(key).directory
+        else {
+            panic!("native fixture must use isolated storage");
+        };
+        let local = std::path::Path::new(&root).join(key);
         drop(state);
         if local.is_dir() {
             std::fs::remove_dir_all(local).unwrap();
@@ -2415,12 +2455,15 @@ pub(crate) mod tests {
         for round in 0..3u64 {
             let facts: Vec<_> = (0..2048u64)
                 .map(|n| {
-                    Instruction::Assert(Artifact {
-                        the: "test/fact".parse().expect("a valid attribute"),
-                        of: format!("test:{round}:{n}").parse().expect("a valid entity"),
-                        is: Value::UnsignedInt(n.into()),
-                        cause: None,
-                    })
+                    Instruction::Assert(
+                        Artifact {
+                            the: "test/fact".parse().expect("a valid attribute"),
+                            of: format!("test:{round}:{n}").parse().expect("a valid entity"),
+                            is: Value::UnsignedInt(n.into()),
+                            cause: None,
+                        },
+                        dialog_artifacts::Pick::All,
+                    )
                 })
                 .collect();
             home.reactor
@@ -2430,7 +2473,10 @@ pub(crate) mod tests {
                 .await
                 .unwrap()
                 .handle()
-                .commit(futures_util::stream::iter(facts))
+                .transaction()
+                .integrate(facts.into_iter().collect())
+                .commit()
+                .publish()
                 .perform(&home.operator)
                 .await
                 .unwrap();
@@ -2454,12 +2500,15 @@ pub(crate) mod tests {
         let touched: Vec<_> = (0..3u64)
             .flat_map(|round| (0..2048u64).map(move |n| (round, n)))
             .map(|(round, n)| {
-                Instruction::Assert(Artifact {
-                    the: "test/touched".parse().expect("a valid attribute"),
-                    of: format!("test:{round}:{n}").parse().expect("a valid entity"),
-                    is: Value::UnsignedInt(n.into()),
-                    cause: None,
-                })
+                Instruction::Assert(
+                    Artifact {
+                        the: "test/touched".parse().expect("a valid attribute"),
+                        of: format!("test:{round}:{n}").parse().expect("a valid entity"),
+                        is: Value::UnsignedInt(n.into()),
+                        cause: None,
+                    },
+                    dialog_artifacts::Pick::All,
+                )
             })
             .collect();
         let branch = back
@@ -2472,7 +2521,10 @@ pub(crate) mod tests {
         branch.handle().refresh(&back.operator).await.unwrap();
         let written = branch
             .handle()
-            .commit(futures_util::stream::iter(touched))
+            .transaction()
+            .integrate(touched.into_iter().collect())
+            .commit()
+            .publish()
             .perform(&back.operator)
             .await;
         assert!(
@@ -2556,6 +2608,137 @@ pub(crate) mod tests {
         );
     }
 
+    /// A remote account may still contain a revoked grant for this device.
+    /// Hydration must preserve the replacement selected by persist_root, and
+    /// the device must read and publish through the real service without a restart.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_keeps_the_current_device_grant_after_account_hydration() {
+        for already_hydrated in [false, true] {
+            let (home, service, root, remote) = ready_account_state(None).await;
+            let (_, swept) = ensure_account_state_swept(&home).await;
+            swept.unwrap();
+            let device = device_on(&root, &remote, None).await;
+            let old = super::super::identity::local_root(&device)
+                .await
+                .unwrap()
+                .delegation;
+            crate::onboarding::describe_device_link(&home, &old, "diagnostic device".into())
+                .await
+                .unwrap();
+            push_account_main(&home).await.unwrap();
+            if already_hydrated {
+                let (_, swept) = ensure_account_state_swept(&device).await;
+                swept.unwrap();
+            }
+            let artifact = tonk_identity::revocation::mint_root_revocation(
+                root.clone(),
+                &old,
+                &old.proof_cids()[0],
+            )
+            .await
+            .unwrap();
+            let response = reqwest::Client::new()
+                .post(service.address.ucan_endpoint())
+                .header(reqwest::header::CONTENT_TYPE, "application/cbor")
+                .body(artifact)
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+            link_device(&device, &root, &remote, None).await;
+            let current = super::super::identity::local_root(&device)
+                .await
+                .unwrap()
+                .delegation;
+            assert_ne!(old.proof_cids(), current.proof_cids());
+            let before = device
+                .reactor
+                .profile_repository()
+                .branch(&device.active_branch)
+                .acquire(&device.operator)
+                .await
+                .unwrap();
+            let held = before
+                .handle()
+                .delegations()
+                .issued_to(device.profile.did())
+                .perform(&device.operator)
+                .await
+                .unwrap();
+            assert!(
+                !held
+                    .iter()
+                    .any(|grant| grant.0.proof_cids() == old.proof_cids()),
+                "root installation must remove the old grant before hydration"
+            );
+            drop(before);
+            // The approving browser retains both grants: its cleanup only
+            // reconciles its OWN canonical device grant.
+            crate::onboarding::describe_device_link(&home, &current, "diagnostic device".into())
+                .await
+                .unwrap();
+            let (_, swept) = ensure_account_state_swept(&home).await;
+            swept.unwrap();
+            let (_, swept) = ensure_account_state_swept(&device).await;
+            swept.unwrap();
+            let branch = device
+                .reactor
+                .profile_repository()
+                .branch(&device.active_branch)
+                .acquire(&device.operator)
+                .await
+                .unwrap();
+            let held = branch
+                .handle()
+                .delegations()
+                .issued_to(device.profile.did())
+                .perform(&device.operator)
+                .await
+                .unwrap();
+            assert!(
+                held.iter()
+                    .any(|grant| grant.0.proof_cids() == current.proof_cids())
+            );
+            assert!(
+                !held
+                    .iter()
+                    .any(|grant| grant.0.proof_cids() == old.proof_cids()),
+                "hydration restored the revoked grant (already_hydrated={already_hydrated})"
+            );
+            drop(branch);
+
+            // Exercise both directions through the access service with the
+            // refreshed prover, without restarting or repairing the device.
+            rename_display_name(&device, "Published with the replacement grant")
+                .await
+                .unwrap();
+            push_account_main(&device).await.unwrap();
+            let (_, swept) = ensure_account_state_swept(&home).await;
+            swept.unwrap();
+            assert_eq!(
+                super::super::account_devices::account_display_name(&home)
+                    .await
+                    .as_deref(),
+                Some("Published with the replacement grant")
+            );
+            rename_display_name(&home, "Read with the replacement grant")
+                .await
+                .unwrap();
+            push_account_main(&home).await.unwrap();
+            let (_, swept) = ensure_account_state_swept(&device).await;
+            swept.unwrap();
+            assert_eq!(
+                super::super::account_devices::account_display_name(&device)
+                    .await
+                    .as_deref(),
+                Some("Read with the replacement grant")
+            );
+            service.stop().await.unwrap();
+        }
+    }
+
     /// A device that signs out and back in keeps pulling its account.
     ///
     /// A device joining an account in use retains its grant on a branch
@@ -2585,12 +2768,15 @@ pub(crate) mod tests {
         // An account in use: enough facts that its tree has an index node.
         let facts: Vec<_> = (0..2048)
             .map(|n| {
-                Instruction::Assert(Artifact {
-                    the: "test/fact".parse().expect("a valid attribute"),
-                    of: format!("test:{n}").parse().expect("a valid entity"),
-                    is: Value::UnsignedInt(n),
-                    cause: None,
-                })
+                Instruction::Assert(
+                    Artifact {
+                        the: "test/fact".parse().expect("a valid attribute"),
+                        of: format!("test:{n}").parse().expect("a valid entity"),
+                        is: Value::UnsignedInt(n),
+                        cause: None,
+                    },
+                    dialog_artifacts::Pick::All,
+                )
             })
             .collect();
         home.reactor
@@ -2600,7 +2786,10 @@ pub(crate) mod tests {
             .await
             .unwrap()
             .handle()
-            .commit(futures_util::stream::iter(facts))
+            .transaction()
+            .integrate(facts.into_iter().collect())
+            .commit()
+            .publish()
             .perform(&home.operator)
             .await
             .unwrap();

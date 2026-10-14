@@ -539,14 +539,6 @@ fn render_notation_tree_item(name: &str, value: &Value) -> String {
 
 // ---- Field values + descriptor expansion ------------------------------------
 
-/// `+41` / `-7`: the wire spelling of a SignedInteger value.
-fn is_signed_literal(s: &str) -> bool {
-    match s.strip_prefix(['+', '-']) {
-        Some(rest) => !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()),
-        None => false,
-    }
-}
-
 /// Render a single field value as a highlighted `<span>`, applying the
 /// `tonk-cm-*` class matching its shape.
 fn render_field_value(value: &Value) -> String {
@@ -555,11 +547,9 @@ fn render_field_value(value: &Value) -> String {
         Value::Bool(b) => ("tonk-cm-number", b.to_string()),
         Value::Number(n) => ("tonk-cm-number", n.to_string()),
         Value::String(s) => {
-            if is_signed_literal(s) {
-                // The wire spelling of a SignedInteger (`+41`, `-7`).
-                ("tonk-cm-number", s.clone())
-            } else if looks_like_uri(s) {
-                ("tonk-cm-entity", s.clone())
+            if looks_like_uri(s) {
+                // Spelled as notation, so `keyword:` reads `:keyword`.
+                ("tonk-cm-entity", tonk_notation::spell_uri(s).into_owned())
             } else {
                 ("tonk-cm-string", s.clone())
             }
@@ -618,18 +608,12 @@ fn revision_badge(revision: Option<&Revision>) -> String {
     }
 }
 
-/// An attribute `Type` discriminant the way it is typed in notation.
+/// An attribute type, as stored, the way it is typed in notation: by
+/// its built-in anchor.
 fn type_name_to_notation(stored: &str) -> &str {
-    match stored {
-        "Text" => "text",
-        "UnsignedInteger" => "unsigned-integer",
-        "SignedInteger" => "signed-integer",
-        "Float" => "float",
-        "Boolean" => "boolean",
-        "Entity" => "entity",
-        "Bytes" => "bytes",
-        other => other,
-    }
+    dialog_artifacts::ValueDataType::named(stored)
+        .map(|kind| tonk_notation::type_anchor(kind.uri()))
+        .unwrap_or(stored)
 }
 
 /// Rewrite every `as` value in a descriptor tree to its notation surface form.

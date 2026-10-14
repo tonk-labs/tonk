@@ -481,6 +481,14 @@ pub(crate) async fn finish_link(
     // spaces. Each account-service request is bounded by the shared HTTP
     // timeout, and awaiting the sequence keeps it inside the fetch lifetime.
     super::account_state::ensure_account_state(state).await;
+    timing.next("public-powerline");
+    // Public spaces are read through the account's powerline from the
+    // public principal. Best-effort: opening one mints it if this did not.
+    if let Ok(root) = super::identity::local_root(state).await
+        && let Err(error) = super::public_access::ensure_powerline(state, &root.root_did).await
+    {
+        log!("public powerline was not minted at link: {error}");
+    }
     timing.next("rotate-onboarding");
     // Everything created or joined before this account existed hangs off
     // the onboarding account; re-issue it to the root from the custodied
