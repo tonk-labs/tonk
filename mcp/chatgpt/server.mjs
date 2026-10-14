@@ -2,18 +2,8 @@
 // long-lived worker replicas publish through Tonk's normal remote sync.
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
-import { mkdtemp, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { createDurableState } from './durable-state.mjs';
-import { createCheckpoint } from './checkpoint.mjs';
-import { createTonkOAuth } from './oauth.mjs';
-import { createAuthenticatedTonkHTTP } from './authenticated-http.mjs';
-import { workerAccountProvisioner, createWorkerTenants } from './worker-tenants.mjs';
-import { accountBackend } from '../account-backend.mjs';
-import { createWorkerUI } from './ui.mjs';
-import { createSpaceSessions } from './space-session.mjs';
-import { checkpointedProvisioner } from './provisioning.mjs';
+import { readFile } from 'node:fs/promises';
+import { createHostedService } from './service.mjs';
 import { providerOrigin } from './provider.mjs';
 const required = (name) => {
   if (!process.env[name]) throw Error('Missing ' + name);
@@ -29,43 +19,15 @@ const build = await readFile(new URL('./build.json', import.meta.url), 'utf8').c
   if (error.code === 'ENOENT') return '{}';
   throw error;
 });
-const dataRoot = await mkdtemp(join(tmpdir(), 'tonk-worker-seeds-'));
-const checkpoint = await createCheckpoint({ directory: dataRoot });
-const durable = await createDurableState();
-if (durable.state && (durable.state.version !== 1 || durable.state.subject !== subject))
-  throw Error('Credential snapshot configuration mismatch');
-const provision = workerAccountProvisioner({ binary, dataRoot, provider });
-const oauth = createTonkOAuth({
+const service = await createHostedService({
   issuer,
-  dynamicRegistration: process.env.TONK_MCP_DCR === 'true',
+  subject,
+  binary,
+  provider,
   clientId: required('TONK_MCP_CLIENT_ID'),
-  redirectUris: [required('TONK_MCP_REDIRECT_URI')],
+  redirectUri: required('TONK_MCP_REDIRECT_URI'),
   clients: process.env.TONK_MCP_CLIENTS ? JSON.parse(process.env.TONK_MCP_CLIENTS) : undefined,
-  linkPage: provider + '/settings/link',
-  saved: durable.state?.oauth,
-  onRevoke: (principal) => sessions.revokePrincipal(principal),
-  provisionAccount: checkpointedProvisioner({
-    provision,
-    checkpoint,
-    retainedTenants: () => [...oauth.retainedTenants(), ...sessions.retainedTenants()],
-  }),
-});
-const tenants = createWorkerTenants({ binary, dataRoot });
-const sessions = createSpaceSessions({
-  saved: durable.state?.sessions,
-  isPrincipalActive: (principal) => oauth.isPrincipalActive(principal),
-  resolveWorker: (principal, selected) => tenants.resolve(principal, selected),
-});
-const http = createAuthenticatedTonkHTTP({
-  oauth,
-  registerUI: createWorkerUI({ origin: issuer }),
-  resolveBackend: async (principal) => ({
-    ...accountBackend({ principal, tenants }),
-    async openSpace(space) {
-      await tenants.resolve(principal, space);
-      return sessions.issue(principal, space);
-    },
-  }),
+  dynamicRegistration: process.env.TONK_MCP_DCR === 'true',
 });
 const server = createServer(async (req, res) => {
   try {
@@ -96,13 +58,7 @@ const server = createServer(async (req, res) => {
       signal: abort.signal,
       ...(['GET', 'HEAD'].includes(req.method) ? {} : { body: Buffer.concat(chunks) }),
     });
-    const response = await durable.run(
-      () =>
-        new URL(request.url).pathname.startsWith('/space-api/')
-          ? sessions.fetch(request)
-          : http.fetch(request),
-      () => ({ version: 1, subject, oauth: oauth.snapshot(), sessions: sessions.snapshot() }),
-    );
+    const response = await service.fetch(request);
     res.writeHead(response.status, Object.fromEntries(response.headers));
     if (response.body)
       Readable.fromWeb(response.body)
@@ -117,9 +73,7 @@ const server = createServer(async (req, res) => {
 server.listen(8080, '0.0.0.0');
 async function close() {
   server.close();
-  sessions.close();
-  await http.close();
-  await tenants.close();
+  await service.close();
   server.closeAllConnections();
 }
 process.once('SIGTERM', close);

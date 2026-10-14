@@ -348,3 +348,21 @@ executed for this plan, and the wider worker/Desktop codebase was not audited.
   SDK tests use fixture authority/backends, not live client or native-worker proof.
   MCP Apps capability reference checked 2026-10-14:
   https://apps.extensions.modelcontextprotocol.io/api/interfaces/app.McpUiClientCapabilities.html
+- Production composition is now exported as `createHostedService`; the executable
+  uses that same function. Real loopback HTTP acceptance passed with Node SDK
+  2.3.0 (2025-11-25 and 2026-07-28) and Python SDK 1.26.0 (2025-11-25): OAuth
+  approval/code exchange, four-tool catalogs, native worker writes/readback,
+  two accounts/clients, forbidden cross-space selection, guides, credential
+  persistence/restart, refresh and reconnect. JSON and finite SSE responses observed.
+  Native data and canonical dispatch are real; account approval/membership and
+  checkpoint service are explicit fixtures. This is not passkey/provider or
+  Claude/ChatGPT acceptance. CI installs the independent Python SDK.
+- Native build passed (existing dead-code warnings). Both integration tests passed
+  with `TONK_WORKER_BINARY=$PWD/target/debug/tonk-worker-host` and
+  `TONK_PYTHON=/tmp/tonk-mcp-python/bin/python`. Initial sandbox runs failed at
+  worker loopback bind (`PermissionDenied`, OS error 1); unchanged elevated run
+  passed. No authority/network policy was weakened.
+- Reconciled checkpoint ordering: local non-ChatGPT OAuth/tool vertical slice is
+  now executable and proven. Per the implementation request, unavailable external
+  client/deployment acceptance will remain unverified while independently safe
+  source extraction proceeds. No claim that the original live preview gate passed.

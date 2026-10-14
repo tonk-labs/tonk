@@ -89,6 +89,14 @@ jobs:
           nix --accept-flake-config develop .#ci -c npm --prefix mcp test
       - name: Test worker behavior, storage isolation and restart
         run: nix --accept-flake-config develop .#ci -c cargo test --locked --profile ci-test --timings -p tonk-worker --lib -- --test-threads=2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install independent Python MCP client
+        run: |
+          python -m venv "$RUNNER_TEMP/tonk-mcp-python"
+          "$RUNNER_TEMP/tonk-mcp-python/bin/pip" install -r mcp/integration/requirements.txt
+          echo "TONK_PYTHON=$RUNNER_TEMP/tonk-mcp-python/bin/python" >> "$GITHUB_ENV"
       - name: Build ordinary worker and test through MCP
         run: |
           nix --accept-flake-config develop .#ci -c cargo build --locked --profile ci-test --timings -p tonk-worker --features native-host --bin tonk-worker-host
