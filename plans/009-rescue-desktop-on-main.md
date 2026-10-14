@@ -1,6 +1,6 @@
 # Plan 009: Recover Tonk Desktop on current main
 
-Status: IN PROGRESS — resumed after reconciling source inventory; acceptance incomplete. Priority: P1. Effort: L, delivered as tested increments.
+Status: LOCAL RECOVERY VALIDATED; external acceptance incomplete. Stopped further work after a source-note update. Priority: P1. Effort: L, delivered as tested increments.
 Planning baseline: `origin/main` at `55af716ef5`, fetched during this planning pass.
 Source: `feat/desktop` at `28f1f72212`, plus the working changes inventoried below.
 This plan interprets “rescue Desktop over the latest” as preserving the existing
@@ -254,8 +254,8 @@ this plan without the applicable user authorization.
 
 - [x] Original Desktop branch and dirty work preserved and inventoried (new external note detected later; see stop condition).
 - [x] Recovery branch is based on freshly fetched main; final tree has no legacy MCP implementation or old Rust/patch import.
-- [ ] Canonical tools/guides generated deterministically; native read/write/readback passes.
-- [ ] Old chats and proposals handled without lost data or replayed writes.
+- [x] Canonical tools/guides generated deterministically; native read/write/readback passes.
+- [x] Old chats and proposals handled without lost data or replayed writes (native tests).
 - [x] Activity UI changes recovered, unit-tested and separately reviewable; visual/live acceptance remains open.
 - [ ] Current root commands and ad-hoc CI pass; release gates remain correctly scoped.
 - [x] Local workflow, live model, remote sync and signed passkey evidence distinguished.
@@ -528,3 +528,67 @@ Matching web runtime build completed successfully:
 Served on loopback 4187 using `desktop/scripts/serve-local-runtime.py`.
 `nix develop .#ci -c test:desktop:workflow` started against that artifact with
 fresh per-run storage and app identifier. Results follow below.
+
+## Resumed local acceptance — passed 2026-10-14
+
+`nix develop .#ci -c test:desktop:workflow` exited 0 against the matching built
+runtime. Disposable app/data at `desktop/artifacts/agent-workflow-pqo65yzy/`.
+Creation passed **20 checks**; process restart passed **8 checks**. Verified actual
+native MCP -> WebKit worker query/evaluate and readback, canonical guide/resource
+parity, native creation proposal without premature creation, schema/three-record
+authoring, three real rendered checkboxes, query assertion non-persistence,
+rendered updates without navigation, checkbox command/rule persistence, rename
+and native picker refresh, invalid-notation rejection, target-override rejection,
+library installation, cross-space isolation and switching back. Checkbox state
+and rename survived process restart. No model, remote account or sync backend
+participated; this is local integration acceptance only.
+
+Evidence binding:
+- Native code: `db0a189b4a` (generator-only follow-up `b71bb1f05b` leaves generated
+  Swift unchanged). Built app executable SHA-256:
+  `efb31ebb099230cdf73edb9a6407dee55201a3f97b31920ef377dd39156fa54e`.
+- Runtime source Rust/UI: baseline `55af716ef5d4c026a1578c4dc4b06a8067225133`;
+  Nix artifact `/nix/store/xjhvh0gcnpmw1p4wr3mjfap3qm94qmjf-tonk-ui-trunk-0.6.16-rc.1`.
+- Worker `/api/health` in both native phases: `429530863c4707fc`, status `ok`.
+- `service_worker.js` SHA-256: `a7fc0fd1f366ac7bbbfe90e2ef8a7280b2e70b9212add92002738bd21e160944`.
+- `worker_bg.wasm` SHA-256: `dc3349655cd3da220ae90bae4706491abbae36496e4d6fe01c5f4355aac20e74`.
+- `create.json` SHA-256: `6102fceccf98653dcbdfb85b2ad57ec5b7dee1f7ecf9bb721018038fe7326bb8`.
+- `reopen.json` SHA-256: `61b902c66294c6b98961a3e9cd7fb329ab08a71642f9239485b90b86187b86b3`.
+- Reports/logs retained locally; main log `/private/tmp/desktop-rescue-workflow.log`.
+  Render-completion tracking is unavailable in this runtime; the test proves
+  observed rendered controls, interaction and readback, not revision checkpoints.
+
+### Delivery constraint
+
+No existing PR was found for `feat/desktop-rescue`. Opening a PR triggers
+`.github/workflows/publish.yml` on `pull_request: opened`, including Cloudflare
+preview and MCP deployment. The user's explicit **do not deploy** instruction
+therefore prevents opening a PR merely to obtain hosted CI. Branch remains local;
+no push, PR, deployment, merge or release was performed. Hosted Desktop/macOS CI
+and broader browser/CLI CI remain unverified. Existing release workflows and
+Rust/Cargo/Nix locks remain unchanged.
+
+### Final source-note update / stop
+
+After local acceptance finished, the final preservation check found that
+`plans/2026-10-14-desktop-browser-approval-stall.md` changed again in the source
+worktree. Current checksum observed:
+`ac431e45ebc6761a5a245b51fbddf7942c209655670726e1518087e729bb6214`.
+The changed contents were not read or imported. Per the plan's source-change
+rule, further work stopped. Source HEAD/status/index/Desktop dirty patch,
+original two notes and regression patch are unchanged from resumed capture;
+all protected backup hashes remain intact. Both this session's loopback fixture
+servers were stopped. No source or production profile was modified.
+
+Latest acceptance summary (supersedes earlier attempt rows):
+- **Passed:** source backup preservation, canonical generation including manual
+  invalidation, native tests, ad-hoc build/signature, MCP contracts (15), ChatGPT
+  contracts (42 from prior unchanged-code run), signing validators (8), Nix root
+  build/test commands, workflow lint, matching CLI build/version, real local
+  native worker workflow (20 creation + 8 restart checks).
+- **Failed/unverified:** live Claude tool/resume failed authentication; activity
+  dropdown/narrow-window visual inspection denied by Computer Use; signed
+  passkeys and live account/callback/second-replica remote-sync acceptance not run.
+  The separate browser-approval investigation was not imported or deployed.
+- **Unverified by explicit constraint:** hosted PR CI, because PR creation triggers
+  deployment. Signing material was not transferred or inspected for recovery.
