@@ -262,6 +262,8 @@ mod when_shortening_an_invite {
     async fn it_shortens_and_claims_a_minted_invite(env: AccessServiceAddress) -> Result<()> {
         let endpoint = env.access_service_url.as_str();
         let inviter = common::TestSite::new().await?;
+        env.provision_subject(inviter.site.repository.did().as_str())
+            .await?;
         remote::add_with_revocation(
             &inviter.site,
             "origin",
@@ -280,7 +282,7 @@ mod when_shortening_an_invite {
         )
         .await?;
         assert!(
-            outcome.url.contains("access="),
+            outcome.url.contains("#ticket="),
             "long form: {}",
             outcome.url
         );
@@ -316,6 +318,8 @@ mod when_shortening_an_invite {
     ) -> Result<()> {
         let endpoint = env.access_service_url.as_str();
         let inviter = common::TestSite::new().await?;
+        env.provision_subject(inviter.site.repository.did().as_str())
+            .await?;
         remote::add_with_revocation(
             &inviter.site,
             "origin",
@@ -405,15 +409,19 @@ mod when_minting_an_invite_that_embeds_a_relay_less_remote {
 
     const ENDPOINT: &str = "https://access.example.test/ucan/";
 
+    /// The endpoint is unreachable, so the mint stops at leaving the
+    /// invite's ticket in the space, past where the relay check ran.
     #[dialog_common::test]
     async fn it_mints_without_demanding_a_relay() -> Result<()> {
         let inviter = common::TestSite::new().await?;
 
-        let outcome = invite::mint(&inviter.site, None, Some(ENDPOINT))
+        let refused = invite::mint(&inviter.site, None, Some(ENDPOINT))
             .await
-            .expect("a relay-less remote still mints");
+            .expect_err("an unreachable space keeps no ticket");
 
-        assert!(!outcome.url.is_empty());
+        let message = refused.to_string();
+        assert!(message.contains("ticket"), "{message}");
+        assert!(!message.contains("relay"), "{message}");
         Ok(())
     }
 }
@@ -472,38 +480,47 @@ mod when_minting_an_invite_for_a_named_space {
 
 mod when_claiming_an_invite_with_a_remote {
     use anyhow::Result;
+    #[cfg(feature = "integration-tests")]
+    use tonk_access_service::helpers::AccessServiceAddress;
     use tonk_cli::invite;
     use tonk_cli::remote;
     use tonk_cli::site::TonkSite;
 
     use crate::common;
 
-    const ENDPOINT: &str = "https://access.example.test/ucan/";
+    #[cfg(feature = "integration-tests")]
     const REVOCATION_RELAY: &str = "https://artifacts.example.test/revocations/";
 
+    /// The invite's grant waits in the space as its ticket, so the
+    /// endpoint has to be a service that keeps one.
+    #[cfg(feature = "integration-tests")]
     #[dialog_common::test]
-    async fn it_auto_configures_the_embedded_remote_on_the_joined_site() -> Result<()> {
+    async fn it_auto_configures_the_embedded_remote_on_the_joined_site(
+        env: AccessServiceAddress,
+    ) -> Result<()> {
+        let endpoint = env.access_service_url.as_str();
         // Inviter site has a remote registered, mints an invite
         // referencing it.
         let inviter = common::TestSite::new().await?;
+        env.provision_subject(inviter.site.repository.did().as_str())
+            .await?;
         remote::add_with_revocation(
             &inviter.site,
             "origin",
-            ENDPOINT,
+            endpoint,
             None,
             Some(REVOCATION_RELAY),
         )
         .await?;
         let invite_outcome =
-            invite::mint_with_relay(&inviter.site, None, Some(ENDPOINT), Some(REVOCATION_RELAY))
+            invite::mint_with_relay(&inviter.site, None, Some(endpoint), Some(REVOCATION_RELAY))
                 .await?;
-        // The endpoint rides inside the signed chain, not the URL.
+        // The grant waits in the space, not the URL.
         assert!(!invite_outcome.url.contains("remote="));
-        let parsed = tonk_invite::Invite::parse_url(&invite_outcome.url).await?;
-        assert_eq!(
-            parsed.remote_url.as_ref().map(url::Url::as_str),
-            Some(ENDPOINT)
-        );
+        assert!(!invite_outcome.url.contains("access="));
+        let ticket = tonk_invite::Ticket::parse_url(&invite_outcome.url)?
+            .expect("an open invite with a remote is a ticket link");
+        assert_eq!(ticket.subject(), &inviter.site.repository.did());
 
         // Claimer joins into a fresh tempdir.
         let claimer_tmp = tempfile::tempdir()?;
@@ -527,7 +544,7 @@ mod when_claiming_an_invite_with_a_remote {
         let listed = remote::list(&joined).await?;
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "origin");
-        assert_eq!(listed[0].endpoint, ENDPOINT);
+        assert_eq!(listed[0].endpoint, endpoint);
         assert_eq!(listed[0].revocation_url.as_deref(), Some(REVOCATION_RELAY));
         // Subject is the inviter's DID — tonk holds delegated
         // authority on the inviter's repo.

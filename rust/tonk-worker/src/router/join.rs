@@ -2859,8 +2859,16 @@ pub(crate) mod tests {
 
         // Create own repo (addressed by its routing key), mint own invite.
         // The mint route refuses a local-only repo, so attach a remote first.
+        // Scoped to this profile's own root: an open invite leaves a ticket
+        // at the remote, which this fixture's is not there to keep.
         let key = put_repo(&app, "test-self-claim").await;
         attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
+        let own_root = {
+            let guard = state.read().await;
+            crate::router::identity::root_did(&guard)
+                .await
+                .expect("test profile has a root")
+        };
         // The mint route derives its link base from the request origin,
         // which the browser conversion boundary attaches. A request built
         // here bypasses that boundary, so supply it directly.
@@ -2872,7 +2880,9 @@ pub(crate) mod tests {
                     .method("POST")
                     .header("content-type", "application/json")
                     .extension(crate::axum::RequestOrigin::parse("https://tonk.network/").unwrap())
-                    .body(Body::from("{}"))
+                    .body(Body::from(
+                        serde_json::json!({ "recipientRoot": own_root.to_string() }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await

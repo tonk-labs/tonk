@@ -159,12 +159,19 @@ cover the authored contract; running-product browser evidence remains distinct.
 ### Ticket links and public spaces decision
 
 An audience-open invite is a ticket link: the space's own address with the
-seed of a fresh key as its fragment, `/space/{did}#{seed}`. The inviter leaves
-the delegation chain in the space as that key's ticket, so the link carries no
-authority of its own. Opening it derives the key, claims the ticket from the
-space's access service, and joins as an `access=` link does. Taking the ticket
-back hides the grant from the next claim; revoking the delegation is what stops
-a recipient who already claimed.
+seed of a fresh key as its fragment, `/space/{did}#ticket={seed}`. The same
+fragment beside any page of the space, `/space/{did}/...#ticket={seed}`, is the
+same link, and links minted before the fragment was keyed (`#{seed}`) still
+read. The inviter leaves the delegation chain in the space as that key's
+ticket, so the link carries no authority of its own; a space whose service
+does not keep the ticket refuses the share rather than handing out the chain in
+an `access=` link. Opening it derives the key, claims the ticket from the
+space's access service, and joins as an `access=` link does. Revoking an invite
+both revokes the delegation, which stops a recipient who already claimed, and
+takes the ticket back, so the next person opening the link is told it was
+withdrawn rather than failing at the first pull. Whoever holds the link holds
+the seed: there is no expiry, and a leaked link admits whoever opens it until
+the invite is revoked.
 
 Publishing a space leaves a read-only ticket for a public principal every
 client can derive (seed `blake3("")`), and every account holds a powerline from

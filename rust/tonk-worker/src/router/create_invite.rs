@@ -6,12 +6,15 @@
 //! - **audience-scoped** — body `{ "audience": "did:key:..." }`: only
 //!   that identity can claim. Response tagged `"scoped"`, echoes the DID.
 //! - **audience-open** (default) — body absent or `{}`: generates an
-//!   ephemeral Ed25519 key, embeds its seed in the URL fragment. Any
-//!   redeemer can claim by redelegating from the ephemeral key.
+//!   ephemeral Ed25519 key, leaves the delegation in the space as that
+//!   key's ticket, and answers the space's address with the key's seed
+//!   in the fragment (`/space/{did}#ticket={seed}`). Any redeemer can
+//!   claim the ticket and redelegate from the ephemeral key.
 //!
-//! `base_url` controls the minted URL's prefix — typically
+//! `base_url` controls a scoped invite's URL prefix — typically
 //! `<window.origin>/join` from the UI so links open against the minting
-//! deployment rather than production.
+//! deployment rather than production. An open invite's link is rooted at
+//! the space's own host, where its ticket is claimed.
 //! Every returned link also carries the organic channel and a hashed space
 //! token used by the page-side, closed PostHog attribution schema.
 
@@ -234,6 +237,22 @@ async fn mint_invite(
     .await
     .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
 
+    // An open invite's grant waits in the space as the ephemeral key's
+    // ticket, and the link names only the space and the key's seed, on
+    // the host serving the space: that is where the recipient claims it.
+    // A space that does not keep the ticket fails the mint (see
+    // `issue_ticket`), before anything about the invite is recorded. A
+    // scoped invite is addressed to a principal the recipient already
+    // holds, so its chain rides in `access=`.
+    let url_str = match &invite.audience {
+        InviteAudience::Open { seed } => {
+            issue_ticket(&tonk, &remote.access_url, &invite.chain, *seed).await?
+        }
+        InviteAudience::Scoped => invite
+            .to_url(base_url.as_str())
+            .map_err(|e| TonkWorkerError::Router(format!("failed to serialize invite URL: {e}")))?,
+    };
+
     // Record the invitation on the repo's content branch: the durable
     // half of the invite. The content branch syncs across replicas, so
     // the record converges where the roster lives. The URL (with its
@@ -267,24 +286,6 @@ async fn mint_invite(
 
     retain_invite_authority(&tonk, &repo_name, &invite.chain).await?;
 
-    // An open invite's grant waits in the space as the ephemeral key's
-    // ticket, and the link names only the space and the key's seed, on
-    // the host serving the space: that is where the recipient claims it.
-    // A scoped invite is addressed to a principal the recipient already
-    // holds, so its chain rides in `access=`, and so does an open one
-    // whose ticket the space did not keep (see `issue_ticket`).
-    let ticket_link = match &invite.audience {
-        InviteAudience::Open { seed } => {
-            issue_ticket(&tonk, &remote.access_url, &invite.chain, *seed).await
-        }
-        InviteAudience::Scoped => None,
-    };
-    let url_str = match ticket_link {
-        Some(link) => link,
-        None => invite
-            .to_url(base_url.as_str())
-            .map_err(|e| TonkWorkerError::Router(format!("failed to serialize invite URL: {e}")))?,
-    };
     let url_str =
         tonk_analytics::launch::space_referral_url(&url_str, &repo_name).map_err(|e| {
             TonkWorkerError::Internal(format!("failed to add invite referral attribution: {e}"))
@@ -331,36 +332,39 @@ async fn mint_invite(
 
 /// Leave an open invite's `chain` in its space as the ticket of the key
 /// `seed` derives, and answer the ticket link that redeems it:
-/// `{origin}/space/{did}#{seed}` on the host serving the space.
+/// `{origin}/space/{did}#ticket={seed}` on the host serving the space.
 ///
-/// `None` when the space's service did not keep the ticket — unreachable,
-/// refusing, or not a service at all. The caller then hands out the
-/// `access=` link, which carries the same chain and redeems the same way:
-/// a share never fails because its grant could not be left in the space.
+/// # Errors
+///
+/// [`TonkWorkerError::Internal`] when the space's service did not keep
+/// the ticket (unreachable, refusing, or not a service at all): the link
+/// would name a ticket no one can claim, so there is no link to hand out.
 pub(super) async fn issue_ticket(
     tonk: &crate::worker::TonkState,
     access_url: &Url,
     chain: &dialog_ucan_core::DelegationChain,
     seed: [u8; 32],
-) -> Option<String> {
-    let subject = chain.subject()?.clone();
-    if let Err(error) = tonk_account::ticket::issue(
+) -> Result<String, TonkWorkerError> {
+    let subject = chain
+        .subject()
+        .ok_or_else(|| TonkWorkerError::Internal("invite chain names no space".into()))?
+        .clone();
+    tonk_account::ticket::issue(
         SiteAddress::from(dialog_remote_ucan::UcanAddress::new(access_url.as_str())),
         chain,
         &tonk.operator,
     )
     .await
-    {
-        log!("invite: the space did not keep the ticket; sharing the full link: {error}");
-        return None;
-    }
-    match Ticket::new(subject, seed, access_url).and_then(|ticket| ticket.to_url()) {
-        Ok(link) => Some(link),
-        Err(error) => {
-            log!("invite: the ticket link did not assemble; sharing the full link: {error}");
-            None
-        }
-    }
+    .map_err(|error| {
+        TonkWorkerError::Internal(format!(
+            "the space did not keep the invite's ticket: {error}"
+        ))
+    })?;
+    Ticket::new(subject, seed, access_url)
+        .and_then(|ticket| ticket.to_url())
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("the ticket link did not assemble: {error}"))
+        })
 }
 
 /// Retain an invite's delegation chain, plus the profile-to-account union,
@@ -864,7 +868,9 @@ mod tests {
     use tonk_schema::prelude::DidExt as _;
 
     use crate::axum::RequestOrigin;
-    use crate::router::tests::{attach_remote, content_invitations, put_repo, test_state};
+    use crate::router::tests::{
+        SCOPED_RECIPIENT, attach_remote, content_invitations, put_repo, test_state,
+    };
     use crate::router::{CreateInviteResponse, api_router_with_state};
 
     #[dialog_common::test]
@@ -910,6 +916,9 @@ mod tests {
     /// Minting an invite records an `Invitation` on the repo's content
     /// branch whose entity matches what a claimer derives from the
     /// URL, and whose inviter is the minting profile.
+    ///
+    /// Scoped, so the chain rides in the URL with no ticket to leave at
+    /// the fixture's remote; `live_tests` records an open one.
     #[dialog_common::test]
     async fn it_records_the_invitation_on_mint() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
@@ -919,7 +928,7 @@ mod tests {
         let key = put_repo(&app, "test-mint-invitation").await;
         attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
 
-        // Mint an open invite.
+        // Mint a scoped invite.
         let response = app
             .clone()
             .oneshot(
@@ -930,7 +939,9 @@ mod tests {
                     .extension(
                         RequestOrigin::parse("https://local.example/invite").expect("valid origin"),
                     )
-                    .body(Body::from("{}"))
+                    .body(Body::from(
+                        serde_json::json!({ "recipientRoot": SCOPED_RECIPIENT }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -972,6 +983,36 @@ mod tests {
                 .this()
         };
         assert_eq!(invitations[0].inviter.0, root_entity);
+    }
+
+    /// An open invite whose ticket the space's service did not keep is
+    /// refused, before anything about it is recorded: the link would name
+    /// a grant nobody can claim.
+    #[dialog_common::test]
+    async fn it_refuses_an_open_invite_whose_ticket_was_not_kept() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "test-ticket-not-kept").await;
+        // Nothing serves this endpoint, so nothing keeps a ticket there.
+        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
+
+        let refused = super::mint_invite(
+            state.clone(),
+            key.clone(),
+            RequestOrigin::parse("https://local.example/").unwrap(),
+            super::CreateInviteRequest::default(),
+            None,
+        )
+        .await;
+        assert!(
+            matches!(&refused, Err(crate::TonkWorkerError::Internal(message))
+                if message.contains("did not keep the invite's ticket")),
+            "refused for the ticket, got {:?}",
+            refused.map(|_| ())
+        );
+        assert!(
+            content_invitations(&state, &key).await.is_empty(),
+            "a refused mint records no invitation"
+        );
     }
 
     /// A space created without a remote refuses, and says which case it was.
@@ -1081,6 +1122,8 @@ mod tests {
         );
     }
 
+    /// A scoped invite's link is rooted at the request's origin; an open
+    /// one's at the space's host, where its ticket is claimed.
     #[dialog_common::test]
     async fn it_uses_the_request_origin_and_rejects_unknown_fields() {
         let (app, _state, _lsp) = api_router_with_state(test_state().await);
@@ -1100,7 +1143,9 @@ mod tests {
                         )
                         .expect("valid origin"),
                     )
-                    .body(Body::from("{}"))
+                    .body(Body::from(
+                        serde_json::json!({ "recipientRoot": SCOPED_RECIPIENT }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -1131,5 +1176,288 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+/// Mints against a live access service, which keeps the ticket an
+/// open invite's link names.
+///
+/// Native only: a wasm unit test has no service to keep a ticket, so
+/// there an open mint is refused, which
+/// `tests::it_refuses_an_open_invite_whose_ticket_was_not_kept` and
+/// `repository::tests::it_refuses_to_share_when_the_space_keeps_no_ticket`
+/// cover.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod live_tests {
+    use axum::Json;
+    use axum::extract::{Path, State};
+    use dialog_ucan_core::DelegationChain;
+    use dialog_varsig::Principal as _;
+
+    use crate::axum::RequestOrigin;
+    use crate::router::{AppState, CreateInviteResponse};
+
+    /// A linked, activated account against a live access service, and
+    /// a space syncing through it. Answers the state, the running
+    /// service, the space's key and the service's `/ucan/` endpoint.
+    async fn shared_space(
+        name: &str,
+    ) -> (
+        AppState,
+        dialog_common::helpers::Service<
+            tonk_access_service::helpers::AccessServiceAddress,
+            tonk_access_service::helpers::AccessServer,
+        >,
+        String,
+        String,
+    ) {
+        let (tonk, service, root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let recipient =
+            tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([7u8; 32]))
+                .secret()
+                .did();
+        let grant = tonk_identity::delegation::mint_device_delegation(root, &tonk.profile.did())
+            .await
+            .expect("the device grant mints");
+        crate::router::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: format!("{name}-test"),
+                delegation_hex: hex::encode(grant.to_bytes().expect("the grant serializes")),
+                passkey: None,
+                encryption_key: Some(recipient.to_string()),
+            },
+        )
+        .await
+        .expect("the root persists");
+        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let key = crate::router::repository::create_space_inner(&state, name, None)
+            .await
+            .expect("the space creates");
+        crate::router::repository::enable_sync_inner(&state, &key, &remote)
+            .await
+            .expect("the remote attaches");
+        (state, service, key, remote)
+    }
+
+    /// Discard the fixture's isolated storage once its state has no
+    /// other holders.
+    async fn discard(state: AppState) {
+        let account_key = {
+            let tonk = state.read().await;
+            crate::router::account_state::require_ready_account_state(&tonk)
+                .await
+                .expect("the linked account is ready")
+                .key
+                .clone()
+        };
+        let tonk = std::sync::Arc::try_unwrap(state)
+            .unwrap_or_else(|_| panic!("the state has no other holders"))
+            .into_inner();
+        crate::router::account_state::tests::discard(tonk, &account_key);
+    }
+
+    /// Claim the ticket a link's space keeps for the link's key, signed
+    /// as that key: exactly what a recipient opening the link does.
+    async fn claim(ticket: &tonk_invite::Ticket) -> Option<Vec<u8>> {
+        let holder = ticket.holder().await.expect("the link's key derives");
+        let holder_did = holder.did();
+        tonk_account::ticket::claim(ticket.remote(), holder, &holder_did, None, ticket.subject())
+            .await
+            .expect("the serving host answers the claim")
+    }
+
+    /// An open invite is the space's address with the seed of a key
+    /// the space keeps a ticket for, and revoking the invite takes the
+    /// ticket back: the link's key claims nothing afterwards, rather
+    /// than a chain the service would refuse at the first pull.
+    #[dialog_common::test]
+    async fn it_mints_a_ticket_link_and_withdraws_it_on_revoke() {
+        let (state, service, key, remote) = shared_space("Ticketed").await;
+
+        let Json(minted) = super::mint_invite(
+            state.clone(),
+            key.clone(),
+            RequestOrigin::parse("https://local.example/").expect("valid origin"),
+            super::CreateInviteRequest::default(),
+            None,
+        )
+        .await
+        .expect("an open invite mints");
+        let CreateInviteResponse::Open { url } = minted else {
+            panic!("an invite with no recipient is open");
+        };
+        let serving = url::Url::parse(&remote).expect("the fixture remote is a URL");
+        assert_eq!(url.origin(), serving.origin(), "rooted on the serving host");
+        assert_eq!(url.path(), format!("/space/{key}"));
+        assert!(
+            url.fragment().is_some_and(|f| f.starts_with("ticket=")),
+            "the seed rides as `#ticket=`: {url}"
+        );
+        assert!(
+            !url.query_pairs().any(|(name, _)| name == "access"),
+            "the grant waits in the space, never in the link: {url}"
+        );
+
+        let ticket = tonk_invite::Ticket::parse_url(url.as_str())
+            .expect("the link parses")
+            .expect("the link is a ticket link");
+        let kept = claim(&ticket)
+            .await
+            .expect("the space keeps the invite's ticket");
+        let chain = ticket
+            .accept(&kept)
+            .await
+            .expect("the ticket is the invite's");
+        let target = chain
+            .proof_cids()
+            .last()
+            .copied()
+            .expect("the chain has a leaf");
+
+        crate::router::revoke_invite::revoke(
+            State(state.clone()),
+            Path((key.clone(), target.to_string())),
+        )
+        .await
+        .expect("the founder revokes the invite");
+
+        assert_eq!(
+            claim(&ticket).await,
+            None,
+            "a revoked invite's ticket is withdrawn"
+        );
+
+        discard(state).await;
+        drop(service);
+    }
+
+    /// The share control's mint: the `tonk:invite` command leaves the
+    /// ticket, writes the ticket link and seed to the session overlay
+    /// only, records the grant durably with the endpoint in its signed
+    /// meta, and the link it wrote redeems verbatim.
+    #[dialog_common::test]
+    async fn it_shares_a_ticket_link_through_the_command() {
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::command::{Authorization, Credential};
+
+        let (state, service, key, remote) = shared_space("Shared").await;
+        {
+            let tonk = state.read().await;
+            crate::router::sync::publish_self_identity(&tonk, &key, "main").await;
+        }
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        crate::router::repository::run_invite_for_test(&env, &key, 1.0)
+            .await
+            .expect("the command mints");
+
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .expect("content branch opens");
+        let credentials = branch
+            .handle()
+            .query()
+            .select(Query::<Credential> {
+                this: Term::var("this"),
+                seed: Term::var("seed"),
+                link: Term::var("link"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("credential query");
+        assert_eq!(credentials.len(), 1, "one credential on the overlay");
+        let seed = credentials[0].seed.0.clone();
+        let link = credentials[0].link.0.clone();
+        assert!(
+            link.ends_with(&format!("#ticket={seed}")),
+            "the link carries the seed as `#ticket=`: {link}"
+        );
+
+        let authorizations = || async {
+            branch
+                .handle()
+                .query()
+                .select(Query::<Authorization> {
+                    this: Term::var("this"),
+                    proof: Term::var("proof"),
+                    remote: Term::var("remote"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("authorization query")
+        };
+        let granted = authorizations().await;
+        assert_eq!(granted.len(), 1, "the grant is recorded");
+        let chain = DelegationChain::try_from(
+            bs58::decode(&granted[0].proof.0)
+                .into_vec()
+                .expect("the proof is base58")
+                .as_slice(),
+        )
+        .expect("the proof is a chain");
+        assert_eq!(
+            tonk_invite::home_address(&chain)
+                .expect("meta reads")
+                .map(String::from),
+            Some(remote.clone()),
+            "the grant names the endpoint in its signed meta"
+        );
+
+        // The founder opening its own link renews; the load-bearing part
+        // is that the link it was handed claims and redeems.
+        // The credential write leaves the topbar's `state:self` in place.
+        let here: dialog_artifacts::Entity = tonk_schema::Replica::SELF_STATE_HERE
+            .parse()
+            .expect("state:self is an entity");
+        let identities = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::ProfileIdentity> {
+                this: Term::from(here),
+                did: Term::var("did"),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("identity query");
+        assert_eq!(identities.len(), 1, "state:self survives the mint");
+
+        let joined = crate::router::join::join_invite(&tonk, &link)
+            .await
+            .expect("the minted link redeems");
+        assert_eq!(joined.subject.as_str(), key);
+
+        // The seed and the link that carries it live on the overlay
+        // only: dropping it leaves the durable grant and nothing else.
+        branch.state.clear_overlay();
+        let credentials = branch
+            .handle()
+            .query()
+            .select(Query::<Credential> {
+                this: Term::var("this"),
+                seed: Term::var("seed"),
+                link: Term::var("link"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("credential query");
+        assert!(credentials.is_empty(), "the seed never reaches storage");
+        assert_eq!(authorizations().await.len(), 1, "the grant is durable");
+
+        drop(branch);
+        drop(tonk);
+        discard(state).await;
+        drop(service);
     }
 }

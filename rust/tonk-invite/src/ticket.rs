@@ -2,7 +2,7 @@
 //! riding in the URL.
 //!
 //! ```text
-//! <origin>/space/<space did>#<base58 seed>
+//! <origin>/space/<space did>[/<page>...]#ticket=<base58 seed>
 //! ```
 //!
 //! The inviter delegates to a fresh key, as an audience-open invite
@@ -13,9 +13,11 @@
 //! the access service at the link's origin, and gets the chain back, which then
 //! redeems exactly as an audience-open invite does.
 //!
-//! The link is short and stable: it is the space's own address with the
-//! seed beside it, so it opens the space for whoever already has it, and
-//! hands a newcomer what they need to get it. Taking the ticket out of
+//! The link is short and stable: it is the space's own address, or any
+//! page within it, with the seed beside it, so it opens the space for
+//! whoever already has it, and hands a newcomer what they need to get
+//! it. Links minted before the fragment was keyed carry the bare seed
+//! (`#<base58 seed>`) and still read. Taking the ticket out of
 //! the space hides the grant from the next claim; revoking the
 //! delegation is what withdraws it from a redeemer who already claimed.
 //!
@@ -33,6 +35,10 @@ use crate::{EphemeralSeed, Invite, InviteAudience, SEED_LEN, home_address};
 
 /// The path segment a space's address sits under: `/space/{did}`.
 const SPACE_PATH: &str = "space";
+
+/// The fragment key a ticket link carries its seed under:
+/// `#ticket={seed}`.
+const TICKET_KEY: &str = "ticket";
 
 /// A ticket link: the space it opens, the seed of the key the space
 /// keeps a ticket for, and the access service the ticket is claimed
@@ -87,7 +93,7 @@ impl Ticket {
     /// Returns an error only when `url` does not parse as a URL.
     pub fn public_for_url(url: &str) -> Result<Option<Self>> {
         let parsed = Url::parse(url).context("space address is not a valid URL")?;
-        if parsed.fragment().and_then(decode_seed).is_some() {
+        if parsed.fragment().and_then(ticket_seed).is_some() {
             return Ok(None);
         }
         let Some(subject) = space_subject(&parsed) else {
@@ -118,8 +124,9 @@ impl Ticket {
             .context("failed to import the ticket key from its seed")
     }
 
-    /// The link: `{origin}/space/{subject}#{seed}`, or for the public
-    /// ticket the space's bare address, since its seed is everyone's.
+    /// The link: `{origin}/space/{subject}#ticket={seed}`, or for the
+    /// public ticket the space's bare address, since its seed is
+    /// everyone's.
     ///
     /// # Errors
     ///
@@ -130,28 +137,33 @@ impl Ticket {
             .join(&format!("/{SPACE_PATH}/{}", self.subject))
             .context("ticket link did not assemble")?;
         if !self.is_public() {
-            url.set_fragment(Some(&bs58::encode(self.seed).into_string()));
+            url.set_fragment(Some(&format!(
+                "{TICKET_KEY}={}",
+                bs58::encode(self.seed).into_string()
+            )));
         }
         Ok(url.into())
     }
 
     /// Read a ticket link, or `None` when `url` is not one.
     ///
-    /// A ticket link is a space's address, `/space/{did}`, with a
-    /// fragment that decodes to a key seed. The same address without one
-    /// is just the space, and a fragment that is not a seed is the page's
-    /// own; neither is a ticket, and neither is an error. Query
-    /// parameters (referral attribution) are ignored.
+    /// A ticket link is a space's address, `/space/{did}`, or a page
+    /// within it, `/space/{did}/...`, with a `ticket={seed}` fragment (or,
+    /// as links minted before the key was added carry it, a fragment that
+    /// is the bare seed). The same address without one is just the space,
+    /// and a fragment that is not a seed is the page's own; neither is a
+    /// ticket, and neither is an error. Query parameters (referral
+    /// attribution) are ignored.
     ///
     /// # Errors
     ///
     /// Returns an error only when `url` does not parse as a URL.
     pub fn parse_url(url: &str) -> Result<Option<Self>> {
         let parsed = Url::parse(url).context("ticket link is not a valid URL")?;
-        let Some(subject) = space_subject(&parsed) else {
+        let Some(subject) = space_page_subject(&parsed) else {
             return Ok(None);
         };
-        let Some(seed) = parsed.fragment().and_then(decode_seed) else {
+        let Some(seed) = parsed.fragment().and_then(ticket_seed) else {
             return Ok(None);
         };
         Ok(Some(Self {
@@ -249,6 +261,26 @@ fn space_subject(url: &Url) -> Option<Did> {
     urlencoding::decode(subject).ok()?.parse().ok()
 }
 
+/// The space a page within it, `/space/{did}/...`, belongs to: the
+/// address a ticket link is shared from, which may be any of its pages.
+fn space_page_subject(url: &Url) -> Option<Did> {
+    let mut segments = url.path_segments()?;
+    let (Some(SPACE_PATH), Some(subject)) = (segments.next(), segments.next()) else {
+        return None;
+    };
+    urlencoding::decode(subject).ok()?.parse().ok()
+}
+
+/// The seed a ticket link's fragment carries: under `ticket=` among the
+/// fragment's `&`-separated pairs, or, as links minted before the key was
+/// added carry it, as the whole fragment.
+fn ticket_seed(fragment: &str) -> Option<EphemeralSeed> {
+    fragment
+        .split('&')
+        .find_map(|pair| pair.strip_prefix(TICKET_KEY)?.strip_prefix('='))
+        .map_or_else(|| decode_seed(fragment), decode_seed)
+}
+
 fn decode_seed(fragment: &str) -> Option<EphemeralSeed> {
     let bytes = bs58::decode(fragment).into_vec().ok()?;
     <[u8; SEED_LEN]>::try_from(bytes.as_slice()).ok()
@@ -295,7 +327,7 @@ mod tests {
         assert_eq!(
             url,
             format!(
-                "https://tonk.example/space/{subject}#{}",
+                "https://tonk.example/space/{subject}#ticket={}",
                 bs58::encode(TICKET_SEED).into_string()
             )
         );
@@ -310,11 +342,44 @@ mod tests {
     async fn it_reads_past_referral_parameters() {
         let subject = did(&SPACE_SEED).await;
         let url = format!(
-            "https://tonk.example/space/{subject}?tonk_channel=share#{}",
+            "https://tonk.example/space/{subject}?tonk_channel=share#ticket={}",
             bs58::encode(TICKET_SEED).into_string()
         );
         let read = Ticket::parse_url(&url).unwrap().expect("a ticket link");
         assert_eq!(read.subject(), &subject);
+    }
+
+    /// A link shared from a page within the space names the same space
+    /// and the same key as one shared from its address.
+    #[dialog_common::test]
+    async fn it_reads_a_ticket_beside_any_page_of_the_space() {
+        let subject = did(&SPACE_SEED).await;
+        let seed = bs58::encode(TICKET_SEED).into_string();
+        for url in [
+            format!("https://tonk.example/space/{subject}/inspector#ticket={seed}"),
+            format!(
+                "https://tonk.example/space/{subject}/open/playground?view=agent#ticket={seed}"
+            ),
+            format!("https://tonk.example/space/{subject}/#ticket={seed}"),
+        ] {
+            let read = Ticket::parse_url(&url).unwrap().expect("a ticket link");
+            assert_eq!(read.subject(), &subject, "{url}");
+            assert_eq!(read.holder().await.unwrap().did(), did(&TICKET_SEED).await);
+        }
+    }
+
+    /// Links minted before the fragment was keyed carry the bare seed,
+    /// and are already out in the world.
+    #[dialog_common::test]
+    async fn it_reads_a_link_minted_with_the_bare_seed() {
+        let subject = did(&SPACE_SEED).await;
+        let url = format!(
+            "https://tonk.example/space/{subject}#{}",
+            bs58::encode(TICKET_SEED).into_string()
+        );
+        let read = Ticket::parse_url(&url).unwrap().expect("a ticket link");
+        assert_eq!(read.subject(), &subject);
+        assert_eq!(read.holder().await.unwrap().did(), did(&TICKET_SEED).await);
     }
 
     #[dialog_common::test]
@@ -326,11 +391,13 @@ mod tests {
             format!("https://tonk.example/space/{subject}"),
             // A fragment that is the page's own.
             format!("https://tonk.example/space/{subject}#notes"),
-            // A path within the space.
-            format!("https://tonk.example/space/{subject}/inspector#{seed}"),
+            format!("https://tonk.example/space/{subject}/inspector#notes"),
+            // A ticket key whose value is not a seed.
+            format!("https://tonk.example/space/{subject}#ticket=notes"),
             // Not a space's address.
-            format!("https://tonk.example/join#{seed}"),
-            format!("https://tonk.example/space/not-a-did#{seed}"),
+            format!("https://tonk.example/join#ticket={seed}"),
+            format!("https://tonk.example/space/not-a-did#ticket={seed}"),
+            format!("https://tonk.example/space#ticket={seed}"),
         ] {
             assert!(Ticket::parse_url(&url).unwrap().is_none(), "{url}");
         }
@@ -405,12 +472,19 @@ mod tests {
             crate::public::did().await.unwrap()
         );
 
-        let link = format!(
-            "https://tonk.example/space/{subject}#{}",
-            bs58::encode(TICKET_SEED).into_string()
-        );
-        assert!(Ticket::public_for_url(&link).unwrap().is_none());
-        assert!(!Ticket::parse_url(&link).unwrap().unwrap().is_public());
+        for link in [
+            format!(
+                "https://tonk.example/space/{subject}#ticket={}",
+                bs58::encode(TICKET_SEED).into_string()
+            ),
+            format!(
+                "https://tonk.example/space/{subject}#{}",
+                bs58::encode(TICKET_SEED).into_string()
+            ),
+        ] {
+            assert!(Ticket::public_for_url(&link).unwrap().is_none(), "{link}");
+            assert!(!Ticket::parse_url(&link).unwrap().unwrap().is_public());
+        }
 
         // The same address with the DID percent-encoded, as it arrives
         // from an address bar or a chat client, opens the same space.
@@ -423,7 +497,10 @@ mod tests {
             .unwrap()
             .expect("an encoded space address");
         assert_eq!(public.subject(), &subject);
-        let encoded_link = format!("{encoded}#{}", bs58::encode(TICKET_SEED).into_string());
+        let encoded_link = format!(
+            "{encoded}#ticket={}",
+            bs58::encode(TICKET_SEED).into_string()
+        );
         assert_eq!(
             Ticket::parse_url(&encoded_link).unwrap().unwrap().subject(),
             &subject

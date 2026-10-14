@@ -50,3 +50,7 @@ pub const BLOCKED_NEEDS_ACTIVATION: &str = "needs-activation";
 /// The account's service was withdrawn. Terminal: no email confirms this
 /// away and nothing in the bar repairs it.
 pub const BLOCKED_SUSPENDED: &str = "suspended";
+
+/// The space's service did not keep the invite's ticket, so a link would name
+/// a grant nobody can claim. Terminal from the bar; sharing again retries.
+pub const BLOCKED_TICKET_NOT_KEPT: &str = "ticket-not-kept";

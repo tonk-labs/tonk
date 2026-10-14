@@ -1955,6 +1955,16 @@ enum RunInvite {
     Attached,
 }
 
+/// Run one pass of [`run_invite`] from a test, outside a dispatch.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) async fn run_invite_for_test(
+    env: &crate::router::CommandEnv,
+    repo_name: &str,
+    time: f64,
+) -> Result<(), TonkWorkerError> {
+    run_invite(env, repo_name, time).await.map(|_| ())
+}
+
 async fn run_invite(
     env: &crate::router::CommandEnv,
     repo_name: &str,
@@ -2175,24 +2185,18 @@ async fn run_invite(
         Invitation::from_chain(&chain).expect("invite delegation is scoped to a specific subject");
     let execution = InvitationExecution::new(&invitation, "open");
 
-    // base58-encode the delegation chain — the `?access=` parameter the
-    // view reads back and assembles into the final URL.
+    // base58-encode the delegation chain: the `Authorization` fact's proof,
+    // which the share view reads back.
     let chain_bytes = chain.to_bytes().map_err(|e| {
         TonkWorkerError::Internal(format!("failed to serialize delegation chain: {e}"))
     })?;
     let proof = bs58::encode(&chain_bytes).into_string();
 
-    // Assemble the invite URL the recipient opens. Built here rather than
-    // concatenated in the view template so there is exactly one definition
-    // of an invite URL, and so it can be shortened — an async round-trip a
-    // template can't make. The display name needs no URL carrier: it
-    // rides in the chain's signed `space.name` meta, inside `access=`.
-    //
     // The grant waits in the space as the membership key's ticket, and the
     // link names only the space and the key's seed; the recipient claims
-    // the ticket with that key. When the space's service does not keep the
-    // ticket, the link carries the chain in `access=` instead, which
-    // redeems the same way (see `issue_ticket`).
+    // the ticket with that key. A space that does not keep the ticket has
+    // no link to hand out, so the share is refused with the reason before
+    // anything about this invite is recorded.
     let link = match super::create_invite::issue_ticket(
         &tonk,
         &remote_execution.access_url,
@@ -2201,16 +2205,20 @@ async fn run_invite(
     )
     .await
     {
-        Some(link) => with_referral(link, repo_name),
-        None => {
-            invite_url(
-                &proof,
-                &remote,
-                &seed,
+        Ok(link) => with_referral(link, repo_name),
+        Err(error) => {
+            log!("Invite for repo '{repo_name}': {error}");
+            drop(tonk);
+            publish_share_blocked(
+                env.state(),
                 repo_name,
-                &remote_execution.access_url,
+                subject_entity,
+                tonk_worker_api::share::BLOCKED_TICKET_NOT_KEPT,
+                "The space's server did not keep the invite. Try sharing again.",
+                time,
             )
-            .await?
+            .await;
+            return Ok(RunInvite::Settled);
         }
     };
 
@@ -2472,54 +2480,11 @@ async fn shortened_or_full(link: String) -> String {
     }
 }
 
-/// Assemble the long invite URL a recipient opens.
-///
-/// The long form is
-/// `{origin}/join?access={proof}{remote}&tonk_channel=reshare&tonk_space={hash}#{seed}`.
-/// `remote` is the legacy ready-to-append `&remote=…` suffix and is empty when
-/// the signed delegation carries the endpoint itself. The share pipeline has
-/// already refused a space with no usable remote. This is the shape the share
-/// view used to concatenate from three overlay fields; building it here gives
-/// it one definition and lets it be shortened.
-///
-/// Shortening is not done here — it is a network round-trip, and this
-/// runs while the URL is still being assembled. [`run_invite`] attempts it
-/// on the result, before the link is written anywhere, and falls back to
-/// this long form when the shortcut service does not answer.
-async fn invite_url(
-    proof: &str,
-    remote: &str,
-    seed: &str,
-    space_key: &str,
-    access_url: &Url,
-) -> Result<String, TonkWorkerError> {
-    // The link lives on the host serving the SPACE — the origin derived
-    // from its access endpoint (the same derivation the CLI uses) — not
-    // on whatever surface happened to mint it. That host is where the
-    // space's members already sync, and it is the origin whose
-    // same-origin shortcut store can answer the short link's relative
-    // redirect. There is no fallback base: `run_invite` has already
-    // refused a space without a usable remote (that is what the share
-    // bar's login/attach prompts are), so an endpoint that yields no
-    // origin here is a bug worth failing on, not a case to paper over
-    // with a link rooted somewhere the space is not served.
-    //
-    // No network here: this only assembles. `run_invite` attempts the
-    // shortcut on the result, before the link reaches the overlay or the
-    // share control's row, so what it delivers is already final.
-    let base = tonk_invite::base_url_for_remote(access_url.as_str()).map_err(|error| {
-        TonkWorkerError::Internal(format!(
-            "the space's access endpoint yields no invite base: {error:#}"
-        ))
-    })?;
-    Ok(long_invite_url(&base, proof, remote, seed, space_key))
-}
-
 /// The service worker's own origin, or `None` outside a worker scope.
 ///
 /// No longer part of the invite base — a minted link lives on the host
-/// serving the space, not the surface that minted it (see [`invite_url`])
-/// — but still what worker-relative endpoints (`/api/…` calls the worker
+/// serving the space, not the surface that minted it — but still what
+/// worker-relative endpoints (`/api/…` calls the worker
 /// makes to its own deployment) resolve against.
 pub(super) fn worker_origin() -> Option<String> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -2541,24 +2506,6 @@ pub(super) fn worker_origin() -> Option<String> {
     {
         None
     }
-}
-
-/// Assemble the long (un-shortened) invite URL.
-///
-/// `base` is the resolved `…/join` base on the host serving the space —
-/// required, because a space with no serving host was refused before the
-/// mint ever got here (see [`invite_url`]). The URL then receives an
-/// organic channel and hashed space token before being returned.
-///
-/// `remote` is already a ready-to-append `&remote=…` suffix and is empty for a
-/// modern delegation whose signed metadata names the shareable remote (see
-/// `RemoteRefusal`). The seed is the fragment and never the query: it must not
-/// reach a server, and the shortcut service is handed only the path + query.
-///
-/// The space's display name needs no slot here: it rides in the chain's
-/// signed `space.name` meta, inside the `access=` parameter itself.
-fn long_invite_url(base: &str, proof: &str, remote: &str, seed: &str, space_key: &str) -> String {
-    with_referral(format!("{base}?access={proof}{remote}#{seed}"), space_key)
 }
 
 /// Add the referral attribution a shared link carries: the organic
@@ -11804,6 +11751,9 @@ block/insert!:
 
         attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
 
+        // Scoped, so the chain rides in the URL to read back: an open
+        // invite leaves it at the remote as a ticket, which this fixture's
+        // remote is not there to keep.
         let response = app
             .clone()
             .oneshot(
@@ -11818,7 +11768,12 @@ block/insert!:
                         crate::axum::RequestOrigin::parse("https://local.example/invite")
                             .expect("valid origin"),
                     )
-                    .body(Body::from("{}"))
+                    .body(Body::from(
+                        serde_json::json!({
+                            "recipientRoot": crate::router::tests::SCOPED_RECIPIENT
+                        })
+                        .to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -12136,6 +12091,10 @@ block/insert!:
     /// the FABB. The visible failure is a timeout, but the boundary that must
     /// answer is the routeless `tonk:invite` dispatch: it has to resolve the
     /// joined repository and delegate from the authority accepted at join.
+    ///
+    /// Nothing serves this fixture's remote, so the mint delegates and then
+    /// stops at leaving its ticket: refused for that and nothing earlier is
+    /// the proof it got past resolving and delegating.
     #[dialog_common::test]
     async fn it_mints_from_the_fabb_after_joining_a_space() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
@@ -12158,8 +12117,6 @@ block/insert!:
                 .await
                 .expect("joined authority must leave provisioning with the existing provider");
         }
-        let before = content_invitations(&state, &key).await.len();
-
         crate::router::dispatch(
             &state,
             crate::router::CommandOrigin::default(),
@@ -12168,13 +12125,13 @@ block/insert!:
         .await;
 
         assert_eq!(
-            content_invitations(&state, &key).await.len(),
-            before + 1,
-            "the joined member's FABB share must mint a fresh invitation",
-        );
-        assert!(
-            share_blocked_rows(&state, &key).await.is_empty(),
-            "a joined member's valid authority must not be reported as a refused share",
+            share_blocked_rows(&state, &key)
+                .await
+                .iter()
+                .map(|row| row.0.as_str())
+                .collect::<Vec<_>>(),
+            vec![tonk_worker_api::share::BLOCKED_TICKET_NOT_KEPT],
+            "a joined member's valid authority must reach the ticket, not be refused earlier",
         );
     }
 
@@ -12222,6 +12179,11 @@ block/insert!:
     /// the credential) but MUST re-stamp `state:self` so the topbar chip
     /// retains the member's identity data. Without the re-stamp the chip
     /// goes blank until the next sync_status poll (~20 s).
+    ///
+    /// Nothing serves this fixture's remote, so here the mint is refused
+    /// for its ticket and must leave `state:self` alone;
+    /// `create_invite::live_tests::it_shares_a_ticket_link_through_the_command`
+    /// checks it after a mint that writes its credential.
     #[dialog_common::test]
     async fn it_restamps_state_self_after_invite_clears_the_overlay() {
         use dialog_query::{Output as _, Query, Term};
@@ -12391,6 +12353,32 @@ block/insert!:
         );
     }
 
+    /// A share click on a space whose service does not keep the invite's
+    /// ticket mints no link and records nothing: the refusal says so, so
+    /// the share control stops waiting rather than timing out, and the
+    /// delegation it minted is never recorded as an invitation.
+    #[dialog_common::test]
+    async fn it_refuses_to_share_when_the_space_keeps_no_ticket() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "test-ticket-not-kept").await;
+        // Nothing serves this endpoint, so nothing keeps a ticket there.
+        let _ = post_remote(&app, &key, "https://access.example.test/ucan/", None).await;
+
+        run_invite_with_time(&state, &key, 77.0).await;
+
+        let blocked = share_blocked_rows(&state, &key).await;
+        assert_eq!(blocked.len(), 1, "one refusal recorded");
+        assert_eq!(
+            blocked[0].0,
+            tonk_worker_api::share::BLOCKED_TICKET_NOT_KEPT
+        );
+        assert_eq!(blocked[0].2, 77.0, "echoes the command's timestamp");
+        assert!(
+            content_invitations(&state, &key).await.is_empty(),
+            "a refused mint records no invitation"
+        );
+    }
+
     /// The command path is what the FABB drives. It must answer a raced or
     /// stale share click with an account refusal and mint no authority.
     #[dialog_common::test]
@@ -12468,8 +12456,9 @@ block/insert!:
     ///
     /// This used to also assert that a remote carrying no revocation relay
     /// refused the mint. Revocations travel in-band on `/ucan/` now, so
-    /// there is no relay to be missing and nothing produces that refusal;
-    /// minting without one is the ordinary case, asserted here.
+    /// there is no relay to be missing and nothing produces that refusal:
+    /// the mint runs on to leave its ticket, which is as far as this
+    /// fixture's remote (nothing serves it) lets it get.
     #[dialog_common::test]
     async fn it_does_not_repoint_a_remote_that_is_already_attached() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
@@ -12478,14 +12467,11 @@ block/insert!:
 
         run_invite_with_time(&state, &key, 11.0).await;
 
-        assert!(
-            share_blocked_rows(&state, &key).await.is_empty(),
-            "a remote without a relay is no longer a refusal",
-        );
+        let blocked = share_blocked_rows(&state, &key).await;
         assert_eq!(
-            content_invitations(&state, &key).await.len(),
-            1,
-            "so the mint records its invitation",
+            blocked.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+            vec![tonk_worker_api::share::BLOCKED_TICKET_NOT_KEPT],
+            "a remote without a relay is no longer a refusal",
         );
 
         let info = post_remote(
@@ -12933,7 +12919,9 @@ block/insert!:
         );
     }
 
-    /// With the marker, the attach is followed by a mint — the single-click path.
+    /// With the marker, the attach is followed by a mint — the single-click
+    /// path. Nothing serves this fixture's remote, so the one mint runs as
+    /// far as leaving its ticket and answers that it could not.
     #[dialog_common::test]
     async fn it_mints_after_attaching_when_asked_to_share() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
@@ -12941,9 +12929,10 @@ block/insert!:
 
         dispatch_enable_sync(&state, &subject, "https://example.test/ucan/", true, 1.0).await;
 
+        let blocked = share_blocked_rows(&state, &key).await;
         assert_eq!(
-            content_invitations(&state, &key).await.len(),
-            1,
+            blocked.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+            vec![tonk_worker_api::share::BLOCKED_TICKET_NOT_KEPT],
             "the attach is followed by exactly one mint"
         );
     }
@@ -13089,87 +13078,6 @@ block/insert!:
         );
     }
 
-    /// The invite URL puts the seed in the fragment and the delegation in
-    /// the query, on the resolved base — the host serving the space.
-    ///
-    /// Driven through [`long_invite_url`] directly rather than through the
-    /// mint, which exercises the base resolution separately (the native
-    /// chain test pins the link's origin to the space's remote).
-    ///
-    /// The fragment split is the load-bearing part. The seed must never
-    /// reach a server, and shortening PUTs only the path + query — so a
-    /// seed that slipped into the query would be uploaded to the shortcut
-    /// service in plaintext.
-    #[dialog_common::test]
-    async fn it_builds_the_invite_url_on_the_resolved_base() {
-        let url = super::long_invite_url(
-            "https://tonk.example/join",
-            "PROOF",
-            "&remote=https%3A%2F%2Fhub%2Fucan%2F",
-            "SEED",
-            "did:key:zSpace",
-        );
-
-        let parsed = url::Url::parse(&url).expect("invite URL parses");
-        assert_eq!(
-            parsed.origin().ascii_serialization(),
-            "https://tonk.example"
-        );
-        assert_eq!(parsed.path(), "/join");
-        assert_eq!(parsed.fragment(), Some("SEED"));
-        assert!(
-            parsed
-                .query_pairs()
-                .any(|(key, value)| { key == "access" && value == "PROOF" })
-        );
-        assert!(
-            parsed
-                .query_pairs()
-                .any(|(key, value)| { key == "remote" && value == "https://hub/ucan/" })
-        );
-        assert!(parsed.query_pairs().any(|(key, value)| {
-            key == tonk_analytics::launch::CHANNEL_PARAMETER && value == "reshare"
-        }));
-        assert!(parsed.query_pairs().any(|(key, value)| {
-            key == tonk_analytics::launch::SPACE_PARAMETER
-                && value == tonk_analytics::anonymize("did:key:zSpace")
-        }));
-
-        // The secret is the fragment, never the query — everything before
-        // `#` is what a shortcut PUT would upload.
-        let (sent, fragment) = url.split_once('#').expect("the seed must be a fragment");
-        assert_eq!(fragment, "SEED");
-        assert!(
-            !sent.contains("SEED"),
-            "the seed must not appear in the path or query: {sent}",
-        );
-    }
-
-    /// A modern delegation carries its endpoint in signed meta, so the
-    /// `remote` suffix is empty — and empty must append *nothing*:
-    /// `Invite::parse_url` rejects an empty `remote=`. (A repo with no
-    /// endpoint at all never reaches the URL builder — the share
-    /// pipeline refuses it first.)
-    #[dialog_common::test]
-    async fn it_omits_the_remote_when_the_chain_carries_the_endpoint() {
-        let url = super::long_invite_url(
-            "https://tonk.example/join",
-            "PROOF",
-            "",
-            "SEED",
-            "did:key:zSpace",
-        );
-        assert!(url.starts_with("https://tonk.example/join?access=PROOF&"));
-        assert!(url.ends_with("#SEED"));
-        assert!(url.contains("tonk_channel=reshare"));
-        assert!(url.contains("tonk_space="));
-        assert!(!url.contains("remote="));
-        assert!(
-            !url.contains("name="),
-            "the name rides in the chain meta, never as a loose parameter: {url}"
-        );
-    }
-
     /// The ticket link is the space's address on the host serving it,
     /// with the membership key's seed in the fragment.
     ///
@@ -13200,7 +13108,10 @@ block/insert!:
             "https://tonk.example"
         );
         assert_eq!(parsed.path(), format!("/space/{subject}"));
-        assert_eq!(parsed.fragment(), Some(encoded.as_str()));
+        assert_eq!(
+            parsed.fragment(),
+            Some(format!("ticket={encoded}").as_str())
+        );
         assert!(parsed.query_pairs().any(|(key, value)| {
             key == tonk_analytics::launch::CHANNEL_PARAMETER && value == "reshare"
         }));
@@ -13216,7 +13127,7 @@ block/insert!:
         // The secret is the fragment, never the query — everything before
         // `#` is what a shortcut PUT would upload.
         let (sent, fragment) = url.split_once('#').expect("the seed must be a fragment");
-        assert_eq!(fragment, encoded);
+        assert_eq!(fragment, format!("ticket={encoded}"));
         assert!(
             !sent.contains(&encoded),
             "the seed must not appear in the path or query: {sent}",

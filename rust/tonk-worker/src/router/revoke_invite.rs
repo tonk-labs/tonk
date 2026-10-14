@@ -226,6 +226,7 @@ pub async fn revoke(
 
     let receipt =
         publish_revocation(&tonk, &repo, &repository, session.handle(), &path, &target).await?;
+    withdraw_ticket(&tonk, &repository, path.audience()).await;
     retract_leaf(&tonk, session.handle(), &path).await;
     // The record is what `list` enumerates, so it goes with the hop it
     // described.
@@ -369,6 +370,48 @@ where
         ));
     }
     Ok(receipt)
+}
+
+/// Take back the ticket the space keeps for a revoked invite's `holder`,
+/// so a link minted for it answers "withdrawn" at the claim rather than
+/// handing out a chain the access service will refuse at the first pull.
+///
+/// Best-effort: the revocation is already durable at the access service,
+/// which is what denies the holder; a ticket left behind only delays the
+/// refusal. A scoped invite keeps no ticket, so there is nothing to take.
+async fn withdraw_ticket<R>(
+    tonk: &TonkState,
+    repository: &dialog_repository::Repository<R>,
+    holder: &Did,
+) where
+    R: dialog_varsig::Principal + Clone,
+{
+    let endpoint = match resolve_configured_remote_url_with(repository, &tonk.operator).await {
+        Ok(ConfiguredRemoteRequirement::Ready(remote)) => remote.access_url,
+        Ok(ConfiguredRemoteRequirement::Refused(reason)) => {
+            log!(
+                "revoked invite's ticket was not withdrawn: {}",
+                reason.detail()
+            );
+            return;
+        }
+        Err(error) => {
+            log!("revoked invite's ticket was not withdrawn: {error}");
+            return;
+        }
+    };
+    if let Err(error) = tonk_account::ticket::withdraw(
+        dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
+            endpoint.as_str(),
+        )),
+        &repository.did(),
+        holder,
+        &tonk.operator,
+    )
+    .await
+    {
+        log!("revoked invite's ticket was not withdrawn: {error}");
+    }
 }
 
 /// Retract the leaf of a revoked path from the space's retained chains.

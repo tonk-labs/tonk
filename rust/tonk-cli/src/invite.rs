@@ -359,20 +359,23 @@ async fn mint_for(
     // An open invite with a remote leaves its grant in the space as the
     // ephemeral key's ticket, and the link names only the space and the
     // key's seed, on the host serving the space, where the recipient
-    // claims it. Everything else — a scoped invite, a local-only space, an
-    // open one whose ticket the space did not keep, or one asked for on a
-    // base off the remote's origin (a ticket is claimed from the origin
-    // its link is on, which has to be the host keeping it) — carries the
-    // chain in `access=`, which redeems the same way.
-    let ticket_link = match (&invite.audience, &invite.remote_url) {
-        (InviteAudience::Open { seed }, Some(remote)) if on_origin_of(base_url, remote) => {
-            issue_ticket(site, remote, &invite.chain, *seed).await
+    // claims it. A space that does not keep the ticket fails the mint, and
+    // so does a base off the remote's origin: a ticket is claimed from the
+    // origin its link is on, which has to be the host keeping it. A scoped
+    // invite, or an open one for a local-only space (no host to keep a
+    // ticket), carries the chain in `access=`.
+    let url = match (&invite.audience, &invite.remote_url) {
+        (InviteAudience::Open { seed }, Some(remote)) => {
+            if !on_origin_of(base_url, remote) {
+                return Err(InviteError::Io(format!(
+                    "an invite link is claimed from the host serving the space ({}); \
+                     the base URL must be on that origin",
+                    remote.origin().ascii_serialization()
+                )));
+            }
+            issue_ticket(site, remote, &invite.chain, *seed).await?
         }
-        _ => None,
-    };
-    let url = match ticket_link {
-        Some(link) => link,
-        None => invite
+        _ => invite
             .to_url(base_url.unwrap_or(DEFAULT_BASE_URL))
             .map_err(|e| InviteError::Io(format!("failed to serialize invite URL: {e}")))?,
     };
@@ -400,36 +403,36 @@ fn on_origin_of(base: Option<&str>, remote: &Url) -> bool {
 
 /// Leave an open invite's `chain` in its space, at the service at
 /// `remote`, as the ticket of the key `seed` derives, and answer the
-/// ticket link that redeems it: `{origin}/space/{did}#{seed}`.
+/// ticket link that redeems it: `{origin}/space/{did}#ticket={seed}`.
 ///
-/// `None`, with a warning, when the service did not keep the ticket: the
-/// caller then hands out the `access=` link, which redeems the same way.
+/// # Errors
+///
+/// [`InviteError::Io`] when the service did not keep the ticket: the link
+/// would name a grant nobody can claim.
 async fn issue_ticket(
     site: &TonkSite,
     remote: &Url,
     chain: &dialog_ucan_core::DelegationChain,
     seed: [u8; 32],
-) -> Option<String> {
-    let subject = chain.subject()?.clone();
-    if let Err(error) = tonk_account::ticket::issue(
+) -> Result<String, InviteError> {
+    let subject = chain
+        .subject()
+        .ok_or_else(|| InviteError::Io("the invite chain names no space".into()))?
+        .clone();
+    tonk_account::ticket::issue(
         dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(remote.as_str())),
         chain,
         &site.operator,
     )
     .await
-    {
-        eprintln!(
-            "warning: the space did not keep the invite's ticket; sharing the full link: {error}"
-        );
-        return None;
-    }
-    match Ticket::new(subject, seed, remote).and_then(|ticket| ticket.to_url()) {
-        Ok(link) => Some(link),
-        Err(error) => {
-            eprintln!("warning: the ticket link did not assemble; sharing the full link: {error}");
-            None
-        }
-    }
+    .map_err(|error| {
+        InviteError::Io(format!(
+            "the space did not keep the invite's ticket: {error}"
+        ))
+    })?;
+    Ticket::new(subject, seed, remote)
+        .and_then(|ticket| ticket.to_url())
+        .map_err(|error| InviteError::Io(format!("the ticket link did not assemble: {error}")))
 }
 
 /// Record a previously minted invitation after its recovery state is durable.
