@@ -1401,9 +1401,12 @@ mod when_minting_against_a_live_remote {
         Ok(())
     }
 
-    /// `--base-url` still wins over the remote-derived origin.
+    /// An open invite's ticket is claimed from the host its link is on, so
+    /// a `--base-url` off the remote's origin would name a ticket no one
+    /// can claim there: the mint refuses it rather than handing the chain
+    /// out in an `access=` link.
     #[dialog_common::test]
-    async fn it_prefers_an_explicit_base_url_over_the_remote(
+    async fn it_refuses_an_explicit_base_url_off_the_remote(
         env: AccessServiceAddress,
     ) -> Result<()> {
         let state = tempfile::tempdir()?;
@@ -1416,20 +1419,13 @@ mod when_minting_against_a_live_remote {
             &["invite", "--base-url", "http://127.0.0.1:9/join"],
         )
         .await;
-        assert!(output.status.success(), "{}", stderr_of(&output));
-
-        let stdout = stdout_of(&output);
-        let url = stdout.trim();
-        assert!(
-            url.starts_with("http://127.0.0.1:9/join"),
-            "explicit base wins: {url}"
-        );
-        // Nothing serves the discard port, so the link stays long.
+        assert!(!output.status.success(), "{}", stdout_of(&output));
         let stderr = stderr_of(&output);
         assert!(
-            stderr.contains("could not shorten the invite URL"),
+            stderr.contains("the base URL must be on that origin"),
             "{stderr}"
         );
+        assert!(stdout_of(&output).trim().is_empty(), "no link is printed");
         Ok(())
     }
 }

@@ -107,10 +107,15 @@ async fn account_approval_ignores_all_invite_routing_metadata() -> anyhow::Resul
     use tonk_schema::prelude::DidExt as _;
 
     let test = common::TestSite::new().await?;
-    let invite = tonk_cli::invite::mint(
+    let recipient = common::TestSite::new().await?;
+    // Scoped, so the link carries the chain and its routing metadata
+    // (an open invite's would be a ticket kept at the remote, which
+    // nothing serves here).
+    let invite = tonk_cli::invite::mint_targeted(
         &test.site,
         Some("https://untrusted.example/join"),
         Some("https://provider.example/ucan/"),
+        recipient.site.repository.did().as_ref(),
     )
     .await?;
     let checked = tonk_cli::invite::preflight(&invite.url).await?;

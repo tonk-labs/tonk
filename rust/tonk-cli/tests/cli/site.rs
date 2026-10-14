@@ -544,8 +544,13 @@ mod when_claiming_an_invite_with_a_remote {
         let listed = remote::list(&joined).await?;
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "origin");
-        assert_eq!(listed[0].endpoint, endpoint);
-        assert_eq!(listed[0].revocation_url.as_deref(), Some(REVOCATION_RELAY));
+        assert_eq!(
+            listed[0].endpoint.trim_end_matches('/'),
+            endpoint.trim_end_matches('/')
+        );
+        // A ticket link carries no relay: revocations go to the access
+        // service on `/ucan/`, which the joined site already names.
+        assert_eq!(listed[0].revocation_url, None);
         // Subject is the inviter's DID — tonk holds delegated
         // authority on the inviter's repo.
         assert_eq!(listed[0].subject, inviter.site.repository.did());
