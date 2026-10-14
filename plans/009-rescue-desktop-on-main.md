@@ -508,3 +508,23 @@ are rejection tests only. Native inspection/proposal schemas stay Desktop-owned.
   reports `tonk 0.6.16-rc.1`; executable SHA-256
   `93536fb6cbbecd4775f0fa78fefd66678a77ef27c7b548337cfe965b295c7cd2`.
   No installed CLI or its profiles changed.
+
+### Resumed increment — canonical manual invalidation
+
+Desktop generation now rebuilds canonical authoring content before importing it;
+`--check` first validates that bundle against the actual manual sources. This
+prevents a manual edit leaving both JS and Swift projections silently stale.
+Added an isolated source-copy test: mutate an agent manual, observe check failure,
+regenerate, then verify the new text appears in Swift and check passes.
+
+`node --test mcp/desktop-generation.test.mjs`: 2 passed. Full
+`npm --prefix mcp test`: 15 passed. `npm --prefix mcp run check:format` (with
+package-cache access), generator check and whitespace check passed. Existing
+checked-in generated output is unchanged, so no new native compilation was needed
+for this generator-only increment.
+
+Matching web runtime build completed successfully:
+`/nix/store/xjhvh0gcnpmw1p4wr3mjfap3qm94qmjf-tonk-ui-trunk-0.6.16-rc.1`.
+Served on loopback 4187 using `desktop/scripts/serve-local-runtime.py`.
+`nix develop .#ci -c test:desktop:workflow` started against that artifact with
+fresh per-run storage and app identifier. Results follow below.

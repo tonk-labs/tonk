@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, cp, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -75,6 +75,62 @@ test('Desktop generation is deterministic, detects drift, and executes the canon
     assert.equal(writes, 1);
     await writeFile(contextPath, first + '\n// stale\n');
     assert.equal(run('--check').status, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Desktop check detects a changed canonical manual before native regeneration', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tonk-desktop-manual-'));
+  const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
+  try {
+    await mkdir(join(root, 'mcp/scripts'), { recursive: true });
+    await mkdir(join(root, 'desktop/Sources/HarnessCore'), { recursive: true });
+    for (const name of [
+      'catalog.mjs',
+      'browser.mjs',
+      'primitive.mjs',
+      'errors.mjs',
+      'authoring.mjs',
+      'authoring-content.mjs',
+      'tools.json',
+      'scripts/sync-desktop.mjs',
+      'scripts/build-authoring-guides.mjs',
+    ]) {
+      await cp(join(sourceRoot, 'mcp', name), join(root, 'mcp', name));
+    }
+    await symlink(join(sourceRoot, 'mcp/node_modules'), join(root, 'mcp/node_modules'));
+    const guidePath = 'rust/tonk-cli/src/guide.rs';
+    const guide = await readFile(join(sourceRoot, guidePath), 'utf8');
+    for (const path of [
+      guidePath,
+      ...[...guide.matchAll(/include_str!\("([^"]+)"\)/g)].map((m) =>
+        resolve(dirname(join(root, guidePath)), m[1]).slice(root.length + 1),
+      ),
+    ]) {
+      await mkdir(dirname(join(root, path)), { recursive: true });
+      await cp(join(sourceRoot, path), join(root, path));
+    }
+    const run = (...args) =>
+      spawnSync(process.execPath, [join(root, 'mcp/scripts/sync-desktop.mjs'), ...args], {
+        encoding: 'utf8',
+      });
+    assert.equal(run().status, 0);
+    assert.equal(run('--check').status, 0);
+    const manual = join(root, 'rust/tonk-cli/src/guide-agent.md');
+    await writeFile(manual, (await readFile(manual, 'utf8')) + '\nManual freshness sentinel.\n');
+    const stale = run('--check');
+    assert.equal(stale.status, 1);
+    assert.match(stale.stderr, /Authoring bundle is stale/);
+    assert.equal(run().status, 0);
+    assert.equal(run('--check').status, 0);
+    assert.match(
+      await readFile(
+        join(root, 'desktop/Sources/HarnessCore/TonkAgentContext.generated.swift'),
+        'utf8',
+      ),
+      /Manual freshness sentinel/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

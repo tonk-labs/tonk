@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { toolDefinitions } from '../catalog.mjs';
 import { build } from 'esbuild';
-import { guides, instructions } from '../authoring.mjs';
+import { spawnSync } from 'node:child_process';
 import { primitiveTools } from '../primitive.mjs';
 
 const args = process.argv.slice(2);
@@ -16,6 +16,18 @@ if (args.filter((arg) => arg !== '--check').length > 1) {
   console.error('Usage: node scripts/sync-desktop.mjs [--check] [/path/to/desktop]');
   process.exit(1);
 }
+// Refresh or validate canonical manuals before importing their generated module.
+// Otherwise a manual edit could leave both native and JS projections equally stale.
+const guideBuild = spawnSync(
+  process.execPath,
+  [
+    fileURLToPath(new URL('./build-authoring-guides.mjs', import.meta.url)),
+    ...(check ? ['--check'] : []),
+  ],
+  { stdio: 'inherit' },
+);
+if (guideBuild.status !== 0) process.exit(guideBuild.status ?? 1);
+const { guides, instructions } = await import('../authoring.mjs');
 const source = await readFile(new URL('../tools.json', import.meta.url));
 const hash = createHash('sha256').update(source).digest('hex');
 const json = JSON.stringify(
