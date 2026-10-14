@@ -29,8 +29,8 @@ open desktop/.build/Tonk.app
 The root flake and lockfile cover the whole monorepo. Run `menu` for commands,
 including `build:desktop`, `dev:desktop:open`, `test:desktop`, and
 `test:desktop:workflow`. Desktop commands are available on macOS; Xcode remains
-a host prerequisite. Shared generation and MCP tests use `build:agent` and
-`test:mcp`.
+a host prerequisite. Shared generation and MCP tests use `node mcp/scripts/sync-desktop.mjs` and
+`npm --prefix mcp test`.
 
 ## Use
 
@@ -47,7 +47,7 @@ API keys are stored in macOS Keychain.
 
 The app is a consumer of [`../mcp`](../mcp/README.md). Build and test commands
 regenerate the native catalog, guides and worker adapter from that package.
-`node mcp/scripts/build-agent-surface.mjs --check` checks all generated consumers.
+`node mcp/scripts/sync-desktop.mjs --check` checks all generated consumers.
 New chats use query/evaluate/guide plus native proposal and inspection controls.
 Host connection code stays in this app; Tonk semantics and authoring text live in
 the monorepo MCP sources. See [MIGRATION.md](MIGRATION.md) for import provenance.
@@ -70,11 +70,12 @@ account-backed proposal acceptance, authentication, remote sync or sharing.
 
 ## CI signing and direct passkeys
 
-`.github/workflows/desktop.yml` runs native tests and an ad-hoc build on pull
-requests. Pushes to `main` and manual runs build a signed Apple Silicon app,
-verify its passkey provisioning, and upload a ZIP plus SHA-256 checksum for
-14 days. They use the root Nix CI shell and the host Xcode installation on the
-[macOS 26 runner](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md).
+`.github/workflows/desktop.yml` runs native tests, generator checks and an ad-hoc
+build on relevant pull requests and main pushes. Signed artifacts are opt-in on
+manual runs of main only. Missing credentials do not block ordinary build/tests.
+Xcode stays a host prerequisite; wrappers clear inherited SDKROOT and select
+`/Applications/Xcode.app` (override with `TONK_XCODE_DEVELOPER_DIR`).
+Local recovery validation used Xcode 27; hosted macOS 26 CI remains separate.
 
 Repository secrets:
 

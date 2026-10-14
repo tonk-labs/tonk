@@ -348,3 +348,43 @@ acceptance remains separate and pending.
 Correction to prior full-suite summary: TonkTests had 51 cases, 2 opt-in runtime
 diagnostics skipped; HarnessCoreTests had 68 cases, 2 opt-in live Claude tests
 skipped. Zero failures; skipped cases are not acceptance proof.
+
+### Increment 3 — root commands and CI
+
+Added macOS-only `build:desktop`, `dev:desktop`, `dev:desktop:open`, `test:desktop`
+and `test:desktop:workflow` using current flake conventions. Main locks/profiles
+unchanged. Workflow covers Desktop, MCP/guides, Rust/frontend and build inputs;
+ordinary checks always use ad-hoc signing. Signed artifact is opt-in only on a
+manual main run; no publication, installation or release-gate changes.
+Removed obsolete Desktop JS forwarding launchers: both their target MCP modules
+are absent on main. Private native transport remains available and documented.
+
+- `nix develop .#ci -c test:desktop`: exit 0 (54 TonkTests + 68 HarnessCoreTests;
+  4 opt-in skips total, zero failures).
+- `TONK_SIGN_IDENTITY=- nix develop .#ci -c build:desktop`: exit 0.
+- `npm --prefix mcp run check:format`: exit 0.
+- `nixfmt --check flake.nix`, `node mcp/scripts/sync-desktop.mjs --check`,
+  `git diff --check`: exit 0.
+- `nix shell --inputs-from . nixpkgs#actionlint -c actionlint .github/workflows/desktop.yml`:
+  exit 0. Initial global-registry command failed with `Too many open files`;
+  retry used the repository input. Initial root evaluation failed on unqualified
+  `lib`; corrected to `pkgs.lib` and `pkgs.stdenv`, then root tests/build passed.
+- Runner availability checked against official runner-images macOS 26 arm64
+  README (2026-10-14): Xcode 26.6 and `/Applications/Xcode.app` documented.
+  https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md
+  Hosted PR CI has not run; local success is not hosted acceptance.
+
+### Live provider and visual attempts
+
+`TONK_TEST_CLAUDE_DISCOVERY=1 TONK_TEST_CLAUDE_LIVE=1 bash desktop/scripts/dev.sh
+test:unit --filter 'ClaudeCodeTests.testInstalledClaudeModelDiscoveryWithoutPrompt|ClaudeCodeTests.testLiveClaudeSubscriptionToolAndResume'`:
+model discovery passed; live tool/resume test failed `XCTAssertTrue(authenticated)`
+and then `authentication`. No live tool call proved. Temporary mock workspace,
+no Tonk production content sent.
+
+Added opt-in `--activity-fixture` gated by local runtime plus explicit data and
+WebKit identifiers. Ad-hoc build passed and a separately identified disposable
+copy launched at `desktop/artifacts/activity-fixture/Tonk Activity Fixture.app`.
+Computer Use denied access (`Computer Use was not approved to use Tonk`). Actual
+ContentView/dropdown/narrow-window inspection remains unverified; no alternate
+UI automation used to bypass that denial.
