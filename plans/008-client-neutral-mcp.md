@@ -469,3 +469,14 @@ Tested increments:
   complete. Remaining live-client/preview acceptance, Claude Code callback policy,
   CIMD resolver and production durability/capacity gates are detailed in the
   compatibility document. No push, PR, merge or deployment was performed.
+
+## PR rebase verification
+
+PR #1096 was rebased onto `origin/main` at `d973c60bea`. The sole conflict was
+`.github/workflows/mcp.yml`: preserved main's `ci-test` profile, Cargo timings,
+and binary path while retaining this branch's pinned Python SDK setup.
+`git range-diff` confirms the other seven implementation commits are unchanged.
+After rebasing, all 78 tests passed again (13 core, 60 hosted, 3 Apps, 2 native
+SDK integration tests using the existing local worker binary). Repository
+formatting and `git diff --check` passed. Live-client acceptance gaps remain
+unchanged; the rebase does not establish hosted CI or deployment success.
