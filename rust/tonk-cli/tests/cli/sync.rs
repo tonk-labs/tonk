@@ -1,8 +1,7 @@
 //! Auto-sync behaviour for `tonk eval`: a write reaches the
 //! upstream on its own, and `--no-sync` suppresses it.
 
-mod common;
-
+use crate::common;
 use anyhow::Result;
 use dialog_repository::Revision;
 use tonk_cli::auto_sync;

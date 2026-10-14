@@ -1,5 +1,5 @@
 //! Executable scoped connection import, restart, and acknowledgement contracts.
-mod common;
+use crate::common;
 
 use anyhow::Result;
 use dialog_credentials::{Ed25519Signer, Signer};

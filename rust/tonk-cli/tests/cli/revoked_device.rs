@@ -6,8 +6,7 @@
 //! the e2e suite caught `tonk account devices` parked in a remote
 //! resolve the service never answered for a revoked principal.
 
-mod common;
-
+use crate::common;
 use anyhow::{Context, Result};
 use tonk_access_service::helpers::AccessServiceAddress;
 use tonk_schema::prelude::DidExt as _;

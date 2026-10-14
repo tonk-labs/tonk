@@ -1,7 +1,5 @@
 //! Behavioural tests for the live workflow card.
 
-mod common;
-
 use anyhow::Result;
 
 use crate::common::{ATTRIBUTE_DECL, CONCEPT_DECL, TestSite};

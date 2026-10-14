@@ -6,8 +6,7 @@
 //! This is the headless equivalent of clicking through a running
 //! instance — the whole chain, not a unit of it.
 
-mod common;
-
+use crate::common;
 use anyhow::Result;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

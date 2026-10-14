@@ -25,27 +25,27 @@ use std::collections::BTreeMap;
 const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0001_control.sql",
-        include_str!("../migrations/0001_control.sql"),
+        include_str!("../../migrations/0001_control.sql"),
     ),
     (
         "0002_deletion.sql",
-        include_str!("../migrations/0002_deletion.sql"),
+        include_str!("../../migrations/0002_deletion.sql"),
     ),
     (
         "0003_deprovision.sql",
-        include_str!("../migrations/0003_deprovision.sql"),
+        include_str!("../../migrations/0003_deprovision.sql"),
     ),
     (
         "0004_consumer_kind.sql",
-        include_str!("../migrations/0004_consumer_kind.sql"),
+        include_str!("../../migrations/0004_consumer_kind.sql"),
     ),
     (
         "0005_customer_email.sql",
-        include_str!("../migrations/0005_customer_email.sql"),
+        include_str!("../../migrations/0005_customer_email.sql"),
     ),
     (
         "0006_account_schema.sql",
-        include_str!("../migrations/0006_account_schema.sql"),
+        include_str!("../../migrations/0006_account_schema.sql"),
     ),
 ];
 

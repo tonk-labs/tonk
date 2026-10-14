@@ -1,5 +1,3 @@
-mod common;
-
 use anyhow::Result;
 
 use crate::common::TestSite;

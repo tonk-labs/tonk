@@ -1,8 +1,6 @@
 //! Behavioural tests for the site lifecycle:
 //! initialization, profile identity, and migration from carry.
 
-mod common;
-
 mod when_initializing_a_site {
     use anyhow::Result;
     use tonk_cli::site::TonkSite;

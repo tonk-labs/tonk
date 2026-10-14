@@ -2,8 +2,6 @@
 //! evaluation, error reporting, output rendering, schema
 //! introspection, and the bundled guide.
 
-mod common;
-
 mod when_evaluating_a_document {
     use anyhow::Result;
 

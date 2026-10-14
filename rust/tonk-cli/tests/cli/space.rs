@@ -3,8 +3,7 @@
 //! the way the `tonk space use` / `tonk space *` commands drive it —
 //! nothing here touches process env or the user's data dir.
 
-mod common;
-
+use crate::common;
 use anyhow::Result;
 use dialog_query::{Output as _, Query, Term};
 use tonk_cli::site::TonkSite;

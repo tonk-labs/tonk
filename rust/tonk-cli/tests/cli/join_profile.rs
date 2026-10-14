@@ -1,7 +1,6 @@
 //! Accountless invite claims use the persistent local profile directly.
 
-mod common;
-
+use crate::common;
 use anyhow::Result;
 use tonk_cli::inventory;
 use tonk_cli::invite;

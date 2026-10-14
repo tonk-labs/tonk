@@ -3,8 +3,6 @@
 //! written as the field's value. Inline text has no location, so an
 //! include in it is refused.
 
-mod common;
-
 use anyhow::Result;
 use tonk_cli::eval::{self, Source};
 

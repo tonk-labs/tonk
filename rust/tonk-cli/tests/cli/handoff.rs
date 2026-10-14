@@ -1,5 +1,5 @@
 //! The connection receipt must resolve through the same seeded model as the UI.
-mod common;
+use crate::common;
 
 #[dialog_common::test]
 async fn pending_handoff_does_not_resolve_as_a_copyable_prompt() -> anyhow::Result<()> {
@@ -520,7 +520,7 @@ async fn explicit_library_evaluation_refreshes_a_frozen_blank_canvas() -> anyhow
             .await?
             .contains("Frozen old canvas")
     );
-    test.eval_inline(include_str!("../../tonk-core/assets/library/core.yaml"))
+    test.eval_inline(include_str!("../../../tonk-core/assets/library/core.yaml"))
         .await?;
     let refreshed = tonk_cli::render::render(&test.site, &route).await?;
     assert!(!refreshed.contains("Frozen old canvas"));

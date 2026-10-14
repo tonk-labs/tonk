@@ -2,8 +2,7 @@
 //! every registered replica opens whatever the account state, and a sync the
 //! service refuses fails there, with copy composed from the space's roster.
 
-mod common;
-
+use crate::common;
 use anyhow::Result;
 use tonk_cli::site::{SiteConfig, TonkSite};
 use tonk_cli::space::{AccountRecord, SpaceStore};

@@ -1,6 +1,6 @@
 //! Milestone-one executable coverage of the candidate scoped build preset.
 //! This fixture does not implement production invitation import or migration.
-mod common;
+use crate::common;
 
 use anyhow::Result;
 use dialog_credentials::{Ed25519Signer, Signer};

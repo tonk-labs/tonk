@@ -1,8 +1,6 @@
 //! `tonk export` / `tonk import` — CSV round-trip of a branch's
 //! artifacts.
 
-mod common;
-
 use anyhow::Result;
 use tonk_cli::transfer::{self, Destination};
 

@@ -1,8 +1,7 @@
 //! The local space listing: one row per registered replica, with the owner
 //! and role read from the roster the space itself carries.
 
-mod common;
-
+use crate::common;
 use anyhow::Result;
 use tonk_cli::inventory::{SpaceRole, list_local, render};
 use tonk_cli::site::{SiteConfig, TonkSite};

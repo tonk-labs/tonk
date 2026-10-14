@@ -1,7 +1,6 @@
 //! Tool-only invitation routing before `tonk join` mutates local state.
 
-mod common;
-
+use crate::common;
 use anyhow::Result;
 use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_effects::storage::Directory;
