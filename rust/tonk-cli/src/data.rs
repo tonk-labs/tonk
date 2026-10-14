@@ -6,6 +6,7 @@
 //! `tonk eval`, not a second write path.
 
 use dialog_query::{ConceptDescriptor, Type};
+use tonk_notation::spell_uri;
 
 /// Error rendering a raw CLI value or building a notation document
 /// against a concept's descriptor.
@@ -79,7 +80,7 @@ pub fn build_query(
     }
     let mut doc = format!(
         "{concept}:\n  this: {}\n",
-        entity.unwrap_or("?__tonk_entity")
+        entity.map_or("?__tonk_entity".into(), spell_uri)
     );
     for (index, (field, _)) in descriptor.with().iter().enumerate() {
         let value = constraints
@@ -102,30 +103,28 @@ pub fn render_value(ty: Option<Type>, raw: &str) -> Result<String, DataError> {
         ty: ty.into(),
         raw: raw.into(),
     };
-    match ty {
+    // A sized number type (`natural:64`) is spelled as the numbers it
+    // stores.
+    match ty.map(Type::storage) {
         Some(Type::UnsignedInt) => {
-            raw.parse::<u128>().map_err(|_| bad("UnsignedInteger"))?;
+            raw.parse::<u128>().map_err(|_| bad("natural"))?;
             Ok(raw.to_string())
         }
         Some(Type::SignedInt) => {
-            raw.parse::<i128>().map_err(|_| bad("SignedInteger"))?;
-            // Spell the signedness: bare digits parse as unsigned, so
-            // a non-negative signed value carries an explicit `+`.
-            if raw.starts_with('+') || raw.starts_with('-') {
-                Ok(raw.to_string())
-            } else {
-                Ok(format!("+{raw}"))
-            }
+            // A literal names a number, not a type: the field's
+            // declared type reads it, so no `+` is spelled.
+            let value: i128 = raw.parse().map_err(|_| bad("integer"))?;
+            Ok(value.to_string())
         }
         Some(Type::Float) => {
-            raw.parse::<f64>().map_err(|_| bad("Float"))?;
+            raw.parse::<f64>().map_err(|_| bad("float"))?;
             Ok(raw.to_string())
         }
         Some(Type::Boolean) => {
-            raw.parse::<bool>().map_err(|_| bad("Boolean"))?;
+            raw.parse::<bool>().map_err(|_| bad("boolean"))?;
             Ok(raw.to_string())
         }
-        Some(Type::Entity) | Some(Type::Symbol) => Ok(raw.to_string()),
+        Some(Type::Entity) | Some(Type::Symbol) => Ok(spell_uri(raw).into_owned()),
         _ => Ok(quote_string(raw)), // String/Bytes/Record/None → quoted text
     }
 }
@@ -206,6 +205,7 @@ pub fn build_supersede(
     fields: &[(String, String)],
 ) -> Result<String, DataError> {
     let body = render_pairs(descriptor, concept, fields)?.join("\n");
+    let entity = spell_uri(entity);
     Ok(format!("{concept}!:\n  this: {entity}\n{body}\n"))
 }
 
@@ -217,6 +217,7 @@ pub fn build_match(
     fields: &[(String, String)],
 ) -> Result<String, DataError> {
     let body = render_pairs(descriptor, concept, fields)?.join("\n");
+    let entity = spell_uri(entity);
     Ok(format!("{concept}:\n  this: {entity}\n{body}\n"))
 }
 
@@ -225,6 +226,7 @@ pub fn build_match(
 /// itself an assertion — a claim invalidating an old one — not a
 /// deletion.
 pub fn build_retract(concept: &str, entity: &str, field: Option<&str>) -> String {
+    let entity = spell_uri(entity);
     match field {
         Some(f) => format!("{concept}!:\n  this: {entity}\n  {f}: _\n"),
         None => format!("{concept}!:\n  this: {entity}\n  ..: _\n"),
@@ -233,12 +235,14 @@ pub fn build_retract(concept: &str, entity: &str, field: Option<&str>) -> String
 
 #[cfg(test)]
 mod tests {
+    /// A number is spelled plainly whatever the field's type: the
+    /// declared type is the lens, so the literal carries no sign.
     #[test]
-    fn it_spells_signed_values_with_an_explicit_sign() {
+    fn it_spells_signed_values_as_plain_numbers() {
         use dialog_query::artifact::Type;
         assert_eq!(
             super::render_value(Some(Type::SignedInt), "41").unwrap(),
-            "+41"
+            "41"
         );
         assert_eq!(
             super::render_value(Some(Type::SignedInt), "-7").unwrap(),
@@ -246,7 +250,7 @@ mod tests {
         );
         assert_eq!(
             super::render_value(Some(Type::SignedInt), "+8").unwrap(),
-            "+8"
+            "8"
         );
         assert_eq!(
             super::render_value(Some(Type::UnsignedInt), "41").unwrap(),
@@ -278,6 +282,12 @@ mod tests {
         assert_eq!(
             render_value(Some(Type::Entity), "did:key:z6Mk").unwrap(),
             "did:key:z6Mk"
+        );
+        // A bare-scheme URI is spelled as a keyword, the only form
+        // YAML reads as a value.
+        assert_eq!(
+            render_value(Some(Type::Entity), "keyword:").unwrap(),
+            ":keyword"
         );
     }
     #[test]

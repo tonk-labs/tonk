@@ -76,8 +76,18 @@ URIs come in several schemes:
 - `did:key:…` — content-addressed entities (DIDs).
 - `xyz.tonk.person/name`, `dialog.meta/name`, etc. — attribute
   URIs in `domain/name` form.
+- `:keyword` — the bare-scheme URI `keyword:`. YAML reads a
+  trailing `:` as the start of a mapping, so `keyword:` can't be
+  written as a value; the notation puts the colon in front
+  instead. Output spells these entities the same way.
 
 All of these are direct references and require no resolution.
+
+```yaml tonk=parse
+link!:
+  this: :keyword
+  target: :tonk
+```
 
 ## A worked example
 
@@ -88,7 +98,6 @@ attribute!: &person-name
   description: The person's name
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
 
 concept!: &person
   description: A person
@@ -139,6 +148,47 @@ parsed as a symbol but is meant to be a string MUST be quoted.
 `name: alice` is a symbol (resolves through the name table);
 `name: "alice"` is a literal string. The quotes are
 load-bearing.
+
+A **number** is an optional sign, digits, an optional fraction and
+an optional exponent (`41`, `+41`, `-7`, `41.5`, `1e39`). It names
+a number, not a type: `41`, `+41` and `41.0` are one value. A
+field's declared type (`natural`, `integer`, `float`) is a lens
+the number is read and written through, so `age: 41` fills a
+`natural`, an `integer` or a `float` field alike, and a raw read
+gives a number back as the narrowest type that holds it (a whole
+non-negative number as a natural, a whole negative one as an
+integer, anything else as a float). A fraction cannot be written
+into a whole-number field, nor a negative number into a natural
+one. `.nan` and `.inf` are not numbers; they read as text.
+
+A bare symbol is always a **reference**: it resolves to an
+anchor declared in the document, a name published on the
+branch, or a built-in name (the types `text`, `integer`,
+`natural`, …), and a symbol that resolves to nothing fails
+the document. It never falls back to its own text. A field
+whose value is a fixed word rather than an entity takes a
+**keyword**, the word with a colon in front:
+
+```yaml tonk=parse
+attribute!: &task-tags
+  description: "Tags on a task"
+  the:         xyz.tonk.task/tags
+  as:          text
+  pick:        :all
+```
+
+`pick:` (`:last`, `:all`, `:top`, `:max`, `:min`) and a command
+field's `role:` (`:object`, `:goal`, …) take keywords. Both also
+read the spellings earlier releases wrote, the bare word
+(`pick: all`) and the quoted word (`role: "object"`), as the same
+keyword, with a warning (`W_OLDER_KEYWORD_SPELLING`) naming the
+keyword to write. `cardinality:`, the spelling earlier releases
+used for a field's pick, is deprecated: it is read, in every
+spelling (`one`, `:one`, `"one"`), as `pick: :last` for `one`
+(the default, so the field can go) and `pick: :all` for `many`,
+with a warning (`W_DEPRECATED_CARDINALITY`) saying so. A template
+or notebook written for an earlier release still evaluates; a
+new document writes the pick.
 
 ## Heads in detail
 
@@ -248,6 +298,7 @@ value can take four forms:
 | `?var`              | Logic variable — bind/unify across expressions          |
 | `name` (bare)       | Resolve through the name table to a target entity       |
 | `did:key:…`         | Entity URI directly (no resolution)                     |
+| `:keyword`          | The bare-scheme entity URI `keyword:`                   |
 | `{ ... }` (mapping) | Entity is content-addressed from the mapping content    |
 
 The mapping form lets you control entity derivation
@@ -282,6 +333,7 @@ distinguished lexically:
 | `_`                             | Blank — query: match any value; assertion: retract field   |
 | `person-name` (bare lowercase)  | Symbol — resolves through the name table to a target entity |
 | `id:foo`, `db:foo`, `did:key:…` | URI — direct entity reference, no resolution               |
+| `:foo`                          | Keyword — the bare-scheme URI `foo:`, no resolution        |
 | `xyz.tonk/foo`                  | Attribute URI — direct, no resolution                      |
 
 The distinction between a bare symbol and a URI is
@@ -424,7 +476,6 @@ attribute!: &person-name
   description: "The person's name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
 ```
 
 is equivalent to:
@@ -435,7 +486,6 @@ attribute!:
   description: "The person's name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
 
 name!:
   this:   id:person-name
@@ -454,7 +504,6 @@ attribute!: &person-name
   description: "The person's name"
   the:         xyz.tonk.person/name
   as:          text
-  cardinality: one
 
 # Additional names for the same entity:
 name!:
@@ -527,72 +576,71 @@ themselves cannot.
 
 ### `attribute`
 
-Defines an attribute by domain/name, value type, and
-cardinality. Although `attribute` is a built-in, its is a regular concept and
-can be described in the notation:
+Defines an attribute: a relation, by domain/name, qualified by a
+value type and a pick. Although `attribute` is a built-in, it is a
+regular concept and can be described in the notation:
 
 ```yaml tonk=illustrative-built-in-schema
-# The four attributes that make up the attribute concept.
+# The attributes that make up the attribute concept.
 
 attribute!:
   this: ?id
-  description: "The attribute selector in domain/name form"
-  the:         dialog.attribute/id
+  description: "The relation in domain/name form"
+  the:         db.attribute/id
   as:          text
-  cardinality: one
 
 attribute!:
   this: ?type
-  description: "The value-type discriminant (text, unsigned-integer, …)"
-  the:         dialog.attribute/type
-  as:          text
-  cardinality: one
+  description: "The value type, as the entity dialog names it (text:, natural:, …)"
+  the:         db.attribute/as
+  as:          entity
 
 attribute!:
-  this: ?cardinality
-  description: "Cardinality: one or many"
-  the:         dialog.attribute/cardinality
-  as:          text
-  cardinality: one
+  this: ?pick
+  description: "Which claims a read returns, as the entity dialog names the pick (last:, all:, …)"
+  the:         db.attribute/pick
+  as:          entity
 
 attribute!:
   this: ?description
   description: "Human-readable description"
-  the:         dialog.meta/description
+  the:         db.meta/description
   as:          text
-  cardinality: one
 
 # The attribute concept itself.
 
 concept!: &attribute
   description: "An attribute definition"
   with:
-    the:        ?id
-    as:          ?type
-    cardinality: ?cardinality
+    id:          ?id
+    pick:        ?pick
     description: ?description
+  maybe:
+    as:          ?type
 ```
 
-The body field shorthands users write (`the:`, `as:`,
-`cardinality:`, `description:`) map to the four attributes
-above through the concept's `with:` map.
+The body field shorthands users write (`the:`, `as:`, `pick:`,
+`description:`) map to these attributes through the concept's
+`with:` map. `as: text` names the built-in type anchor `text`,
+which stands for the type entity `text:`, and `pick: all` names the
+built-in pick anchor `all`, which stands for the pick entity `all:`.
+The built-in picks are `last`, `all`, `top`, `max` and `min`.
 
 `description` is required on every attribute, but it does not
 participate in the attribute entity's content-derivation —
-two attributes with identical `the:`, `as:`, and
-`cardinality:` but different `description:` claims resolve to
-the same entity. Changing the description of an existing
-attribute is a mutation on a stable entity, not the creation
-of a new one.
+two attributes with identical `the:`, `as:`, and `pick:` but
+different `description:` claims resolve to the same entity.
+Changing the description of an existing attribute is a
+mutation on a stable entity, not the creation of a new one.
 
 Because `attribute` is a regular concept, you can query it:
 
 ```yaml tonk=eval
-# Find every attribute whose cardinality is "many".
+# Find every attribute that reads a set.
 attribute:
-  this:        ?a
-  id:          ?selector
-  cardinality: "many"
+  this: ?a
+  id:   ?selector
+  pick: all
 ```
 
 Note: the schema definition above is illustrative. In an
@@ -649,7 +697,6 @@ attribute!:
   description: "The entity identified by the name"
   the:         dialog.meta/name
   as:          entity
-  cardinality: one
 
 concept!: &name
   description: "A mutable name for an entity"

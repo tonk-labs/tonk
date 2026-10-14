@@ -121,12 +121,19 @@ pub async fn open_local_account_branch(
     profile: &Peer<NativeSpace>,
     operator: &Peer<NativeSpace, Session>,
 ) -> Result<Branch> {
-    dialog_repository::Repository::from(profile.credential().clone())
+    let branch = dialog_repository::Repository::from(profile.credential().clone())
         .branch(tonk_account::MAIN_BRANCH)
         .open()
         .perform(operator)
         .await
-        .context("failed to open the local account branch")
+        .context("failed to open the local account branch")?;
+    // Written directly: a branch an earlier release wrote is moved to this
+    // release's format first, since a commit into the earlier layout is
+    // refused.
+    dialog_reactor::migrate(&branch, operator)
+        .await
+        .context("failed to migrate the local account branch")?;
+    Ok(branch)
 }
 
 /// One space's outcome under [`rotate_local_spaces`].

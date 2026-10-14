@@ -6,7 +6,7 @@
 //! idiom). Source is a borrowed handle to a branch / txn that
 //! lives for the analyze call; env is a per-execution context.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use dialog_artifacts::Entity;
 use parking_lot::Mutex;
@@ -86,6 +86,10 @@ pub(crate) struct Scope {
     /// that pass reads it synchronously, the same way a concept body
     /// reads an in-document attribute.
     pub(crate) event_declarations: Mutex<HashMap<String, EventDescriptor>>,
+    /// Built-in type anchors (`text`, `integer`, ...) this document
+    /// declares an anchor of its own under. Within the document the
+    /// name means its declaration, not the type.
+    pub(crate) shadowed_builtins: Mutex<HashSet<String>>,
 }
 
 impl Scope {
@@ -102,6 +106,7 @@ impl Scope {
             resolved_rules: Mutex::new(HashMap::new()),
             resolved_concepts: Mutex::new(HashMap::new()),
             event_declarations: Mutex::new(HashMap::new()),
+            shadowed_builtins: Mutex::new(HashSet::new()),
         }
     }
 
@@ -324,7 +329,21 @@ impl Scope {
         if let Some(concept) = self.in_doc_concepts.lock().get(name) {
             return Some(concept.entity.clone());
         }
+        // A built-in anchor names its entity: a type (`text` is
+        // `text:`) or a pick (`all` is `all:`). A document that
+        // declares an anchor of the same name shadows it above; a name
+        // published on the branch does not, so one document's choice
+        // never changes another's types or picks.
+        if let Some(uri) = self.builtin(name) {
+            return uri.parse().ok();
+        }
         self.named_entities.lock().get(name).cloned()
+    }
+
+    /// The entity the built-in anchor `name` names, a type or a pick,
+    /// unless this document declares an anchor of its own under it.
+    pub(crate) fn builtin(&self, name: &str) -> Option<&'static str> {
+        tonk_notation::builtin(name).filter(|_| !self.shadowed_builtins.lock().contains(name))
     }
 
     /// Sync lookup of an installed rule resolved for a retract.
