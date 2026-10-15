@@ -592,3 +592,12 @@ Latest acceptance summary (supersedes earlier attempt rows):
   The separate browser-approval investigation was not imported or deployed.
 - **Unverified by explicit constraint:** hosted PR CI, because PR creation triggers
   deployment. Signing material was not transferred or inspected for recovery.
+
+### PR delivery authorized (2026-10-15)
+
+The user explicitly requested opening a PR after being informed that PR events
+trigger preview deployment workflows. This supersedes the delivery constraint
+above for pushing this branch and opening its PR, including normal PR workflow
+side effects. No merge, manual deployment or release is authorized or performed.
+The implementation and local validation evidence above are unchanged; hosted CI
+remains pending until the PR runs. No further source-worktree import is included.
