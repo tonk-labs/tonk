@@ -8,6 +8,24 @@
   A native macOS workspace for Tonk spaces and agents.
 </p>
 
+## Download Tonk Desktop
+
+For macOS 15+ on Apple Silicon. Unzip the download and move **Tonk.app** to
+**Applications**.
+
+| Channel | Download | Published from |
+| --- | --- | --- |
+| Stable | [Download for Mac](https://github.com/tonk-labs/tonk/releases/latest/download/Tonk-macos-arm64.zip) | Final `vX.Y.Z` tags |
+| Staging / RC | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-staging/Tonk-macos-arm64.zip) | Prerelease `vX.Y.Z-rc.N` tags |
+| Dev / main | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-desktop-dev/Tonk-macos-arm64.zip) | Latest successfully published `main` build |
+
+All channels are Developer ID signed and notarized. Each release includes
+`Tonk-macos-arm64.sha256` and `Tonk-desktop-manifest.json` with the exact version
+and source commit. Links become available after the first successful release
+for each channel. Downloads are manual; all channels use the same app identity
+and local data, so installing another channel replaces the installed app.
+These are build channels; all currently use the production Tonk service.
+
 ## Build
 
 Requires macOS 15+, full Xcode 26+, and Node 22+ for shared-source generation.
@@ -89,8 +107,18 @@ it, enables `TonkDirectPasskeyEnabled`, and checks the signed team, leaf
 certificate, associated-domain entitlements, embedded profile and app flag.
 Missing credentials or a mismatched profile fail the signing stage.
 
-This artifact is signed and provisioned, but is not notarized or published as a
-release. Direct passkeys are enabled for `https://tonk.network`; that domain
+The optional manual artifact is signed and provisioned. Automatic releases use
+`desktop-dev.yml`: every main push builds a dev release; `release.yml`
+calls the shared `desktop-release.yml` build for version tags and publishes Desktop alongside the CLI.
+These release builds use Swift release configuration, hardened runtime, a secure
+signing timestamp, required Apple notarization, and a stapled ticket. Publication
+fails if signing, notarization or verification fails. Superseded dev builds do
+not overwrite the current main build.
+
+Release notarization also requires `APP_STORE_CONNECT_KEY_P8`,
+`APP_STORE_CONNECT_KEY_ID`, and `APP_STORE_CONNECT_ISSUER_ID`, shared with CLI CI.
+
+ Direct passkeys are enabled for `https://tonk.network`; that domain
 must serve an AASA `webcredentials` entry for `8WVKS2F24C.xyz.tonk`. CI does not
 perform a real passkey ceremony or prove recovery of an existing account.
 

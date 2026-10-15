@@ -49,6 +49,24 @@ Add new rules, concepts, or extend existing ones as your needs evolve. No migrat
 
 Check out the [Dialog DB repository](https://github.com/dialog-db/dialog-db) to learn more about how it works under the hood.
 
+## Download Tonk Desktop
+
+For macOS 15+ on Apple Silicon. Unzip the download and move **Tonk.app** to
+**Applications**.
+
+| Channel | Download | Published from |
+| --- | --- | --- |
+| Stable | [Download for Mac](https://github.com/tonk-labs/tonk/releases/latest/download/Tonk-macos-arm64.zip) | Final `vX.Y.Z` tags |
+| Staging / RC | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-staging/Tonk-macos-arm64.zip) | Prerelease `vX.Y.Z-rc.N` tags |
+| Dev / main | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-desktop-dev/Tonk-macos-arm64.zip) | Latest successfully published `main` build |
+
+All channels are Developer ID signed and notarized. Each release includes
+`Tonk-macos-arm64.sha256` and `Tonk-desktop-manifest.json` with the exact version
+and source commit. Links become available after the first successful release
+for each channel. Downloads are manual; all channels use the same app identity
+and local data, so installing another channel replaces the installed app.
+These are build channels; all currently use the production Tonk service.
+
 ## The `tonk` CLI
 
 `tonk` is a local-first command-line companion for reading and writing Tonk data without a browser. It operates on a *space* — a named Dialog repository in a central registry. `tonk space use <name>` binds the current directory to a space without copying data there; `--space` and `TONK_SPACE` override that binding for one invocation or process. The CLI speaks the same asserted-notation as the rest of the substrate: you assert claims, query them, and define concepts and rules with `tonk eval`, plus read-only introspection (`tonk schema`, `tonk concept ls`, `tonk view ls`) and a built-in notation reference (`tonk guide`).
