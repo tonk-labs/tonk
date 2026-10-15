@@ -76,7 +76,7 @@ impl AgentLinkWorker {
                     .to_string()
             })
             .collect::<Vec<_>>();
-        let id = grant_set_id(&subject, &grants.recipient().to_string(), &cids);
+        let id = grant_set_id(&subject, grants.recipient().as_ref(), &cids);
         let _lock = lock_root(&self.root)
             .map_err(|_| "Agent storage is unavailable or busy.".to_owned())?;
         let directory = self.root.join(id);

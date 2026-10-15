@@ -76,3 +76,12 @@ Final native integration result:
 - No dependency lock files changed. No public deployment, Docker image run,
   real hosted-client acceptance, load test, or native Desktop UI test was performed.
   Existing native dead-code warnings are unchanged.
+
+PR #1105 lint follow-up:
+- CI Clippy rejected an unnecessary recipient `to_string()` allocation in the
+  worker. The matching all-targets local check also found the same pattern in
+  the integration fixture's subject provisioning. Both now borrow with `as_ref()`.
+- `cargo clippy --offline --locked -p tonk-worker --all-targets --all-features --
+  -D warnings` passed. The earlier native-host-only diagnostic run encountered
+  existing dead-code warnings from disabled optional features; CI enables all
+  features. Formatting and diff checks passed for the correction.

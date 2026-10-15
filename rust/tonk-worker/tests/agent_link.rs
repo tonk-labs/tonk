@@ -14,7 +14,7 @@ async fn agent_link_syncs_and_reads_back_from_an_independent_replica() -> anyhow
     let owner = Signer::from(owner_key.clone());
     service
         .address
-        .provision_subject(&owner.did().to_string())
+        .provision_subject(owner.did().as_ref())
         .await?;
     let remote = service.address.ucan_endpoint().parse()?;
     let seed = [51; 32];
