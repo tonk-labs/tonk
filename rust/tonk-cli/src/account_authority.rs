@@ -663,9 +663,7 @@ mod tests {
 
         assert_eq!(made.load(Ordering::SeqCst), 1);
         assert!(Arc::ptr_eq(&handles[0], &handles[1]));
-        assert!(Arc::ptr_eq(
-            &operator.inner().held("writer").expect("held by the operator"),
-            &handles[0]
-        ));
+        let held = operator.inner().held("writer");
+        assert!(held.is_some_and(|held| Arc::ptr_eq(&held, &handles[0])));
     }
 }
