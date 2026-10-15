@@ -816,10 +816,7 @@ mod tests {
         let location = Directory::At(directory.to_string_lossy().into_owned());
         let (storage, profile) =
             crate::device::open_profile_at("receipt-projection", location.clone()).await?;
-        let registry = crate::device::Registry {
-            profile: "receipt-projection".into(),
-            directory: location,
-        };
+        let registry = crate::device::Registry::new("receipt-projection".into(), location);
         let tonk =
             crate::worker::boot_state(storage, "receipt-projection".into(), profile, registry)
                 .await?;
@@ -1000,6 +997,8 @@ mod tests {
             },
             AuthorizeError::Revoked {
                 subject: did.clone(),
+                certificate: None,
+                revocation: None,
             },
             AuthorizeError::InvalidSignature { issuer: did },
             AuthorizeError::Declined {
@@ -1080,10 +1079,7 @@ mod tests {
         let location = Directory::At(directory.to_string_lossy().into_owned());
         let (storage, profile) =
             crate::device::open_profile_at("ledger-branch", location.clone()).await?;
-        let registry = crate::device::Registry {
-            profile: "ledger-branch".into(),
-            directory: location.clone(),
-        };
+        let registry = crate::device::Registry::new("ledger-branch".into(), location.clone());
         let first =
             crate::worker::boot_state(storage, "ledger-branch".into(), profile, registry).await?;
         // Onto a fresh branch, the way add-account lands, and booted the
@@ -1175,10 +1171,7 @@ mod tests {
         std::fs::create_dir_all(&directory)?;
         let location = Directory::At(directory.to_string_lossy().into_owned());
         let (storage, profile) = crate::device::open_profile_at("ledger", location.clone()).await?;
-        let registry = crate::device::Registry {
-            profile: "ledger".into(),
-            directory: location.clone(),
-        };
+        let registry = crate::device::Registry::new("ledger".into(), location.clone());
         let tonk = crate::worker::boot_state(storage, "ledger".into(), profile, registry).await?;
         let root = Ed25519Signer::import(&[52; 32]).await?;
         let grant =
@@ -1238,10 +1231,7 @@ mod tests {
             .await?;
         assert_eq!(groups(&tonk).await?.len(), 1);
         assert!(has_issued_for_subject(&tonk, invite.grants().subject()).await?);
-        let other_registry = crate::device::Registry {
-            profile: "other-account".into(),
-            directory: location.clone(),
-        };
+        let other_registry = crate::device::Registry::new("other-account".into(), location.clone());
         let other_profile = other_registry
             .open_profile(&tonk.storage, "other-account")
             .await?;
@@ -1324,10 +1314,7 @@ mod tests {
         );
         drop(tonk);
         let (storage, profile) = crate::device::open_profile_at("ledger", location.clone()).await?;
-        let registry = crate::device::Registry {
-            profile: "ledger".into(),
-            directory: location,
-        };
+        let registry = crate::device::Registry::new("ledger".into(), location);
         let reopened =
             crate::worker::boot_state(storage, "ledger".into(), profile, registry).await?;
         assert!(has_issued_for_subject(&reopened, invite.grants().subject()).await?);

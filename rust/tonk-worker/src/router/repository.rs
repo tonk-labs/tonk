@@ -9706,10 +9706,7 @@ route!: &foreign-profile-route
             clients: Default::default(),
             account_keys: Default::default(),
             profile_library: Default::default(),
-            registry: crate::device::Registry {
-                profile: name,
-                directory,
-            },
+            registry: crate::device::Registry::new(name, directory),
             profile_transition: Default::default(),
             context_generation: Default::default(),
         }

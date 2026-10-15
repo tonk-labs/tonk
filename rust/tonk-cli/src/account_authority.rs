@@ -277,6 +277,10 @@ impl Holds for AccountBoundOperator {
     fn hold(&self, key: String, handle: Held) {
         self.inner.hold(key, handle)
     }
+
+    fn held_or(&self, key: &str, make: &dyn Fn() -> Held) -> Held {
+        self.inner.held_or(key, make)
+    }
 }
 
 impl dialog_varsig::Principal for AccountBoundOperator {
@@ -604,5 +608,62 @@ mod tests {
         let selected = DelegationChain::new(proof.proofs[0].0.clone());
 
         assert_eq!(selected.proof_cids()[0], expected);
+    }
+
+    /// dialog shares a branch's writer and caches through `held_or`, so two
+    /// first asks through the guard must get one handle. The guard answers
+    /// them under its operator's lock; looking and then holding would let
+    /// both see nothing held and each make their own.
+    #[dialog_common::test]
+    async fn it_holds_one_handle_for_concurrent_first_asks() {
+        use dialog_capability::Subject;
+        use dialog_effects::storage::Directory;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let temp = tempfile::tempdir().unwrap();
+        let store = SpaceStore::at(temp.path().join("state"));
+        let profile = crate::site::open_profile(
+            format!("held-or-test-{}", rand::random::<u64>()),
+            Directory::At(temp.path().join("profiles").to_string_lossy().into()),
+            true,
+        )
+        .await
+        .unwrap();
+        std::fs::create_dir_all(store.account_dir()).unwrap();
+        let account_dir = store.account_dir().canonicalize().unwrap();
+        let inner = profile
+            .session(b"tonk/held-or-test/v1")
+            .space(profile.state())
+            .allow(Subject::any())
+            .base(Directory::At(account_dir.to_string_lossy().into()))
+            .build()
+            .await
+            .unwrap();
+        let operator = AccountBoundOperator::new(inner, profile, store, false);
+
+        let made = AtomicUsize::new(0);
+        let make = || -> Held {
+            made.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            Arc::new(())
+        };
+        let start = Barrier::new(2);
+        let handles: Vec<Held> = std::thread::scope(|scope| {
+            let asks: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        operator.held_or("writer", &make)
+                    })
+                })
+                .collect();
+            asks.into_iter().map(|ask| ask.join().unwrap()).collect()
+        });
+
+        assert_eq!(made.load(Ordering::SeqCst), 1);
+        assert!(Arc::ptr_eq(&handles[0], &handles[1]));
+        let held = operator.inner().held("writer");
+        assert!(held.is_some_and(|held| Arc::ptr_eq(&held, &handles[0])));
     }
 }
