@@ -357,8 +357,8 @@ enum Command {
         /// such as CI, so repeated joins confirm one installation.
         #[arg(long, value_name = "ID", requires = "url", hide = true)]
         installation: Option<String>,
-        /// Trust this Tonk deployment origin for the import.
-        /// Overrides TONK_CONNECTION_ORIGIN and must match the signed /ucan/ route.
+        /// Only join through this Tonk deployment origin; by default the
+        /// link's own deployment is used. Overrides TONK_CONNECTION_ORIGIN.
         #[arg(long, value_name = "ORIGIN", requires = "url")]
         via: Option<String>,
     },
