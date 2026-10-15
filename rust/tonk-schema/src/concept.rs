@@ -165,6 +165,7 @@ pub trait QueryEnv:
     + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
+    + dialog_common::Holds
     + ConditionalSync
     + 'static
 {
@@ -181,6 +182,7 @@ impl<T> QueryEnv for T where
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
+        + dialog_common::Holds
         + ConditionalSync
         + 'static
 {

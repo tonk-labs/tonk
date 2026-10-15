@@ -170,6 +170,7 @@ pub trait EvaluateEnv:
     + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
+    + dialog_common::Holds
     + ConditionalSync
     + 'static
 {
@@ -187,6 +188,7 @@ impl<T> EvaluateEnv for T where
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
+        + dialog_common::Holds
         + ConditionalSync
         + 'static
 {

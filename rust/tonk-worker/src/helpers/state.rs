@@ -72,10 +72,10 @@ pub async fn test_state_without_root() -> TonkState {
     // so tests neither collide with each other nor touch the real
     // registry, while rotated/activated profiles still resolve in the
     // same directory the test profile itself lives in.
-    let registry = crate::device::Registry {
-        profile: profile_name.clone(),
-        directory: dialog_effects::storage::Directory::Profile,
-    };
+    let registry = crate::device::Registry::new(
+        profile_name.clone(),
+        dialog_effects::storage::Directory::Profile,
+    );
     TonkState {
         seed_upgrades: Default::default(),
         profile,

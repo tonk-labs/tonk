@@ -1,0 +1,63 @@
+name: Desktop release
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/resolve-release
+        if: github.ref_type == 'tag'
+        id: release
+      - name: Identify build
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          version="$RELEASE_VERSION"
+          if [ -z "$version" ]; then
+            version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"].split("-")[0])')-dev.${GITHUB_SHA:0:12}"
+          fi
+          echo "TONK_DESKTOP_VERSION=$version" >> "$GITHUB_ENV"
+      - uses: cachix/install-nix-action@v31
+      - name: Install generation dependencies
+        run: nix --accept-flake-config develop .#ci -c npm --prefix mcp ci --ignore-scripts
+      - name: Test Desktop
+        run: |
+          python3 -m unittest discover -s desktop/scripts/tests -p 'test_*.py'
+          nix --accept-flake-config develop .#ci -c test:desktop
+      - name: Build signed release app
+        env:
+          TONK_BUILD_CONFIGURATION: release
+          TONK_RELEASE_BUILD: '1'
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          TONK_PROVISIONING_PROFILE_BASE64: ${{ secrets.TONK_PROVISIONING_PROFILE_BASE64 }}
+        run: bash desktop/scripts/ci-sign.sh
+      - name: Notarize and staple
+        env:
+          APP_STORE_CONNECT_KEY_P8: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: bash desktop/scripts/ci-notarize.sh
+      - name: Record artifact identity
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path('desktop/artifacts/Tonk-desktop-manifest.json').write_text(json.dumps({
+              'version': os.environ['TONK_DESKTOP_VERSION'],
+              'commit': os.environ['GITHUB_SHA'],
+              'ref': os.environ['GITHUB_REF'],
+          }, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tonk-desktop-macos-arm64
+          path: desktop/artifacts/Tonk-*
+          if-no-files-found: error

@@ -55,6 +55,10 @@ where
             // what we can point at.
             revocation: selector.delegation,
             principal,
+            // Without the document a holder has no evidence to retract the
+            // certificate on, so it stops at the refusal instead of proving
+            // again through another grant.
+            proof: None,
         }))
     }
 }

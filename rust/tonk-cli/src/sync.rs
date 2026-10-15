@@ -515,7 +515,11 @@ mod tests {
                     PermanentRejection::Expired,
                 ),
                 (
-                    AuthorizeError::Revoked { subject: did },
+                    AuthorizeError::Revoked {
+                        subject: did,
+                        certificate: None,
+                        revocation: None,
+                    },
                     PermanentRejection::Revoked,
                 ),
             ] {
