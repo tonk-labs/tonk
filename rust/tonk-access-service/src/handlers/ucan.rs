@@ -97,7 +97,7 @@ fn with_cors_headers(response: Response) -> Response {
     );
     let _ = headers.set(
         "Access-Control-Expose-Headers",
-        "Content-Type, Content-Length, Content-Range, ETag, Server-Timing, UCAN-Command, UCAN-Subject, UCAN-Arguments",
+        "Content-Type, Content-Length, Content-Range, ETag, Retry-After, Server-Timing, UCAN-Command, UCAN-Subject, UCAN-Arguments",
     );
     response.with_headers(headers)
 }
@@ -593,6 +593,9 @@ async fn perform(
     let _ = headers.set("Content-Type", answer.content_type);
     if let Some(version) = &answer.version {
         let _ = headers.set("ETag", &format!("\"{version}\""));
+    }
+    if let Some(seconds) = answer.retry_after {
+        let _ = headers.set("Retry-After", &seconds.to_string());
     }
     for (name, value) in &described {
         let _ = headers.set(name, value);

@@ -3147,9 +3147,7 @@ pub(crate) mod tests {
         use dialog_repository::{FetchRemoteBranchError, PullError, ResolveError};
 
         let outage = PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(
-            ResolveError::from(MemoryError::Rejected(Rejection::Unavailable {
-                reason: "unavailable".to_string(),
-            })),
+            ResolveError::from(MemoryError::Rejected(Rejection::unavailable("unavailable"))),
         ));
 
         assert_eq!(
