@@ -18,10 +18,12 @@ struct TonkWelcomeView: View {
       }
       VStack(spacing: 14) {
         if runtime.signInPending {
-          ProgressView(
-            runtime.attachingAccount
-              ? "Connecting your account…"
-              : (runtime.nativeSignInPending ? "Approve your Tonk passkey…" : "Finish signing in in your browser"))
+          if let progress = runtime.browserSignInProgress {
+            BrowserSignInProgressView(progress: progress)
+          } else {
+            ProgressView(
+              runtime.attachingAccount ? "Connecting your account…" : "Approve your Tonk passkey…")
+          }
           if !runtime.nativeSignInPending {
             Button("Cancel") { runtime.cancelSignIn() }.disabled(runtime.attachingAccount)
           }
@@ -41,11 +43,15 @@ struct TonkWelcomeView: View {
             }
           }
           if !runtime.supportsDirectPasskey {
-            Text("Use your existing Tonk passkey in your browser.\nYou’ll return here when sign-in is complete.")
-              .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Text(
+              "Use your existing Tonk passkey in your browser.\nYou’ll return here when sign-in is complete."
+            )
+            .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
           }
         }
-        if let message = runtime.accountMessage ?? runtime.error ?? runtime.catalogError {
+        if let message = runtime.accountMessage ?? runtime.error
+          ?? (runtime.signInPending ? nil : runtime.catalogError)
+        {
           Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
           if !runtime.signInPending { Button("Try again") { runtime.load() } }
         }
