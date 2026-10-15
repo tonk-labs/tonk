@@ -1639,10 +1639,7 @@ mod native_tests {
         let (storage, profile) = crate::device::open_profile_at(&name, directory.clone())
             .await
             .unwrap();
-        let registry = crate::device::Registry {
-            profile: name.clone(),
-            directory,
-        };
+        let registry = crate::device::Registry::new(name.clone(), directory);
         let state = crate::worker::boot_state(storage, name, profile, registry)
             .await
             .unwrap();

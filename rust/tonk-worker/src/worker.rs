@@ -470,12 +470,10 @@ impl TonkState {
         let directory = directory
             .canonicalize()
             .map_err(|error| crate::TonkWorkerError::Internal(error.to_string()))?;
-        let registry = crate::device::Registry {
-            profile: "hosted".to_owned(),
-            directory: dialog_effects::storage::Directory::At(
-                directory.to_string_lossy().into_owned(),
-            ),
-        };
+        let registry = crate::device::Registry::new(
+            "hosted".to_owned(),
+            dialog_effects::storage::Directory::At(directory.to_string_lossy().into_owned()),
+        );
         let storage = registry.storage().await?;
         let profile = registry.open_profile(&storage, "hosted").await?;
         boot_state(storage, "hosted".to_owned(), profile, registry).await

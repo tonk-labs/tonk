@@ -13,7 +13,7 @@ use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationE
 use dialog_peer::{Allowance, OpenCredential, Peer, PeerError, PeerSpace, SpaceVaultExt as _};
 use dialog_repository::{
     ACCESS_BRANCH, AddAddressError, Branch, ConnectError, ConnectedBranch, ConnectedReplica,
-    PeersEnv, Repository, ResolveEnv, SiteAddress, Upstream, contact,
+    HeldCaches, PeersEnv, Repository, ResolveEnv, SiteAddress, Upstream, contact,
 };
 use dialog_storage::provider::storage::{CredentialStore, Storage};
 use dialog_storage::resource::Resource;
@@ -180,17 +180,82 @@ where
     S: PeerSpace + Resource<Location, Error: Display>,
     CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
 {
+    open(
+        location,
+        base,
+        storage,
+        credentials,
+        system,
+        create,
+        branch,
+        None,
+    )
+    .await
+}
+
+/// Open the peer a profile is on the account branch `branch`, as
+/// [`open_peer_on`], holding `caches`.
+///
+/// Peers holding one set share its tree nodes and its branch writers, so
+/// their commits to one branch take turns instead of meeting at the
+/// storage's publish lock, and none starts cold. A set is for one
+/// storage: every peer given it must be opened over the same `storage`.
+#[allow(clippy::too_many_arguments)]
+pub async fn open_peer_holding<S>(
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    credentials: &CredentialStore<S>,
+    system: &SignerCredential,
+    create: bool,
+    branch: &str,
+    caches: &HeldCaches,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
+    open(
+        location,
+        base,
+        storage,
+        credentials,
+        system,
+        create,
+        branch,
+        Some(caches),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn open<S>(
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    credentials: &CredentialStore<S>,
+    system: &SignerCredential,
+    create: bool,
+    branch: &str,
+    caches: Option<&HeldCaches>,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
     let credential = open_credential(&location, credentials, &storage, create).await?;
     record_location(&credential.did(), &location);
     let home = home(&location, &base, &credential.did(), &storage).await?;
-    let peer = Peer::new(credential.clone())
+    let builder = Peer::new(credential.clone())
         .at(home)
         .base(base)
         .space(Repository::from(credential.did()).branch(branch))
         .with(storage)
-        .grant(Allowance::storage(system))
-        .build()
-        .await?;
+        .grant(Allowance::storage(system));
+    let peer = match caches {
+        Some(caches) => builder.with(caches.clone()).build().await?,
+        None => builder.build().await?,
+    };
     onboard(&peer)
         .await
         .map_err(|error| PeerError::State(error.to_string()))?;

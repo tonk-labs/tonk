@@ -13,7 +13,7 @@
 use dialog_capability::{Subject, did};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt};
 use dialog_query::{Output as _, Query, Term};
-use dialog_repository::{Branch, Repository};
+use dialog_repository::{Branch, HeldCaches, Repository};
 use dialog_storage::provider::storage::Storage;
 use dialog_varsig::{Did, Principal as _};
 use tonk_common::log;
@@ -46,11 +46,11 @@ const SAVE_RETRY_LIMIT: usize = 4;
 /// rendered error, as the reactor does for its own commits: the
 /// `VersionMismatch` and lock leaves render their text through the chain.
 ///
-/// The lock case is new with dialog's writers belonging to the
-/// environment: each attempt opens the registry afresh, so two saves in
-/// one process no longer share a writer and meet at the storage's lock
-/// instead, which refuses at once rather than waiting and leaves the
-/// retry to the caller.
+/// The lock case is a writer this process does not share: the peers a
+/// [`Registry`] opens share their writers through its caches and take
+/// turns, but another process over the same storage meets this one at
+/// the storage's lock, which refuses at once rather than waiting and
+/// leaves the retry to the caller.
 fn is_head_moved(error: &impl std::fmt::Display) -> bool {
     let rendered = error.to_string();
     rendered.contains("Version mismatch") || rendered.contains("Concurrent write in progress")
@@ -132,10 +132,7 @@ pub(crate) async fn open_profile_at(
     name: &str,
     directory: Directory,
 ) -> Result<(Storage<DefaultSpace>, DefaultProfile), TonkWorkerError> {
-    let registry = Registry {
-        profile: name.to_owned(),
-        directory,
-    };
+    let registry = Registry::new(name.to_owned(), directory);
     let storage = registry.storage().await?;
     let profile = registry.open_profile(&storage, name).await?;
     Ok((storage, profile))
@@ -150,13 +147,30 @@ pub(crate) async fn open_profile_at(
 /// active profile — so they work regardless of which profile is
 /// active. That is what lets an activation write the pointer for a
 /// profile it has not swapped in yet.
+///
+/// Every peer a registry opens holds the registry's caches, so the
+/// peers over its storage share their tree nodes and their branch
+/// writers: the registry profile's own commits and a profile switch
+/// recording the pointer take turns on the branch rather than meeting
+/// at the storage's publish lock. Clones share the caches.
 #[derive(Clone)]
 pub(crate) struct Registry {
     pub(crate) profile: String,
     pub(crate) directory: Directory,
+    caches: HeldCaches,
 }
 
 impl Registry {
+    /// The registry of the profile `profile` in `directory`, with caches
+    /// of its own.
+    pub(crate) fn new(profile: String, directory: Directory) -> Self {
+        Self {
+            profile,
+            directory,
+            caches: HeldCaches::new(),
+        }
+    }
+
     /// Explicit native registries keep content beside their profile, never in
     /// the hosting process's working directory. Browser storage is unchanged.
     pub(crate) fn space_location(&self, name: &str) -> Location {
@@ -177,10 +191,7 @@ impl Registry {
 
     /// The one this device actually uses.
     pub(crate) fn device() -> Self {
-        Self {
-            profile: REGISTRY_PROFILE.to_string(),
-            directory: Directory::Profile,
-        }
+        Self::new(REGISTRY_PROFILE.to_string(), Directory::Profile)
     }
 
     /// The storage every profile in this registry's directory is
@@ -207,13 +218,15 @@ impl Registry {
         // Space names resolve against the directory the worker has always
         // kept its spaces in.
         let location = Location::new(self.directory.clone(), name);
-        let profile = tonk_account::peer::open_peer(
+        let profile = tonk_account::peer::open_peer_holding(
             location.clone(),
             self.space_location("").directory,
             storage.clone(),
             &credentials,
             &system,
             create,
+            dialog_repository::ACCESS_BRANCH,
+            &self.caches,
         )
         .await?;
         tonk_account::peer::migrate_site_secrets(
@@ -241,7 +254,7 @@ impl Registry {
                 .map_err(|error| {
                     TonkWorkerError::Internal(format!("failed to open the system key: {error}"))
                 })?;
-        tonk_account::peer::open_peer_on(
+        tonk_account::peer::open_peer_holding(
             Location::new(self.directory.clone(), name),
             self.space_location("").directory,
             storage.clone(),
@@ -249,6 +262,7 @@ impl Registry {
             &system,
             false,
             branch,
+            &self.caches,
         )
         .await
         .map_err(|error| {
@@ -638,10 +652,7 @@ mod tests {
         );
         #[cfg(target_arch = "wasm32")]
         let directory = Directory::Temp;
-        Registry {
-            profile: name,
-            directory,
-        }
+        Registry::new(name, directory)
     }
 
     #[dialog_common::test]
@@ -884,5 +895,37 @@ mod tests {
                 .is_some_and(|active| names.contains(&active)),
             "the pointer names one of the recorded profiles, got {active:?}"
         );
+    }
+
+    /// Two peers the registry opens over its storage take turns on a
+    /// branch they both write.
+    ///
+    /// Each peer is an environment of its own. Without the registry's
+    /// caches each would keep its own writer for the branch, and two saves
+    /// at once would meet at the storage's publish lock, which refuses the
+    /// later one instead of waiting for it.
+    #[dialog_common::test]
+    async fn it_has_the_peers_it_opens_take_turns_on_a_branch() {
+        let registry = scratch();
+        let storage = registry.storage().await.unwrap();
+        let first = registry.open_self(&storage).await.unwrap();
+        let second = registry.open_self(&storage).await.unwrap();
+
+        let (one, two) = futures_util::future::join(
+            first
+                .secrets()
+                .site(ACTIVE_PROFILE_SITE)
+                .save(b"one".to_vec())
+                .perform(&first),
+            second
+                .secrets()
+                .site(ACTIVE_PROFILE_SITE)
+                .save(b"two".to_vec())
+                .perform(&second),
+        )
+        .await;
+
+        one.expect("the first save lands");
+        two.expect("the second save lands after it");
     }
 }
