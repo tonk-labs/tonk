@@ -80,3 +80,9 @@ Earlier `plan/fabb-conformance.md`, `plan/fabb-mobile.md`, and `plan/fabb-share.
 Considered and excluded: changes/review/history (outside the current reference MVP); wholesale Hub restyling (outside this FABB-focused plan); importing mock authentication or fabricated member activity (not production data contracts).
 
 Plan 005 is an independent UI handoff added on 2026-09-22. It compares the latest local hub prototype with the current schema-driven UI. Its capability spikes must precede claims of full preview/Discover parity; its first layout increment has no dependency on those capabilities. It intentionally excludes obsolete prototype search/sort controls, simulated account state, and a second SPA architecture.
+
+## Hosted MCP client interoperability
+
+| Plan | Priority | Status | Execution order |
+| --- | --- | --- | --- |
+| [008: Client-neutral hosted MCP](008-client-neutral-mcp.md) | P1 | IMPLEMENTED LOCALLY; acceptance gaps remain | Registry, DCR, shared host/Apps and Node/Python native tests pass; packaging passes; external clients and CIMD remain unverified/deferred |

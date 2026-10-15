@@ -11,8 +11,10 @@ WORKDIR /app
 COPY mcp/package.json mcp/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 COPY mcp/*.mjs mcp/tools.json ./
+COPY mcp/hosted ./hosted
+COPY mcp/apps ./apps
 COPY mcp/chatgpt ./chatgpt
 COPY --from=native /src/target/release/tonk-worker-host /usr/local/bin/tonk-worker-host
-COPY mcp/chatgpt/cloudflare/worker-entrypoint.sh /entrypoint.sh
+COPY mcp/hosted/cloudflare/worker-entrypoint.sh /entrypoint.sh
 EXPOSE 8080
 ENTRYPOINT ["sh", "/entrypoint.sh"]

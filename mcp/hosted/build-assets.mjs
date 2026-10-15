@@ -64,7 +64,7 @@ for (const match of [...css.matchAll(/url\(["']?(\/fonts\/([^"')]+))["']?\)/g)])
   const font = await readFile(new URL('../../rust/tonk-ui/assets/fonts/' + name, import.meta.url));
   css = css.replaceAll(match[0], `url("data:${mime};base64,${font.toString('base64')}")`);
 }
-const theme = await readFile(new URL('./ui/space-theme.js', import.meta.url), 'utf8');
+const theme = await readFile(new URL('../apps/ui/space-theme.js', import.meta.url), 'utf8');
 const pack = {
   manifest,
   glue,
@@ -104,7 +104,10 @@ console.log(
 const guest = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline' blob:; img-src data: blob:; font-src data: blob:; connect-src blob:; frame-src blob: about:; form-action 'none'"><style>html,body{margin:0;min-height:100%;font-family:system-ui}</style>`;
 const script = (source) => '<script>' + source.replace(/<\/script/gi, '<\\/script') + '</script>';
 // Full worker host: no component-specific edit locks or command adapters.
-const workerMount = await readFile(new URL('./ui/embed-bootstrap.js', import.meta.url), 'utf8');
+const workerMount = await readFile(
+  new URL('../apps/ui/embed-bootstrap.js', import.meta.url),
+  'utf8',
+);
 await writeFile(
   new URL('./public/worker-guest.html', import.meta.url),
   guest +

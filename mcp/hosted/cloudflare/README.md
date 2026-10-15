@@ -13,7 +13,8 @@ ignored. Deployment requires the existing `CLOUDFLARE_ACCOUNT_ID` and
 | Final v tag | `tonk-mcp` | `https://tonk.network` |
 
 Each worker has its own workers.dev issuer, `${worker}-chatgpt` public OAuth
-client and private `${worker}-checkpoints` bucket. The callback is
+client and private `${worker}-checkpoints` bucket. Generated configs additionally
+register `${worker}-claude` and `${worker}-native`; see [compatibility](../COMPATIBILITY.md). The callback is
 `https://chatgpt.com/connector_platform_oauth_redirect`. CI records connection
 settings in the job summary and PR comment after smoke checks pass. Those checks
 exercise container-backed OAuth discovery, the unauthenticated MCP challenge,
@@ -31,15 +32,15 @@ using `tonk.foundation`. CI uses `prepare-deployment.mjs` instead. From the root
 
 ```sh
 npm --prefix mcp ci --ignore-scripts
-npm --prefix mcp/chatgpt/cloudflare ci
-TONK_UI_DIST=/absolute/path/to/tonk-ui npm --prefix mcp run build:chatgpt-assets
-docker build --platform linux/amd64 -f mcp/chatgpt/cloudflare/Dockerfile.worker -t tonk-chatgpt:test .
-cd mcp/chatgpt/cloudflare
+npm --prefix mcp/hosted/cloudflare ci
+TONK_UI_DIST=/absolute/path/to/tonk-ui npm --prefix mcp run build:hosted-assets
+docker build --platform linux/amd64 -f mcp/hosted/cloudflare/Dockerfile.worker -t tonk-chatgpt:test .
+cd mcp/hosted/cloudflare
 npx --no-install wrangler deploy --dry-run --containers-rollout=none --config wrangler.toml
 ```
 
 The dry run validates the Worker bundle, not the container or public deployment.
-The image runs the ordinary `tonk-worker-host` binary and `chatgpt/server.mjs`.
+The image runs the ordinary `tonk-worker-host` binary and `hosted/server.mjs`.
 Its entrypoint installs the Cloudflare interception CA. For manual deployment,
 provision the test checkpoint bucket and set `TONK_MCP_ISSUER`, `TONK_MCP_SPACE`
 (deployment namespace), `TONK_MCP_CLIENT_ID` and `TONK_MCP_REDIRECT_URI` through

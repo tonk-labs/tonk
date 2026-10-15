@@ -1,5 +1,6 @@
 import { writeFile, appendFile } from 'node:fs/promises';
 import { deployment } from './deployment.mjs';
+import { connectionSettings } from './connection-settings.mjs';
 
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
 const token = process.env.CLOUDFLARE_API_TOKEN;
@@ -42,7 +43,7 @@ await writeFile(
 if (process.env.GITHUB_OUTPUT) {
   await appendFile(
     process.env.GITHUB_OUTPUT,
-    `url=${config.vars.TONK_MCP_ISSUER}/mcp\nissuer=${config.vars.TONK_MCP_ISSUER}\nclient_id=${config.vars.TONK_MCP_CLIENT_ID}\ncallback=${config.vars.TONK_MCP_REDIRECT_URI}\n`,
+    `url=${config.vars.TONK_MCP_ISSUER}/mcp\nissuer=${config.vars.TONK_MCP_ISSUER}\nclient_id=${config.vars.TONK_MCP_CLIENT_ID}\ncallback=${config.vars.TONK_MCP_REDIRECT_URI}\nconnection_settings<<TONK_MCP_SETTINGS\n${connectionSettings(config)}\nTONK_MCP_SETTINGS\n`,
   );
 }
 console.log(`Prepared ${config.name}: ${config.vars.TONK_MCP_ISSUER}/mcp`);

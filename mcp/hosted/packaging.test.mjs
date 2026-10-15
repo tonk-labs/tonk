@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
-import { renderWorkerUI } from './ui.mjs';
+import { renderWorkerUI } from '../apps/ui.mjs';
 
 test('hosted executable bundles against the core without retired runtimes or Desktop', async () => {
   const result = await build({
@@ -16,6 +16,13 @@ test('hosted executable bundles against the core without retired runtimes or Des
   });
   const modules = Object.keys(result.metafile.inputs);
   assert.ok(modules.some((path) => path.endsWith('primitive.mjs')));
+  assert.ok(modules.some((path) => path.endsWith('hosted/service.mjs')));
+  assert.ok(modules.some((path) => path.endsWith('apps/ui.mjs')));
+  assert.ok(
+    modules
+      .filter((path) => path.includes('/chatgpt/'))
+      .every((path) => path.endsWith('chatgpt/metadata.mjs')),
+  );
   assert.ok(modules.some((path) => path.endsWith('worker-process.mjs')));
   assert.ok(!modules.some((path) => /legacy|desktop|native\.mjs|runtime-client/.test(path)));
   const html = renderWorkerUI({ origin: 'https://mcp.example.test' });

@@ -3,7 +3,7 @@
 Tonk's general agent API is `tonk_query` and `tonk_evaluate`. Both send inline
 notation unchanged to the ordinary worker. Hosts supply authority and transport;
 the core has no ChatGPT UI, hosted login service or Desktop dependency.
-The optional [ChatGPT host](chatgpt/README.md) composes this API separately.
+The optional [hosted service](hosted/README.md) composes this API separately.
 
 ## Source map
 

@@ -38,4 +38,5 @@ jobs:
       - run: npm --prefix mcp ci --ignore-scripts
       - run: npm --prefix mcp run check:format
       - run: npm --prefix mcp test
-      - run: npm --prefix mcp run test:chatgpt
+      - run: npm --prefix mcp run test:hosted
+      - run: npm --prefix mcp run test:apps

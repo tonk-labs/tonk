@@ -1,0 +1,2 @@
+# Independent client implementation for hosted interoperability acceptance.
+mcp==1.26.0

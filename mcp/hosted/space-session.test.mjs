@@ -182,3 +182,32 @@ test('recovery retains widget resume authority until its fixed expiry', () => {
   now = 101;
   assert.deepEqual([...restored.retainedTenants()], []);
 });
+
+test('disabled parent grants cannot issue, resume, renew or use browser credentials', async () => {
+  let active = true;
+  const sessions = createSpaceSessions({
+    isPrincipalActive: () => active,
+    resolveWorker: async () => {
+      throw Error('must not resolve revoked authority');
+    },
+  });
+  const principal = { tenantId: 'test', clientId: 'native' };
+  const issued = sessions.issue(principal, 'did:key:z6Test');
+  active = false;
+  assert.throws(() => sessions.issue(principal, 'did:key:z6Test'), /revoked/);
+  for (const [path, token] of [
+    ['session/resume', issued.resumeToken],
+    ['session/renew', issued.refreshToken],
+    ['api/repository/did%3Akey%3Az6Test/branch/main/query', issued.token],
+  ]) {
+    const response = await sessions.fetch(
+      new Request('https://host/space-api/' + path, {
+        method: 'POST',
+        headers: { authorization: 'Bearer ' + token },
+        body: '{}',
+      }),
+    );
+    assert.equal(response.status, 401);
+  }
+  sessions.close();
+});
