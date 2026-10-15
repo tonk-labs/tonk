@@ -18,7 +18,7 @@ use dialog_capability::{Ability, Capability, Effect, ForkInvocation, Provider, S
 use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_effects::memory::prelude::CellScope;
 use dialog_effects::memory::{Edition, MemoryError, Publish, Resolve, Watch};
-use dialog_remote_ucan::socket::{Reply, Request, SUBPROTOCOL};
+use dialog_remote_ucan::socket::{PING, PONG, Reply, Request, SUBPROTOCOL};
 use dialog_remote_ucan::{UcanAddress, UcanAuthorization, UcanSite};
 use dialog_repository::SiteAddress;
 use dialog_ucan::Scope;
@@ -139,16 +139,17 @@ async fn it_tells_a_watch_of_each_write_to_its_cell(
 }
 
 /// A space the service does not serve is not watched: the watch is
-/// declined as a request for that space would be. The watch is sent
-/// when it begins, and its first answer is the refusal.
+/// declined as a request for that space would be, and the refusal is the
+/// answer to beginning it.
 #[dialog_common::test]
 async fn it_refuses_a_watch_on_a_space_it_does_not_serve(
     env: AccessServiceAddress,
 ) -> anyhow::Result<()> {
     let signer = Ed25519Signer::generate().await?;
     let cell = CellScope::new(Subject::from(signer.did()), "branch/main", "revision");
-    let mut editions = perform::<Watch>(with_socket(&env), &signer, cell.watch()).await?;
-    let refused = editions.next().await;
+    let refused = perform::<Watch>(with_socket(&env), &signer, cell.watch())
+        .await
+        .map(|_| ());
     assert!(
         matches!(
             refused,
@@ -179,6 +180,7 @@ async fn it_refuses_a_frame_for_another_space(env: AccessServiceAddress) -> anyh
         .insert("Sec-WebSocket-Protocol", SUBPROTOCOL.parse()?);
     let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
     let frame = Request::Invoke {
+        id: Some(7),
         container: Container::from(publish.invocation().chain()).to_bytes()?,
         payload: Some(b"misdirected".to_vec()),
     };
@@ -190,9 +192,13 @@ async fn it_refuses_a_frame_for_another_space(env: AccessServiceAddress) -> anyh
             other => anyhow::bail!("the socket closed without an answer: {other:?}"),
         }
     };
-    let Reply::Answer { status, body, .. } = answer else {
+    let Reply::Answer {
+        id, status, body, ..
+    } = answer
+    else {
         anyhow::bail!("expected an answer, got {answer:?}");
     };
+    assert_eq!(id, Some(7), "the refusal names the frame it answers");
     assert_eq!(status, 403);
     let reason: AuthorizeError = serde_json::from_slice(&body)?;
     assert!(
@@ -202,5 +208,29 @@ async fn it_refuses_a_frame_for_another_space(env: AccessServiceAddress) -> anyh
 
     let held = perform::<Resolve>(endpoint(&env), &signer, cell.resolve()).await?;
     assert_eq!(held, None, "the refused frame wrote nothing");
+    Ok(())
+}
+
+/// A socket's `ping` is answered with `pong`, as text, without being read
+/// as a frame, so dialog's client keeps a quiet connection open. The
+/// worker's object answers it through the runtime's auto-response, which
+/// no test here runs: Miniflare's `tests/live.rs` exchanges frames only.
+#[dialog_common::test]
+async fn it_answers_a_ping_with_a_pong(env: AccessServiceAddress) -> anyhow::Result<()> {
+    let (_, space) = served(&env).await?;
+    let socket = with_socket(&env)
+        .socket()
+        .expect("the endpoint has a socket")
+        .to_string();
+    let mut request = format!("{socket}?sub={}", space.did()).into_client_request()?;
+    request
+        .headers_mut()
+        .insert("Sec-WebSocket-Protocol", SUBPROTOCOL.parse()?);
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
+    socket.send(Message::text(PING)).await?;
+    match socket.next().await {
+        Some(Ok(Message::Text(text))) => assert_eq!(text.as_str(), PONG),
+        other => anyhow::bail!("expected a pong, got {other:?}"),
+    }
     Ok(())
 }

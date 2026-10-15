@@ -24,7 +24,9 @@ use dialog_effects::memory::{self, CellState, Edition, MemoryError, Version};
 use dialog_effects::rejection::Rejection;
 use dialog_remote_s3::helpers::S3Network;
 use dialog_remote_s3::{Address, s3::S3Credential};
-use dialog_remote_ucan::socket::{Change, Reply, Request as Frame, SUBPROTOCOL, Session};
+use dialog_remote_ucan::socket::{
+    Change, PING, PONG, Reply, Request as Frame, SUBPROTOCOL, Session,
+};
 use dialog_remote_ucan::{Access, RecentInvocations};
 use dialog_ucan_core::{Container, InvocationChain};
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -205,7 +207,7 @@ where
                     if let Some(invoked) = &invoked
                         && let Err(refusal) = admissible(&registration, &subject, invoked).await
                     {
-                        let reply = refused(Some(invoked.invocation.clone()), &refusal);
+                        let reply = refused(invoked.id, Some(invoked.invocation.clone()), &refusal);
                         if sink.send(Message::binary(reply.encode())).await.is_err() {
                             break;
                         }
@@ -227,6 +229,13 @@ where
                         }
                     }
                 }
+                // A ping is answered as the space's object answers it,
+                // without reading it as a frame.
+                Some(Ok(Message::Text(text))) if text.as_str() == PING => {
+                    if sink.send(Message::text(PONG)).await.is_err() {
+                        break;
+                    }
+                }
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                 Some(Ok(_)) => {}
             },
@@ -242,7 +251,7 @@ where
                                 state: &change.state,
                             },
                             RECHECK,
-                            unix_now(),
+                            live.access.now(),
                         )
                         .await;
                     for reply in delivered {
@@ -260,6 +269,8 @@ where
 
 /// What a frame invokes, read before it is answered.
 struct Invoked {
+    /// The frame, as its `Invoke` named it, which a refusal echoes.
+    id: Option<u64>,
     /// The invocation's content identifier.
     invocation: String,
     /// The space it names.
@@ -273,11 +284,12 @@ struct Invoked {
 /// What the frame `bytes` invokes, when it is an invocation that can be
 /// read.
 fn invoked(bytes: &[u8]) -> Option<Invoked> {
-    let Frame::Invoke { container, .. } = Frame::decode(bytes).ok()? else {
+    let Frame::Invoke { id, container, .. } = Frame::decode(bytes).ok()? else {
         return None;
     };
     let chain = InvocationChain::try_from(Container::from_bytes(&container).ok()?).ok()?;
     Some(Invoked {
+        id,
         invocation: chain.invocation.to_cid().to_string(),
         subject: chain.subject().to_string(),
         writes: crate::socket::cell_written(&chain),
@@ -335,8 +347,9 @@ async fn meter(registration: &RegistrationState, invoked: &Invoked, reply: &Repl
 }
 
 /// The answer a refused frame gets: what a refused request's body says.
-fn refused(invocation: Option<String>, refusal: &Refusal) -> Reply {
+fn refused(id: Option<u64>, invocation: Option<String>, refusal: &Refusal) -> Reply {
     Reply::Answer {
+        id,
         invocation,
         status: refusal.status(),
         version: None,

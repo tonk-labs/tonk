@@ -1,6 +1,8 @@
 // Execute the production Wasm worker, with its space Durable Object, against
 // disposable Miniflare R2, D1 and KV: a watch begun over a space's socket must
-// be told of a cell write made over HTTP.
+// be told of a cell write made over HTTP, a ping must be answered with a pong,
+// and the watch's invocation presented again must be refused as replayed, on
+// another socket and after the object is started anew over the same storage.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -30,7 +32,7 @@ async function main() {
       SERVICE_SECRET_KEY: '5d'.repeat(32),
     },
   });
-  const worker = new Miniflare(options);
+  let worker = new Miniflare(options);
   try {
     // Both databases as their migrations leave them: the frames a socket
     // carries are metered into INGEST like requests are.
@@ -52,32 +54,53 @@ async function main() {
     await db.prepare('INSERT INTO subscription(consumer,provider,registered_at) VALUES(?,?,1)')
       .bind(fixture.subject, fixture.subject).run();
 
-    const upgrade = await worker.dispatchFetch(
-      `http://localhost/ucan/?sub=${encodeURIComponent(fixture.subject)}`,
-      { headers: { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': SUBPROTOCOL } },
-    );
-    assert.equal(upgrade.status, 101, `upgrade answered ${upgrade.status}`);
-    assert.equal(upgrade.headers.get('Sec-WebSocket-Protocol'), SUBPROTOCOL);
-    const socket = upgrade.webSocket;
-    const frames = [];
-    let wake = null;
-    socket.addEventListener('message', event => {
-      frames.push(Buffer.from(event.data));
-      if (wake) wake();
-    });
-    socket.accept();
-    const next = () => new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('no frame arrived')), 15000);
-      const take = () => {
-        if (frames.length) { clearTimeout(timer); wake = null; resolve(frames.shift()); }
-        else wake = take;
-      };
-      take();
-    });
+    // A socket to the space's object, and what arrives on it in order: a
+    // frame as a Buffer, a text message as a string.
+    async function open() {
+      const upgrade = await worker.dispatchFetch(
+        `http://localhost/ucan/?sub=${encodeURIComponent(fixture.subject)}`,
+        { headers: { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': SUBPROTOCOL } },
+      );
+      assert.equal(upgrade.status, 101, `upgrade answered ${upgrade.status}`);
+      assert.equal(upgrade.headers.get('Sec-WebSocket-Protocol'), SUBPROTOCOL);
+      const socket = upgrade.webSocket;
+      const arrived = [];
+      let wake = null;
+      socket.addEventListener('message', event => {
+        arrived.push(typeof event.data === 'string' ? event.data : Buffer.from(event.data));
+        if (wake) wake();
+      });
+      socket.accept();
+      const next = () => new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('nothing arrived')), 15000);
+        const take = () => {
+          if (arrived.length) { clearTimeout(timer); wake = null; resolve(arrived.shift()); }
+          else wake = take;
+        };
+        take();
+      });
+      return { socket, next };
+    }
+    // The answer to presenting the watch's invocation again: a refusal
+    // naming it as replayed.
+    async function refusedAsReplayed(when) {
+      const { socket, next } = await open();
+      socket.send(new Uint8Array(fixture.watch));
+      const answer = await next();
+      assert.ok(Buffer.isBuffer(answer), `a frame answers a frame ${when}`);
+      assert.ok(!answer.includes(Buffer.from('State')), `the invocation was accepted again ${when}`);
+      assert.ok(answer.includes(Buffer.from('Replayed')), `not refused as replayed ${when}: ${answer.toString()}`);
+      socket.close();
+    }
 
+    const { socket, next } = await open();
     socket.send(new Uint8Array(fixture.watch));
     const began = await next();
     assert.ok(began.includes(Buffer.from('State')), `the watch was not accepted: ${began.toString()}`);
+
+    // Answered by the runtime's auto-response, without the object.
+    socket.send('ping');
+    assert.equal(await next(), 'pong', 'a ping is answered with a pong');
 
     const written = await worker.dispatchFetch('http://localhost/ucan/', {
       method: 'POST',
@@ -94,7 +117,14 @@ async function main() {
     assert.ok(told.includes(Buffer.from('State')), `the watch was not told: ${told.toString()}`);
     assert.ok(told.includes(Buffer.from(fixture.content)), 'the watch was told what the cell holds');
     socket.close();
-    console.log('live worker: a watch over the socket was told of a write over HTTP');
+
+    await refusedAsReplayed('on another socket');
+    // Started anew over the same storage, as an object is after it was
+    // evicted: nothing it held in memory survives, the record must.
+    await worker.dispose();
+    worker = new Miniflare(options);
+    await refusedAsReplayed('after the object started anew');
+    console.log('live worker: a watch was told of a write over HTTP, a ping was answered, and a replay was refused across a restart');
   } finally { await worker.dispose(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

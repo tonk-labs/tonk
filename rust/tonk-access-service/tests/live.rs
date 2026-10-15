@@ -50,6 +50,7 @@ async fn live_worker_tells_a_watch_of_a_write_over_http() -> anyhow::Result<()> 
 
     let watch = issued(&space, &cell.watch()).await;
     let frame = Request::Invoke {
+        id: Some(1),
         container: Container::from(watch.invocation().chain()).to_bytes()?,
         payload: None,
     }

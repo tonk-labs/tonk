@@ -7,8 +7,10 @@
 //! invocation verified on its own, screened as a request is, and refused
 //! when it names a space other than the socket's. What each socket
 //! watches is kept in the object's storage, so it survives hibernation,
-//! and the object holds the record of the invocations it accepted, so
-//! one presented again on any of its sockets is refused.
+//! and the object keeps the record of the invocations it accepted in its
+//! storage too, so one presented again on any of its sockets is refused,
+//! however long the object slept in between. A socket's `ping` is answered
+//! with `pong` by the runtime, without waking the object.
 //!
 //! A cell write the object performs itself is fanned out to every socket
 //! at once. One the worker performed over HTTP is reported here
@@ -19,16 +21,21 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
+
 use dialog_capability::{Did, Provider, Subject};
 use dialog_effects::memory;
 use dialog_effects::memory::prelude::CellScope;
-use dialog_remote_ucan::socket::{Change, Reply, Request as Frame, SUBPROTOCOL, Session};
-use dialog_remote_ucan::{Access, Presented, RecentInvocations, Subscription};
+use dialog_remote_ucan::socket::{
+    Change, PING, PONG, Reply, Request as Frame, SUBPROTOCOL, Session,
+};
+use dialog_remote_ucan::{Access, Presented, Subscription};
 use dialog_ucan_core::{Container, InvocationChain};
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
+use worker::worker_sys::WebSocketRequestResponsePair;
 use worker::{
-    DurableObject, Env, Method, Request, Response, Result, State, WebSocket,
+    DurableObject, Env, ListOptions, Method, Request, Response, Result, State, Storage, WebSocket,
     WebSocketIncomingMessage, WebSocketPair, console_error, durable_object,
 };
 
@@ -63,6 +70,8 @@ pub struct Changed {
 
 /// What a frame invokes, read before it is answered.
 struct Invoked {
+    /// The frame, as its `Invoke` named it, which a refusal echoes.
+    id: Option<u64>,
     /// The invocation's content identifier.
     invocation: String,
     /// The space it names.
@@ -83,10 +92,16 @@ pub struct Live {
 
 impl DurableObject for Live {
     fn new(state: State, env: Env) -> Self {
+        // The runtime answers a ping itself, so a socket kept alive by
+        // its client costs no wake of the object.
+        if let Ok(pair) = WebSocketRequestResponsePair::new(PING, PONG) {
+            state.set_websocket_auto_response(&pair);
+        }
+        let presented = Arc::new(Stored(state.storage()));
         Self {
             state,
             env,
-            presented: Arc::new(RecentInvocations::default()),
+            presented,
         }
     }
 
@@ -116,8 +131,14 @@ impl DurableObject for Live {
         ws: WebSocket,
         message: WebSocketIncomingMessage,
     ) -> Result<()> {
-        let WebSocketIncomingMessage::Binary(bytes) = message else {
-            return Ok(());
+        let bytes = match message {
+            WebSocketIncomingMessage::Binary(bytes) => bytes,
+            // Answered by the runtime where it keeps the auto-response;
+            // here where it does not.
+            WebSocketIncomingMessage::String(text) if text == PING => {
+                return ws.send_with_str(PONG);
+            }
+            WebSocketIncomingMessage::String(_) => return Ok(()),
         };
         let Some(socket) = ws.deserialize_attachment::<Attachment>()? else {
             return Ok(());
@@ -126,7 +147,10 @@ impl DurableObject for Live {
         if let Some(invoked) = &invoked
             && let Err(refusal) = self.admissible(&socket, invoked).await
         {
-            return send(&ws, &refused(Some(invoked.invocation.clone()), &refusal));
+            return send(
+                &ws,
+                &refused(invoked.id, Some(invoked.invocation.clone()), &refusal),
+            );
         }
 
         let access = self.access()?;
@@ -146,6 +170,13 @@ impl DurableObject for Live {
             }
         }
         Ok(())
+    }
+
+    /// Forget the invocations no longer fresh: they are refused as stale
+    /// now, so the record need not hold them.
+    async fn alarm(&self) -> Result<Response> {
+        forget_expired(&self.state.storage(), now()).await?;
+        Response::empty()
     }
 
     async fn websocket_close(
@@ -245,7 +276,7 @@ impl Live {
             cell,
             state: &state,
         };
-        let at = now();
+        let at = access.now();
         let deliveries = self.state.get_websockets().into_iter().map(|ws| {
             let access = &access;
             async move {
@@ -327,11 +358,12 @@ impl Live {
 /// What the frame `bytes` invokes, when it is an invocation that can be
 /// read.
 fn invoked(bytes: &[u8]) -> Option<Invoked> {
-    let Frame::Invoke { container, .. } = Frame::decode(bytes).ok()? else {
+    let Frame::Invoke { id, container, .. } = Frame::decode(bytes).ok()? else {
         return None;
     };
     let chain = InvocationChain::try_from(Container::from_bytes(&container).ok()?).ok()?;
     Some(Invoked {
+        id,
         invocation: chain.invocation.to_cid().to_string(),
         subject: chain.subject().to_string(),
         writes: crate::socket::cell_written(&chain),
@@ -392,8 +424,9 @@ pub async fn changed(env: Env, subject: String, space: String, cell: String) {
 }
 
 /// The answer a refused frame gets: what a refused request's body says.
-fn refused(invocation: Option<String>, refusal: &Refusal) -> Reply {
+fn refused(id: Option<u64>, invocation: Option<String>, refusal: &Refusal) -> Reply {
     Reply::Answer {
+        id,
         invocation,
         status: refusal.status(),
         version: None,
@@ -413,6 +446,76 @@ fn send(ws: &WebSocket, reply: &Reply) -> Result<()> {
 
 fn watches(id: &str) -> String {
     format!("watches/{id}")
+}
+
+/// Where the record of accepted invocations is kept, by invocation.
+const PRESENTED: &str = "presented/";
+
+/// The invocations the object accepted, kept in its storage, each until it
+/// is no longer fresh: memory would be lost each time the object
+/// hibernates, and an invocation captured before could be presented again
+/// after. The object handles one event at a time, so the read and the
+/// write of a record are not interleaved with another socket's.
+struct Stored(Storage);
+
+#[async_trait(?Send)]
+impl Presented for Stored {
+    async fn record(&self, invocation: &str, until: u64, now: u64) -> bool {
+        let key = format!("{PRESENTED}{invocation}");
+        match self.0.get::<u64>(&key).await {
+            Ok(Some(remembered)) if remembered >= now => return false,
+            Ok(_) => {}
+            // A record that cannot be read refuses the invocation rather
+            // than let a copy through.
+            Err(error) => {
+                console_error!("the record of accepted invocations could not be read: {error}");
+                return false;
+            }
+        }
+        if let Err(error) = self.0.put(&key, until).await {
+            console_error!("an accepted invocation could not be recorded: {error}");
+            return false;
+        }
+        // Forget it once it is no longer fresh, if nothing is due sooner.
+        if matches!(self.0.get_alarm().await, Ok(None)) {
+            let wait = Duration::from_secs(until.saturating_sub(now).max(1));
+            if let Err(error) = self.0.set_alarm(wait).await {
+                console_error!("the record of accepted invocations will not be pruned: {error}");
+            }
+        }
+        true
+    }
+}
+
+/// Delete the records of invocations no longer fresh at `now`, and wake
+/// again when the next one stops being.
+async fn forget_expired(storage: &Storage, now: u64) -> Result<()> {
+    let held = storage
+        .list_with_options(ListOptions::new().prefix(PRESENTED))
+        .await?;
+    let mut expired = Vec::new();
+    let mut next: Option<u64> = None;
+    held.for_each(&mut |until, key| {
+        let (Some(key), Some(until)) = (key.as_string(), until.as_f64()) else {
+            return;
+        };
+        let until = until as u64;
+        if until < now {
+            expired.push(key);
+        } else {
+            next = Some(next.map_or(until, |next| next.min(until)));
+        }
+    });
+    // Storage deletes at most 128 keys at once.
+    for keys in expired.chunks(128) {
+        storage.delete_multiple(keys.to_vec()).await?;
+    }
+    if let Some(next) = next {
+        storage
+            .set_alarm(Duration::from_secs(next.saturating_sub(now).max(1)))
+            .await?;
+    }
+    Ok(())
 }
 
 fn fresh_id() -> Result<String> {
