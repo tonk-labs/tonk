@@ -1131,7 +1131,7 @@ mod tests {
         use dialog_search_tree::{Entry, PersistentNodeBody};
         let entries: Vec<Entry<Key, dialog_artifacts::State<Datum>>> = entries
             .into_iter()
-            .map(|(key, value)| Entry { key, value })
+            .map(|(key, value)| Entry::new(key, value))
             .collect();
         PersistentNodeBody::<dialog_artifacts::State<Datum>>::segment_from_entries::<Key>(
             entries,

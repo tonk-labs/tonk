@@ -132,6 +132,18 @@ where
     }
 }
 
+// Required of every environment a query runs through; unreachable for
+// the same reason `execute` is.
+impl dialog_common::Holds for NoQueryEnv {
+    fn held(&self, _key: &str) -> Option<dialog_common::Held> {
+        match *self {}
+    }
+
+    fn hold(&self, _key: String, _handle: dialog_common::Held) {
+        match *self {}
+    }
+}
+
 impl Opened for NoOpened {
     type Env = NoQueryEnv;
 

@@ -102,7 +102,8 @@ pub async fn record<Env>(
     env: &Env,
 ) -> Result<(), CommitError>
 where
-    Env: Provider<Get>
+    Env: dialog_common::Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<dialog_effects::blob::Import>
         + Provider<dialog_effects::blob::Size>
@@ -165,7 +166,8 @@ pub async fn spaces<Env>(
     env: &Env,
 ) -> Result<Vec<DirectorySpace>, EvaluationError>
 where
-    Env: Provider<Get>
+    Env: dialog_common::Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
@@ -251,7 +253,8 @@ pub async fn access_endpoints<Env>(
     env: &Env,
 ) -> Result<std::collections::BTreeSet<String>, EvaluationError>
 where
-    Env: Provider<Get>
+    Env: dialog_common::Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
@@ -294,7 +297,8 @@ pub async fn mount_record<Env>(
     env: &Env,
 ) -> Result<Option<MountRecord>, EvaluationError>
 where
-    Env: Provider<Get>
+    Env: dialog_common::Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
@@ -318,7 +322,8 @@ pub async fn mount_record_strict<Env>(
     env: &Env,
 ) -> Result<Option<MountRecord>, EvaluationError>
 where
-    Env: Provider<Get>
+    Env: dialog_common::Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
@@ -341,7 +346,8 @@ async fn read_mount_record<Env>(
     strict: bool,
 ) -> Result<Option<MountRecord>, EvaluationError>
 where
-    Env: Provider<Get>
+    Env: dialog_common::Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>

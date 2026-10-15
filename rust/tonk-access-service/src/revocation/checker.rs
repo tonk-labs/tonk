@@ -10,6 +10,7 @@
 //! That is the same question [`RevocationIndex::revoked_by_any`] answers, so
 //! this is a thin adapter rather than a second implementation.
 
+use dialog_ucan_core::InvocationChain;
 use dialog_ucan_core::revocation::{RevocationChecker, RevocationMatch, RevocationSelector};
 use dialog_varsig::Did;
 use std::collections::BTreeSet;
@@ -43,18 +44,28 @@ where
         }
 
         let recorded = self.0.subjects(&target).await?;
-        let principal = candidates
+        let Some((subject, principal)) = candidates
             .iter()
-            .find(|candidate| recorded.contains(*candidate))
-            .and_then(|did| did.parse::<Did>().ok());
+            .filter(|candidate| recorded.contains(*candidate))
+            .find_map(|did| Some((did, did.parse::<Did>().ok()?)))
+        else {
+            return Ok(None);
+        };
 
-        Ok(principal.map(|principal| RevocationMatch {
-            // The index records the fact, not the document that carried it,
-            // so the revocation's own address is not recoverable from it.
-            // Naming the revoked delegation keeps the field honest: it is
-            // what we can point at.
-            revocation: selector.delegation,
+        // The signed revocation, so the holder refused on it can verify it
+        // rather than take our word. A fact recorded before documents were
+        // kept has none: the refusal stands, and carries no evidence.
+        let proof = self.0.document(&target, subject).await?;
+        Ok(Some(RevocationMatch {
+            // The revocation's own address when its document is kept and
+            // reads as one. Otherwise the revoked delegation, which keeps the
+            // field honest: it is what we can point at.
+            revocation: proof
+                .as_deref()
+                .and_then(|document| InvocationChain::try_from(document).ok())
+                .map_or(selector.delegation, |chain| chain.invocation.to_cid()),
             principal,
+            proof,
         }))
     }
 }
@@ -80,7 +91,10 @@ mod tests {
     #[dialog_common::test]
     async fn it_reports_a_revocation_by_a_candidate() {
         let index = MemoryRevocationIndex::default();
-        index.record(TARGET, ALICE).await.unwrap();
+        index
+            .record(TARGET, ALICE, b"alice's revocation")
+            .await
+            .unwrap();
 
         let checker = IndexedRevocations(index);
         let by = [did(ALICE)];
@@ -91,6 +105,30 @@ mod tests {
             .expect("alice revoked it and alice is a candidate");
 
         assert_eq!(found.principal, did(ALICE), "the revoker must be named");
+        assert_eq!(
+            found.proof.as_deref(),
+            Some(b"alice's revocation".as_slice()),
+            "the document the revocation was recorded with comes back with it"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_an_older_revocation_without_a_document() {
+        // A fact recorded before documents were kept still refuses the
+        // chain; it just has no evidence to hand the holder.
+        let index = MemoryRevocationIndex::default();
+        index.record_without_document(TARGET, ALICE).unwrap();
+
+        let checker = IndexedRevocations(index);
+        let by = [did(ALICE)];
+        let found = checker
+            .query(RevocationSelector::new(cid(), &by))
+            .await
+            .unwrap()
+            .expect("the fact stands");
+        assert_eq!(found.principal, did(ALICE));
+        assert_eq!(found.proof, None);
+        assert_eq!(found.revocation, cid(), "the revoked delegation stands in");
     }
 
     #[dialog_common::test]
@@ -100,7 +138,10 @@ mod tests {
         // it, but Bob issued nothing into the chain being checked, so this
         // is not a revocation OF that chain.
         let index = MemoryRevocationIndex::default();
-        index.record(TARGET, BOB).await.unwrap();
+        index
+            .record(TARGET, BOB, b"bob's revocation")
+            .await
+            .unwrap();
 
         let checker = IndexedRevocations(index);
         let by = [did(ALICE)];
@@ -132,7 +173,10 @@ mod tests {
         // A chain rooted in its own subject presents no issuers to match
         // against, so there is no question to ask.
         let index = MemoryRevocationIndex::default();
-        index.record(TARGET, ALICE).await.unwrap();
+        index
+            .record(TARGET, ALICE, b"alice's revocation")
+            .await
+            .unwrap();
 
         let checker = IndexedRevocations(index);
         assert!(
