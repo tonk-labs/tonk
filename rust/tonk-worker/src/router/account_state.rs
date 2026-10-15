@@ -3796,6 +3796,8 @@ pub(crate) mod tests {
                     subject: "did:key:z6MkrCD1csqtgdj8sRHYRPGLYcMFXAoDhkgvHNq2FML2xqCX"
                         .parse()
                         .expect("a valid did"),
+                    certificate: None,
+                    revocation: None,
                 },
                 AuthorizeError::Expired {
                     expiration: 1,

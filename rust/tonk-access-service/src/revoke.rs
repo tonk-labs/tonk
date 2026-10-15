@@ -120,15 +120,32 @@ pub async fn revoke<S: Store, I: RevocationIndex + ConditionalSync>(
             })?;
     }
 
+    // The container is kept as the record's value, so a refusal on this
+    // revocation can hand it to the holder to verify. A replay of a fact
+    // recorded before documents were kept writes it then: the document is
+    // the one just verified, and it changes no fact, so it needs no more
+    // authority than the replay itself.
+    let index_failed = |error: crate::revocation::index::IndexError| RegistrationError::Internal {
+        message: error.to_string(),
+    };
     let recorded = if already_recorded {
+        if index
+            .document(&verified.target_cid, &subject)
+            .await
+            .map_err(index_failed)?
+            .is_none()
+        {
+            index
+                .record(&verified.target_cid, &subject, container)
+                .await
+                .map_err(index_failed)?;
+        }
         false
     } else {
         index
-            .record(&verified.target_cid, &subject)
+            .record(&verified.target_cid, &subject, container)
             .await
-            .map_err(|error| RegistrationError::Internal {
-                message: error.to_string(),
-            })?
+            .map_err(index_failed)?
     };
 
     Ok(RevokeReceipt {
@@ -212,6 +229,47 @@ mod tests {
                 .revoked_by_any(&receipt.revoked.to_string(), &BTreeSet::from([subject]))
                 .await
                 .unwrap()
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_the_revocation_it_records() {
+        // The container is what a refusal on this revocation hands the
+        // holder, so the index must give back exactly what was posted.
+        let (space, bytes) = revocation().await;
+        let subject = space.did().to_string();
+        let store = store_holding(&subject).await;
+        let index = MemoryRevocationIndex::default();
+
+        let receipt = revoke(&store, &index, &bytes).await.expect("recorded");
+        assert_eq!(
+            index
+                .document(&receipt.revoked.to_string(), &subject)
+                .await
+                .unwrap(),
+            Some(bytes)
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_gives_an_older_record_its_revocation_on_a_replay() {
+        // A fact recorded before documents were kept is recorded already,
+        // so a replay is not a new fact; it does keep the document.
+        let (space, bytes) = revocation().await;
+        let subject = space.did().to_string();
+        let store = store_holding(&subject).await;
+        let index = MemoryRevocationIndex::default();
+        let target = tonk_identity::revocation::verify(&bytes)
+            .await
+            .expect("the artifact verifies")
+            .target_cid;
+        index.record_without_document(&target, &subject).unwrap();
+
+        let receipt = revoke(&store, &index, &bytes).await.expect("a replay");
+        assert!(!receipt.recorded, "the fact was already recorded");
+        assert_eq!(
+            index.document(&target, &subject).await.unwrap(),
+            Some(bytes)
         );
     }
 

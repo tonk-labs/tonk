@@ -74,7 +74,8 @@ pub async fn upgrade_definitions<Env>(
     env: &Env,
 ) -> Result<DefinitionsUpgraded, String>
 where
-    Env: QueryEnv
+    Env: dialog_common::Holds
+        + QueryEnv
         + dialog_capability::Provider<dialog_effects::memory::Publish>
         + dialog_capability::Provider<dialog_effects::archive::Import>
         + dialog_capability::Provider<dialog_effects::authority::Attest>

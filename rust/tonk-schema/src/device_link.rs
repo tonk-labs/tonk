@@ -85,7 +85,8 @@ pub async fn device_links<Env>(
     env: &Env,
 ) -> Result<Vec<(DeviceLink, String)>, EvaluationError>
 where
-    Env: Provider<Get>
+    Env: dialog_common::Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>

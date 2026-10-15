@@ -1000,6 +1000,8 @@ mod tests {
             },
             AuthorizeError::Revoked {
                 subject: did.clone(),
+                certificate: None,
+                revocation: None,
             },
             AuthorizeError::InvalidSignature { issuer: did },
             AuthorizeError::Declined {
