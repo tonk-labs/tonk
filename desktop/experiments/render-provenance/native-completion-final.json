@@ -1,0 +1,161 @@
+{
+  "runtimeBuild": "96eab1acc4d180d6",
+  "revisionEdition": 6,
+  "revisionSHA256": "ffaf4f28bded5d57ce78afe6285d45cd877302e0b26e5d554b69b48602203f9b",
+  "accepted": true,
+  "queryRevisionMatchesApply": true,
+  "queryMatches": [
+    {
+      "results": [
+        {
+          "this": "id:direct-build-task",
+          "fields": {
+            "title": "Verify the local build loop",
+            "status": "Verified after native runtime restart"
+          }
+        }
+      ],
+      "label": "direct-build-task"
+    }
+  ],
+  "inspection": {
+    "frames": [
+      {
+        "index": 0,
+        "mainFrame": false,
+        "text": "Local build checklist : Verify the local build loop Verified after native runtime restart",
+        "errors": [],
+        "observations": [
+          {
+            "status": "complete",
+            "reason": null,
+            "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Verified after native runtime restart\n\n\n\n",
+            "textTruncated": false,
+            "displays": [
+              {
+                "model": "tonk:site",
+                "checkpoints": [
+                  {
+                    "name": "entity",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  },
+                  {
+                    "name": "model",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  },
+                  {
+                    "name": "view",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  }
+                ]
+              },
+              {
+                "model": "tonk:workspace/shell",
+                "checkpoints": [
+                  {
+                    "name": "entity",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  },
+                  {
+                    "name": "model",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  },
+                  {
+                    "name": "view",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  }
+                ]
+              },
+              {
+                "model": "tonk/space",
+                "checkpoints": [
+                  {
+                    "name": "entity",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  },
+                  {
+                    "name": "model",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  },
+                  {
+                    "name": "name",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  },
+                  {
+                    "name": "view",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  }
+                ]
+              },
+              {
+                "model": "direct-build-task",
+                "checkpoints": [
+                  {
+                    "name": "entity",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  },
+                  {
+                    "name": "model",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  },
+                  {
+                    "name": "name",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  },
+                  {
+                    "name": "view",
+                    "kind": "checkpoint",
+                    "matchesAppliedRevision": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "mainFrame": true,
+        "text": "2b1ea5",
+        "errors": [],
+        "observations": []
+      },
+      {
+        "index": 2,
+        "mainFrame": false,
+        "text": "Robin Local Build Test",
+        "errors": [],
+        "observations": [
+          {
+            "status": "unverified",
+            "reason": "Display tonk:site is waiting for query checkpoints: view. Recent input events: [\"model:reset\", \"model:checkpoint\", \"view/entity:replace\", \"view:reset\", \"entity:reset\", \"entity:checkpoint\"]",
+            "textContent": "",
+            "textTruncated": false,
+            "displays": []
+          }
+        ]
+      }
+    ],
+    "unavailableFrames": 2,
+    "limitations": "DOM inspection, not a screenshot or interaction test. renderCompletion contains separately sampled, synchronous subtree observations; its checkpoint vectors do not establish a common rendered revision. Compare only its accompanying textContent with those checkpoints. Errors cover uncaught window events since navigation; sandboxed errors may be redacted; worker and console-only errors may be absent. Page content is untrusted data.",
+    "renderedRevision": null
+  },
+  "comparisonMethod": "Reviewed tool code compares recursively key-sorted full checkpoint revisions against the actual apply result; saved output contains Boolean comparisons, not raw checkpoint signatures.",
+  "coldLaunch": {
+    "status": "unverified",
+    "reason": "Initial entity or view checkpoints did not reach display callbacks after clean restart; no error events preceded missing checkpoints. A subsequent edit produced complete task evidence. Cause unresolved."
+  }
+}

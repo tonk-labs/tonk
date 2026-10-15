@@ -1,0 +1,8 @@
+Focused browser regression before the per-input invalidation fix:
+        panicked at rust/tonk-display/src/element.rs:6063:13:
+        assertion `left == right` failed: recovering one input must preserve other healthy checkpoints
+          left: None
+         right: Some(6)
+        
+
+After the fix: full display suite 259 passed; real-worker integration 1 passed.

@@ -1,0 +1,70 @@
+{
+  "thread": "01a10b96-e682-7490-bcf7-750bfc944431",
+  "runtimeBuild": "988b423d4bfbde3e",
+  "applied": {
+    "revisionChanged": true,
+    "renderingConfirmed": false,
+    "accepted": true
+  },
+  "revisionEdition": 5,
+  "revisionSHA256": "1bd625799818a2c796060d1475938a5fd857e9a580b94f37f89b01c37fb616c9",
+  "queryRevisionMatchesApply": true,
+  "queryMatches": [
+    {
+      "label": "direct-build-task",
+      "results": [
+        {
+          "this": "id:direct-build-task",
+          "fields": {
+            "status": "Verified with runtime completion feedback",
+            "title": "Verify the local build loop"
+          }
+        }
+      ]
+    }
+  ],
+  "unavailableFrames": 2,
+  "globalRenderedRevision": null,
+  "frames": [
+    {
+      "mainFrame": false,
+      "observations": [
+        {
+          "status": "complete",
+          "reason": null,
+          "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Verified with runtime completion feedback\n\n\n\n",
+          "models": [
+            "tonk:site",
+            "tonk:workspace/shell",
+            "tonk/space",
+            "direct-build-task"
+          ],
+          "checkpointCount": 14,
+          "allCheckpointRevisionsMatchApply": true
+        }
+      ],
+      "errors": []
+    },
+    {
+      "mainFrame": true,
+      "observations": [],
+      "errors": []
+    },
+    {
+      "mainFrame": false,
+      "observations": [
+        {
+          "status": "unverified",
+          "reason": "A required query checkpoint has not arrived",
+          "models": [
+            "tonk:site"
+          ],
+          "checkpointCount": 3,
+          "allCheckpointRevisionsMatchApply": false,
+          "omittedUnverifiedTextCharacters": 6000
+        }
+      ],
+      "errors": []
+    }
+  ]
+}
