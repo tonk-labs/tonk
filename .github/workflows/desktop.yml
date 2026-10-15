@@ -1,0 +1,75 @@
+name: Desktop
+on:
+  pull_request:
+    paths: &desktop-paths
+      - 'desktop/**'
+      - 'mcp/**'
+      - 'guide/**'
+      - 'manual/**'
+      - 'rust/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'nix/**'
+      - '.github/workflows/desktop.yml'
+  push:
+    branches: [main]
+    paths: *desktop-paths
+  workflow_dispatch:
+    inputs:
+      signed:
+        description: 'Build a signed artifact on main (not a release)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  desktop:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+      - name: Install locked generation dependencies
+        run: nix --accept-flake-config develop .#ci -c npm --prefix mcp ci --ignore-scripts
+      - name: Verify canonical generation and contracts
+        run: |
+          nix --accept-flake-config develop .#ci -c node mcp/scripts/sync-desktop.mjs --check
+          nix --accept-flake-config develop .#ci -c npm --prefix mcp test
+          nix --accept-flake-config develop .#ci -c npm --prefix mcp run test:chatgpt
+          nix --accept-flake-config develop .#ci -c npm --prefix mcp run check:format
+      - name: Test signing-profile validators
+        run: python3 -m unittest discover -s desktop/scripts/tests -p 'test_*.py'
+      - name: Test native app
+        run: nix --accept-flake-config develop .#ci -c test:desktop
+      - name: Build and verify ad-hoc app
+        env:
+          TONK_SIGN_IDENTITY: '-'
+        run: |
+          nix --accept-flake-config develop .#ci -c build:desktop
+          codesign --verify --strict desktop/.build/Tonk.app
+      - name: Build optional signed artifact
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.signed
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          TONK_PROVISIONING_PROFILE_BASE64: ${{ secrets.TONK_PROVISIONING_PROFILE_BASE64 }}
+        run: bash desktop/scripts/ci-sign.sh
+      - name: Upload optional signed artifact
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.signed
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tonk-desktop-macos-arm64-${{ github.sha }}
+          path: |
+            desktop/artifacts/Tonk-macos-arm64.zip
+            desktop/artifacts/Tonk-macos-arm64.sha256
+          if-no-files-found: error
+          retention-days: 14

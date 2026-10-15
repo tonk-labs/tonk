@@ -539,6 +539,28 @@
             description = "Display all Tonk Shell commands";
             command = "showTonkMenu";
           };
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+          "build:desktop" = {
+            description = "Build Tonk Desktop with host Xcode";
+            command = "exec bash desktop/scripts/build-app.sh \"$@\"";
+          };
+          "dev:desktop" = {
+            description = "Build and open Tonk Desktop";
+            command = "exec bash desktop/scripts/dev.sh dev:run \"$@\"";
+          };
+          "dev:desktop:open" = {
+            description = "Open the built Tonk Desktop";
+            command = "exec bash desktop/scripts/dev.sh dev:open \"$@\"";
+          };
+          "test:desktop" = {
+            description = "Test Tonk Desktop with host Xcode";
+            command = "exec bash desktop/scripts/dev.sh test:unit \"$@\"";
+          };
+          "test:desktop:workflow" = {
+            description = "Test Desktop against an isolated local runtime";
+            command = "exec bash desktop/scripts/dev.sh test:workflow \"$@\"";
+          };
         };
 
         menu = makeMenu commands;
