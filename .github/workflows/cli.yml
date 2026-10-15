@@ -1,4 +1,12 @@
 on:
+  workflow_call:
+    inputs:
+      source-sha:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
   pull_request:
 
 name: 'CLI'
@@ -7,7 +15,7 @@ name: 'CLI'
 # their tag in `release.yml`.
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: cli-${{ github.workflow }}-${{ inputs.version != '' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -19,10 +27,25 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact-name: tonk-linux-x86_64
+            identity: linux-cli
           - os: macos-latest
             artifact-name: tonk-macos-arm64
+            identity: macos-cli
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
+      - uses: actions/checkout@v4
+        if: inputs.version != ''
+        with:
+          ref: ${{ github.sha }}
+          path: .release-controller
+          persist-credentials: false
+      - name: Stamp the selected candidate
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python3 .release-controller/scripts/release_stamp.py "$VERSION"
       - uses: wimpysworld/nothing-but-nix@main
         if: runner.os == 'Linux'
       - uses: cachix/install-nix-action@v31
@@ -33,12 +56,43 @@ jobs:
           name: tonk-test-cache
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
       - name: 'Build tonk'
-        run: nix build --accept-flake-config .#tonk-cli
+        env:
+          CLI_PACKAGE: ${{ inputs.version != '' && 'tonk-cli' || 'tonk-cli-ci' }}
+        run: nix build --accept-flake-config ".#$CLI_PACKAGE"
       - name: 'Stage tonk artifact'
         run: |
           mkdir -p artifacts
           cp result/bin/tonk artifacts/tonk
           chmod 0755 artifacts/tonk
+      - name: Sign and notarize the candidate
+        if: inputs.version != '' && runner.os == 'macOS'
+        uses: ./.release-controller/.github/actions/sign-notarize-macos
+        with:
+          binary-path: artifacts/tonk
+          certificate-p12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          app-store-connect-key: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+          app-store-connect-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          app-store-connect-issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      - uses: actions/download-artifact@v4
+        if: inputs.version != ''
+        with:
+          name: release-context-${{ github.run_attempt }}
+          path: .release-context
+      - name: Record candidate binary identity
+        if: inputs.version != ''
+        env:
+          IDENTITY: ${{ matrix.identity }}
+        run: |
+          python3 .release-controller/scripts/release_evidence.py identity \
+            --context .release-context/context.json --name "$IDENTITY" \
+            --path artifacts/tonk --output release-identity/identity.json
+      - uses: actions/upload-artifact@v4
+        if: inputs.version != ''
+        with:
+          name: release-evidence-${{ matrix.identity }}-${{ github.run_attempt }}
+          path: release-identity/identity.json
+          retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
@@ -47,3 +101,7 @@ jobs:
   artifact-smoke:
     needs: ['build-cli']
     uses: ./.github/workflows/cli-smoke.yml
+    with:
+      expected-version: ${{ inputs.version }}
+      release-signed: ${{ inputs.version != '' }}
+      source-sha: ${{ inputs.source-sha }}

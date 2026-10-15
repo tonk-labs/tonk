@@ -458,30 +458,58 @@
           "test:e2e" = {
             description = "Run serialized real-browser account integration tests";
             command = ''
-              # These artifacts come from the Nix store, so cachix serves
-              # them warm; rebuilding them in-place with cargo cost every CI
-              # run a from-scratch compile, since runners keep no cargo
-              # target directory between runs.
-              nix build .#tonk-cli .#tests-e2e .#tonk-ui-preview
-
-              TONK_BIN="$(nix eval .#tonk-cli.outPath --raw)/bin/tonk"
-              export TONK_BIN
-              TONK_UI_TEST_ARTIFACT="$(nix eval .#tonk-ui-preview.outPath --raw)"
-              export TONK_UI_TEST_ARTIFACT
-              # The store-built CLI bakes in the release PostHog key; the
-              # debug build the suite spawned before had none. Keep test
-              # runs out of the analytics.
+              # CI supplies exact producer outputs, including on forks without
+              # cache write credentials. Local runs build their inputs here.
+              if [ -z "''${TONK_E2E_ARCHIVE:-}" ]; then
+                nix build .#tonk-cli .#tests-e2e .#tonk-ui-preview
+                TONK_BIN="$(nix eval .#tonk-cli.outPath --raw)/bin/tonk"
+                TONK_UI_TEST_ARTIFACT="$(nix eval .#tonk-ui-preview.outPath --raw)"
+                TONK_E2E_ARCHIVE="$(nix eval .#tests-e2e.outPath --raw)/tests-e2e.tar.zst"
+              fi
+              export TONK_BIN TONK_UI_TEST_ARTIFACT
+              export TONK_UI_TEST_SERVER="${
+                self.packages.${system}.tonk-ui-test-server-runtime
+              }/bin/tonk-ui-test-server"
+              test -x "$TONK_BIN"
+              test -f "$TONK_UI_TEST_ARTIFACT/index.html"
+              test -f "$TONK_E2E_ARCHIVE"
               export DO_NOT_TRACK=1
-
-              TESTS_PATH="$(nix eval .#tests-e2e.outPath --raw)"
 
               # The `e2e` profile (.config/nextest.toml) serializes the
               # suite and holds the quarantine list of known-broken tests.
               cargo nextest run \
                 --profile e2e \
                 --workspace-remap ./ \
-                --archive-file "$TESTS_PATH/tests-e2e.tar.zst" \
+                --archive-file "$TONK_E2E_ARCHIVE" \
                 "$@"
+            '';
+          };
+
+          "test:release-e2e" = {
+            description = "Test the explicitly selected release CLI and web artifacts";
+            command = ''
+              set -euo pipefail
+              : "''${TONK_BIN:?Select the candidate CLI binary}"
+              : "''${TONK_UI_TEST_ARTIFACT:?Select the candidate web artifact}"
+              : "''${TONK_RELEASE_CLI_SHA256:?Supply the candidate CLI digest}"
+              : "''${TONK_RELEASE_WEB_SHA256:?Supply the candidate web digest}"
+              : "''${TONK_RELEASE_TEST_ARCHIVE:?Select the candidate test archive}"
+              : "''${TONK_RELEASE_CONTROLLER:?Select the trusted controller checkout}"
+              : "''${TONK_RELEASE_INVENTORY:?Select the inventory output file}"
+              : "''${TONK_RELEASE_PARTITION:?Select the release shard}"
+              ${pkgs.python3}/bin/python3 "$TONK_RELEASE_CONTROLLER/scripts/release_artifacts.py" \
+                "$TONK_BIN" --expected "$TONK_RELEASE_CLI_SHA256"
+              ${pkgs.python3}/bin/python3 "$TONK_RELEASE_CONTROLLER/scripts/release_artifacts.py" \
+                "$TONK_UI_TEST_ARTIFACT" --tree --expected "$TONK_RELEASE_WEB_SHA256"
+              export DO_NOT_TRACK=1
+              cargo nextest list --profile release-gate \
+                --config-file "$TONK_RELEASE_CONTROLLER/.config/nextest.toml" \
+                --workspace-remap ./ --archive-file "$TONK_RELEASE_TEST_ARCHIVE" \
+                --partition "$TONK_RELEASE_PARTITION" --message-format json > "$TONK_RELEASE_INVENTORY"
+              cargo nextest run --profile release-gate --retries 0 \
+                --config-file "$TONK_RELEASE_CONTROLLER/.config/nextest.toml" \
+                --workspace-remap ./ --archive-file "$TONK_RELEASE_TEST_ARCHIVE" \
+                --partition "$TONK_RELEASE_PARTITION"
             '';
           };
 
@@ -501,6 +529,17 @@
           "test:native:debug" = menuTestCommand {
             description = "Unit and integration tests (${system}, debug)";
             package = "tests-native-debug";
+          };
+
+          "test:native:ci" = menuTestCommand {
+            description = "PR unit and integration tests (native)";
+            package = "tests-native-ci";
+          };
+
+          "test:web:ci" = menuTestCommand {
+            description = "PR unit tests (Wasm, pooled runner)";
+            package = "tests-web-ci";
+            runner = "${wbg-pool}/bin/wbg-pool";
           };
 
           "test:native:release" = menuTestCommand {
@@ -537,6 +576,28 @@
           "menu" = {
             description = "Display all Tonk Shell commands";
             command = "showTonkMenu";
+          };
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+          "build:desktop" = {
+            description = "Build Tonk Desktop with host Xcode";
+            command = "exec bash desktop/scripts/build-app.sh \"$@\"";
+          };
+          "dev:desktop" = {
+            description = "Build and open Tonk Desktop";
+            command = "exec bash desktop/scripts/dev.sh dev:run \"$@\"";
+          };
+          "dev:desktop:open" = {
+            description = "Open the built Tonk Desktop";
+            command = "exec bash desktop/scripts/dev.sh dev:open \"$@\"";
+          };
+          "test:desktop" = {
+            description = "Test Tonk Desktop with host Xcode";
+            command = "exec bash desktop/scripts/dev.sh test:unit \"$@\"";
+          };
+          "test:desktop:workflow" = {
+            description = "Test Desktop against an isolated local runtime";
+            command = "exec bash desktop/scripts/dev.sh test:workflow \"$@\"";
           };
         };
 
@@ -596,8 +657,7 @@
           tests-native-release = buildTestArchive {
             name = "native-release";
             profile = "release-test";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests --cargo-profile release-test";
-            depsExtraArgs = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
           };
 
           tests-web-debug = buildTestArchive {
@@ -608,8 +668,9 @@
 
           tests-web-release = buildTestArchive {
             name = "web-release";
+            profile = "release";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --exclude tonk-perf --release";
+            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
           };
 
           # The real-browser suite `test:e2e` runs. Its `integration-tests`
@@ -618,7 +679,27 @@
           tests-e2e = buildTestArchive {
             name = "e2e";
             args = "--package tonk-ui --features integration-tests,connection-invites";
-            depsExtraArgs = "--package tonk-ui --features integration-tests,connection-invites";
+          };
+
+          tests-native-ci = buildTestArchive {
+            name = "native-ci";
+            profile = "ci-test";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+          };
+
+          # The reduced ci-test profile traps in Wasm repository tests. Keep
+          # the established test profile here while retaining matched caches.
+          tests-web-ci = buildTestArchive {
+            name = "web-ci";
+            profile = "test";
+            target = "wasm32-unknown-unknown";
+            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
+          };
+
+          tests-e2e-ci = buildTestArchive {
+            name = "e2e-ci";
+            profile = "ci-test";
+            args = "--package tonk-ui --features integration-tests,connection-invites";
           };
 
           tests = pkgs.runCommand "tests-all" { } ''
@@ -633,6 +714,14 @@
           # distribution, not only where Nix's glibc is installed.
           tonk-cli = (if system == "x86_64-linux" then buildStaticCrate else buildCrate) {
             pname = "tonk-cli";
+            cargoExtraArgs = "--package tonk-cli";
+            TONK_POSTHOG_KEY = posthogKey;
+            fixupPhase = darwinBinaryFixup;
+          };
+
+          tonk-cli-ci = (if system == "x86_64-linux" then buildStaticCrate else buildCrate) {
+            pname = "tonk-cli-ci";
+            CARGO_PROFILE = "ci-release";
             cargoExtraArgs = "--package tonk-cli";
             TONK_POSTHOG_KEY = posthogKey;
             fixupPhase = darwinBinaryFixup;
@@ -661,6 +750,11 @@
           tonk-ui-preview = tonk-ui.overrideAttrs (_: {
             pname = "tonk-ui-preview";
           });
+
+          # Reduced browser optimization caused worker Wasm traps in account
+          # flows. Share the established browser output between PR deployment
+          # and E2E; the producer still builds it only once for all shards.
+          tonk-ui-ci = tonk-ui;
 
           tonk-access-service = buildWasmCrate {
             pname = "tonk-access-service";
@@ -699,10 +793,26 @@
             '';
           });
 
+          tonk-cloudflare-ci-artifacts = tonk-cloudflare-artifacts.overrideAttrs (_: {
+            pname = "tonk-cloudflare-ci-assets";
+            buildPhase = ''
+              mkdir -p ./build
+              cp -r ${tonk-access-service} ./build/tonk-access-service
+              cp -r ${tonk-ui-ci} ./build/tonk-ui
+            '';
+          });
+
           # This package is used by integration tests to run a web server
           # over a local deployment of tonk-ui with Caddy as reverse proxy
           # to route /ucan/* to the access service
-          tonk-ui-test-server =
+          tonk-ui-test-server = pkgs.writeShellScriptBin "tonk-ui-test-server" ''
+            export TONK_UI_TEST_ARTIFACT="''${TONK_UI_TEST_ARTIFACT:-${tonk-ui}}"
+            exec ${tonk-ui-test-server-runtime}/bin/tonk-ui-test-server "$@"
+          '';
+
+          # Runtime-only launcher for CI: selecting an artifact must not pull
+          # the default optimized browser artifact into the CI shell closure.
+          tonk-ui-test-server-runtime =
             with pkgs;
             writeScriptBin "tonk-ui-test-server" ''
               #!${bash}/bin/bash
@@ -715,7 +825,11 @@
               # in front of its own access service.
               SIBLING_PORT=''${4:-}
               SIBLING_ACCESS_SERVICE_PORT=''${5:-}
-              ARTIFACT_ROOT=''${TONK_UI_TEST_ARTIFACT:-${self.packages.${system}.tonk-ui}}
+              ARTIFACT_ROOT=''${TONK_UI_TEST_ARTIFACT:-}
+              if [ -z "$ARTIFACT_ROOT" ]; then
+                  echo "Set TONK_UI_TEST_ARTIFACT to a built Tonk UI output (or run test:e2e)." >&2
+                  exit 1
+              fi
               if [ ! -f "$ARTIFACT_ROOT/index.html" ] || [ ! -f "$ARTIFACT_ROOT/service_worker.js" ]; then
                   echo "Invalid Tonk test artifact: $ARTIFACT_ROOT" >&2
                   exit 1
@@ -736,8 +850,7 @@
               fi
 
               # Name the build under test. The artifact is pinned into this
-              # script when it is built, so a stale server silently serves a
-              # stale app; the harness records this line so a log always says
+              # script at runtime; the harness records this line so a log always says
               # which build produced it.
               BUILD_ID=unknown
               while IFS= read -r line; do

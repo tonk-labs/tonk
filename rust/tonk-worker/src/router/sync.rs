@@ -683,7 +683,9 @@ pub async fn pull(
     // guest chains addressed to an operator that no longer exists.
     ensure_session_authority(&state).await?;
 
-    let tonk_state = state.write().await;
+    // Sync mutates branch state through the reactor, not TonkState itself.
+    // An exclusive application lock would block local approval behind remote IO.
+    let tonk_state = state.read().await;
 
     let session = tonk_state
         .reactor
@@ -816,7 +818,9 @@ pub async fn push(
 
     ensure_session_authority(&state).await?;
 
-    let tonk_state = state.write().await;
+    // Sync mutates branch state through the reactor, not TonkState itself.
+    // An exclusive application lock would block local approval behind remote IO.
+    let tonk_state = state.read().await;
 
     let session = tonk_state
         .reactor
@@ -1031,8 +1035,6 @@ pub async fn sync(
         if !super::account_state::is_account_key(&tonk_state, &params.repo).await
             && !is_sync_enabled(&tonk_state, &params.repo, &params.branch).await
         {
-            drop(tonk_state);
-            let tonk_state = state.write().await;
             publish_paused_status(&tonk_state, &params.repo, &params.branch).await;
             log!("sync of {}/{} skipped: paused", params.repo, params.branch);
             return Ok(Json(SyncResponse {
@@ -1045,15 +1047,12 @@ pub async fn sync(
         }
     }
 
-    // Flip the chip to `pending` for the duration. This runs in its OWN brief
-    // write-lock scope that drops before the long pull/push lock below, so the
-    // overlay write + subscription re-poll reach the chip *before* the sync
-    // begins (a mid-sync publish wouldn't — the chip's re-poll needs the read
-    // lock the long write lock holds). The settled status is published by the
-    // status check the controller runs after `/sync` returns.
+    // Overlay updates and polls use the reactor's own synchronization. Taking
+    // an application write lock here would queue behind network-bound syncs
+    // and prevent later local readers (including device approval) from running.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        let tonk_state = state.write().await;
+        let tonk_state = state.read().await;
         publish_sync_status_attr(
             &tonk_state,
             &params.repo,
@@ -1773,6 +1772,8 @@ mod tests {
     fn it_classifies_revocation_from_the_typed_reason() {
         let error = sync_failure(&authorization_failure(AuthorizeError::Revoked {
             subject: dialog_capability::did!("key:zSubject"),
+            certificate: None,
+            revocation: None,
         }));
         assert!(matches!(
             error,

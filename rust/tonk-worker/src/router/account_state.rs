@@ -2209,10 +2209,7 @@ pub(crate) mod tests {
             seed_upgrades: Default::default(),
             account_keys: Default::default(),
             profile_library: Default::default(),
-            registry: crate::device::Registry {
-                profile: name.clone(),
-                directory,
-            },
+            registry: crate::device::Registry::new(name.clone(), directory),
             profile_transition: Default::default(),
             context_generation: Default::default(),
         };
@@ -3796,6 +3793,8 @@ pub(crate) mod tests {
                     subject: "did:key:z6MkrCD1csqtgdj8sRHYRPGLYcMFXAoDhkgvHNq2FML2xqCX"
                         .parse()
                         .expect("a valid did"),
+                    certificate: None,
+                    revocation: None,
                 },
                 AuthorizeError::Expired {
                     expiration: 1,

@@ -85,7 +85,8 @@ pub async fn device_links<Env>(
     env: &Env,
 ) -> Result<Vec<(DeviceLink, String)>, EvaluationError>
 where
-    Env: Provider<Get>
+    Env: dialog_common::Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
@@ -127,7 +128,8 @@ where
 /// the same record that carries its label — no second source to drift.
 async fn delegation_audience<Env>(account: &Branch, entity: &Entity, env: &Env) -> Option<String>
 where
-    Env: Provider<Get>
+    Env: dialog_common::Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>

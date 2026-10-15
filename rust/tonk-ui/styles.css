@@ -3413,15 +3413,15 @@ tonk-notebook-index {
 
   /* The in-space account ceremony uses the current FABB task shell while the
      same DOM continues to drive the real email lookup and WebAuthn ceremony. */
-  #tonk-register[data-fabb-task] .ocol {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .ocol {
     display: flex;
     flex-flow: row wrap;
     overflow: hidden;
     background: var(--modal, var(--card));
   }
-  #tonk-register[data-fabb-task] .ostack { display: contents; }
-  #tonk-register[data-fabb-task] .mblk { box-shadow: none; }
-  #tonk-register[data-fabb-task] .m-head {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .ostack { display: contents; }
+  #tonk-register:is([data-fabb-task], [data-account-task]) .mblk { box-shadow: none; }
+  #tonk-register:is([data-fabb-task], [data-account-task]) .m-head {
     box-sizing: border-box;
     flex: 0 0 100%;
     min-height: 48px;
@@ -3433,7 +3433,7 @@ tonk-notebook-index {
     background: var(--wash);
     font-size: 17px;
   }
-  #tonk-register[data-fabb-task] .fabb-task-disc {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .fabb-task-disc {
     display: block;
     box-sizing: border-box;
     width: 18px;
@@ -3442,11 +3442,11 @@ tonk-notebook-index {
     border: 2px solid var(--ink);
     border-radius: 50%;
   }
-  #tonk-register[data-fabb-task] .fabb-task-title {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .fabb-task-title {
     margin-left: auto;
     text-align: right;
   }
-  #tonk-register[data-fabb-task] .orow {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .orow {
     box-sizing: border-box;
     flex: 0 0 100%;
     min-height: 48px;
@@ -3460,26 +3460,26 @@ tonk-notebook-index {
   }
   /* Keep these rows in the DOM for the activation wait, but let the
      instruction below the saved email and name carry the visible message. */
-  #tonk-register[data-fabb-task] #tonk-register-passkey-row,
-  #tonk-register[data-fabb-task] #tonk-register-confirm-row {
+  #tonk-register:is([data-fabb-task], [data-account-task]) #tonk-register-passkey-row,
+  #tonk-register:is([data-fabb-task], [data-account-task]) #tonk-register-confirm-row {
     display: none;
   }
-  #tonk-register[data-fabb-task] .orow.editing {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .orow.editing {
     min-height: 104px;
     height: auto;
     grid-template-rows: auto 48px;
     gap: 8px;
     padding: 18px 18px 14px;
   }
-  #tonk-register[data-fabb-task] .orow.editing .k {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .orow.editing .k {
     color: var(--ink);
     font: 600 17px/1.1 var(--cond);
     letter-spacing: 0;
   }
-  #tonk-register[data-fabb-task] .orow.editing .v {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .orow.editing .v {
     align-items: stretch;
   }
-  #tonk-register[data-fabb-task] .orow.editing .ed {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .orow.editing .ed {
     box-sizing: border-box;
     min-height: 48px;
     height: 48px;
@@ -3489,14 +3489,14 @@ tonk-notebook-index {
     font: 400 18px/1.5 var(--cond);
     letter-spacing: .02em;
   }
-  #tonk-register[data-fabb-task] .orow.editing .ed:hover {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .orow.editing .ed:hover {
     background: var(--wash-p);
   }
-  #tonk-register[data-fabb-task] .orow.editing .ed:focus-visible {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .orow.editing .ed:focus-visible {
     outline: 2px solid currentColor;
     outline-offset: -2px;
   }
-  #tonk-register[data-fabb-task] .obtn {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .obtn {
     order: 101;
     box-sizing: border-box;
     flex: 0 0 50%;
@@ -3512,7 +3512,7 @@ tonk-notebook-index {
     white-space: normal;
     opacity: 1;
   }
-  #tonk-register[data-fabb-task] .oexp {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .oexp {
     order: 90;
     box-sizing: border-box;
     flex: 0 0 100%;
@@ -3522,12 +3522,12 @@ tonk-notebook-index {
     border-top: 0;
     background: var(--wash);
   }
-  #tonk-register[data-fabb-task] .oexp p {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .oexp p {
     font: 400 18px/1.5 var(--cond);
     letter-spacing: 0;
     text-transform: none;
   }
-  #tonk-register[data-fabb-task] .ghost {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .ghost {
     order: 100;
     box-sizing: border-box;
     flex: 0 0 50%;
@@ -3539,7 +3539,7 @@ tonk-notebook-index {
     text-decoration: none;
     font: 600 17px/1.1 var(--cond);
   }
-  #tonk-register[data-fabb-task] .ocol:has(.obtn[hidden]) .ghost {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .ocol:has(.obtn[hidden]) .ghost {
     flex-basis: 100%;
   }
 
@@ -3584,3 +3584,44 @@ tonk-notebook-index {
       animation: none;
     }
   }
+
+/* Link-entry account work uses the shared task skin without claiming a guest
+   FABB continuation or changing the link's saved return destination. */
+#tonk-register[data-account-task]:not([data-anchored]):not([data-fabb-task]) .ocol {
+    box-sizing: border-box;
+    width: min(360px, calc(100vw - 32px));
+    margin: max(16px, 12vh) auto 16px;
+    border: 1.5px solid var(--ring);
+    border-radius: 25px;
+    max-height: calc(100dvh - max(16px, 12vh) - 16px);
+    display: grid; grid-template-columns: 1fr 1fr;
+    grid-template-rows: 48px minmax(0, 1fr) auto;
+    overflow: hidden;
+}
+#tonk-register[data-account-task] .account-task-body {
+    grid-column: 1 / -1; min-height: 0; overflow-y: auto;
+    overscroll-behavior: contain;
+}
+#tonk-register[data-account-task] .account-task-body .ostack {
+    display: flex; gap: 0;
+}
+#tonk-register[data-account-task] .m-head { grid-column: 1 / -1; }
+#tonk-register[data-account-task] .ghost { grid-column: 1; }
+#tonk-register[data-account-task] .obtn { grid-column: 2; }
+#tonk-register #tonk-register-wait-title {
+    margin: 0 0 16px;
+    font: 600 17px/1.1 var(--cond);
+}
+#tonk-register #tonk-register-resend {
+    display: block; width: auto; min-height: 44px; margin-top: 16px; padding: 10px 0;
+    text-align: left; cursor: pointer;
+    border: 0; background: transparent; color: var(--ink);
+    font: 600 17px/1.1 var(--cond);
+    text-decoration: underline; text-underline-offset: 4px;
+}
+#tonk-register #tonk-register-resend[hidden],
+#tonk-register #tonk-register-wait-title[hidden] { display: none; }
+#tonk-register #tonk-register-resend:focus-visible {
+    outline: 2px solid var(--ink); outline-offset: 2px;
+}
+#tonk-register[data-awaiting-email] .obtn:disabled { opacity: .45; }

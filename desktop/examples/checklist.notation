@@ -1,0 +1,45 @@
+concept!: &tonk-checklist
+  description: A small checklist for the Tonk staging experiment
+  with:
+    title:
+      description: The checklist heading
+      the: tonk.checklist/title
+      as: text
+      cardinality: one
+    connect:
+      description: Connection step status
+      the: tonk.checklist/connect
+      as: text
+      cardinality: one
+    build:
+      description: Build step status
+      the: tonk.checklist/build
+      as: text
+      cardinality: one
+    verify:
+      description: Follow-up verification status
+      the: tonk.checklist/verify
+      as: text
+      cardinality: one
+
+tonk-checklist!:
+  this: id:tonk-checklist-smoke
+  title: Tonk checklist
+  connect: Done — connect the isolated CLI
+  build: Done — build a durable checklist
+  verify: Pending — verify a follow-up edit
+
+view!:
+  this: tonk-checklist
+  show:
+    directory: |
+      <article style="max-width:640px;margin:48px auto;padding:32px;font-family:system-ui;line-height:1.6;color:#232329;background:#faf9f6;border-radius:16px">
+        <p style="font-size:13px;color:#62626b">TONK / STAGING</p>
+        <h1>{title}</h1>
+        <ul style="padding-left:24px">
+          <li>{connect}</li>
+          <li>{build}</li>
+          <li>{verify}</li>
+        </ul>
+        <p style="font-size:14px;color:#62626b">Built through the CLI. Stored in this space.</p>
+      </article>

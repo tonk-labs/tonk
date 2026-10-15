@@ -49,6 +49,7 @@ pub trait SelectProvider:
     + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
+    + dialog_common::Holds
     + ConditionalSync
     + 'static
 {
@@ -64,6 +65,7 @@ impl<T> SelectProvider for T where
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
+        + dialog_common::Holds
         + ConditionalSync
         + 'static
 {

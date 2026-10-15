@@ -3108,6 +3108,8 @@ pub(crate) mod tests {
         let refusal = PullError::FetchRemoteBranch(FetchRemoteBranchError::Resolve(
             ResolveError::from(MemoryError::Authorization(AuthorizeError::Revoked {
                 subject: dialog_capability::did!("key:zSubject"),
+                certificate: None,
+                revocation: None,
             })),
         ));
 

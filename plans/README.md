@@ -1,5 +1,27 @@
 # Implementation plans
 
+## Release gates
+
+| Plan | Priority | Status | Execution order |
+| --- | --- | --- | --- |
+| [012: Promote verified candidates through staging to stable](012-release-gates.md) | P1 | READINESS IMPLEMENTED LOCALLY; enforcement deferred | Candidate reports and manual verification; hosted product validation and channel migration remain |
+
+Browser and CLI first. Prepared at `e7388a98f7` on 2026-10-13 using current
+workflow source and read-only GitHub policy inspection. Checkpoints depend on
+the preceding checkpoint; no other plan is a prerequisite. Existing release
+workflows and remote settings remain unchanged. The plan records rejected
+branch-promotion and mutable-checklist alternatives, plus the GitHub Release
+metadata/CLI channel boundary that must be resolved before enforcement is
+claimed complete.
+
+## CI compile time
+
+| Plan | Priority | Status | Execution order |
+| --- | --- | --- | --- |
+| [012: Shorten PR verification and retain optimized release gates](012-ci-compile-time.md) | P1 | IMPLEMENTED; hosted validation pending | Matched test caches; shared E2E artifacts and parallel checks; PR profiles and exact-tag release gates |
+
+The [2026-10-13 audit](2026-10-13-ci-compile-audit.md) records hosted timing evidence. All five recommendations are implemented; shipping profiles remain unchanged and optimized suites now run after merge/on tags. Local verification passed 113 focused archive tests, 8 gate tests and 16 artifact/server tests. The plan records the unchanged lifecycle-test timeout and outstanding full hosted verification and measurements.
+
 ## Agent access management
 
 | Plan | Priority | Status | Execution order |
@@ -58,3 +80,9 @@ Earlier `plan/fabb-conformance.md`, `plan/fabb-mobile.md`, and `plan/fabb-share.
 Considered and excluded: changes/review/history (outside the current reference MVP); wholesale Hub restyling (outside this FABB-focused plan); importing mock authentication or fabricated member activity (not production data contracts).
 
 Plan 005 is an independent UI handoff added on 2026-09-22. It compares the latest local hub prototype with the current schema-driven UI. Its capability spikes must precede claims of full preview/Discover parity; its first layout increment has no dependency on those capabilities. It intentionally excludes obsolete prototype search/sort controls, simulated account state, and a second SPA architecture.
+
+## Hosted MCP client interoperability
+
+| Plan | Priority | Status | Execution order |
+| --- | --- | --- | --- |
+| [008: Client-neutral hosted MCP](008-client-neutral-mcp.md) | P1 | IMPLEMENTED LOCALLY; acceptance gaps remain | Registry, DCR, shared host/Apps and Node/Python native tests pass; packaging passes; external clients and CIMD remain unverified/deferred |

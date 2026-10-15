@@ -1,0 +1,59 @@
+name: Record release verification
+run-name: Verify ${{ inputs.group }} for candidate run ${{ inputs.candidate-run }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate-run:
+        description: 'Release readiness run ID (the exact candidate reviewed)'
+        type: string
+        required: true
+      group:
+        description: 'Checklist group from docs/releases.md; verify every item'
+        type: choice
+        options: [accounts, spaces, cli, visual]
+        required: true
+      result:
+        description: 'Observed result (failed and blocked replace previous passes)'
+        type: choice
+        options: [passed, failed, blocked]
+        required: true
+      evidence-url:
+        description: 'HTTPS link to sanitized running-product evidence'
+        type: string
+        required: true
+      notes:
+        description: 'Observed outcomes, platforms, environment and any limitations; no credentials'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  record:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Authenticate the reviewer and bind evidence to the candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ inputs.candidate-run }}
+          GROUP: ${{ inputs.group }}
+          RESULT: ${{ inputs.result }}
+          EVIDENCE_URL: ${{ inputs.evidence-url }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          python3 scripts/release_evidence.py verify --candidate-run "$CANDIDATE" \
+            --group "$GROUP" --result "$RESULT" --evidence-url "$EVIDENCE_URL" \
+            --notes "$NOTES" --output verification
+          cat verification/readiness.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-verification
+          path: verification/
+          retention-days: 30

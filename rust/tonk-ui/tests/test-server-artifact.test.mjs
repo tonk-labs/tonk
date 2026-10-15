@@ -75,3 +75,14 @@ test('copy failure cannot announce a ready deployment', () => fixture(({ artifac
   assert.notEqual(result.status, 0);
   assert.ok(!result.stdout.includes('Test server live'));
 }));
+
+test('missing artifact fails explicitly without building a shipping fallback', () => fixture(({ script }) => {
+  const env = { ...process.env };
+  delete env.TONK_UI_TEST_ARTIFACT;
+  const result = spawnSync('/bin/bash', [script], { env, encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Set TONK_UI_TEST_ARTIFACT/);
+  assert.ok(!result.stdout.includes('Test server live'));
+  const body = readFileSync(script, 'utf8');
+  assert.ok(!body.includes('/unavailable-baked-artifact'));
+}));

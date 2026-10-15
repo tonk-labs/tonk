@@ -195,24 +195,26 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions", version = "0.3.0" }
+# The socket work (dialog-db#564, hardened in dialog-db#608) before it is
+# released: pinned to that branch's commit until a pre-release is tagged.
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d66c89fe19c4912bb3c7836a023fdd0bcaeb945f", version = "0.4.0-rc.2" }
 
 [profile.dev]
 opt-level = 1
@@ -259,3 +261,25 @@ lto = "fat"
 inherits = "release"
 opt-level = "s"
 lto = "fat"
+
+# PR correctness checks retain assertions and overflow checking. Override the
+# dev wildcard explicitly so dependencies do not silently remain at opt-level 3.
+[profile.ci-test]
+inherits = "test"
+opt-level = 1
+lto = "off"
+codegen-units = 16
+
+[profile.ci-test.package."*"]
+opt-level = 1
+
+# Platform/browser smoke builds exercise release code paths without shipping
+# optimization. Real releases keep the profiles above unchanged.
+[profile.ci-release]
+inherits = "release"
+opt-level = 1
+lto = "off"
+codegen-units = 16
+
+[profile.ci-release.package."*"]
+opt-level = 1

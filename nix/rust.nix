@@ -127,7 +127,18 @@ let
       // {
         version = "0.1.0";
 
-        cargoArtifacts = nativeArtifacts;
+        cargoArtifacts =
+          if attributes ? CARGO_PROFILE then
+            craneLib.buildDepsOnly (
+              commonAttributes
+              // {
+                pname = "${attributes.pname}-deps";
+                CARGO_PROFILE = attributes.CARGO_PROFILE;
+                cargoExtraArgs = attributes.cargoExtraArgs or "";
+              }
+            )
+          else
+            nativeArtifacts;
       }
       // attributes
     );
@@ -168,6 +179,7 @@ let
           muslAttributes
           // {
             pname = "${attributes.pname}-static-deps";
+            CARGO_PROFILE = attributes.CARGO_PROFILE or "release";
             cargoExtraArgs = attributes.cargoExtraArgs or "";
           }
         );
@@ -213,36 +225,27 @@ let
       name,
       args ? "",
       target ? null,
-      # Extra cargo args for a dedicated dependency-only build. An archive
-      # whose feature set pulls dependencies the shared workspace artifacts
-      # never compile (e.g. tonk-ui's `integration-tests` WebDriver stack)
-      # names them here so they are cached across source changes instead of
-      # rebuilt inside every archive derivation.
-      depsExtraArgs ? null,
-      # Cargo profile the archive builds with, when not the default one.
-      # Its dependencies are built under the same profile, since artifacts
-      # built for another profile are not reused.
-      profile ? null,
+      # One profile and target/feature graph for both the dependency cache and
+      # nextest. Raw nextest does not honor Crane's CARGO_PROFILE default.
+      profile ? "test",
     }:
     let
       baseAttributes = if target == "wasm32-unknown-unknown" then wasmAttributes else commonAttributes;
-
-      targetAttributes =
-        if profile == null then baseAttributes else baseAttributes // { CARGO_PROFILE = profile; };
-
-      sharedArtifacts = if target == "wasm32-unknown-unknown" then wasmArtifacts else nativeArtifacts;
-
-      targetArtifacts =
-        if depsExtraArgs == null && profile == null then
-          sharedArtifacts
-        else
-          craneLib.buildDepsOnly (
-            targetAttributes
-            // {
-              pname = "tonk-workspace-${name}-deps";
-              cargoExtraArgs = if depsExtraArgs == null then "" else depsExtraArgs;
-            }
-          );
+      targetAttributes = baseAttributes // {
+        CARGO_PROFILE = profile;
+      };
+      targetArtifacts = craneLib.buildDepsOnly (
+        targetAttributes
+        // {
+          pname = "tonk-workspace-${name}-deps";
+          cargoExtraArgs = args;
+          # nextest archives consume test artifacts. Compile that graph once;
+          # separate check/build passes produce artifacts this consumer does
+          # not need. --no-run also supports cross-compiled Wasm tests.
+          buildPhaseCargoCommand = "cargoWithProfile test ${args} --no-run";
+          doCheck = false;
+        }
+      );
     in
     craneLib.mkCargoDerivation (
       targetAttributes
@@ -251,7 +254,7 @@ let
         cargoArtifacts = targetArtifacts;
 
         buildPhaseCargoCommand = ''
-          cargo nextest archive \
+          cargo nextest archive --cargo-profile ${profile} --timings \
             ${args} \
             --archive-file ./tests-${name}.tar.zst
         '';
@@ -259,6 +262,7 @@ let
         installPhaseCommand = ''
           mkdir -p $out
           cp ./*.tar.zst $out/
+          cp -r target/cargo-timings $out/cargo-timings
         '';
 
         doInstallCargoArtifacts = false;

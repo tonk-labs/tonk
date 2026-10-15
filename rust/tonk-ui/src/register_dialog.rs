@@ -141,7 +141,9 @@ const DIALOG_HTML: &str = r##"
     <button class="obtn pre" id="tonk-register-action" hidden></button>
   </div>
   <div class="oexp mblk">
+    <h2 id="tonk-register-wait-title" hidden>check your email</h2>
     <p id="tonk-register-status" aria-live="polite">Enter your email address. We’ll tell you whether to create a passkey or sign in.</p>
+    <button type="button" id="tonk-register-resend" hidden>resend link</button>
   </div>
   <button class="ghost" id="tonk-register-dismiss">
     <span aria-hidden="true">&#9666;</span> back to space</button>
@@ -419,15 +421,61 @@ fn prepare_compact_account_ui(host: &Element) {
         if let Some(button) = action.dyn_ref::<HtmlButtonElement>() {
             button.set_disabled(true);
         }
-        if host.has_attribute("data-fabb-task") {
+        if is_compact_task(host) {
             if let Ok(Some(container)) = host.query_selector(".ocol") {
                 let _ = container.append_child(&action);
             }
         }
     }
+    if host.has_attribute("data-account-task") {
+        prepare_link_task_body(host);
+    }
     set_status(
         "Enter your email to continue. We’ll check whether you already have a Tonk account.",
     );
+}
+
+/// Only the records and active form scroll; the title and cancel/action rung
+/// remain reachable in short browser windows and above a mobile keyboard.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn prepare_link_task_body(host: &Element) {
+    if host
+        .query_selector(".account-task-body")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+    let Some(document) = host.owner_document() else {
+        return;
+    };
+    let Some(column) = host.query_selector(".ocol").ok().flatten() else {
+        return;
+    };
+    let Some(stack) = host.query_selector(".ostack").ok().flatten() else {
+        return;
+    };
+    let Some(head) = host.query_selector(".m-head").ok().flatten() else {
+        return;
+    };
+    let Some(explanation) = host.query_selector(".oexp").ok().flatten() else {
+        return;
+    };
+    let Ok(body) = document.create_element("div") else {
+        return;
+    };
+    body.set_class_name("account-task-body");
+    let _ = column.insert_before(&head, Some(&stack));
+    let _ = column.insert_before(&body, Some(&stack));
+    let _ = body.append_child(&stack);
+    let _ = body.append_child(&explanation);
+}
+
+/// Presentation is shared; only `data-fabb-task` owns a guest continuation.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn is_compact_task(host: &Element) -> bool {
+    host.has_attribute("data-fabb-task") || host.has_attribute("data-account-task")
 }
 
 fn set_heading(text: &str) {
@@ -516,7 +564,13 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     );
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if host.has_attribute("data-account-task") {
+        prepare_compact_account_ui(&host);
+    }
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     on_click(&host, ACTION, submit);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    on_click(&host, "#tonk-register-resend", resend_verification);
     watch_address(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     commit_on_enter(&host);
@@ -561,6 +615,9 @@ fn open_host(guest_restore: Option<Box<dyn FnOnce()>>, html: &str) -> Option<Ele
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     if let Some(path) = current_link_path() {
         let _ = host.set_attribute(RETURN_PATH, &path);
+        if html == DIALOG_HTML {
+            let _ = host.set_attribute("data-account-task", "");
+        }
     }
     host.set_inner_html(html);
     let _ = body.append_child(&host);
@@ -679,7 +736,7 @@ fn add_row(host: &Element, id: &str, noun: &str, value: &str) -> Option<Element>
     // Before the action row, so the button stays at the foot of the ordinary
     // ceremony stack. A contained FABB task moves that button into its fused
     // footer, leaving subsequent ceremony rows in this stack.
-    if host.has_attribute("data-fabb-task") {
+    if is_compact_task(host) {
         let _ = stack.append_child(&row);
         unfold(&row);
         return Some(row);
@@ -1508,7 +1565,7 @@ fn show_answer(answer: &Answer) {
     if ACTION_PENDING.with(Cell::get) {
         return;
     }
-    let contained = host.has_attribute("data-fabb-task");
+    let contained = is_compact_task(&host);
     set_status(if contained {
         contained_status_for(&answer.state)
     } else {
@@ -2142,12 +2199,76 @@ pub(crate) fn run_signup_ceremony() {
                         "Click the confirmation link we sent to your email."
                     });
                     if let Some(host) = host_element() {
+                        show_verification_wait(&host);
                         await_activation(&host);
                         watch_activation_while_waiting();
                     }
                 }
             }
         }
+    });
+}
+
+/// Keep verification and its recovery action together, rather than relying
+/// on the Hub reminder behind the modal. Resend uses the existing profile command.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn show_verification_wait(host: &Element) {
+    let _ = host.set_attribute("data-awaiting-email", "");
+    for selector in ["#tonk-register-wait-title", "#tonk-register-resend"] {
+        if let Ok(Some(element)) = host.query_selector(selector) {
+            let _ = element.remove_attribute("hidden");
+        }
+    }
+    if is_compact_task(host) {
+        set_action("waiting for link…", false);
+        // Waiting on an external link is not an active passkey operation.
+        if let Ok(Some(action)) = host.query_selector(ACTION) {
+            let _ = action.remove_attribute("aria-busy");
+            let _ = action.class_list().remove_1("wait");
+        }
+    }
+}
+
+/// The dialog lives in the trusted top page, outside the Hub guest's event
+/// bindings. Dispatch the same transient profile command explicitly here.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn resend_verification() {
+    let Some(host) = host_element().filter(|host| host.has_attribute("data-awaiting-email")) else {
+        return;
+    };
+    let Some(button) = host
+        .query_selector("#tonk-register-resend")
+        .ok()
+        .flatten()
+        .and_then(|element| element.dyn_into::<HtmlButtonElement>().ok())
+    else {
+        return;
+    };
+    if button.disabled() {
+        return;
+    }
+    button.set_disabled(true);
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = crate::api::transact_profile(serde_json::json!({
+            "claims": [{ "op": "assert", "application": {
+                "predicate": { "kind": "transient", "concept": {
+                    "description": "Request another activation email.",
+                    "with": { "at": { "the": "xyz.tonk.resend-activation/at", "as": "natural:64" } }
+                } },
+                "parameters": { "at": js_sys::Date::now() as u64 }
+            } }]
+        }))
+        .await;
+        // Do not deliver a late result into a replacement ceremony.
+        if !host.is_connected() || !host.has_attribute("data-awaiting-email") {
+            return;
+        }
+        button.set_disabled(false);
+        set_status(if result.is_ok() {
+            "Another confirmation email was requested. Check your inbox, then open the confirmation link."
+        } else {
+            "Couldn’t request another email. Check your connection and try again."
+        });
     });
 }
 
@@ -2464,6 +2585,12 @@ pub(crate) fn finish_ceremony() {
         return;
     }
     let _ = host.set_attribute("data-finishing-ceremony", "");
+    let _ = host.remove_attribute("data-awaiting-email");
+    for selector in ["#tonk-register-wait-title", "#tonk-register-resend"] {
+        if let Ok(Some(element)) = host.query_selector(selector) {
+            let _ = element.set_attribute("hidden", "");
+        }
+    }
     let activation_was_pending = host.query_selector(CONFIRM_ROW).ok().flatten().is_some();
     // The row that was awaiting the link is the one that resolves; the
     // address row above it keeps saying which address. Where no
@@ -2619,7 +2746,7 @@ fn hand_over_to_the_hub(host: &Element) {
 /// Unfold the display-name input and focus it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn ask_for_name(host: &Element) {
-    let contained = host.has_attribute("data-fabb-task");
+    let contained = is_compact_task(host);
     set_status(if contained {
         "This name appears to other people in your spaces."
     } else {
@@ -3885,29 +4012,43 @@ mod space_login_tests {
 
     #[wasm_bindgen_test]
     fn contained_account_places_the_display_name_field_above_its_footer() {
-        let document = web_sys::window().unwrap().document().unwrap();
-        let host = document.create_element("dialog").unwrap();
-        host.set_id(DIALOG_ID);
-        host.set_inner_html(DIALOG_HTML);
-        host.set_attribute("data-fabb-task", "").unwrap();
-        document.body().unwrap().append_child(&host).unwrap();
-        prepare_compact_account_ui(&host);
-        let stack = host
-            .query_selector("#tonk-register-stack")
-            .unwrap()
-            .unwrap();
-        let action = host.query_selector(ACTION).unwrap().unwrap();
-        assert_ne!(action.parent_element(), Some(stack.clone()));
+        for presentation in ["data-fabb-task", "data-account-task"] {
+            let document = web_sys::window().unwrap().document().unwrap();
+            let host = document.create_element("dialog").unwrap();
+            host.set_id(DIALOG_ID);
+            host.set_inner_html(DIALOG_HTML);
+            host.set_attribute(presentation, "").unwrap();
+            document.body().unwrap().append_child(&host).unwrap();
+            prepare_compact_account_ui(&host);
+            let stack = host
+                .query_selector("#tonk-register-stack")
+                .unwrap()
+                .unwrap();
+            let action = host.query_selector(ACTION).unwrap().unwrap();
+            assert_ne!(action.parent_element(), Some(stack.clone()));
 
-        ask_for_name(&host);
-        let row = host
-            .query_selector(NAME_ROW)
-            .unwrap()
-            .expect("display name row");
-        assert_eq!(row.parent_element(), Some(stack));
-        assert!(row.query_selector("#tonk-register-name").unwrap().is_some());
-        assert_eq!(action.text_content().as_deref(), Some(SAVE_NAME));
-        host.remove();
+            ask_for_name(&host);
+            let row = host
+                .query_selector(NAME_ROW)
+                .unwrap()
+                .expect("display name row");
+            assert_eq!(row.parent_element(), Some(stack));
+            assert!(row.query_selector("#tonk-register-name").unwrap().is_some());
+            assert_eq!(action.text_content().as_deref(), Some(SAVE_NAME));
+            show_verification_wait(&host);
+            assert!(
+                host.query_selector("#tonk-register-resend")
+                    .unwrap()
+                    .is_some_and(|button| !button.has_attribute("hidden"))
+            );
+            assert!(action.dyn_ref::<HtmlButtonElement>().unwrap().disabled());
+            if presentation == "data-account-task" {
+                assert!(!host.has_attribute("data-fabb-task"));
+                assert!(host.query_selector(".account-task-body").unwrap().is_some());
+            }
+            host.remove();
+            ACTION_PENDING.with(|pending| pending.set(false));
+        }
     }
 
     #[wasm_bindgen_test]

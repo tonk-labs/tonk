@@ -272,10 +272,10 @@ mod tests {
             clients: Default::default(),
             account_keys: Default::default(),
             profile_library: Default::default(),
-            registry: crate::device::Registry {
-                profile: name.to_string(),
-                directory: dialog_effects::storage::Directory::Profile,
-            },
+            registry: crate::device::Registry::new(
+                name.to_string(),
+                dialog_effects::storage::Directory::Profile,
+            ),
             profile_transition: Default::default(),
             context_generation: Default::default(),
         }

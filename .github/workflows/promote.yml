@@ -1,0 +1,40 @@
+name: Promotion preflight
+run-name: Check promotion readiness for candidate run ${{ inputs.candidate-run }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate-run:
+        description: 'Release readiness run ID; observation phase, no publishing'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Re-read evidence, reviewer authority and live protections
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ inputs.candidate-run }}
+        run: python3 scripts/release_promote.py --candidate-run "$CANDIDATE" --output preflight
+      - name: Publish preflight summary
+        if: always()
+        run: |
+          echo 'Observation phase: this workflow cannot publish a release.' >> "$GITHUB_STEP_SUMMARY"
+          cat preflight/readiness.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: promotion-preflight-${{ github.run_attempt }}
+          path: preflight/
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,95 @@
+{
+  "runtimeBuild": "c6f4686fc9e81247",
+  "runs": [
+    [
+      {
+        "allCheckpointRevisionsMatchQuery": true,
+        "checkpointCount": 14,
+        "edition": 3,
+        "phase": "cold",
+        "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Waiting for direct apply\n\n\n\n"
+      },
+      {
+        "allCheckpointRevisionsMatchQuery": true,
+        "checkpointCount": 14,
+        "edition": 3,
+        "phase": "reload-1",
+        "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Waiting for direct apply\n\n\n\n"
+      },
+      {
+        "allCheckpointRevisionsMatchQuery": true,
+        "checkpointCount": 14,
+        "edition": 3,
+        "phase": "reload-2",
+        "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Waiting for direct apply\n\n\n\n"
+      },
+      {
+        "allCheckpointRevisionsMatchQuery": true,
+        "checkpointCount": 14,
+        "edition": 4,
+        "phase": "edit-without-reload",
+        "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Applied locally without CLI or sync\n\n\n\n"
+      }
+    ],
+    [
+      {
+        "allCheckpointRevisionsMatchQuery": true,
+        "checkpointCount": 14,
+        "edition": 3,
+        "phase": "cold",
+        "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Waiting for direct apply\n\n\n\n"
+      },
+      {
+        "allCheckpointRevisionsMatchQuery": true,
+        "checkpointCount": 14,
+        "edition": 3,
+        "phase": "reload-1",
+        "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Waiting for direct apply\n\n\n\n"
+      },
+      {
+        "allCheckpointRevisionsMatchQuery": true,
+        "checkpointCount": 14,
+        "edition": 3,
+        "phase": "reload-2",
+        "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Waiting for direct apply\n\n\n\n"
+      },
+      {
+        "allCheckpointRevisionsMatchQuery": true,
+        "checkpointCount": 14,
+        "edition": 4,
+        "phase": "edit-without-reload",
+        "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Applied locally without CLI or sync\n\n\n\n"
+      }
+    ],
+    [
+      {
+        "allCheckpointRevisionsMatchQuery": true,
+        "checkpointCount": 14,
+        "edition": 3,
+        "phase": "cold",
+        "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Waiting for direct apply\n\n\n\n"
+      },
+      {
+        "allCheckpointRevisionsMatchQuery": true,
+        "checkpointCount": 14,
+        "edition": 3,
+        "phase": "reload-1",
+        "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Waiting for direct apply\n\n\n\n"
+      },
+      {
+        "allCheckpointRevisionsMatchQuery": true,
+        "checkpointCount": 14,
+        "edition": 3,
+        "phase": "reload-2",
+        "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Waiting for direct apply\n\n\n\n"
+      },
+      {
+        "allCheckpointRevisionsMatchQuery": true,
+        "checkpointCount": 14,
+        "edition": 4,
+        "phase": "edit-without-reload",
+        "textContent": "\n\n  \n    \n  \n\n  Local build checklist\n  Verify the local build loop: Applied locally without CLI or sync\n\n\n\n"
+      }
+    ]
+  ]
+}

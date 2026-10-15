@@ -173,6 +173,8 @@ def main():
     parser.add_argument("--release-signed", action="store_true",
                         help="require Developer ID and notarization for a macOS release artifact")
     parser.add_argument("--expected-version", help="release tag version without the v prefix")
+    parser.add_argument("--source-root", type=Path,
+                        help="candidate checkout containing the npm launcher to test")
     args = parser.parse_args()
     native = (platform.system(), platform.machine())
     expected = {"linux-x64": ("Linux", "x86_64"), "darwin-arm64": ("Darwin", "arm64")}
@@ -187,7 +189,7 @@ def main():
         check_static(binary)
     else:
         check_macos(binary, args.release_signed)
-    root = Path(__file__).resolve().parent.parent
+    root = args.source_root.resolve() if args.source_root else Path(__file__).resolve().parent.parent
     with tempfile.TemporaryDirectory(prefix="tonk-cli-smoke-") as directory:
         temp = Path(directory)
         # Execute a writable copy, exactly as archive extraction would produce.
