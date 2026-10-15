@@ -15,15 +15,15 @@ test('hosted executable bundles against the core without retired runtimes or Des
     metafile: true,
   });
   const modules = Object.keys(result.metafile.inputs);
-  assert.ok(modules.some((path) => path.endsWith('primitive.mjs')));
-  assert.ok(modules.some((path) => path.endsWith('hosted/service.mjs')));
-  assert.ok(modules.some((path) => path.endsWith('apps/ui.mjs')));
+  assert.ok(modules.some((path) => path.endsWith('agent-link-backend.mjs')));
+  assert.ok(modules.some((path) => path.endsWith('hosted/agent-service.mjs')));
+  assert.ok(!modules.some((path) => path.endsWith('hosted/oauth.mjs')));
   assert.ok(
     modules
       .filter((path) => path.includes('/chatgpt/'))
       .every((path) => path.endsWith('chatgpt/metadata.mjs')),
   );
-  assert.ok(modules.some((path) => path.endsWith('worker-process.mjs')));
+
   assert.ok(!modules.some((path) => /legacy|desktop|native\.mjs|runtime-client/.test(path)));
   const html = renderWorkerUI({ origin: 'https://mcp.example.test' });
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];

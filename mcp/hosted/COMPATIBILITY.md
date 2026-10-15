@@ -1,3 +1,8 @@
+> The deployed endpoint now uses [per-call agent links](../AGENT-LINKS.md).
+> The OAuth compatibility information below applies only to the retained optional
+> account adapter. Hosted-client acceptance of the agent-link endpoint is a
+> separate rollout check.
+
 # Hosted MCP compatibility and acceptance
 
 Evidence date: 2026-10-14. Implementation through `49cde56d50`; no commit from

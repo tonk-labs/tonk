@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deployment } from './deployment.mjs';
 const base = { accountId: 'a'.repeat(32), commit: 'b'.repeat(40), subdomain: 'tonk' };
-test('deployment channels bind distinct issuers, OAuth clients, storage and matching providers', () => {
+test('deployment channels bind distinct issuers, storage and matching providers', () => {
   const configs = [
     {
       channel: 'preview',
@@ -18,7 +18,7 @@ test('deployment channels bind distinct issuers, OAuth clients, storage and matc
     { channel: 'staging', provider: 'https://staging.tonk.xyz' },
     { channel: 'stable', provider: 'https://tonk.network' },
   ].map((input) => deployment({ ...base, ...input }));
-  for (const field of ['TONK_MCP_ISSUER', 'TONK_MCP_CLIENT_ID', 'TONK_MCP_SPACE'])
+  for (const field of ['TONK_MCP_ISSUER'])
     assert.equal(new Set(configs.map((config) => config.vars[field])).size, configs.length);
   assert.equal(
     new Set(configs.map((config) => config.r2_buckets[0].bucket_name)).size,
@@ -27,10 +27,9 @@ test('deployment channels bind distinct issuers, OAuth clients, storage and matc
   for (const config of configs) {
     assert.equal(config.containers[0].class_name, 'TonkRuntime');
     assert.deepEqual(config.migrations, [{ tag: 'v1', new_sqlite_classes: ['TonkRuntime'] }]);
-    const clients = JSON.parse(config.vars.TONK_MCP_CLIENTS);
-    assert.equal(clients[0].clientId, config.vars.TONK_MCP_CLIENT_ID);
-    assert.deepEqual(clients[0].redirectUris, [config.vars.TONK_MCP_REDIRECT_URI]);
-    assert.equal(clients[2].applicationType, 'native');
+    assert.equal(config.vars.TONK_MCP_CLIENTS, undefined);
+    assert.equal(config.vars.TONK_MCP_CLIENT_ID, undefined);
+    assert.equal(config.vars.TONK_MCP_SPACE, undefined);
     assert.equal(config.vars.TONK_MCP_DCR, undefined);
   }
   assert.ok(configs.every((config) => config.routes.length === 0));

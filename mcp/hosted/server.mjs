@@ -1,17 +1,15 @@
-// Full-worker hosted runtime. OAuth seeds are checkpointed while closed;
-// long-lived worker replicas publish through Tonk's normal remote sync.
+// Agent-link hosted runtime. Each invocation supplies its own scoped authority.
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import { readFile } from 'node:fs/promises';
-import { createHostedService } from './service.mjs';
+import { createAgentService } from './agent-service.mjs';
 import { providerOrigin } from './provider.mjs';
 const required = (name) => {
   if (!process.env[name]) throw Error('Missing ' + name);
   return process.env[name];
 };
 const issuer = required('TONK_MCP_ISSUER'),
-  subject = required('TONK_MCP_SPACE'),
-  binary = required('TONK_WORKER_BINARY'),
+  binary = required('TONK_AGENT_WORKER_BINARY'),
   provider = providerOrigin(required('TONK_PROVIDER_ORIGIN'));
 if (new URL(issuer).origin !== issuer || !issuer.startsWith('https://'))
   throw Error('Invalid issuer');
@@ -19,16 +17,7 @@ const build = await readFile(new URL('./build.json', import.meta.url), 'utf8').c
   if (error.code === 'ENOENT') return '{}';
   throw error;
 });
-const service = await createHostedService({
-  issuer,
-  subject,
-  binary,
-  provider,
-  clientId: required('TONK_MCP_CLIENT_ID'),
-  redirectUri: required('TONK_MCP_REDIRECT_URI'),
-  clients: process.env.TONK_MCP_CLIENTS ? JSON.parse(process.env.TONK_MCP_CLIENTS) : undefined,
-  dynamicRegistration: process.env.TONK_MCP_DCR === 'true',
-});
+const service = await createAgentService({ issuer, binary, provider });
 const server = createServer(async (req, res) => {
   try {
     if (!req.url?.startsWith('/') || req.url.startsWith('//')) {

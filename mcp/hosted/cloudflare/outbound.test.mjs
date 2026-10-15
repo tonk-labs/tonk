@@ -116,3 +116,19 @@ test('deployment provider is exact and isolated from other environments', async 
     403,
   );
 });
+
+test('agent replicas never reuse the OAuth checkpoint object', async () => {
+  const response = await outbound(
+    new Request('http://checkpoint.internal/agent-state'),
+    {
+      CHECKPOINTS: {
+        get: async (key) => {
+          assert.equal(key, 'checkpoint/agent-link-v1/agent-state-v1.json');
+          return null;
+        },
+      },
+    },
+    { containerId: 'agent-link-v1' },
+  );
+  assert.equal(response.status, 404);
+});

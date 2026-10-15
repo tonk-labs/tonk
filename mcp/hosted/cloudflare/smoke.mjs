@@ -1,5 +1,6 @@
 // Exercises the deployed container, not registration-only discovery at the edge.
 import assert from 'node:assert/strict';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { setTimeout } from 'node:timers/promises';
 import { providerOrigin } from '../provider.mjs';
 
@@ -13,24 +14,22 @@ async function check() {
   const build = await get('/build.json');
   assert.equal(build.status, 200);
   assert.equal((await build.json()).commit, commit);
-  const authorization = await get('/.well-known/oauth-authorization-server');
-  assert.equal(authorization.status, 200);
-  const metadata = await authorization.json();
-  assert.equal(metadata.issuer, issuer);
-  assert.equal(metadata.token_endpoint, `${issuer}/oauth/token`);
-  assert.ok(metadata.code_challenge_methods_supported.includes('S256'));
-  const resource = await get('/.well-known/oauth-protected-resource/mcp');
-  assert.equal(resource.status, 200);
-  const protection = await resource.json();
-  assert.equal(protection.resource, `${issuer}/mcp`);
-  assert.deepEqual(protection.authorization_servers, [issuer]);
-  const unauthorized = await get('/mcp');
-  assert.equal(unauthorized.status, 401);
-  assert.ok(
-    unauthorized.headers
-      .get('www-authenticate')
-      .includes(`${issuer}/.well-known/oauth-protected-resource/mcp`),
-  );
+  const retired = await get('/.well-known/oauth-authorization-server');
+  assert.equal(retired.status, 404);
+  const client = new Client({ name: 'deployment-smoke', version: '1' });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${issuer}/mcp`)));
+    const tools = (await client.listTools()).tools;
+    assert.deepEqual(tools.map((tool) => tool.name).sort(), ['tonk_evaluate', 'tonk_query']);
+    for (const tool of tools) assert.ok(tool.inputSchema.required.includes('agent_link'));
+    const rejected = await client.callTool({
+      name: 'tonk_query',
+      arguments: { document: 'concept:\n' },
+    });
+    assert.equal(rejected.isError, true);
+  } finally {
+    await client.close();
+  }
   const assets = await get('/space-runtime.json');
   assert.equal(assets.status, 200);
   assert.ok((await assets.json()).manifest.wasm.endsWith('.wasm'));
