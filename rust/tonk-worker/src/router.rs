@@ -69,7 +69,11 @@ pub(crate) mod custody;
 /// account, then retire it.
 pub(crate) mod rotation;
 
+#[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
+mod agent_link;
 mod join;
+#[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
+pub use agent_link::AgentLinkWorker;
 pub(crate) mod public_access;
 mod publication;
 pub use join::{JoinRequest, JoinResponse};

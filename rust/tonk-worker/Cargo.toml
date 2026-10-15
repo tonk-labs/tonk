@@ -10,6 +10,11 @@ name = "tonk-worker-host"
 path = "src/bin/hosted.rs"
 required-features = ["native-host"]
 
+[[bin]]
+name = "tonk-agent-worker"
+path = "src/bin/agent_worker.rs"
+required-features = ["native-host"]
+
 [features]
 native-host = ["axum/tokio", "axum/http1", "tokio/net", "tokio/rt-multi-thread", "tokio/macros", "tokio/signal"]
 # Local opt-in until a compatible CLI is published.

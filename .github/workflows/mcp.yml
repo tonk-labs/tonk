@@ -103,6 +103,10 @@ jobs:
           nix --accept-flake-config develop .#ci -c cargo build --locked --profile ci-test --timings -p tonk-worker --features native-host --bin tonk-worker-host
           export TONK_WORKER_BINARY="$CARGO_TARGET_DIR/ci-test/tonk-worker-host"
           nix --accept-flake-config develop .#ci -c npm --prefix mcp run test:integration
+      - name: Test agent-link stdio and hosted HTTP with remote readback
+        run: |
+          nix --accept-flake-config develop .#ci -c cargo test --locked --profile ci-test -p tonk-worker --features native-host --test agent_link
+          nix --accept-flake-config develop .#ci -c npm --prefix mcp run test:hosted
       - name: Upload Cargo timing reports
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,6 +1,5 @@
 import { Container, ContainerProxy } from '@cloudflare/containers';
 import { outbound } from './outbound.mjs';
-import { discovery } from './discovery.mjs';
 import { providerOrigin } from '../provider.mjs';
 export { ContainerProxy };
 
@@ -18,11 +17,6 @@ export class TonkRuntime extends Container {
     this.envVars = {
       TONK_PROVIDER_ORIGIN: providerOrigin(env.TONK_PROVIDER_ORIGIN),
       TONK_MCP_ISSUER: env.TONK_MCP_ISSUER,
-      TONK_MCP_SPACE: env.TONK_MCP_SPACE,
-      TONK_MCP_DCR: env.TONK_MCP_DCR === 'true' ? 'true' : 'false',
-      TONK_MCP_CLIENT_ID: env.TONK_MCP_CLIENT_ID,
-      TONK_MCP_REDIRECT_URI: env.TONK_MCP_REDIRECT_URI,
-      ...(env.TONK_MCP_CLIENTS ? { TONK_MCP_CLIENTS: env.TONK_MCP_CLIENTS } : {}),
     };
   }
 }
@@ -45,37 +39,11 @@ export default {
       response.headers.set('X-Content-Type-Options', 'nosniff');
       return response;
     }
-    if (
-      !env.TONK_PROVIDER_ORIGIN ||
-      !env.TONK_MCP_SPACE ||
-      !env.TONK_MCP_CLIENT_ID ||
-      !env.TONK_MCP_REDIRECT_URI
-    ) {
-      return discovery(request, env.TONK_MCP_ISSUER);
-    }
-    if (
-      ![
-        '/mcp',
-        '/build.json',
-        '/oauth/authorize',
-        '/oauth/continue',
-        '/oauth/callback',
-        '/oauth/token',
-        '/oauth/revoke',
-        ...(env.TONK_MCP_DCR === 'true' ? ['/oauth/register'] : []),
-        '/.well-known/oauth-protected-resource/mcp',
-        '/.well-known/oauth-authorization-server',
-      ].includes(url.pathname) &&
-      !url.pathname.startsWith('/space-api/') &&
-      !(
-        env.TONK_MCP_DCR === 'true' &&
-        /^\/oauth\/register\/dynamic-[A-Za-z0-9_-]{43}$/.test(url.pathname)
-      )
-    ) {
+    if (!env.TONK_PROVIDER_ORIGIN) return new Response(null, { status: 503 });
+    if (!['/mcp', '/build.json'].includes(url.pathname)) {
       return new Response(null, { status: 404 });
     }
-    // One named instance: OAuth state and private checkpoint cannot be spread
-    // across random containers. The public caller cannot choose the instance.
-    return env.RUNTIME.getByName('chatgpt-single-space-v1').fetch(request);
+    // Separate instance and checkpoint namespace from the former OAuth service.
+    return env.RUNTIME.getByName('agent-link-v1').fetch(request);
   },
 };
