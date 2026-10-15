@@ -8,6 +8,7 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   @Published var loading = true
   @Published var error: String?
   @Published var ready = false
+  @Published var browserSignInProgress: BrowserSignInProgress?
   @Published var signInPending = false
   @Published var nativeSignInPending = false
   @Published var attachingAccount = false

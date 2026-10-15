@@ -66,6 +66,7 @@ extension RuntimeModel {
     }
     guard !signInPending else { return }
     signInPending = true
+    setBrowserSignInStage(.preparing)
     accountMessage = nil
     let handoff = BrowserCallback()
     callback = handoff
@@ -74,15 +75,10 @@ extension RuntimeModel {
       callback = nil
       signInPending = false
       attachingAccount = false
+      setBrowserSignInStage(nil)
     }
     do {
-      let identity = try await accountScript(
-        """
-        const root = await api('/api/identity/root');
-        const account = await api('/api/account');
-        if (!root.deviceDid) throw new Error('The runtime did not return a device identity.');
-        return {deviceDid: root.deviceDid, rootDid: root.rootDid || '', status: account.status};
-        """)
+      let identity = try await accountScript(Self.browserSignInPreflightScript)
       guard let device = identity["deviceDid"] as? String else {
         throw CallbackError("The Tonk runtime is not ready. Reload and try again.")
       }
@@ -106,7 +102,11 @@ extension RuntimeModel {
       guard let authURL = url.url, NSWorkspace.shared.open(authURL) else {
         throw CallbackError("Couldn’t open your default browser.")
       }
+      setBrowserSignInStage(.browser)
       let data = try await handoff.receive()
+      setBrowserSignInStage(.authorization)
+      NSApp.activate(ignoringOtherApps: true)
+      webView.window?.makeKeyAndOrderFront(nil)
       let grant = try TonkAuthorization(data: data)
       let delegation = grant.delegation
       let credential = grant.credential
@@ -114,29 +114,22 @@ extension RuntimeModel {
       attachingAccount = true
       // Values are structured arguments, never interpolated JavaScript. The worker checks the
       // signature, audience and root authority, and refuses an incompatible existing account.
+      let arguments: [String: Any] = [
+        "device": device, "expectedRoot": identity["rootDid"] ?? "",
+        "credential": credential, "delegation": delegation, "remote": remote,
+      ]
+      let root = try await accountScript(Self.browserAuthorizationScript, arguments: arguments)
+      guard let rootDid = root["rootDid"] as? String, !rootDid.isEmpty else {
+        throw CallbackError("The runtime did not return an account identity.")
+      }
+      setBrowserSignInStage(.account)
       let result = try await accountScript(
-        """
-        const before = await api('/api/identity/root');
-        if (before.deviceDid !== device || (before.rootDid || '') !== expectedRoot)
-          throw new Error('The active Tonk profile changed during sign-in. Try again.');
-        const root = await api('/api/identity/root', {credentialId: credential, delegationHex: delegation});
-        if (root.status !== 'ready' || root.deviceDid !== device)
-          throw new Error('The runtime did not accept the device authorization.');
-        const account = await api('/api/account/attach', {
-          provider: runtimeOrigin, rootDid: root.rootDid,
-          credentialId: credential, delegationHex: delegation, remote
-        });
-        if (account.status !== 'registered' || account.deviceDid !== device)
-          throw new Error('Tonk accepted the device grant but account setup is incomplete. Try signing in again.');
-        return {status: account.status};
-        """,
-        arguments: [
-          "device": device, "expectedRoot": identity["rootDid"] ?? "",
-          "credential": credential, "delegation": delegation, "remote": remote,
-        ])
+        Self.browserAttachmentScript,
+        arguments: arguments.merging(["authorizedRoot": rootDid]) { _, trusted in trusted })
       if result["status"] as? String == "registered" {
         accountConnected = true
         accountMessage = "Your Tonk account is connected."
+        catalogLoaded = false
         webView.reload()
         NSApp.activate(ignoringOtherApps: true)
       }
@@ -149,6 +142,32 @@ extension RuntimeModel {
       accountMessage = "Couldn’t connect Tonk: \(message)"
     }
   }
+
+  static let browserSignInPreflightScript = """
+    const [root, account] = await Promise.all([api('/api/identity/root'), api('/api/account')]);
+    if (!root.deviceDid) throw new Error('The runtime did not return a device identity.');
+    return {deviceDid: root.deviceDid, rootDid: root.rootDid || '', status: account.status};
+    """
+
+  static let browserAuthorizationScript = """
+    const before = await api('/api/identity/root');
+    if (before.deviceDid !== device || (before.rootDid || '') !== expectedRoot)
+      throw new Error('The active Tonk profile changed during sign-in. Try again.');
+    const root = await api('/api/identity/root', {credentialId: credential, delegationHex: delegation});
+    if (root.status !== 'ready' || root.deviceDid !== device)
+      throw new Error('The runtime did not accept the device authorization.');
+    return {rootDid: root.rootDid};
+    """
+
+  static let browserAttachmentScript = """
+    const account = await api('/api/account/attach', {
+      provider: runtimeOrigin, rootDid: authorizedRoot,
+      credentialId: credential, delegationHex: delegation, remote
+    });
+    if (account.status !== 'registered' || account.deviceDid !== device)
+      throw new Error('Tonk accepted the device grant but account setup is incomplete. Try signing in again.');
+    return {status: account.status};
+    """
 
   // Detect the installed worker API before routing profile reads or writes.
   static let accountAPIScript = """
