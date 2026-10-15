@@ -40,12 +40,20 @@ const ACTIVE_PROFILE_SITE: &str = "tonk-active-profile-v1";
 /// publish lost to another commit on the registry's branch.
 const SAVE_RETRY_LIMIT: usize = 4;
 
-/// Whether a save failed because the head moved between its read and its
-/// publish. Matched on the rendered error, as the reactor does for its
-/// own commits: the `VersionMismatch` leaf renders its text through the
-/// chain.
+/// Whether a save lost to another writer on the registry's branch: the
+/// head moved between its read and its publish, or another writer held
+/// the branch's publish lock when this one reached it. Matched on the
+/// rendered error, as the reactor does for its own commits: the
+/// `VersionMismatch` and lock leaves render their text through the chain.
+///
+/// The lock case is new with dialog's writers belonging to the
+/// environment: each attempt opens the registry afresh, so two saves in
+/// one process no longer share a writer and meet at the storage's lock
+/// instead, which refuses at once rather than waiting and leaves the
+/// retry to the caller.
 fn is_head_moved(error: &impl std::fmt::Display) -> bool {
-    error.to_string().contains("Version mismatch")
+    let rendered = error.to_string();
+    rendered.contains("Version mismatch") || rendered.contains("Concurrent write in progress")
 }
 
 /// Branch of the registry profile's repository holding the roster of every
