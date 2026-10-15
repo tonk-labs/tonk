@@ -1,0 +1,49 @@
+name: Desktop dev
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: ./.github/workflows/desktop-release.yml
+    secrets: inherit
+  publish-dev:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: desktop-dev-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Tonk-desktop-macos-arm64
+          path: artifacts
+      - name: Publish current main build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)
+          if [ "$current" != "$GITHUB_SHA" ]; then
+            echo "Skipping superseded main build $GITHUB_SHA (current: $current)"
+            exit 0
+          fi
+          tag=tonk-desktop-dev
+          # The dev tag is intentionally rolling; never modify version tags.
+          if gh api "repos/$GH_REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$tag" -f sha="$GITHUB_SHA" -F force=true
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA"
+          fi
+          notes="Latest successful Desktop dev build from main: $GITHUB_SHA. macOS 15+, Apple Silicon. Download Tonk-macos-arm64.zip, unzip, and move Tonk.app to Applications. Signed and notarized."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title 'Tonk Desktop (dev)' --notes "$notes" --prerelease --latest=false
+          else
+            gh release create "$tag" --verify-tag --title 'Tonk Desktop (dev)' --notes "$notes" --prerelease --latest=false
+          fi
+          gh release upload "$tag" artifacts/Tonk-* --clobber
