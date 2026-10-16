@@ -17,7 +17,7 @@
     "test:chatgpt": "npm run test:hosted && npm run test:apps",
     "start:chatgpt": "npm run start:hosted",
     "build:chatgpt-assets": "npm run build:hosted-assets",
-    "test:hosted": "node --test --experimental-test-module-mocks hosted/*.test.mjs hosted/cloudflare/*.test.mjs",
+    "test:hosted": "node --test hosted/*.test.mjs hosted/cloudflare/*.test.mjs",
     "test:apps": "node --test apps/*.test.mjs chatgpt/*.test.mjs",
     "start:hosted": "node hosted/server.mjs",
     "build:hosted-assets": "node hosted/build-assets.mjs"

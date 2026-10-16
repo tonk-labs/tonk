@@ -1,5 +1,6 @@
 import { Container, ContainerProxy } from '@cloudflare/containers';
 import { outbound } from './outbound.mjs';
+import { guestAsset, guestAssetPaths } from './guest-assets.mjs';
 import { providerOrigin } from '../provider.mjs';
 export { ContainerProxy };
 
@@ -29,22 +30,8 @@ export default {
       return new Response('Tonk test connection is not configured.', { status: 503 });
     }
     if (url.origin !== env.TONK_MCP_ISSUER) return new Response(null, { status: 421 });
-    if (
-      ['/space-runtime.json', '/worker-guest.html'].includes(url.pathname) &&
-      ['GET', 'HEAD'].includes(request.method)
-    ) {
-      const asset = await env.ASSETS.fetch(request);
-      const response = new Response(asset.body, asset);
-      response.headers.set('Access-Control-Allow-Origin', '*');
-      response.headers.set('X-Content-Type-Options', 'nosniff');
-      // A subdomain may claim a parent domain as its WebAuthn RP ID, so a page
-      // here could otherwise assert passkeys registered on the apex. Guest
-      // pages never need WebAuthn; disable it for them and their frames.
-      response.headers.set(
-        'Permissions-Policy',
-        'publickey-credentials-get=(), publickey-credentials-create=()',
-      );
-      return response;
+    if (guestAssetPaths.includes(url.pathname) && ['GET', 'HEAD'].includes(request.method)) {
+      return guestAsset(request, env.ASSETS);
     }
     if (!env.TONK_PROVIDER_ORIGIN) return new Response(null, { status: 503 });
     if (!['/mcp', '/build.json'].includes(url.pathname)) {
