@@ -3,15 +3,6 @@ import HarnessCore
 
 @MainActor
 extension RuntimeModel {
-  func createShareLink(_ space: TonkSpace) async throws -> URL {
-    try requireSpaceReady(space)
-    let response = try await accountScript(
-      """
-      return await api('/api/repository/' + encodeURIComponent(subject) + '/invite', {});
-      """, arguments: ["subject": space.subject])
-    return try Self.validateShareLink(response, subject: space.subject)
-  }
-
   /// An open invitation is a ticket link, `/space/{subject}#{seed}`, or, when
   /// the space kept no ticket, a `/join` link carrying the grant. Either lives
   /// on this deployment or on the host serving the space.

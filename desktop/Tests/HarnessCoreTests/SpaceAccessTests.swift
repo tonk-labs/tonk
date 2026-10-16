@@ -147,4 +147,21 @@ final class SpaceAccessTests: XCTestCase {
     try journal.save(to: url)
     XCTAssertEqual(AccessJournal.load(from: url), journal)
   }
+
+  func testSyncSummary() {
+    XCTAssertEqual(SyncSummary.label(["synced", "no-upstream"]), "Synced")
+    XCTAssertEqual(SyncSummary.label(["synced", "ahead"]), "Syncing")
+    XCTAssertEqual(SyncSummary.label(["behind", "diverged"]), "Needs attention")
+    XCTAssertEqual(SyncSummary.label(["synced", "error"]), "Offline")
+    XCTAssertEqual(SyncSummary.label(["no-upstream"]), "On this Mac")
+  }
+
+  func testSpaceContainsItsViews() throws {
+    let space = try XCTUnwrap(
+      TonkSpace.decodeCatalog(Data(#"[{"subject":"did:key:zAbc","name":"x"}]"#.utf8)).first)
+    XCTAssertTrue(space.contains(space.url))
+    XCTAssertTrue(space.contains(space.url.appendingPathComponent("id:board")))
+    XCTAssertFalse(space.contains(URL(string: space.url.absoluteString + "Other")!))
+    XCTAssertFalse(space.contains(URL(string: "https://elsewhere.example" + space.url.path)!))
+  }
 }

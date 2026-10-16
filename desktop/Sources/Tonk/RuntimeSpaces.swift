@@ -75,12 +75,13 @@ extension RuntimeModel {
     }
   }
 
-  func openSpace(_ space: TonkSpace) {
+  func openSpace(_ space: TonkSpace, at url: URL? = nil) {
     loading = true
     ready = false
     selectedSpace = space
     error = nil
-    webView.load(URLRequest(url: space.url))
+    let target = url.flatMap { space.contains($0) ? $0 : nil } ?? space.url
+    webView.load(URLRequest(url: target))
   }
 
   func showSpaces() {

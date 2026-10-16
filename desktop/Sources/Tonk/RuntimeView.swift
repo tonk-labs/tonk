@@ -73,7 +73,9 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     error = nil
     ready = false
     if !accountStatusKnown { accountMessage = nil }
-    webView.load(URLRequest(url: selectedSpace?.url ?? RuntimeLocation.home))
+    // Reloading stays on the open view of the selected space.
+    let current = webView.url.flatMap { url in selectedSpace?.contains(url) == true ? url : nil }
+    webView.load(URLRequest(url: current ?? selectedSpace?.url ?? RuntimeLocation.home))
   }
 
   func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
