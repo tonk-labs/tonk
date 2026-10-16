@@ -65,8 +65,14 @@ impl LocalPeer {
 
     /// One background sync pass over every space with pending changes.
     pub async fn sync(&mut self) -> Result<(), String> {
-        let (ok, _) = send(&mut self.router, "POST", "/api/sync", "text/plain", String::new())
-            .await?;
+        let (ok, _) = send(
+            &mut self.router,
+            "POST",
+            "/api/sync",
+            "text/plain",
+            String::new(),
+        )
+        .await?;
         if ok {
             Ok(())
         } else {
@@ -158,7 +164,14 @@ impl LocalPeer {
 
 async fn join(router: &mut Router, link: &str) -> Result<Value, String> {
     let body = json!({ "url": link }).to_string();
-    let (ok, value) = send(router, "POST", "/api/profile/join", "application/json", body).await?;
+    let (ok, value) = send(
+        router,
+        "POST",
+        "/api/profile/join",
+        "application/json",
+        body,
+    )
+    .await?;
     if !ok {
         // Surface the worker's classified reason (revoked, expired, private…)
         // but never anything that could contain the link.
@@ -237,16 +250,19 @@ async fn evaluate(
                 "Could not persist evaluation journal; no evaluation was dispatched.".to_owned()
             })?;
     }
-    let mut result = request(router, &format!("{base}/evaluate?transact={writing}"), document)
-        .await
-        .map_err(|_| {
-            if writing {
-                "Evaluation could not be confirmed. Do not repeat it; query the space first."
-                    .to_owned()
-            } else {
-                "The worker query could not be completed.".to_owned()
-            }
-        })?;
+    let mut result = request(
+        router,
+        &format!("{base}/evaluate?transact={writing}"),
+        document,
+    )
+    .await
+    .map_err(|_| {
+        if writing {
+            "Evaluation could not be confirmed. Do not repeat it; query the space first.".to_owned()
+        } else {
+            "The worker query could not be completed.".to_owned()
+        }
+    })?;
     if writing && synchronize {
         request(router, &format!("{base}/sync/push"), "")
             .await
@@ -335,8 +351,13 @@ mod tests {
     async fn one_owner_keeps_one_identity_and_starts_with_no_spaces() {
         let root = scratch();
         let remote: url::Url = "http://127.0.0.1:9/ucan/".parse().unwrap();
-        let lock = try_lock(&root).unwrap().expect("first process owns the peer");
-        assert!(try_lock(&root).unwrap().is_none(), "a second owner is refused");
+        let lock = try_lock(&root)
+            .unwrap()
+            .expect("first process owns the peer");
+        assert!(
+            try_lock(&root).unwrap().is_none(),
+            "a second owner is refused"
+        );
         let mut peer = LocalPeer::open(root.clone(), remote.clone()).await.unwrap();
         let first = peer.call("tonk_list_spaces", &json!({})).await.unwrap();
         assert!(first["peer"].as_str().unwrap().starts_with("did:key:"));

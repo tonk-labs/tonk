@@ -144,8 +144,11 @@ impl ServerHandler for Server {
         let resources = std::iter::once("context")
             .chain(guide::TOPICS.iter().copied())
             .map(|topic| {
-                Resource::new(format!("tonk://guide/{topic}"), format!("tonk-guide-{topic}"))
-                    .with_mime_type("text/markdown")
+                Resource::new(
+                    format!("tonk://guide/{topic}"),
+                    format!("tonk-guide-{topic}"),
+                )
+                .with_mime_type("text/markdown")
             })
             .collect::<Vec<_>>();
         Ok(ListResourcesResult::with_all_items(resources))
