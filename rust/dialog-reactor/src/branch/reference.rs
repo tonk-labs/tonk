@@ -105,6 +105,36 @@ where
     })
 }
 
+/// The whole migration, as the [`Upgrade`] a profile is opened with.
+///
+/// A profile's state branch is its account branch, which keeps the
+/// profile library's definitions, and onboarding writes it directly when
+/// the profile opens. Moving only its storage there would leave the later
+/// [`migrate`] gate, which asks only about storage, nothing to do, and
+/// the definitions under their earlier identities.
+///
+/// [`Upgrade`]: tonk_account::peer::Upgrade
+pub struct ProfileUpgrade;
+
+impl<S> tonk_account::peer::Upgrade<S> for ProfileUpgrade
+where
+    S: dialog_peer::PeerSpace,
+    dialog_peer::Peer<S>: LoadProvider + BranchOpenProvider + CommitProvider,
+{
+    fn upgrade<'a>(
+        &'a self,
+        branch: &'a dialog_repository::Branch,
+        peer: &'a dialog_peer::Peer<S>,
+    ) -> tonk_account::peer::UpgradeFuture<'a> {
+        Box::pin(async move {
+            migrate_branch(branch, peer)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+    }
+}
+
 /// Move every subscription waiting on this branch out of the reactor's
 /// waiting room and onto the live [`BranchState`].
 ///
@@ -327,5 +357,90 @@ impl<'a> BranchReference<'a> {
     /// same way a transaction commit does.
     pub fn import<I: Importer + Unpin + ConditionalSend>(self, importer: I) -> Import<'a, I> {
         Import::new(self, importer)
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::ProfileUpgrade;
+    use dialog_artifacts::{Entity, Pick, Relation, Statement, Update, Value};
+    use dialog_capability::Principal as _;
+    use dialog_effects::storage::{Directory, Location};
+    use dialog_storage::provider::storage::{NativeSpace, Storage};
+    use tonk_account::peer::{open_peer, open_system};
+
+    /// A claim by its raw relation, as the earlier release recorded
+    /// definitions.
+    struct Raw {
+        the: Relation,
+        of: Entity,
+        is: Value,
+    }
+
+    impl Statement for Raw {
+        fn assert(self, update: &mut impl Update) {
+            update.associate(self.the, self.of, self.is, Pick::Last);
+        }
+
+        fn retract(self, update: &mut impl Update) {
+            update.dissociate(self.the, self.of, self.is);
+        }
+    }
+
+    /// A profile an earlier release wrote keeps library definitions on its
+    /// state branch in that release's form. Opening it moves the storage
+    /// and the definitions together, so the later storage-gated
+    /// [`super::migrate`] finding nothing to do leaves nothing behind.
+    #[dialog_common::test]
+    async fn it_upgrades_the_definitions_of_a_profile_an_earlier_release_wrote()
+    -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        let open = || async {
+            let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+            open_peer(
+                Location::new(directory.clone(), "tonk"),
+                directory.clone(),
+                Storage::<NativeSpace>::default().owned_by(system.did()),
+                &credentials,
+                &system,
+                true,
+                &ProfileUpgrade,
+            )
+            .await
+        };
+
+        let peer = open().await?;
+        let attribute: dialog_query::AttributeDescriptor = serde_json::from_value(
+            serde_json::json!({ "the": "xyz.tonk.note/title", "as": "text:" }),
+        )?;
+        let earlier: Entity = dialog_query::migration::attribute_uri_v0(&attribute).parse()?;
+        let mut transaction = peer.state().transaction();
+        for (the, is) in [
+            ("db.attribute/id", "xyz.tonk.note/title"),
+            ("db.attribute/type", "Text"),
+            ("db.attribute/cardinality", "one"),
+        ] {
+            transaction = transaction.assert(Raw {
+                the: the.parse()?,
+                of: earlier.clone(),
+                is: Value::String(is.into()),
+            });
+        }
+        transaction.commit().publish().perform(&peer).await?;
+        // How a release before the number band left the branch.
+        peer.state().rekey_storage(0).perform(&peer).await?;
+        drop(peer);
+
+        let peer = open().await?;
+        assert!(!peer.state().needs_migration(&peer).await?);
+        let left = tonk_schema::upgrade::upgrade_definitions(peer.state(), &peer)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(
+            left.moves.is_empty() && left.rewritten.is_empty(),
+            "the definitions were upgraded when the profile opened: {left:?}"
+        );
+        Ok(())
     }
 }
