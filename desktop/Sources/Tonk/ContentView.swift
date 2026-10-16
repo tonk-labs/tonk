@@ -21,6 +21,7 @@ struct ContentView: View {
   @State private var spaceSearch = ""
   @FocusState private var searchFocused: Bool
   @State private var page: DesktopPage?
+  @State private var sidebarColumns = NavigationSplitViewVisibility.all
   @State private var newLink: NewLinkRequest?
   @State private var showHistory = false
   @State private var showProviderSettings = false
@@ -168,6 +169,11 @@ struct ContentView: View {
 
   @ToolbarContentBuilder
   private var windowToolbar: some ToolbarContent {
+    // While the sidebar is hidden its own toolbar goes with it; show the toggle here.
+    if model.openedSpace == nil && runtime.showsSpacePicker && sidebarColumns == .detailOnly {
+      ToolbarItem(id: "show-sidebar", placement: .navigation) { sidebarToggle }
+        .customGlassToolbarItem()
+    }
     if model.openedSpace != nil {
       ToolbarItem(id: "toggle-chat", placement: .navigation) {
         Button {
@@ -582,8 +588,21 @@ struct ContentView: View {
     }
   }
 
+  private var sidebarToggle: some View {
+    let visible = sidebarColumns != .detailOnly
+    return Button {
+      withAnimation { sidebarColumns = visible ? .detailOnly : .all }
+    } label: {
+      Image(systemName: "sidebar.left").frame(width: 20, height: 20)
+    }
+    .nativeControl(circular: true).controlSize(.large)
+    .keyboardShortcut("s", modifiers: [.command, .control])
+    .accessibilityLabel(visible ? "Hide sidebar" : "Show sidebar")
+    .help(visible ? "Hide sidebar (⌃⌘S)" : "Show sidebar (⌃⌘S)")
+  }
+
   private var desktop: some View {
-    NavigationSplitView {
+    NavigationSplitView(columnVisibility: $sidebarColumns) {
       DesktopSidebar(
         runtime: runtime, access: access, selection: $page, search: $spaceSearch,
         searchFocused: $searchFocused,
@@ -593,6 +612,12 @@ struct ContentView: View {
           ? signOutOfTonk : nil
       )
       .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+      // Replaced by a circular toggle that matches the window's other controls.
+      .toolbar(removing: .sidebarToggle)
+      .toolbar {
+        ToolbarItem(id: "hide-sidebar", placement: .automatic) { sidebarToggle }
+          .customGlassToolbarItem()
+      }
     } detail: {
       Group {
         switch page {
