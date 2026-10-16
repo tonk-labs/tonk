@@ -18,6 +18,9 @@ The first session downloads the signed `tonk-agent-peer` binary for your platfor
 from the latest Tonk release and verifies it against the release's
 `checksums.txt`. macOS (Apple Silicon) and Linux (x86_64) are supported.
 
+To try a pull request's build, use the one-line `claude --plugin-url …` from the
+**Agent peer preview** comment on the pull request.
+
 ## How it works
 
 - **One peer per machine.** The peer's identity and data live in
