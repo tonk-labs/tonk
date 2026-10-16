@@ -1,0 +1,19 @@
+[package]
+name = "tonk-agent-peer"
+description = "Local Tonk peer exposed to agent hosts as a stdio MCP server."
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "tonk-agent-peer"
+path = "src/main.rs"
+
+[dependencies]
+dirs = { workspace = true }
+rmcp = { workspace = true }
+rustix = { workspace = true, features = ["stdio"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "io-std", "io-util", "net", "sync", "time", "signal"] }
+tonk-worker = { workspace = true, features = ["native-host"] }

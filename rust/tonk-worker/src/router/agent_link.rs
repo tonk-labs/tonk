@@ -139,11 +139,11 @@ impl AgentLinkWorker {
     }
 }
 
-async fn request(router: &mut Router, path: &str, document: &str) -> Result<Value, ()> {
+pub(super) async fn request(router: &mut Router, path: &str, document: &str) -> Result<Value, ()> {
     request_method(router, path, document, "POST").await
 }
 
-async fn request_method(
+pub(super) async fn request_method(
     router: &mut Router,
     path: &str,
     document: &str,
@@ -218,7 +218,7 @@ fn lock_root(root: &Path) -> std::io::Result<std::fs::File> {
     Ok(lock)
 }
 
-fn create_journal(path: &Path) -> std::io::Result<()> {
+pub(super) fn create_journal(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
         .write(true)
@@ -229,7 +229,7 @@ fn create_journal(path: &Path) -> std::io::Result<()> {
     std::fs::File::open(path.parent().unwrap())?.sync_all()
 }
 
-fn clear_journal(path: &Path) -> std::io::Result<()> {
+pub(super) fn clear_journal(path: &Path) -> std::io::Result<()> {
     std::fs::remove_file(path)?;
     std::fs::File::open(path.parent().unwrap())?.sync_all()
 }

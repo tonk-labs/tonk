@@ -106,6 +106,7 @@ jobs:
       - name: Test agent-link stdio and hosted HTTP with remote readback
         run: |
           nix --accept-flake-config develop .#ci -c cargo test --locked --profile ci-test -p tonk-worker --features native-host --test agent_link
+          nix --accept-flake-config develop .#ci -c cargo test --locked --profile ci-test -p tonk-worker --features native-host --lib local_peer
           nix --accept-flake-config develop .#ci -c npm --prefix mcp run test:hosted
       - name: Upload Cargo timing reports
         if: always()

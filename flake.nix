@@ -611,7 +611,7 @@
           # access service's HTTP-level tests are `#![cfg]`'d on.
           tests-native-debug = buildTestArchive {
             name = "native-debug";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-agent-peer --features integration-tests";
           };
 
           # Built with `release-test`: release optimizations without LTO,
@@ -619,20 +619,20 @@
           tests-native-release = buildTestArchive {
             name = "native-release";
             profile = "release-test";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-agent-peer --features integration-tests";
           };
 
           tests-web-debug = buildTestArchive {
             name = "web-debug";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
+            args = "--workspace --exclude tonk-cli --exclude tonk-agent-peer --exclude tonk-perf";
           };
 
           tests-web-release = buildTestArchive {
             name = "web-release";
             profile = "release";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
+            args = "--workspace --exclude tonk-cli --exclude tonk-agent-peer --exclude tonk-perf";
           };
 
           # The real-browser suite `test:e2e` runs. Its `integration-tests`
@@ -646,7 +646,7 @@
           tests-native-ci = buildTestArchive {
             name = "native-ci";
             profile = "ci-test";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-agent-peer --features integration-tests";
           };
 
           # The reduced ci-test profile traps in Wasm repository tests. Keep
@@ -655,7 +655,7 @@
             name = "web-ci";
             profile = "test";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
+            args = "--workspace --exclude tonk-cli --exclude tonk-agent-peer --exclude tonk-perf";
           };
 
           tests-e2e-ci = buildTestArchive {
@@ -678,6 +678,14 @@
             pname = "tonk-cli";
             cargoExtraArgs = "--package tonk-cli";
             TONK_POSTHOG_KEY = posthogKey;
+            fixupPhase = darwinBinaryFixup;
+          };
+
+          # The local peer agent hosts launch as a stdio MCP server. Native
+          # only; released beside the CLI with the same signing.
+          tonk-agent-peer = (if system == "x86_64-linux" then buildStaticCrate else buildCrate) {
+            pname = "tonk-agent-peer";
+            cargoExtraArgs = "--package tonk-agent-peer";
             fixupPhase = darwinBinaryFixup;
           };
 
