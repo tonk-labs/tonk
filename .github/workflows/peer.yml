@@ -1,15 +1,20 @@
 on:
   pull_request:
+  push:
+    branches: [main]
 
 name: 'Peer'
 
-# Builds the local peer that the Tonk agent plugin launches, on every pull
-# request, and drives each build over MCP stdio. Releases build, sign and
-# publish it from their tag in `release.yml`.
+# Builds the local peer that the Tonk agent plugin launches on every pull
+# request and every merge to `main`, and drives each build over MCP stdio.
+# A merge also refreshes the rolling `tonk-peer-dev` prerelease, which the
+# plugin's `dev` channel installs against the dev deployment (tonk.foundation)
+# that `main` already ships to. Releases build, sign and publish it from their
+# tag in `release.yml`.
 
 concurrency:
   group: peer-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-peer:
@@ -65,3 +70,44 @@ jobs:
           node-version: 24
       - name: 'Validate with Claude Code'
         run: npx --yes @anthropic-ai/claude-code plugin validate ./plugins/tonk
+
+  # Unsigned beyond the build's ad-hoc signature, like any main build. The
+  # launcher verifies it against this release's checksums.txt.
+  dev-release:
+    name: 'Publish rolling dev build'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: ['build-peer', 'plugin']
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-peer-macos-arm64
+          path: artifacts/macos-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-peer-linux-x86_64
+          path: artifacts/linux-x86_64
+      - name: Prepare assets
+        run: |
+          set -euo pipefail
+          for platform in macos-arm64 linux-x86_64; do
+            install -m 0755 "artifacts/$platform/tonk-peer" tonk-peer
+            tar -czf "tonk-peer-$platform.tar.gz" tonk-peer
+            rm tonk-peer
+          done
+          sha256sum tonk-peer-macos-arm64.tar.gz tonk-peer-linux-x86_64.tar.gz > checksums.txt
+      - name: Replace the rolling dev release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release delete tonk-peer-dev --yes --cleanup-tag || true
+          gh release create tonk-peer-dev \
+            --target "$GITHUB_SHA" \
+            --prerelease --latest=false \
+            --title 'tonk-peer (dev)' \
+            --notes "Rolling tonk-peer build of main at $GITHUB_SHA for the plugin's dev channel. Not a release." \
+            tonk-peer-macos-arm64.tar.gz tonk-peer-linux-x86_64.tar.gz checksums.txt

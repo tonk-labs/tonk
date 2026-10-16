@@ -9,7 +9,7 @@
 # stdout belongs to the MCP protocol: every message here goes to stderr.
 #
 # Environment, all optional:
-#   TONK_CHANNEL       stable (default) or staging
+#   TONK_CHANNEL       stable (default), staging, or dev (latest main build)
 #   TONK_RELEASE       pin an exact release tag (wins over TONK_CHANNEL)
 #   TONK_PEER_REMOTE   trusted access service (default follows the channel)
 #   TONK_PEER_HOME     peer data directory (default ~/.tonk/peer)
@@ -30,7 +30,11 @@ case "$CHANNEL" in
     BASE="https://github.com/${REPO}/releases/download/tonk-staging"
     REMOTE="https://staging.tonk.xyz/ucan/"
     ;;
-  *) die "unknown TONK_CHANNEL '$CHANNEL' (use stable or staging)" ;;
+  dev)
+    BASE="https://github.com/${REPO}/releases/download/tonk-peer-dev"
+    REMOTE="https://tonk.foundation/ucan/"
+    ;;
+  *) die "unknown TONK_CHANNEL '$CHANNEL' (use stable, staging or dev)" ;;
 esac
 if [ -n "${TONK_RELEASE:-}" ]; then
   BASE="https://github.com/${REPO}/releases/download/${TONK_RELEASE}"

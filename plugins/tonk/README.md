@@ -35,7 +35,7 @@ Set these in the environment the host starts MCP servers with:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TONK_CHANNEL` | `stable` | Release channel: `stable` or `staging` |
+| `TONK_CHANNEL` | `stable` | `stable`, `staging`, or `dev` (latest `main` build, against tonk.foundation) |
 | `TONK_RELEASE` | | Pin an exact release tag |
 | `TONK_PEER_REMOTE` | follows the channel | Trusted access service |
 | `TONK_PEER_HOME` | `~/.tonk/peer` | Peer data directory |
