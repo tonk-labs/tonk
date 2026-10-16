@@ -224,12 +224,10 @@ async fn snapshot(
     let mut digest = std::collections::hash_map::DefaultHasher::new();
     encoded.hash(&mut digest);
     let truncated = encoded.len() > MAX_MATCHES_BYTES;
-    if truncated {
-        if let Value::Array(groups) = &mut matches {
-            for group in groups.iter_mut() {
-                if let Some(Value::Array(results)) = group.get_mut("results") {
-                    results.truncate(50);
-                }
+    if truncated && let Value::Array(groups) = &mut matches {
+        for group in groups.iter_mut() {
+            if let Some(Value::Array(results)) = group.get_mut("results") {
+                results.truncate(50);
             }
         }
     }
