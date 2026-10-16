@@ -1,5 +1,5 @@
 [package]
-name = "tonk-peer"
+name = "tonk-agent-peer"
 description = "Local Tonk peer exposed to agent hosts as a stdio MCP server."
 version.workspace = true
 authors.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "tonk-peer"
+name = "tonk-agent-peer"
 path = "src/main.rs"
 
 [dependencies]

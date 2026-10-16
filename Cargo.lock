@@ -4818,6 +4818,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-agent-peer"
+version = "0.6.16-rc.1"
+dependencies = [
+ "dirs 5.0.1",
+ "rmcp",
+ "rustix",
+ "serde_json",
+ "tokio",
+ "tonk-worker",
+ "url",
+]
+
+[[package]]
 name = "tonk-analytics"
 version = "0.6.16-rc.1"
 dependencies = [
@@ -5272,19 +5285,6 @@ dependencies = [
  "tokio",
  "url",
  "wasm-bindgen-test",
-]
-
-[[package]]
-name = "tonk-peer"
-version = "0.6.16-rc.1"
-dependencies = [
- "dirs 5.0.1",
- "rmcp",
- "rustix",
- "serde_json",
- "tokio",
- "tonk-worker",
- "url",
 ]
 
 [[package]]

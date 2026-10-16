@@ -3,17 +3,17 @@ on:
   push:
     branches: [main]
 
-name: 'Peer'
+name: 'Agent peer'
 
 # Builds the local peer that the Tonk agent plugin launches on every pull
 # request and every merge to `main`, and drives each build over MCP stdio.
-# A merge also refreshes the rolling `tonk-peer-dev` prerelease, which the
+# A merge also refreshes the rolling `tonk-agent-peer-dev` prerelease, which the
 # plugin's `dev` channel installs against the dev deployment (tonk.foundation)
 # that `main` already ships to. Releases build, sign and publish it from their
 # tag in `release.yml`.
 
 concurrency:
-  group: peer-${{ github.ref }}
+  group: agent-peer-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -24,9 +24,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact-name: tonk-peer-linux-x86_64
+            artifact-name: tonk-agent-peer-linux-x86_64
           - os: macos-latest
-            artifact-name: tonk-peer-macos-arm64
+            artifact-name: tonk-agent-peer-macos-arm64
     steps:
       - uses: actions/checkout@v4
       - uses: wimpysworld/nothing-but-nix@main
@@ -38,19 +38,19 @@ jobs:
         with:
           name: tonk-test-cache
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-      - name: 'Build tonk-peer'
-        run: nix build --accept-flake-config .#tonk-peer
-      - name: 'Stage tonk-peer artifact'
+      - name: 'Build tonk-agent-peer'
+        run: nix build --accept-flake-config .#tonk-agent-peer
+      - name: 'Stage tonk-agent-peer artifact'
         run: |
           mkdir -p artifacts
-          cp result/bin/tonk-peer artifacts/tonk-peer
-          chmod 0755 artifacts/tonk-peer
+          cp result/bin/tonk-agent-peer artifacts/tonk-agent-peer
+          chmod 0755 artifacts/tonk-agent-peer
       - name: 'Smoke over MCP stdio'
-        run: python3 rust/tonk-peer/smoke.py artifacts/tonk-peer
+        run: python3 rust/tonk-agent-peer/smoke.py artifacts/tonk-agent-peer
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
-          path: artifacts/tonk-peer
+          path: artifacts/tonk-agent-peer
 
   plugin:
     name: 'Check plugin'
@@ -63,8 +63,8 @@ jobs:
           for manifest in .claude-plugin/marketplace.json plugins/tonk/.claude-plugin/plugin.json plugins/tonk/.mcp.json; do
             python3 -m json.tool "$manifest" > /dev/null
           done
-          sh -n plugins/tonk/scripts/tonk-peer
-          test -x plugins/tonk/scripts/tonk-peer
+          sh -n plugins/tonk/scripts/tonk-agent-peer
+          test -x plugins/tonk/scripts/tonk-agent-peer
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -83,31 +83,31 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: tonk-peer-macos-arm64
+          name: tonk-agent-peer-macos-arm64
           path: artifacts/macos-arm64
       - uses: actions/download-artifact@v4
         with:
-          name: tonk-peer-linux-x86_64
+          name: tonk-agent-peer-linux-x86_64
           path: artifacts/linux-x86_64
       - name: Prepare assets
         run: |
           set -euo pipefail
           for platform in macos-arm64 linux-x86_64; do
-            install -m 0755 "artifacts/$platform/tonk-peer" tonk-peer
-            tar -czf "tonk-peer-$platform.tar.gz" tonk-peer
-            rm tonk-peer
+            install -m 0755 "artifacts/$platform/tonk-agent-peer" tonk-agent-peer
+            tar -czf "tonk-agent-peer-$platform.tar.gz" tonk-agent-peer
+            rm tonk-agent-peer
           done
-          sha256sum tonk-peer-macos-arm64.tar.gz tonk-peer-linux-x86_64.tar.gz > checksums.txt
+          sha256sum tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz > checksums.txt
       - name: Replace the rolling dev release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh release delete tonk-peer-dev --yes --cleanup-tag || true
-          gh release create tonk-peer-dev \
+          gh release delete tonk-agent-peer-dev --yes --cleanup-tag || true
+          gh release create tonk-agent-peer-dev \
             --target "$GITHUB_SHA" \
             --prerelease --latest=false \
-            --title 'tonk-peer (dev)' \
-            --notes "Rolling tonk-peer build of main at $GITHUB_SHA for the plugin's dev channel. Not a release." \
-            tonk-peer-macos-arm64.tar.gz tonk-peer-linux-x86_64.tar.gz checksums.txt
+            --title 'tonk-agent-peer (dev)' \
+            --notes "Rolling tonk-agent-peer build of main at $GITHUB_SHA for the plugin's dev channel. Not a release." \
+            tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz checksums.txt

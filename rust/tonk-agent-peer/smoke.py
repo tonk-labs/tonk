@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Drive a built tonk-peer over MCP stdio in a throwaway home.
+"""Drive a built tonk-agent-peer over MCP stdio in a throwaway home.
 
-    python3 rust/tonk-peer/smoke.py path/to/tonk-peer
+    python3 rust/tonk-agent-peer/smoke.py path/to/tonk-agent-peer
 
 Checks the handshake, the tool and guide catalogs, that a fresh peer has an
 identity and no spaces, that a second process sharing the directory forwards
@@ -19,7 +19,7 @@ EXPECTED_TOOLS = {"tonk_list_spaces", "tonk_join", "tonk_query", "tonk_evaluate"
 
 class Session:
     def __init__(self, binary, home):
-        env = dict(os.environ, TONK_PEER_HOME=home, TONK_PEER_REMOTE="https://tonk.network/ucan/")
+        env = dict(os.environ, TONK_AGENT_PEER_HOME=home, TONK_AGENT_PEER_REMOTE="https://tonk.network/ucan/")
         self.process = subprocess.Popen(
             [binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, text=True
         )
@@ -27,7 +27,7 @@ class Session:
         info = self.request("initialize", {
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "tonk-peer-smoke", "version": "0"},
+            "clientInfo": {"name": "tonk-agent-peer-smoke", "version": "0"},
         })
         assert info["serverInfo"]["name"] == "tonk", info
         assert "tools" in info["capabilities"], info
@@ -95,7 +95,7 @@ def main(binary):
         failed, after = second.tool("tonk_list_spaces")
         assert not failed and after["structuredContent"]["peer"] == peer, after
         second.close()
-    print("tonk-peer smoke passed")
+    print("tonk-agent-peer smoke passed")
 
 
 if __name__ == "__main__":

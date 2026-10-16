@@ -9,8 +9,8 @@
 //! calls to it over a private socket (see [`owner`]).
 //!
 //! Configuration, all optional:
-//! - `TONK_PEER_HOME`: data directory, default `~/.tonk/peer`
-//! - `TONK_PEER_REMOTE`: trusted access service, default the stable service
+//! - `TONK_AGENT_PEER_HOME`: data directory, default `~/.tonk/agent-peer`
+//! - `TONK_AGENT_PEER_REMOTE`: trusted access service, default the stable service
 use std::path::PathBuf;
 
 use rmcp::ServiceExt;
@@ -36,14 +36,14 @@ fn protocol_stdout() -> std::io::Result<std::fs::File> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protocol = tokio::fs::File::from_std(protocol_stdout()?);
-    let root = match std::env::var_os("TONK_PEER_HOME") {
+    let root = match std::env::var_os("TONK_AGENT_PEER_HOME") {
         Some(home) => PathBuf::from(home),
         None => dirs::home_dir()
-            .ok_or("No home directory; set TONK_PEER_HOME.")?
+            .ok_or("No home directory; set TONK_AGENT_PEER_HOME.")?
             .join(".tonk")
             .join("peer"),
     };
-    let remote: url::Url = std::env::var("TONK_PEER_REMOTE")
+    let remote: url::Url = std::env::var("TONK_AGENT_PEER_REMOTE")
         .unwrap_or_else(|_| DEFAULT_REMOTE.to_owned())
         .parse()?;
     let peer = owner::Peer::new(root, remote);

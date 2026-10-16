@@ -14,14 +14,14 @@ claude plugin marketplace add tonk-labs/tonk
 claude plugin install tonk@tonk
 ```
 
-The first session downloads the signed `tonk-peer` binary for your platform
+The first session downloads the signed `tonk-agent-peer` binary for your platform
 from the latest Tonk release and verifies it against the release's
 `checksums.txt`. macOS (Apple Silicon) and Linux (x86_64) are supported.
 
 ## How it works
 
 - **One peer per machine.** The peer's identity and data live in
-  `~/.tonk/peer`. Every session on the machine is the same peer.
+  `~/.tonk/agent-peer`. Every session on the machine is the same peer.
 - **One owner at a time.** Hosts start an MCP server per session. The first to
   need the peer owns it: it keeps the worker open and syncs every 30 seconds.
   Other sessions forward their calls to it. When the owner's session ends, the
@@ -37,9 +37,9 @@ Set these in the environment the host starts MCP servers with:
 | --- | --- | --- |
 | `TONK_CHANNEL` | `stable` | `stable`, `staging`, or `dev` (latest `main` build, against tonk.foundation) |
 | `TONK_RELEASE` | | Pin an exact release tag |
-| `TONK_PEER_REMOTE` | follows the channel | Trusted access service |
-| `TONK_PEER_HOME` | `~/.tonk/peer` | Peer data directory |
-| `TONK_PEER_BINARY` | | Run a local build instead (development) |
+| `TONK_AGENT_PEER_REMOTE` | follows the channel | Trusted access service |
+| `TONK_AGENT_PEER_HOME` | `~/.tonk/agent-peer` | Peer data directory |
+| `TONK_AGENT_PEER_BINARY` | | Run a local build instead (development) |
 
 ## Not yet
 

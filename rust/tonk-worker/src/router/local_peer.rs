@@ -344,7 +344,7 @@ mod tests {
     use super::*;
 
     fn scratch() -> PathBuf {
-        std::env::temp_dir().join(format!("tonk-peer-spike-{}", rand::random::<u64>()))
+        std::env::temp_dir().join(format!("tonk-agent-peer-spike-{}", rand::random::<u64>()))
     }
 
     #[tokio::test]

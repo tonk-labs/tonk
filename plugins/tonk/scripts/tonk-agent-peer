@@ -11,13 +11,13 @@
 # Environment, all optional:
 #   TONK_CHANNEL       stable (default), staging, or dev (latest main build)
 #   TONK_RELEASE       pin an exact release tag (wins over TONK_CHANNEL)
-#   TONK_PEER_REMOTE   trusted access service (default follows the channel)
-#   TONK_PEER_HOME     peer data directory (default ~/.tonk/peer)
-#   TONK_PEER_BINARY   run this binary instead (development)
+#   TONK_AGENT_PEER_REMOTE   trusted access service (default follows the channel)
+#   TONK_AGENT_PEER_HOME     peer data directory (default ~/.tonk/agent-peer)
+#   TONK_AGENT_PEER_BINARY   run this binary instead (development)
 set -eu
 
 REPO="tonk-labs/tonk"
-say() { printf 'tonk-peer: %s\n' "$1" >&2; }
+say() { printf 'tonk-agent-peer: %s\n' "$1" >&2; }
 die() { say "$1"; exit 1; }
 
 CHANNEL="${TONK_CHANNEL:-stable}"
@@ -31,7 +31,7 @@ case "$CHANNEL" in
     REMOTE="https://staging.tonk.xyz/ucan/"
     ;;
   dev)
-    BASE="https://github.com/${REPO}/releases/download/tonk-peer-dev"
+    BASE="https://github.com/${REPO}/releases/download/tonk-agent-peer-dev"
     REMOTE="https://tonk.foundation/ucan/"
     ;;
   *) die "unknown TONK_CHANNEL '$CHANNEL' (use stable, staging or dev)" ;;
@@ -40,21 +40,21 @@ if [ -n "${TONK_RELEASE:-}" ]; then
   BASE="https://github.com/${REPO}/releases/download/${TONK_RELEASE}"
   CHANNEL="$TONK_RELEASE"
 fi
-export TONK_PEER_REMOTE="${TONK_PEER_REMOTE:-$REMOTE}"
+export TONK_AGENT_PEER_REMOTE="${TONK_AGENT_PEER_REMOTE:-$REMOTE}"
 
-if [ -n "${TONK_PEER_BINARY:-}" ]; then
-  exec "$TONK_PEER_BINARY"
+if [ -n "${TONK_AGENT_PEER_BINARY:-}" ]; then
+  exec "$TONK_AGENT_PEER_BINARY"
 fi
 
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) PLATFORM="macos-arm64" ;;
   Linux-x86_64) PLATFORM="linux-x86_64" ;;
-  *) die "no tonk-peer build for $(uname -s) $(uname -m) yet" ;;
+  *) die "no tonk-agent-peer build for $(uname -s) $(uname -m) yet" ;;
 esac
-ASSET="tonk-peer-${PLATFORM}.tar.gz"
+ASSET="tonk-agent-peer-${PLATFORM}.tar.gz"
 
 CACHE="${HOME}/.tonk/bin/${CHANNEL}"
-BIN="${CACHE}/tonk-peer"
+BIN="${CACHE}/tonk-agent-peer"
 STAMP="${CACHE}/checked"
 
 fetch() {
@@ -91,12 +91,12 @@ update() {
   fi
   fetch "${BASE}/${ASSET}" "$tmp/$ASSET" || return 1
   [ "$(sha256_of "$tmp/$ASSET")" = "$expected" ] || { say "checksum mismatch for $ASSET"; return 1; }
-  tar -xzf "$tmp/$ASSET" -C "$tmp" tonk-peer || return 1
-  chmod 0755 "$tmp/tonk-peer"
-  mv -f "$tmp/tonk-peer" "$BIN"
+  tar -xzf "$tmp/$ASSET" -C "$tmp" tonk-agent-peer || return 1
+  chmod 0755 "$tmp/tonk-agent-peer"
+  mv -f "$tmp/tonk-agent-peer" "$BIN"
   printf '%s\n' "$expected" > "${CACHE}/sha256"
   touch "$STAMP"
-  say "installed tonk-peer from ${CHANNEL}"
+  say "installed tonk-agent-peer from ${CHANNEL}"
 }
 
 fresh() {
@@ -105,7 +105,7 @@ fresh() {
 
 if ! fresh; then
   if ! (update); then
-    [ -x "$BIN" ] || die "could not download tonk-peer from ${BASE}"
+    [ -x "$BIN" ] || die "could not download tonk-agent-peer from ${BASE}"
     say "could not check for an update; using the cached binary"
   fi
 fi
