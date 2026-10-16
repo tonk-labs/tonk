@@ -10,7 +10,14 @@ export function deployment({ channel, pullRequest, provider, subdomain, accountI
     throw Error('Invalid PR number');
   const suffix = channel === 'preview' ? `pr-${pullRequest}` : channel;
   const name = channel === 'stable' ? 'tonk-mcp' : `tonk-mcp-${suffix}`;
-  const issuer = `https://${name}.${subdomain}.workers.dev`;
+  // Release channels get one-level tonk.host names (the zone has no nested
+  // subdomains). PR previews stay on workers.dev so they leave no DNS behind.
+  const domain = {
+    dev: 'agent-dev.tonk.host',
+    staging: 'agent-staging.tonk.host',
+    stable: 'agent.tonk.host',
+  }[channel];
+  const issuer = `https://${domain ?? `${name}.${subdomain}.workers.dev`}`;
   const expectedProvider = {
     dev: 'https://tonk.foundation',
     staging: 'https://staging.tonk.xyz',
@@ -29,8 +36,10 @@ export function deployment({ channel, pullRequest, provider, subdomain, accountI
     main: 'worker.mjs',
     compatibility_date: '2026-10-07',
     account_id: accountId,
-    workers_dev: true,
-    routes: [],
+    // The issuer is the only origin the Worker answers (others get 421), so a
+    // channel with a domain does not also expose a workers.dev URL.
+    workers_dev: !domain,
+    routes: domain ? [{ pattern: domain, custom_domain: true }] : [],
     containers: [
       {
         class_name: 'TonkRuntime',
