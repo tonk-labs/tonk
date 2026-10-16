@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => dirs::home_dir()
             .ok_or("No home directory; set TONK_AGENT_PEER_HOME.")?
             .join(".tonk")
-            .join("peer"),
+            .join("agent-peer"),
     };
     let peer = owner::Peer::new(root);
     let service = server::Server::new(peer.clone())
