@@ -227,6 +227,7 @@ impl Registry {
             create,
             dialog_repository::ACCESS_BRANCH,
             &self.caches,
+            &dialog_reactor::ProfileUpgrade,
         )
         .await?;
         tonk_account::peer::migrate_site_secrets(
@@ -263,6 +264,7 @@ impl Registry {
             false,
             branch,
             &self.caches,
+            &dialog_reactor::ProfileUpgrade,
         )
         .await
         .map_err(|error| {
