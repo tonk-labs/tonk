@@ -614,6 +614,7 @@ struct ContentView: View {
     }
     .disabled(model.busy || model.connecting || model.creatingSpace || runtime.pendingSpace != nil)
     .onChange(of: runtime.spaces.map(\.id), initial: true) { _, ids in
+      if runtime.catalogLoaded { access.setCatalog(runtime.spaces) }
       // Keep a space selected; fall back when it leaves the account.
       if case .space(let id) = page, ids.contains(id) { return }
       if page == nil, let fixture = ActivityFixture.initialPage(runtime.spaces) {
@@ -623,6 +624,10 @@ struct ContentView: View {
       {
         page = ids.first.map { .space($0) }
       }
+    }
+    .onChange(of: runtime.accountConnected) { _, connected in
+      // Nothing learned under one account may show under the next.
+      if !connected { access.reset() }
     }
     .task(id: runtime.catalogLoaded && runtime.accountConnected) {
       guard runtime.catalogLoaded && runtime.accountConnected else { return }

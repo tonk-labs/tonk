@@ -32,4 +32,25 @@ final class AccessModelTests: XCTestCase {
     XCTAssertNil(AccessModel.publicAddress("ftp://sync.example", subject: "did:key:zS"))
     XCTAssertNil(AccessModel.publicAddress(nil, subject: "did:key:zS"))
   }
+
+  func testLinksFollowTheCatalogAndResetForgetsTheAccount() throws {
+    let kept = "did:key:zKept"
+    let gone = "did:key:zGone"
+    let link = { (subject: String) in
+      SpaceAccess(links: [AccessLink(kind: .person, subject: subject, target: subject, usedBy: [])])
+    }
+    let access = AccessModel()
+    access.showFixture(
+      [kept: link(kept), gone: link(gone)], agents: [], accountName: "A", journal: AccessJournal())
+    XCTAssertEqual(access.allLinks.count, 2)
+    let catalog = try TonkSpace.decodeCatalog(
+      Data(#"[{"subject":"did:key:zKept","name":"k"}]"#.utf8))
+    access.setCatalog(catalog)
+    XCTAssertEqual(access.allLinks.map(\.subject), [kept])
+    XCTAssertNil(access.spaces[gone])
+    XCTAssertTrue(access.loadedAll)
+    access.reset()
+    XCTAssertTrue(access.allLinks.isEmpty)
+    XCTAssertNil(access.accountName)
+  }
 }

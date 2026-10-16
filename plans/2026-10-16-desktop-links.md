@@ -1,6 +1,6 @@
 # Desktop around links and access
 
-Status: in progress on `feat/desktop-links`.
+Status: implemented on `feat/desktop-links`; live account paths unverified (see Evidence).
 
 Goal: re-implement Tonk Desktop around a links-first layout. The sidebar has
 New link, All links, For agents and the spaces list, with sync status and the
@@ -54,3 +54,21 @@ and use counts; per-space icon/kind; avatars; agent link expiry/scope choice
 3. Sidebar + space overview + links lists + New link sheet; ContentView shell.
 4. Worker `invitation` field + test.
 5. Build, unit tests, fixture screenshot; report.
+
+## Evidence (2026-10-16)
+
+- `swift test` (desktop), after review fixes: HarnessCore 81 passed and
+  TonkTests 55 passed (2 skipped each). `AnimatedSidebarTests.testRapidAnimated
+  ReversalFinishesAtLatestVisibility` is flaky in this session: it failed
+  once here and identically on the untouched base `0df8e73610`, then passed.
+- Fixture renders (`--local-runtime --links-fixture --fixture-page <page>
+  --snapshot <png> --snapshot-sidebar <png>`) show the overview, the agents
+  page and the sidebar. The split-view sidebar is not captured by in-process
+  window rendering on macOS 26, hence the separate sidebar render.
+- Worker: `it_records_the_invitation_on_mint` (wasm, headless Firefox) proves
+  the listed `invitation` equals the entity a claimer derives from the link.
+- Home-alias notation (`name: this: id:tonk/space`) checked against a local CLI
+  space: `matches_after[0].results[0].fields.entity`.
+- NOT run: any path against a signed-in production account (mint, revoke,
+  reset, publish, roster, agent connections, sync), or opening a view in the
+  live runtime. These need a manual pass with a real account.

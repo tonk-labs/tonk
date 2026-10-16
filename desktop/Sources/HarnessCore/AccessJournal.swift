@@ -59,9 +59,9 @@ public struct AccessJournal: Codable, Equatable, Sendable {
     Array(events.filter { $0.subject == subject }.sorted { $0.date > $1.date }.prefix(limit))
   }
 
-  /// When this Mac made the link, if it did.
+  /// When this Mac made the link, directly or by resetting another, if it did.
   public func madeAt(target: String) -> Date? {
-    events.first(where: { $0.target == target && $0.action == .made })?.date
+    events.first(where: { $0.target == target && [.made, .reset].contains($0.action) })?.date
   }
 
   public static func load(from url: URL) -> AccessJournal {

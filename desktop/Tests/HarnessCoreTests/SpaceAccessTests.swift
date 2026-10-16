@@ -142,6 +142,11 @@ final class SpaceAccessTests: XCTestCase {
       journal.recent(subject: subject).map(\.sentence),
       ["You revoked a link for agents", "You made a link for agents"])
     XCTAssertEqual(journal.madeAt(target: "g1"), now)
+    journal.record(
+      AccessEvent(
+        date: now.addingTimeInterval(180), subject: subject, action: .reset, kind: .person,
+        target: "fresh"))
+    XCTAssertEqual(journal.madeAt(target: "fresh"), now.addingTimeInterval(180))
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: url) }
     try journal.save(to: url)
