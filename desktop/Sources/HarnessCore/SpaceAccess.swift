@@ -118,13 +118,6 @@ public struct SpaceViewEntry: Equatable, Sendable, Identifiable {
     isHome ? space.url : space.url.appendingPathComponent(model)
   }
 
-  /// Models the shipped library declares; every space has them, so they are not its views.
-  public static func isLibrary(_ model: String) -> Bool {
-    ["tonk:", "tonk/", "dialog:", "dialog.", "xyz.tonk", "library/"].contains {
-      model.hasPrefix($0)
-    }
-  }
-
   /// A readable name for a model URI such as `tonk:board` or `id:cycle-14`.
   public static func title(forModel model: String) -> String {
     let tail = model.split(whereSeparator: { ":/".contains($0) }).last.map(String.init) ?? model

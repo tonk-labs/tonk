@@ -217,7 +217,7 @@ final class AccessModel: ObservableObject {
     // A missing part leaves its section empty instead of failing the overview.
     // The roster is required: an empty one would wrongly read as "only you".
     const safe = (promise, fallback) => promise.catch(() => fallback);
-    const [invites, members, executions, home, directories, info, sync] = await Promise.all([
+    const [invites, members, executions, home, directories, concepts, info, sync] = await Promise.all([
       safe(api(base + '/invites'), []),
       query({
         member: field('xyz.tonk.membership/member', 'Entity'),
@@ -231,13 +231,28 @@ final class AccessModel: ObservableObject {
       }, ['subject', 'kind']), []),
       safe(notation('name:\\n  this: id:tonk/space\\n'), []),
       safe(query({directory: field('xyz.tonk.view/directory', 'Text')}, ['directory']), []),
+      safe(notation('concept:\\n'), []),
       safe(api(base), {}),
       status
     ]);
+    // A concept is the space's own when one of its attributes is outside the
+    // namespaces the shipped library uses; only those directories are views.
+    const reserved = /^(xyz\\.tonk|dialog|tonk|db)[.\\/:]/;
+    const described = Object.fromEntries(concepts.map(row => {
+      let source = row.fields?.source;
+      try { if (typeof source === 'string') source = JSON.parse(source); } catch { source = null; }
+      const attributes = Object.values(source?.with || {})
+        .map(field => typeof field?.the === 'string' ? field.the : field?.the?.domain || '');
+      return [row.this, {name: typeof row.fields?.name === 'string' ? row.fields.name : null,
+        own: attributes.some(the => the && !reserved.test(the))}];
+    }));
+    const homeModel = home[0]?.fields?.entity || null;
+    const models = directories.map(row => row.this).filter(x => typeof x === 'string');
     return {
       invites, members, executions,
-      home: home[0]?.fields?.entity || null,
-      directories: directories.map(row => row.this ?? row.fields?.this).filter(x => typeof x === 'string'),
+      home: homeModel ? {model: homeModel, name: described[homeModel]?.name || null} : null,
+      directories: [...new Set(models)].filter(model => described[model]?.own)
+        .map(model => ({model, name: described[model].name})),
       remote: Object.values(info.remote || {}).map(r => r?.address?.Ucan?.endpoint).find(x => typeof x === 'string') || null,
       sync: sync.state
     };
@@ -257,21 +272,28 @@ final class AccessModel: ObservableObject {
     .sorted { ($0.isFounder ? 0 : 1, $0.displayName) < ($1.isFounder ? 0 : 1, $1.displayName) }
   }
 
-  /// The home first, then directories the space itself declares.
+  /// The home first, then directories over the space's own concepts, named
+  /// by their concept names rather than their content-derived URIs.
   static func views(home: Any?, directories: Any?) -> [SpaceViewEntry] {
+    func entry(_ value: Any?, isHome: Bool) -> SpaceViewEntry? {
+      guard let row = value as? [String: Any], let model = row["model"] as? String else {
+        return nil
+      }
+      let name = (row["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+      return SpaceViewEntry(
+        model: model, title: SpaceViewEntry.title(forModel: name ?? model), isHome: isHome)
+    }
     var entries: [SpaceViewEntry] = []
-    if let home = home as? String, home != "tonk:blank" {
-      entries.append(
-        SpaceViewEntry(model: home, title: SpaceViewEntry.title(forModel: home), isHome: true))
+    if let home = entry(home, isHome: true), home.model != "tonk:blank" {
+      entries.append(home)
     } else {
       entries.append(SpaceViewEntry(model: "tonk/space", title: "Home", isHome: true))
     }
-    let models = (directories as? [String] ?? []).filter { !SpaceViewEntry.isLibrary($0) }
-    for model in Set(models).sorted() where !entries.contains(where: { $0.model == model }) {
-      entries.append(
-        SpaceViewEntry(model: model, title: SpaceViewEntry.title(forModel: model), isHome: false))
+    for view in (directories as? [Any] ?? []).compactMap({ entry($0, isHome: false) })
+    where !entries.contains(where: { $0.model == view.model }) {
+      entries.append(view)
     }
-    return entries
+    return entries.prefix(1) + entries.dropFirst().sorted { $0.title < $1.title }
   }
 
   static func publicAddress(_ endpoint: Any?, subject: String) -> String? {

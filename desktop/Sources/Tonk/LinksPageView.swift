@@ -9,49 +9,42 @@ struct LinksPageView: View {
   var onNewLink: () -> Void
 
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 28) {
+    let groups = spaces.compactMap { space -> (TonkSpace, [AccessLink])? in
+      let rows = access.links(for: space.id).filter { !agentsOnly || $0.forAgents }
+      return rows.isEmpty ? nil : (space, rows)
+    }
+    Form {
+      Section {
+      } footer: {
         Text(
           agentsOnly
             ? "Links agents use to read and change a space. Each lasts 90 days and can be revoked at any time."
-            : "Every way into your spaces: plain links for people, agent links and public addresses."
+            : "Every way into your spaces: plain links for people, links for agents, and public addresses."
         )
         .foregroundStyle(.secondary)
-        let groups = spaces.compactMap { space -> (TonkSpace, [AccessLink])? in
-          let rows = access.links(for: space.id).filter { !agentsOnly || $0.forAgents }
-          return rows.isEmpty ? nil : (space, rows)
-        }
-        if groups.isEmpty {
-          OverviewCard {
-            HStack {
-              Text(
-                loadingAny
-                  ? "Loading links…"
-                  : (agentsOnly ? "No agent links yet." : "No links yet.")
-              )
-              .foregroundStyle(.secondary)
-              Spacer()
-              Button("New link", action: onNewLink).disabled(spaces.isEmpty)
-            }
-            .padding(20)
-          }
-        }
-        ForEach(groups, id: \.0.id) { space, rows in
-          VStack(alignment: .leading, spacing: 12) {
-            SectionHeading(title: space.title)
-            OverviewCard {
-              ForEach(Array(rows.enumerated()), id: \.element.id) { index, link in
-                if index > 0 { Divider() }
-                AccessLinkRow(link: link, space: space, access: access)
-              }
-            }
+      }
+      if groups.isEmpty {
+        Section {
+          HStack {
+            Text(
+              loadingAny
+                ? "Loading links…" : (agentsOnly ? "No agent links yet." : "No links yet.")
+            )
+            .foregroundStyle(.secondary)
+            Spacer()
+            Button("New Link…", action: onNewLink).disabled(spaces.isEmpty)
           }
         }
       }
-      .frame(maxWidth: 820, alignment: .leading)
-      .padding(.horizontal, 40).padding(.vertical, 32)
-      .frame(maxWidth: .infinity)
+      ForEach(groups, id: \.0.id) { space, rows in
+        Section(space.title) {
+          ForEach(rows) { link in
+            AccessLinkRow(link: link, space: space, access: access)
+          }
+        }
+      }
     }
+    .formStyle(.grouped)
   }
 
   private var loadingAny: Bool {
@@ -71,60 +64,63 @@ struct NewLinkSheet: View {
   private var creating: Bool { access.working.contains("new:" + subject) }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 18) {
-      Text("New link").font(.title2.weight(.semibold))
-      Picker("Space", selection: $subject) {
-        ForEach(spaces) { Text($0.title).tag($0.id) }
+    VStack(spacing: 0) {
+      Form {
+        Section {
+          Picker("Space", selection: $subject) {
+            ForEach(spaces) { Text($0.title).tag($0.id) }
+          }
+          Picker("For", selection: $kind) {
+            Text("People").tag(AccessModel.NewLink.person)
+            Text("Agents").tag(AccessModel.NewLink.agent)
+            Text("Public").tag(AccessModel.NewLink.publicRead)
+          }
+          .pickerStyle(.segmented)
+        } header: {
+          Text("New Link")
+        }
+        Section {
+          LabeledContent("Access", value: grant)
+        } footer: {
+          Text(explanation).foregroundStyle(.secondary)
+        }
       }
-      Picker("For", selection: $kind) {
-        Text("People").tag(AccessModel.NewLink.person)
-        Text("Agents").tag(AccessModel.NewLink.agent)
-        Text("Public").tag(AccessModel.NewLink.publicRead)
-      }
-      .pickerStyle(.segmented)
-      VStack(alignment: .leading, spacing: 6) {
-        Text(grant).font(.headline)
-        Text(explanation).foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      .frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
+      .formStyle(.grouped)
+      .scrollDisabled(true)
       HStack {
+        if creating { ProgressView().controlSize(.small) }
         Spacer()
         Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(creating)
-        Button {
+        Button(kind == .publicRead ? "Make Public and Copy" : "Make and Copy Link") {
           guard let space else { return }
           Task { if await access.make(kind, in: space) { dismiss() } }
-        } label: {
-          HStack(spacing: 8) {
-            if creating { ProgressView().controlSize(.small) }
-            Text(kind == .publicRead ? "Make public and copy" : "Make and copy link")
-          }
         }
-        .buttonStyle(.borderedProminent).tint(.tonkInk)
         .keyboardShortcut(.defaultAction)
         .disabled(creating || space == nil)
       }
+      .padding([.horizontal, .bottom], 20)
     }
-    .padding(24).frame(width: 460)
+    .frame(width: 480)
+    .fixedSize(horizontal: false, vertical: true)
     .interactiveDismissDisabled(creating)
   }
 
   private var grant: String {
     switch kind {
-    case .person: "Anyone · Write · Whole space · Never expires"
-    case .agent: "Anyone with the link · Write · Whole space · Expires in 90 days"
-    case .publicRead: "Anyone · Read · Whole space · Never expires"
+    case .person: "Anyone · Write · Never expires"
+    case .agent: "Anyone with the link · Write · 90 days"
+    case .publicRead: "Anyone · Read · Never expires"
     }
   }
 
   private var explanation: String {
     switch kind {
     case .person:
-      "Anyone who opens it can join and edit. Reset it later to stop new people joining."
+      "Anyone who opens it can join the whole space and edit it. Reset it later to stop new people joining."
     case .agent:
       "Paste it into Claude Code, Cursor or another MCP client. Keep it private; it works like a password."
     case .publicRead:
-      "Anyone with the space’s address can read it. Only admins can make a space public."
+      "Anyone with the space’s address can read all of it. Only admins can make a space public."
     }
   }
 }

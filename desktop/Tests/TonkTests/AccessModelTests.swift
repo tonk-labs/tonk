@@ -16,13 +16,19 @@ final class AccessModelTests: XCTestCase {
     XCTAssertEqual(members[1].invitation, "tonk:i")
   }
 
-  func testViewsAreTheHomeThenTheSpacesOwnDirectories() {
+  func testViewsAreTheHomeThenTheSpacesOwnDirectoriesByName() {
     let views = AccessModel.views(
-      home: "id:board", directories: ["id:cycle-14", "tonk:member", "id:board", "id:cycle-14"])
-    XCTAssertEqual(views.map(\.title), ["Board", "Cycle 14"])
-    XCTAssertEqual(views.map(\.isHome), [true, false])
+      home: ["model": "id:card", "name": "card"],
+      directories: [
+        ["model": "concept:Bf4r", "name": "task-list"], ["model": "id:card", "name": "card"],
+        ["model": "concept:Zz", "name": NSNull()],
+      ])
+    XCTAssertEqual(views.map(\.title), ["Card", "Task list", "Zz"])
+    XCTAssertEqual(views.map(\.isHome), [true, false, false])
     // A space still on the blank canvas opens its home all the same.
-    XCTAssertEqual(AccessModel.views(home: "tonk:blank", directories: []).map(\.title), ["Home"])
+    XCTAssertEqual(
+      AccessModel.views(home: ["model": "tonk:blank"], directories: []).map(\.title), ["Home"])
+    XCTAssertEqual(AccessModel.views(home: nil, directories: nil).map(\.title), ["Home"])
   }
 
   func testPublicAddressUsesTheSpacesHost() {

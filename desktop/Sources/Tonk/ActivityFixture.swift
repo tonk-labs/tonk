@@ -53,6 +53,9 @@ extension ActivityFixture {
       NSApp.terminate(nil)
       return
     }
+    if let index = args.firstIndex(of: "--appearance"), args.indices.contains(index + 1) {
+      NSApp.appearance = NSAppearance(named: args[index + 1] == "dark" ? .darkAqua : .aqua)
+    }
     let names = ["tonk-team", "kanoodel", "tea-inventory", "little-writer"]
     let subjects = [
       "did:key:z6MkTeam", "did:key:z6MkKanood3", "did:key:z6MkTea", "did:key:z6MkWriter",
