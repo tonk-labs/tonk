@@ -37,6 +37,13 @@ export default {
       const response = new Response(asset.body, asset);
       response.headers.set('Access-Control-Allow-Origin', '*');
       response.headers.set('X-Content-Type-Options', 'nosniff');
+      // A subdomain may claim a parent domain as its WebAuthn RP ID, so a page
+      // here could otherwise assert passkeys registered on the apex. Guest
+      // pages never need WebAuthn; disable it for them and their frames.
+      response.headers.set(
+        'Permissions-Policy',
+        'publickey-credentials-get=(), publickey-credentials-create=()',
+      );
       return response;
     }
     if (!env.TONK_PROVIDER_ORIGIN) return new Response(null, { status: 503 });
