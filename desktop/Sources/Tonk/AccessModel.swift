@@ -24,9 +24,9 @@ final class AccessModel: ObservableObject {
   private var accountLoaded = false
 
   /// For layout fixtures only: show prepared access without a runtime.
-  init(
-    fixture: [String: SpaceAccess] = [:], agents: [AgentConnection] = [],
-    accountName: String? = nil, journal: AccessJournal = AccessJournal()
+  func showFixture(
+    _ fixture: [String: SpaceAccess], agents: [AgentConnection], accountName: String,
+    journal: AccessJournal
   ) {
     spaces = fixture
     agentConnections = agents
