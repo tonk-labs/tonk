@@ -39,6 +39,12 @@ worker supports today and flag the rest.
   Additive worker field `invitation` on `InvitationSummary`; Desktop degrades
   when an older worker omits it.
 - Opening a view loads the existing runtime + chat surface at that view's URL.
+- Views are the home (`tonk/space`) plus directory facets over the space's own
+  concepts: a concept counts as the space's own when one of its attributes lies
+  outside the library namespaces (`xyz.tonk`, `dialog`, `tonk`, `db`). Titles
+  come from the concept's `name`, never its content-derived URI.
+- Native macOS look: sidebar `List`, grouped `Form` sections, system colours and
+  accent only; New Link is a toolbar button and File > New Link… (⇧⌘N).
 
 ## Not possible yet (flag to user)
 

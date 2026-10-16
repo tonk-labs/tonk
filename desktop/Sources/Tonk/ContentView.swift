@@ -83,6 +83,10 @@ struct ContentView: View {
     )
     .focusedSceneValue(\.refreshContent, refreshDisabled ? nil : refreshContent)
     .focusedSceneValue(
+      \.newLink,
+      runtime.spaces.isEmpty || !runtime.accountConnected || signingOut ? nil : startNewLink
+    )
+    .focusedSceneValue(
       \.toggleAgentSidebar,
       model.openedSpace == nil || signingOut ? nil : toggleAgentSidebar
     )
@@ -238,9 +242,10 @@ struct ContentView: View {
           Button {
             startNewLink()
           } label: {
-            Text("New link").padding(.horizontal, 6)
+            Label("New Link", systemImage: "plus")
           }
-          .buttonStyle(.borderedProminent).tint(.tonkInk).controlSize(.large)
+          .labelStyle(.titleAndIcon)
+          .help("New Link (⇧⌘N)")
           .disabled(runtime.spaces.isEmpty || !runtime.accountConnected)
         }
       }.customGlassToolbarItem()
@@ -547,7 +552,7 @@ struct ContentView: View {
   }
 
   private func startNewLink() {
-    guard let first = selectedSpace ?? runtime.spaces.first else { return }
+    guard let first = model.openedSpace ?? selectedSpace ?? runtime.spaces.first else { return }
     newLink = NewLinkRequest(id: first.id)
   }
 
