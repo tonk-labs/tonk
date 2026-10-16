@@ -153,14 +153,6 @@ final class SpaceAccessTests: XCTestCase {
     XCTAssertEqual(AccessJournal.load(from: url), journal)
   }
 
-  func testSyncSummary() {
-    XCTAssertEqual(SyncSummary.label(["synced", "no-upstream"]), "Synced")
-    XCTAssertEqual(SyncSummary.label(["synced", "ahead"]), "Syncing")
-    XCTAssertEqual(SyncSummary.label(["behind", "diverged"]), "Needs attention")
-    XCTAssertEqual(SyncSummary.label(["synced", "error"]), "Offline")
-    XCTAssertEqual(SyncSummary.label(["no-upstream"]), "On this Mac")
-  }
-
   func testSpaceContainsItsViews() throws {
     let space = try XCTUnwrap(
       TonkSpace.decodeCatalog(Data(#"[{"subject":"did:key:zAbc","name":"x"}]"#.utf8)).first)

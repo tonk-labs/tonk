@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import HarnessCore
 
-/// Links, people, views and sync for each space, read through the signed-in
+/// Links, people and views for each space, read through the signed-in
 /// runtime. Every request goes through the worker, which enforces authority.
 @MainActor
 final class AccessModel: ObservableObject {
@@ -12,7 +12,6 @@ final class AccessModel: ObservableObject {
   @Published private(set) var agentConnections: [AgentConnection] = []
   @Published private(set) var accountName: String?
   @Published private(set) var selfDid: String?
-  @Published private(set) var syncStates: [String: String] = [:]
   @Published private(set) var journal = AccessJournal()
   /// Link operations in flight, keyed by link id or `new:<subject>`.
   @Published private(set) var working: Set<String> = []
@@ -39,7 +38,6 @@ final class AccessModel: ObservableObject {
     agentConnections = agents
     self.accountName = accountName
     self.journal = journal
-    syncStates = fixture.mapValues { _ in "synced" }
   }
 
   func prepare(directory: URL, runtime: RuntimeModel) {
@@ -58,7 +56,6 @@ final class AccessModel: ObservableObject {
     agentConnections = []
     accountName = nil
     selfDid = nil
-    syncStates = [:]
     accountLoaded = false
   }
 
@@ -77,7 +74,6 @@ final class AccessModel: ObservableObject {
     let keep = Set(catalog)
     self.spaces = self.spaces.filter { keep.contains($0.key) }
     errors = errors.filter { keep.contains($0.key) || $0.key == "account" }
-    syncStates = syncStates.filter { keep.contains($0.key) }
   }
 
   var agentLinks: [AccessLink] { allLinks.filter(\.forAgents) }
@@ -155,7 +151,6 @@ final class AccessModel: ObservableObject {
       access.publicAddress = Self.publicAddress(result["remote"], subject: space.subject)
       spaces[space.id] = access
       errors[space.id] = nil
-      if let state = result["sync"] as? String { syncStates[space.id] = state }
     } catch {
       if generation == started { errors[space.id] = Self.message(error) }
     }
@@ -171,29 +166,7 @@ final class AccessModel: ObservableObject {
     }
   }
 
-  func refreshSync(_ catalog: [TonkSpace]) async {
-    guard let runtime else { return }
-    let started = generation
-    for space in catalog {
-      guard !Task.isCancelled, generation == started else { return }
-      if let result = try? await runtime.accountScript(
-        Self.syncScript, arguments: ["subject": space.subject]),
-        let state = result["state"] as? String
-      {
-        syncStates[space.id] = state
-      }
-    }
-  }
-
-  static let syncScript = """
-    const response = await fetch('/api/repository/' + encodeURIComponent(subject) + '/branch/main/sync/status', {
-      signal: AbortSignal.timeout(15000)
-    });
-    if (!response.ok) return {state: 'error'};
-    return {state: (await response.json()).state};
-    """
-
-  /// One read per space: invites, roster, publications, views, remote and sync.
+  /// One read per space: invites, roster, publications, views and remote.
   static let spaceScript = """
     const base = '/api/repository/' + encodeURIComponent(subject);
     const main = base + '/branch/main';
@@ -212,12 +185,10 @@ final class AccessModel: ObservableObject {
       const value = await response.json();
       return (value.matches_after || value.matchesAfter || []).flatMap(block => block.results || []);
     };
-    const status = fetch(main + '/sync/status', {signal: AbortSignal.timeout(15000)})
-      .then(r => r.ok ? r.json() : {state: 'error'}).catch(() => ({state: 'error'}));
     // A missing part leaves its section empty instead of failing the overview.
     // The roster is required: an empty one would wrongly read as "only you".
     const safe = (promise, fallback) => promise.catch(() => fallback);
-    const [invites, members, executions, home, directories, concepts, info, sync] = await Promise.all([
+    const [invites, members, executions, home, directories, concepts, info] = await Promise.all([
       safe(api(base + '/invites'), []),
       query({
         member: field('xyz.tonk.membership/member', 'Entity'),
@@ -232,8 +203,7 @@ final class AccessModel: ObservableObject {
       safe(notation('name:\\n  this: id:tonk/space\\n'), []),
       safe(query({directory: field('xyz.tonk.view/directory', 'Text')}, ['directory']), []),
       safe(notation('concept:\\n'), []),
-      safe(api(base), {}),
-      status
+      safe(api(base), {})
     ]);
     // A concept is the space's own when one of its attributes is outside the
     // namespaces the shipped library uses; only those directories are views.
@@ -253,8 +223,7 @@ final class AccessModel: ObservableObject {
       home: homeModel ? {model: homeModel, name: described[homeModel]?.name || null} : null,
       directories: [...new Set(models)].filter(model => described[model]?.own)
         .map(model => ({model, name: described[model].name})),
-      remote: Object.values(info.remote || {}).map(r => r?.address?.Ucan?.endpoint).find(x => typeof x === 'string') || null,
-      sync: sync.state
+      remote: Object.values(info.remote || {}).map(r => r?.address?.Ucan?.endpoint).find(x => typeof x === 'string') || null
     };
     """
 
