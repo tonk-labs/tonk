@@ -3,7 +3,8 @@
 Tonk's general agent API is `tonk_query` and `tonk_evaluate`. Both send inline
 notation unchanged to the ordinary worker. Hosts supply authority and transport;
 the core has no ChatGPT UI, hosted login service or Desktop dependency.
-The optional [hosted service](hosted/README.md) composes this API separately.
+The hosted `/mcp` endpoint uses [per-call agent links](AGENT-LINKS.md), with no
+account OAuth. The same backend supports local stdio coding agents.
 
 ## Source map
 
@@ -45,7 +46,8 @@ For other MCP transports, construct a server with `createTonkServer(backend)`
 from `core.mjs` and connect the SDK transport. A browser host can call
 `createAgentTools` directly. A primitive imports no Node, MCP SDK or UI code.
 
-The resolver must authenticate before returning a backend. Do not publish a
+An account resolver must authenticate before returning a backend. An agent-link
+backend instead validates the supplied scoped credential on every tool call. Do not publish a
 personal worker as a singleton backend on a public listener. For multi-space
 accounts, `accountBackend({ principal, tenants, allowsWrites })` adds
 `tonk_list_spaces` and explicit `space` arguments. The host implements

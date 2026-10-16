@@ -1,0 +1,39 @@
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { agentLinkBackend } from '../agent-link-backend.mjs';
+import { createTonkHTTP } from '../http.mjs';
+import { createCheckpoint } from './checkpoint.mjs';
+
+// One bounded, serialized worker owner. Checkpoint only after the child closes,
+// including failure paths; a failed checkpoint freezes subsequent calls.
+export async function createAgentService({ issuer, provider, binary, directory, checkpoint, run }) {
+  directory ??= await mkdtemp(join(tmpdir(), 'tonk-agent-workers-'));
+  checkpoint ??= await createCheckpoint({
+    directory,
+    endpoint: 'http://checkpoint.internal/agent-state',
+  });
+  const backend = agentLinkBackend({
+    binary,
+    dataDirectory: directory,
+    remote: provider + '/ucan/',
+    linkOrigin: provider,
+    checkpoint,
+    run,
+  });
+  const handler = createTonkHTTP(async () => backend);
+  return {
+    async fetch(request) {
+      const url = new URL(request.url);
+      if (url.origin !== issuer) return new Response(null, { status: 421 });
+      if (url.pathname !== '/mcp' || url.search) return new Response(null, { status: 404 });
+      if (request.headers.has('origin')) return new Response(null, { status: 403 });
+      if (request.method !== 'POST') return new Response(null, { status: 405 });
+      return handler.fetch(request);
+    },
+    async close() {
+      await backend.close({ cancel: true });
+      await handler.close();
+    },
+  };
+}

@@ -3,7 +3,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libs
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY rust ./rust
-RUN cargo build --locked --release -p tonk-worker --features native-host --bin tonk-worker-host
+RUN cargo build --locked --release -p tonk-worker --features native-host --bin tonk-agent-worker
 
 FROM node:24-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
@@ -14,7 +14,7 @@ COPY mcp/*.mjs mcp/tools.json ./
 COPY mcp/hosted ./hosted
 COPY mcp/apps ./apps
 COPY mcp/chatgpt ./chatgpt
-COPY --from=native /src/target/release/tonk-worker-host /usr/local/bin/tonk-worker-host
+COPY --from=native /src/target/release/tonk-agent-worker /usr/local/bin/tonk-agent-worker
 COPY mcp/hosted/cloudflare/worker-entrypoint.sh /entrypoint.sh
 EXPOSE 8080
 ENTRYPOINT ["sh", "/entrypoint.sh"]

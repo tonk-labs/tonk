@@ -1,29 +1,10 @@
 export function connectionSettings(config) {
-  const clients = JSON.parse(config.vars.TONK_MCP_CLIENTS);
-  const labels = {
-    'Tonk for ChatGPT': 'ChatGPT',
-    'Tonk for Claude': 'Claude web',
-    'Tonk native client': 'Native',
-  };
-  const rows = clients.map((client) => {
-    const callbacks = client.redirectUris
-      .map((uri) => {
-        const callback = new URL(uri);
-        const display =
-          client.applicationType === 'native' && callback.protocol === 'http:'
-            ? `${callback.protocol}//${callback.hostname}:PORT${callback.pathname}${callback.search}`
-            : uri;
-        return `\`${display}\``;
-      })
-      .join(' or ');
-    return `| ${labels[client.displayName] ?? client.displayName} | \`${client.clientId}\` | ${callbacks} |`;
-  });
   return [
-    `**Server:** \`${config.vars.TONK_MCP_ISSUER}/mcp\`  `,
-    'Streamable HTTP · OAuth + PKCE · leave client secret empty',
+    `**Server:** \`${config.vars.TONK_MCP_ISSUER}/mcp\``,
+    'Streamable HTTP · no OAuth configuration',
     '',
-    '| Client | Client ID | Callback |',
-    '| --- | --- | --- |',
-    ...rows,
+    'Copy an agent link from the desired Tonk space and supply the complete link as',
+    '`agent_link` on every `tonk_query` or `tonk_evaluate` call, alongside `document`.',
+    'The link includes private credentials. Share it only with the intended agent.',
   ].join('\n');
 }

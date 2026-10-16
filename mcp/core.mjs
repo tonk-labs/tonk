@@ -6,7 +6,10 @@ export { TonkToolError } from './errors.mjs';
 import { instructions } from './authoring.mjs';
 import { registerAuthoringResources } from './authoring-resources.mjs';
 
-export function createTonkServer({ capabilities, call, spaceSelection }, { registerUI } = {}) {
+export function createTonkServer(
+  { capabilities, call, spaceSelection, agentLinkSelection },
+  { registerUI } = {},
+) {
   const server = new McpServer({ name: 'tonk', version: '0.1.0' }, { instructions });
   registerAuthoringResources(server);
   for (const tool of selectTools(capabilities)) {
@@ -14,7 +17,7 @@ export function createTonkServer({ capabilities, call, spaceSelection }, { regis
       tool.name,
       {
         description: tool.description,
-        inputSchema: z.fromJSONSchema(inputSchemaFor(tool, { spaceSelection })),
+        inputSchema: z.fromJSONSchema(inputSchemaFor(tool, { spaceSelection, agentLinkSelection })),
         annotations: tool.annotations,
       },
       async (args, context) => {
