@@ -83,7 +83,14 @@ export function agentLinkBackend({
             resolved.hash = fragment;
             link = resolved.href;
           } else link = url.href;
-        } catch {
+        } catch (error) {
+          // Operator diagnostics only: never log the link, which carries the
+          // capability in its fragment. stderr keeps stdio transports intact.
+          console.error(
+            'Agent link expansion failed:',
+            error?.message ?? 'unknown error',
+            error?.cause?.code ?? '',
+          );
           throw new TonkToolError('Could not resolve the agent link.');
         }
         signal?.throwIfAborted();
