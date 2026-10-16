@@ -23,8 +23,19 @@ mod server;
 
 const DEFAULT_REMOTE: &str = "https://tonk.network/ucan/";
 
+/// Keep the real stdout for the protocol and send fd 1 to stderr. The worker
+/// and its dependencies print diagnostics to stdout, which on a stdio MCP
+/// server would corrupt the stream the host reads.
+fn protocol_stdout() -> std::io::Result<std::fs::File> {
+    use std::os::fd::AsFd;
+    let protocol = rustix::io::dup(std::io::stdout().as_fd())?;
+    rustix::stdio::dup2_stdout(std::io::stderr().as_fd())?;
+    Ok(std::fs::File::from(protocol))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let protocol = tokio::fs::File::from_std(protocol_stdout()?);
     let root = match std::env::var_os("TONK_PEER_HOME") {
         Some(home) => PathBuf::from(home),
         None => dirs::home_dir()
@@ -37,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     let peer = owner::Peer::new(root, remote);
     let service = server::Server::new(peer.clone())
-        .serve(rmcp::transport::stdio())
+        .serve((tokio::io::stdin(), protocol))
         .await?;
     // The host ends the session by closing stdin; a signal does the same.
     tokio::select! {

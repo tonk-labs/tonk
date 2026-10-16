@@ -5280,6 +5280,7 @@ version = "0.6.16-rc.1"
 dependencies = [
  "dirs 5.0.1",
  "rmcp",
+ "rustix",
  "serde_json",
  "tokio",
  "tonk-worker",
