@@ -22,6 +22,12 @@ final class AccessModel: ObservableObject {
   private var journalURL: URL?
   private let vault = LinkVault(scope: RuntimeLocation.deployment.title)
   private var accountLoaded = false
+  /// The account's spaces, in catalog order; counts and pages follow it.
+  private var catalog: [String] = []
+  /// Spaces asked to refresh while a refresh was already reading them.
+  private var refreshAgain: Set<String> = []
+  /// Bumped by `reset`, so reads begun under another account are dropped.
+  private var generation = 0
 
   /// For layout fixtures only: show prepared access without a runtime.
   func showFixture(
@@ -29,6 +35,7 @@ final class AccessModel: ObservableObject {
     journal: AccessJournal
   ) {
     spaces = fixture
+    catalog = fixture.keys.sorted()
     agentConnections = agents
     self.accountName = accountName
     self.journal = journal
@@ -43,6 +50,9 @@ final class AccessModel: ObservableObject {
 
   /// Clears everything learned under the previous account.
   func reset() {
+    generation += 1
+    catalog = []
+    refreshAgain = []
     spaces = [:]
     errors = [:]
     agentConnections = []
@@ -56,8 +66,18 @@ final class AccessModel: ObservableObject {
 
   func links(for subject: String) -> [AccessLink] { spaces[subject]?.links ?? [] }
 
-  var allLinks: [AccessLink] {
-    spaces.keys.sorted().flatMap { links(for: $0) }
+  var allLinks: [AccessLink] { catalog.flatMap { links(for: $0) } }
+
+  /// Whether every catalog space has been read, successfully or not.
+  var loadedAll: Bool { catalog.allSatisfy { spaces[$0] != nil || errors[$0] != nil } }
+
+  /// Follow the account's catalog, dropping spaces that left it.
+  func setCatalog(_ spaces: [TonkSpace]) {
+    catalog = spaces.map(\.id)
+    let keep = Set(catalog)
+    self.spaces = self.spaces.filter { keep.contains($0.key) }
+    errors = errors.filter { keep.contains($0.key) || $0.key == "account" }
+    syncStates = syncStates.filter { keep.contains($0.key) }
   }
 
   var agentLinks: [AccessLink] { allLinks.filter(\.forAgents) }
@@ -72,15 +92,17 @@ final class AccessModel: ObservableObject {
 
   func refreshAccount() async {
     guard let runtime else { return }
+    let started = generation
     do {
       let result = try await runtime.accountScript(Self.accountScript)
+      guard generation == started else { return }
       let data = try JSONSerialization.data(withJSONObject: result["connections"] ?? [])
       agentConnections = try JSONDecoder().decode([AgentConnection].self, from: data)
       accountName = (result["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
       selfDid = (result["root"] as? String).flatMap { $0.isEmpty ? nil : $0 }
       accountLoaded = true
     } catch {
-      errors["account"] = Self.message(error)
+      if generation == started { errors["account"] = Self.message(error) }
     }
   }
 
@@ -93,14 +115,30 @@ final class AccessModel: ObservableObject {
             connections: Array.isArray(connections) ? connections : []};
     """
 
+  /// Read a space. A call while one is running makes it read again afterwards,
+  /// so the result always reflects every action that preceded the call.
   func refresh(_ space: TonkSpace) async {
-    guard let runtime, !loading.contains(space.id) else { return }
+    guard runtime != nil else { return }
+    if loading.contains(space.id) {
+      refreshAgain.insert(space.id)
+      return
+    }
     loading.insert(space.id)
     defer { loading.remove(space.id) }
+    repeat {
+      refreshAgain.remove(space.id)
+      await read(space)
+    } while refreshAgain.contains(space.id)
+  }
+
+  private func read(_ space: TonkSpace) async {
+    guard let runtime else { return }
+    let started = generation
     if !accountLoaded { await refreshAccount() }
     do {
       let result = try await runtime.accountScript(
         Self.spaceScript, arguments: ["subject": space.subject])
+      guard generation == started else { return }
       let invites = try Self.decode([InviteSummary].self, result["invites"])
       let members = Self.members(result["members"])
       let isPublic = (result["executions"] as? [[String: Any]] ?? []).contains {
@@ -119,12 +157,13 @@ final class AccessModel: ObservableObject {
       errors[space.id] = nil
       if let state = result["sync"] as? String { syncStates[space.id] = state }
     } catch {
-      errors[space.id] = Self.message(error)
+      if generation == started { errors[space.id] = Self.message(error) }
     }
   }
 
   /// Load each space once, sequentially, so counts fill in without a burst.
   func refreshAll(_ catalog: [TonkSpace]) async {
+    setCatalog(catalog)
     await refreshAccount()
     for space in catalog {
       guard !Task.isCancelled else { return }
@@ -134,8 +173,9 @@ final class AccessModel: ObservableObject {
 
   func refreshSync(_ catalog: [TonkSpace]) async {
     guard let runtime else { return }
+    let started = generation
     for space in catalog {
-      guard !Task.isCancelled else { return }
+      guard !Task.isCancelled, generation == started else { return }
       if let result = try? await runtime.accountScript(
         Self.syncScript, arguments: ["subject": space.subject]),
         let state = result["state"] as? String
@@ -175,6 +215,7 @@ final class AccessModel: ObservableObject {
     const status = fetch(main + '/sync/status', {signal: AbortSignal.timeout(15000)})
       .then(r => r.ok ? r.json() : {state: 'error'}).catch(() => ({state: 'error'}));
     // A missing part leaves its section empty instead of failing the overview.
+    // The roster is required: an empty one would wrongly read as "only you".
     const safe = (promise, fallback) => promise.catch(() => fallback);
     const [invites, members, executions, home, directories, info, sync] = await Promise.all([
       safe(api(base + '/invites'), []),
@@ -184,10 +225,10 @@ final class AccessModel: ObservableObject {
         name: field('xyz.tonk.membership/name', 'Text', true),
         invitation: field('xyz.tonk.membership/invitation', 'Entity', true)
       }, ['member', 'role', 'name', 'invitation']),
-      query({
+      safe(query({
         subject: field('xyz.tonk.invitation/subject', 'Entity'),
         kind: field('xyz.tonk.invitation-execution/kind', 'Text')
-      }, ['subject', 'kind']),
+      }, ['subject', 'kind']), []),
       safe(notation('name:\\n  this: id:tonk/space\\n'), []),
       safe(query({directory: field('xyz.tonk.view/directory', 'Text')}, ['directory']), []),
       safe(api(base), {}),

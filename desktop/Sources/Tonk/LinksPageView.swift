@@ -55,7 +55,7 @@ struct LinksPageView: View {
   }
 
   private var loadingAny: Bool {
-    !access.loading.isEmpty || access.spaces.count < spaces.count
+    !access.loading.isEmpty || !access.loadedAll
   }
 }
 
