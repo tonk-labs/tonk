@@ -19,6 +19,7 @@ use rmcp::ServiceExt;
 mod guide;
 mod owner;
 mod server;
+mod views;
 
 /// Keep the real stdout for the protocol and send fd 1 to stderr. The worker
 /// and its dependencies print diagnostics to stdout, which on a stdio MCP
@@ -41,7 +42,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .join("agent-peer"),
     };
     let peer = owner::Peer::new(root);
-    let service = server::Server::new(peer.clone())
+    let views = std::sync::Arc::new(views::Views::start().await?);
+    let service = server::Server::new(peer.clone(), views)
         .serve((tokio::io::stdin(), protocol))
         .await?;
     // The host ends the session by closing stdin; a signal does the same.

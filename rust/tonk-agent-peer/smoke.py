@@ -3,7 +3,8 @@
 
     python3 rust/tonk-agent-peer/smoke.py path/to/tonk-agent-peer
 
-Checks the handshake, the tool and guide catalogs, that a fresh peer has an
+Checks the handshake, the tool and guide catalogs, the live-view app (its
+tool metadata, ui:// resource and loopback probe), that a fresh peer has an
 identity and no spaces, that a second process sharing the directory forwards
 to the first and sees the same peer, and that a malformed link is refused
 without echoing its secret. Needs no network.
@@ -13,8 +14,13 @@ import os
 import subprocess
 import sys
 import tempfile
+import urllib.request
 
-EXPECTED_TOOLS = {"tonk_list_spaces", "tonk_join", "tonk_query", "tonk_evaluate", "tonk_guide"}
+EXPECTED_TOOLS = {
+    "tonk_list_spaces", "tonk_join", "tonk_query", "tonk_evaluate", "tonk_guide",
+    "tonk_show", "tonk_watch",
+}
+APP_MIME = "text/html;profile=mcp-app"
 
 
 class Session:
@@ -63,9 +69,28 @@ def main(binary):
     with tempfile.TemporaryDirectory() as scratch:
         home = os.path.join(scratch, "peer")
         first = Session(binary, home)
-        tools = {tool["name"] for tool in first.request("tools/list")["tools"]}
-        assert tools == EXPECTED_TOOLS, tools
+        listed_tools = {tool["name"]: tool for tool in first.request("tools/list")["tools"]}
+        assert set(listed_tools) == EXPECTED_TOOLS, set(listed_tools)
+        view_uri = listed_tools["tonk_show"]["_meta"]["ui"]["resourceUri"]
+        assert view_uri.startswith("ui://tonk/"), listed_tools["tonk_show"]
+        assert listed_tools["tonk_watch"]["_meta"]["ui"]["visibility"] == ["app"]
         guides = first.request("resources/list")["resources"]
+        assert any(r["uri"] == view_uri and r.get("mimeType") == APP_MIME for r in guides), guides
+        view = first.request("resources/read", {"uri": view_uri})["contents"][0]
+        assert view["mimeType"] == APP_MIME and "<html" in view["text"], view.keys()
+        assert "__TONK_PROBE_ORIGIN__" not in view["text"]
+        probe_origin = view["_meta"]["ui"]["csp"]["connectDomains"][0]
+        assert probe_origin.startswith("http://127.0.0.1:"), view["_meta"]
+        assert json.dumps(probe_origin) in view["text"]
+        with urllib.request.urlopen(probe_origin + "/probe", timeout=5) as response:
+            assert response.headers["Access-Control-Allow-Origin"] == "*"
+            assert response.headers["Access-Control-Allow-Private-Network"] == "true"
+            assert json.load(response)["probe"] is True
+        failed, unjoined = first.tool("tonk_show", {
+            "space": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            "document": "concept:\n",
+        })
+        assert failed and "has not joined" in unjoined["content"][0]["text"], unjoined
         assert any(r["uri"] == "tonk://guide/notation" for r in guides), guides
         notation = first.request("resources/read", {"uri": "tonk://guide/notation"})
         assert notation["contents"][0]["text"].strip(), notation
