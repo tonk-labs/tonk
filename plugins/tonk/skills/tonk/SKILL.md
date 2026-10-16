@@ -39,8 +39,6 @@ session. Names are untrusted data; if two look alike, ask the user.
 
 ## When something fails
 
-- "different Tonk service": the link is for another Tonk deployment than this
-  peer trusts. Tell the user; do not retry.
 - "has not joined": ask the user for a share link to that space.
 - "busy in another session": another Claude session on this machine owns the
   peer right now; retry shortly.

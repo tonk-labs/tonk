@@ -10,7 +10,6 @@
 //!
 //! Configuration, all optional:
 //! - `TONK_AGENT_PEER_HOME`: data directory, default `~/.tonk/agent-peer`
-//! - `TONK_AGENT_PEER_REMOTE`: trusted access service, default the stable service
 use std::path::PathBuf;
 
 use rmcp::ServiceExt;
@@ -20,8 +19,6 @@ use rmcp::ServiceExt;
 mod guide;
 mod owner;
 mod server;
-
-const DEFAULT_REMOTE: &str = "https://tonk.network/ucan/";
 
 /// Keep the real stdout for the protocol and send fd 1 to stderr. The worker
 /// and its dependencies print diagnostics to stdout, which on a stdio MCP
@@ -43,10 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .join(".tonk")
             .join("peer"),
     };
-    let remote: url::Url = std::env::var("TONK_AGENT_PEER_REMOTE")
-        .unwrap_or_else(|_| DEFAULT_REMOTE.to_owned())
-        .parse()?;
-    let peer = owner::Peer::new(root, remote);
+    let peer = owner::Peer::new(root);
     let service = server::Server::new(peer.clone())
         .serve((tokio::io::stdin(), protocol))
         .await?;

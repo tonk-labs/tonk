@@ -5,8 +5,8 @@
 
 Checks the handshake, the tool and guide catalogs, that a fresh peer has an
 identity and no spaces, that a second process sharing the directory forwards
-to the first and sees the same peer, and that a link for another service is
-refused. Needs no network.
+to the first and sees the same peer, and that a malformed link is refused
+without echoing its secret. Needs no network.
 """
 import json
 import os
@@ -19,7 +19,7 @@ EXPECTED_TOOLS = {"tonk_list_spaces", "tonk_join", "tonk_query", "tonk_evaluate"
 
 class Session:
     def __init__(self, binary, home):
-        env = dict(os.environ, TONK_AGENT_PEER_HOME=home, TONK_AGENT_PEER_REMOTE="https://tonk.network/ucan/")
+        env = dict(os.environ, TONK_AGENT_PEER_HOME=home)
         self.process = subprocess.Popen(
             [binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, text=True
         )
@@ -84,10 +84,10 @@ def main(binary):
 
         seed = "4" * 44
         failed, refused = second.tool("tonk_join", {
-            "link": f"https://evil.example/space/did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#{seed}"
+            "link": f"not a link #{seed}"
         })
         text = refused["content"][0]["text"]
-        assert failed and "different Tonk service" in text, refused
+        assert failed, refused
         assert seed not in text, refused
 
         # When the owner's session ends, the other takes over the same peer.

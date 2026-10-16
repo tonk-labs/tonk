@@ -29,8 +29,8 @@ To try a pull request's build, use the one-line `claude --plugin-url …` from t
   need the peer owns it: it keeps the worker open and syncs every 30 seconds.
   Other sessions forward their calls to it. When the owner's session ends, the
   next call anywhere takes over.
-- **Pinned service.** The peer only joins links for the Tonk service it
-  trusts, so a link found in fetched content cannot point it elsewhere.
+- **Any Tonk service.** Like the browser, the peer joins a space on whichever
+  service its link names. It joins only links you give it in the conversation.
 
 ## Configuration
 
@@ -38,9 +38,8 @@ Set these in the environment the host starts MCP servers with:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TONK_CHANNEL` | `stable` | `stable`, `staging`, or `dev` (latest `main` build, against tonk.foundation) |
+| `TONK_CHANNEL` | `stable` | `stable`, `staging`, or `dev` (latest `main` build) |
 | `TONK_RELEASE` | | Pin an exact release tag |
-| `TONK_AGENT_PEER_REMOTE` | follows the channel | Trusted access service |
 | `TONK_AGENT_PEER_HOME` | `~/.tonk/agent-peer` | Peer data directory |
 | `TONK_AGENT_PEER_BINARY` | | Run a local build instead (development) |
 

@@ -13,8 +13,7 @@ name: 'Agent peer'
 # Builds the local peer that the Tonk agent plugin launches on every pull
 # request and every merge to `main`, and drives each build over MCP stdio.
 # A merge also refreshes the rolling `tonk-agent-peer-dev` prerelease, which the
-# plugin's `dev` channel installs against the dev deployment (tonk.foundation)
-# that `main` already ships to. Releases build, sign and publish it from their
+# plugin's `dev` channel installs. Releases build, sign and publish it from their
 # tag in `release.yml`. Each pull request also gets a `tonk-agent-peer-pr-N`
 # prerelease and a comment with a one-line install of the plugin pinned to it.
 
@@ -108,7 +107,7 @@ jobs:
             rm tonk-agent-peer
           done
           sha256sum tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz > checksums.txt
-          plugins/tonk/package.sh tonk-plugin.zip tonk-agent-peer-dev https://tonk.foundation/ucan/
+          plugins/tonk/package.sh tonk-plugin.zip tonk-agent-peer-dev
       - name: Replace the rolling dev release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -156,7 +155,7 @@ jobs:
             rm tonk-agent-peer
           done
           sha256sum tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz > checksums.txt
-          plugins/tonk/package.sh tonk-plugin.zip "$TAG" https://tonk.foundation/ucan/
+          plugins/tonk/package.sh tonk-plugin.zip "$TAG"
       - name: Replace the preview release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -183,7 +182,7 @@ jobs:
             claude --plugin-url ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ env.TAG }}/tonk-plugin.zip
             ```
 
-            The plugin is pinned to this preview's binary and trusts **tonk.foundation**, so paste a share link from a tonk.foundation space. Its identity and joined spaces live in `~/.tonk/agent-peer`; remove that directory to start over.
+            The plugin is pinned to this preview's binary. Paste a share or agent link for any Tonk space. Its identity and joined spaces live in `~/.tonk/agent-peer`; remove that directory to start over.
 
   cleanup-preview:
     name: 'Remove preview'

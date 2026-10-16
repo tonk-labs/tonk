@@ -11,15 +11,13 @@
 # Environment, all optional:
 #   TONK_CHANNEL       stable (default), staging, or dev (latest main build)
 #   TONK_RELEASE       pin an exact release tag (wins over TONK_CHANNEL)
-#   TONK_AGENT_PEER_REMOTE   trusted access service (default follows the channel)
 #   TONK_AGENT_PEER_HOME     peer data directory (default ~/.tonk/agent-peer)
 #   TONK_AGENT_PEER_BINARY   run this binary instead (development)
 set -eu
 
-# Packaged previews pin these (see plugins/tonk/package.sh); the environment
+# Packaged previews pin this (see plugins/tonk/package.sh); the environment
 # still wins.
 PINNED_RELEASE=""
-PINNED_REMOTE=""
 
 REPO="tonk-labs/tonk"
 say() { printf 'tonk-agent-peer: %s\n' "$1" >&2; }
@@ -29,25 +27,20 @@ CHANNEL="${TONK_CHANNEL:-stable}"
 case "$CHANNEL" in
   stable)
     BASE="https://github.com/${REPO}/releases/latest/download"
-    REMOTE="https://tonk.network/ucan/"
     ;;
   staging)
     BASE="https://github.com/${REPO}/releases/download/tonk-staging"
-    REMOTE="https://staging.tonk.xyz/ucan/"
     ;;
   dev)
     BASE="https://github.com/${REPO}/releases/download/tonk-agent-peer-dev"
-    REMOTE="https://tonk.foundation/ucan/"
     ;;
   *) die "unknown TONK_CHANNEL '$CHANNEL' (use stable, staging or dev)" ;;
 esac
 TONK_RELEASE="${TONK_RELEASE:-$PINNED_RELEASE}"
-[ -z "$PINNED_REMOTE" ] || REMOTE="$PINNED_REMOTE"
 if [ -n "${TONK_RELEASE:-}" ]; then
   BASE="https://github.com/${REPO}/releases/download/${TONK_RELEASE}"
   CHANNEL="$TONK_RELEASE"
 fi
-export TONK_AGENT_PEER_REMOTE="${TONK_AGENT_PEER_REMOTE:-$REMOTE}"
 
 if [ -n "${TONK_AGENT_PEER_BINARY:-}" ]; then
   exec "$TONK_AGENT_PEER_BINARY"

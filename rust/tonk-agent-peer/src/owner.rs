@@ -25,7 +25,6 @@ const FORWARD_TIMEOUT: Duration = Duration::from_secs(180);
 #[derive(Clone)]
 pub struct Peer {
     root: PathBuf,
-    remote: url::Url,
     role: Arc<Mutex<Role>>,
 }
 
@@ -40,10 +39,9 @@ enum Role {
 }
 
 impl Peer {
-    pub fn new(root: PathBuf, remote: url::Url) -> Self {
+    pub fn new(root: PathBuf) -> Self {
         Self {
             root,
-            remote,
             role: Arc::new(Mutex::new(Role::Unclaimed)),
         }
     }
@@ -96,9 +94,7 @@ impl Peer {
         let Some(lock) = tonk_worker::try_lock_peer(&self.root).map_err(unavailable)? else {
             return Ok(None);
         };
-        let peer = Arc::new(Mutex::new(
-            LocalPeer::open(self.root.clone(), self.remote.clone()).await?,
-        ));
+        let peer = Arc::new(Mutex::new(LocalPeer::open(self.root.clone()).await?));
         let socket = self.socket();
         // A socket file left by a previous owner is stale: we hold the lock.
         let _ = std::fs::remove_file(&socket);

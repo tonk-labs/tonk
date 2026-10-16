@@ -17,4 +17,3 @@ rustix = { workspace = true, features = ["stdio"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "io-std", "io-util", "net", "sync", "time", "signal"] }
 tonk-worker = { workspace = true, features = ["native-host"] }
-url = { workspace = true }

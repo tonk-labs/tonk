@@ -3,16 +3,12 @@
 //! generates on first use and never receives from a link. Pasted share links
 //! are redeemed through the ordinary join, which delegates the membership to
 //! this peer's account, so the link itself is no longer needed afterwards and
-//! the space owner can withdraw it.
-//!
-//! The host pins the trusted access-service URL. A link naming any other
-//! service is refused before anything is claimed, so content fetched by the
-//! agent cannot point the peer at an unknown remote.
+//! the space owner can withdraw it. Like the browser peer, it joins spaces on
+//! any Tonk service the user's link names.
 use std::path::{Path, PathBuf};
 
 use axum::{Router, body::Body, http::Request};
 use serde_json::{Value, json};
-use tonk_invite::{Invite, Ticket};
 use tower_service::Service;
 
 use super::agent_link::{clear_journal, create_journal, request, request_method};
@@ -28,14 +24,13 @@ pub struct LocalPeer {
     state: crate::AppState,
     hub: std::sync::Arc<crate::router::lsp::LspHub>,
     root: PathBuf,
-    remote: url::Url,
     did: String,
 }
 
 impl LocalPeer {
     /// Open the peer's one persistent profile, generating its key on first
     /// use. The caller must hold the lock returned by [`try_lock`].
-    pub async fn open(root: PathBuf, remote: url::Url) -> Result<Self, String> {
+    pub async fn open(root: PathBuf) -> Result<Self, String> {
         create_private_dir(&root).map_err(|_| "Peer storage is unavailable.".to_owned())?;
         let state = TonkState::open_native(&root.join("peer"))
             .await
@@ -47,7 +42,6 @@ impl LocalPeer {
             state,
             hub,
             root,
-            remote,
             did,
         })
     }
@@ -103,7 +97,6 @@ impl LocalPeer {
                 if is_agent_link(&link) {
                     return self.join_agent(&link).await;
                 }
-                self.pin(&link).await?;
                 join(&mut self.router, &link).await
             }
             "tonk_list_spaces" => list(&mut self.router, self.did.clone()).await,
@@ -143,16 +136,14 @@ impl LocalPeer {
         }
     }
 
-    /// Expand a `/@/` shortcut into the link it stands for. Only the pinned
-    /// service is asked, and the private fragment is never sent: the server
-    /// answers a fragment-free request and the fragment is reattached.
+    /// Expand a `/@/` shortcut into the link it stands for. The private
+    /// fragment is never sent: the server answers a fragment-free request and
+    /// the fragment is reattached.
     async fn expand(&self, link: &str) -> Result<String, String> {
-        let parsed = url::Url::parse(link).map_err(|_| "That is not a Tonk share link.".to_owned())?;
+        let parsed =
+            url::Url::parse(link).map_err(|_| "That is not a Tonk share link.".to_owned())?;
         if !parsed.path().starts_with("/@/") {
             return Ok(link.to_owned());
-        }
-        if parsed.origin() != self.remote.origin() {
-            return Err(self.foreign());
         }
         super::join::resolve_shortcut(link)
             .await
@@ -175,11 +166,15 @@ impl LocalPeer {
 
         let invalid = || "Invalid, expired or untrusted agent link.".to_owned();
         let now = Timestamp::now();
-        let hint = AgentInvite::inspect_url(link, now).await.map_err(|_| invalid())?;
-        let scopes = candidate_build_scopes(&hint.subject);
-        let invite = AgentInvite::parse_url(link, &scopes, &self.remote, now)
+        let hint = AgentInvite::inspect_url(link, now)
             .await
-            .map_err(|_| self.foreign())?;
+            .map_err(|_| invalid())?;
+        let scopes = candidate_build_scopes(&hint.subject);
+        // The link's own signed route is the service it is redeemed against.
+        let remote = hint.remote;
+        let invite = AgentInvite::parse_url(link, &scopes, &remote, now)
+            .await
+            .map_err(|_| invalid())?;
         let link_key = Signer::from(
             Ed25519Signer::import(invite.secret_seed())
                 .await
@@ -188,7 +183,11 @@ impl LocalPeer {
         let subject = invite.grants().subject().clone();
         let renewed = list(&mut self.router, self.did.clone()).await?["spaces"]
             .as_array()
-            .is_some_and(|spaces| spaces.iter().any(|entry| entry["subject"] == subject.to_string()));
+            .is_some_and(|spaces| {
+                spaces
+                    .iter()
+                    .any(|entry| entry["subject"] == subject.to_string())
+            });
         let state = self.state.write().await;
         let peer = state.profile.did();
         let mut chains = Vec::new();
@@ -207,7 +206,7 @@ impl LocalPeer {
                 .map_err(|_| invalid())?;
             chains.push(chain.push(hop).map_err(|_| invalid())?);
         }
-        let grants = SpaceGrantBundle::validate(chains, &peer, &scopes, &self.remote, now)
+        let grants = SpaceGrantBundle::validate(chains, &peer, &scopes, &remote, now)
             .await
             .map_err(|_| invalid())?;
         let stored = async {
@@ -249,39 +248,16 @@ impl LocalPeer {
         .and_then(|info| info["label"].as_str().map(str::to_owned));
         Ok(json!({ "subject": subject.to_string(), "name": name, "renewed": renewed }))
     }
-
-    fn foreign(&self) -> String {
-        format!(
-            "This link belongs to a different Tonk service than this peer trusts ({}).",
-            self.remote.origin().ascii_serialization()
-        )
-    }
-
-    /// Refuse a link whose access service is not the pinned one.
-    async fn pin(&self, link: &str) -> Result<(), String> {
-        let malformed = || "That is not a Tonk share link.".to_owned();
-        let remote = if let Some(ticket) = Ticket::public_for_url(link).map_err(|_| malformed())? {
-            Some(ticket.remote().clone())
-        } else if let Some(ticket) = Ticket::parse_url(link).map_err(|_| malformed())? {
-            Some(ticket.remote().clone())
-        } else {
-            Invite::parse_url(link)
-                .await
-                .map_err(|_| malformed())?
-                .remote_url
-        };
-        match remote {
-            Some(remote) if remote.origin() == self.remote.origin() => Ok(()),
-            _ => Err(self.foreign()),
-        }
-    }
 }
 
 /// Agent links carry their key in a versioned fragment.
 fn is_agent_link(link: &str) -> bool {
     url::Url::parse(link)
         .ok()
-        .and_then(|url| url.fragment().map(|fragment| fragment.starts_with("tonk-agent-")))
+        .and_then(|url| {
+            url.fragment()
+                .map(|fragment| fragment.starts_with("tonk-agent-"))
+        })
         .unwrap_or(false)
 }
 
@@ -467,13 +443,12 @@ mod tests {
     use super::*;
 
     fn scratch() -> PathBuf {
-        std::env::temp_dir().join(format!("tonk-agent-peer-spike-{}", rand::random::<u64>()))
+        std::env::temp_dir().join(format!("tonk-peer-spike-{}", rand::random::<u64>()))
     }
 
     #[tokio::test]
     async fn one_owner_keeps_one_identity_and_starts_with_no_spaces() {
         let root = scratch();
-        let remote: url::Url = "http://127.0.0.1:9/ucan/".parse().unwrap();
         let lock = try_lock(&root)
             .unwrap()
             .expect("first process owns the peer");
@@ -481,7 +456,7 @@ mod tests {
             try_lock(&root).unwrap().is_none(),
             "a second owner is refused"
         );
-        let mut peer = LocalPeer::open(root.clone(), remote.clone()).await.unwrap();
+        let mut peer = LocalPeer::open(root.clone()).await.unwrap();
         let first = peer.call("tonk_list_spaces", &json!({})).await.unwrap();
         assert!(first["peer"].as_str().unwrap().starts_with("did:key:"));
         assert_eq!(first["peer"], peer.did());
@@ -489,7 +464,7 @@ mod tests {
         peer.close().await;
         drop(lock);
         let _lock = try_lock(&root).unwrap().expect("ownership passes on");
-        let mut again = LocalPeer::open(root.clone(), remote).await.unwrap();
+        let mut again = LocalPeer::open(root.clone()).await.unwrap();
         let second = again.call("tonk_list_spaces", &json!({})).await.unwrap();
         assert_eq!(first["peer"], second["peer"]);
         again.close().await;
@@ -497,21 +472,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_refuses_links_for_another_service_and_unjoined_spaces() {
+    async fn peer_refuses_malformed_links_and_unjoined_spaces() {
         let root = scratch();
-        let remote: url::Url = "https://tonk.foundation/ucan/".parse().unwrap();
         let _lock = try_lock(&root).unwrap().unwrap();
-        let mut peer = LocalPeer::open(root.clone(), remote).await.unwrap();
+        let mut peer = LocalPeer::open(root.clone()).await.unwrap();
         let seed = bs58::encode([7u8; 32]).into_string();
-        let foreign = format!(
-            "https://evil.example/space/did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#{seed}"
-        );
+        let malformed = format!("not a link #{seed}");
         let refused = peer
-            .call("tonk_join", &json!({ "link": foreign }))
+            .call("tonk_join", &json!({ "link": malformed }))
             .await
             .unwrap_err();
-        assert!(refused.contains("different Tonk service"), "{refused}");
-        assert!(!refused.contains(&seed));
+        assert!(!refused.contains(&seed), "{refused}");
         let unjoined = peer
             .call(
                 "tonk_query",

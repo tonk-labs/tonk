@@ -4827,7 +4827,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tonk-worker",
- "url",
 ]
 
 [[package]]
