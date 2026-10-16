@@ -32,6 +32,22 @@ To try a pull request's build, use the one-line `claude --plugin-url …` from t
 - **Any Tonk service.** Like the browser, the peer joins a space on whichever
   service its link names. It joins only links you give it in the conversation.
 
+## Live views (experimental)
+
+`tonk_show` renders the result of a query as a live view inside the
+conversation, using MCP Apps. The view keeps itself current by long-polling the
+peer (`tonk_watch`, which only the view can call), so changes made anywhere,
+including other people's, appear within seconds.
+
+Views render where the host supports MCP Apps from a local server: Claude
+Desktop chat, through the `tonk-agent-peer-<platform>.mcpb` extension from a
+release, and possibly Cowork. Claude Code shows the result as text. The
+extension and the plugin run the same peer and share its data directory.
+
+The view's "Sandbox checks" panel reports whether the host lets it compile
+WebAssembly and reach a loopback origin; both decide how Tonk's own view
+runtime could run inside it.
+
 ## Configuration
 
 Set these in the environment the host starts MCP servers with:

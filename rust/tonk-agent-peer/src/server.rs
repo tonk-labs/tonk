@@ -1,6 +1,7 @@
 //! The MCP surface. Tool definitions come from the shared catalog in
 //! `mcp/tools.json`, so every Tonk host describes the same tools the same way;
-//! guides are the CLI's canonical manuals.
+//! guides are the CLI's canonical manuals. Live views (MCP Apps) are offered
+//! beside them by [`crate::views`].
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     model::{
@@ -13,7 +14,9 @@ use rmcp::{
 };
 use serde_json::{Value, json};
 
-use crate::{guide, owner::Peer};
+use std::sync::Arc;
+
+use crate::{guide, owner::Peer, views::Views};
 
 const CATALOG: &str = include_str!("../../../mcp/tools.json");
 /// Tools this host offers, in catalog order.
@@ -31,10 +34,11 @@ const SCOPED: &[&str] = &["tonk_query", "tonk_evaluate"];
 pub struct Server {
     peer: Peer,
     tools: Vec<Tool>,
+    views: Arc<Views>,
 }
 
 impl Server {
-    pub fn new(peer: Peer) -> Self {
+    pub fn new(peer: Peer, views: Arc<Views>) -> Self {
         let catalog: Value = serde_json::from_str(CATALOG).expect("valid tool catalog");
         let tools = catalog["tools"]
             .as_array()
@@ -58,7 +62,9 @@ impl Server {
             })
             .collect::<Vec<Tool>>();
         assert_eq!(tools.len(), TOOLS.len(), "catalog misses a peer tool");
-        Self { peer, tools }
+        let mut tools = tools;
+        tools.extend(views.tools());
+        Self { peer, tools, views }
     }
 }
 
@@ -110,10 +116,13 @@ impl ServerHandler for Server {
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let name = request.name.as_ref();
+        let arguments = Value::Object(request.arguments.unwrap_or_default());
+        if let Some(result) = self.views.call(&self.peer, name, &arguments).await {
+            return Ok(result.into());
+        }
         if !TOOLS.contains(&name) {
             return Ok(text(json!("Tool unavailable."), true).into());
         }
-        let arguments = Value::Object(request.arguments.unwrap_or_default());
         if name == "tonk_guide" {
             let topic = arguments["topic"].as_str().unwrap_or("");
             return Ok(match (topic, guide_topic(topic)) {
@@ -150,6 +159,7 @@ impl ServerHandler for Server {
                 )
                 .with_mime_type("text/markdown")
             })
+            .chain(std::iter::once(self.views.resource()))
             .collect::<Vec<_>>();
         Ok(ListResourcesResult::with_all_items(resources))
     }
@@ -159,6 +169,9 @@ impl ServerHandler for Server {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
+        if let Some(contents) = self.views.read(&request.uri) {
+            return Ok(ReadResourceResult::new(vec![contents]).into());
+        }
         let body = request
             .uri
             .strip_prefix("tonk://guide/")
