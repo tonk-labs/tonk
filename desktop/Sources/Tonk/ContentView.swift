@@ -169,11 +169,6 @@ struct ContentView: View {
 
   @ToolbarContentBuilder
   private var windowToolbar: some ToolbarContent {
-    // While the sidebar is hidden its own toolbar goes with it; show the toggle here.
-    if model.openedSpace == nil && runtime.showsSpacePicker && sidebarColumns == .detailOnly {
-      ToolbarItem(id: "show-sidebar", placement: .navigation) { sidebarToggle }
-        .customGlassToolbarItem()
-    }
     if model.openedSpace != nil {
       ToolbarItem(id: "toggle-chat", placement: .navigation) {
         Button {
@@ -615,7 +610,12 @@ struct ContentView: View {
       // Replaced by a circular toggle that matches the window's other controls.
       .toolbar(removing: .sidebarToggle)
       .toolbar {
-        ToolbarItem(id: "hide-sidebar", placement: .automatic) { sidebarToggle }
+        // Trailing edge of the sidebar, where the system toggle sat. It stays
+        // in the titlebar when the sidebar collapses, so one toggle serves both.
+        if #available(macOS 26.0, *) {
+          ToolbarSpacer(.flexible)
+        }
+        ToolbarItem(id: "toggle-sidebar", placement: .automatic) { sidebarToggle }
           .customGlassToolbarItem()
       }
     } detail: {
