@@ -1,0 +1,67 @@
+on:
+  pull_request:
+
+name: 'Peer'
+
+# Builds the local peer that the Tonk agent plugin launches, on every pull
+# request, and drives each build over MCP stdio. Releases build, sign and
+# publish it from their tag in `release.yml`.
+
+concurrency:
+  group: peer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-peer:
+    name: 'Build ${{ matrix.artifact-name }}'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact-name: tonk-peer-linux-x86_64
+          - os: macos-latest
+            artifact-name: tonk-peer-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wimpysworld/nothing-but-nix@main
+        if: runner.os == 'Linux'
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Build tonk-peer'
+        run: nix build --accept-flake-config .#tonk-peer
+      - name: 'Stage tonk-peer artifact'
+        run: |
+          mkdir -p artifacts
+          cp result/bin/tonk-peer artifacts/tonk-peer
+          chmod 0755 artifacts/tonk-peer
+      - name: 'Smoke over MCP stdio'
+        run: python3 rust/tonk-peer/smoke.py artifacts/tonk-peer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: artifacts/tonk-peer
+
+  plugin:
+    name: 'Check plugin'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 'Manifests parse and the launcher is valid shell'
+        run: |
+          set -euo pipefail
+          for manifest in .claude-plugin/marketplace.json plugins/tonk/.claude-plugin/plugin.json plugins/tonk/.mcp.json; do
+            python3 -m json.tool "$manifest" > /dev/null
+          done
+          sh -n plugins/tonk/scripts/tonk-peer
+          test -x plugins/tonk/scripts/tonk-peer
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 'Validate with Claude Code'
+        run: npx --yes @anthropic-ai/claude-code plugin validate ./plugins/tonk

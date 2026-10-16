@@ -17,7 +17,7 @@ export function selectTools(names) {
 
 // These tools operate without an already-selected space. Keep target policy
 // separate from tool registration so account and pinned hosts share schemas.
-const unscopedTools = new Set(['tonk_list_spaces', 'tonk_guide', 'tonk_join']);
+const unscopedTools = new Set(['tonk_list_spaces', 'tonk_guide']);
 
 export function inputSchemaFor(tool, { spaceSelection = false, agentLinkSelection = false } = {}) {
   const schema = structuredClone(tool.inputSchema);

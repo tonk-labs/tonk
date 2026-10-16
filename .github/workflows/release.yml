@@ -95,6 +95,55 @@ jobs:
           name: ${{ matrix.artifact-name }}
           path: artifacts/tonk
 
+  # The local peer that agent-host plugins launch. Built and signed exactly
+  # like the CLI; the plugin's launcher verifies it against checksums.txt.
+  build-peer:
+    name: 'Build ${{ matrix.artifact-name }}'
+    needs: ['resolve']
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact-name: tonk-peer-linux-x86_64
+          - os: macos-latest
+            artifact-name: tonk-peer-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/resolve-release
+      - uses: wimpysworld/nothing-but-nix@main
+        if: runner.os == 'Linux'
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Build tonk-peer'
+        run: nix build --accept-flake-config .#tonk-peer
+      - name: 'Stage tonk-peer artifact'
+        run: |
+          mkdir -p artifacts
+          cp result/bin/tonk-peer artifacts/tonk-peer
+          chmod 0755 artifacts/tonk-peer
+      - name: 'Sign and notarize macOS artifact'
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/sign-notarize-macos
+        with:
+          binary-path: artifacts/tonk-peer
+          certificate-p12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          app-store-connect-key: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+          app-store-connect-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          app-store-connect-issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: artifacts/tonk-peer
+
   artifact-smoke:
     needs: ['resolve', 'build-cli']
     uses: ./.github/workflows/cli-smoke.yml
@@ -104,7 +153,7 @@ jobs:
 
   publish:
     name: 'Publish GitHub release'
-    needs: ['resolve', 'build-cli', 'build-desktop', 'artifact-smoke']
+    needs: ['resolve', 'build-cli', 'build-peer', 'build-desktop', 'artifact-smoke']
     runs-on: ubuntu-latest
     timeout-minutes: 200
     permissions:
@@ -127,6 +176,14 @@ jobs:
           path: artifacts/linux-x86_64
       - uses: actions/download-artifact@v4
         with:
+          name: tonk-peer-macos-arm64
+          path: artifacts/peer-macos-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-peer-linux-x86_64
+          path: artifacts/peer-linux-x86_64
+      - uses: actions/download-artifact@v4
+        with:
           name: Tonk-desktop-macos-arm64
           path: desktop-assets
       - name: Prepare release assets
@@ -140,8 +197,15 @@ jobs:
           install -m 0755 artifacts/linux-x86_64/tonk tonk
           tar -czf tonk-linux-x86_64.tar.gz tonk
           rm tonk
-          # Checksums the installer verifies before installing.
-          sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz > checksums.txt
+          install -m 0755 artifacts/peer-macos-arm64/tonk-peer tonk-peer
+          tar -czf tonk-peer-macos-arm64.tar.gz tonk-peer
+          rm tonk-peer
+          install -m 0755 artifacts/peer-linux-x86_64/tonk-peer tonk-peer
+          tar -czf tonk-peer-linux-x86_64.tar.gz tonk-peer
+          rm tonk-peer
+          # Checksums the installer and the plugin launcher verify.
+          sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz \
+            tonk-peer-macos-arm64.tar.gz tonk-peer-linux-x86_64.tar.gz > checksums.txt
           # Release identity for `tonk update`.
           cat > manifest.json <<EOF
           {
@@ -177,6 +241,8 @@ jobs:
           files: |
             tonk-macos-arm64.tar.gz
             tonk-linux-x86_64.tar.gz
+            tonk-peer-macos-arm64.tar.gz
+            tonk-peer-linux-x86_64.tar.gz
             checksums.txt
             manifest.json
             install.sh
@@ -215,6 +281,8 @@ jobs:
           files: |
             tonk-macos-arm64.tar.gz
             tonk-linux-x86_64.tar.gz
+            tonk-peer-macos-arm64.tar.gz
+            tonk-peer-linux-x86_64.tar.gz
             checksums.txt
             manifest.json
             install.sh

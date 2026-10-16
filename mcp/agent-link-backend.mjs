@@ -51,7 +51,38 @@ export function agentLinkBackend({
         signal?.throwIfAborted();
         let link;
         try {
-          link = await resolveShortcut(args.agent_link, linkOrigin, signal);
+          const url = new URL(args.agent_link);
+          if (url.pathname.startsWith('/@/')) {
+            if (url.origin !== linkOrigin || url.username || url.password || !url.hash)
+              throw Error('Invalid shortcut');
+            const fragment = url.hash;
+            url.hash = '';
+            const response = await fetch(url, {
+              redirect: 'manual',
+              signal: signal
+                ? AbortSignal.any([signal, AbortSignal.timeout(5000)])
+                : AbortSignal.timeout(5000),
+            });
+            await response.body?.cancel();
+            const location = response.headers.get('location');
+            if (
+              ![301, 302, 303, 307, 308].includes(response.status) ||
+              !location ||
+              location.length > 160000
+            )
+              throw Error('Invalid redirect');
+            const resolved = new URL(location, url);
+            if (
+              resolved.origin !== linkOrigin ||
+              resolved.username ||
+              resolved.password ||
+              resolved.hash ||
+              resolved.pathname.startsWith('/@/')
+            )
+              throw Error('Invalid redirect');
+            resolved.hash = fragment;
+            link = resolved.href;
+          } else link = url.href;
         } catch {
           throw new TonkToolError('Could not resolve the agent link.');
         }
@@ -90,14 +121,7 @@ export function agentLinkBackend({
   };
 }
 
-export function invoke({
-  binary,
-  dataDirectory,
-  remote,
-  input,
-  signal,
-  marker = 'TONK_AGENT_LINK_RESULT ',
-}) {
+function invoke({ binary, dataDirectory, remote, input, signal }) {
   return new Promise((resolve, reject) => {
     const timeout = AbortSignal.timeout(120000);
     const child = spawn(binary, [dataDirectory, remote], {
@@ -148,6 +172,7 @@ export function invoke({
       if (failed || code !== 0) return fail();
       try {
         const last = output.trimEnd().split('\n').at(-1);
+        const marker = 'TONK_AGENT_LINK_RESULT ';
         if (!last.startsWith(marker)) return fail();
         resolve(JSON.parse(last.slice(marker.length)));
       } catch {
@@ -156,36 +181,4 @@ export function invoke({
     });
     child.stdin.end(JSON.stringify(input));
   });
-}
-
-// Expand a same-origin `/@/` shortcut by one manual redirect. The private
-// fragment never leaves this process; any other link is returned unchanged.
-export async function resolveShortcut(href, linkOrigin, signal) {
-  const url = new URL(href);
-  if (!url.pathname.startsWith('/@/')) return url.href;
-  if (url.origin !== linkOrigin || url.username || url.password || !url.hash)
-    throw Error('Invalid shortcut');
-  const fragment = url.hash;
-  url.hash = '';
-  const response = await fetch(url, {
-    redirect: 'manual',
-    signal: signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(5000)])
-      : AbortSignal.timeout(5000),
-  });
-  await response.body?.cancel();
-  const location = response.headers.get('location');
-  if (![301, 302, 303, 307, 308].includes(response.status) || !location || location.length > 160000)
-    throw Error('Invalid redirect');
-  const resolved = new URL(location, url);
-  if (
-    resolved.origin !== linkOrigin ||
-    resolved.username ||
-    resolved.password ||
-    resolved.hash ||
-    resolved.pathname.startsWith('/@/')
-  )
-    throw Error('Invalid redirect');
-  resolved.hash = fragment;
-  return resolved.href;
 }

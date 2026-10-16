@@ -1,0 +1,108 @@
+#!/bin/sh
+# Launch the local Tonk peer as this plugin's stdio MCP server.
+#
+# The peer is a signed native binary published with each Tonk release. This
+# launcher fetches the one for this platform, verifies it against the
+# release's checksums.txt, caches it, and execs it. It checks for a newer
+# release at most once a day and keeps using the cached binary when offline.
+#
+# stdout belongs to the MCP protocol: every message here goes to stderr.
+#
+# Environment, all optional:
+#   TONK_CHANNEL       stable (default) or staging
+#   TONK_RELEASE       pin an exact release tag (wins over TONK_CHANNEL)
+#   TONK_PEER_REMOTE   trusted access service (default follows the channel)
+#   TONK_PEER_HOME     peer data directory (default ~/.tonk/peer)
+#   TONK_PEER_BINARY   run this binary instead (development)
+set -eu
+
+REPO="tonk-labs/tonk"
+say() { printf 'tonk-peer: %s\n' "$1" >&2; }
+die() { say "$1"; exit 1; }
+
+CHANNEL="${TONK_CHANNEL:-stable}"
+case "$CHANNEL" in
+  stable)
+    BASE="https://github.com/${REPO}/releases/latest/download"
+    REMOTE="https://tonk.network/ucan/"
+    ;;
+  staging)
+    BASE="https://github.com/${REPO}/releases/download/tonk-staging"
+    REMOTE="https://staging.tonk.xyz/ucan/"
+    ;;
+  *) die "unknown TONK_CHANNEL '$CHANNEL' (use stable or staging)" ;;
+esac
+if [ -n "${TONK_RELEASE:-}" ]; then
+  BASE="https://github.com/${REPO}/releases/download/${TONK_RELEASE}"
+  CHANNEL="$TONK_RELEASE"
+fi
+export TONK_PEER_REMOTE="${TONK_PEER_REMOTE:-$REMOTE}"
+
+if [ -n "${TONK_PEER_BINARY:-}" ]; then
+  exec "$TONK_PEER_BINARY"
+fi
+
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) PLATFORM="macos-arm64" ;;
+  Linux-x86_64) PLATFORM="linux-x86_64" ;;
+  *) die "no tonk-peer build for $(uname -s) $(uname -m) yet" ;;
+esac
+ASSET="tonk-peer-${PLATFORM}.tar.gz"
+
+CACHE="${HOME}/.tonk/bin/${CHANNEL}"
+BIN="${CACHE}/tonk-peer"
+STAMP="${CACHE}/checked"
+
+fetch() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q "$1" -O "$2"
+  else
+    return 1
+  fi
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+# Download, verify and atomically install the current release's binary.
+# Returns non-zero, leaving any cached binary untouched, on any failure.
+update() {
+  mkdir -p "$CACHE"
+  chmod 0700 "${HOME}/.tonk/bin" "$CACHE" 2>/dev/null || true
+  tmp="$(mktemp -d "${CACHE}/.update.XXXXXX")" || return 1
+  trap 'rm -rf "$tmp"' EXIT
+  fetch "${BASE}/checksums.txt" "$tmp/checksums.txt" || return 1
+  expected="$(awk -v f="$ASSET" '{name=$2; sub(/^\*/, "", name); if (name == f) {print $1; exit}}' "$tmp/checksums.txt")"
+  [ -n "$expected" ] || { say "release has no $ASSET"; return 1; }
+  if [ -x "$BIN" ] && [ "$(cat "${CACHE}/sha256" 2>/dev/null || true)" = "$expected" ]; then
+    touch "$STAMP"
+    return 0
+  fi
+  fetch "${BASE}/${ASSET}" "$tmp/$ASSET" || return 1
+  [ "$(sha256_of "$tmp/$ASSET")" = "$expected" ] || { say "checksum mismatch for $ASSET"; return 1; }
+  tar -xzf "$tmp/$ASSET" -C "$tmp" tonk-peer || return 1
+  chmod 0755 "$tmp/tonk-peer"
+  mv -f "$tmp/tonk-peer" "$BIN"
+  printf '%s\n' "$expected" > "${CACHE}/sha256"
+  touch "$STAMP"
+  say "installed tonk-peer from ${CHANNEL}"
+}
+
+fresh() {
+  [ -x "$BIN" ] && [ -f "$STAMP" ] && [ -n "$(find "$STAMP" -mmin -1440 2>/dev/null)" ]
+}
+
+if ! fresh; then
+  if ! (update); then
+    [ -x "$BIN" ] || die "could not download tonk-peer from ${BASE}"
+    say "could not check for an update; using the cached binary"
+  fi
+fi
+exec "$BIN"

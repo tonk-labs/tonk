@@ -18,22 +18,66 @@ use tower_service::Service;
 use super::agent_link::{clear_journal, create_journal, request, request_method};
 use crate::TonkState;
 
-/// A persistent peer over one private data directory.
-pub struct LocalPeerWorker {
+/// A long-lived local peer over one private data directory.
+///
+/// Only the process holding the directory lock (see [`try_lock`]) may open
+/// it; that owner keeps the worker open for its whole life so it can sync in
+/// the background, and other processes forward their calls to it.
+pub struct LocalPeer {
+    router: Router,
+    state: crate::AppState,
+    hub: std::sync::Arc<crate::router::lsp::LspHub>,
     root: PathBuf,
     remote: url::Url,
+    did: String,
 }
 
-impl LocalPeerWorker {
-    /// Pin a host-owned data directory and independently trusted remote.
-    pub fn new(root: PathBuf, remote: url::Url) -> Self {
-        Self { root, remote }
+impl LocalPeer {
+    /// Open the peer's one persistent profile, generating its key on first
+    /// use. The caller must hold the lock returned by [`try_lock`].
+    pub async fn open(root: PathBuf, remote: url::Url) -> Result<Self, String> {
+        create_private_dir(&root).map_err(|_| "Peer storage is unavailable.".to_owned())?;
+        let state = TonkState::open_native(&root.join("peer"))
+            .await
+            .map_err(|_| "Could not open the local peer.".to_owned())?;
+        let did = state.profile.did().to_string();
+        let (router, state, hub) = crate::api_router_with_state(state);
+        Ok(Self {
+            router,
+            state,
+            hub,
+            root,
+            remote,
+            did,
+        })
+    }
+
+    /// This peer's own DID: the device identity that joins spaces.
+    pub fn did(&self) -> &str {
+        &self.did
     }
 
     /// Run one tool. Arguments are tool-specific; errors exclude upstream
     /// details and never echo a link.
     pub async fn call(&mut self, tool: &str, arguments: &Value) -> Result<Value, String> {
         self.execute(tool, arguments, true).await
+    }
+
+    /// One background sync pass over every space with pending changes.
+    pub async fn sync(&mut self) -> Result<(), String> {
+        let (ok, _) = send(&mut self.router, "POST", "/api/sync", "text/plain", String::new())
+            .await?;
+        if ok {
+            Ok(())
+        } else {
+            Err("Background sync did not complete.".into())
+        }
+    }
+
+    /// Release query streams and the worker.
+    pub async fn close(self) {
+        self.state.read().await.shutdown();
+        self.hub.shutdown().await;
     }
 
     async fn execute(
@@ -50,13 +94,9 @@ impl LocalPeerWorker {
                     return Err("Provide one complete Tonk share link.".into());
                 }
                 self.pin(link).await?;
-                self.with_state(|router, _| async move { join(router, link).await })
-                    .await
+                join(&mut self.router, link).await
             }
-            "tonk_list_spaces" => {
-                self.with_state(|router, did| async move { list(router, did).await })
-                    .await
-            }
+            "tonk_list_spaces" => list(&mut self.router, self.did.clone()).await,
             "tonk_query" | "tonk_evaluate" | "publish_retained" => {
                 let writing = tool == "tonk_evaluate";
                 let recovering = tool == "publish_retained";
@@ -68,20 +108,25 @@ impl LocalPeerWorker {
                 if !recovering && (document.trim().is_empty() || document.len() > 32_000) {
                     return Err("Provide one inline notation document, up to 32 KB.".into());
                 }
+                if !list(&mut self.router, self.did.clone()).await?["spaces"]
+                    .as_array()
+                    .is_some_and(|spaces| spaces.iter().any(|entry| entry["subject"] == space))
+                {
+                    return Err(
+                        "This peer has not joined that space. Ask for a share link and call tonk_join."
+                            .to_owned(),
+                    );
+                }
                 let journal = self.root.join("pending").join(space.replace(':', "_"));
-                self.with_state(|router, did| async move {
-                    if !list(router, did).await?["spaces"]
-                        .as_array()
-                        .is_some_and(|spaces| spaces.iter().any(|entry| entry["subject"] == space))
-                    {
-                        return Err(
-                            "This peer has not joined that space. Ask for a share link and call tonk_join."
-                                .to_owned(),
-                        );
-                    }
-                    evaluate(router, space, document, &journal, writing, recovering, synchronize)
-                        .await
-                })
+                evaluate(
+                    &mut self.router,
+                    space,
+                    document,
+                    &journal,
+                    writing,
+                    recovering,
+                    synchronize,
+                )
                 .await
             }
             _ => Err("Tool unavailable.".into()),
@@ -108,29 +153,6 @@ impl LocalPeerWorker {
                 self.remote.origin().ascii_serialization()
             )),
         }
-    }
-
-    /// Open the one persistent profile under an exclusive lock, run `body`
-    /// against its ordinary router, and shut everything down afterwards.
-    async fn with_state<F, Fut>(&mut self, body: F) -> Result<Value, String>
-    where
-        F: FnOnce(&'static mut Router, String) -> Fut,
-        Fut: std::future::Future<Output = Result<Value, String>>,
-    {
-        let _lock =
-            lock_root(&self.root).map_err(|_| "Peer storage is unavailable or busy.".to_owned())?;
-        let state = TonkState::open_native(&self.root.join("peer"))
-            .await
-            .map_err(|_| "Could not open the local peer.".to_owned())?;
-        let did = state.profile.did().to_string();
-        let (router, state, hub) = crate::api_router_with_state(state);
-        // The router lives for exactly this call; leaking it keeps the borrow
-        // simple for the closure and is reclaimed when the process exits.
-        let router: &'static mut Router = Box::leak(Box::new(router));
-        let result = body(router, did).await;
-        state.read().await.shutdown();
-        hub.shutdown().await;
-        result
     }
 }
 
@@ -277,9 +299,10 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
         .create(path)
 }
 
-/// A private root with one exclusive lock. Unlike the agent-link adapter
-/// there are no replica or byte caps: this is one person's own peer.
-fn lock_root(root: &Path) -> std::io::Result<std::fs::File> {
+/// Try to become the owner of a peer directory. `Ok(None)` means another
+/// process owns it; the lock is held for as long as the returned file lives.
+/// There are no replica or byte caps: this is one person's own peer.
+pub fn try_lock(root: &Path) -> std::io::Result<Option<std::fs::File>> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     create_private_dir(root)?;
     let meta = std::fs::symlink_metadata(root)?;
@@ -293,10 +316,11 @@ fn lock_root(root: &Path) -> std::io::Result<std::fs::File> {
         .write(true)
         .mode(0o600)
         .open(root.join("peer.lock"))?;
-    // Block rather than fail: two hosts on one machine (desktop chat and a
-    // coding agent) may share this peer and take turns.
-    lock.lock().map_err(std::io::Error::other)?;
-    Ok(lock)
+    match lock.try_lock() {
+        Ok(()) => Ok(Some(lock)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -308,16 +332,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_keeps_one_identity_and_starts_with_no_spaces() {
+    async fn one_owner_keeps_one_identity_and_starts_with_no_spaces() {
         let root = scratch();
         let remote: url::Url = "http://127.0.0.1:9/ucan/".parse().unwrap();
-        let mut peer = LocalPeerWorker::new(root.clone(), remote.clone());
+        let lock = try_lock(&root).unwrap().expect("first process owns the peer");
+        assert!(try_lock(&root).unwrap().is_none(), "a second owner is refused");
+        let mut peer = LocalPeer::open(root.clone(), remote.clone()).await.unwrap();
         let first = peer.call("tonk_list_spaces", &json!({})).await.unwrap();
         assert!(first["peer"].as_str().unwrap().starts_with("did:key:"));
+        assert_eq!(first["peer"], peer.did());
         assert_eq!(first["spaces"], json!([]));
-        let mut again = LocalPeerWorker::new(root.clone(), remote);
+        peer.close().await;
+        drop(lock);
+        let _lock = try_lock(&root).unwrap().expect("ownership passes on");
+        let mut again = LocalPeer::open(root.clone(), remote).await.unwrap();
         let second = again.call("tonk_list_spaces", &json!({})).await.unwrap();
         assert_eq!(first["peer"], second["peer"]);
+        again.close().await;
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -325,7 +356,8 @@ mod tests {
     async fn peer_refuses_links_for_another_service_and_unjoined_spaces() {
         let root = scratch();
         let remote: url::Url = "https://tonk.foundation/ucan/".parse().unwrap();
-        let mut peer = LocalPeerWorker::new(root.clone(), remote);
+        let _lock = try_lock(&root).unwrap().unwrap();
+        let mut peer = LocalPeer::open(root.clone(), remote).await.unwrap();
         let seed = bs58::encode([7u8; 32]).into_string();
         let foreign = format!(
             "https://evil.example/space/did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#{seed}"
@@ -348,6 +380,7 @@ mod tests {
             .unwrap_err();
         assert!(unjoined.contains("has not joined"), "{unjoined}");
         assert!(peer.call("tonk_join", &json!({})).await.is_err());
+        peer.close().await;
         std::fs::remove_dir_all(root).unwrap();
     }
 }

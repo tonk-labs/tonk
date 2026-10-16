@@ -625,14 +625,14 @@
           tests-web-debug = buildTestArchive {
             name = "web-debug";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
+            args = "--workspace --exclude tonk-cli --exclude tonk-peer --exclude tonk-perf";
           };
 
           tests-web-release = buildTestArchive {
             name = "web-release";
             profile = "release";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
+            args = "--workspace --exclude tonk-cli --exclude tonk-peer --exclude tonk-perf";
           };
 
           # The real-browser suite `test:e2e` runs. Its `integration-tests`
@@ -655,7 +655,7 @@
             name = "web-ci";
             profile = "test";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
+            args = "--workspace --exclude tonk-cli --exclude tonk-peer --exclude tonk-perf";
           };
 
           tests-e2e-ci = buildTestArchive {
@@ -678,6 +678,14 @@
             pname = "tonk-cli";
             cargoExtraArgs = "--package tonk-cli";
             TONK_POSTHOG_KEY = posthogKey;
+            fixupPhase = darwinBinaryFixup;
+          };
+
+          # The local peer agent hosts launch as a stdio MCP server. Native
+          # only; released beside the CLI with the same signing.
+          tonk-peer = (if system == "x86_64-linux" then buildStaticCrate else buildCrate) {
+            pname = "tonk-peer";
+            cargoExtraArgs = "--package tonk-peer";
             fixupPhase = darwinBinaryFixup;
           };
 
