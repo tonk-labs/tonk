@@ -53,6 +53,8 @@ pub mod describe;
 pub mod email;
 mod error;
 mod handlers;
+#[cfg(target_arch = "wasm32")]
+pub mod live;
 pub mod lookup;
 pub mod metering;
 #[cfg(target_arch = "wasm32")]
@@ -65,6 +67,7 @@ pub mod revocation;
 pub mod revoke;
 pub mod service;
 pub mod shortcut;
+pub mod socket;
 pub mod store;
 pub mod vault;
 
@@ -80,6 +83,18 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
     // can extend the isolate's life for that write.
     if matches!(req.method(), Method::Post) && req.path() == "/ucan/" {
         return handlers::ucan::serve(req, env, ctx).await;
+    }
+    // A socket to the access service is the space's own: its Durable
+    // Object keeps it and answers what it carries.
+    #[cfg(target_arch = "wasm32")]
+    if matches!(req.method(), Method::Get)
+        && req.path() == "/ucan/"
+        && req
+            .headers()
+            .get("Upgrade")?
+            .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+    {
+        return live::connect(req, &env).await;
     }
     let router = Router::new();
 

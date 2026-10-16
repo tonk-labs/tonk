@@ -48,6 +48,16 @@ run_worker_first = [
 # `/object/` path, and the worker reads and writes the bucket through
 # this binding. That keeps the bytes on an origin browsers reach over
 # HTTP/2, where the S3 endpoint's six-connection cap does not apply.
+# Each space's live side: the Durable Object that keeps its sockets,
+# answers what they carry, and tells their watches of each cell write.
+[[durable_objects.bindings]]
+name = "LIVE"
+class_name = "Live"
+
+[[migrations]]
+tag = "v1-live"
+new_sqlite_classes = ["Live"]
+
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces"
@@ -137,6 +147,16 @@ enabled = true
 head_sampling_rate = 1
 invocation_logs = false
 
+# Each space's live side: the Durable Object that keeps its sockets,
+# answers what they carry, and tells their watches of each cell write.
+[[env.staging.durable_objects.bindings]]
+name = "LIVE"
+class_name = "Live"
+
+[[env.staging.migrations]]
+tag = "v1-live"
+new_sqlite_classes = ["Live"]
+
 [[env.staging.r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces-staging"
@@ -194,6 +214,16 @@ enabled = true
 head_sampling_rate = 1
 invocation_logs = false
 
+# Each space's live side: the Durable Object that keeps its sockets,
+# answers what they carry, and tells their watches of each cell write.
+[[env.dev.durable_objects.bindings]]
+name = "LIVE"
+class_name = "Live"
+
+[[env.dev.migrations]]
+tag = "v1-live"
+new_sqlite_classes = ["Live"]
+
 [[env.dev.r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces-dev"
@@ -241,6 +271,14 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # this worker's presigned URLs, and neither of those belongs in an environment
 # someone else is testing against.
 [env.preview]
+# No `LIVE` here yet, and none of the top-level migrations, which named
+# environments inherit. Preview uploads each pull request as a version of
+# one shared worker, and a version cannot carry a Durable Object migration:
+# the migration has to land through a plain `wrangler deploy --env preview`
+# first, after which every version must keep the class. Until that is done
+# once from main, a preview has no sockets, and its clients sync over
+# requests as they do against any service without one.
+migrations = []
 workers_dev = true
 routes = []
 
@@ -257,6 +295,7 @@ redact_query_string = true
 enabled = true
 head_sampling_rate = 1
 invocation_logs = false
+
 
 [[env.preview.r2_buckets]]
 binding = "BUCKET"
