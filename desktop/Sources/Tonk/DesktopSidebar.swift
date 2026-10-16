@@ -14,7 +14,6 @@ struct DesktopSidebar: View {
   @Binding var search: String
   var searchFocused: FocusState<Bool>.Binding
   var onNewLink: () -> Void
-  var onSyncStatus: () -> Void
   var onSettings: () -> Void
   var onSignOut: (() -> Void)?
 
@@ -51,27 +50,8 @@ struct DesktopSidebar: View {
     .safeAreaInset(edge: .bottom, spacing: 0) { footer }
   }
 
-  private var sync: (label: String, symbol: String, color: Color) {
-    let label = SyncSummary.label(runtime.spaces.compactMap { access.syncStates[$0.id] })
-    return switch label {
-    case "Synced": (label, "checkmark.circle.fill", .green)
-    case "Syncing", "Checking sync": (label, "arrow.triangle.2.circlepath", .secondary)
-    case "On this Mac": (label, "laptopcomputer", .secondary)
-    default: (label, "exclamationmark.triangle.fill", .orange)
-    }
-  }
-
   private var footer: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Button(action: onSyncStatus) {
-        Label {
-          Text(sync.label).foregroundStyle(.secondary)
-        } icon: {
-          Image(systemName: sync.symbol).foregroundStyle(sync.color)
-        }
-      }
-      .buttonStyle(.plain)
-      .help("Show sync status")
+    VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 8) {
         Text(AccessText.initials(access.accountName ?? ""))
           .font(.caption.weight(.semibold))

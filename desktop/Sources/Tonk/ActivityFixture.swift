@@ -211,7 +211,7 @@ extension ActivityFixture {
         DesktopSidebar(
           runtime: runtime, access: access,
           selection: .constant(runtime.spaces.last.map { .space($0.id) }),
-          search: .constant(""), searchFocused: $focused, onNewLink: {}, onSyncStatus: {},
+          search: .constant(""), searchFocused: $focused, onNewLink: {},
           onSettings: {}, onSignOut: {}
         )
         .frame(width: 260, height: 760)

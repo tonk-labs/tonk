@@ -291,7 +291,7 @@ struct ContentView: View {
           "Open in browser", symbol: "arrow.up.right.square", key: "\u{F703}",
           action: openSpaceInBrowser)
       }
-      if let space = model.openedSpace {
+      if let space = model.openedSpace ?? selectedSpace {
         menu.addAction("Sync status…", symbol: "arrow.triangle.2.circlepath") {
           syncStatusSpace = space
         }
@@ -588,7 +588,6 @@ struct ContentView: View {
         runtime: runtime, access: access, selection: $page, search: $spaceSearch,
         searchFocused: $searchFocused,
         onNewLink: startNewLink,
-        onSyncStatus: { syncStatusSpace = selectedSpace ?? runtime.spaces.first },
         onSettings: { showProviderSettings = true },
         onSignOut: runtime.accountConnected && RuntimeLocation.deployment != .local
           ? signOutOfTonk : nil
@@ -637,11 +636,6 @@ struct ContentView: View {
     .task(id: runtime.catalogLoaded && runtime.accountConnected) {
       guard runtime.catalogLoaded && runtime.accountConnected else { return }
       await access.refreshAll(runtime.spaces)
-      // Sync is the one thing that changes on its own; poll it gently.
-      while !Task.isCancelled {
-        do { try await Task.sleep(for: .seconds(30)) } catch { return }
-        await access.refreshSync(runtime.spaces)
-      }
     }
   }
 

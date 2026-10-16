@@ -328,15 +328,3 @@ extension String {
     return first.lowercased() + dropFirst()
   }
 }
-
-/// The sidebar's one-word sync state across every space.
-public enum SyncSummary {
-  public static func label(_ states: [String]) -> String {
-    if states.isEmpty { return "Checking sync" }
-    if states.contains("diverged") { return "Needs attention" }
-    if states.contains(where: { $0 == "ahead" || $0 == "behind" }) { return "Syncing" }
-    if states.contains("error") { return "Offline" }
-    if states.allSatisfy({ $0 == "no-upstream" }) { return "On this Mac" }
-    return "Synced"
-  }
-}
