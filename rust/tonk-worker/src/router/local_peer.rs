@@ -99,8 +99,12 @@ impl LocalPeer {
                 if link.is_empty() || link.len() > 160_000 {
                     return Err("Provide one complete Tonk share link.".into());
                 }
-                self.pin(link).await?;
-                join(&mut self.router, link).await
+                let link = self.expand(link).await?;
+                if is_agent_link(&link) {
+                    return self.join_agent(&link).await;
+                }
+                self.pin(&link).await?;
+                join(&mut self.router, &link).await
             }
             "tonk_list_spaces" => list(&mut self.router, self.did.clone()).await,
             "tonk_query" | "tonk_evaluate" | "publish_retained" => {
@@ -139,6 +143,120 @@ impl LocalPeer {
         }
     }
 
+    /// Expand a `/@/` shortcut into the link it stands for. Only the pinned
+    /// service is asked, and the private fragment is never sent: the server
+    /// answers a fragment-free request and the fragment is reattached.
+    async fn expand(&self, link: &str) -> Result<String, String> {
+        let parsed = url::Url::parse(link).map_err(|_| "That is not a Tonk share link.".to_owned())?;
+        if !parsed.path().starts_with("/@/") {
+            return Ok(link.to_owned());
+        }
+        if parsed.origin() != self.remote.origin() {
+            return Err(self.foreign());
+        }
+        super::join::resolve_shortcut(link)
+            .await
+            .map_err(|_| "Could not expand the shortcut link.".to_owned())
+    }
+
+    /// Redeem an agent link into this peer's own identity.
+    ///
+    /// An agent link grants a fixed set of scopes to the key in its fragment.
+    /// The peer uses that key once, to delegate each grant onward to itself
+    /// with the same command, policy, expiry and signed route, then keeps
+    /// only the extended chains. Access lasts as long as the link's grants;
+    /// the link's key is never stored.
+    async fn join_agent(&mut self, link: &str) -> Result<Value, String> {
+        use dialog_credentials::{Ed25519Signer, Signer};
+        use dialog_ucan::UcanDelegation;
+        use dialog_ucan_core::{DelegationBuilder, time::Timestamp};
+        use tonk_invite::connection::{AgentInvite, SpaceGrantBundle, candidate_build_scopes};
+        use tonk_schema::prelude::DidExt;
+
+        let invalid = || "Invalid, expired or untrusted agent link.".to_owned();
+        let now = Timestamp::now();
+        let hint = AgentInvite::inspect_url(link, now).await.map_err(|_| invalid())?;
+        let scopes = candidate_build_scopes(&hint.subject);
+        let invite = AgentInvite::parse_url(link, &scopes, &self.remote, now)
+            .await
+            .map_err(|_| self.foreign())?;
+        let link_key = Signer::from(
+            Ed25519Signer::import(invite.secret_seed())
+                .await
+                .map_err(|_| invalid())?,
+        );
+        let subject = invite.grants().subject().clone();
+        let renewed = list(&mut self.router, self.did.clone()).await?["spaces"]
+            .as_array()
+            .is_some_and(|spaces| spaces.iter().any(|entry| entry["subject"] == subject.to_string()));
+        let state = self.state.write().await;
+        let peer = state.profile.did();
+        let mut chains = Vec::new();
+        for chain in invite.grants().chains() {
+            let leaf = chain.proofs().last().ok_or_else(invalid)?;
+            let hop = DelegationBuilder::new()
+                .issuer(link_key.clone())
+                .audience(&peer)
+                .subject(leaf.subject().clone())
+                .command(leaf.command().0.clone())
+                .policy(leaf.policy().clone())
+                .expiration(leaf.expiration().ok_or_else(invalid)?)
+                .meta(leaf.meta().clone())
+                .try_build()
+                .await
+                .map_err(|_| invalid())?;
+            chains.push(chain.push(hop).map_err(|_| invalid())?);
+        }
+        let grants = SpaceGrantBundle::validate(chains, &peer, &scopes, &self.remote, now)
+            .await
+            .map_err(|_| invalid())?;
+        let stored = async {
+            for chain in grants.chains() {
+                state
+                    .profile
+                    .access()
+                    .save(UcanDelegation(chain.clone()))
+                    .perform(&state.operator)
+                    .await
+                    .map_err(|_| ())?;
+            }
+            if !renewed {
+                super::join::mount_replica(
+                    &state,
+                    grants.subject(),
+                    Some(grants.remote().as_str()),
+                    None,
+                )
+                .await
+                .map_err(|_| ())?;
+                super::repository::record_initialized_replica_in_profile(&state, grants.subject())
+                    .await
+                    .map_err(|_| ())?;
+            }
+            Ok::<(), ()>(())
+        }
+        .await;
+        drop(state);
+        stored.map_err(|()| "Could not save the space membership.".to_owned())?;
+        let name = request_method(
+            &mut self.router,
+            &format!("/api/repository/{}", subject.repo_key()),
+            "",
+            "GET",
+        )
+        .await
+        .ok()
+        .and_then(|info| info["label"].as_str().map(str::to_owned));
+        Ok(json!({ "subject": subject.to_string(), "name": name, "renewed": renewed }))
+    }
+
+    fn foreign(&self) -> String {
+        format!(
+            "This link belongs to a different Tonk service than this peer trusts ({}).",
+            self.remote.origin().ascii_serialization()
+        )
+    }
+
     /// Refuse a link whose access service is not the pinned one.
     async fn pin(&self, link: &str) -> Result<(), String> {
         let malformed = || "That is not a Tonk share link.".to_owned();
@@ -154,12 +272,17 @@ impl LocalPeer {
         };
         match remote {
             Some(remote) if remote.origin() == self.remote.origin() => Ok(()),
-            _ => Err(format!(
-                "This link belongs to a different Tonk service than this peer trusts ({}).",
-                self.remote.origin().ascii_serialization()
-            )),
+            _ => Err(self.foreign()),
         }
     }
+}
+
+/// Agent links carry their key in a versioned fragment.
+fn is_agent_link(link: &str) -> bool {
+    url::Url::parse(link)
+        .ok()
+        .and_then(|url| url.fragment().map(|fragment| fragment.starts_with("tonk-agent-")))
+        .unwrap_or(false)
 }
 
 async fn join(router: &mut Router, link: &str) -> Result<Value, String> {

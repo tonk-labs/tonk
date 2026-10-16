@@ -62,7 +62,6 @@ ASSET="tonk-agent-peer-${PLATFORM}.tar.gz"
 
 CACHE="${HOME}/.tonk/bin/${CHANNEL}"
 BIN="${CACHE}/tonk-agent-peer"
-STAMP="${CACHE}/checked"
 
 fetch() {
   if command -v curl >/dev/null 2>&1; then
@@ -93,7 +92,6 @@ update() {
   expected="$(awk -v f="$ASSET" '{name=$2; sub(/^\*/, "", name); if (name == f) {print $1; exit}}' "$tmp/checksums.txt")"
   [ -n "$expected" ] || { say "release has no $ASSET"; return 1; }
   if [ -x "$BIN" ] && [ "$(cat "${CACHE}/sha256" 2>/dev/null || true)" = "$expected" ]; then
-    touch "$STAMP"
     return 0
   fi
   fetch "${BASE}/${ASSET}" "$tmp/$ASSET" || return 1
@@ -102,18 +100,11 @@ update() {
   chmod 0755 "$tmp/tonk-agent-peer"
   mv -f "$tmp/tonk-agent-peer" "$BIN"
   printf '%s\n' "$expected" > "${CACHE}/sha256"
-  touch "$STAMP"
   say "installed tonk-agent-peer from ${CHANNEL}"
 }
 
-fresh() {
-  [ -x "$BIN" ] && [ -f "$STAMP" ] && [ -n "$(find "$STAMP" -mmin -1440 2>/dev/null)" ]
-}
-
-if ! fresh; then
-  if ! (update); then
-    [ -x "$BIN" ] || die "could not download tonk-agent-peer from ${BASE}"
-    say "could not check for an update; using the cached binary"
-  fi
+if ! (update); then
+  [ -x "$BIN" ] || die "could not download tonk-agent-peer from ${BASE}"
+  say "could not check for an update; using the cached binary"
 fi
 exec "$BIN"
