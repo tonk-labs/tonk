@@ -611,7 +611,7 @@
           # access service's HTTP-level tests are `#![cfg]`'d on.
           tests-native-debug = buildTestArchive {
             name = "native-debug";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-agent-peer --features integration-tests";
           };
 
           # Built with `release-test`: release optimizations without LTO,
@@ -619,7 +619,7 @@
           tests-native-release = buildTestArchive {
             name = "native-release";
             profile = "release-test";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-agent-peer --features integration-tests";
           };
 
           tests-web-debug = buildTestArchive {
@@ -646,7 +646,7 @@
           tests-native-ci = buildTestArchive {
             name = "native-ci";
             profile = "ci-test";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-agent-peer --features integration-tests";
           };
 
           # The reduced ci-test profile traps in Wasm repository tests. Keep
