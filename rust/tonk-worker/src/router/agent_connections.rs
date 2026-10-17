@@ -8,7 +8,6 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_capability::{
     Subject,
     access::{Access, Prove},
@@ -23,6 +22,7 @@ use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_handler_macros::wasm_compat;
 use tonk_invite::connection::{
     AgentInvite, DEFAULT_GRANT_TTL_SECONDS, SpaceGrantBundle, candidate_build_scopes, grant_set_id,
     require_grant_deadline,

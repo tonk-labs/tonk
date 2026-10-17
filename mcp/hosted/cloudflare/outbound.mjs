@@ -10,12 +10,12 @@ export async function outbound(request, env, context, forward = fetch) {
   }
   if (
     url.origin !== 'http://checkpoint.internal' ||
-    !['/state', '/credentials'].includes(url.pathname) ||
+    !['/state', '/credentials', '/agent-state'].includes(url.pathname) ||
     url.search
   ) {
     return new Response(null, { status: 403 });
   }
-  const key = `checkpoint/${context.containerId}/${url.pathname === '/state' ? 'state' : 'credentials'}-v1.json`;
+  const key = `checkpoint/${context.containerId}/${url.pathname.slice(1)}-v1.json`;
   if (request.method === 'GET') {
     const object = await env.CHECKPOINTS.get(key);
     return object

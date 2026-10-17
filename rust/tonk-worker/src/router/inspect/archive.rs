@@ -2,7 +2,6 @@
 
 use ::axum::extract::Path;
 use ::axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use base58::FromBase58;
 use dialog_repository::RepositoryExt as _;
 use dialog_storage::Blake3Hash;
@@ -10,6 +9,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 
 use super::super::AppState;
 use crate::TonkWorkerError;

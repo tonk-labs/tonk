@@ -1,3 +1,8 @@
+> The deployed endpoint now uses [per-call agent links](../AGENT-LINKS.md).
+> The OAuth compatibility information below applies only to the retained optional
+> account adapter. Hosted-client acceptance of the agent-link endpoint is a
+> separate rollout check.
+
 # Hosted MCP compatibility and acceptance
 
 Evidence date: 2026-10-14. Implementation through `49cde56d50`; no commit from
@@ -29,9 +34,9 @@ A documented callback is not an observed authorization attempt.
 
 | Channel | MCP URL | Tonk provider |
 | --- | --- | --- |
-| Development | https://tonk-mcp-dev.tonk.workers.dev/mcp | https://tonk.foundation |
-| Staging | https://tonk-mcp-staging.tonk.workers.dev/mcp | https://staging.tonk.xyz |
-| Stable | https://tonk-mcp.tonk.workers.dev/mcp | https://tonk.network |
+| Development | https://agent-dev.tonk.host/mcp | https://tonk.foundation |
+| Staging | https://agent-staging.tonk.host/mcp | https://staging.tonk.xyz |
+| Stable | https://agent.tonk.host/mcp | https://tonk.network |
 | PR N | https://tonk-mcp-pr-N.tonk.workers.dev/mcp | Matching Tonk PR preview |
 
 These are configured destinations, not evidence of this branch being live there.

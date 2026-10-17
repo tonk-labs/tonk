@@ -15,6 +15,7 @@ members = [
   "rust/tonk-evaluator",
   "rust/tonk-fab",
   "rust/tonk-guest",
+  "rust/tonk-handler-macros",
   "rust/tonk-host",
   "rust/tonk-identity",
   "rust/tonk-inspector",
@@ -67,6 +68,7 @@ tonk-invite = { path = "./rust/tonk-invite" }
 tonk-language-server = { path = "./rust/tonk-language-server" }
 tonk-library = { path = "./rust/tonk-library" }
 tonk-macros = { path = "./rust/tonk-macros" }
+tonk-handler-macros = { path = "./rust/tonk-handler-macros" }
 tonk-notation = { path = "./rust/tonk-notation" }
 tonk-intent = { path = "./rust/tonk-intent" }
 tonk-lingo = { path = "./rust/tonk-lingo" }
@@ -86,7 +88,6 @@ aes-gcm = "0.10"
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false }
-axum-wasm-macros = "0.1"
 base58 = "0.2"
 base64 = "0.22"
 blake3 = "1.5"

@@ -31,6 +31,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The worker library's own unit tests run in `Tests (native, debug)`, from
+  # the same `ci-test` profile. The jobs below cover what only MCP exercises,
+  # on separate runners: each compiles tonk-worker with a different feature
+  # set, and compiling that crate is most of each job's time.
   core:
     name: MCP contracts and ordinary worker
     runs-on: ubuntu-latest
@@ -70,7 +74,9 @@ jobs:
           df -h / "$CARGO_HOME" "$CARGO_TARGET_DIR"
       # Cachix caches Nix outputs, not the direct Cargo builds below. Keep
       # compatible dependency artifacts across source edits; Cargo still checks
-      # fingerprints and both test commands always execute.
+      # fingerprints and every test command always executes. The fallback keys
+      # restore an older entry after a lockfile change, so only the changed
+      # dependencies recompile.
       - name: Cache Cargo build artifacts
         uses: actions/cache@v4
         with:
@@ -78,9 +84,10 @@ jobs:
             ${{ env.CARGO_TARGET_DIR }}
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
-          key: mcp-cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', 'flake.lock', 'flake.nix', 'nix/**', '.cargo/**', '.github/workflows/mcp.yml') }}-${{ github.sha }}
+          key: mcp-cargo-v2-core-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', 'flake.lock', 'flake.nix', 'nix/**', '.cargo/**', '.github/workflows/mcp.yml') }}-${{ github.sha }}
           restore-keys: |
-            mcp-cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', 'flake.lock', 'flake.nix', 'nix/**', '.cargo/**', '.github/workflows/mcp.yml') }}-
+            mcp-cargo-v2-core-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', 'flake.lock', 'flake.nix', 'nix/**', '.cargo/**', '.github/workflows/mcp.yml') }}-
+            mcp-cargo-v2-core-${{ runner.os }}-${{ runner.arch }}-
       - name: Install locked MCP dependencies
         run: nix --accept-flake-config develop .#ci -c npm --prefix mcp ci --ignore-scripts
       - name: Check formatting, generated guides and core contracts
@@ -88,8 +95,6 @@ jobs:
           nix --accept-flake-config develop .#ci -c cargo fmt --all -- --check
           nix --accept-flake-config develop .#ci -c npm --prefix mcp run check:format
           nix --accept-flake-config develop .#ci -c npm --prefix mcp test
-      - name: Test worker behavior, storage isolation and restart
-        run: nix --accept-flake-config develop .#ci -c cargo test --locked --profile ci-test --timings -p tonk-worker --lib -- --test-threads=2
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -103,11 +108,80 @@ jobs:
           nix --accept-flake-config develop .#ci -c cargo build --locked --profile ci-test --timings -p tonk-worker --features native-host --bin tonk-worker-host
           export TONK_WORKER_BINARY="$CARGO_TARGET_DIR/ci-test/tonk-worker-host"
           nix --accept-flake-config develop .#ci -c npm --prefix mcp run test:integration
+      - name: Test hosted HTTP
+        run: nix --accept-flake-config develop .#ci -c npm --prefix mcp run test:hosted
       - name: Upload Cargo timing reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mcp-cargo-timings
+          path: ${{ env.CARGO_TARGET_DIR }}/cargo-timings
+          if-no-files-found: ignore
+          retention-days: 7
+
+  agent-link:
+    name: MCP agent-link stdio with remote readback
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # nothing-but-nix gives reclaimed disk space to /nix, not the checkout.
+      # Its background cleanup also removes ~/.cargo during later build steps.
+      CARGO_HOME: /nix/var/tonk-mcp-cargo
+      CARGO_TARGET_DIR: /nix/var/tonk-mcp-target
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
+      - uses: actions/checkout@v4
+        if: inputs.version != ''
+        with:
+          ref: ${{ github.sha }}
+          path: .release-controller
+          persist-credentials: false
+      - name: Stamp the selected candidate
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python3 .release-controller/scripts/release_stamp.py "$VERSION"
+      - uses: wimpysworld/nothing-but-nix@main
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: Prepare Cargo build storage
+        run: |
+          sudo install -d -o "$(id -u)" -g "$(id -g)" "$CARGO_TARGET_DIR" "$CARGO_HOME"
+          df -h / "$CARGO_HOME" "$CARGO_TARGET_DIR"
+      # Cachix caches Nix outputs, not the direct Cargo builds below. Keep
+      # compatible dependency artifacts across source edits; Cargo still checks
+      # fingerprints and every test command always executes. The fallback keys
+      # restore an older entry after a lockfile change, so only the changed
+      # dependencies recompile.
+      - name: Cache Cargo build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CARGO_TARGET_DIR }}
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+          key: mcp-cargo-v2-agent-link-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', 'flake.lock', 'flake.nix', 'nix/**', '.cargo/**', '.github/workflows/mcp.yml') }}-${{ github.sha }}
+          restore-keys: |
+            mcp-cargo-v2-agent-link-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', 'flake.lock', 'flake.nix', 'nix/**', '.cargo/**', '.github/workflows/mcp.yml') }}-
+            mcp-cargo-v2-agent-link-${{ runner.os }}-${{ runner.arch }}-
+      # The test drives the worker through the Node MCP client.
+      - name: Install locked MCP dependencies
+        run: nix --accept-flake-config develop .#ci -c npm --prefix mcp ci --ignore-scripts
+      - name: Test agent-link stdio with remote readback
+        run: nix --accept-flake-config develop .#ci -c cargo test --locked --profile ci-test --timings -p tonk-worker --features native-host --test agent_link
+      - name: Upload Cargo timing reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-agent-link-cargo-timings
           path: ${{ env.CARGO_TARGET_DIR }}/cargo-timings
           if-no-files-found: ignore
           retention-days: 7

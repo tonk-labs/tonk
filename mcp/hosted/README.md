@@ -1,3 +1,8 @@
+> The deployed `/mcp` executable now uses [agent links](../AGENT-LINKS.md),
+> replacing OAuth. The account/OAuth modules described below remain optional
+> adapters and are not the deployed entrypoint. See the agent-link guide for
+> current setup, storage limits and recovery.
+
 # Hosted MCP service
 
 This host composes the general [Tonk MCP core](../README.md) with OAuth and an

@@ -55,7 +55,6 @@
 //! from a closed set rather than anything an upstream response said.
 
 use ::axum::{Json, extract::State, http::StatusCode};
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::{ArtifactSelector, Changes, Entity, Relation, Statement as _, Value};
 use dialog_capability::access::{AuthorizeError, Prove, Retain};
 use dialog_capability::{Fork, Provider};
@@ -75,6 +74,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 use tonk_invite::{Invite, InviteAudience, Ticket};
 use tonk_schema::{
     Invitation, InvitationExecution, InvitedVia, MemberName, MemberRole, Membership, Replica,

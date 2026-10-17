@@ -22,11 +22,11 @@ use std::collections::HashSet;
 
 use ::axum::extract::State;
 use ::axum::response::Redirect;
-use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 use tonk_schema::domain::replica::Profile as ProfileEntity;
 use tonk_schema::{LegacyReplica, Replica, SpaceKind, SpaceStatus, prelude::DidExt as _};
 
