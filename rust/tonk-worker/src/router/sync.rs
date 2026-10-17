@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 
 use ::axum::{Json, extract::Path, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_capability::access::{AuthorizeError, Recourse};
 use dialog_effects::Rejection;
 use dialog_repository::{PublishError, PullError, Revision};
@@ -19,6 +18,7 @@ use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 use tonk_schema::{SyncState, classify};
 use tonk_worker_api::SyncDisposition;
 pub use tonk_worker_api::{SyncResponse, SyncStatusResponse};

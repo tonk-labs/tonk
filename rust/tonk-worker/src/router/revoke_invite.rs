@@ -9,7 +9,6 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::RepositoryExt as _;
 use dialog_ucan::{Parameters, Scope, UcanDelegation};
@@ -22,6 +21,7 @@ use ipld_core::cid::Cid;
 use tokio::sync::oneshot;
 use tonk_account::customer::RevokeReceipt;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 use tonk_schema::{Invitation, InvitationExecution};
 use tonk_worker_api::{InvitationKind, InvitationSummary};
 

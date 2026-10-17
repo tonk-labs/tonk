@@ -5,11 +5,11 @@
 //! account key or account-wide grant to the waiting CLI.
 
 use axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_ucan_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_handler_macros::wasm_compat;
 use tonk_invite::local_space_link;
 
 use super::AppState;

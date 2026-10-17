@@ -314,16 +314,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-wasm-macros"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89e6832759c0999d93009d56f931e8bb454b78d2a73f999fe9c8caa21f7e7b22"
-dependencies = [
- "quote",
- "syn 2.0.118",
-]
-
-[[package]]
 name = "base-x"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4997,6 +4987,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-handler-macros"
+version = "0.6.16-rc.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
 name = "tonk-host"
 version = "0.6.16-rc.1"
 dependencies = [
@@ -5409,7 +5408,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "axum-wasm-macros",
  "base58",
  "base64",
  "blake3",
@@ -5461,6 +5459,7 @@ dependencies = [
  "tonk-common",
  "tonk-evaluator",
  "tonk-fab",
+ "tonk-handler-macros",
  "tonk-identity",
  "tonk-inspector",
  "tonk-invite",

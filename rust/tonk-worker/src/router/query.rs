@@ -16,13 +16,13 @@ use ::axum::body::{Body, Bytes};
 use ::axum::extract::{Path, Query as UrlQuery, Request, State};
 use ::axum::http::{HeaderMap, StatusCode, header};
 use ::axum::response::{IntoResponse, Response};
-use axum_wasm_macros::wasm_compat;
 use http_body_util::BodyExt as _;
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tonk_handler_macros::wasm_compat;
 
 use crate::reactor::{Conclusion, Query, ReactorError};
 use crate::router::update_pending;

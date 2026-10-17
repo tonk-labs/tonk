@@ -12,7 +12,6 @@ use axum::{
     Json,
     extract::{Extension, State},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_ucan_core::time::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -21,6 +20,7 @@ use tonk_account::customer::{CustomerStatus, Receipt};
 use tonk_account::pending::{PendingQueue, PendingWork};
 use tonk_account::{CUSTOMER_CREDENTIAL_SITE, PENDING_WORK_CREDENTIAL_SITE};
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 use tonk_identity::request::build_enroll_invocation;
 use url::Url;
 

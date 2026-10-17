@@ -1,12 +1,12 @@
 //! Persist and validate the provider-neutral local passkey root.
 
 use axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_handler_macros::wasm_compat;
 use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
 
 use super::AppState;
