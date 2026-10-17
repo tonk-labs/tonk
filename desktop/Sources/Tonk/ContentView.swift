@@ -30,6 +30,12 @@ struct ContentView: View {
   @State private var syncStatusSpace: TonkSpace?
   @FocusState private var composing: Bool
 
+  private var startupFailure: String? {
+    if let message = runtime.accountMessage { return message }
+    if let error = runtime.error { return error }
+    return runtime.catalogError
+  }
+
   private var windowContent: some View {
     ZStack {
       GeometryReader { geometry in
@@ -51,7 +57,7 @@ struct ContentView: View {
           if runtime.accountStatusKnown {
             TonkWelcomeView(runtime: runtime)
           } else {
-            let failure = runtime.accountMessage ?? runtime.error ?? runtime.catalogError
+            let failure: String? = startupFailure
             SpaceLoadingView(
               title: failure == nil ? "Opening Tonk…" : "Couldn’t open Tonk",
               detail: failure ?? "Loading your workspace.",
