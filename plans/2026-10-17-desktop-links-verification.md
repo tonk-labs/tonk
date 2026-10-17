@@ -35,3 +35,21 @@ proven fixes, then update the draft PR with the final evidence.
   AnimatedSidebarTests` runs (4 tests each).
 - `bash desktop/scripts/dev.sh test:unit`: 56 TonkTests and 80 HarnessCoreTests,
   2 skipped in each target, zero failures. `git diff --check` passed.
+- Live setup: created `Desktop verification 2026-10-17` on tonk.foundation,
+  subject `did:key:z6Mku9wwCXTY2iphGNMrRVE37i4PWV8NBQAGqTvLWjaFrEoM`.
+  Desktop discovered it after refresh. The actual chat created two synthetic
+  tasks and a directory; Home and the discovered Task view rendered both.
+  Rapid chat toggles ended open with focus in the message field.
+- Automatic approval review blocked live person-link creation pending explicit
+  approval of whole-space write/no-expiry scope. A combined approval request
+  also covers 90-day agent links and temporary public reads in this test space.
+  No live link was created by this run before approval.
+- Action regressions reproduced reset revoking the old link despite clipboard
+  failure, and silent Keychain write failures. Fixed both; added person-link
+  Revoke, account-generation guards, partial-read error presentation and catalog
+  refresh on space-list changes. Eight focused action regressions cover these
+  boundaries, including partial revocation failure and stale-account reads.
+- Full Swift suite after access fixes: 64 TonkTests + 80 HarnessCoreTests,
+  2 skipped in each target, zero failures (2026-10-17). Live access mutation,
+  post-restart Keychain persistence, independent-client revocation and video
+  remain pending; unit fault injection is not live account evidence.

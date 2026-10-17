@@ -4,7 +4,13 @@ import Security
 
 /// Bearer link URLs this Mac minted, kept so Copy works later. The worker never
 /// stores them; Keychain keeps them off disk and out of the access journal.
-struct LinkVault {
+protocol AccessLinkStore {
+  func read(_ target: String) -> String?
+  func write(_ link: String, for target: String) throws
+  func remove(_ target: String)
+}
+
+struct LinkVault: AccessLinkStore {
   let scope: String
 
   private func query(_ target: String) -> [String: Any] {

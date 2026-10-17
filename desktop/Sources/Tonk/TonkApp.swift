@@ -44,7 +44,6 @@ struct TonkApp: App {
     .defaultSize(width: 1180, height: 780)
     .windowToolbarStyle(.unified)
     .commands {
-      WindowCommands()
       CommandGroup(replacing: .newItem) {
         Button("New chat") {
           model.startSpaceChat()
@@ -53,6 +52,7 @@ struct TonkApp: App {
           model.openedSpace == nil || model.busy || model.creatingSpace || model.loginPending
             || model.connecting)
       }
+      WindowCommands()
     }
   }
 }

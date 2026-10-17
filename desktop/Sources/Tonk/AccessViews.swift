@@ -52,6 +52,7 @@ struct AccessLinkRow: View {
   let space: TonkSpace?
   @ObservedObject var access: AccessModel
   @State private var confirming = false
+  @State private var resetting = false
 
   var body: some View {
     TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -77,10 +78,10 @@ struct AccessLinkRow: View {
     }
     .accessibilityElement(children: .contain)
     .confirmationDialog(confirmTitle, isPresented: $confirming) {
-      Button(link.canReset ? "Reset Link" : confirmAction, role: .destructive) {
+      Button(resetting ? "Reset Link" : confirmAction, role: .destructive) {
         guard let space else { return }
         Task {
-          if link.canReset {
+          if resetting {
             await access.resetLink(link, space: space)
           } else {
             await access.revoke(link, space: space)
@@ -97,7 +98,15 @@ struct AccessLinkRow: View {
     let stored = access.storedLink(link)
     HStack(spacing: 8) {
       if busy { ProgressView().controlSize(.small) }
-      Button(link.canReset ? "Reset…" : (link.kind == .publicRead ? "Make Private…" : "Revoke…")) {
+      if link.canReset {
+        Button("Reset…") {
+          resetting = true
+          confirming = true
+        }
+        .disabled(busy || space == nil)
+      }
+      Button(link.kind == .publicRead ? "Make Private…" : "Revoke…") {
+        resetting = false
         confirming = true
       }
       .disabled(busy || space == nil)
@@ -112,11 +121,9 @@ struct AccessLinkRow: View {
   }
 
   private var confirmTitle: String {
-    switch link.kind {
-    case .person where link.canReset: "Reset this link?"
-    case .publicRead: "Make this space private?"
-    default: "Revoke this link?"
-    }
+    resetting
+      ? "Reset this link?"
+      : (link.kind == .publicRead ? "Make this space private?" : "Revoke this link?")
   }
 
   private var confirmAction: String {
@@ -125,10 +132,10 @@ struct AccessLinkRow: View {
 
   private var confirmMessage: String {
     switch link.kind {
-    case .person:
-      "A new link is made and copied. The old link stops working; people who already joined keep their access."
-    case .scoped:
-      "The link stops working. People who already joined keep their access."
+    case .person, .scoped:
+      resetting
+        ? "A new link is made and copied. The old link stops working; people who already joined keep their access."
+        : "The link stops working. People who already joined keep their access."
     case .agent:
       "Agents using this link lose access to the space."
     case .publicRead:
