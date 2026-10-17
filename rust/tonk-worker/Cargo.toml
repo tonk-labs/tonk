@@ -38,7 +38,7 @@ base64 = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
-axum-wasm-macros = { workspace = true }
+tonk-handler-macros = { workspace = true }
 bs58 = { workspace = true }
 console_error_panic_hook = { workspace = true }
 dialog-capability = { workspace = true }

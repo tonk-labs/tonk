@@ -18,10 +18,10 @@
 use ::axum::Json;
 use ::axum::extract::{Request, State};
 use ::axum::http::HeaderMap;
-use axum_wasm_macros::wasm_compat;
 use serde::Serialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_handler_macros::wasm_compat;
 
 use super::{AppState, ClientId};
 use crate::TonkWorkerError;

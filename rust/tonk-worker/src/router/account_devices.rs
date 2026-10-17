@@ -7,7 +7,6 @@
 //! account summary still proxies the account service.
 
 use axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use serde::Deserialize;
@@ -15,6 +14,7 @@ use serde::Deserialize;
 use tokio::sync::oneshot;
 use tonk_account::delegations::account_scope;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 use tonk_worker_api::{
     AccountDevice, AccountSummary, PasskeyMetadata, RevokeDeviceAcknowledgement,
     RevokeDeviceRequest,

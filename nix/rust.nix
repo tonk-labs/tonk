@@ -202,21 +202,38 @@ let
       // attributes
     );
 
+  # `depsBuildCommand` lists the Cargo builds Trunk will run, with their
+  # profiles, binaries and features. Trunk builds each asset under the profile
+  # its `index.html` link names, and the shared Wasm artifacts are built under
+  # `release`, so without it every asset recompiles all of its dependencies.
   buildTrunkCrate =
     attributes:
     let
       crateRoot = builtins.dirOf attributes.trunkConfig;
+      depsBuildCommand = attributes.depsBuildCommand or null;
+      cargoArtifacts =
+        if depsBuildCommand == null then
+          wasmArtifacts
+        else
+          craneLib.buildDepsOnly (
+            wasmAttributes
+            // {
+              pname = "${attributes.pname}-trunk-deps";
+              buildPhaseCargoCommand = depsBuildCommand;
+              doCheck = false;
+            }
+          );
     in
     craneLib.buildTrunkPackage (
       wasmAttributes
       // {
-        cargoArtifacts = wasmArtifacts;
+        inherit cargoArtifacts;
         preBuild = ''
           cd ${crateRoot}
         '';
         inherit wasm-bindgen-cli;
       }
-      // attributes
+      // builtins.removeAttrs attributes [ "depsBuildCommand" ]
     );
 
   # Build cargo-nextest test archive

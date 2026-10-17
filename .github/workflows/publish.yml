@@ -350,9 +350,57 @@ jobs:
 
             </details>
 
+  # The MCP container's Rust runtime. It needs nothing from the Cloudflare
+  # deployment, so it compiles while that job builds the browser bundle,
+  # instead of inside the container build after it. It builds in the Debian
+  # release the container runs, so the binary links the same glibc.
+  agent-worker:
+    name: MCP runtime build
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container: rust:1.93.0-bookworm
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
+      - name: Trust the workspace checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: ./.github/actions/resolve-release
+        if: github.ref_type == 'tag'
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends pkg-config libssl-dev clang cmake zstd
+      # Keeps compiled dependencies across source edits. Cargo still checks
+      # every fingerprint, so a stale entry only costs rebuilding what changed.
+      - name: Cache Cargo build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            target
+            /usr/local/cargo/registry
+            /usr/local/cargo/git
+          key: agent-worker-v1-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            agent-worker-v1-${{ hashFiles('Cargo.lock') }}-
+            agent-worker-v1-
+      - name: Build the agent worker
+        run: cargo build --locked --release -p tonk-worker --features native-host --bin tonk-agent-worker
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tonk-agent-worker
+          path: target/release/tonk-agent-worker
+          if-no-files-found: error
+          retention-days: 3
+
   mcp:
     name: MCP deployment
-    needs: deploy
+    needs: [deploy, agent-worker]
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     permissions:
@@ -363,6 +411,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       # Keep Docker on this runner; the Nix asset job deliberately removes it.
+      # The container image copies the agent worker built above.
       - uses: actions/checkout@v4
         with:
           fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
@@ -375,6 +424,12 @@ jobs:
         with:
           name: mcp-browser-assets
           path: mcp/hosted/public
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-agent-worker
+          path: target/release
+      - name: Make the agent worker executable
+        run: chmod 0755 target/release/tonk-agent-worker
       - name: Install and test MCP
         run: |
           npm ci --prefix mcp --ignore-scripts
