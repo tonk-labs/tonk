@@ -321,8 +321,12 @@ jobs:
         run: |
           nix develop --accept-flake-config .#ci --command test:sw
 
+  # The native suites build as three archives (worker, cli, rest; see
+  # `nativeTestGroups` in flake.nix) on separate runners: one archive kept a
+  # runner's four cores saturated for most of its build. `Tests (native, ...)`
+  # below keeps the required contexts.
   tests:
-    name: 'Tests (native, ${{ matrix.profile }})'
+    name: 'Native tests (${{ matrix.profile }}) ${{ matrix.group }}'
     runs-on: 'ubuntu-latest'
     timeout-minutes: 75
     strategy:
@@ -330,6 +334,7 @@ jobs:
       fail-fast: false
       matrix:
         profile: ["debug", "release"]
+        group: ["worker", "cli", "rest"]
     steps:
       # Keep branch-protection contexts stable and state plainly that optimized
       # suites are deferred. Main/tag runs execute every matrix cell below.
@@ -382,15 +387,35 @@ jobs:
             --accept-flake-config \
             --set-env-var TMPDIR "$RUNNER_TEMP" \
             .#ci \
-            --command test:native:"$TEST_PROFILE"
+            --command test:native:"$TEST_PROFILE":${{ matrix.group }}
       - name: Upload Cargo build timings
         if: always() && (github.event_name != 'pull_request' || matrix.profile != 'release')
         uses: actions/upload-artifact@v4
         with:
-          name: cargo-timings-native-${{ matrix.profile }}
+          name: cargo-timings-native-${{ matrix.profile }}-${{ matrix.group }}
           path: ${{ runner.temp }}/cargo-timings/
           if-no-files-found: ignore
           retention-days: 14
+
+  native:
+    if: always()
+    name: 'Tests (native, ${{ matrix.profile }})'
+    needs: ['tests']
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        profile: ["debug", "release"]
+    steps:
+      - name: Defer optimized tests to main and release tags
+        if: github.event_name == 'pull_request' && matrix.profile == 'release'
+        run: echo 'Optimized tests were not run on this PR. They run on main and v* release tags; PR correctness coverage runs in the debug context.' | tee -a "$GITHUB_STEP_SUMMARY"
+      # `needs` reports the group matrix as one result, so a failing group of
+      # either profile fails both contexts. The group jobs name the profile.
+      - name: 'Require every native test group'
+        env:
+          GROUP_RESULT: '${{ needs.tests.result }}'
+        run: test "$GROUP_RESULT" = success
 
   # Browser test execution takes about as long as compiling the archive, so the
   # suite runs in shards. Each shard realizes the same archive derivation (one

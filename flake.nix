@@ -243,6 +243,43 @@
 
         inherit (menuHelpers) makeMenu makeDevShellHook menuTestCommand;
 
+        # The native suites also build as three archives, one per CI runner.
+        # The single archive kept all four cores busy for most of its build,
+        # so only more runners shorten it. `rest` excludes rather than lists
+        # packages, so a new crate lands there by default.
+        nativeTestGroups = {
+          worker = "--package tonk-worker";
+          cli = "--package tonk-cli";
+          rest = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-worker --exclude tonk-cli";
+        };
+        # Each variant's profile, as in the whole-workspace archives below.
+        nativeTestProfiles = {
+          debug = "test";
+          release = "release-test";
+          ci = "ci-test";
+        };
+        forNativeTestGroups =
+          f:
+          pkgs.lib.concatMapAttrs (
+            variant: profile:
+            pkgs.lib.mapAttrs' (group: selection: f variant profile group selection) nativeTestGroups
+          ) nativeTestProfiles;
+        nativeGroupPackages = forNativeTestGroups (
+          variant: profile: group: selection:
+          pkgs.lib.nameValuePair "tests-native-${variant}-${group}" (buildTestArchive {
+            name = "native-${variant}-${group}";
+            inherit profile;
+            args = "${selection} --features integration-tests";
+          })
+        );
+        nativeGroupCommands = forNativeTestGroups (
+          variant: _: group: _:
+          pkgs.lib.nameValuePair "test:native:${variant}:${group}" (menuTestCommand {
+            description = "Native ${variant} tests, ${group} group (one CI runner's share)";
+            package = "tests-native-${variant}-${group}";
+          })
+        );
+
         commands = {
           "build:web" = {
             description = "Build the Tonk web application";
@@ -561,7 +598,8 @@
             description = "Test Desktop against an isolated local runtime";
             command = "exec bash desktop/scripts/dev.sh test:workflow \"$@\"";
           };
-        };
+        }
+        // nativeGroupCommands;
 
         menu = makeMenu commands;
 
@@ -883,7 +921,8 @@
               $SIBLING_SITE
               EOF
             '';
-        };
+        }
+        // nativeGroupPackages;
       }
     );
 
