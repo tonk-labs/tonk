@@ -66,6 +66,23 @@ final class AccessActionsTests: XCTestCase {
     XCTAssertNil(store.values["old"])
     XCTAssertNotNil(store.values["replacement"])
     XCTAssertEqual(access.journal.events.last?.action, .reset)
+    XCTAssertTrue(access.journal.revokedTargets[space.subject]?.contains("old") == true)
+    runtime.invites = [["targetCid": "old", "kind": "open", "status": "active"]]
+    await access.refresh(space)
+    XCTAssertTrue(access.links(for: space.subject).isEmpty)
+  }
+
+  func testConfirmedRevokeDoesNotReappearFromStaleReplica() async throws {
+    let space = try space()
+    let runtime = AccessRuntimeStub()
+    runtime.invites = [["targetCid": "old", "kind": "open", "status": "active"]]
+    let access = AccessModel(vault: LinkStoreStub())
+    access.runtime = runtime
+    await access.refresh(space)
+    XCTAssertEqual(access.links(for: space.subject).count, 1)
+    await access.revoke(
+      AccessLink(kind: .person, subject: space.subject, target: "old", usedBy: []), space: space)
+    XCTAssertTrue(access.links(for: space.subject).isEmpty)
   }
 
   func testKeychainFailureIsReportedAfterMinting() async throws {
@@ -186,6 +203,7 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
   var accountRead: (() async -> Void)?
   var mintRead: (() async -> Void)?
   var spaceWarnings: [String] = []
+  var invites: [[String: Any]] = []
   var spaceReads = 0
   func createCLILink(_ space: TonkSpace) async throws -> String { "unused" }
   func accountScript(_ script: String, arguments: [String: Any]) async throws -> [String: Any] {
@@ -196,7 +214,7 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
     }
     if script == AccessModel.spaceScript {
       spaceReads += 1
-      return ["invites": [], "members": [], "warnings": spaceWarnings]
+      return ["invites": invites, "members": [], "warnings": spaceWarnings]
     }
     if script.contains("const minted") {
       await mintRead?()

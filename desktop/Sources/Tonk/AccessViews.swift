@@ -134,8 +134,8 @@ struct AccessLinkRow: View {
     switch link.kind {
     case .person, .scoped:
       resetting
-        ? "A new link is made and copied. The old link stops working; people who already joined keep their access."
-        : "The link stops working. People who already joined keep their access."
+        ? "A new link is made and copied. The old link stops working. People who joined through it may lose access and need the new link."
+        : "The link stops working. People who joined through it may lose access unless they have another grant."
     case .agent:
       "Agents using this link lose access to the space."
     case .publicRead:

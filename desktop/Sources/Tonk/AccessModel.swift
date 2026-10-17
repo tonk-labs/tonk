@@ -170,7 +170,9 @@ final class AccessModel: ObservableObject {
       let result = try await runtime.accountScript(
         Self.spaceScript, arguments: ["subject": space.subject])
       guard generation == started else { return }
+      let revoked = journal.revokedTargets[space.subject] ?? []
       let invites = try Self.decode([InviteSummary].self, result["invites"])
+        .filter { !revoked.contains($0.targetCid) }
       let members = Self.members(result["members"])
       let isPublic = (result["executions"] as? [[String: Any]] ?? []).contains {
         ($0["fields"] as? [String: Any])?["kind"] as? String == "public"
@@ -416,6 +418,7 @@ final class AccessModel: ObservableObject {
         try await revoke(link, runtime: runtime, space: space)
         guard generation == started else { return }
         vault.remove(link.target)
+        journal.confirmRevocation(subject: space.subject, target: link.target)
         record(.reset, kind: .person, target: target, space: space)
         notice = "New link copied. The old link no longer works." + storageWarning
       } catch {

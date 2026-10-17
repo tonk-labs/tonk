@@ -46,11 +46,38 @@ public struct AccessEvent: Codable, Equatable, Sendable, Identifiable {
 
 public struct AccessJournal: Codable, Equatable, Sendable {
   public private(set) var events: [AccessEvent] = []
+  /// Confirmed revocations outlive the bounded activity feed. A stale replica
+  /// may reintroduce invitation facts, but cannot undo the service's receipt.
+  public private(set) var revokedTargets: [String: Set<String>] = [:]
   static let limit = 500
 
-  public init(events: [AccessEvent] = []) { self.events = events }
+  public init(events: [AccessEvent] = []) {
+    self.events = events
+    for event in events where event.action == .revoked {
+      if let target = event.target { revokedTargets[event.subject, default: []].insert(target) }
+    }
+  }
+
+  private enum CodingKeys: String, CodingKey { case events, revokedTargets }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(events: try values.decode([AccessEvent].self, forKey: .events))
+    for (subject, targets) in try values.decodeIfPresent(
+      [String: Set<String>].self, forKey: .revokedTargets) ?? [:]
+    {
+      revokedTargets[subject, default: []].formUnion(targets)
+    }
+  }
+
+  public mutating func confirmRevocation(subject: String, target: String) {
+    revokedTargets[subject, default: []].insert(target)
+  }
 
   public mutating func record(_ event: AccessEvent) {
+    if event.action == .revoked, let target = event.target {
+      confirmRevocation(subject: event.subject, target: target)
+    }
     events.append(event)
     if events.count > Self.limit { events.removeFirst(events.count - Self.limit) }
   }

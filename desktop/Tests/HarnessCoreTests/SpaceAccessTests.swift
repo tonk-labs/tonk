@@ -161,4 +161,19 @@ final class SpaceAccessTests: XCTestCase {
     XCTAssertFalse(space.contains(URL(string: space.url.absoluteString + "Other")!))
     XCTAssertFalse(space.contains(URL(string: "https://elsewhere.example" + space.url.path)!))
   }
+
+  func testRevocationSurvivesJournalTrimmingAndLegacyLoading() throws {
+    var journal = AccessJournal(events: [
+      AccessEvent(date: now, subject: subject, action: .revoked, kind: .person, target: "old")
+    ])
+    for _ in 0..<501 {
+      journal.record(
+        AccessEvent(date: now, subject: subject, action: .made, kind: .person, target: "new"))
+    }
+    let restored = try JSONDecoder().decode(AccessJournal.self, from: JSONEncoder().encode(journal))
+    XCTAssertEqual(restored.revokedTargets[subject], ["old"])
+    XCTAssertFalse(restored.events.contains { $0.target == "old" })
+    let legacy = try JSONSerialization.data(withJSONObject: ["events": []])
+    XCTAssertTrue(try JSONDecoder().decode(AccessJournal.self, from: legacy).revokedTargets.isEmpty)
+  }
 }
