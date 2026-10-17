@@ -282,37 +282,29 @@ struct ContentView: View {
 
   private var moreMenu: some View {
     AnchoredMenuButton {
-      let menu = NSMenu()
-      menu.autoenablesItems = false
-      menu.addAction(
-        "Refresh", symbol: "arrow.clockwise", key: "r",
-        enabled: !refreshDisabled, action: refreshContent)
+      Button("Refresh", systemImage: "arrow.clockwise", action: refreshContent)
+        .disabled(refreshDisabled)
       if model.openedSpace != nil {
-        menu.addAction(
-          "Open in browser", symbol: "arrow.up.right.square", key: "\u{F703}",
-          action: openSpaceInBrowser)
+        Button("Open in Browser", systemImage: "arrow.up.right.square", action: openSpaceInBrowser)
       }
       if let space = model.openedSpace ?? selectedSpace {
-        menu.addAction("Sync status…", symbol: "arrow.triangle.2.circlepath") {
+        Button("Sync Status…", systemImage: "arrow.triangle.2.circlepath") {
           syncStatusSpace = space
         }
       }
-      menu.addItem(.separator())
-      menu.addAction(
-        "Settings…", symbol: "gearshape",
-        enabled: !accountActionsDisabled
-      ) { showProviderSettings = true }
+      Divider()
+      Button("Settings…", systemImage: "gearshape") { showProviderSettings = true }
+        .disabled(accountActionsDisabled)
       if model.provider == .chatGPT && model.signedIn {
-        menu.addAction("Sign out of ChatGPT", enabled: !accountActionsDisabled) {
+        Button("Sign Out of ChatGPT") {
           Task { await model.signOut() }
-        }
+        }.disabled(accountActionsDisabled)
       }
       if runtime.accountConnected && RuntimeLocation.deployment != .local {
-        menu.addAction("Sign out of Tonk", enabled: !accountActionsDisabled) {
+        Button("Sign Out of Tonk") {
           signOutOfTonk()
-        }
+        }.disabled(accountActionsDisabled)
       }
-      return menu
     }
   }
 

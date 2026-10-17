@@ -53,3 +53,29 @@ proven fixes, then update the draft PR with the final evidence.
   2 skipped in each target, zero failures (2026-10-17). Live access mutation,
   post-restart Keychain persistence, independent-client revocation and video
   remain pending; unit fault injection is not live account evidence.
+- More Options: the custom NSMenu popup failed through accessibility; deferring
+  it exposed an AppKit assertion in `popUpMenuPositioningItem`. Replaced its
+  detached manual anchor with a native SwiftUI Menu. Actual app checks now open
+  the menu and Sync Status sheet successfully; the verification space reports
+  matching local/remote revisions. New Link's keyboard shortcut opens its sheet.
+  Existing person-link rows visibly expose both Reset and Revoke; no existing
+  links were modified.
+- Final full Swift run after menu replacement: 64 + 80 tests, 4 total skipped,
+  zero failures. Signed build and `codesign --verify --strict` passed with system
+  trust-store access. `cargo fmt --all --check`, generator `--check`, and
+  `git diff --check` passed.
+- Fresh worker invitation test compiled but did not execute: pooled Chrome
+  timed out discovering DevTools; stock Chrome returned HTTP 404 during driver
+  setup; Firefox returned HTTP 500 / "Could not find profile folder". Retried
+  with canonical TMPDIR and both installed geckodriver 0.37.0 and 0.37.1.
+  A launch probe confirmed the generated profile and user.js exist before
+  Firefox starts. This remains a browser-runner blocker, not a test pass.
+
+## Walkthrough still to record
+
+After approved live checks pass, record the tested native build showing:
+catalog/search, All Links/For Agents, overview/roster, Home/directory navigation,
+chat toggle/focus, new person link and independent claim, reset and old-link
+denial, agent MCP use and revocation denial, public read/unpublish denial,
+restart/Copy/history persistence, and sync/error recovery. Keep bearer URLs
+offscreen. Pair video timestamps with external-client results and source SHA.
