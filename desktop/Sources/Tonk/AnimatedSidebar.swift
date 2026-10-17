@@ -75,7 +75,9 @@ final class SidebarSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
 
   private func applyRequestedVisibility() {
     guard !transitioning, sidebarItem.isCollapsed == requestedVisible else { return }
-    if animateChanges && view.window != nil {
+    // AppKit need not complete an animation in an offscreen window. Waiting
+    // for that completion would leave every subsequent request queued.
+    if animateChanges && view.window?.isVisible == true {
       transitioning = true
       NSAnimationContext.runAnimationGroup { context in
         context.duration = 0.15
