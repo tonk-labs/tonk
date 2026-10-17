@@ -172,6 +172,9 @@ jobs:
           restore-keys: |
             mcp-cargo-v2-agent-link-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', 'flake.lock', 'flake.nix', 'nix/**', '.cargo/**', '.github/workflows/mcp.yml') }}-
             mcp-cargo-v2-agent-link-${{ runner.os }}-${{ runner.arch }}-
+      # The test drives the worker through the Node MCP client.
+      - name: Install locked MCP dependencies
+        run: nix --accept-flake-config develop .#ci -c npm --prefix mcp ci --ignore-scripts
       - name: Test agent-link stdio with remote readback
         run: nix --accept-flake-config develop .#ci -c cargo test --locked --profile ci-test --timings -p tonk-worker --features native-host --test agent_link
       - name: Upload Cargo timing reports
