@@ -5,6 +5,7 @@ import SwiftUI
 struct SpaceOverviewView: View {
   let space: TonkSpace
   @ObservedObject var access: AccessModel
+  var canRefresh = true
   var onOpenView: (SpaceViewEntry) -> Void
   var onNewLink: () -> Void
 
@@ -12,6 +13,17 @@ struct SpaceOverviewView: View {
 
   var body: some View {
     Form {
+      if let error = access.errors["account"] {
+        Section {
+          Text("Agent connections could not be refreshed: " + error)
+          Button("Try Again") {
+            Task {
+              await access.refreshAccount()
+              await access.refresh(space)
+            }
+          }
+        }
+      }
       if let error = access.errors[space.id] {
         Section {
           Label {
@@ -91,7 +103,10 @@ struct SpaceOverviewView: View {
         ProgressView()
       }
     }
-    .task(id: space.id) { await access.refresh(space) }
+    .task(id: canRefresh ? space.id : nil) {
+      guard canRefresh else { return }
+      await access.refresh(space)
+    }
   }
 
   @ViewBuilder private var links: some View {

@@ -624,7 +624,9 @@ struct ContentView: View {
         case .space:
           if let space = selectedSpace {
             SpaceOverviewView(
-              space: space, access: access, onOpenView: { open($0, in: space) },
+              space: space, access: access,
+              canRefresh: runtime.accountConnected && !runtime.showingCachedCatalog,
+              onOpenView: { open($0, in: space) },
               onNewLink: startNewLink)
           } else {
             CatalogStatusView(runtime: runtime)
@@ -658,7 +660,7 @@ struct ContentView: View {
       // Nothing learned under one account may show under the next.
       if !connected { access.reset() }
     }
-    .task(id: runtime.catalogLoaded && runtime.accountConnected) {
+    .task(id: runtime.catalogLoaded && runtime.accountConnected ? runtime.spaces.map(\.id) : nil) {
       guard runtime.catalogLoaded && runtime.accountConnected else { return }
       await access.refreshAll(runtime.spaces)
     }

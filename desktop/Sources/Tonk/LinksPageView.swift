@@ -23,12 +23,27 @@ struct LinksPageView: View {
         )
         .foregroundStyle(.secondary)
       }
+      if let error = access.errors["account"] {
+        Section {
+          Text("Agent links could not be refreshed: " + error)
+          Button("Try Again") { Task { await access.refreshAll(spaces) } }
+        }
+      }
+      ForEach(spaces.filter { access.errors[$0.id] != nil }) { space in
+        Section(space.title) {
+          Text(access.errors[space.id] ?? "")
+          Button("Try Again") { Task { await access.refresh(space) } }
+        }
+      }
       if groups.isEmpty {
         Section {
           HStack {
             Text(
               loadingAny
-                ? "Loading links…" : (agentsOnly ? "No agent links yet." : "No links yet.")
+                ? "Loading links…"
+                : (!access.errors.isEmpty
+                  ? "Some links could not be loaded."
+                  : (agentsOnly ? "No agent links yet." : "No links yet."))
             )
             .foregroundStyle(.secondary)
             Spacer()

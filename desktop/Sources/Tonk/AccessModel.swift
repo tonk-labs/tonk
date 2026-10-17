@@ -2,6 +2,21 @@ import AppKit
 import Foundation
 import HarnessCore
 
+@MainActor
+protocol SpaceAccessRuntime: AnyObject {
+  var catalogBranch: String? { get }
+  func accountScript(_ script: String, arguments: [String: Any]) async throws -> [String: Any]
+  func createCLILink(_ space: TonkSpace) async throws -> String
+}
+
+extension SpaceAccessRuntime {
+  func accountScript(_ script: String) async throws -> [String: Any] {
+    try await accountScript(script, arguments: [:])
+  }
+}
+
+extension RuntimeModel: SpaceAccessRuntime {}
+
 /// Links, people and views for each space, read through the signed-in
 /// runtime. Every request goes through the worker, which enforces authority.
 @MainActor
@@ -17,9 +32,10 @@ final class AccessModel: ObservableObject {
   @Published private(set) var working: Set<String> = []
   @Published var notice: String?
 
-  weak var runtime: RuntimeModel?
+  weak var runtime: (any SpaceAccessRuntime)?
   private var journalURL: URL?
-  private let vault = LinkVault(scope: RuntimeLocation.deployment.title)
+  private let vault: any AccessLinkStore
+  private let copyToPasteboard: (String) -> Bool
   private var accountLoaded = false
   /// The account's spaces, in catalog order; counts and pages follow it.
   private var catalog: [String] = []
@@ -27,6 +43,17 @@ final class AccessModel: ObservableObject {
   private var refreshAgain: Set<String> = []
   /// Bumped by `reset`, so reads begun under another account are dropped.
   private var generation = 0
+
+  init(
+    vault: any AccessLinkStore = LinkVault(scope: RuntimeLocation.deployment.title),
+    copyToPasteboard: @escaping (String) -> Bool = {
+      NSPasteboard.general.clearContents()
+      return NSPasteboard.general.setString($0, forType: .string)
+    }
+  ) {
+    self.vault = vault
+    self.copyToPasteboard = copyToPasteboard
+  }
 
   /// For layout fixtures only: show prepared access without a runtime.
   func showFixture(
@@ -40,7 +67,7 @@ final class AccessModel: ObservableObject {
     self.journal = journal
   }
 
-  func prepare(directory: URL, runtime: RuntimeModel) {
+  func prepare(directory: URL, runtime: any SpaceAccessRuntime) {
     self.runtime = runtime
     journalURL = directory.appendingPathComponent("access-journal.json")
     if let journalURL { journal = AccessJournal.load(from: journalURL) }
@@ -57,6 +84,9 @@ final class AccessModel: ObservableObject {
     accountName = nil
     selfDid = nil
     accountLoaded = false
+    loading = []
+    working = []
+    notice = nil
   }
 
   // MARK: Reads
@@ -97,6 +127,7 @@ final class AccessModel: ObservableObject {
       accountName = (result["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
       selfDid = (result["root"] as? String).flatMap { $0.isEmpty ? nil : $0 }
       accountLoaded = true
+      errors["account"] = nil
     } catch {
       if generation == started { errors["account"] = Self.message(error) }
     }
@@ -106,7 +137,9 @@ final class AccessModel: ObservableObject {
     const [profile, root] = await Promise.all([api('/api/profile'), api('/api/identity/root')]);
     // Agent links exist only on workers built with connection invites.
     const response = await fetch('/api/account/connections', {signal: AbortSignal.timeout(60000)});
-    const connections = response.ok ? await response.json() : [];
+    if (!response.ok) throw new Error('Agent connections could not be loaded (HTTP ' + response.status + ').');
+    const connections = await response.json();
+    if (!Array.isArray(connections)) throw new Error('Invalid agent connections response.');
     return {name: profile.display_name || profile.displayName || '', root: root.rootDid || '',
             connections: Array.isArray(connections) ? connections : []};
     """
@@ -115,22 +148,24 @@ final class AccessModel: ObservableObject {
   /// so the result always reflects every action that preceded the call.
   func refresh(_ space: TonkSpace) async {
     guard runtime != nil else { return }
+    let started = generation
     if loading.contains(space.id) {
       refreshAgain.insert(space.id)
       return
     }
     loading.insert(space.id)
-    defer { loading.remove(space.id) }
+    defer { if generation == started { loading.remove(space.id) } }
     repeat {
       refreshAgain.remove(space.id)
       await read(space)
-    } while refreshAgain.contains(space.id)
+    } while generation == started && refreshAgain.contains(space.id)
   }
 
   private func read(_ space: TonkSpace) async {
     guard let runtime else { return }
     let started = generation
     if !accountLoaded { await refreshAccount() }
+    guard generation == started else { return }
     do {
       let result = try await runtime.accountScript(
         Self.spaceScript, arguments: ["subject": space.subject])
@@ -150,7 +185,8 @@ final class AccessModel: ObservableObject {
         isPublic: isPublic, selfDid: selfDid)
       access.publicAddress = Self.publicAddress(result["remote"], subject: space.subject)
       spaces[space.id] = access
-      errors[space.id] = nil
+      let warnings = result["warnings"] as? [String] ?? []
+      errors[space.id] = warnings.isEmpty ? nil : warnings.joined(separator: " ")
     } catch {
       if generation == started { errors[space.id] = Self.message(error) }
     }
@@ -158,10 +194,11 @@ final class AccessModel: ObservableObject {
 
   /// Load each space once, sequentially, so counts fill in without a burst.
   func refreshAll(_ catalog: [TonkSpace]) async {
+    let started = generation
     setCatalog(catalog)
     await refreshAccount()
     for space in catalog {
-      guard !Task.isCancelled else { return }
+      guard !Task.isCancelled, generation == started else { return }
       await refresh(space)
     }
   }
@@ -181,15 +218,19 @@ final class AccessModel: ObservableObject {
         method: 'POST', headers: {'content-type': 'text/plain'}, body: document,
         signal: AbortSignal.timeout(60000)
       });
-      if (!response.ok) return [];
+      if (!response.ok) throw new Error('View query failed (HTTP ' + response.status + ').');
       const value = await response.json();
       return (value.matches_after || value.matchesAfter || []).flatMap(block => block.results || []);
     };
-    // A missing part leaves its section empty instead of failing the overview.
-    // The roster is required: an empty one would wrongly read as "only you".
-    const safe = (promise, fallback) => promise.catch(() => fallback);
+    // Keep partial data useful, but never present failed reads as a verified
+    // absence of links, publications, or views.
+    const warnings = [];
+    const safe = (promise, fallback, section) => promise.catch(() => {
+      warnings.push(section + ' could not be loaded. Try refreshing.');
+      return fallback;
+    });
     const [invites, members, executions, home, directories, concepts, info] = await Promise.all([
-      safe(api(base + '/invites'), []),
+      safe(api(base + '/invites'), [], 'Links'),
       query({
         member: field('xyz.tonk.membership/member', 'Entity'),
         role: field('xyz.tonk.membership/role', 'Entity', true),
@@ -199,11 +240,11 @@ final class AccessModel: ObservableObject {
       safe(query({
         subject: field('xyz.tonk.invitation/subject', 'Entity'),
         kind: field('xyz.tonk.invitation-execution/kind', 'Text')
-      }, ['subject', 'kind']), []),
-      safe(notation('name:\\n  this: id:tonk/space\\n'), []),
-      safe(query({directory: field('xyz.tonk.view/directory', 'Text')}, ['directory']), []),
-      safe(notation('concept:\\n'), []),
-      safe(api(base), {})
+      }, ['subject', 'kind']), [], 'Public access'),
+      safe(notation('name:\\n  this: id:tonk/space\\n'), [], 'Home view'),
+      safe(query({directory: field('xyz.tonk.view/directory', 'Text')}, ['directory']), [], 'Views'),
+      safe(notation('concept:\\n'), [], 'View names'),
+      safe(api(base), {}, 'Space address')
     ]);
     // A concept is the space's own when one of its attributes is outside the
     // namespaces the shipped library uses; only those directories are views.
@@ -219,7 +260,7 @@ final class AccessModel: ObservableObject {
     const homeModel = home[0]?.fields?.entity || null;
     const models = directories.map(row => row.this).filter(x => typeof x === 'string');
     return {
-      invites, members, executions,
+      invites, members, executions, warnings,
       home: homeModel ? {model: homeModel, name: described[homeModel]?.name || null} : null,
       directories: [...new Set(models)].filter(model => described[model]?.own)
         .map(model => ({model, name: described[model].name})),
@@ -284,17 +325,21 @@ final class AccessModel: ObservableObject {
   @discardableResult
   func make(_ kind: NewLink, in space: TonkSpace) async -> Bool {
     guard let runtime, !working.contains("new:" + space.id) else { return false }
+    let started = generation
     working.insert("new:" + space.id)
-    defer { working.remove("new:" + space.id) }
+    defer { if generation == started { working.remove("new:" + space.id) } }
     do {
       switch kind {
       case .person:
         let (url, target) = try await mintPersonLink(runtime: runtime, space: space)
+        guard generation == started else { return false }
         finishMint(url: url, target: target, kind: .person, space: space)
       case .agent:
         let before = Set(agentConnections.map(\.id))
         let link = try await runtime.createCLILink(space)
+        guard generation == started else { return false }
         await refreshAccount()
+        guard generation == started else { return false }
         let fresh = agentConnections.filter {
           $0.subject == space.subject && !before.contains($0.id)
         }
@@ -302,7 +347,9 @@ final class AccessModel: ObservableObject {
           url: link, target: fresh.count == 1 ? fresh[0].id : nil, kind: .agent, space: space)
       case .publicRead:
         try await setPublic(true, space: space, runtime: runtime)
+        guard generation == started else { return false }
         await refresh(space)
+        guard generation == started else { return false }
         record(.published, kind: .publicRead, target: space.subject, space: space)
         if let address = spaces[space.id]?.publicAddress, copy(address) {
           notice = "Public link copied"
@@ -314,6 +361,7 @@ final class AccessModel: ObservableObject {
       await refresh(space)
       return true
     } catch {
+      guard generation == started else { return false }
       notice = "Couldn’t make the link: " + Self.message(error)
       return false
     }
@@ -326,18 +374,22 @@ final class AccessModel: ObservableObject {
 
   func revoke(_ link: AccessLink, space: TonkSpace) async {
     guard let runtime, !working.contains(link.id) else { return }
+    let started = generation
     working.insert(link.id)
-    defer { working.remove(link.id) }
+    defer { if generation == started { working.remove(link.id) } }
     do {
       try await revoke(link, runtime: runtime, space: space)
+      guard generation == started else { return }
       record(
         link.kind == .publicRead ? .unpublished : .revoked, kind: link.kind, target: link.target,
         space: space)
       if link.kind != .publicRead { vault.remove(link.target) }
       notice = link.kind == .publicRead ? "The space is private" : "Link revoked"
       if link.kind == .agent { await refreshAccount() }
+      guard generation == started else { return }
       await refresh(space)
     } catch {
+      guard generation == started else { return }
       notice = "Couldn’t revoke the link: " + Self.message(error)
     }
   }
@@ -345,28 +397,42 @@ final class AccessModel: ObservableObject {
   /// Replace a plain link: the new link works before the old one stops.
   func resetLink(_ link: AccessLink, space: TonkSpace) async {
     guard let runtime, link.canReset, !working.contains(link.id) else { return }
+    let started = generation
     working.insert(link.id)
-    defer { working.remove(link.id) }
+    defer { if generation == started { working.remove(link.id) } }
     do {
       let (url, target) = try await mintPersonLink(runtime: runtime, space: space)
-      if let target { try? vault.write(url, for: target) }
-      _ = copy(url)
+      guard generation == started else { return }
+      let storageWarning = retain(url, target: target)
+      guard copy(url) else {
+        record(.made, kind: .person, target: target, space: space)
+        notice =
+          "A replacement was made but couldn’t be copied; the old link is still active."
+          + storageWarning
+        await refresh(space)
+        return
+      }
       do {
         try await revoke(link, runtime: runtime, space: space)
+        guard generation == started else { return }
         vault.remove(link.target)
         record(.reset, kind: .person, target: target, space: space)
-        notice = "New link copied. The old link no longer works."
+        notice = "New link copied. The old link no longer works." + storageWarning
       } catch {
+        guard generation == started else { return }
         record(.made, kind: .person, target: target, space: space)
-        notice = "New link copied, but the old link is still active: " + Self.message(error)
+        notice =
+          "New link copied, but the old link is still active: " + Self.message(error)
+          + storageWarning
       }
       await refresh(space)
     } catch {
+      guard generation == started else { return }
       notice = "Couldn’t reset the link: " + Self.message(error)
     }
   }
 
-  private func mintPersonLink(runtime: RuntimeModel, space: TonkSpace) async throws
+  private func mintPersonLink(runtime: any SpaceAccessRuntime, space: TonkSpace) async throws
     -> (String, String?)
   {
     let result = try await runtime.accountScript(
@@ -390,17 +456,28 @@ final class AccessModel: ObservableObject {
   }
 
   private func finishMint(url: String, target: String?, kind: AccessLinkKind, space: TonkSpace) {
-    if let target { try? vault.write(url, for: target) }
+    let storageWarning = retain(url, target: target)
     record(.made, kind: kind, target: target, space: space)
     notice =
-      copy(url)
-      ? (target == nil
-        ? "Link copied. Save it now; this Mac couldn’t match it to its listing."
-        : "Link copied")
-      : "The link was made, but couldn’t be copied"
+      (copy(url) ? "Link copied." : "The link was made, but couldn’t be copied.")
+      + storageWarning
   }
 
-  private func revoke(_ link: AccessLink, runtime: RuntimeModel, space: TonkSpace) async throws {
+  private func retain(_ url: String, target: String?) -> String {
+    guard let target else {
+      return " Save it now; this Mac couldn’t match it to its listing."
+    }
+    do {
+      try vault.write(url, for: target)
+      return ""
+    } catch {
+      return " This Mac couldn’t save the link in Keychain; Copy will not be available later."
+    }
+  }
+
+  private func revoke(_ link: AccessLink, runtime: any SpaceAccessRuntime, space: TonkSpace)
+    async throws
+  {
     switch link.kind {
     case .person, .scoped:
       _ = try await runtime.accountScript(
@@ -419,7 +496,9 @@ final class AccessModel: ObservableObject {
   }
 
   /// Publication is a profile command with no receipt; wait for its record.
-  private func setPublic(_ published: Bool, space: TonkSpace, runtime: RuntimeModel) async throws {
+  private func setPublic(_ published: Bool, space: TonkSpace, runtime: any SpaceAccessRuntime)
+    async throws
+  {
     guard let branch = runtime.catalogBranch else {
       throw HarnessError.message("Wait for your spaces to load, then try again.")
     }
@@ -467,8 +546,7 @@ final class AccessModel: ObservableObject {
   }
 
   private func copy(_ value: String) -> Bool {
-    NSPasteboard.general.clearContents()
-    return NSPasteboard.general.setString(value, forType: .string)
+    copyToPasteboard(value)
   }
 
   private static func decode<T: Decodable>(_ type: T.Type, _ value: Any?) throws -> T {
