@@ -50,7 +50,7 @@ final class SpaceAccessTests: XCTestCase {
     // An older worker cannot say who claimed it, so nothing is claimed either way.
     XCTAssertNil(links[2].usage(madeAt: nil, now: now))
     XCTAssertEqual(links[3].detail(now: now), "Anyone · Write · Whole space · Expires in 7 days")
-    XCTAssertEqual(links[3].usage(madeAt: now, now: now), "Made just now · Not used yet")
+    XCTAssertEqual(links[3].usage(madeAt: now, now: now), "Made just now · No registered clients")
     XCTAssertTrue(links[3].forAgents)
     XCTAssertTrue(links[1].canReset)
     XCTAssertFalse(links[3].canReset)

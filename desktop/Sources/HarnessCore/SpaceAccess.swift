@@ -186,6 +186,14 @@ public struct AccessLink: Equatable, Sendable, Identifiable {
     if kind == .publicRead { return "Anyone with the address can read" }
     let made = madeAt.map { "Made " + AccessText.relative($0, now: now).lowercasedFirst() }
     guard let usedBy else { return made }
+    if kind == .agent {
+      // Per-call MCP authority does not register a client installation.
+      // Installation metadata therefore cannot establish whether a link was used.
+      if usedBy.isEmpty {
+        return [made, "No registered clients"].compactMap { $0 }.joined(separator: " · ")
+      }
+      return "Connected clients: " + AccessText.list(usedBy)
+    }
     if usedBy.isEmpty { return [made, "Not used yet"].compactMap { $0 }.joined(separator: " · ") }
     return "Used by " + AccessText.list(usedBy)
   }
