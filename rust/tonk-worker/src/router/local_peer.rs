@@ -11,7 +11,7 @@ use axum::{Router, body::Body, http::Request};
 use serde_json::{Value, json};
 use tower_service::Service;
 
-use super::agent_link::{clear_journal, create_journal, request, request_method};
+use super::agent_link::{clear_journal, create_journal, request_detailed, request_method};
 use crate::TonkState;
 
 /// A long-lived local peer over one private data directory.
@@ -318,15 +318,18 @@ async fn evaluate(
     let base = format!("/api/repository/{space}/branch/main");
     if journal.exists() {
         if synchronize {
-            request_method(router, &format!("{base}/sync/status"), "", "GET")
+            request_detailed(router, &format!("{base}/sync/status"), "", "GET")
                 .await
-                .map_err(|_| "Retained state authorization failed.".to_owned())?;
+                .map_err(|error| format!("Retained state authorization failed. ({error})"))?;
         }
         if recovering {
-            request(router, &format!("{base}/sync/push"), "")
+            request_detailed(router, &format!("{base}/sync/push"), "", "POST")
                 .await
-                .map_err(|_| "Retained state publication could not be confirmed.".to_owned())?;
-            clear_journal(journal).map_err(|_| "Could not clear recovery journal.".to_owned())?;
+                .map_err(|error| {
+                    format!("Retained state publication could not be confirmed. ({error})")
+                })?;
+            clear_journal(journal)
+                .map_err(|error| format!("Could not clear recovery journal. ({error})"))?;
             return Ok(json!({ "published_retained_state": true }));
         }
         if writing {
@@ -337,9 +340,11 @@ async fn evaluate(
             return Err("No retained evaluation to recover.".into());
         }
         if synchronize {
-            request(router, &format!("{base}/sync/pull"), "")
+            request_detailed(router, &format!("{base}/sync/pull"), "", "POST")
                 .await
-                .map_err(|_| "Space pull failed; no evaluation was dispatched.".to_owned())?;
+                .map_err(|error| {
+                    format!("Space pull failed; no evaluation was dispatched. ({error})")
+                })?;
         }
     }
     if writing && synchronize {
@@ -349,25 +354,27 @@ async fn evaluate(
                 "Could not persist evaluation journal; no evaluation was dispatched.".to_owned()
             })?;
     }
-    let mut result = request(
+    let mut result = request_detailed(
         router,
         &format!("{base}/evaluate?transact={writing}"),
         document,
+        "POST",
     )
     .await
-    .map_err(|_| {
+    .map_err(|error| {
         if writing {
-            "Evaluation could not be confirmed. Do not repeat it; query the space first.".to_owned()
+            format!("Evaluation could not be confirmed. Do not repeat it; query the space first. ({error})")
         } else {
-            "The worker query could not be completed.".to_owned()
+            format!("The worker query could not be completed. ({error})")
         }
     })?;
     if writing && synchronize {
-        request(router, &format!("{base}/sync/push"), "")
+        request_detailed(router, &format!("{base}/sync/push"), "", "POST")
             .await
-            .map_err(|_| {
-                "Applied locally; remote push could not be confirmed. Do not repeat the write."
-                    .to_owned()
+            .map_err(|error| {
+                format!(
+                    "Applied locally; remote push could not be confirmed. Do not repeat the write. ({error})"
+                )
             })?;
         clear_journal(journal).map_err(|_| {
             "Publication succeeded but recovery journal could not be cleared.".to_owned()

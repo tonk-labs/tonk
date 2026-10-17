@@ -77,7 +77,11 @@ fn text(result: Value, error: bool) -> CallToolResult {
         CallToolResult::error(content)
     } else {
         let mut result_value = CallToolResult::success(content);
-        result_value.structured_content = Some(result);
+        // MCP requires structured content to be an object; strict clients
+        // (Claude Desktop) reject the whole result otherwise.
+        if result.is_object() {
+            result_value.structured_content = Some(result);
+        }
         result_value
     }
 }

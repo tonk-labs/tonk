@@ -149,6 +149,20 @@ pub(super) async fn request_method(
     document: &str,
     method: &str,
 ) -> Result<Value, ()> {
+    request_detailed(router, path, document, method)
+        .await
+        .map_err(|_| ())
+}
+
+/// Like [`request_method`], but says why it failed: the worker's status and
+/// the start of its body. Only for callers whose user owns the peer; the
+/// hosted connection keeps worker errors opaque.
+pub(super) async fn request_detailed(
+    router: &mut Router,
+    path: &str,
+    document: &str,
+    method: &str,
+) -> Result<Value, String> {
     let response = router
         .call(
             Request::builder()
@@ -156,17 +170,23 @@ pub(super) async fn request_method(
                 .uri(path)
                 .header("content-type", "text/plain")
                 .body(Body::from(document.to_owned()))
-                .map_err(|_| ())?,
+                .map_err(|error| error.to_string())?,
         )
         .await
-        .map_err(|_| ())?;
-    if !response.status().is_success() {
-        return Err(());
-    }
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
     let body = axum::body::to_bytes(response.into_body(), 2_000_000)
         .await
-        .map_err(|_| ())?;
-    serde_json::from_slice(&body).map_err(|_| ())
+        .map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        let text = String::from_utf8_lossy(&body);
+        let mut end = text.len().min(600);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        return Err(format!("{status}: {}", text[..end].trim()));
+    }
+    serde_json::from_slice(&body).map_err(|error| error.to_string())
 }
 
 fn lock_root(root: &Path) -> std::io::Result<std::fs::File> {

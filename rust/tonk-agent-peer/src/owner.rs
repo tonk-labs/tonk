@@ -49,14 +49,14 @@ impl Peer {
     /// Run one tool on the peer, owning it if nobody else does.
     pub async fn call(&self, tool: &str, arguments: Value) -> Result<Value, String> {
         if let Some(peer) = self.owned().await? {
-            return peer.lock().await.call(tool, &arguments).await;
+            return run(&peer, tool, &arguments).await;
         }
         match forward(&self.socket(), tool, &arguments).await {
             Ok(result) => result,
             // The owner went away between our lock check and the connection:
             // try once more, which claims ownership if it is free now.
             Err(Forward::Unreachable) => match self.owned().await? {
-                Some(peer) => peer.lock().await.call(tool, &arguments).await,
+                Some(peer) => run(&peer, tool, &arguments).await,
                 None => Err("The local peer is busy in another session; try again.".into()),
             },
             Err(Forward::Lost) => Err(
@@ -112,6 +112,26 @@ impl Peer {
     }
 }
 
+/// Run a tool on the owned peer. Listing spaces also says which process owns
+/// the peer, since every session on this machine talks to that one: an owner
+/// left running from an older build answers with older code.
+async fn run(peer: &Mutex<LocalPeer>, tool: &str, arguments: &Value) -> Result<Value, String> {
+    let mut result = peer.lock().await.call(tool, arguments).await?;
+    if tool == "tonk_list_spaces"
+        && let Value::Object(fields) = &mut result
+    {
+        fields.insert(
+            "owner".into(),
+            json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "pid": std::process::id(),
+                "binary": std::env::current_exe().ok(),
+            }),
+        );
+    }
+    Ok(result)
+}
+
 /// Answer forwarded calls, one JSON line in and one JSON line out per
 /// connection. The socket lives in the owner-only data directory.
 async fn serve(listener: UnixListener, peer: Arc<Mutex<LocalPeer>>) {
@@ -127,7 +147,7 @@ async fn serve(listener: UnixListener, peer: Arc<Mutex<LocalPeer>>) {
                 Ok(request) => {
                     let tool = request["tool"].as_str().unwrap_or_default().to_owned();
                     let arguments = request["arguments"].clone();
-                    match peer.lock().await.call(&tool, &arguments).await {
+                    match run(&peer, &tool, &arguments).await {
                         Ok(result) => json!({ "result": result }),
                         Err(error) => json!({ "error": error }),
                     }

@@ -94,6 +94,11 @@ def main(binary):
         assert any(r["uri"] == "tonk://guide/notation" for r in guides), guides
         notation = first.request("resources/read", {"uri": "tonk://guide/notation"})
         assert notation["contents"][0]["text"].strip(), notation
+        # MCP requires structuredContent to be an object; Claude Desktop
+        # rejects the whole result when a guide comes back as a string.
+        failed, guide = first.tool("tonk_guide", {"topic": "notation"})
+        assert not failed and guide["content"][0]["text"].strip(), guide
+        assert isinstance(guide.get("structuredContent", {}), dict), guide
 
         failed, listed = first.tool("tonk_list_spaces")
         assert not failed, listed
@@ -106,6 +111,10 @@ def main(binary):
         failed, again = second.tool("tonk_list_spaces")
         assert not failed, again
         assert again["structuredContent"]["peer"] == peer, again
+        # Both name the same owning process, which answers for every session.
+        owner = listed["structuredContent"]["owner"]
+        assert owner["pid"] and owner["version"] and owner["binary"], listed
+        assert again["structuredContent"]["owner"] == owner, again
 
         seed = "4" * 44
         failed, refused = second.tool("tonk_join", {
