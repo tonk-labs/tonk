@@ -468,6 +468,7 @@ pub async fn list(
                 } else {
                     "unconfigured".to_string()
                 },
+                invitation: invitation.this.to_string(),
             }
         })
         .collect::<Vec<_>>();

@@ -7,10 +7,11 @@ struct TonkApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
   @StateObject private var model = HarnessModel()
   @StateObject private var runtime = RuntimeModel()
+  @StateObject private var access = AccessModel()
 
   var body: some Scene {
     Window(RuntimeLocation.deployment.title, id: "main") {
-      ContentView(model: model, runtime: runtime)
+      ContentView(model: model, runtime: runtime, access: access)
         .frame(minWidth: 850, minHeight: 580)
         .background(WindowAppearance())
         .task {
@@ -18,7 +19,13 @@ struct TonkApp: App {
             ActivityFixture.prepare(model: model, runtime: runtime)
             return
           }
+          if ProcessInfo.processInfo.arguments.contains("--links-fixture") {
+            ActivityFixture.prepareLinks(runtime: runtime, access: access)
+            ActivityFixture.snapshotIfRequested(runtime: runtime, access: access)
+            return
+          }
           runtime.prepareCatalogCache(directory: model.root)
+          access.prepare(directory: model.root, runtime: runtime)
           delegate.model = model
           delegate.runtime = runtime
           model.runtime = runtime
@@ -37,7 +44,6 @@ struct TonkApp: App {
     .defaultSize(width: 1180, height: 780)
     .windowToolbarStyle(.unified)
     .commands {
-      WindowCommands()
       CommandGroup(replacing: .newItem) {
         Button("New chat") {
           model.startSpaceChat()
@@ -46,6 +52,7 @@ struct TonkApp: App {
           model.openedSpace == nil || model.busy || model.creatingSpace || model.loginPending
             || model.connecting)
       }
+      WindowCommands()
     }
   }
 }
