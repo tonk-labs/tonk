@@ -693,6 +693,17 @@
             (buildTrunkCrate {
               pname = "tonk-ui";
               trunkConfig = "./rust/tonk-ui/Trunk.toml";
+              # The builds Trunk runs for the three `rel="rust"` links in
+              # rust/tonk-ui/index.html, with the features `preBuild` adds.
+              # Keep profiles, binaries and features in step with those links.
+              depsBuildCommand = ''
+                cargo build --profile wasm-ui-release \
+                  --manifest-path rust/tonk-ui/Cargo.toml --bin ui --features connection-invites
+                cargo build --profile wasm-worker-release \
+                  --manifest-path rust/tonk-ui/Cargo.toml --bin worker --features connection-invites
+                cargo build --profile wasm-release \
+                  --manifest-path rust/tonk-guest/Cargo.toml --bin guest
+              '';
               TONK_POSTHOG_KEY = posthogKey;
               postFixup = ''
                 ${./rust/tonk-ui/scripts/stamp-service-worker.sh} "$out"
