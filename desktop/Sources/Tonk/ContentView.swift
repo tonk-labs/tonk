@@ -36,7 +36,21 @@ struct ContentView: View {
     return runtime.catalogError
   }
 
-  private var windowContent: some View {
+  private var startupLoading: some View {
+    let failure = startupFailure
+    return SpaceLoadingView(
+      title: failure == nil ? "Opening Tonk…" : "Couldn’t open Tonk",
+      detail: failure ?? "Loading your workspace.",
+      waiting: failure != nil
+    ) {
+      if failure != nil {
+        Button("Try again") { runtime.load() }.nativeControl()
+      }
+    }
+    .background(.background)
+  }
+
+  private var workspaceLayers: some View {
     ZStack {
       GeometryReader { geometry in
         AnimatedSidebar(
@@ -57,65 +71,60 @@ struct ContentView: View {
           if runtime.accountStatusKnown {
             TonkWelcomeView(runtime: runtime)
           } else {
-            let failure: String? = startupFailure
-            SpaceLoadingView(
-              title: failure == nil ? "Opening Tonk…" : "Couldn’t open Tonk",
-              detail: failure ?? "Loading your workspace.",
-              waiting: failure != nil
-            ) {
-              if failure != nil {
-                Button("Try again") { runtime.load() }.nativeControl()
-              }
-            }
-            .background(.background)
+            startupLoading
           }
         } else {
           desktop
         }
       }
     }
-    .nativeControl()
-    .containerBackground(
-      reduceTransparency
-        ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.thinMaterial),
-      for: .window
-    )
-    .focusedSceneValue(
-      \.modelSettings, accountActionsDisabled || signingOut ? nil : { showProviderSettings = true }
-    )
-    .focusedSceneValue(
-      \.focusSearch,
-      model.openedSpace == nil && runtime.showsSpacePicker
-        ? { searchFocused = true } : nil
-    )
-    .focusedSceneValue(\.refreshContent, refreshDisabled ? nil : refreshContent)
-    .focusedSceneValue(
-      \.newLink,
-      runtime.spaces.isEmpty || !runtime.accountConnected || signingOut ? nil : startNewLink
-    )
-    .focusedSceneValue(
-      \.toggleAgentSidebar,
-      model.openedSpace == nil || signingOut ? nil : toggleAgentSidebar
-    )
-    .focusedSceneValue(
-      \.openSpaceInBrowser, model.openedSpace == nil || signingOut ? nil : openSpaceInBrowser
-    )
-    .navigationTitle(
-      model.openedSpace?.title
-        ?? (runtime.showsSpacePicker
-          ? pageTitle : (RuntimeLocation.deployment == .production ? "" : "Tonk"))
-    )
-    .navigationSubtitle(
-      RuntimeLocation.deployment == .production ? "" : RuntimeLocation.home.absoluteString
-    )
-    .toolbar { windowToolbar }
-    .toolbarBackground(
-      reduceTransparency
-        ? AnyShapeStyle(Color(nsColor: .textBackgroundColor)) : AnyShapeStyle(.ultraThinMaterial),
-      for: .windowToolbar
-    )
-    .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
-    .disabled(signingOut)
+  }
+
+  private var windowContent: some View {
+    workspaceLayers
+      .nativeControl()
+      .containerBackground(
+        reduceTransparency
+          ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.thinMaterial),
+        for: .window
+      )
+      .focusedSceneValue(
+        \.modelSettings,
+        accountActionsDisabled || signingOut ? nil : { showProviderSettings = true }
+      )
+      .focusedSceneValue(
+        \.focusSearch,
+        model.openedSpace == nil && runtime.showsSpacePicker
+          ? { searchFocused = true } : nil
+      )
+      .focusedSceneValue(\.refreshContent, refreshDisabled ? nil : refreshContent)
+      .focusedSceneValue(
+        \.newLink,
+        runtime.spaces.isEmpty || !runtime.accountConnected || signingOut ? nil : startNewLink
+      )
+      .focusedSceneValue(
+        \.toggleAgentSidebar,
+        model.openedSpace == nil || signingOut ? nil : toggleAgentSidebar
+      )
+      .focusedSceneValue(
+        \.openSpaceInBrowser, model.openedSpace == nil || signingOut ? nil : openSpaceInBrowser
+      )
+      .navigationTitle(
+        model.openedSpace?.title
+          ?? (runtime.showsSpacePicker
+            ? pageTitle : (RuntimeLocation.deployment == .production ? "" : "Tonk"))
+      )
+      .navigationSubtitle(
+        RuntimeLocation.deployment == .production ? "" : RuntimeLocation.home.absoluteString
+      )
+      .toolbar { windowToolbar }
+      .toolbarBackground(
+        reduceTransparency
+          ? AnyShapeStyle(Color(nsColor: .textBackgroundColor)) : AnyShapeStyle(.ultraThinMaterial),
+        for: .windowToolbar
+      )
+      .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+      .disabled(signingOut)
   }
 
   var body: some View {
