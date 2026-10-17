@@ -140,7 +140,7 @@ verification record). Signed executable SHA-256:
   the verification space and preserves local activity. Other spaces/grants
   were not modified. Synthetic records and guest roster entries remain.
 - Final native Sync Status: matching local/remote revisions at 22:19:14 BST.
-- Captioned 79-second walkthrough: actual native-window frames captured via
+- Captioned walkthrough: actual native-window frames captured via
   the computer-use API, with pauses between checks trimmed. Includes a live
   rapid-toggle sequence, view navigation, scope controls, Copy, reset, cleanup,
   sync and restart. Public browser checks are labelled still evidence; MCP
@@ -151,10 +151,21 @@ verification record). Signed executable SHA-256:
 
 The video proves the displayed flows, not every possible desktop state. Network,
 clipboard, Keychain, permission and stale-account failure paths were exercised
-with deterministic fault injection; live sign-out/account switching, expired
-sessions, and a system-wide offline transition were not performed. The four
+with deterministic fault injection. Approved live sign-out cleared the account,
+spaces and access lists; browser passkey recovery restored the same jack account,
+its catalog, and existing task data, with revoked test links still absent.
+Different-account switching, expired sessions, and a system-wide offline
+transition were not performed. The four
 skipped diagnostic tests require separate local diagnostic servers. Signing is
 local build evidence, not notarization or release-channel proof.
 
 The video is a local artifact associated with this Codex task, not committed as
 binary content in the repository. The final PR checks are tracked on PR #1116.
+
+## Final hosted and recovery results
+
+At revision `9823527bb1`, Desktop CI run 39070778586 passed native tests,
+canonical generation/contracts, signing validators, and app build/verification.
+All PR test checks passed; the preview MCP deployment was still running when
+this record was updated. The walkthrough includes signed-out Welcome, restored
+account/catalog, and reopened task data after browser passkey recovery.
