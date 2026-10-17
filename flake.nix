@@ -709,9 +709,11 @@
                 '';
               });
 
-          tonk-ui-preview = tonk-ui.overrideAttrs (_: {
-            pname = "tonk-ui-preview";
-          });
+          # Previews and staging once enabled invitations that production
+          # lacked. `tonk-ui` now enables them everywhere, so these name the
+          # same derivation. A renamed copy would hash differently and make
+          # every deployment's Wrangler build compile the browser bundle again.
+          tonk-ui-preview = tonk-ui;
 
           # Reduced browser optimization caused worker Wasm traps in account
           # flows. Share the established browser output between PR deployment
@@ -746,23 +748,11 @@
             '';
           };
 
-          tonk-cloudflare-preview-artifacts = tonk-cloudflare-artifacts.overrideAttrs (_: {
-            pname = "tonk-cloudflare-preview-assets";
-            buildPhase = ''
-              mkdir -p ./build
-              cp -r ${tonk-access-service} ./build/tonk-access-service
-              cp -r ${tonk-ui-preview} ./build/tonk-ui
-            '';
-          });
-
-          tonk-cloudflare-ci-artifacts = tonk-cloudflare-artifacts.overrideAttrs (_: {
-            pname = "tonk-cloudflare-ci-assets";
-            buildPhase = ''
-              mkdir -p ./build
-              cp -r ${tonk-access-service} ./build/tonk-access-service
-              cp -r ${tonk-ui-ci} ./build/tonk-ui
-            '';
-          });
+          # Same output as `tonk-cloudflare-artifacts`, for the same reason as
+          # `tonk-ui-preview`: Wrangler's preview, dev and staging build
+          # commands then find the bundle the workflow already built.
+          tonk-cloudflare-preview-artifacts = tonk-cloudflare-artifacts;
+          tonk-cloudflare-ci-artifacts = tonk-cloudflare-artifacts;
 
           # This package is used by integration tests to run a web server
           # over a local deployment of tonk-ui with Caddy as reverse proxy
