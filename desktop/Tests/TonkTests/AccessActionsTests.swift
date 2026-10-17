@@ -96,6 +96,33 @@ final class AccessActionsTests: XCTestCase {
     XCTAssertTrue(access.notice?.contains("Keychain") == true)
   }
 
+  func testDeniedAccessActionsNeverReportSuccessOrRecordActivity() async throws {
+    let space = try space()
+    let runtime = AccessRuntimeStub()
+    runtime.permissionDenied = true
+    let store = LinkStoreStub()
+    let access = AccessModel(
+      vault: store,
+      copyToPasteboard: { _ in
+        XCTFail("Denied actions must not copy a link")
+        return true
+      })
+    access.runtime = runtime
+    for kind in AccessModel.NewLink.allCases {
+      let made = await access.make(kind, in: space)
+      XCTAssertFalse(made)
+      XCTAssertTrue(access.notice?.contains("Permission denied") == true)
+      XCTAssertTrue(access.working.isEmpty)
+      XCTAssertTrue(access.journal.events.isEmpty)
+      XCTAssertTrue(store.values.isEmpty)
+    }
+    await access.revoke(
+      AccessLink(kind: .person, subject: space.subject, target: "denied", usedBy: []), space: space)
+    XCTAssertTrue(access.notice?.contains("Permission denied") == true)
+    XCTAssertTrue(access.journal.events.isEmpty)
+    XCTAssertTrue(access.journal.revokedTargets.isEmpty)
+  }
+
   func testAccountRefreshClearsRecoveredError() async {
     let access = AccessModel(vault: LinkStoreStub())
     let runtime = AccessRuntimeStub()
@@ -200,13 +227,18 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
   var revoked: [String] = []
   var revokeFails = false
   var accountFails = false
+  var permissionDenied = false
   var accountRead: (() async -> Void)?
   var mintRead: (() async -> Void)?
   var spaceWarnings: [String] = []
   var invites: [[String: Any]] = []
   var spaceReads = 0
-  func createCLILink(_ space: TonkSpace) async throws -> String { "unused" }
+  func createCLILink(_ space: TonkSpace) async throws -> String {
+    if permissionDenied { throw HarnessError.message("Permission denied") }
+    return "unused"
+  }
   func accountScript(_ script: String, arguments: [String: Any]) async throws -> [String: Any] {
+    if permissionDenied { throw HarnessError.message("Permission denied") }
     if script == AccessModel.accountScript {
       await accountRead?()
       if accountFails { throw HarnessError.message("Offline") }
