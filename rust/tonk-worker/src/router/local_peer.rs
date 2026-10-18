@@ -63,21 +63,17 @@ impl LocalPeer {
         self.execute(tool, arguments, true).await
     }
 
-    /// One background sync pass over every space with pending changes.
-    pub async fn sync(&mut self) -> Result<(), String> {
-        let (ok, _) = send(
-            &mut self.router,
-            "POST",
-            "/api/sync",
-            "text/plain",
-            String::new(),
-        )
-        .await?;
-        if ok {
-            Ok(())
-        } else {
-            Err("Background sync did not complete.".into())
-        }
+    /// One sync pass: push every space with pending changes, then pull every
+    /// open one. `POST /api/sync` only acknowledges natively (the browser's
+    /// service worker is what drains on it), so call the drain directly.
+    pub async fn sync(&self) {
+        crate::router::drain_sync(&self.state).await;
+    }
+
+    /// The worker state, for syncing without holding this peer: a drain
+    /// waits on the network, and tool calls should not wait behind it.
+    pub fn sync_state(&self) -> crate::AppState {
+        self.state.clone()
     }
 
     /// Release query streams and the worker.

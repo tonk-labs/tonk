@@ -17,8 +17,9 @@ use tokio::{
 };
 use tonk_worker::LocalPeer;
 
-/// How often the owner pushes and pulls in the background.
-const SYNC_INTERVAL: Duration = Duration::from_secs(30);
+/// How often the owner pushes and pulls in the background, as the hosted
+/// native worker does.
+const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 /// Upper bound on one forwarded call, matching a slow pull plus evaluation.
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -186,12 +187,15 @@ async fn serve(listener: UnixListener, peer: Arc<Mutex<LocalPeer>>, origin: Arc<
 
 /// Keep joined spaces current while any session has the plugin open.
 async fn background_sync(peer: Arc<Mutex<LocalPeer>>) {
+    // Sync through the worker state, not the peer lock, so tool calls and
+    // views never wait behind a pull. A failed pass (offline, remote down)
+    // requeues its spaces for the next tick.
+    let state = peer.lock().await.sync_state();
     let mut ticks = tokio::time::interval(SYNC_INTERVAL);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticks.tick().await;
-        // A failed pass (offline, remote down) is retried on the next tick.
-        let _ = peer.lock().await.sync().await;
+        tonk_worker::drain_sync(&state).await;
     }
 }
 
