@@ -44,12 +44,14 @@ Desktop chat, through the `tonk-agent-peer-<platform>.mcpb` extension from a
 release, and possibly Cowork. Claude Code shows the result as text. The
 extension and the plugin run the same peer and share its data directory.
 
-`tonk_open` opens a joined space in the conversation rendered by Tonk itself:
-the real guest runtime, with the space's own views, live and interactive. The
-peer that owns the data directory serves its worker API on a loopback port,
-and the view relays the guest's requests there, as the browser relays them to
-its service worker. The guest runtime (`space-runtime.json`,
-`worker-guest.html`) ships in the extension under `server/runtime`.
+`tonk_display` renders entities in the conversation with their concept's own
+display, through Tonk's real guest runtime: the same `<tonk-display>` the web
+app uses, live and interactive. The peer that owns the data directory serves
+its worker API on a loopback port, and the view relays the guest's requests
+there, as the browser relays them to its service worker. The guest runtime
+(`space-runtime.json`) ships in the extension under `server/runtime`.
+`tonk_view_log` shows what recent views requested and reported, for when one
+stays blank.
 
 The loopback API is not authenticated yet: while a peer runs, any local
 process or page that finds its port can act as that peer.

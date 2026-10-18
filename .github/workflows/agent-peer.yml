@@ -234,7 +234,7 @@ jobs:
 
             The plugin is pinned to this preview's binary. Paste a share or agent link for any Tonk space. Its identity and joined spaces live in `~/.tonk/agent-peer`; remove that directory to start over.
 
-            **Claude Desktop chat with live views:** download [`tonk-agent-peer-macos-arm64.mcpb`](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ env.TAG }}/tonk-agent-peer-macos-arm64.mcpb) and open it to install the extension. It is the same peer and shares `~/.tonk/agent-peer` with the plugin. Ask Claude to open a joined space (`tonk_open`, rendered by Tonk with the space's own views) or show a query live (`tonk_show`). The preview binary is not notarized; if macOS refuses to start it, run `xattr -d com.apple.quarantine` on the downloaded file before opening it.
+            **Claude Desktop chat with live views:** download [`tonk-agent-peer-macos-arm64.mcpb`](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ env.TAG }}/tonk-agent-peer-macos-arm64.mcpb) and open it to install the extension. It is the same peer and shares `~/.tonk/agent-peer` with the plugin. Ask Claude to display things from a joined space (`tonk_display`, rendered by Tonk with each concept's own display) or show a query live (`tonk_show`). The preview binary is not notarized; if macOS refuses to start it, run `xattr -d com.apple.quarantine` on the downloaded file before opening it.
 
   cleanup-preview:
     name: 'Remove preview'

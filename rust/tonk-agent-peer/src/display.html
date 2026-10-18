@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
-  <meta charset="utf-8" /><title>Tonk space</title>
-  <!-- Local agent peer variant of mcp/apps/ui/worker-space.html. -->
+  <meta charset="utf-8" /><title>Tonk display</title>
+  <!-- Local agent peer display, derived from mcp/apps/ui/worker-space.html. -->
   <style>
     html,
     body {
@@ -21,21 +21,46 @@
     #error[hidden] {
       display: none;
     }
+    #status {
+      margin: 0;
+      padding: 4px 12px;
+      font: 12px ui-monospace, monospace;
+      opacity: 0.7;
+    }
     iframe {
       flex: 1;
-      min-height: 640px;
+      min-height: 420px;
       border: 0;
       width: 100%;
     }
   </style>
   <p id="error" role="alert" hidden></p>
-  <iframe title="Tonk space" sandbox="allow-scripts allow-forms"></iframe>
+  <p id="status">starting</p>
+  <iframe title="Tonk display" sandbox="allow-scripts allow-forms"></iframe>
   <script>
     (() => {
       const origin = __TONK_PEER_ORIGIN__,
         frame = document.querySelector('iframe'),
-        errorMessage = document.querySelector('#error');
+        errorMessage = document.querySelector('#error'),
+        statusLine = document.querySelector('#status');
+      // Spike diagnostics: each step shows here and reaches the peer's view
+      // log (tonk_view_log), so a blank view can be explained from the chat.
+      function trace(step) {
+        statusLine.textContent = step;
+        try {
+          fetch(origin + '/agent-peer/log', {
+            method: 'POST',
+            body: String(step).slice(0, 2000),
+            credentials: 'omit',
+          }).catch(() => {});
+        } catch {}
+      }
+      addEventListener('error', (e) => trace('page error: ' + e.message));
+      addEventListener('unhandledrejection', (e) =>
+        trace('page rejection: ' + (e.reason?.message || e.reason)),
+      );
       let route,
+        hello = false,
         pack,
         port,
         serial = 0,
@@ -78,47 +103,44 @@
         return response;
       }
       function showError(message) {
+        if (message) trace('error: ' + message);
         errorMessage.textContent = message;
         errorMessage.hidden = !message;
       }
-      async function navigate(path) {
-        if (!path.startsWith('/') || path.startsWith('//'))
-          throw Error('Choose a route in this space.');
+      // Mount the guest: Tonk's own runtime renders each entity with its
+      // concept's display, reading the space through the peer.
+      async function load() {
         controller.abort();
         controller = new AbortController();
         port?.close();
         port = null;
-        route = { ...route, path };
-        const response = await request(base() + '/site', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ path }),
-        });
-        const { site } = await response.json();
-        route.site = site;
-        route.model = 'tonk:site';
         showError('');
-        frame.src = origin + '/worker-guest.html?instance=' + ++serial;
+        trace('loading the display guest from the peer');
+        const instance = ++serial;
+        hello = false;
+        frame.removeAttribute('srcdoc');
+        frame.src = origin + '/display-guest.html?instance=' + instance;
         size();
+        // A host may refuse to frame the loopback origin; the guest document
+        // then never says hello. Load the same document inline instead.
+        setTimeout(async () => {
+          if (hello || instance !== serial) return;
+          trace('no hello from the framed guest; loading it inline');
+          const html = await (await fetch(origin + '/display-guest.html')).text();
+          frame.removeAttribute('src');
+          frame.srcdoc = html;
+        }, 8000);
       }
       async function guest(message, current) {
         if (message.type === 'title') {
           document.title = String(message.text || 'Tonk').slice(0, 200);
           return;
         }
-        if (message.type === 'navigate') {
-          const u = new URL(
-              message.href,
-              'https://tonk.foundation/space/' + route.subject + route.path,
-            ),
-            prefix = '/space/' + route.subject;
-          if (u.origin !== 'https://tonk.foundation' || u.search)
-            throw Error('Navigation outside this space is unavailable.');
-          return navigate(
-            u.pathname.startsWith(prefix + '/') ? u.pathname.slice(prefix.length) : u.pathname,
-          );
+        if (message.type === 'navigate' || message.type === 'open') {
+          trace('navigation is not available in a display: ' + String(message.href).slice(0, 200));
+          return;
         }
-        if (message.type === 'reload') return navigate(route.path, false);
+        if (message.type === 'reload') return load();
         if (['analytics', 'unsubscribe'].includes(message.type)) return;
         if (message.type === 'fetch') {
           const target = new URL(message.path, 'https://tonk.foundation');
@@ -126,14 +148,6 @@
             throw Error('External requests are unavailable.');
           let path = target.pathname + target.search;
           if (target.pathname === '/query') path = base() + '/query' + target.search;
-          if (target.pathname === '/api/site') {
-            path = base() + '/site';
-            message = {
-              ...message,
-              body: JSON.stringify({ path: route.path }),
-              headers: { 'content-type': 'application/json' },
-            };
-          }
           if (
             ![encodeURIComponent(route.subject), route.subject].some((subject) => {
               const prefix = '/api/repository/' + subject;
@@ -217,12 +231,14 @@
             m.error ? p.reject(Error(m.error.message)) : p.resolve(m.result);
           } else if (
             m.method === 'ui/notifications/tool-result' &&
-            m.params?.structuredContent?.subject
+            m.params?.structuredContent?.subject &&
+            Array.isArray(m.params.structuredContent.items)
           ) {
             ready
               .then(() => {
-                route = { path: '/', ...m.params.structuredContent };
-                return navigate(route.path);
+                route = m.params.structuredContent;
+                trace('tool result: ' + route.items.length + ' entities in ' + route.subject);
+                return load();
               })
               .catch((e) => showError(e.message));
           }
@@ -230,6 +246,8 @@
         }
         if (event.source !== frame.contentWindow || !pack || !route) return;
         if (m?.type === 'hello' && m.v === 1 && event.ports[0]) {
+          hello = true;
+          trace('guest said hello');
           port?.close();
           port = event.ports[0];
           const current = port;
@@ -250,19 +268,19 @@
             type: 'ready',
             context: {
               origin: 'https://tonk.foundation',
-              path: '/space/' + route.subject + route.path,
+              path: '/space/' + route.subject + '/',
               repo: route.subject,
               branch: 'main',
               with: 'main@' + route.subject,
-              site: route.site,
-              this: route.site,
-              model: route.model,
+              this: route.items[0].entity,
+              model: route.items[0].model,
               selectionReporting: false,
             },
           });
         }
         if (m?.__tonkRuntime === 'runtime-ready') {
-          send({ type: 'tonk-mount', ...route, hideFab: true });
+          trace('guest runtime ready; injecting Tonk');
+          send({ type: 'tonk-display-mount', subject: route.subject, items: route.items });
           send({
             __tonkRuntime: 'inject',
             glue: pack.glue,
@@ -280,21 +298,24 @@
           send({ __tonkRuntime: 'inject-table', table: pack.tableGrid });
         if (m?.__tonkRuntime === 'need-code')
           send({ __tonkRuntime: 'inject-code', code: pack.code });
-        if (m?.__tonkRuntime === 'error') showError('Tonk runtime could not load.');
+        if (m?.__tonkRuntime === 'error')
+          showError('Tonk runtime could not load: ' + JSON.stringify(m).slice(0, 500));
+        else if (m?.__tonkRuntime === 'warn') trace('runtime warning: ' + JSON.stringify(m).slice(0, 500));
+        else if (m?.__tonkRuntime) trace('runtime: ' + m.__tonkRuntime);
       });
       function size() {
         parent.postMessage(
           {
             jsonrpc: '2.0',
             method: 'ui/notifications/size-changed',
-            params: { height: Math.max(640, document.body.scrollHeight) },
+            params: { height: Math.max(480, document.body.scrollHeight) },
           },
           '*',
         );
       }
       const ready = (async () => {
         await rpc('ui/initialize', {
-          appInfo: { name: 'tonk-agent-peer-space', version: '0.1.0' },
+          appInfo: { name: 'tonk-agent-peer-display', version: '0.1.0' },
           appCapabilities: {},
           protocolVersion: '2026-01-26',
         });
@@ -303,9 +324,11 @@
           '*',
         );
         size();
+        trace('loading the guest runtime');
         const response = await fetch(origin + '/space-runtime.json', { credentials: 'omit' });
         if (!response.ok) throw Error(await response.text());
         pack = await response.json();
+        trace('guest runtime loaded; waiting for the tool result');
       })();
       ready.catch((e) => showError(e.message));
     })();

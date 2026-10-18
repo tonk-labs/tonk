@@ -46,7 +46,7 @@ cat > "$work/manifest.json" <<EOF
     { "name": "tonk_list_spaces", "description": "List spaces this peer has joined" },
     { "name": "tonk_query", "description": "Read a space with Tonk notation" },
     { "name": "tonk_evaluate", "description": "Write to a space with Tonk notation" },
-    { "name": "tonk_open", "description": "Open a space rendered with its own views" },
+    { "name": "tonk_display", "description": "Render entities with their own Tonk displays" },
     { "name": "tonk_show", "description": "Show a live view of a query" },
     { "name": "tonk_guide", "description": "Read Tonk's authoring manuals" }
   ],

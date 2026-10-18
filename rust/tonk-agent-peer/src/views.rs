@@ -26,8 +26,8 @@ use crate::owner::Peer;
 
 const MIME: &str = "text/html;profile=mcp-app";
 const TEMPLATE: &str = include_str!("view.html");
-/// A space rendered by Tonk's own guest runtime, with its own views.
-const SPACE: &str = include_str!("space.html");
+/// Entities rendered by Tonk's own guest runtime, each with its own display.
+const DISPLAY: &str = include_str!("display.html");
 /// How long one `tonk_watch` call may wait for a change.
 const WATCH_DEFAULT: Duration = Duration::from_secs(20);
 const WATCH_MAX: Duration = Duration::from_secs(25);
@@ -40,7 +40,7 @@ pub struct Views {
     uri: String,
     html: String,
     probe: String,
-    space_uri: String,
+    display_uri: String,
 }
 
 impl Views {
@@ -59,13 +59,13 @@ impl Views {
         html.hash(&mut digest);
         let uri = format!("ui://tonk/view-{:016x}.html", digest.finish());
         let mut digest = std::collections::hash_map::DefaultHasher::new();
-        SPACE.hash(&mut digest);
-        let space_uri = format!("ui://tonk/space-{:016x}.html", digest.finish());
+        DISPLAY.hash(&mut digest);
+        let display_uri = format!("ui://tonk/display-{:016x}.html", digest.finish());
         Ok(Self {
             uri,
             html,
             probe,
-            space_uri,
+            display_uri,
         })
     }
 
@@ -95,20 +95,41 @@ impl Views {
                 "_meta": { "ui": { "resourceUri": self.uri } },
             }),
             json!({
-                "name": "tonk_open",
-                "title": "Open a Tonk space",
-                "description": "Open a joined space in the conversation, rendered by Tonk itself with the space's own views, live and interactive. Use it when the user wants to see, browse or work in a space. `path` is a route inside the space; omit it for the space's home.",
+                "name": "tonk_display",
+                "title": "Display Tonk entities",
+                "description": "Render entities in the conversation with their concept's own Tonk display (the space's view for that concept), live and interactive, exactly as Tonk renders them. Find exact entity URIs and their concept names with tonk_query first. Use it when the user wants to see or work with specific things in a space.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "space": space,
-                        "path": { "type": "string", "maxLength": 2000, "pattern": "^/", "description": "Route inside the space, such as /. Defaults to /." },
+                        "items": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 20,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "entity": { "type": "string", "minLength": 1, "maxLength": 500, "description": "Exact saved entity URI." },
+                                    "model": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Concept to display it as, such as deck/instance." },
+                                    "view": { "type": "string", "maxLength": 200, "description": "A specific view concept, when the concept has several." },
+                                },
+                                "required": ["entity", "model"],
+                                "additionalProperties": false,
+                            },
+                        },
                     },
-                    "required": ["space"],
+                    "required": ["space", "items"],
                     "additionalProperties": false,
                 },
                 "annotations": { "readOnlyHint": true, "openWorldHint": false },
-                "_meta": { "ui": { "resourceUri": self.space_uri } },
+                "_meta": { "ui": { "resourceUri": self.display_uri } },
+            }),
+            json!({
+                "name": "tonk_view_log",
+                "title": "Read the live view log",
+                "description": "Diagnostics for live views: the recent requests views made to this peer and the steps they reported, oldest first. Use it when a view stays blank or shows an error.",
+                "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+                "annotations": { "readOnlyHint": true, "openWorldHint": false },
             }),
             json!({
                 "name": "tonk_watch",
@@ -139,17 +160,17 @@ impl Views {
             Resource::new(self.uri.clone(), "tonk-view")
                 .with_title("Tonk live view")
                 .with_mime_type(MIME),
-            Resource::new(self.space_uri.clone(), "tonk-space")
-                .with_title("Tonk space")
+            Resource::new(self.display_uri.clone(), "tonk-display")
+                .with_title("Tonk display")
                 .with_mime_type(MIME),
         ]
     }
 
-    /// The space app talks to the owner's loopback worker API, so its page
+    /// The display app talks to the owner's loopback worker API, so its page
     /// and permissions name that origin, asked of the owner when read.
     pub async fn read(&self, peer: &Peer, uri: &str) -> Option<Result<ResourceContents, String>> {
-        if uri == self.space_uri {
-            return Some(self.space(peer).await);
+        if uri == self.display_uri {
+            return Some(self.display(peer).await);
         }
         if uri != self.uri {
             return None;
@@ -171,12 +192,12 @@ impl Views {
         .with_meta(MetaObject::from(meta))))
     }
 
-    async fn space(&self, peer: &Peer) -> Result<ResourceContents, String> {
+    async fn display(&self, peer: &Peer) -> Result<ResourceContents, String> {
         let owner = peer.call("tonk_peer_origin", json!({})).await?;
         let origin = owner["origin"]
             .as_str()
             .ok_or("The local peer did not say where it serves views.")?;
-        let html = SPACE.replace(
+        let html = DISPLAY.replace(
             "__TONK_PEER_ORIGIN__",
             &serde_json::to_string(origin).expect("string"),
         );
@@ -188,7 +209,7 @@ impl Views {
         }) else {
             unreachable!()
         };
-        Ok(ResourceContents::text(html, self.space_uri.clone())
+        Ok(ResourceContents::text(html, self.display_uri.clone())
             .with_mime_type(MIME)
             .with_meta(MetaObject::from(meta)))
     }
@@ -198,25 +219,49 @@ impl Views {
         let text = |name: &str| arguments.get(name).and_then(Value::as_str).unwrap_or("");
         let (space, document) = (text("space"), text("document"));
         Some(match name {
-            "tonk_open" => {
-                let path = Some(text("path"))
-                    .filter(|path| !path.is_empty())
-                    .unwrap_or("/");
+            "tonk_view_log" => match peer.call("tonk_view_log", json!({})).await {
+                Ok(log) => {
+                    let lines = log["log"].as_array().cloned().unwrap_or_default();
+                    let text = lines
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let mut result =
+                        CallToolResult::success(vec![ContentBlock::text(if text.is_empty() {
+                            "No view activity yet.".to_owned()
+                        } else {
+                            text
+                        })]);
+                    result.structured_content = Some(log);
+                    result
+                }
+                Err(error) => CallToolResult::error(vec![ContentBlock::text(error)]),
+            },
+            "tonk_display" => {
+                let items = arguments
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 // Confirms the space is joined before the app loads it.
                 match peer
                     .call("tonk_query", json!({ "space": space, "document": format!("tonk/repository:\n  this: {space}\n") }))
                     .await
                 {
-                    Ok(response) => {
-                        let name = response["matches_after"][0]["results"][0]["fields"]["name"]
-                            .as_str()
-                            .unwrap_or(space)
-                            .to_owned();
+                    Ok(_) if items.is_empty() => {
+                        CallToolResult::error(vec![ContentBlock::text("Name at least one entity.")])
+                    }
+                    Ok(_) => {
+                        let listed = items
+                            .iter()
+                            .map(|item| format!("{} as {}", item["entity"].as_str().unwrap_or("?"), item["model"].as_str().unwrap_or("?")))
+                            .collect::<Vec<_>>()
+                            .join(", ");
                         let mut result = CallToolResult::success(vec![ContentBlock::text(format!(
-                            "Opened \"{name}\" at {path} in a live view rendered by Tonk."
+                            "Displaying {listed}, rendered by Tonk."
                         ))]);
-                        result.structured_content =
-                            Some(json!({ "subject": space, "path": path, "name": name }));
+                        result.structured_content = Some(json!({ "subject": space, "items": items }));
                         result
                     }
                     Err(error) => CallToolResult::error(vec![ContentBlock::text(error)]),

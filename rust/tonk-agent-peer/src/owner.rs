@@ -136,6 +136,9 @@ async fn run(
     if tool == "tonk_peer_origin" {
         return Ok(json!({ "origin": origin }));
     }
+    if tool == "tonk_view_log" {
+        return Ok(json!({ "origin": origin, "log": crate::loopback::log() }));
+    }
     let mut result = peer.lock().await.call(tool, arguments).await?;
     if tool == "tonk_list_spaces"
         && let Value::Object(fields) = &mut result

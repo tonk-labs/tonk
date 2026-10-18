@@ -19,7 +19,7 @@ import urllib.request
 
 EXPECTED_TOOLS = {
     "tonk_list_spaces", "tonk_join", "tonk_query", "tonk_evaluate", "tonk_guide",
-    "tonk_show", "tonk_watch", "tonk_open",
+    "tonk_show", "tonk_watch", "tonk_display", "tonk_view_log",
 }
 APP_MIME = "text/html;profile=mcp-app"
 # A stand-in guest runtime directory; the real pack is built from tonk-ui.
@@ -92,7 +92,7 @@ def main(binary):
             assert response.headers["Access-Control-Allow-Private-Network"] == "true"
             assert json.load(response)["probe"] is True
         # The space app reaches the owner's worker API on loopback.
-        space_uri = listed_tools["tonk_open"]["_meta"]["ui"]["resourceUri"]
+        space_uri = listed_tools["tonk_display"]["_meta"]["ui"]["resourceUri"]
         assert any(r["uri"] == space_uri and r.get("mimeType") == APP_MIME for r in guides), guides
         space = first.request("resources/read", {"uri": space_uri})["contents"][0]
         peer_origin = space["_meta"]["ui"]["csp"]["connectDomains"][0]
@@ -101,7 +101,7 @@ def main(binary):
         assert json.dumps(peer_origin) in space["text"] and "__TONK_PEER_ORIGIN__" not in space["text"]
         with urllib.request.urlopen(peer_origin + "/space-runtime.json", timeout=5) as response:
             assert response.headers["Access-Control-Allow-Origin"] == "*"
-            assert json.load(response) == {"stand_in": True}
+            assert json.load(response)["stand_in"] is True
         preflight = urllib.request.Request(
             peer_origin + "/api/profile", method="OPTIONS",
             headers={"Origin": "null", "Access-Control-Request-Method": "POST",
@@ -119,8 +119,14 @@ def main(binary):
             raise AssertionError("missing guest document must 404")
         except urllib.error.HTTPError as missing:
             assert missing.code == 404 and "not installed" in missing.read().decode()
-        failed, closed = first.tool("tonk_open", {
+        failed, log = first.tool("tonk_view_log")
+        assert not failed and any("/space-runtime.json -> 200" in line
+                                  for line in log["structuredContent"]["log"]), log
+        with urllib.request.urlopen(peer_origin + "/display-guest.html", timeout=5) as response:
+            assert "tonk-display-mount" in response.read().decode()
+        failed, closed = first.tool("tonk_display", {
             "space": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            "items": [{"entity": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "model": "tonk/repository"}],
         })
         assert failed and "has not joined" in closed["content"][0]["text"], closed
         failed, unjoined = first.tool("tonk_show", {
