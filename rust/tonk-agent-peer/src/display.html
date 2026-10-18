@@ -115,23 +115,18 @@
         port?.close();
         port = null;
         showError('');
-        trace('loading the display guest from the peer');
-        const instance = ++serial;
-        hello = false;
-        frame.removeAttribute('srcdoc');
-        frame.src = origin + '/display-guest.html?instance=' + instance;
+        // Claude Desktop does not let the view frame the loopback origin
+        // (the framed guest never says hello), so load the guest inline.
+        trace('loading the display guest inline');
+        ++serial;
+        const html = await (await fetch(origin + '/display-guest.html')).text();
+        frame.removeAttribute('src');
+        frame.srcdoc = html;
         size();
-        // A host may refuse to frame the loopback origin; the guest document
-        // then never says hello. Load the same document inline instead.
-        setTimeout(async () => {
-          if (hello || instance !== serial) return;
-          trace('no hello from the framed guest; loading it inline');
-          const html = await (await fetch(origin + '/display-guest.html')).text();
-          frame.removeAttribute('src');
-          frame.srcdoc = html;
-        }, 8000);
       }
       async function guest(message, current) {
+        if (!['fetch', 'subscribe', 'unsubscribe'].includes(message.type))
+          trace('guest sent ' + message.type + ' ' + JSON.stringify(message).slice(0, 300));
         if (message.type === 'title') {
           document.title = String(message.text || 'Tonk').slice(0, 200);
           return;
@@ -156,6 +151,7 @@
               );
             })
           ) {
+            trace('refused guest fetch ' + message.method + ' ' + path);
             current.postMessage({
               v: 1,
               type: 'fetch-result',
