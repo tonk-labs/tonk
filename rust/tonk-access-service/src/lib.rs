@@ -65,6 +65,7 @@ pub mod provisioning;
 pub mod registration;
 pub mod revocation;
 pub mod revoke;
+pub mod secret;
 pub mod service;
 pub mod shortcut;
 pub mod socket;
@@ -78,6 +79,7 @@ pub mod helpers;
 /// Worker entrypoint
 #[event(fetch)]
 async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
+    secret::load(&env).await;
     // POST /ucan/ is served outside the Router: recording an invocation
     // must outlive the response, and only the fetch event's `Context`
     // can extend the isolate's life for that write.

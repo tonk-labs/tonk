@@ -972,10 +972,8 @@ pub(crate) fn permit_key(env: &Env) -> std::result::Result<PermitKey, Refusal> {
         if let Some(key) = cached.get() {
             return Ok(key.clone());
         }
-        let seed = env
-            .secret("SERVICE_SECRET_KEY")
-            .map_err(|e| Refusal::unclassified(format!("Missing SERVICE_SECRET_KEY: {e}")))?
-            .to_string();
+        let seed = crate::secret::secret(env, "SERVICE_SECRET_KEY")
+            .map_err(|e| Refusal::unclassified(format!("Missing SERVICE_SECRET_KEY: {e}")))?;
         let key = PermitKey::derive(&seed).map_err(Refusal::unclassified)?;
         let _ = cached.set(key.clone());
         Ok(key)

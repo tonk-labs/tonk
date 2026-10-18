@@ -106,6 +106,7 @@ impl DurableObject for Live {
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
+        crate::secret::load(&self.env).await;
         let url = req.url()?;
         let Some(subject) = url
             .query_pairs()
@@ -131,6 +132,7 @@ impl DurableObject for Live {
         ws: WebSocket,
         message: WebSocketIncomingMessage,
     ) -> Result<()> {
+        crate::secret::load(&self.env).await;
         let bytes = match message {
             WebSocketIncomingMessage::Binary(bytes) => bytes,
             // Answered by the runtime where it keeps the auto-response;
@@ -175,6 +177,7 @@ impl DurableObject for Live {
     /// Forget the invocations no longer fresh: they are refused as stale
     /// now, so the record need not hold them.
     async fn alarm(&self) -> Result<Response> {
+        crate::secret::load(&self.env).await;
         forget_expired(&self.state.storage(), now()).await?;
         Response::empty()
     }
