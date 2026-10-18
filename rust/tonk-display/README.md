@@ -87,7 +87,7 @@ Observation marks two things:
   that fed it and coloured by where that field came from: a concept field,
   `{this}`, a `{dom.host/*}` host attribute, or an iteration key. A value that
   changes flashes where it landed.
-- **Commands** — every element binding an `on<event>` or `on:<name>`
+- **Commands** — every element binding an `on:<event>`
   interaction, labelled `click -> space/create`, bouncing when it actually
   posts. A binding whose event declaration did not resolve is drawn *inert*: it
   installs no listener and will never fire, which is otherwise invisible.
