@@ -156,6 +156,15 @@ addEventListener('message', (e) => {
     });
     return display;
   }));
+  // The host sizes the view to what it reports, and only this document can
+  // measure its content: report its height whenever it changes.
+  let reported = 0;
+  new ResizeObserver(() => {
+    const height = Math.ceil(document.documentElement.getBoundingClientRect().height);
+    if (height === reported) return;
+    reported = height;
+    parent.postMessage({ type: 'tonk-display-size', height }, '*');
+  }).observe(document.documentElement);
 });
 "#;
 

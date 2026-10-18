@@ -5,13 +5,8 @@
   <style>
     html,
     body {
-      height: 100%;
       margin: 0;
       color-scheme: light dark;
-    }
-    body {
-      display: flex;
-      flex-direction: column;
     }
     #error {
       margin: 0;
@@ -31,8 +26,8 @@
       opacity: 0.7;
     }
     iframe {
-      flex: 1;
-      min-height: 420px;
+      display: block;
+      height: 120px;
       border: 0;
       width: 100%;
     }
@@ -109,6 +104,7 @@
         if (message) trace('error: ' + message);
         errorMessage.textContent = message;
         errorMessage.hidden = !message;
+        size();
       }
       // Mount the guest: Tonk's own runtime renders each entity with its
       // concept's display, reading the space through the peer.
@@ -246,6 +242,12 @@
           return;
         }
         if (event.source !== frame.contentWindow || !pack || !route) return;
+        // The guest measures its own content; the frame and the view follow.
+        if (m?.type === 'tonk-display-size' && Number.isFinite(m.height)) {
+          frame.style.height = Math.min(Math.max(m.height, 40), 4000) + 'px';
+          size();
+          return;
+        }
         if (m?.type === 'hello' && m.v === 1 && event.ports[0]) {
           hello = true;
           trace('guest said hello');
@@ -283,6 +285,7 @@
           trace('guest runtime ready; injecting Tonk');
           // Loading is done; the steps keep going to the view log only.
           statusLine.hidden = true;
+          size();
           send({ type: 'tonk-display-mount', subject: route.subject, items: route.items });
           send({
             __tonkRuntime: 'inject',
@@ -312,7 +315,7 @@
           {
             jsonrpc: '2.0',
             method: 'ui/notifications/size-changed',
-            params: { height: Math.max(480, document.body.scrollHeight) },
+            params: { height: Math.ceil(document.documentElement.getBoundingClientRect().height) },
           },
           '*',
         );
