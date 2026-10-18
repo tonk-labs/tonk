@@ -86,6 +86,10 @@ const ACCOUNT_REQUIRED_ATTR: &str = "data-account-required";
 /// while the dock classes are dropped during a drag.
 const MIRROR_CLASS: &str = "fab-mirror";
 
+/// The observed attributes whose presence is what they say, set empty:
+/// the attribute callback cannot tell one being added from a repeat.
+const PRESENCE_ATTRIBUTES: &[&str] = &["alert", "up", "flip", "data-observer"];
+
 /// The `<tonk-fab>` custom element.
 #[derive(Default)]
 pub(crate) struct TonkFab {
@@ -199,7 +203,12 @@ impl CustomElement for TonkFab {
         old: Option<String>,
         new: Option<String>,
     ) {
-        if old == new {
+        // The custom-elements glue passes a missing old value as `""`
+        // (`oldValue || ""`), so an attribute added empty arrives with
+        // `old == new`: for the presence attributes that is how every one
+        // of them is set, not a repeat. Their handlers are idempotent and
+        // write nothing this element observes, so they run every time.
+        if old == new && !PRESENCE_ATTRIBUTES.contains(&name.as_str()) {
             return;
         }
         match name.as_str() {
