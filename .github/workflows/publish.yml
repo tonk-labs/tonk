@@ -205,7 +205,7 @@ jobs:
               case "$status" in
                 200) cat "$body" ;;
                 401|403)
-                  echo "::error::The Cloudflare API token may not read the Secrets Store (HTTP $status): give it the Secrets Store permission" >&2
+                  echo "::error::The Cloudflare API token may not read the Secrets Store (HTTP $status: $(jq -c '.errors' "$body" 2>/dev/null)): give the token behind CLOUDFLARE_API_TOKEN the Secrets Store permission on this account" >&2
                   exit 1 ;;
                 *)
                   echo "::error::Reading the Secrets Store ($1) failed with HTTP $status: $(jq -c '.errors' "$body" 2>/dev/null)" >&2
