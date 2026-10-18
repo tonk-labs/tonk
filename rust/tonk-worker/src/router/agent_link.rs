@@ -179,14 +179,44 @@ pub(super) async fn request_detailed(
         .await
         .map_err(|error| error.to_string())?;
     if !status.is_success() {
-        let text = String::from_utf8_lossy(&body);
-        let mut end = text.len().min(600);
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        return Err(format!("{status}: {}", text[..end].trim()));
+        return Err(format!("{status}: {}", worker_error(&body)));
     }
     serde_json::from_slice(&body).map_err(|error| error.to_string())
+}
+
+/// A worker error body as an agent can act on it: the analyzer's message
+/// with its code and position when the body is the worker's error shape,
+/// else the start of the body.
+pub(super) fn worker_error(body: &[u8]) -> String {
+    if let Ok(value) = serde_json::from_slice::<Value>(body)
+        && let Some(message) = value["error"]["message"].as_str()
+    {
+        let code = value["error"]["code"]
+            .as_str()
+            .or(value["error"]["kind"].as_str());
+        let start = &value["error"]["range"]["start"];
+        let at = match (start["line"].as_u64(), start["character"].as_u64()) {
+            // Ranges are zero-based; editors and people count from one.
+            (Some(line), Some(column)) => format!(" (line {}, column {})", line + 1, column + 1),
+            _ => String::new(),
+        };
+        return match code {
+            Some(code) => format!("{code}: {}{at}", clip(message, 4000)),
+            None => format!("{}{at}", clip(message, 4000)),
+        };
+    }
+    clip(String::from_utf8_lossy(body).trim(), 1000)
+}
+
+fn clip(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_owned();
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
 }
 
 fn lock_root(root: &Path) -> std::io::Result<std::fs::File> {

@@ -343,7 +343,20 @@ async fn evaluate(
             return Ok(json!({ "published_retained_state": true }));
         }
         if writing {
-            return Err("An earlier evaluation is unresolved. Query retained state and explicitly recover it before writing again.".into());
+            // Recover on the agent's behalf rather than latching: publish
+            // whatever the unresolved write left locally, so the space is
+            // current, then refuse this write once. Writing blindly now could
+            // repeat the earlier one; the agent queries and decides.
+            request_detailed(router, &format!("{base}/sync/push"), "", "POST")
+                .await
+                .map_err(|error| {
+                    format!(
+                        "An earlier write's outcome is unresolved and its local state could not be published yet; nothing new was written. Try again shortly. ({error})"
+                    )
+                })?;
+            clear_journal(journal)
+                .map_err(|error| format!("Could not clear recovery journal. ({error})"))?;
+            return Err("An earlier write's outcome was unresolved. Its local state is now published, so the space is current, and nothing new was written. Query the space to see whether that write applied, then write again only if it did not.".into());
         }
     } else {
         if recovering {
@@ -372,10 +385,15 @@ async fn evaluate(
     )
     .await
     .map_err(|error| {
-        if writing {
-            format!("Evaluation could not be confirmed. Do not repeat it; query the space first. ({error})")
-        } else {
+        if !writing {
             format!("The worker query could not be completed. ({error})")
+        } else if refused(&error) {
+            // The worker turned the document down (analysis, validation)
+            // before applying anything: there is nothing to recover.
+            let _ = clear_journal(journal);
+            format!("Nothing was written: the worker refused the document. Fix it and write again.\n{error}")
+        } else {
+            format!("Evaluation could not be confirmed. Do not repeat it; query the space first. ({error})")
         }
     })?;
     if writing && synchronize {
@@ -390,9 +408,15 @@ async fn evaluate(
             "Publication succeeded but recovery journal could not be cleared.".to_owned()
         })?;
     } else if journal.exists() {
-        result["recovery"] = json!({"required": true, "message": "Retained local state; publication or evaluation outcome is unresolved. Do not repeat the write."});
+        result["recovery"] = json!({"required": true, "message": "An earlier write's outcome is unresolved; its local state is not yet published. The next write publishes it first, then asks you to check before writing again. Do not repeat the write blindly."});
     }
     Ok(result)
+}
+
+/// Whether a worker failure is a refusal of the request itself (a 4xx),
+/// as opposed to an outcome that is unknown (transport failure, 5xx).
+fn refused(error: &str) -> bool {
+    error.starts_with('4') && error.as_bytes().get(3) == Some(&b' ')
 }
 
 /// One request through the ordinary router, keeping the status and any JSON
@@ -512,6 +536,46 @@ mod tests {
             .unwrap_err();
         assert!(unjoined.contains("has not joined"), "{unjoined}");
         assert!(peer.call("tonk_join", &json!({})).await.is_err());
+        peer.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_client_errors_count_as_refusals() {
+        assert!(refused("400 Bad Request: analyze failed"));
+        assert!(refused("409 Conflict: stale"));
+        assert!(!refused("500 Internal Server Error: boom"));
+        assert!(!refused("connection reset"));
+        assert!(!refused("4000 bytes"));
+    }
+
+    #[test]
+    fn worker_errors_read_as_the_analyzer_reports_them() {
+        let body = br#"{"error":{"kind":"analyze","message":"`count` expects Integer, got Text","code":"E_TYPE","range":{"start":{"line":3,"character":7}}}}"#;
+        assert_eq!(
+            super::super::agent_link::worker_error(body),
+            "E_TYPE: `count` expects Integer, got Text (line 4, column 8)"
+        );
+        assert_eq!(super::super::agent_link::worker_error(b" plain "), "plain");
+    }
+
+    // An unresolved write never latches: the next write tries to publish
+    // its retained state, and keeps the marker only while that fails.
+    #[tokio::test]
+    async fn unresolved_writes_are_published_before_refusing_once() {
+        let root = scratch();
+        let _lock = try_lock(&root).unwrap().unwrap();
+        let mut peer = LocalPeer::open(root.clone()).await.unwrap();
+        let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let journal = root.join("pending").join(space.replace(':', "_"));
+        create_private_dir(journal.parent().unwrap()).unwrap();
+        create_journal(&journal).unwrap();
+        // The space is unknown here, so publishing fails: still unresolved.
+        let held = evaluate(&mut peer.router, space, "x", &journal, true, false, false)
+            .await
+            .unwrap_err();
+        assert!(held.contains("could not be published yet"), "{held}");
+        assert!(journal.exists(), "the marker stays while publishing fails");
         peer.close().await;
         std::fs::remove_dir_all(root).unwrap();
     }
