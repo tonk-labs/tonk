@@ -19,8 +19,10 @@ dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-credentials = { workspace = true }
+dialog-did-web = { workspace = true }
 dialog-effects = { workspace = true }
 dialog-peer = { workspace = true }
+dialog-remote-ucan = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-storage = { workspace = true }
 dialog-ucan = { workspace = true }
@@ -39,7 +41,6 @@ url = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
-dialog-remote-ucan = { workspace = true }
 dialog-peer = { workspace = true, features = ["helpers"] }
 dialog-storage = { workspace = true, features = ["helpers"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
@@ -47,3 +48,5 @@ wasm-bindgen-test = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tempfile = { workspace = true }
+# The local DID documents the discovery tests serve.
+tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }

@@ -28,7 +28,7 @@ use dialog_capability::access::AuthorizeError;
 use dialog_capability::{Fork, Provider};
 use dialog_effects::memory::prelude::CellScope;
 use dialog_effects::memory::{MemoryError, Publish, Resolve, Retract};
-use dialog_repository::{PeersEnv, RemoteSite, SiteAddress};
+use dialog_repository::{RemoteSite, SiteAddress};
 use dialog_ucan_core::issuer::Issuer;
 use dialog_ucan_core::promise::Promised;
 use dialog_ucan_core::time::Timestamp;
@@ -86,7 +86,7 @@ pub async fn issue<Env>(
     env: &Env,
 ) -> Result<(), IssueTicketError>
 where
-    Env: PeersEnv + Provider<Fork<RemoteSite, Publish>>,
+    Env: crate::peer::ConnectEnv + Provider<Fork<RemoteSite, Publish>>,
 {
     let space = chain.subject().ok_or(IssueTicketError::NoSubject)?.clone();
     let content = chain
@@ -118,7 +118,9 @@ pub async fn withdraw<Env>(
     env: &Env,
 ) -> Result<bool, IssueTicketError>
 where
-    Env: PeersEnv + Provider<Fork<RemoteSite, Resolve>> + Provider<Fork<RemoteSite, Retract>>,
+    Env: crate::peer::ConnectEnv
+        + Provider<Fork<RemoteSite, Resolve>>
+        + Provider<Fork<RemoteSite, Retract>>,
 {
     let remote = connect(address, space.clone(), env).await?;
     let connection = remote.connection(env);

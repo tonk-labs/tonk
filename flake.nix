@@ -908,6 +908,9 @@
                   handle /.well-known/tonk {
                       reverse_proxy localhost:$SIBLING_ACCESS_SERVICE_PORT
                   }
+                  handle /.well-known/did.json {
+                      reverse_proxy localhost:$SIBLING_ACCESS_SERVICE_PORT
+                  }
                   handle /ucan/* {
                       reverse_proxy localhost:$SIBLING_ACCESS_SERVICE_PORT
                   }
@@ -938,6 +941,12 @@
               https://tonk.network:$PORT, https://localhost:$PORT {
                   tls internal
                   handle /.well-known/tonk {
+                      reverse_proxy localhost:$ACCESS_SERVICE_PORT
+                  }
+                  # The access service's DID document, which says where it
+                  # is reached: a client dials its socket only because the
+                  # document names it, as against a deployed service.
+                  handle /.well-known/did.json {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }
                   handle /ucan/* {

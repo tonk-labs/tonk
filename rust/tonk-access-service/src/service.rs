@@ -292,8 +292,8 @@ mod tests {
 
     /// A peer handed the service's DID discovers from the document alone
     /// where the service is reached: its endpoint, and its socket on the
-    /// same origin, which is where a client handed only the endpoint
-    /// looks for it.
+    /// same origin. The document is the only place a client learns of the
+    /// socket.
     #[dialog_common::test]
     fn it_announces_the_access_service_dialog_discovers() {
         let signer = signer_from_hex(&"11".repeat(32)).unwrap();
@@ -320,14 +320,6 @@ mod tests {
                     dialog_remote_ucan::UcanAddress::new(format!("{origin}/ucan/"))
                         .with_socket(socket)
                 ),
-                "{origin}"
-            );
-            let derived = tonk_account::peer::with_socket(dialog_repository::SiteAddress::Ucan(
-                dialog_remote_ucan::UcanAddress::new(format!("{origin}/ucan/")),
-            ));
-            assert_eq!(
-                Some(derived),
-                discovered.map(dialog_repository::SiteAddress::Ucan),
                 "{origin}"
             );
         }

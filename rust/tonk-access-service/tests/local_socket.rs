@@ -20,7 +20,6 @@ use dialog_effects::memory::prelude::CellScope;
 use dialog_effects::memory::{Edition, MemoryError, Publish, Resolve, Watch};
 use dialog_remote_ucan::socket::{PING, PONG, Reply, Request, SUBPROTOCOL};
 use dialog_remote_ucan::{UcanAddress, UcanAuthorization, UcanSite};
-use dialog_repository::SiteAddress;
 use dialog_ucan::Scope;
 use dialog_ucan_core::Container;
 use dialog_varsig::Principal as _;
@@ -61,12 +60,12 @@ fn endpoint(env: &AccessServiceAddress) -> UcanAddress {
     ))
 }
 
-/// The endpoint with its socket, found where tonk's client looks for it.
+/// The endpoint with its socket, where the local service announces it in
+/// its DID document: the endpoint itself, over `ws`.
 fn with_socket(env: &AccessServiceAddress) -> UcanAddress {
-    match tonk_account::peer::with_socket(SiteAddress::Ucan(endpoint(env))) {
-        SiteAddress::Ucan(address) => address,
-        other => panic!("an access service's address stays one, got {other:?}"),
-    }
+    let address = endpoint(env);
+    let socket = address.endpoint().replacen("http://", "ws://", 1);
+    address.with_socket(socket)
 }
 
 /// `capability`, invoked by `signer` at `address`.
