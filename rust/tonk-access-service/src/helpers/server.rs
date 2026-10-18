@@ -511,7 +511,8 @@ async fn handle_request(
             .split_once("://")
             .map(|(_, rest)| rest.to_string())
             .unwrap_or_else(|| request_host(&req));
-        let document = did_document(&host, &registration.origin, &registration.service);
+        // The local service keeps sockets (`server/live.rs`).
+        let document = did_document(&host, &registration.origin, &registration.service, true);
         return Ok(cors_response(
             Response::builder()
                 .status(StatusCode::OK)

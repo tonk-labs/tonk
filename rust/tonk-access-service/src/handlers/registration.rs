@@ -400,7 +400,13 @@ pub async fn handle_did_document(req: Request, ctx: RouteContext<()>) -> worker:
     // The request's own origin: on the Worker this is the deployment the
     // browser actually reached, which is what a client should sync to.
     let origin = req.url()?.origin().ascii_serialization();
-    let document = did_document(&host, &origin, &signer);
+    // Only a deployment with the socket binding names a socket; one
+    // without answers its upgrade 404.
+    let sockets = ctx
+        .env
+        .durable_object(crate::service::SOCKETS_BINDING)
+        .is_ok();
+    let document = did_document(&host, &origin, &signer, sockets);
     // Pretty-printed: a DID document is something people open and read,
     // and `from_json` would emit it on one line.
     let body = serde_json::to_string_pretty(&document)

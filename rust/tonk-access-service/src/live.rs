@@ -45,7 +45,7 @@ use crate::revocation::checker::IndexedRevocations;
 use crate::revocation::index::kv::KvRevocationIndex;
 
 /// The binding the worker reaches a space's object through.
-pub const BINDING: &str = "LIVE";
+pub const BINDING: &str = crate::service::SOCKETS_BINDING;
 
 /// How long a watch's authority stands, once found to hold, before it is
 /// checked again on delivering to it.
