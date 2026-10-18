@@ -12,11 +12,14 @@ markup-safe, unlike an attribute) and fire a command on each idle edit:
 
 ```html
 <tonk-prose
-  onchange=prose/edit
-  data-subject={this}
+  on:prose-change=prose/edit
   placeholder="Write something…"
   auto-focus>{content}</tonk-prose>
 ```
+
+`on/prose-change` is the library's event declaration: it listens for
+`change` and fills `prose/edit`'s `subject` from `{this}` and its
+`content` from `.detail.content`, so the element needs no `data-subject`.
 
 The `change` event carries the new document on `event.detail.content` as
 a **versioned envelope** (markdown + HLC ETag). Store that verbatim and

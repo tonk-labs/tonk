@@ -12,14 +12,24 @@ edits by firing a command on `change`:
 <tonk-code
   language="yaml"
   value={source}
-  data-subject={this}
-  onchange=snippet/edit
+  on:snippet-change=snippet/edit
   placeholder="Type here…"></tonk-code>
 ```
 
-The `change` event's `event.detail.value` is the new document text; read
-it in the command with `dom.event.detail/value` and write it back onto
-the entity with a rule. (`value` is also a live property:
+The `change` event's `event.detail.value` is the new document text.
+Declare how it fills your command, and write it back onto the entity
+with a rule:
+
+```yaml
+event!: &on/snippet-change
+  type: "change"
+  where:
+    subject: "{this}"
+    source: ".detail.value"
+```
+
+The command (`snippet/edit`) declares exactly `subject` (an `entity`)
+and `source` (`text`); see `tonk help events`. (`value` is also a live property:
 `el.value` round-trips the document.)
 
 ## Attributes

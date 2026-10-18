@@ -98,8 +98,8 @@ Opening `/<model>` instead reaches the model directory without changing home.
 Bind stored booleans to the checkbox property with `checked={done}`.
 A bare `{done}` in the input tag does not bind checked state. Native inputs
 change visually on click even without saving; verify persistence by reading
-records and reloading the view. The `onchange` command handles the write
-separately (see the events guide).
+records and reloading the view. An `on:toggle` binding and its command handle
+the write separately (see the events guide).
 
 This example assumes `integration-task` has `title` and boolean `done` fields.
 It displays saved state; add the event handler only after defining its command
@@ -216,8 +216,8 @@ has a full page: **`tonk help <element>`**.
 | Element | What it is | Bind by |
 |---------|-----------|---------|
 | `<tonk-display>` | Render an entity (or every instance) through a view. The primitive everything else hangs off. | `model` + `entity` attrs |
-| `<tonk-prose>` | Typora-style markdown editor. | text content; `onchange` |
-| `<tonk-code>` | CodeMirror code editor with per-language highlighting. | `value`/`language` attrs; `onchange` |
+| `<tonk-prose>` | Typora-style markdown editor. | text content; `change` event |
+| `<tonk-code>` | CodeMirror code editor with per-language highlighting. | `value`/`language` attrs; `change` event |
 | `<tonk-table>` | IronCalc spreadsheet — live formulas, sheets, per-cell claims. | text (CSV) or `subject` + `<tonk-display>` rows |
 
 ```
@@ -226,8 +226,9 @@ tonk help tonk-prose
 ```
 
 The editors persist the same way: bind the store's value in (as element
-text or an attribute), fire a command on the element's `change` event
-(read `dom.event.detail/…`), and a rule writes it back — the loop in
+text or an attribute), bind the element's `change` event with an
+`on:<name>=<command>` whose `event!:` declaration reads `.detail.…`, and a
+rule writes it back — the loop in
 `tonk help events`. `<tonk-table>` also offers a store-native *claims*
 mode (one claim per cell). Your own elements (below) are peers of
 these.
@@ -460,9 +461,9 @@ Rules of the road:
 - **Data flows in** through attributes the view binds (`<tally-widget
   count={count}>`) and through child rows the view renders inside the
   element; **actions flow out** as bubbling `CustomEvent`s, wired
-  exactly like clicks — `onbump=<command>` on the element plus
-  `dom.event.detail/amount` fields on the command (see `tonk help
-  events`). The built-in `<tonk-sheet-binder>` works this way; your
+  exactly like clicks — `on:tally-bump=<command>` on the element plus an
+  `event!: &on/tally-bump` with `type: "bump"` reading `.detail.amount`
+  (see `tonk help events`). The built-in `<tonk-sheet-binder>` works this way; your
   elements are peers of it.
 - **The escape hatch is a reserved key.** What a method table cannot
   say — `static formAssociated`, extending a built-in — goes in
