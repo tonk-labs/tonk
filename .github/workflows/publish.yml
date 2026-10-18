@@ -205,7 +205,16 @@ jobs:
               case "$status" in
                 200) cat "$body" ;;
                 401|403)
-                  echo "::error::The Cloudflare API token may not read the Secrets Store (HTTP $status: $(jq -c '.errors' "$body" 2>/dev/null)): give the token behind CLOUDFLARE_API_TOKEN the Secrets Store permission on this account" >&2
+                  # Name the token, by its id, so the one to change can be
+                  # found among the account's and its members' tokens. A user
+                  # token verifies at /user, an account token at its account.
+                  token="$({
+                    curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                      "https://api.cloudflare.com/client/v4/user/tokens/verify" \
+                      || curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                        "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify"
+                  } 2>/dev/null | jq -r '"\(.result.id) (\(.result.status))"' 2>/dev/null)"
+                  echo "::error::The Cloudflare API token ${token:-of unknown id} may not read the Secrets Store (HTTP $status: $(jq -c '.errors' "$body" 2>/dev/null)): give the token behind CLOUDFLARE_API_TOKEN the Secrets Store permission on this account" >&2
                   exit 1 ;;
                 *)
                   echo "::error::Reading the Secrets Store ($1) failed with HTTP $status: $(jq -c '.errors' "$body" 2>/dev/null)" >&2
