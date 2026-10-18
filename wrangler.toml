@@ -296,6 +296,27 @@ class_name = "Live"
 tag = "v1-live"
 new_sqlite_classes = ["Live"]
 
+# A preview is a worker of its own, so it holds no secret set with `wrangler
+# secret put`: those belong to one worker. Its secrets are the account's,
+# kept in the Secrets Store and read at runtime (`src/secret.rs`), so no
+# deployment ever handles them. They are put in the store once:
+#
+#   wrangler secrets-store secret create <store-id> --remote --scopes workers \
+#     --name TONK_PREVIEW_SERVICE_SECRET_KEY   # 32 hex-encoded seed bytes
+#   wrangler secrets-store secret create <store-id> --remote --scopes workers \
+#     --name TONK_PREVIEW_RESEND_API_KEY
+#
+# Continuous integration fills in the store's id, as it does the databases'.
+[[env.preview.secrets_store_secrets]]
+binding = "SERVICE_SECRET_KEY_STORED"
+store_id = "SECRETS-STORE-REPLACED-PER-DEPLOY"
+secret_name = "TONK_PREVIEW_SERVICE_SECRET_KEY"
+
+[[env.preview.secrets_store_secrets]]
+binding = "RESEND_API_KEY_STORED"
+store_id = "SECRETS-STORE-REPLACED-PER-DEPLOY"
+secret_name = "TONK_PREVIEW_RESEND_API_KEY"
+
 [env.preview.observability]
 enabled = true
 head_sampling_rate = 1

@@ -189,6 +189,30 @@ jobs:
             fi
             echo "$id"
           }
+          # The account's Secrets Store, which holds the secrets every
+          # preview reads at runtime. Only its id and the secrets' names are
+          # read here, never a value. A preview missing either secret could
+          # not sign or could not send its activation mail, so the deploy
+          # stops instead of shipping one.
+          resolve_store() {
+            api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/secrets_store"
+            stores="$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$api/stores")"
+            id="$(jq -r 'if (.result | length) == 1 then .result[0].id
+              else (.result[] | select(.name == "default_secrets_store") | .id) end' <<<"$stores" | head -n 1)"
+            if [ -z "$id" ] || [ "$id" = null ]; then
+              echo "::error::No Secrets Store found for the preview secrets (see the note in wrangler.toml)" >&2
+              exit 1
+            fi
+            names="$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "$api/stores/$id/secrets?per_page=100" | jq -r '.result[].name')"
+            for name in TONK_PREVIEW_SERVICE_SECRET_KEY TONK_PREVIEW_RESEND_API_KEY; do
+              if ! grep -Fxq "$name" <<<"$names"; then
+                echo "::error::The Secrets Store holds no $name; create it as wrangler.toml describes" >&2
+                exit 1
+              fi
+            done
+            echo "$id"
+          }
           control="tonk-access-control-pr-${{ github.event.pull_request.number }}"
           ingest="tonk-access-ingest-pr-${{ github.event.pull_request.number }}"
           revocations="tonk-access-revocations-pr-${{ github.event.pull_request.number }}"
@@ -199,6 +223,7 @@ jobs:
           ingest_id="$(resolve "$ingest" "rust/tonk-access-service/migrations-ingest")"
           revocations_id="$(resolve_kv "$revocations")"
           servability_id="$(resolve_kv "$servability")"
+          store_id="$(resolve_store)"
           cp wrangler.toml "$config"
           sed -i \
             -e "s/^name = \"tonk-access-service-preview\"$/name = \"$worker\"/" \
@@ -208,6 +233,7 @@ jobs:
             -e "s/database_id = \"INGEST-REPLACED-PER-PULL-REQUEST\"/database_id = \"$ingest_id\"/" \
             -e "s/id = \"REPLACED-PER-PULL-REQUEST\"/id = \"$revocations_id\"/" \
             -e "s/id = \"SERVABILITY-REPLACED-PER-PULL-REQUEST\"/id = \"$servability_id\"/" \
+            -e "s/store_id = \"SECRETS-STORE-REPLACED-PER-DEPLOY\"/store_id = \"$store_id\"/" \
             "$config"
           if ! grep -Fxq "name = \"$worker\"" "$config" \
             || ! grep -Fq "database_name = \"$control\"" "$config" \
@@ -215,7 +241,8 @@ jobs:
             || ! grep -Fq "database_name = \"$ingest\"" "$config" \
             || ! grep -Fq "database_id = \"$ingest_id\"" "$config" \
             || ! grep -Fq "id = \"$revocations_id\"" "$config" \
-            || ! grep -Fq "id = \"$servability_id\"" "$config"; then
+            || ! grep -Fq "id = \"$servability_id\"" "$config" \
+            || grep -Fq "SECRETS-STORE-REPLACED-PER-DEPLOY" "$config"; then
             echo "::error::Could not bind the access preview config to $worker/$control/$ingest/$revocations"
             exit 1
           fi
@@ -253,32 +280,10 @@ jobs:
           worker="${{ steps.access-database.outputs.worker }}"
           config="${{ steps.access-database.outputs.config }}"
           log="$RUNNER_TEMP/access-preview.log"
-          # The worker's identity is minted once, on its first deploy, and
-          # kept: a key that changed on every push would change the service
-          # under clients that already trust it. A worker that does not exist
-          # yet lists no secrets.
-          existing="$({
-            nix --accept-flake-config develop .#ci --command \
-              wrangler secret list --env preview -c "$config" --format json 2>/dev/null
-          } | sed -n '/^[[:space:]]*\[/,$p' | jq -r '.[].name' 2>/dev/null || true)"
-          secrets="$(jq -n '{}')"
-          if ! grep -Fxq SERVICE_SECRET_KEY <<<"$existing"; then
-            secrets="$(jq --arg key "$(openssl rand -hex 32)" '. + {SERVICE_SECRET_KEY: $key}' <<<"$secrets")"
-          fi
-          # Optional: without it the preview delivers no activation email,
-          # as before, and says so in its log.
-          if [ -n "${PREVIEW_RESEND_API_KEY:-}" ]; then
-            secrets="$(jq --arg key "$PREVIEW_RESEND_API_KEY" '. + {RESEND_API_KEY: $key}' <<<"$secrets")"
-          fi
-          secrets_file=()
-          if [ "$(jq 'length' <<<"$secrets")" -gt 0 ]; then
-            umask 077
-            printf '%s' "$secrets" > "$RUNNER_TEMP/access-preview-secrets.json"
-            secrets_file=(--secrets-file "$RUNNER_TEMP/access-preview-secrets.json")
-          fi
+          # The worker holds no secrets of its own: it reads the account's
+          # from the Secrets Store at runtime, so nothing here handles one.
           nix --accept-flake-config develop .#ci --command \
-            wrangler deploy --env preview -c "$config" "${secrets_file[@]}" 2>&1 | tee "$log"
-          rm -f "$RUNNER_TEMP/access-preview-secrets.json"
+            wrangler deploy --env preview -c "$config" 2>&1 | tee "$log"
           url="$(grep -Eo "https://$worker\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
           if [ -z "$url" ]; then
             echo "::error::wrangler printed no workers.dev URL for $worker"
@@ -293,7 +298,6 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          PREVIEW_RESEND_API_KEY: ${{ secrets.PREVIEW_RESEND_API_KEY }}
 
       # Migrations run first, because code that queries a column the
       # database does not have yet fails every request until the schema
