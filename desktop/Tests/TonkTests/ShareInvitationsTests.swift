@@ -41,7 +41,12 @@ final class ShareInvitationsTests: XCTestCase {
       for: .person,
       personLink: {
         XCTAssertFalse(sharing.showingProgress)
-        try await Task.sleep(for: .milliseconds(350))
+        // Poll rather than sleep past the threshold: a loaded runner can wake
+        // the progress task after a fixed sleep would.
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !sharing.showingProgress && ContinuousClock.now < deadline {
+          try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertTrue(sharing.showingProgress)
         return "person"
       },
