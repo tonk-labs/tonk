@@ -28,7 +28,7 @@ export function deployment({ channel, pullRequest, provider, subdomain, accountI
     throw Error('Provider does not match release channel');
   if (
     channel === 'preview' &&
-    provider !== `https://pr-${pullRequest}-tonk-access-service-preview.${subdomain}.workers.dev`
+    provider !== `https://tonk-access-service-pr-${pullRequest}.${subdomain}.workers.dev`
   )
     throw Error('Provider does not match PR preview');
   return {
