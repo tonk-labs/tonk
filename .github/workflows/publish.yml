@@ -193,6 +193,7 @@ jobs:
           ingest="tonk-access-ingest-pr-${{ github.event.pull_request.number }}"
           revocations="tonk-access-revocations-pr-${{ github.event.pull_request.number }}"
           servability="tonk-access-servability-pr-${{ github.event.pull_request.number }}"
+          worker="tonk-access-service-pr-${{ github.event.pull_request.number }}"
           config="$PWD/wrangler.preview.toml"
           control_id="$(resolve "$control" "rust/tonk-access-service/migrations")"
           ingest_id="$(resolve "$ingest" "rust/tonk-access-service/migrations-ingest")"
@@ -200,6 +201,7 @@ jobs:
           servability_id="$(resolve_kv "$servability")"
           cp wrangler.toml "$config"
           sed -i \
+            -e "s/^name = \"tonk-access-service-preview\"$/name = \"$worker\"/" \
             -e "s/database_name = \"tonk-access-control-preview\"/database_name = \"$control\"/" \
             -e "s/database_id = \"REPLACED-PER-PULL-REQUEST\"/database_id = \"$control_id\"/" \
             -e "s/database_name = \"tonk-access-ingest-preview\"/database_name = \"$ingest\"/" \
@@ -207,18 +209,20 @@ jobs:
             -e "s/id = \"REPLACED-PER-PULL-REQUEST\"/id = \"$revocations_id\"/" \
             -e "s/id = \"SERVABILITY-REPLACED-PER-PULL-REQUEST\"/id = \"$servability_id\"/" \
             "$config"
-          if ! grep -Fq "database_name = \"$control\"" "$config" \
+          if ! grep -Fxq "name = \"$worker\"" "$config" \
+            || ! grep -Fq "database_name = \"$control\"" "$config" \
             || ! grep -Fq "database_id = \"$control_id\"" "$config" \
             || ! grep -Fq "database_name = \"$ingest\"" "$config" \
             || ! grep -Fq "database_id = \"$ingest_id\"" "$config" \
             || ! grep -Fq "id = \"$revocations_id\"" "$config" \
             || ! grep -Fq "id = \"$servability_id\"" "$config"; then
-            echo "::error::Could not bind the access preview config to $control/$ingest/$revocations"
+            echo "::error::Could not bind the access preview config to $worker/$control/$ingest/$revocations"
             exit 1
           fi
           echo "database=$control" >> "$GITHUB_OUTPUT"
           echo "ingest=$ingest" >> "$GITHUB_OUTPUT"
           echo "config=$config" >> "$GITHUB_OUTPUT"
+          echo "worker=$worker" >> "$GITHUB_OUTPUT"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -241,17 +245,43 @@ jobs:
       - name: Deploy access preview
         if: github.event_name == 'pull_request'
         id: deploy-preview
+        # A plain deploy of the pull request's own worker, as production is
+        # deployed: it applies the Durable Object migrations, which a version
+        # upload cannot, so the preview keeps sockets as production does.
         run: |
           set -o pipefail
-          preview_alias="pr-${{ github.event.pull_request.number }}"
+          worker="${{ steps.access-database.outputs.worker }}"
+          config="${{ steps.access-database.outputs.config }}"
           log="$RUNNER_TEMP/access-preview.log"
+          # The worker's identity is minted once, on its first deploy, and
+          # kept: a key that changed on every push would change the service
+          # under clients that already trust it. A worker that does not exist
+          # yet lists no secrets.
+          existing="$({
+            nix --accept-flake-config develop .#ci --command \
+              wrangler secret list --env preview -c "$config" --format json 2>/dev/null
+          } | sed -n '/^[[:space:]]*\[/,$p' | jq -r '.[].name' 2>/dev/null || true)"
+          secrets="$(jq -n '{}')"
+          if ! grep -Fxq SERVICE_SECRET_KEY <<<"$existing"; then
+            secrets="$(jq --arg key "$(openssl rand -hex 32)" '. + {SERVICE_SECRET_KEY: $key}' <<<"$secrets")"
+          fi
+          # Optional: without it the preview delivers no activation email,
+          # as before, and says so in its log.
+          if [ -n "${PREVIEW_RESEND_API_KEY:-}" ]; then
+            secrets="$(jq --arg key "$PREVIEW_RESEND_API_KEY" '. + {RESEND_API_KEY: $key}' <<<"$secrets")"
+          fi
+          secrets_file=()
+          if [ "$(jq 'length' <<<"$secrets")" -gt 0 ]; then
+            umask 077
+            printf '%s' "$secrets" > "$RUNNER_TEMP/access-preview-secrets.json"
+            secrets_file=(--secrets-file "$RUNNER_TEMP/access-preview-secrets.json")
+          fi
           nix --accept-flake-config develop .#ci --command \
-            wrangler versions upload --env preview \
-              -c "${{ steps.access-database.outputs.config }}" \
-              --preview-alias "$preview_alias" 2>&1 | tee "$log"
-          url="$(grep -Eo "https://$preview_alias-tonk-access-service-preview\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
+            wrangler deploy --env preview -c "$config" "${secrets_file[@]}" 2>&1 | tee "$log"
+          rm -f "$RUNNER_TEMP/access-preview-secrets.json"
+          url="$(grep -Eo "https://$worker\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
           if [ -z "$url" ]; then
-            echo "::error::wrangler printed no preview alias URL for the access worker"
+            echo "::error::wrangler printed no workers.dev URL for $worker"
             exit 1
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
@@ -263,6 +293,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_RESEND_API_KEY: ${{ secrets.PREVIEW_RESEND_API_KEY }}
 
       # Migrations run first, because code that queries a column the
       # database does not have yet fails every request until the schema
@@ -480,7 +511,7 @@ jobs:
       - uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - name: Delete preview databases
+      - name: Delete preview databases and worker
         run: |
           set -euo pipefail
           for database in \
@@ -494,6 +525,12 @@ jobs:
                 wrangler d1 delete "$database" --skip-confirmation
             fi
           done
+          # The pull request's own worker, and with it its Durable Object
+          # namespace. A worker that was never deployed is nothing to delete.
+          worker="tonk-access-service-pr-${{ github.event.pull_request.number }}"
+          nix --accept-flake-config develop .#ci --command \
+            wrangler delete "$worker" --force \
+            || echo "No preview worker $worker to delete"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

@@ -259,9 +259,9 @@ namespace_id = "1001"
 [env.dev.vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
-# Preview. Every pull request uploads a version of this environment under a
-# `--preview-alias` and is reached at its own workers.dev URL, so the
-# environment holds no route of its own. `routes = []` is load-bearing: a named
+# Preview. Every pull request deploys this environment as a worker of its own
+# and is reached at that worker's workers.dev URL, so the environment holds no
+# route of its own. `routes = []` is load-bearing: a named
 # environment inherits the top-level `routes`, and deploying it with that
 # inherited entry would reassign the `tonk.network` custom domain away from
 # production.
@@ -271,20 +271,30 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # this worker's presigned URLs, and neither of those belongs in an environment
 # someone else is testing against.
 [env.preview]
-# No `LIVE` here yet, and none of the top-level migrations, which named
-# environments inherit. Preview uploads each pull request as a version of
-# one shared worker, and a version cannot carry a Durable Object migration:
-# the migration has to land through a plain `wrangler deploy --env preview`
-# first, after which every version must keep the class. Until that is done
-# once from main, a preview has no sockets, and its clients sync over
-# requests as they do against any service without one.
-migrations = []
+# Each pull request deploys its own worker, as production does, rather than a
+# version of one shared worker: a version can neither create a Durable Object
+# class nor have a preview URL once its worker implements one, so a shared
+# preview could never carry `LIVE`. Continuous integration rewrites this name
+# to `tonk-access-service-pr-<N>` in a copy of this file, deploys it with a
+# plain `wrangler deploy`, which applies the migrations below, and deletes the
+# worker when the pull request closes.
+name = "tonk-access-service-preview"
 workers_dev = true
 routes = []
 
-# Wrangler rebuilds before upload, so it must select the preview artifact too.
+# Wrangler rebuilds before deploying, so it must select the preview artifact too.
 [env.preview.build]
 command = "nix build --accept-flake-config .#tonk-cloudflare-preview-artifacts"
+
+# Each space's live side: the Durable Object that keeps its sockets,
+# answers what they carry, and tells their watches of each cell write.
+[[env.preview.durable_objects.bindings]]
+name = "LIVE"
+class_name = "Live"
+
+[[env.preview.migrations]]
+tag = "v1-live"
+new_sqlite_classes = ["Live"]
 
 [env.preview.observability]
 enabled = true
