@@ -214,7 +214,7 @@ jobs:
                       || curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
                         "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify"
                   } 2>/dev/null | jq -r '"\(.result.id) (\(.result.status))"' 2>/dev/null)"
-                  echo "::error::The Cloudflare API token ${token:-of unknown id} may not read the Secrets Store (HTTP $status: $(jq -c '.errors' "$body" 2>/dev/null)): give the token behind CLOUDFLARE_API_TOKEN the Secrets Store permission on this account" >&2
+                  echo "::error::The Cloudflare API token ${token:-of unknown id} may not read the Secrets Store (HTTP $status: $(jq -c '.errors' "$body" 2>/dev/null)): give the token behind CLOUDFLARE_PREVIEW_API_TOKEN the Secrets Store permission on this account" >&2
                   exit 1 ;;
                 *)
                   echo "::error::Reading the Secrets Store ($1) failed with HTTP $status: $(jq -c '.errors' "$body" 2>/dev/null)" >&2
@@ -276,7 +276,7 @@ jobs:
           echo "config=$config" >> "$GITHUB_OUTPUT"
           echo "worker=$worker" >> "$GITHUB_OUTPUT"
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Apply preview access migrations
@@ -291,7 +291,7 @@ jobs:
               "${{ steps.access-database.outputs.ingest }}" --remote \
               --env preview -c "${{ steps.access-database.outputs.config }}"
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy access preview
@@ -321,7 +321,7 @@ jobs:
             echo WRANGLER_OUTPUT_EOF
           } >> "$GITHUB_OUTPUT"
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       # Migrations run first, because code that queries a column the
@@ -467,7 +467,9 @@ jobs:
       contents: read
       pull-requests: write
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      # A pull request's MCP preview deploys with the previews' own token, so
+      # previews never run on the token that deploys production.
+      CLOUDFLARE_API_TOKEN: ${{ github.event_name == 'pull_request' && secrets.CLOUDFLARE_PREVIEW_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       # Keep Docker on this runner; the Nix asset job deliberately removes it.
@@ -561,5 +563,5 @@ jobs:
             wrangler delete "$worker" --force \
             || echo "No preview worker $worker to delete"
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
