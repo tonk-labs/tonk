@@ -80,7 +80,9 @@ jobs:
       - name: 'Pack the guest runtime'
         run: |
           set -euo pipefail
-          TONK_UI_DIST="$PWD/result" node mcp/hosted/build-assets.mjs
+          # The nix setup above leaves the runner without its own node.
+          TONK_UI_DIST="$PWD/result" nix --accept-flake-config shell nixpkgs#nodejs --command \
+            node mcp/hosted/build-assets.mjs
           mkdir -p runtime
           cp mcp/hosted/public/space-runtime.json mcp/hosted/public/worker-guest.html runtime/
           ls -l runtime
