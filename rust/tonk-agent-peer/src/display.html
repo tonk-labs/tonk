@@ -21,6 +21,9 @@
     #error[hidden] {
       display: none;
     }
+    #status[hidden] {
+      display: none;
+    }
     #status {
       margin: 0;
       padding: 4px 12px;
@@ -46,7 +49,7 @@
       // Spike diagnostics: each step shows here and reaches the peer's view
       // log (tonk_view_log), so a blank view can be explained from the chat.
       function trace(step) {
-        statusLine.textContent = step;
+        if (!statusLine.hidden) statusLine.textContent = step;
         try {
           fetch(origin + '/agent-peer/log', {
             method: 'POST',
@@ -278,6 +281,8 @@
         }
         if (m?.__tonkRuntime === 'runtime-ready') {
           trace('guest runtime ready; injecting Tonk');
+          // Loading is done; the steps keep going to the view log only.
+          statusLine.hidden = true;
           send({ type: 'tonk-display-mount', subject: route.subject, items: route.items });
           send({
             __tonkRuntime: 'inject',
