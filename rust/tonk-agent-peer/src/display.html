@@ -125,7 +125,9 @@
         size();
       }
       async function guest(message, current) {
-        if (!['fetch', 'subscribe', 'unsubscribe'].includes(message.type))
+        if (message.type === 'fetch' && message.method !== 'GET' && !/[/]query([?]|$)/.test(message.path))
+          trace('guest fetch ' + message.method + ' ' + message.path);
+        else if (!['fetch', 'subscribe', 'unsubscribe'].includes(message.type))
           trace('guest sent ' + message.type + ' ' + JSON.stringify(message).slice(0, 300));
         if (message.type === 'title') {
           document.title = String(message.text || 'Tonk').slice(0, 200);
@@ -297,7 +299,8 @@
         if (m?.__tonkRuntime === 'error')
           showError('Tonk runtime could not load: ' + JSON.stringify(m).slice(0, 500));
         else if (m?.__tonkRuntime === 'warn') trace('runtime warning: ' + JSON.stringify(m).slice(0, 500));
-        else if (m?.__tonkRuntime) trace('runtime: ' + m.__tonkRuntime);
+        else if (m?.__tonkRuntime && m.__tonkRuntime !== 'press')
+          trace('runtime: ' + m.__tonkRuntime);
       });
       function size() {
         parent.postMessage(

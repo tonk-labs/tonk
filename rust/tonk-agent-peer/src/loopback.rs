@@ -125,6 +125,17 @@ async fn asset(name: &'static str) -> Response {
 /// display, routed to the space. Runs before the bootstrap scripts, like the
 /// hosted embed's mount script.
 const DISPLAY_MOUNT: &str = r#"
+// Spike diagnostics: the element runtime reports unresolved command
+// bindings only with console.warn, which never leaves the guest.
+for (const level of ['warn', 'error']) {
+  const original = console[level].bind(console);
+  console[level] = (...args) => {
+    original(...args);
+    try {
+      parent.postMessage({ __tonkRuntime: 'warn', level, error: args.map(String).join(' ').slice(0, 1000) }, '*');
+    } catch {}
+  };
+}
 addEventListener('message', (e) => {
   if (e.source !== parent || e.data?.type !== 'tonk-display-mount') return;
   window.__tonkHideFab = true;
@@ -137,6 +148,12 @@ addEventListener('message', (e) => {
     display.setAttribute('entity', item.entity);
     display.setAttribute('model', item.model);
     if (item.view) display.setAttribute('view', item.view);
+    // Report when the command delegate is installed, and which bindings it has.
+    display.addEventListener('tonk-display:bound', () => {
+      const bindings = [...display.querySelectorAll('[data-event-bindings]')]
+        .map((view) => view.getAttribute('data-event-bindings')).join(' ');
+      parent.postMessage({ __tonkRuntime: 'warn', level: 'info', error: 'bound ' + item.entity + ' ' + bindings.slice(0, 600) }, '*');
+    });
     return display;
   }));
 });
