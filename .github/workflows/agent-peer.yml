@@ -141,14 +141,15 @@ jobs:
           set -euo pipefail
           for platform in macos-arm64 linux-x86_64; do
             install -m 0755 "artifacts/$platform/tonk-agent-peer" tonk-agent-peer
-            tar -czf "tonk-agent-peer-$platform.tar.gz" tonk-agent-peer
-            rm tonk-agent-peer
+            # The launcher installs the guest runtime beside the binary.
+            rm -rf runtime && cp -R artifacts/runtime runtime
+            tar -czf "tonk-agent-peer-$platform.tar.gz" tonk-agent-peer runtime
+            rm -rf tonk-agent-peer runtime
           done
           sha256sum tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz > checksums.txt
           plugins/tonk/package.sh tonk-plugin.zip tonk-agent-peer-dev
           version=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version'])")
-          plugins/tonk/package-mcpb.sh artifacts/macos-arm64/tonk-agent-peer darwin "$version" tonk-agent-peer-macos-arm64.mcpb artifacts/runtime
-          plugins/tonk/package-mcpb.sh artifacts/linux-x86_64/tonk-agent-peer linux "$version" tonk-agent-peer-linux-x86_64.mcpb artifacts/runtime
+          plugins/tonk/package-mcpb.sh "$version" tonk-agent-peer-dev tonk.mcpb
       - name: Replace the rolling dev release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -162,7 +163,7 @@ jobs:
             --title 'tonk-agent-peer (dev)' \
             --notes "Rolling tonk-agent-peer build of main at $GITHUB_SHA for the plugin's dev channel. Not a release." \
             tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz checksums.txt tonk-plugin.zip \
-            tonk-agent-peer-macos-arm64.mcpb tonk-agent-peer-linux-x86_64.mcpb
+            tonk.mcpb
 
   # A preview a reviewer can install in one line. Same-repository pull
   # requests only: a fork's token cannot publish releases.
@@ -197,14 +198,15 @@ jobs:
           set -euo pipefail
           for platform in macos-arm64 linux-x86_64; do
             install -m 0755 "artifacts/$platform/tonk-agent-peer" tonk-agent-peer
-            tar -czf "tonk-agent-peer-$platform.tar.gz" tonk-agent-peer
-            rm tonk-agent-peer
+            # The launcher installs the guest runtime beside the binary.
+            rm -rf runtime && cp -R artifacts/runtime runtime
+            tar -czf "tonk-agent-peer-$platform.tar.gz" tonk-agent-peer runtime
+            rm -rf tonk-agent-peer runtime
           done
           sha256sum tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz > checksums.txt
           plugins/tonk/package.sh tonk-plugin.zip "$TAG"
           version=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version'])")
-          plugins/tonk/package-mcpb.sh artifacts/macos-arm64/tonk-agent-peer darwin "$version" tonk-agent-peer-macos-arm64.mcpb artifacts/runtime
-          plugins/tonk/package-mcpb.sh artifacts/linux-x86_64/tonk-agent-peer linux "$version" tonk-agent-peer-linux-x86_64.mcpb artifacts/runtime
+          plugins/tonk/package-mcpb.sh "$version" "$TAG" tonk.mcpb
       - name: Replace the preview release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -219,7 +221,7 @@ jobs:
             --title "tonk-agent-peer preview (#${{ github.event.pull_request.number }})" \
             --notes "Preview build of ${{ github.event.pull_request.head.ref }} at $HEAD_SHA. Removed when the pull request closes. Not a release." \
             tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz checksums.txt tonk-plugin.zip \
-            tonk-agent-peer-macos-arm64.mcpb tonk-agent-peer-linux-x86_64.mcpb
+            tonk.mcpb
       - uses: mshick/add-pr-comment@v2
         with:
           message-id: agent-peer-preview
@@ -234,7 +236,7 @@ jobs:
 
             The plugin is pinned to this preview's binary. Paste a share or agent link for any Tonk space. Its identity and joined spaces live in `~/.tonk/agent-peer`; remove that directory to start over.
 
-            **Claude Desktop chat with live views:** download [`tonk-agent-peer-macos-arm64.mcpb`](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ env.TAG }}/tonk-agent-peer-macos-arm64.mcpb) and open it to install the extension. It is the same peer and shares `~/.tonk/agent-peer` with the plugin. Ask Claude to display things from a joined space (`tonk_display`, rendered by Tonk with each concept's own display) or show a query live (`tonk_show`). The preview binary is not notarized; if macOS refuses to start it, run `xattr -d com.apple.quarantine` on the downloaded file before opening it.
+            **Claude Desktop chat with live views:** install [`tonk.mcpb`](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ env.TAG }}/tonk.mcpb) once by opening it. It updates itself: every new chat starts the newest build of this pull request, and a newer build takes over from an older one still running. It is the same peer as the plugin and shares `~/.tonk/agent-peer`. Ask Claude to display things from a joined space (`tonk_display`) or show a query live (`tonk_show`).
 
   cleanup-preview:
     name: 'Remove preview'

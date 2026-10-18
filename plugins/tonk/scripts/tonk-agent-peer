@@ -1,10 +1,12 @@
 #!/bin/sh
 # Launch the local Tonk peer as this plugin's stdio MCP server.
 #
-# The peer is a signed native binary published with each Tonk release. This
-# launcher fetches the one for this platform, verifies it against the
-# release's checksums.txt, caches it, and execs it. It checks for a newer
-# release at most once a day and keeps using the cached binary when offline.
+# The peer is a native binary published with each Tonk release, together with
+# the guest runtime its live views use. This launcher fetches them for this
+# platform, verifies the archive against the release's checksums.txt, caches
+# them, and execs the peer. It checks for a newer build on every start and
+# keeps using the cached one when offline. The Claude Desktop extension ships
+# this same launcher, so both update themselves.
 #
 # stdout belongs to the MCP protocol: every message here goes to stderr.
 #
@@ -89,8 +91,18 @@ update() {
   fi
   fetch "${BASE}/${ASSET}" "$tmp/$ASSET" || return 1
   [ "$(sha256_of "$tmp/$ASSET")" = "$expected" ] || { say "checksum mismatch for $ASSET"; return 1; }
-  tar -xzf "$tmp/$ASSET" -C "$tmp" tonk-agent-peer || return 1
+  tar -xzf "$tmp/$ASSET" -C "$tmp" || return 1
+  [ -f "$tmp/tonk-agent-peer" ] || { say "$ASSET has no tonk-agent-peer"; return 1; }
   chmod 0755 "$tmp/tonk-agent-peer"
+  # The guest runtime for live views rides along when the release has one.
+  if [ -d "$tmp/runtime" ]; then
+    rm -rf "${CACHE}/runtime.old"
+    [ -d "${CACHE}/runtime" ] && mv "${CACHE}/runtime" "${CACHE}/runtime.old"
+    mv "$tmp/runtime" "${CACHE}/runtime"
+    rm -rf "${CACHE}/runtime.old"
+  fi
+  # A newer binary is a new file, so running peers keep theirs; its fresh
+  # modification time is how a running owner learns it is outdated.
   mv -f "$tmp/tonk-agent-peer" "$BIN"
   printf '%s\n' "$expected" > "${CACHE}/sha256"
   say "installed tonk-agent-peer from ${CHANNEL}"

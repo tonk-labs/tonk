@@ -76,6 +76,14 @@ impl LocalPeer {
         self.state.clone()
     }
 
+    /// Stop serving without consuming the peer: end the worker's generation
+    /// and release its live query streams, for when another process takes
+    /// over the directory while handles to this one are still alive.
+    pub async fn retire(&self) {
+        self.state.read().await.shutdown();
+        self.hub.shutdown().await;
+    }
+
     /// Release query streams and the worker.
     pub async fn close(self) {
         self.state.read().await.shutdown();

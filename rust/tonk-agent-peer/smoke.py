@@ -10,6 +10,7 @@ to the first and sees the same peer, and that a malformed link is refused
 without echoing its secret. Needs no network.
 """
 import json
+import shutil
 import os
 import subprocess
 import sys
@@ -166,6 +167,22 @@ def main(binary):
         text = refused["content"][0]["text"]
         assert failed, refused
         assert seed not in text, refused
+
+        # A newer build (a later-installed binary) takes over from an older
+        # owner; the older session keeps working by forwarding to it.
+        newer = os.path.join(scratch, "newer", "tonk-agent-peer")
+        os.makedirs(os.path.dirname(newer))
+        shutil.copy2(binary, newer)
+        later = os.stat(binary).st_mtime + 60
+        os.utime(newer, (later, later))
+        third = Session(newer, home)
+        failed, taken = third.tool("tonk_list_spaces")
+        assert not failed and taken["structuredContent"]["peer"] == peer, taken
+        assert taken["structuredContent"]["owner"]["pid"] == third.process.pid, taken
+        failed, forwarded = first.tool("tonk_list_spaces")
+        assert not failed, forwarded
+        assert forwarded["structuredContent"]["owner"]["pid"] == third.process.pid, forwarded
+        third.close()
 
         # When the owner's session ends, the other takes over the same peer.
         first.close()

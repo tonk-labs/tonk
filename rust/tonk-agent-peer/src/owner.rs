@@ -6,13 +6,20 @@
 //! others over `peer.sock` inside the private directory. A process that does
 //! not own the peer forwards each call; when the owner exits, the next call
 //! anywhere takes over.
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, UNIX_EPOCH},
+};
 
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
-    sync::Mutex,
+    sync::{Mutex, Notify},
     task::JoinHandle,
 };
 use tonk_worker::LocalPeer;
@@ -27,6 +34,23 @@ const FORWARD_TIMEOUT: Duration = Duration::from_secs(180);
 pub struct Peer {
     root: PathBuf,
     role: Arc<Mutex<Role>>,
+    // Whether this process already asked an owner to yield to its build.
+    asked: Arc<AtomicBool>,
+}
+
+/// When this process's binary was installed. The launcher installs every
+/// new build as a new file, so a later stamp is a newer build.
+fn build_stamp() -> u128 {
+    static STAMP: OnceLock<u128> = OnceLock::new();
+    *STAMP.get_or_init(|| {
+        std::env::current_exe()
+            .and_then(std::fs::metadata)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|age| age.as_nanos())
+            .unwrap_or(0)
+    })
 }
 
 enum Role {
@@ -43,15 +67,27 @@ enum Role {
 
 impl Peer {
     pub fn new(root: PathBuf) -> Self {
+        // Read now: an update replaces the binary at the same path, and a
+        // stamp read later would mistake this process for the newer build.
+        build_stamp();
         Self {
             root,
             role: Arc::new(Mutex::new(Role::Unclaimed)),
+            asked: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Run one tool on the peer, owning it if nobody else does.
     pub async fn call(&self, tool: &str, arguments: Value) -> Result<Value, String> {
         if let Some((peer, origin)) = self.owned().await? {
+            return run(&peer, &origin, tool, &arguments).await;
+        }
+        // Once per process: an owner running an older build hands the
+        // directory over, so an updated extension takes effect in the next
+        // session without restarting the host.
+        if !self.asked.swap(true, Ordering::SeqCst)
+            && let Some((peer, origin)) = self.take_over().await?
+        {
             return run(&peer, &origin, tool, &arguments).await;
         }
         match forward(&self.socket(), tool, &arguments).await {
@@ -86,6 +122,28 @@ impl Peer {
         }
     }
 
+    /// Ask the owner to yield if its build is older than ours, then claim
+    /// the directory once it lets go.
+    async fn take_over(&self) -> Result<Option<(Arc<Mutex<LocalPeer>>, Arc<str>)>, String> {
+        let stamp = build_stamp().to_string();
+        let answer = forward(
+            &self.socket(),
+            "tonk_peer_yield",
+            &json!({ "stamp": stamp }),
+        )
+        .await;
+        if !matches!(&answer, Ok(Ok(reply)) if reply["yielded"] == true) {
+            return Ok(None);
+        }
+        for _ in 0..50 {
+            if let Some(owned) = self.owned().await? {
+                return Ok(Some(owned));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok(None)
+    }
+
     fn socket(&self) -> PathBuf {
         self.root.join("peer.sock")
     }
@@ -108,8 +166,23 @@ impl Peer {
         let router = peer.lock().await.router();
         let (origin, loopback) = crate::loopback::start(router).await.map_err(unavailable)?;
         let origin: Arc<str> = origin.into();
+        // A newer build asked us to step aside: release the directory and
+        // retire this worker, then keep serving this session by forwarding.
+        let yielded = Arc::new(Notify::new());
+        {
+            let me = self.clone();
+            let yielded = yielded.clone();
+            let peer = peer.clone();
+            tokio::spawn(async move {
+                yielded.notified().await;
+                // Let the reply reach the new owner first.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                peer.lock().await.retire().await;
+                me.shutdown().await;
+            });
+        }
         let tasks = vec![
-            tokio::spawn(serve(listener, peer.clone(), origin.clone())),
+            tokio::spawn(serve(listener, peer.clone(), origin.clone(), yielded)),
             tokio::spawn(background_sync(peer.clone())),
             loopback,
         ];
@@ -159,10 +232,16 @@ async fn run(
 
 /// Answer forwarded calls, one JSON line in and one JSON line out per
 /// connection. The socket lives in the owner-only data directory.
-async fn serve(listener: UnixListener, peer: Arc<Mutex<LocalPeer>>, origin: Arc<str>) {
+async fn serve(
+    listener: UnixListener,
+    peer: Arc<Mutex<LocalPeer>>,
+    origin: Arc<str>,
+    yielded: Arc<Notify>,
+) {
     while let Ok((stream, _)) = listener.accept().await {
         let peer = peer.clone();
         let origin = origin.clone();
+        let yielded = yielded.clone();
         tokio::spawn(async move {
             let (read, mut write) = stream.into_split();
             let mut line = String::new();
@@ -173,6 +252,19 @@ async fn serve(listener: UnixListener, peer: Arc<Mutex<LocalPeer>>, origin: Arc<
                 Ok(request) => {
                     let tool = request["tool"].as_str().unwrap_or_default().to_owned();
                     let arguments = request["arguments"].clone();
+                    if tool == "tonk_peer_yield" {
+                        let theirs = arguments["stamp"]
+                            .as_str()
+                            .and_then(|stamp| stamp.parse::<u128>().ok())
+                            .unwrap_or(0);
+                        let yielding = theirs > build_stamp();
+                        if yielding {
+                            yielded.notify_one();
+                        }
+                        let reply = json!({ "result": { "yielded": yielding } });
+                        let _ = write.write_all(format!("{reply}\n").as_bytes()).await;
+                        return;
+                    }
                     match run(&peer, &origin, &tool, &arguments).await {
                         Ok(result) => json!({ "result": result }),
                         Err(error) => json!({ "error": error }),

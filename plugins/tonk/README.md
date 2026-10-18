@@ -40,9 +40,12 @@ peer (`tonk_watch`, which only the view can call), so changes made anywhere,
 including other people's, appear within seconds.
 
 Views render where the host supports MCP Apps from a local server: Claude
-Desktop chat, through the `tonk-agent-peer-<platform>.mcpb` extension from a
-release, and possibly Cowork. Claude Code shows the result as text. The
-extension and the plugin run the same peer and share its data directory.
+Desktop chat, through the `tonk.mcpb` extension from a release, and possibly
+Cowork. Claude Code shows the result as text. The extension carries the same
+launcher as the plugin, pinned to its release: it installs once and updates
+itself on every start, and a newer build takes over from an older peer still
+running in another session. The extension and the plugin run the same peer
+and share its data directory.
 
 `tonk_display` renders entities in the conversation with their concept's own
 display, through Tonk's real guest runtime: the same `<tonk-display>` the web
