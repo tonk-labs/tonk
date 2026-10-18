@@ -261,11 +261,17 @@ an element is a dictionary of functions keyed by method.**
 
 ```yaml tonk=eval
 element!: &tally-widget
-  description: "A running tally, incremented by its own bump event"
+  description: "A running tally; a click on it dispatches a bump event"
   method:
     connected: |
       (self) => {
         self.textContent = `count: ${self.getAttribute('count') ?? 0}`;
+        self.__click ??= () => self.bump();
+        self.addEventListener('click', self.__click);
+      }
+    attribute-changed: |
+      (self, name, before, after) => {
+        if (name === 'count') self.textContent = `count: ${after ?? 0}`;
       }
     bump: |
       (self) => self.dispatchEvent(
@@ -460,10 +466,12 @@ Rules of the road:
 
 - **Data flows in** through attributes the view binds (`<tally-widget
   count={count}>`) and through child rows the view renders inside the
-  element; **actions flow out** as bubbling `CustomEvent`s, wired
-  exactly like clicks — `on:tally-bump=<command>` on the element plus an
-  `event!: &on/tally-bump` with `type: "bump"` reading `.detail.amount`
-  (see `tonk help events`). The built-in `<tonk-sheet-binder>` works this way; your
+  element; **actions flow out** as `CustomEvent`s dispatched with
+  `bubbles: true`, bound exactly like clicks:
+  `<tally-widget count={count} on:tally-bump=tally/bump>` plus an
+  `event!: &on/tally-bump` with `type: "bump"` reading `.detail.amount`.
+  `tonk help events` ("Events from custom elements") has the complete,
+  runnable loop. The built-in `<tonk-table>` works this way; your
   elements are peers of it.
 - **The escape hatch is a reserved key.** What a method table cannot
   say — `static formAssociated`, extending a built-in — goes in
