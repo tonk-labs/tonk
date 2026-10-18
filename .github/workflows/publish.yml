@@ -196,15 +196,31 @@ jobs:
           # stops instead of shipping one.
           resolve_store() {
             api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/secrets_store"
-            stores="$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$api/stores")"
+            # A request Cloudflare refuses says why, rather than reading as
+            # an empty answer.
+            store_get() {
+              body="$RUNNER_TEMP/secrets-store.json"
+              status="$(curl -sS -o "$body" -w '%{http_code}' \
+                -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$api$1")"
+              case "$status" in
+                200) cat "$body" ;;
+                401|403)
+                  echo "::error::The Cloudflare API token may not read the Secrets Store (HTTP $status): give it the Secrets Store permission" >&2
+                  exit 1 ;;
+                *)
+                  echo "::error::Reading the Secrets Store ($1) failed with HTTP $status: $(jq -c '.errors' "$body" 2>/dev/null)" >&2
+                  exit 1 ;;
+              esac
+            }
+            stores="$(store_get /stores)" || exit 1
             id="$(jq -r 'if (.result | length) == 1 then .result[0].id
               else (.result[] | select(.name == "default_secrets_store") | .id) end' <<<"$stores" | head -n 1)"
             if [ -z "$id" ] || [ "$id" = null ]; then
-              echo "::error::No Secrets Store found for the preview secrets (see the note in wrangler.toml)" >&2
+              echo "::error::The account has no Secrets Store for the preview secrets (see the note in wrangler.toml)" >&2
               exit 1
             fi
-            names="$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-              "$api/stores/$id/secrets?per_page=100" | jq -r '.result[].name')"
+            secrets="$(store_get "/stores/$id/secrets?per_page=100")" || exit 1
+            names="$(jq -r '.result[].name' <<<"$secrets")"
             for name in TONK_PREVIEW_SERVICE_SECRET_KEY TONK_PREVIEW_RESEND_API_KEY; do
               if ! grep -Fxq "$name" <<<"$names"; then
                 echo "::error::The Secrets Store holds no $name; create it as wrangler.toml describes" >&2
