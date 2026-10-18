@@ -4821,6 +4821,7 @@ dependencies = [
 name = "tonk-agent-peer"
 version = "0.6.16-rc.1"
 dependencies = [
+ "axum",
  "dirs 5.0.1",
  "rmcp",
  "rustix",

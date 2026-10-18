@@ -32,6 +32,8 @@ enum Role {
     Unclaimed,
     Owner {
         peer: Arc<Mutex<LocalPeer>>,
+        // Where this process serves the peer's worker API to local views.
+        origin: Arc<str>,
         tasks: Vec<JoinHandle<()>>,
         // Held for as long as this process owns the directory.
         _lock: std::fs::File,
@@ -48,15 +50,15 @@ impl Peer {
 
     /// Run one tool on the peer, owning it if nobody else does.
     pub async fn call(&self, tool: &str, arguments: Value) -> Result<Value, String> {
-        if let Some(peer) = self.owned().await? {
-            return run(&peer, tool, &arguments).await;
+        if let Some((peer, origin)) = self.owned().await? {
+            return run(&peer, &origin, tool, &arguments).await;
         }
         match forward(&self.socket(), tool, &arguments).await {
             Ok(result) => result,
             // The owner went away between our lock check and the connection:
             // try once more, which claims ownership if it is free now.
             Err(Forward::Unreachable) => match self.owned().await? {
-                Some(peer) => run(&peer, tool, &arguments).await,
+                Some((peer, origin)) => run(&peer, &origin, tool, &arguments).await,
                 None => Err("The local peer is busy in another session; try again.".into()),
             },
             Err(Forward::Lost) => Err(
@@ -69,7 +71,10 @@ impl Peer {
     /// Release ownership so another session can take over.
     pub async fn shutdown(&self) {
         let role = std::mem::replace(&mut *self.role.lock().await, Role::Unclaimed);
-        if let Role::Owner { peer, tasks, _lock } = role {
+        if let Role::Owner {
+            peer, tasks, _lock, ..
+        } = role
+        {
             for task in tasks {
                 task.abort();
             }
@@ -85,10 +90,10 @@ impl Peer {
     }
 
     /// The open peer when this process owns it, claiming it if it is free.
-    async fn owned(&self) -> Result<Option<Arc<Mutex<LocalPeer>>>, String> {
+    async fn owned(&self) -> Result<Option<(Arc<Mutex<LocalPeer>>, Arc<str>)>, String> {
         let mut role = self.role.lock().await;
-        if let Role::Owner { peer, .. } = &*role {
-            return Ok(Some(peer.clone()));
+        if let Role::Owner { peer, origin, .. } = &*role {
+            return Ok(Some((peer.clone(), origin.clone())));
         }
         let unavailable = |_| "Peer storage is unavailable.".to_owned();
         let Some(lock) = tonk_worker::try_lock_peer(&self.root).map_err(unavailable)? else {
@@ -99,23 +104,38 @@ impl Peer {
         // A socket file left by a previous owner is stale: we hold the lock.
         let _ = std::fs::remove_file(&socket);
         let listener = UnixListener::bind(&socket).map_err(unavailable)?;
+        let router = peer.lock().await.router();
+        let (origin, loopback) = crate::loopback::start(router).await.map_err(unavailable)?;
+        let origin: Arc<str> = origin.into();
         let tasks = vec![
-            tokio::spawn(serve(listener, peer.clone())),
+            tokio::spawn(serve(listener, peer.clone(), origin.clone())),
             tokio::spawn(background_sync(peer.clone())),
+            loopback,
         ];
         *role = Role::Owner {
             peer: peer.clone(),
+            origin: origin.clone(),
             tasks,
             _lock: lock,
         };
-        Ok(Some(peer))
+        Ok(Some((peer, origin)))
     }
 }
 
 /// Run a tool on the owned peer. Listing spaces also says which process owns
 /// the peer, since every session on this machine talks to that one: an owner
 /// left running from an older build answers with older code.
-async fn run(peer: &Mutex<LocalPeer>, tool: &str, arguments: &Value) -> Result<Value, String> {
+async fn run(
+    peer: &Mutex<LocalPeer>,
+    origin: &str,
+    tool: &str,
+    arguments: &Value,
+) -> Result<Value, String> {
+    // Views ask where the owner serves the worker API, whichever process
+    // renders them.
+    if tool == "tonk_peer_origin" {
+        return Ok(json!({ "origin": origin }));
+    }
     let mut result = peer.lock().await.call(tool, arguments).await?;
     if tool == "tonk_list_spaces"
         && let Value::Object(fields) = &mut result
@@ -126,6 +146,7 @@ async fn run(peer: &Mutex<LocalPeer>, tool: &str, arguments: &Value) -> Result<V
                 "version": env!("CARGO_PKG_VERSION"),
                 "pid": std::process::id(),
                 "binary": std::env::current_exe().ok(),
+                "origin": origin,
             }),
         );
     }
@@ -134,9 +155,10 @@ async fn run(peer: &Mutex<LocalPeer>, tool: &str, arguments: &Value) -> Result<V
 
 /// Answer forwarded calls, one JSON line in and one JSON line out per
 /// connection. The socket lives in the owner-only data directory.
-async fn serve(listener: UnixListener, peer: Arc<Mutex<LocalPeer>>) {
+async fn serve(listener: UnixListener, peer: Arc<Mutex<LocalPeer>>, origin: Arc<str>) {
     while let Ok((stream, _)) = listener.accept().await {
         let peer = peer.clone();
+        let origin = origin.clone();
         tokio::spawn(async move {
             let (read, mut write) = stream.into_split();
             let mut line = String::new();
@@ -147,7 +169,7 @@ async fn serve(listener: UnixListener, peer: Arc<Mutex<LocalPeer>>) {
                 Ok(request) => {
                     let tool = request["tool"].as_str().unwrap_or_default().to_owned();
                     let arguments = request["arguments"].clone();
-                    match run(&peer, &tool, &arguments).await {
+                    match run(&peer, &origin, &tool, &arguments).await {
                         Ok(result) => json!({ "result": result }),
                         Err(error) => json!({ "error": error }),
                     }

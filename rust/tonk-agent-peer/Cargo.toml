@@ -11,6 +11,7 @@ name = "tonk-agent-peer"
 path = "src/main.rs"
 
 [dependencies]
+axum = { workspace = true, features = ["tokio", "http1"] }
 dirs = { workspace = true }
 rmcp = { workspace = true }
 rustix = { workspace = true, features = ["stdio"] }

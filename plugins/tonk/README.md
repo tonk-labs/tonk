@@ -44,9 +44,15 @@ Desktop chat, through the `tonk-agent-peer-<platform>.mcpb` extension from a
 release, and possibly Cowork. Claude Code shows the result as text. The
 extension and the plugin run the same peer and share its data directory.
 
-The view's "Sandbox checks" panel reports whether the host lets it compile
-WebAssembly and reach a loopback origin; both decide how Tonk's own view
-runtime could run inside it.
+`tonk_open` opens a joined space in the conversation rendered by Tonk itself:
+the real guest runtime, with the space's own views, live and interactive. The
+peer that owns the data directory serves its worker API on a loopback port,
+and the view relays the guest's requests there, as the browser relays them to
+its service worker. The guest runtime (`space-runtime.json`,
+`worker-guest.html`) ships in the extension under `server/runtime`.
+
+The loopback API is not authenticated yet: while a peer runs, any local
+process or page that finds its port can act as that peer.
 
 ## Configuration
 
@@ -57,6 +63,7 @@ Set these in the environment the host starts MCP servers with:
 | `TONK_CHANNEL` | `stable` | `stable`, `staging`, or `dev` (latest `main` build) |
 | `TONK_RELEASE` | | Pin an exact release tag |
 | `TONK_AGENT_PEER_HOME` | `~/.tonk/agent-peer` | Peer data directory |
+| `TONK_AGENT_PEER_RUNTIME` | `runtime/` beside the binary | Guest runtime served to space views |
 | `TONK_AGENT_PEER_BINARY` | | Run a local build instead (development) |
 
 ## Not yet

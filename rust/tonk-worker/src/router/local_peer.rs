@@ -46,6 +46,12 @@ impl LocalPeer {
         })
     }
 
+    /// The peer's ordinary worker router, for serving it to local views. It
+    /// shares this peer's state; requests through it act as this peer.
+    pub fn router(&self) -> Router {
+        self.router.clone()
+    }
+
     /// This peer's own DID: the device identity that joins spaces.
     pub fn did(&self) -> &str {
         &self.did

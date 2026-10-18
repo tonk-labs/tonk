@@ -1,7 +1,11 @@
 #!/bin/sh
 # Package a tonk-agent-peer binary as a Claude Desktop extension (.mcpb).
 #
-#   plugins/tonk/package-mcpb.sh BINARY PLATFORM VERSION OUT.mcpb
+#   plugins/tonk/package-mcpb.sh BINARY PLATFORM VERSION OUT.mcpb [RUNTIME_DIR]
+#
+# RUNTIME_DIR holds Tonk's guest runtime (space-runtime.json and
+# worker-guest.html from mcp/hosted/build-assets.mjs); the peer serves it to
+# the space view from server/runtime.
 #
 # PLATFORM is darwin, linux or win32. The extension runs the same peer as the
 # plugin and shares its data directory, so both act as one peer. Desktop chat
@@ -11,10 +15,15 @@ binary="$1"
 platform="$2"
 version="$3"
 out="$4"
+runtime="${5:-}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/server"
 install -m 0755 "$binary" "$work/server/tonk-agent-peer"
+if [ -n "$runtime" ]; then
+  mkdir -p "$work/server/runtime"
+  cp "$runtime/space-runtime.json" "$runtime/worker-guest.html" "$work/server/runtime/"
+fi
 cat > "$work/manifest.json" <<EOF
 {
   "manifest_version": "0.3",
@@ -37,7 +46,8 @@ cat > "$work/manifest.json" <<EOF
     { "name": "tonk_list_spaces", "description": "List spaces this peer has joined" },
     { "name": "tonk_query", "description": "Read a space with Tonk notation" },
     { "name": "tonk_evaluate", "description": "Write to a space with Tonk notation" },
-    { "name": "tonk_show", "description": "Show a live view of a space" },
+    { "name": "tonk_open", "description": "Open a space rendered with its own views" },
+    { "name": "tonk_show", "description": "Show a live view of a query" },
     { "name": "tonk_guide", "description": "Read Tonk's authoring manuals" }
   ],
   "compatibility": { "platforms": ["$platform"] }

@@ -26,6 +26,8 @@ use crate::owner::Peer;
 
 const MIME: &str = "text/html;profile=mcp-app";
 const TEMPLATE: &str = include_str!("view.html");
+/// A space rendered by Tonk's own guest runtime, with its own views.
+const SPACE: &str = include_str!("space.html");
 /// How long one `tonk_watch` call may wait for a change.
 const WATCH_DEFAULT: Duration = Duration::from_secs(20);
 const WATCH_MAX: Duration = Duration::from_secs(25);
@@ -38,6 +40,7 @@ pub struct Views {
     uri: String,
     html: String,
     probe: String,
+    space_uri: String,
 }
 
 impl Views {
@@ -55,7 +58,15 @@ impl Views {
         let mut digest = std::collections::hash_map::DefaultHasher::new();
         html.hash(&mut digest);
         let uri = format!("ui://tonk/view-{:016x}.html", digest.finish());
-        Ok(Self { uri, html, probe })
+        let mut digest = std::collections::hash_map::DefaultHasher::new();
+        SPACE.hash(&mut digest);
+        let space_uri = format!("ui://tonk/space-{:016x}.html", digest.finish());
+        Ok(Self {
+            uri,
+            html,
+            probe,
+            space_uri,
+        })
     }
 
     pub fn tools(&self) -> Vec<Tool> {
@@ -84,6 +95,22 @@ impl Views {
                 "_meta": { "ui": { "resourceUri": self.uri } },
             }),
             json!({
+                "name": "tonk_open",
+                "title": "Open a Tonk space",
+                "description": "Open a joined space in the conversation, rendered by Tonk itself with the space's own views, live and interactive. Use it when the user wants to see, browse or work in a space. `path` is a route inside the space; omit it for the space's home.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "space": space,
+                        "path": { "type": "string", "maxLength": 2000, "pattern": "^/", "description": "Route inside the space, such as /. Defaults to /." },
+                    },
+                    "required": ["space"],
+                    "additionalProperties": false,
+                },
+                "annotations": { "readOnlyHint": true, "openWorldHint": false },
+                "_meta": { "ui": { "resourceUri": self.space_uri } },
+            }),
+            json!({
                 "name": "tonk_watch",
                 "title": "Wait for a Tonk view to change",
                 "description": "Used by a live Tonk view to stay current. Not for direct use.",
@@ -107,13 +134,23 @@ impl Views {
         .collect()
     }
 
-    pub fn resource(&self) -> Resource {
-        Resource::new(self.uri.clone(), "tonk-view")
-            .with_title("Tonk live view")
-            .with_mime_type(MIME)
+    pub fn resources(&self) -> Vec<Resource> {
+        vec![
+            Resource::new(self.uri.clone(), "tonk-view")
+                .with_title("Tonk live view")
+                .with_mime_type(MIME),
+            Resource::new(self.space_uri.clone(), "tonk-space")
+                .with_title("Tonk space")
+                .with_mime_type(MIME),
+        ]
     }
 
-    pub fn read(&self, uri: &str) -> Option<ResourceContents> {
+    /// The space app talks to the owner's loopback worker API, so its page
+    /// and permissions name that origin, asked of the owner when read.
+    pub async fn read(&self, peer: &Peer, uri: &str) -> Option<Result<ResourceContents, String>> {
+        if uri == self.space_uri {
+            return Some(self.space(peer).await);
+        }
         if uri != self.uri {
             return None;
         }
@@ -126,11 +163,34 @@ impl Views {
         let Value::Object(meta) = meta else {
             unreachable!()
         };
-        Some(
-            ResourceContents::text(self.html.clone(), self.uri.clone())
-                .with_mime_type(MIME)
-                .with_meta(MetaObject::from(meta)),
+        Some(Ok(ResourceContents::text(
+            self.html.clone(),
+            self.uri.clone(),
         )
+        .with_mime_type(MIME)
+        .with_meta(MetaObject::from(meta))))
+    }
+
+    async fn space(&self, peer: &Peer) -> Result<ResourceContents, String> {
+        let owner = peer.call("tonk_peer_origin", json!({})).await?;
+        let origin = owner["origin"]
+            .as_str()
+            .ok_or("The local peer did not say where it serves views.")?;
+        let html = SPACE.replace(
+            "__TONK_PEER_ORIGIN__",
+            &serde_json::to_string(origin).expect("string"),
+        );
+        let Value::Object(meta) = json!({
+            "ui": {
+                "csp": { "connectDomains": [origin], "frameDomains": [origin] },
+                "prefersBorder": true,
+            },
+        }) else {
+            unreachable!()
+        };
+        Ok(ResourceContents::text(html, self.space_uri.clone())
+            .with_mime_type(MIME)
+            .with_meta(MetaObject::from(meta)))
     }
 
     /// Run a view tool, or `None` when `name` is not one.
@@ -138,6 +198,30 @@ impl Views {
         let text = |name: &str| arguments.get(name).and_then(Value::as_str).unwrap_or("");
         let (space, document) = (text("space"), text("document"));
         Some(match name {
+            "tonk_open" => {
+                let path = Some(text("path"))
+                    .filter(|path| !path.is_empty())
+                    .unwrap_or("/");
+                // Confirms the space is joined before the app loads it.
+                match peer
+                    .call("tonk_query", json!({ "space": space, "document": format!("tonk/repository:\n  this: {space}\n") }))
+                    .await
+                {
+                    Ok(response) => {
+                        let name = response["matches_after"][0]["results"][0]["fields"]["name"]
+                            .as_str()
+                            .unwrap_or(space)
+                            .to_owned();
+                        let mut result = CallToolResult::success(vec![ContentBlock::text(format!(
+                            "Opened \"{name}\" at {path} in a live view rendered by Tonk."
+                        ))]);
+                        result.structured_content =
+                            Some(json!({ "subject": space, "path": path, "name": name }));
+                        result
+                    }
+                    Err(error) => CallToolResult::error(vec![ContentBlock::text(error)]),
+                }
+            }
             "tonk_show" => match snapshot(peer, space, document).await {
                 Ok((version, matches, truncated)) => {
                     let title = Some(text("title")).filter(|title| !title.is_empty());

@@ -17,6 +17,7 @@ use rmcp::ServiceExt;
 #[path = "../../tonk-cli/src/guide.rs"]
 #[allow(dead_code)]
 mod guide;
+mod loopback;
 mod owner;
 mod server;
 mod views;

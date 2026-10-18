@@ -163,7 +163,7 @@ impl ServerHandler for Server {
                 )
                 .with_mime_type("text/markdown")
             })
-            .chain(std::iter::once(self.views.resource()))
+            .chain(self.views.resources())
             .collect::<Vec<_>>();
         Ok(ListResourcesResult::with_all_items(resources))
     }
@@ -173,7 +173,8 @@ impl ServerHandler for Server {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
-        if let Some(contents) = self.views.read(&request.uri) {
+        if let Some(contents) = self.views.read(&self.peer, &request.uri).await {
+            let contents = contents.map_err(|error| McpError::internal_error(error, None))?;
             return Ok(ReadResourceResult::new(vec![contents]).into());
         }
         let body = request

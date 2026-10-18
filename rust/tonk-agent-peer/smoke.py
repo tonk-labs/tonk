@@ -14,18 +14,23 @@ import os
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 
 EXPECTED_TOOLS = {
     "tonk_list_spaces", "tonk_join", "tonk_query", "tonk_evaluate", "tonk_guide",
-    "tonk_show", "tonk_watch",
+    "tonk_show", "tonk_watch", "tonk_open",
 }
 APP_MIME = "text/html;profile=mcp-app"
+# A stand-in guest runtime directory; the real pack is built from tonk-ui.
+RUNTIME = tempfile.mkdtemp()
+with open(os.path.join(RUNTIME, "space-runtime.json"), "w") as stand_in:
+    stand_in.write('{"stand_in":true}')
 
 
 class Session:
     def __init__(self, binary, home):
-        env = dict(os.environ, TONK_AGENT_PEER_HOME=home)
+        env = dict(os.environ, TONK_AGENT_PEER_HOME=home, TONK_AGENT_PEER_RUNTIME=RUNTIME)
         self.process = subprocess.Popen(
             [binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, text=True
         )
@@ -86,6 +91,38 @@ def main(binary):
             assert response.headers["Access-Control-Allow-Origin"] == "*"
             assert response.headers["Access-Control-Allow-Private-Network"] == "true"
             assert json.load(response)["probe"] is True
+        # The space app reaches the owner's worker API on loopback.
+        space_uri = listed_tools["tonk_open"]["_meta"]["ui"]["resourceUri"]
+        assert any(r["uri"] == space_uri and r.get("mimeType") == APP_MIME for r in guides), guides
+        space = first.request("resources/read", {"uri": space_uri})["contents"][0]
+        peer_origin = space["_meta"]["ui"]["csp"]["connectDomains"][0]
+        assert peer_origin.startswith("http://127.0.0.1:"), space["_meta"]
+        assert space["_meta"]["ui"]["csp"]["frameDomains"] == [peer_origin], space["_meta"]
+        assert json.dumps(peer_origin) in space["text"] and "__TONK_PEER_ORIGIN__" not in space["text"]
+        with urllib.request.urlopen(peer_origin + "/space-runtime.json", timeout=5) as response:
+            assert response.headers["Access-Control-Allow-Origin"] == "*"
+            assert json.load(response) == {"stand_in": True}
+        preflight = urllib.request.Request(
+            peer_origin + "/api/profile", method="OPTIONS",
+            headers={"Origin": "null", "Access-Control-Request-Method": "POST",
+                     "Access-Control-Request-Headers": "content-type,x-tonk-client-id"},
+        )
+        with urllib.request.urlopen(preflight, timeout=5) as response:
+            assert response.status == 204, response.status
+            assert response.headers["Access-Control-Allow-Private-Network"] == "true"
+            assert "x-tonk-client-id" in response.headers["Access-Control-Allow-Headers"]
+        with urllib.request.urlopen(peer_origin + "/api/profile", timeout=30) as response:
+            assert response.headers["Access-Control-Allow-Origin"] == "*"
+            assert response.status == 200
+        try:
+            urllib.request.urlopen(peer_origin + "/worker-guest.html", timeout=5)
+            raise AssertionError("missing guest document must 404")
+        except urllib.error.HTTPError as missing:
+            assert missing.code == 404 and "not installed" in missing.read().decode()
+        failed, closed = first.tool("tonk_open", {
+            "space": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+        })
+        assert failed and "has not joined" in closed["content"][0]["text"], closed
         failed, unjoined = first.tool("tonk_show", {
             "space": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
             "document": "concept:\n",
