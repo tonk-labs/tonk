@@ -12,32 +12,58 @@ struct LinkBadge: View {
   }
 }
 
-/// Overlapping initials for a roster.
-struct InitialsStack: View {
+/// A space's people: a summary and overlapping initials. Hovering an initial
+/// grows it into a pill with the member's full name.
+struct Roster: View {
+  let summary: String
   let members: [SpaceMember]
   var limit = 6
+  @State private var hovered: SpaceMember.ID?
 
   var body: some View {
-    HStack(spacing: -6) {
-      ForEach(members.prefix(limit)) { member in
-        Text(member.initial).font(.caption.weight(.semibold))
-          .frame(width: 24, height: 24)
-          .background(.fill.secondary, in: Circle())
-          .background(Color(nsColor: .windowBackgroundColor), in: Circle())
-          .overlay { Circle().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1) }
-          .overlay { ToolTip(text: member.displayName) }
-          .accessibilityElement(children: .ignore)
-          .accessibilityLabel(member.displayName)
+    HStack(spacing: 10) {
+      Text(summary)
+      HStack(spacing: -6) {
+        ForEach(members.prefix(limit)) { chip($0) }
+        if members.count > limit {
+          let hidden = members.dropFirst(limit).map(\.displayName)
+          Text("+\(members.count - limit)").font(.caption).foregroundStyle(.secondary)
+            .padding(.leading, 10)
+            .overlay { ToolTip(text: AccessText.list(hidden)) }
+            .accessibilityLabel(AccessText.list(hidden))
+        }
       }
-      if members.count > limit {
-        let hidden = members.dropFirst(limit).map(\.displayName)
-        Text("+\(members.count - limit)").font(.caption).foregroundStyle(.secondary)
-          .padding(.leading, 10)
-          .overlay { ToolTip(text: AccessText.list(hidden)) }
-          .accessibilityLabel(AccessText.list(hidden))
+      .accessibilityElement(children: .contain)
+    }
+    .animation(.spring(duration: 0.35, bounce: 0.2), value: hovered)
+  }
+
+  private func chip(_ member: SpaceMember) -> some View {
+    let open = hovered == member.id
+    return HStack(spacing: 4) {
+      Text(member.initial).font(.caption.weight(.semibold))
+      if open {
+        Text(member.displayName).font(.caption).lineLimit(1).fixedSize()
+          .transition(.opacity.combined(with: .move(edge: .leading)))
       }
     }
-    .accessibilityElement(children: .contain)
+    .padding(.horizontal, open ? 8 : 0)
+    .frame(minWidth: 24, minHeight: 24)
+    .background(.fill.secondary, in: Capsule())
+    .background(Color(nsColor: .windowBackgroundColor), in: Capsule())
+    .clipShape(Capsule())
+    .overlay { Capsule().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1) }
+    .zIndex(open ? 1 : 0)
+    .contentShape(Capsule())
+    .onHover { over in
+      if over {
+        hovered = member.id
+      } else if hovered == member.id {
+        hovered = nil
+      }
+    }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(member.displayName)
   }
 }
 
@@ -186,7 +212,7 @@ private struct BotShape: Shape {
 }
 
 /// An AppKit tooltip. SwiftUI's `.help` does not reach plain views inside a
-/// grouped form's rows, so the roster's initials would otherwise show nothing.
+/// grouped form's rows, so the roster's "+N" overflow would otherwise show nothing.
 private struct ToolTip: NSViewRepresentable {
   let text: String
   func makeNSView(context: Context) -> NSView { NSView() }
