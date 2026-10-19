@@ -5,8 +5,18 @@ private struct RefreshContentKey: FocusedValueKey { typealias Value = () -> Void
 private struct SearchFocusKey: FocusedValueKey { typealias Value = () -> Void }
 private struct OpenSpaceInBrowserKey: FocusedValueKey { typealias Value = () -> Void }
 private struct ToggleAgentSidebarKey: FocusedValueKey { typealias Value = () -> Void }
+private struct NewLinkKey: FocusedValueKey { typealias Value = () -> Void }
+private struct NewChatKey: FocusedValueKey { typealias Value = () -> Void }
 
 extension FocusedValues {
+  var newChat: (() -> Void)? {
+    get { self[NewChatKey.self] }
+    set { self[NewChatKey.self] = newValue }
+  }
+  var newLink: (() -> Void)? {
+    get { self[NewLinkKey.self] }
+    set { self[NewLinkKey.self] = newValue }
+  }
   var toggleAgentSidebar: (() -> Void)? {
     get { self[ToggleAgentSidebarKey.self] }
     set { self[ToggleAgentSidebarKey.self] = newValue }
@@ -36,19 +46,32 @@ struct WindowCommands: Commands {
   @FocusedValue(\.refreshContent) private var refreshContent
   @FocusedValue(\.openSpaceInBrowser) private var openSpaceInBrowser
   @FocusedValue(\.toggleAgentSidebar) private var toggleAgentSidebar
+  @FocusedValue(\.newLink) private var newLink
+  @FocusedValue(\.newChat) private var newChat
 
   var body: some Commands {
     CommandGroup(replacing: .appSettings) {
       Button("Settings…") { modelSettings?() }
         .keyboardShortcut(",").disabled(modelSettings == nil)
     }
+    CommandGroup(before: .newItem) {
+      Button("New Link…") { newLink?() }
+        .keyboardShortcut("n")
+        .disabled(newLink == nil)
+    }
+    CommandGroup(replacing: .newItem) {
+      // Each space window has its own chat; this starts one in the focused window.
+      Button("New Chat") { newChat?() }
+        .keyboardShortcut("n", modifiers: [.command, .shift])
+        .disabled(newChat == nil)
+    }
     CommandGroup(after: .toolbar) {
       Button("Refresh") { refreshContent?() }
         .keyboardShortcut("r").disabled(refreshContent == nil)
-      Button("Toggle agent sidebar") { toggleAgentSidebar?() }
+      Button("Toggle Agent Sidebar") { toggleAgentSidebar?() }
         .keyboardShortcut("b", modifiers: .command)
         .disabled(toggleAgentSidebar == nil)
-      Button("Open in browser") { openSpaceInBrowser?() }
+      Button("Open in Browser") { openSpaceInBrowser?() }
         .keyboardShortcut(.rightArrow, modifiers: .command)
         .disabled(openSpaceInBrowser == nil)
     }

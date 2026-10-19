@@ -25,7 +25,7 @@ extension RuntimeModel {
     accountConnected = false
     accountStatusKnown = true
     accountMessage = nil
-    selectedSpace = nil
+    accountEpoch += 1
     spaces = []
     catalogBranch = nil
     catalogLoaded = false

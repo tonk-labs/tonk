@@ -2030,11 +2030,13 @@ view!:
 #
 # The routes every space starts with, shipped as `seed/route` commands: the
 # rule above writes each one where no route claims its path. Patterns
-# use the route grammar: `{name}` is one segment, `{name:path}` is slash-tolerant
-# (so a namespaced `{model:path}` captures `tonk/person` whole), `@` and `!` are
-# literal delimiters between params. The SW matches most-specific-first, so the
-# bare `/`, the `@`/`!` artifact patterns, and the plain `{model}` directory never
-# shadow one another.
+# use the route grammar: `{name}` captures one segment (it stops at `/`),
+# `{*name}` captures a span that may contain `/` up to the next literal or
+# the end (so `{*model}` captures a namespaced `tonk/person` whole), and
+# several params may share a segment separated by literals (`@` and `!`
+# below). The SW matches most-specific-first, so the bare `/`, the `@`/`!`
+# artifact patterns, and the plain `{*model}` directory never shadow one
+# another.
 #
 # The bare `/` route resolves the declarative workspace shell (the site's
 # `{concept}` indirection mounts it on the site entity); the sub-routes resolve

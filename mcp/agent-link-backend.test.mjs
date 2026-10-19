@@ -1,11 +1,86 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { agentLinkBackend } from './agent-link-backend.mjs';
+import { agentLinkBackend, invoke } from './agent-link-backend.mjs';
 import { createTonkHTTP } from './http.mjs';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+test('subprocess failures emit bounded secret-safe diagnostics after close', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'tonk-agent-diagnostics-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const secret = 'private-diagnostic-fixture';
+  const cases = [
+    { category: 'exit', source: 'process.exitCode = 7;', status: 7, signal: null },
+    {
+      category: 'exit',
+      source: "process.kill(process.pid, 'SIGTERM');",
+      status: null,
+      signal: 'SIGTERM',
+    },
+    { category: 'missing_result', source: 'console.log(text);', status: 0, signal: null },
+    {
+      category: 'invalid_result',
+      source: "console.log('TONK_AGENT_LINK_RESULT ' + text + 'broken');",
+      status: 0,
+      signal: null,
+    },
+    {
+      category: 'output_limit',
+      source: "process.stdout.write('x'.repeat(2100001)); setInterval(() => {}, 1000);",
+    },
+    { category: 'timeout', source: 'setInterval(() => {}, 1000);', timeoutMs: 150 },
+    { category: 'cancelled', source: 'setInterval(() => {}, 1000);', cancel: true },
+    { category: 'spawn_error', missing: true },
+  ];
+  for (const fixture of cases) {
+    await t.test(fixture.category + (fixture.signal ?? ''), async (subtest) => {
+      const logs = [];
+      subtest.mock.method(console, 'error', (...args) => logs.push(args));
+      const binary = join(directory, fixture.missing ? secret : 'worker.mjs');
+      if (!fixture.missing) {
+        await writeFile(
+          binary,
+          `#!${process.execPath}
+let text = '';
+for await (const chunk of process.stdin) text += chunk;
+console.error(text);
+${fixture.source}
+`,
+          { mode: 0o700 },
+        );
+      }
+      const controller = new AbortController();
+      const timer = fixture.cancel ? setTimeout(() => controller.abort(secret), 150) : undefined;
+      try {
+        await assert.rejects(
+          invoke({
+            binary,
+            dataDirectory: directory,
+            remote: 'https://example.invalid/' + secret,
+            signal: controller.signal,
+            timeoutMs: fixture.timeoutMs ?? 5000,
+            input: { tool: 'tonk_evaluate', agent_link: secret, document: secret },
+          }),
+          (error) => {
+            assert.match(error.message, /Do not repeat it; query the space first/);
+            assert.ok(!error.message.includes(secret));
+            return true;
+          },
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+      assert.equal(logs.length, 1);
+      assert.ok(!JSON.stringify(logs).includes(secret));
+      const diagnostic = JSON.parse(logs[0][1]);
+      assert.equal(diagnostic.category, fixture.category);
+      if ('status' in fixture) assert.equal(diagnostic.status, fixture.status);
+      if ('signal' in fixture) assert.equal(diagnostic.signal, fixture.signal);
+    });
+  }
+});
 
 test('subprocess sends credentials on stdin and consumes only its final result', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'tonk-agent-process-'));
@@ -102,6 +177,26 @@ test('invalid shortcut origin is rejected before execution', async () => {
     }),
     /Could not resolve/,
   );
+});
+
+test('shortcut failures never log upstream exception text', async (t) => {
+  const logs = [];
+  t.mock.method(console, 'error', (...args) => logs.push(args));
+  t.mock.method(globalThis, 'fetch', async () => {
+    throw Error('private-shortcut-fixture');
+  });
+  const backend = agentLinkBackend({
+    remote: 'https://access.example/ucan/',
+    run: () => assert.fail('must not execute'),
+  });
+  await assert.rejects(
+    backend.call('tonk_query', {
+      agent_link: 'https://access.example/@/fixture#private-shortcut-fixture',
+      document: 'concept:\n',
+    }),
+    /Could not resolve/,
+  );
+  assert.deepEqual(logs, [['Agent link expansion failed.']]);
 });
 
 test('shortcut resolution keeps the seed out of HTTP and reattaches it for the worker', async (t) => {
