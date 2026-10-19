@@ -32,6 +32,8 @@ let
       "Cargo.toml"
       "rust-toolchain.toml"
       "rust"
+      # The shared MCP tool catalog, embedded by tonk-agent-peer.
+      "mcp/tools.json"
     ];
   };
 
@@ -105,7 +107,7 @@ let
   # Build WASM dependencies separately (different target)
   # Exclude native-only crates that can't compile for wasm32-unknown-unknown.
   # If you add a new native-only crate, add it to the --exclude list here.
-  wasmCargoExcludeArgs = "--workspace --exclude tonk-cli --exclude tonk-perf";
+  wasmCargoExcludeArgs = "--workspace --exclude tonk-cli --exclude tonk-agent-peer --exclude tonk-perf";
 
   wasmAttributes = commonAttributes // {
     CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
