@@ -83,14 +83,10 @@ export function agentLinkBackend({
             resolved.hash = fragment;
             link = resolved.href;
           } else link = url.href;
-        } catch (error) {
+        } catch {
           // Operator diagnostics only: never log the link, which carries the
           // capability in its fragment. stderr keeps stdio transports intact.
-          console.error(
-            'Agent link expansion failed:',
-            error?.message ?? 'unknown error',
-            error?.cause?.code ?? '',
-          );
+          console.error('Agent link expansion failed.');
           throw new TonkToolError('Could not resolve the agent link.');
         }
         signal?.throwIfAborted();
@@ -128,13 +124,30 @@ export function agentLinkBackend({
   };
 }
 
-function invoke({ binary, dataDirectory, remote, input, signal }) {
+// Signals whose names are safe to report in subprocess diagnostics.
+const SAFE_SIGNALS = new Set([
+  'SIGTERM',
+  'SIGKILL',
+  'SIGABRT',
+  'SIGSEGV',
+  'SIGBUS',
+  'SIGILL',
+  'SIGPIPE',
+  'SIGINT',
+  'SIGHUP',
+  'SIGQUIT',
+  'SIGTRAP',
+  'SIGFPE',
+]);
+
+export function invoke({ binary, dataDirectory, remote, input, signal, timeoutMs = 120000 }) {
   return new Promise((resolve, reject) => {
-    const timeout = AbortSignal.timeout(120000);
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const abort = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const child = spawn(binary, [dataDirectory, remote], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { PATH: process.env.PATH, DO_NOT_TRACK: '1' },
-      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      signal: abort,
     });
     let output = '';
     let killTimer;
@@ -143,10 +156,16 @@ function invoke({ binary, dataDirectory, remote, input, signal }) {
       killTimer ??= setTimeout(() => child.kill('SIGKILL'), 3000);
       killTimer.unref();
     };
-    const abort = signal ? AbortSignal.any([signal, timeout]) : timeout;
     abort.addEventListener('abort', terminate, { once: true });
-    let failed = false;
-    const fail = () =>
+    let failure;
+    const fail = (category, code, exitSignal) => {
+      // Never include child stderr, stdin, URLs, paths or exception messages.
+      const status = Number.isInteger(code) && code >= 0 && code <= 255 ? code : null;
+      const safeSignal = SAFE_SIGNALS.has(exitSignal) ? exitSignal : null;
+      console.error(
+        'Agent worker subprocess failed:',
+        JSON.stringify({ category, status, signal: safeSignal }),
+      );
       reject(
         new TonkToolError(
           input.tool === 'tonk_evaluate'
@@ -154,36 +173,41 @@ function invoke({ binary, dataDirectory, remote, input, signal }) {
             : 'The worker query could not be completed.',
         ),
       );
+    };
     child.stderr.resume();
     // Settle only after close: even cancellation must not allow the next call
     // to open this worker's storage while its process is still exiting.
     child.on('error', () => {
-      failed = true;
+      failure ??= abort.aborted ? (timeout.aborted ? 'timeout' : 'cancelled') : 'spawn_error';
     });
     child.stdin.on('error', () => {
-      failed = true;
+      failure ??= 'stdin_error';
       terminate();
     });
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
-      if (failed) return;
+      if (failure) return;
       output += chunk;
       if (Buffer.byteLength(output) > 2100000) {
         terminate();
-        failed = true;
+        failure = 'output_limit';
       }
     });
-    child.on('close', (code) => {
+    child.on('close', (code, exitSignal) => {
       clearTimeout(killTimer);
       abort.removeEventListener('abort', terminate);
-      if (failed || code !== 0) return fail();
+      if (failure || code !== 0) {
+        const category =
+          failure ?? (abort.aborted ? (timeout.aborted ? 'timeout' : 'cancelled') : 'exit');
+        return fail(category, code, exitSignal);
+      }
       try {
         const last = output.trimEnd().split('\n').at(-1);
         const marker = 'TONK_AGENT_LINK_RESULT ';
-        if (!last.startsWith(marker)) return fail();
+        if (!last.startsWith(marker)) return fail('missing_result', code, exitSignal);
         resolve(JSON.parse(last.slice(marker.length)));
       } catch {
-        fail();
+        fail('invalid_result', code, exitSignal);
       }
     });
     child.stdin.end(JSON.stringify(input));

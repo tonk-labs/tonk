@@ -5,7 +5,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { createAgentService } from '../hosted/agent-service.mjs';
 import { createCheckpoint } from '../hosted/checkpoint.mjs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rename, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 let input = '';
@@ -105,6 +105,10 @@ try {
 }
 
 assert.ok(snapshot?.length > 0, 'native replicas were not checkpointed');
+// A restarted container cannot reach the previous root. Keep its disposable
+// fixture bytes for diagnosis, but make the recorded absolute paths unavailable.
+await rename(hostedDirectory, hostedDirectory + '-retired');
+await assert.rejects(stat(hostedDirectory), { code: 'ENOENT' });
 const restoredDirectory = config.directory + '-restored';
 await mkdir(restoredDirectory, { mode: 0o700 });
 const restoredCheckpoint = await createCheckpoint({
