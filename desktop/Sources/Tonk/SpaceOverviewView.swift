@@ -68,30 +68,6 @@ struct SpaceOverviewView: View {
           .help("Open \(view.title)")
         }
       }
-      Section {
-        let events = access.journal.recent(subject: space.subject)
-        if events.isEmpty {
-          Text("Links you make, reset or revoke on this Mac appear here.")
-            .foregroundStyle(.secondary)
-        } else {
-          TimelineView(.periodic(from: .now, by: 60)) { context in
-            VStack(alignment: .leading, spacing: 8) {
-              ForEach(events) { event in
-                LabeledContent {
-                  Text(AccessText.relative(event.date, now: context.date))
-                } label: {
-                  Text(event.sentence)
-                }
-              }
-            }
-          }
-        }
-      } header: {
-        Text("Recent Activity")
-      } footer: {
-        Text("Tonk doesn’t keep a shared history yet, so this shows only what you did on this Mac.")
-          .font(.footnote).foregroundStyle(.secondary)
-      }
       links
     }
     .formStyle(.grouped)
