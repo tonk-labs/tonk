@@ -308,19 +308,6 @@ struct ContentView: View {
           syncStatusSpace = space
         }
       }
-      Divider()
-      Button("Settings…", systemImage: "gearshape") { showProviderSettings = true }
-        .disabled(accountActionsDisabled)
-      if model.provider == .chatGPT && model.signedIn {
-        Button("Sign Out of ChatGPT") {
-          Task { await model.signOut() }
-        }.disabled(accountActionsDisabled)
-      }
-      if runtime.accountConnected && RuntimeLocation.deployment != .local {
-        Button("Sign Out of Tonk") {
-          signOutOfTonk()
-        }.disabled(accountActionsDisabled)
-      }
     }
   }
 
