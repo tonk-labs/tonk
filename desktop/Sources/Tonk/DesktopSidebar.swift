@@ -71,13 +71,13 @@ struct DesktopSidebar: View {
             Button("Sign Out of Tonk", action: onSignOut)
           }
         } label: {
-          Image(systemName: "gearshape")
+          // A titled label keeps its name; a bare symbol reads as "Gear Shape".
+          Label("Account and Settings", systemImage: "gearshape").labelStyle(.iconOnly)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Account and settings")
-        .accessibilityLabel("Account and settings")
+        .help("Account and Settings")
       }
     }
     .padding(.horizontal, 16).padding(.vertical, 12)

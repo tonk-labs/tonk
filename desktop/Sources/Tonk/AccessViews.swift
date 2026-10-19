@@ -41,12 +41,15 @@ struct InitialsStack: View {
   }
 }
 
-extension AccessLink {
-  var symbol: String {
+/// The kind of link at a glance: a bot for agents, a globe for public, else a link.
+struct LinkKindIcon: View {
+  let kind: AccessLinkKind
+
+  var body: some View {
     switch kind {
-    case .agent: "cpu"
-    case .publicRead: "globe"
-    case .person, .scoped: "link"
+    case .agent: BotGlyph()
+    case .publicRead: Image(systemName: "globe")
+    case .person, .scoped: Image(systemName: "link")
     }
   }
 }
@@ -62,7 +65,7 @@ struct AccessLinkRow: View {
   var body: some View {
     TimelineView(.periodic(from: .now, by: 60)) { context in
       HStack(alignment: .center, spacing: 12) {
-        Image(systemName: link.symbol).foregroundStyle(.secondary)
+        LinkKindIcon(kind: link.kind).foregroundStyle(.secondary)
           .frame(width: 20)
           .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 2) {
