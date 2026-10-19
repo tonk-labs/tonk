@@ -1,7 +1,8 @@
 import Foundation
 
-/// What this Mac did to a space's access. The worker keeps no change feed, so
-/// the overview's activity comes from here. It never holds link secrets.
+/// What the account did to a space's access, from any of its desktops. The
+/// worker keeps no change feed, so each desktop records these on the account
+/// branch as `tonk:access-event` rows. It never holds link secrets.
 public struct AccessEvent: Codable, Equatable, Sendable, Identifiable {
   public enum Action: String, Codable, Sendable {
     case made, reset, revoked, published, unpublished
@@ -13,10 +14,12 @@ public struct AccessEvent: Codable, Equatable, Sendable, Identifiable {
   public let kind: AccessLinkKind
   /// Invite target CID, agent connection id, or the space DID.
   public let target: String?
+  /// On a reset, the target of the plain link it revoked.
+  public let replaced: String?
 
   public init(
     id: UUID = UUID(), date: Date, subject: String, action: Action, kind: AccessLinkKind,
-    target: String?
+    target: String?, replaced: String? = nil
   ) {
     self.id = id
     self.date = date
@@ -24,6 +27,19 @@ public struct AccessEvent: Codable, Equatable, Sendable, Identifiable {
     self.action = action
     self.kind = kind
     self.target = target
+    self.replaced = replaced
+  }
+
+  /// The event's entity on the account branch.
+  public var entity: String { "urn:uuid:" + id.uuidString.lowercased() }
+
+  /// The targets this event proves no longer work.
+  var revokes: [String] {
+    switch action {
+    case .revoked: target.map { [$0] } ?? []
+    case .reset: replaced.map { [$0] } ?? []
+    default: []
+    }
   }
 
   public var sentence: String {
@@ -44,21 +60,25 @@ public struct AccessEvent: Codable, Equatable, Sendable, Identifiable {
   }
 }
 
+/// This Mac's copy of the account's access activity: the events read back
+/// from the account branch plus any it has not managed to write there yet.
 public struct AccessJournal: Codable, Equatable, Sendable {
   public private(set) var events: [AccessEvent] = []
   /// Confirmed revocations outlive the bounded activity feed. A stale replica
   /// may reintroduce invitation facts, but cannot undo the service's receipt.
   public private(set) var revokedTargets: [String: Set<String>] = [:]
+  /// Events recorded here and not yet on the account branch.
+  public private(set) var unsynced: Set<UUID> = []
   static let limit = 500
 
   public init(events: [AccessEvent] = []) {
     self.events = events
-    for event in events where event.action == .revoked {
-      if let target = event.target { revokedTargets[event.subject, default: []].insert(target) }
+    for event in events {
+      for target in event.revokes { revokedTargets[event.subject, default: []].insert(target) }
     }
   }
 
-  private enum CodingKeys: String, CodingKey { case events, revokedTargets }
+  private enum CodingKeys: String, CodingKey { case events, revokedTargets, unsynced }
 
   public init(from decoder: Decoder) throws {
     let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -68,25 +88,65 @@ public struct AccessJournal: Codable, Equatable, Sendable {
     {
       revokedTargets[subject, default: []].formUnion(targets)
     }
+    // A journal written before activity synced kept everything on this Mac,
+    // so all of it still has to reach the account.
+    unsynced = try values.decodeIfPresent(Set<UUID>.self, forKey: .unsynced)
+      ?? Set(events.map(\.id))
   }
 
   public mutating func confirmRevocation(subject: String, target: String) {
     revokedTargets[subject, default: []].insert(target)
   }
 
+  /// Adds an event made on this Mac; it stays unsynced until `markSynced`.
   public mutating func record(_ event: AccessEvent) {
-    if event.action == .revoked, let target = event.target {
-      confirmRevocation(subject: event.subject, target: target)
-    }
+    insert(event)
+    unsynced.insert(event.id)
+    trim()
+  }
+
+  /// Folds in events read from the account branch. Ones already known are
+  /// kept as they are, so a replayed read changes nothing.
+  public mutating func merge(_ remote: [AccessEvent]) {
+    let known = Set(events.map(\.id))
+    for event in remote where !known.contains(event.id) { insert(event) }
+    events.sort { $0.date < $1.date }
+    trim()
+  }
+
+  public mutating func markSynced(_ ids: some Sequence<UUID>) {
+    unsynced.subtract(ids)
+  }
+
+  /// Unsynced events, oldest first.
+  public var pending: [AccessEvent] { events.filter { unsynced.contains($0.id) } }
+
+  private mutating func insert(_ event: AccessEvent) {
+    for target in event.revokes { confirmRevocation(subject: event.subject, target: target) }
     events.append(event)
-    if events.count > Self.limit { events.removeFirst(events.count - Self.limit) }
+  }
+
+  /// Bounds the feed, dropping the oldest synced events before any that
+  /// still have to reach the account.
+  private mutating func trim() {
+    var excess = events.count - Self.limit
+    guard excess > 0 else { return }
+    events.removeAll { event in
+      guard excess > 0, !unsynced.contains(event.id) else { return false }
+      excess -= 1
+      return true
+    }
+    if excess > 0 {
+      unsynced.subtract(events.prefix(excess).map(\.id))
+      events.removeFirst(excess)
+    }
   }
 
   public func recent(subject: String, limit: Int = 8) -> [AccessEvent] {
     Array(events.filter { $0.subject == subject }.sorted { $0.date > $1.date }.prefix(limit))
   }
 
-  /// When this Mac made the link, directly or by resetting another, if it did.
+  /// When the account made the link, directly or by resetting another.
   public func madeAt(target: String) -> Date? {
     events.first(where: { $0.target == target && [.made, .reset].contains($0.action) })?.date
   }

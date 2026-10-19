@@ -292,6 +292,7 @@ struct ContentView: View {
       Task {
         await runtime.refreshSpaces()
         await access.refreshAll(runtime.spaces)
+        await model.syncModelChoice()
       }
     } else {
       runtime.reloadSpace()
@@ -670,6 +671,10 @@ struct ContentView: View {
     .task(id: runtime.catalogLoaded && runtime.accountConnected ? runtime.spaces.map(\.id) : nil) {
       guard runtime.catalogLoaded && runtime.accountConnected else { return }
       await access.refreshAll(runtime.spaces)
+    }
+    .task(id: runtime.catalogLoaded && runtime.accountConnected ? runtime.liveAccountRoot : nil) {
+      guard runtime.catalogLoaded && runtime.accountConnected else { return }
+      await model.syncModelChoice()
     }
   }
 

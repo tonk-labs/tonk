@@ -123,6 +123,66 @@ final class AccessActionsTests: XCTestCase {
     XCTAssertTrue(access.journal.revokedTargets.isEmpty)
   }
 
+  func testActivitySyncMergesTheAccountsEventsAndUploadsThisMacsLegacyJournal() async throws {
+    let space = try space()
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let date = Date(timeIntervalSince1970: 1_800_000_000)
+    let mine = AccessEvent(
+      date: date, subject: space.subject, action: .made, kind: .person, target: "mine")
+    let elsewhere = AccessEvent(
+      date: date, subject: "did:key:zOtherAccount", action: .made, kind: .person, target: "x")
+    // A journal from before activity synced: no `unsynced` key.
+    let legacy = #"{"events":["# + [mine, elsewhere].map { event in
+      let encoder = JSONEncoder()
+      encoder.dateEncodingStrategy = .iso8601
+      return String(decoding: try! encoder.encode(event), as: UTF8.self)
+    }.joined(separator: ",") + "]}"
+    try Data(legacy.utf8).write(to: directory.appendingPathComponent("access-journal.json"))
+
+    let runtime = AccessRuntimeStub()
+    let theirs = UUID()
+    runtime.remoteEvents = [
+      [
+        "this": "urn:uuid:" + theirs.uuidString.lowercased(), "space": space.subject,
+        "action": "reset", "kind": "person", "at": 1_800_000_060_000.0, "target": "new",
+        "replaced": "old",
+      ],
+      ["this": "tonk:not-an-event", "space": space.subject, "action": "made", "kind": "person"],
+    ]
+    let access = AccessModel(vault: LinkStoreStub())
+    access.prepare(directory: directory, runtime: runtime)
+    access.setCatalog([space])
+    await access.syncActivity()
+
+    XCTAssertEqual(
+      access.journal.recent(subject: space.subject).map(\.id), [theirs, mine.id])
+    XCTAssertEqual(access.journal.revokedTargets[space.subject], ["old"])
+    // Only this account's space is uploaded; the other account's event waits.
+    XCTAssertEqual(runtime.recorded.map { $0["this"] as? String }, [mine.entity])
+    XCTAssertEqual(runtime.recorded.first?["at"] as? Double, 1_800_000_000_000)
+    XCTAssertEqual(access.journal.pending.map(\.id), [elsewhere.id])
+    let saved = AccessJournal.load(from: directory.appendingPathComponent("access-journal.json"))
+    XCTAssertEqual(saved.pending.map(\.id), [elsewhere.id])
+    XCTAssertTrue(saved.events.contains { $0.id == theirs })
+  }
+
+  func testResetRecordsTheReplacedLinkForOtherDesktops() async throws {
+    let space = try space()
+    let runtime = AccessRuntimeStub()
+    let access = AccessModel(vault: LinkStoreStub(), copyToPasteboard: { _ in true })
+    access.runtime = runtime
+    await access.resetLink(
+      AccessLink(kind: .person, subject: space.subject, target: "old", usedBy: []), space: space)
+    await access.flushActivity()
+    let row = try XCTUnwrap(runtime.recorded.last)
+    XCTAssertEqual(row["action"] as? String, "reset")
+    XCTAssertEqual(row["target"] as? String, "replacement")
+    XCTAssertEqual(row["replaced"] as? String, "old")
+    XCTAssertTrue(access.journal.pending.isEmpty)
+  }
+
   func testAccountRefreshClearsRecoveredError() async {
     let access = AccessModel(vault: LinkStoreStub())
     let runtime = AccessRuntimeStub()
@@ -233,6 +293,8 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
   var spaceWarnings: [String] = []
   var invites: [[String: Any]] = []
   var spaceReads = 0
+  var remoteEvents: [[String: Any]] = []
+  var recorded: [[String: Any]] = []
   func createCLILink(_ space: TonkSpace) async throws -> String {
     if permissionDenied { throw HarnessError.message("Permission denied") }
     return "unused"
@@ -243,6 +305,15 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
       await accountRead?()
       if accountFails { throw HarnessError.message("Offline") }
       return ["connections": [], "name": "Verifier", "root": "did:key:zVerifier"]
+    }
+    if script == AccessModel.activityScript {
+      XCTAssertEqual(arguments["branch"] as? String, catalogBranch)
+      return ["events": remoteEvents]
+    }
+    if script == AccessModel.recordScript {
+      let events = arguments["events"] as? [[String: Any]] ?? []
+      recorded += events
+      return ["saved": events.count]
     }
     if script == AccessModel.spaceScript {
       spaceReads += 1

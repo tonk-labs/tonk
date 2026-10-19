@@ -176,4 +176,73 @@ final class SpaceAccessTests: XCTestCase {
     let legacy = try JSONSerialization.data(withJSONObject: ["events": []])
     XCTAssertTrue(try JSONDecoder().decode(AccessJournal.self, from: legacy).revokedTargets.isEmpty)
   }
+
+  func testLegacyJournalQueuesEveryEventForTheAccount() throws {
+    let event = AccessEvent(date: now, subject: subject, action: .made, kind: .person, target: "c")
+    var file = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(AccessJournal(events: [event])))
+        as? [String: Any])
+    file["unsynced"] = nil
+    let legacy = try JSONSerialization.data(withJSONObject: file)
+    var restored = try JSONDecoder().decode(AccessJournal.self, from: legacy)
+    XCTAssertEqual(restored.pending, [event])
+    restored.markSynced([event.id])
+    XCTAssertTrue(restored.pending.isEmpty)
+    let resaved = try JSONDecoder().decode(
+      AccessJournal.self, from: JSONEncoder().encode(restored))
+    XCTAssertTrue(resaved.pending.isEmpty)
+  }
+
+  func testMergeAddsAnotherDesktopsEventsOnceAndLearnsItsRevocations() {
+    var journal = AccessJournal()
+    let mine = AccessEvent(date: now, subject: subject, action: .made, kind: .person, target: "a")
+    journal.record(mine)
+    let theirs = AccessEvent(
+      date: now.addingTimeInterval(-60), subject: subject, action: .reset, kind: .person,
+      target: "b", replaced: "old")
+    journal.merge([theirs, mine])
+    journal.merge([theirs])
+    XCTAssertEqual(journal.events, [theirs, mine])
+    XCTAssertEqual(journal.pending, [mine])
+    XCTAssertEqual(journal.revokedTargets[subject], ["old"])
+    XCTAssertEqual(journal.madeAt(target: "b"), theirs.date)
+  }
+
+  func testTrimmingKeepsUnsyncedEventsBeforeSyncedOnes() {
+    var journal = AccessJournal()
+    let synced = (0..<AccessJournal.limit).map {
+      AccessEvent(
+        date: now.addingTimeInterval(Double($0)), subject: subject, action: .made, kind: .person,
+        target: "s\($0)")
+    }
+    journal.merge(synced)
+    let fresh = AccessEvent(
+      date: now.addingTimeInterval(-1), subject: subject, action: .made, kind: .agent, target: "f")
+    journal.record(fresh)
+    XCTAssertEqual(journal.events.count, AccessJournal.limit)
+    XCTAssertTrue(journal.events.contains(fresh))
+    XCTAssertEqual(journal.pending, [fresh])
+  }
+
+  func testModelChoiceSeedsThenFollowsWhicheverSideChanged() {
+    let claude = ModelChoice(provider: .claude, model: "opus")
+    let local = ModelChoice(provider: .local, model: "fixture")
+    XCTAssertEqual(ModelChoice.reconcile(local: local, remote: nil, synced: nil), .push(local))
+    XCTAssertEqual(
+      ModelChoice.reconcile(local: local, remote: .known(local), synced: nil), .agree(local))
+    // Another desktop seeded the account first, or changed it since.
+    XCTAssertEqual(
+      ModelChoice.reconcile(local: local, remote: .known(claude), synced: nil), .adopt(claude))
+    XCTAssertEqual(
+      ModelChoice.reconcile(local: local, remote: .known(claude), synced: local), .adopt(claude))
+    // This Mac changed while the account kept what both last agreed on.
+    XCTAssertEqual(
+      ModelChoice.reconcile(local: local, remote: .known(claude), synced: claude), .push(local))
+    XCTAssertEqual(
+      ModelChoice.reconcile(local: local, remote: .unknown, synced: claude), .ignore)
+    XCTAssertEqual(
+      ModelChoice.RemoteValue(provider: "someday", model: "x"), .unknown)
+    XCTAssertEqual(
+      ModelChoice.RemoteValue(provider: "claude", model: nil), .known(ModelChoice(provider: .claude)))
+  }
 }

@@ -43,6 +43,10 @@ final class AccessModel: ObservableObject {
   private var refreshAgain: Set<String> = []
   /// Bumped by `reset`, so reads begun under another account are dropped.
   private var generation = 0
+  /// Spaces this Mac acted on under the current account. With the catalog,
+  /// they bound which unsynced events may be written to this account, so a
+  /// journal shared by several accounts never leaks one's activity into another.
+  private var actedOn: Set<String> = []
 
   init(
     vault: any AccessLinkStore = LinkVault(scope: RuntimeLocation.deployment.title),
@@ -84,6 +88,7 @@ final class AccessModel: ObservableObject {
     accountName = nil
     selfDid = nil
     accountLoaded = false
+    actedOn = []
     loading = []
     working = []
     notice = nil
@@ -130,7 +135,116 @@ final class AccessModel: ObservableObject {
       errors["account"] = nil
     } catch {
       if generation == started { errors["account"] = Self.message(error) }
+      return
     }
+    await syncActivity()
+  }
+
+  // MARK: Activity
+
+  /// Reads the account's access activity and writes any this Mac still holds.
+  /// A failure leaves events unsynced for the next refresh to retry.
+  func syncActivity() async {
+    guard let runtime, let branch = runtime.catalogBranch else { return }
+    let started = generation
+    do {
+      let result = try await runtime.accountScript(
+        Self.activityScript, arguments: ["branch": branch])
+      guard generation == started else { return }
+      journal.merge(Self.events(result["events"]))
+      saveJournal()
+    } catch {
+      return
+    }
+    await flushActivity()
+  }
+
+  /// Writes unsynced events for this account's spaces to its branch.
+  func flushActivity() async {
+    guard let runtime, let branch = runtime.catalogBranch else { return }
+    let started = generation
+    let eligible = actedOn.union(catalog).union(spaces.keys)
+    let pending = journal.pending.filter { eligible.contains($0.subject) }
+    guard !pending.isEmpty else { return }
+    do {
+      _ = try await runtime.accountScript(
+        Self.recordScript, arguments: ["branch": branch, "events": pending.map(Self.row)])
+      guard generation == started else { return }
+      journal.markSynced(pending.map(\.id))
+      saveJournal()
+    } catch {}
+  }
+
+  static let activityScript = """
+    const field = (the, as, optional) => ({the, as, cardinality: 'one', ...(optional ? {optional: true} : {})});
+    const variable = name => ({'?': {name}});
+    const names = ['space', 'action', 'kind', 'at', 'target', 'replaced'];
+    const rows = await api('/api/profile/branch/' + encodeURIComponent(branch) + '/query', {
+      predicate: {with: {
+        space: field('xyz.tonk.access-event/space', 'Entity'),
+        action: field('xyz.tonk.access-event/action', 'Text'),
+        kind: field('xyz.tonk.access-event/kind', 'Text'),
+        at: field('xyz.tonk.access-event/at', 'Float'),
+        target: field('xyz.tonk.access-event/target', 'Text', true),
+        replaced: field('xyz.tonk.access-event/replaced', 'Text', true)
+      }},
+      terms: Object.fromEntries(['this', ...names].map(name => [name, variable(name)]))
+    });
+    if (!Array.isArray(rows)) throw new Error('Invalid access activity response.');
+    return {events: rows.map(row => ({...row.fields, this: row.this}))};
+    """
+
+  static let recordScript = """
+    const field = (the, as) => ({the, as, cardinality: 'one'});
+    const claims = events.map(event => {
+      const with_ = {
+        space: field('xyz.tonk.access-event/space', 'Entity'),
+        action: field('xyz.tonk.access-event/action', 'Text'),
+        kind: field('xyz.tonk.access-event/kind', 'Text'),
+        at: field('xyz.tonk.access-event/at', 'Float')
+      };
+      const parameters = {this: event.this, space: event.space, action: event.action,
+                          kind: event.kind, at: event.at};
+      for (const key of ['target', 'replaced']) {
+        if (!event[key]) continue;
+        with_[key] = field('xyz.tonk.access-event/' + key, 'Text');
+        parameters[key] = event[key];
+      }
+      return {op: 'assert', application: {predicate: {kind: 'durable', concept: {with: with_}}, parameters}};
+    });
+    await api('/api/profile/branch/' + encodeURIComponent(branch) + '/transact', {claims});
+    return {saved: claims.length};
+    """
+
+  /// An event as `recordScript` asserts it.
+  static func row(_ event: AccessEvent) -> [String: Any] {
+    var row: [String: Any] = [
+      "this": event.entity, "space": event.subject, "action": event.action.rawValue,
+      "kind": event.kind.rawValue, "at": (event.date.timeIntervalSince1970 * 1000).rounded(),
+    ]
+    if let target = event.target { row["target"] = target }
+    if let replaced = event.replaced { row["replaced"] = replaced }
+    return row
+  }
+
+  /// Rows from `activityScript`; ones this desktop cannot read are skipped.
+  static func events(_ value: Any?) -> [AccessEvent] {
+    (value as? [[String: Any]] ?? []).compactMap { row in
+      guard let this = row["this"] as? String, this.hasPrefix("urn:uuid:"),
+        let id = UUID(uuidString: String(this.dropFirst("urn:uuid:".count))),
+        let subject = row["space"] as? String,
+        let action = (row["action"] as? String).flatMap(AccessEvent.Action.init(rawValue:)),
+        let kind = (row["kind"] as? String).flatMap(AccessLinkKind.init(rawValue:)),
+        let at = (row["at"] as? NSNumber)?.doubleValue
+      else { return nil }
+      return AccessEvent(
+        id: id, date: Date(timeIntervalSince1970: at / 1000), subject: subject, action: action,
+        kind: kind, target: row["target"] as? String, replaced: row["replaced"] as? String)
+    }
+  }
+
+  private func saveJournal() {
+    if let journalURL { try? journal.save(to: journalURL) }
   }
 
   static let accountScript = """
@@ -419,7 +533,7 @@ final class AccessModel: ObservableObject {
         guard generation == started else { return }
         vault.remove(link.target)
         journal.confirmRevocation(subject: space.subject, target: link.target)
-        record(.reset, kind: .person, target: target, space: space)
+        record(.reset, kind: .person, target: target, replaced: link.target, space: space)
         notice = "New link copied. The old link no longer works." + storageWarning
       } catch {
         guard generation == started else { return }
@@ -541,11 +655,16 @@ final class AccessModel: ObservableObject {
   }
 
   private func record(
-    _ action: AccessEvent.Action, kind: AccessLinkKind, target: String?, space: TonkSpace
+    _ action: AccessEvent.Action, kind: AccessLinkKind, target: String?,
+    replaced: String? = nil, space: TonkSpace
   ) {
     journal.record(
-      AccessEvent(date: Date(), subject: space.subject, action: action, kind: kind, target: target))
-    if let journalURL { try? journal.save(to: journalURL) }
+      AccessEvent(
+        date: Date(), subject: space.subject, action: action, kind: kind, target: target,
+        replaced: replaced))
+    actedOn.insert(space.subject)
+    saveJournal()
+    Task { await flushActivity() }
   }
 
   private func copy(_ value: String) -> Bool {

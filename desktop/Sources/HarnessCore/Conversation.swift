@@ -88,6 +88,8 @@ public struct SavedState: Codable, Equatable, Sendable {
   public var importedLegacyChats: Bool?
   public var provider: ModelProvider?
   public var connections: [String: ModelConnection]?
+  /// The account's model choice when this Mac last agreed with it.
+  public var syncedModelChoice: ModelChoice?
   public var profile = AgentProfile()
   public var conversation = Conversation()
   public init() {}

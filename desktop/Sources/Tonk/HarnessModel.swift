@@ -39,6 +39,8 @@ final class HarnessModel: ObservableObject {
   var resumed = false
   private var saveTask: Task<Void, Never>?
   var storageAvailable = true
+  var modelChoiceSyncing = false
+  var modelChoiceSyncAgain = false
 
   init(
     directory: URL? = nil, apiClient: APIModelClient? = nil, claudeClient: ClaudeCodeClient? = nil
