@@ -124,6 +124,22 @@ export function agentLinkBackend({
   };
 }
 
+// Signals whose names are safe to report in subprocess diagnostics.
+const SAFE_SIGNALS = new Set([
+  'SIGTERM',
+  'SIGKILL',
+  'SIGABRT',
+  'SIGSEGV',
+  'SIGBUS',
+  'SIGILL',
+  'SIGPIPE',
+  'SIGINT',
+  'SIGHUP',
+  'SIGQUIT',
+  'SIGTRAP',
+  'SIGFPE',
+]);
+
 export function invoke({ binary, dataDirectory, remote, input, signal, timeoutMs = 120000 }) {
   return new Promise((resolve, reject) => {
     const timeout = AbortSignal.timeout(timeoutMs);
@@ -145,22 +161,7 @@ export function invoke({ binary, dataDirectory, remote, input, signal, timeoutMs
     const fail = (category, code, exitSignal) => {
       // Never include child stderr, stdin, URLs, paths or exception messages.
       const status = Number.isInteger(code) && code >= 0 && code <= 255 ? code : null;
-      const safeSignal = [
-        'SIGTERM',
-        'SIGKILL',
-        'SIGABRT',
-        'SIGSEGV',
-        'SIGBUS',
-        'SIGILL',
-        'SIGPIPE',
-        'SIGINT',
-        'SIGHUP',
-        'SIGQUIT',
-        'SIGTRAP',
-        'SIGFPE',
-      ].includes(exitSignal)
-        ? exitSignal
-        : null;
+      const safeSignal = SAFE_SIGNALS.has(exitSignal) ? exitSignal : null;
       console.error(
         'Agent worker subprocess failed:',
         JSON.stringify({ category, status, signal: safeSignal }),
@@ -195,7 +196,7 @@ export function invoke({ binary, dataDirectory, remote, input, signal, timeoutMs
     child.on('close', (code, exitSignal) => {
       clearTimeout(killTimer);
       abort.removeEventListener('abort', terminate);
-      if (failure || abort.aborted || code !== 0) {
+      if (failure || code !== 0) {
         const category =
           failure ?? (abort.aborted ? (timeout.aborted ? 'timeout' : 'cancelled') : 'exit');
         return fail(category, code, exitSignal);
