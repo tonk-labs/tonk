@@ -276,6 +276,63 @@ pub mod space {
     pub struct Color(pub String);
 }
 
+/// Attributes of a `tonk:access-event`: one change the account made to a
+/// space's links, written by the desktop on the account branch so every
+/// device shows the same Recent Activity. Each event is its own
+/// `urn:uuid:` entity.
+pub mod access_event {
+    use super::{Attribute, Entity};
+
+    /// The space whose access changed.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.access-event")]
+    pub struct Space(pub Entity);
+
+    /// `made`, `reset`, `revoked`, `published` or `unpublished`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.access-event")]
+    pub struct Action(pub String);
+
+    /// `person`, `scoped`, `agent` or `publicRead`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.access-event")]
+    pub struct Kind(pub String);
+
+    /// When the change was confirmed, unix milliseconds.
+    #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+    #[domain("xyz.tonk.access-event")]
+    pub struct At(pub f64);
+
+    /// The invite target CID, agent connection id, or space DID.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.access-event")]
+    pub struct Target(pub String);
+
+    /// On a reset, the target of the plain link it revoked.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.access-event")]
+    pub struct Replaced(pub String);
+}
+
+/// Attributes of `tonk:model-choice`: the desktop chat provider and model
+/// the account chose, on the account's root DID. Keys, executable paths and
+/// base URLs stay on each Mac.
+pub mod model_choice {
+    use super::Attribute;
+
+    /// The desktop's provider token, such as `claude` or `anthropic`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.model-choice")]
+    #[pick(last)]
+    pub struct Provider(pub String);
+
+    /// The provider's model ID; absent means its default.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.model-choice")]
+    #[pick(last)]
+    pub struct Model(pub String);
+}
+
 /// Attributes describing a device authorization — an
 /// `account -> profile` powerline as a device list presents it.
 ///

@@ -130,6 +130,80 @@ concept!: &space
       the: xyz.tonk.space/color
       as: text
 
+# What this account did to a space's links, from any of its desktops. The
+# access service keeps no change feed and publication is a transient
+# command, so nothing else records when a link was made, reset or revoked;
+# the desktop asserts one of these per action and every device on the
+# account reads them back as the space's Recent Activity.
+#
+# ENTITY: a `urn:uuid:` minted by the desktop that acted, so replaying an
+# event it already wrote converges on the same row. Never a link URL: the
+# bearer link stays in that desktop's Keychain.
+concept!: &access-event
+  this: tonk:access-event
+  description: One change this account made to a space's links.
+  with:
+    space:
+      description: The space whose access changed, by its subject DID.
+      the: xyz.tonk.access-event/space
+      as: entity
+    action:
+      description: >
+        What happened: `made`, `reset`, `revoked`, `published` or
+        `unpublished`.
+      the: xyz.tonk.access-event/action
+      as: text
+    kind:
+      description: >
+        The kind of link it touched: `person` (a plain link), `scoped`
+        (a link for one account), `agent` or `publicRead`.
+      the: xyz.tonk.access-event/kind
+      as: text
+    at:
+      description: When the desktop confirmed the change, unix milliseconds.
+      the: xyz.tonk.access-event/at
+      as: float:64
+  maybe:
+    target:
+      description: >
+        Which link: the invite's target CID, the agent connection id, or
+        the space DID for a publication. An identifier the worker already
+        lists, never the link or its authority. Absent when the desktop
+        could not match a fresh link to its listing.
+      the: xyz.tonk.access-event/target
+      as: text
+    replaced:
+      description: >
+        On a `reset`, the target of the plain link it revoked, so every
+        device can hide that link even while a stale replica still lists
+        it.
+      the: xyz.tonk.access-event/replaced
+      as: text
+
+# The chat model this account last chose in the desktop. Only the choice
+# syncs: API keys stay in each Mac's Keychain, and executable paths and
+# base URLs stay on the Mac they describe, so a Mac without a key for the
+# chosen provider keeps its own.
+#
+# ENTITY: the account's root DID.
+concept!: &model-choice
+  this: tonk:model-choice
+  description: The desktop chat provider and model this account uses.
+  with:
+    provider:
+      description: >
+        The provider token the desktop understands, such as `claude`,
+        `chatGPT`, `anthropic` or `disabled`. A desktop that does not know
+        the token ignores it.
+      the: xyz.tonk.model-choice/provider
+      as: text
+  maybe:
+    model:
+      description: >
+        The provider's model ID. Absent means the provider's default.
+      the: xyz.tonk.model-choice/model
+      as: text
+
 # The Add Space command. The Hub's named creation dialogs submit this shape.
 # The worker records the replica, seeds the repository, and navigates the
 # creator. The command is transient and is swept before the durable commit.
