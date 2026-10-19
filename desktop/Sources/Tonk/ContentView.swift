@@ -283,6 +283,7 @@ struct ContentView: View {
       Task {
         await runtime.refreshSpaces()
         await access.refreshAll(runtime.spaces)
+        await model.syncModelChoice()
       }
     } else {
       spacePage?.reload()
@@ -636,6 +637,12 @@ struct ContentView: View {
     .task(id: runtime.catalogLoaded && runtime.accountConnected ? runtime.spaces.map(\.id) : nil) {
       guard runtime.catalogLoaded && runtime.accountConnected else { return }
       await access.refreshAll(runtime.spaces)
+    }
+    // Once the live catalog replaces any cached one, the account root is known.
+    .task(id: runtime.catalogLoaded && runtime.accountConnected && !runtime.showingCachedCatalog) {
+      guard runtime.catalogLoaded && runtime.accountConnected && !runtime.showingCachedCatalog
+      else { return }
+      await model.syncModelChoice()
     }
   }
 
