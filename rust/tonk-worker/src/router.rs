@@ -74,6 +74,10 @@ mod agent_link;
 mod join;
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 pub use agent_link::AgentLinkWorker;
+#[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
+mod local_peer;
+#[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
+pub use local_peer::{LocalPeer, try_lock as try_lock_peer};
 pub(crate) mod public_access;
 mod publication;
 pub use join::{JoinRequest, JoinResponse};

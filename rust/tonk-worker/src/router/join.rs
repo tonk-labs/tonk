@@ -1627,7 +1627,7 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
 /// landed; `redirected` distinguishes a real shortcut from a host that
 /// answered the probe with content.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
+pub(crate) async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
     use web_sys::Response;
@@ -1659,7 +1659,7 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
 /// Native resolution: fetch without following, read `Location`, resolve
 /// against the short link. Mirrors the CLI's `resolve_shortcut`.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
+pub(crate) async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
