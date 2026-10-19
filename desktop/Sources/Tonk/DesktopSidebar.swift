@@ -16,6 +16,9 @@ struct DesktopSidebar: View {
   var onNewLink: () -> Void
   var onSettings: () -> Void
   var onSignOut: (() -> Void)?
+  /// The space whose icon picker is open, from its context menu.
+  @State private var customizing: String?
+  @State private var hovered: String?
 
   private var spaces: [TonkSpace] {
     runtime.spaces.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }
@@ -34,10 +37,38 @@ struct DesktopSidebar: View {
       Section("Spaces") {
         ForEach(spaces) { space in
           let shared = (access.spaces[space.id]?.members.count ?? 0) > 1
-          Label(space.title, systemImage: shared ? "person.2" : "square.grid.2x2")
+          Label {
+            Text(space.title)
+          } icon: {
+            EditableSpaceIcon(
+              space: space, shared: shared, hovering: hovered == space.id,
+              enabled: runtime.accountConnected
+            ) { customizing = space.id }
+          }
             .badge(access.links(for: space.id).count)
             .tag(DesktopPage.space(space.id))
             .help(space.title)
+            .onHover { over in
+              if over {
+                hovered = space.id
+              } else if hovered == space.id {
+                hovered = nil
+              }
+            }
+            .contextMenu {
+              Button("Change Icon…") { customizing = space.id }
+                .disabled(!runtime.accountConnected)
+            }
+            .popover(
+              isPresented: Binding(
+                get: { customizing == space.id },
+                set: { if !$0 { customizing = nil } }),
+              arrowEdge: .trailing
+            ) {
+              SpaceAppearancePicker(space: space, shared: shared) { icon, color in
+                save(space, icon: icon, color: color)
+              }
+            }
         }
         if spaces.isEmpty && !search.isEmpty {
           Text("No Matching Spaces").foregroundStyle(.secondary)
@@ -48,6 +79,16 @@ struct DesktopSidebar: View {
     .searchable(text: $search, placement: .sidebar, prompt: "Search Spaces")
     .searchFocused(searchFocused)
     .safeAreaInset(edge: .bottom, spacing: 0) { footer }
+  }
+
+  private func save(_ space: TonkSpace, icon: String?, color: String?) {
+    Task {
+      do {
+        try await runtime.setSpaceAppearance(space, icon: icon, color: color)
+      } catch {
+        access.notice = "Couldn’t save the icon: " + error.localizedDescription
+      }
+    }
   }
 
   private var footer: some View {
