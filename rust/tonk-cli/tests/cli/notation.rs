@@ -560,6 +560,7 @@ mod when_serving_the_guide {
         for (topic, body) in [
             ("notation", guide::NOTATION),
             ("views", guide::VIEWS),
+            ("routes", guide::ROUTES),
             ("events", guide::EVENTS),
         ] {
             for fence in guide_yaml_fences(topic, body) {
@@ -620,6 +621,7 @@ mod when_serving_the_guide {
         assert!(guide::topic("sync").unwrap().contains("upstream"));
         assert!(guide::topic("views").unwrap().contains("tonk:view"));
         assert!(guide::topic("events").unwrap().contains("rule!"));
+        assert!(guide::topic("routes").unwrap().contains("route!"));
         assert!(guide::topic("bogus").is_none());
     }
 
@@ -656,7 +658,11 @@ mod when_serving_the_guide {
 
     #[dialog_common::test]
     fn raw_view_examples_pin_the_entity_they_update() {
-        for (topic, body) in [("views", guide::VIEWS), ("events", guide::EVENTS)] {
+        for (topic, body) in [
+            ("views", guide::VIEWS),
+            ("routes", guide::ROUTES),
+            ("events", guide::EVENTS),
+        ] {
             let lines: Vec<_> = body.lines().collect();
             for (index, line) in lines.iter().enumerate() {
                 if !line.starts_with("view") || !line.contains("!: &") {

@@ -250,9 +250,13 @@ view!:
       </ul>
       <div class="launchpad">
         <h1>No trips yet</h1>
-        <button onclick=create>Plan one</button>
+        <button on:trip-create=trip/create>Plan one</button>
       </div>
 ```
+
+(The launchpad is chrome, so it has no `{this}`; `on/trip-create` is an
+`event!:` declaration whose sources don't read one, e.g. `time: ".timeStamp"`.
+See `tonk help events`.)
 
 The `<ul class="trips">` repeat root clones per trip; the
 `<div class="launchpad">` is chrome (no `{this}`/`{field}` reference), so
@@ -281,7 +285,7 @@ view!:
       </ul>
       <tonk-fallback>
         <h1>No trips yet</h1>
-        <button onclick=create>Plan one</button>
+        <button on:trip-create=trip/create>Plan one</button>
       </tonk-fallback>
 ```
 

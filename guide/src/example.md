@@ -51,7 +51,7 @@ The screen shows `0`. Edit the data and it follows; edit the template and the sc
 
 ## Add the button and what a click means
 
-Put a button in the view. We stamp the counter's own identity onto it with `{this}` so a click can tell which counter it came from, and wire the button to a command named `increment`:
+Put a button in the view and bind its click to a command named `increment` with `on:click`:
 
 ```yaml
 view!:
@@ -59,20 +59,20 @@ view!:
   show:
     ui: |
       <div>
-        <button onclick=increment data-counter={this}>+</button>
+        <button on:click=increment>+</button>
         <span>{count}</span>
       </div>
 ```
 
-A **command** is what an interaction means, captured as data. The click becomes an `increment` that records which counter was clicked:
+A **command** is what an interaction means, captured as data. The click becomes an `increment` that records which counter was clicked. The built-in `on/click` event declaration fills a command's `subject` field with `{this}`, the counter the button was rendered for, so the command names its field `subject`:
 
 ```yaml
 command!: &increment
   description: A request to increase a counter by one
   with:
-    counter:
-      description: The counter to increment, read from the button's data-counter
-      the: dom.event.current-target.dataset/counter
+    subject:
+      description: The counter to increment
+      the: xyz.tonk.counter.increment/subject
       as: entity
 ```
 
@@ -88,7 +88,7 @@ rule!:
   assert!: counter
   when:
     - assert: increment
-      where: { counter: ?this }
+      where: { subject: ?this }
     - assert: counter
       where: { this: ?this, count: ?current }
     - assert: math/sum

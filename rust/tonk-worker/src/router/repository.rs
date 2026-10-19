@@ -15794,6 +15794,146 @@ attribute!: &probe/next
             missing.iter().take(5).collect::<Vec<_>>()
         );
     }
+
+    /// The notebook component as it shipped before it pinned its route
+    /// models: each one's identity derived from its fields.
+    fn unpinned_notebook(shipped: &str) -> String {
+        let earlier = shipped
+            .replace(
+                "concept!: &notebook/index-route\n  this: tonk:notebook/index-route\n",
+                "concept!: &notebook/index-route\n",
+            )
+            .replace(
+                "concept!: &notebook/route\n  this: tonk:notebook/route\n",
+                "concept!: &notebook/route\n",
+            )
+            .replace("tonk:notebook/index-route", "notebook/index-route")
+            .replace("tonk:notebook/route", "notebook/route");
+        assert_ne!(
+            earlier, shipped,
+            "the shipped notebook pins its route models"
+        );
+        earlier
+    }
+
+    /// Every route on the branch, as `(path, concept)`.
+    async fn routes(tonk: &TonkState, key: &str) -> Vec<(String, String)> {
+        use dialog_query::{Output as _, Query, Term};
+        let mut routes: Vec<(String, String)> = content(tonk, key)
+            .await
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::Route> {
+                this: Term::var("this"),
+                path: Term::var("path"),
+                concept: Term::var("concept"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("the routes read")
+            .into_iter()
+            .map(|route| (route.path.0, route.concept.0.to_string()))
+            .collect();
+        routes.sort();
+        routes
+    }
+
+    /// Every claim about `entity`, as `(attribute, value)`.
+    async fn about(tonk: &TonkState, key: &str, entity: &str) -> Vec<(String, String)> {
+        use dialog_artifacts::ArtifactSelector;
+        use futures_util::StreamExt as _;
+
+        let session = content(tonk, key).await;
+        let stream = session
+            .handle()
+            .claims()
+            .select(ArtifactSelector::new().of(entity.parse().expect("an entity")))
+            .perform(&tonk.operator)
+            .await
+            .expect("the claims read");
+        tokio::pin!(stream);
+        let mut claims = Vec::new();
+        while let Some(found) = stream.next().await {
+            let found = found.expect("a claim").to_owned().expect("a claim");
+            claims.push((found.the.to_string(), format!("{:?}", found.is)));
+        }
+        claims
+    }
+
+    /// A space that installed the notebook while its route models were
+    /// unpinned moves both pages to the pinned models on its next mount:
+    /// the routes name the pinned concepts, their views move with them,
+    /// and nothing of the library is left on the derived identities.
+    #[dialog_common::test]
+    async fn pinning_the_notebook_route_models_moves_their_pages() {
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, "Garden").await;
+        let shipped = fetch_library_document(NOTEBOOK_SOURCE)
+            .await
+            .expect("the component is shipped");
+        let earlier = unpinned_notebook(&shipped);
+        install_fresh_from(&tonk, &key, CONTENT_BRANCH, NOTEBOOK_SOURCE, &earlier, &[])
+            .await
+            .expect("the earlier component installs");
+
+        let notebook = |routes: &[(String, String)], path: &str| -> Vec<String> {
+            routes
+                .iter()
+                .filter(|(at, _)| at == path)
+                .map(|(_, concept)| concept.clone())
+                .collect()
+        };
+        let before = routes(&tonk, &key).await;
+        let derived: Vec<String> = ["/notebook", "/notebook/{*entity}"]
+            .iter()
+            .map(|path| {
+                let concepts = notebook(&before, path);
+                assert_eq!(concepts.len(), 1, "one route claims {path}: {concepts:?}");
+                concepts[0].clone()
+            })
+            .collect();
+        for concept in &derived {
+            assert!(
+                !concept.starts_with("tonk:"),
+                "the earlier route model is unpinned: {concept}"
+            );
+        }
+
+        let session = content(&tonk, &key).await;
+        assert!(
+            upgrade_components(&tonk, &key, &session)
+                .await
+                .expect("the components' upgrade runs"),
+            "the mount moves the notebook to the shipped version"
+        );
+
+        let after = routes(&tonk, &key).await;
+        assert_eq!(
+            notebook(&after, "/notebook"),
+            vec!["tonk:notebook/index-route".to_owned()]
+        );
+        assert_eq!(
+            notebook(&after, "/notebook/{*entity}"),
+            vec!["tonk:notebook/route".to_owned()]
+        );
+        for pinned in ["tonk:notebook/index-route", "tonk:notebook/route"] {
+            let claims = about(&tonk, &key, pinned).await;
+            assert!(
+                claims
+                    .iter()
+                    .any(|(the, _)| the.starts_with("xyz.tonk.view/")),
+                "{pinned} carries its page's view: {claims:?}"
+            );
+        }
+        for concept in &derived {
+            assert_eq!(
+                about(&tonk, &key, concept).await,
+                Vec::new(),
+                "nothing of the library is left on {concept}"
+            );
+        }
+    }
 }
 
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
