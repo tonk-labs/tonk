@@ -218,11 +218,18 @@ view!:
 # "Concept mismatch: required attribute missing" beside the working list.
 # A literal path wins over `/{*model}` under the router's specificity rules
 # (fewer broad params first), so this claims the URL outright.
+#
+# Both notebook route models are pinned with `this:`, as every route model
+# should be. A concept's identity comes from its fields alone, and a route
+# model's fields are the few site fields every page reads, so an unpinned one
+# would be the very concept a space's own `{repo, branch}` page declares,
+# share its `ui` view, and one page would replace the other.
 route!:
   path: "/notebook"
-  concept: notebook/index-route
+  concept: tonk:notebook/index-route
 
 concept!: &notebook/index-route
+  this: tonk:notebook/index-route
   description: The notebook index (`/space/{repo}/notebook`).
   with:
     repo:
@@ -246,7 +253,7 @@ concept!: &notebook/index-route
 # The nested display renders the notebook rows the switcher matches
 # against; they are its data and the no-script fallback both.
 view!:
-  this: notebook/index-route
+  this: tonk:notebook/index-route
   show:
     ui: |
       <tonk-notebook-index class="notebook-index">
@@ -264,9 +271,10 @@ view!:
 
 route!:
   path: "/notebook/{*entity}"
-  concept: notebook/route
+  concept: tonk:notebook/route
 
 concept!: &notebook/route
+  this: tonk:notebook/route
   description: A single notebook page (`/space/{repo}/notebook/{entity}`).
   with:
     entity:
@@ -283,7 +291,7 @@ concept!: &notebook/route
       as: text
 
 view!:
-  this: notebook/route
+  this: tonk:notebook/route
   show:
     ui: |
       <div class="notebook-space">
@@ -428,7 +436,7 @@ rule!:
     - assert: site
       where:
         this: ?site
-        concept: notebook/route
+        concept: tonk:notebook/route
     - assert: notebook/route
       where:
         this: ?site
