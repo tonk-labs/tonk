@@ -37,10 +37,7 @@ struct SpaceOverviewView: View {
       Section {
         LabeledContent("People") {
           if let state, !state.members.isEmpty {
-            HStack(spacing: 10) {
-              Text(state.peopleSummary)
-              InitialsStack(members: state.members)
-            }
+            Roster(summary: state.peopleSummary, members: state.members)
           } else {
             Text(state == nil ? "Loading…" : "Only you so far")
           }
