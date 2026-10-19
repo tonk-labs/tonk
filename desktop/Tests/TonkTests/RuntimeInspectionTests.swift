@@ -8,7 +8,7 @@ import XCTest
 final class RuntimeInspectionTests: XCTestCase {
   func testNativeFabFlagIsAvailableBeforePageScriptsOnEveryLoad() async throws {
     let runtime = RuntimeModel()
-    let webView = runtime.webView
+    let webView = runtime.spaceWebView
     webView.navigationDelegate = nil
     for _ in 0..<2 {
       webView.loadHTMLString(
