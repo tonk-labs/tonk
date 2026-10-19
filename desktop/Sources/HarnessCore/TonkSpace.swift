@@ -12,6 +12,15 @@ public struct TonkSpace: Identifiable, Codable, Equatable, Sendable {
     RuntimeLocation.home.appendingPathComponent("space").appendingPathComponent(subject)
   }
 
+  /// Whether `url` is this space's home or one of its views.
+  public func contains(_ other: URL) -> Bool {
+    let home = url
+    guard other.scheme == home.scheme, other.host == home.host, other.port == home.port else {
+      return false
+    }
+    return other.path == home.path || other.path.hasPrefix(home.path + "/")
+  }
+
   public static func decodeCatalog(_ data: Data) throws -> [Self] {
     let spaces = try JSONDecoder().decode([Self].self, from: data)
     var seen = Set<String>()

@@ -5,8 +5,13 @@ private struct RefreshContentKey: FocusedValueKey { typealias Value = () -> Void
 private struct SearchFocusKey: FocusedValueKey { typealias Value = () -> Void }
 private struct OpenSpaceInBrowserKey: FocusedValueKey { typealias Value = () -> Void }
 private struct ToggleAgentSidebarKey: FocusedValueKey { typealias Value = () -> Void }
+private struct NewLinkKey: FocusedValueKey { typealias Value = () -> Void }
 
 extension FocusedValues {
+  var newLink: (() -> Void)? {
+    get { self[NewLinkKey.self] }
+    set { self[NewLinkKey.self] = newValue }
+  }
   var toggleAgentSidebar: (() -> Void)? {
     get { self[ToggleAgentSidebarKey.self] }
     set { self[ToggleAgentSidebarKey.self] = newValue }
@@ -36,11 +41,17 @@ struct WindowCommands: Commands {
   @FocusedValue(\.refreshContent) private var refreshContent
   @FocusedValue(\.openSpaceInBrowser) private var openSpaceInBrowser
   @FocusedValue(\.toggleAgentSidebar) private var toggleAgentSidebar
+  @FocusedValue(\.newLink) private var newLink
 
   var body: some Commands {
     CommandGroup(replacing: .appSettings) {
       Button("Settings…") { modelSettings?() }
         .keyboardShortcut(",").disabled(modelSettings == nil)
+    }
+    CommandGroup(after: .newItem) {
+      Button("New Link…") { newLink?() }
+        .keyboardShortcut("n", modifiers: [.command, .shift])
+        .disabled(newLink == nil)
     }
     CommandGroup(after: .toolbar) {
       Button("Refresh") { refreshContent?() }

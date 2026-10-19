@@ -180,7 +180,7 @@ extension RuntimeModel {
   func inspectView(_ space: TonkSpace) async throws -> String {
     func check() throws {
       try requireSpaceReady(space)
-      guard selectedSpace?.id == space.id, webView.url == space.url else {
+      guard selectedSpace?.id == space.id, let url = webView.url, space.contains(url) else {
         throw HarnessError.message("Open the attached space in the preview before inspecting it.")
       }
       try Task.checkCancellation()

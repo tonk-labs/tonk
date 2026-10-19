@@ -6,6 +6,7 @@ struct ContentView: View {
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @ObservedObject var model: HarnessModel
   @ObservedObject var runtime: RuntimeModel
+  @ObservedObject var access: AccessModel
   private var draft: String {
     get { model.saved.conversation.draft ?? "" }
     nonmutating set {
@@ -18,16 +19,38 @@ struct ContentView: View {
     nonmutating set { model.showingChat = newValue }
   }
   @State private var spaceSearch = ""
-  @State private var searchFocusRequest = 0
+  @FocusState private var searchFocused: Bool
+  @State private var page: DesktopPage?
+  @State private var sidebarColumns = NavigationSplitViewVisibility.all
+  @State private var newLink: NewLinkRequest?
   @State private var showHistory = false
   @State private var showProviderSettings = false
   @State private var accountError: String?
   @State private var signingOut = false
-  @State private var sharingSpace: TonkSpace?
   @State private var syncStatusSpace: TonkSpace?
   @FocusState private var composing: Bool
 
-  private var windowContent: some View {
+  private var startupFailure: String? {
+    if let message = runtime.accountMessage { return message }
+    if let error = runtime.error { return error }
+    return runtime.catalogError
+  }
+
+  private var startupLoading: some View {
+    let failure = startupFailure
+    return SpaceLoadingView(
+      title: failure == nil ? "Opening Tonk…" : "Couldn’t open Tonk",
+      detail: failure ?? "Loading your workspace.",
+      waiting: failure != nil
+    ) {
+      if failure != nil {
+        Button("Try again") { runtime.load() }.nativeControl()
+      }
+    }
+    .background(.background)
+  }
+
+  private var workspaceLayers: some View {
     ZStack {
       GeometryReader { geometry in
         AnimatedSidebar(
@@ -48,71 +71,60 @@ struct ContentView: View {
           if runtime.accountStatusKnown {
             TonkWelcomeView(runtime: runtime)
           } else {
-            let failure = runtime.accountMessage ?? runtime.error ?? runtime.catalogError
-            SpaceLoadingView(
-              title: failure == nil ? "Opening Tonk…" : "Couldn’t open Tonk",
-              detail: failure ?? "Loading your workspace.",
-              waiting: failure != nil
-            ) {
-              if failure != nil {
-                Button("Try again") { runtime.load() }.nativeControl()
-              }
-            }
-            .background(.background)
+            startupLoading
           }
         } else {
-          SpacePickerView(runtime: runtime, search: $spaceSearch) { space in
-            Task {
-              guard let space = await runtime.spaceForOpening(space) else { return }
-              if await model.enterSpace(space) {
-                runtime.openSpace(space)
-                model.openedSpace = space
-                showingChat = false
-              }
-            }
-          }.disabled(
-            model.busy || model.connecting || model.creatingSpace || runtime.pendingSpace != nil)
+          desktop
         }
       }
     }
-    .nativeControl()
-    .containerBackground(
-      reduceTransparency
-        ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.thinMaterial),
-      for: .window
-    )
-    .focusedSceneValue(
-      \.modelSettings, accountActionsDisabled || signingOut ? nil : { showProviderSettings = true }
-    )
-    .focusedSceneValue(
-      \.focusSearch,
-      model.openedSpace == nil && runtime.showsSpacePicker
-        ? { searchFocusRequest += 1 } : nil
-    )
-    .focusedSceneValue(\.refreshContent, refreshDisabled ? nil : refreshContent)
-    .focusedSceneValue(
-      \.toggleAgentSidebar,
-      model.openedSpace == nil || signingOut ? nil : toggleAgentSidebar
-    )
-    .focusedSceneValue(
-      \.openSpaceInBrowser, model.openedSpace == nil || signingOut ? nil : openSpaceInBrowser
-    )
-    .navigationTitle(
-      model.openedSpace?.title
-        ?? (runtime.showsSpacePicker
-          ? "Spaces" : (RuntimeLocation.deployment == .production ? "" : "Tonk"))
-    )
-    .navigationSubtitle(
-      RuntimeLocation.deployment == .production ? "" : RuntimeLocation.home.absoluteString
-    )
-    .toolbar { windowToolbar }
-    .toolbarBackground(
-      reduceTransparency
-        ? AnyShapeStyle(Color(nsColor: .textBackgroundColor)) : AnyShapeStyle(.ultraThinMaterial),
-      for: .windowToolbar
-    )
-    .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
-    .disabled(signingOut)
+  }
+
+  private var windowContent: some View {
+    workspaceLayers
+      .nativeControl()
+      .containerBackground(
+        reduceTransparency
+          ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.thinMaterial),
+        for: .window
+      )
+      .focusedSceneValue(
+        \.modelSettings,
+        accountActionsDisabled || signingOut ? nil : { showProviderSettings = true }
+      )
+      .focusedSceneValue(
+        \.focusSearch,
+        model.openedSpace == nil && runtime.showsSpacePicker
+          ? { searchFocused = true } : nil
+      )
+      .focusedSceneValue(\.refreshContent, refreshDisabled ? nil : refreshContent)
+      .focusedSceneValue(
+        \.newLink,
+        runtime.spaces.isEmpty || !runtime.accountConnected || signingOut ? nil : startNewLink
+      )
+      .focusedSceneValue(
+        \.toggleAgentSidebar,
+        model.openedSpace == nil || signingOut ? nil : toggleAgentSidebar
+      )
+      .focusedSceneValue(
+        \.openSpaceInBrowser, model.openedSpace == nil || signingOut ? nil : openSpaceInBrowser
+      )
+      .navigationTitle(
+        model.openedSpace?.title
+          ?? (runtime.showsSpacePicker
+            ? pageTitle : (RuntimeLocation.deployment == .production ? "" : "Tonk"))
+      )
+      .navigationSubtitle(
+        RuntimeLocation.deployment == .production ? "" : RuntimeLocation.home.absoluteString
+      )
+      .toolbar { windowToolbar }
+      .toolbarBackground(
+        reduceTransparency
+          ? AnyShapeStyle(Color(nsColor: .textBackgroundColor)) : AnyShapeStyle(.ultraThinMaterial),
+        for: .windowToolbar
+      )
+      .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+      .disabled(signingOut)
   }
 
   var body: some View {
@@ -133,9 +145,10 @@ struct ContentView: View {
       .sheet(item: $syncStatusSpace) { space in
         SyncStatusView(runtime: runtime, space: space)
       }
-      .sheet(item: $sharingSpace) { space in
-        ShareSpaceView(runtime: runtime, space: space)
+      .sheet(item: $newLink) { request in
+        NewLinkSheet(spaces: runtime.spaces, access: access, subject: request.id)
       }
+      .overlay(alignment: .bottom) { noticeToast }
       .sheet(isPresented: $showHistory) {
         ChatHistoryView(
           model: model, space: model.openedSpace
@@ -190,7 +203,7 @@ struct ContentView: View {
         } label: {
           Image(systemName: "chevron.left").frame(width: 20, height: 20)
         }.nativeControl(circular: true).controlSize(.large)
-          .accessibilityLabel("All spaces").help("All spaces")
+          .accessibilityLabel("Back to overview").help("Back to overview")
           .keyboardShortcut("[", modifiers: .command)
           .disabled(model.busy || model.creatingSpace)
       }.customGlassToolbarItem()
@@ -221,10 +234,10 @@ struct ContentView: View {
               .disabled(chatActionsDisabled)
             Divider().frame(height: 18).padding(.horizontal, 4)
             Button {
-              sharingSpace = model.openedSpace
+              newLink = model.openedSpace.map { NewLinkRequest(id: $0.id) }
             } label: {
-              Image(systemName: "square.and.arrow.up").frame(width: 20, height: 20)
-            }.nativeControl(circular: true).accessibilityLabel("Share space").help("Share space")
+              Image(systemName: "link.badge.plus").frame(width: 20, height: 20)
+            }.nativeControl(circular: true).accessibilityLabel("New link").help("New link")
               .disabled(runtime.loading || !runtime.accountConnected)
           }.labelStyle(.titleAndIcon).fixedSize().controlSize(.large)
         }.padding(.vertical, 4)
@@ -233,7 +246,7 @@ struct ContentView: View {
     if model.openedSpace == nil
       && runtime.showsSpacePicker
     {
-      ToolbarItem(id: "glass-space-search", placement: .primaryAction) {
+      ToolbarItem(id: "new-link", placement: .primaryAction) {
         HStack(spacing: 12) {
           if runtime.loading || runtime.catalogLoading {
             ProgressView()
@@ -242,8 +255,14 @@ struct ContentView: View {
               .accessibilityLabel("Refreshing spaces")
               .help("Refreshing…")
           }
-          GlassToolbarSearch(text: $spaceSearch, focusRequest: searchFocusRequest)
-            .frame(width: 240)
+          Button {
+            startNewLink()
+          } label: {
+            Label("New Link", systemImage: "plus")
+          }
+          .labelStyle(.titleAndIcon)
+          .help("New Link (⇧⌘N)")
+          .disabled(runtime.spaces.isEmpty || !runtime.accountConnected)
         }
       }.customGlassToolbarItem()
     }
@@ -257,7 +276,14 @@ struct ContentView: View {
   }
 
   private func refreshContent() {
-    if model.openedSpace == nil { Task { await runtime.refreshSpaces() } } else { runtime.load() }
+    if model.openedSpace == nil {
+      Task {
+        await runtime.refreshSpaces()
+        await access.refreshAll(runtime.spaces)
+      }
+    } else {
+      runtime.load()
+    }
   }
 
   private func openSpaceInBrowser() {
@@ -271,45 +297,29 @@ struct ContentView: View {
 
   private var moreMenu: some View {
     AnchoredMenuButton {
-      let menu = NSMenu()
-      menu.autoenablesItems = false
-      menu.addAction(
-        "Refresh", symbol: "arrow.clockwise", key: "r",
-        enabled: !refreshDisabled, action: refreshContent)
+      Button("Refresh", systemImage: "arrow.clockwise", action: refreshContent)
+        .disabled(refreshDisabled)
       if model.openedSpace != nil {
-        menu.addAction(
-          "Open in browser", symbol: "arrow.up.right.square", key: "\u{F703}",
-          action: openSpaceInBrowser)
+        Button("Open in Browser", systemImage: "arrow.up.right.square", action: openSpaceInBrowser)
       }
-      if let space = model.openedSpace {
-        menu.addAction("Sync status…", symbol: "arrow.triangle.2.circlepath") {
+      if let space = model.openedSpace ?? selectedSpace {
+        Button("Sync Status…", systemImage: "arrow.triangle.2.circlepath") {
           syncStatusSpace = space
         }
       }
-      menu.addItem(.separator())
-      menu.addAction(
-        "Settings…", symbol: "gearshape",
-        enabled: !accountActionsDisabled
-      ) { showProviderSettings = true }
+      Divider()
+      Button("Settings…", systemImage: "gearshape") { showProviderSettings = true }
+        .disabled(accountActionsDisabled)
       if model.provider == .chatGPT && model.signedIn {
-        menu.addAction("Sign out of ChatGPT", enabled: !accountActionsDisabled) {
+        Button("Sign Out of ChatGPT") {
           Task { await model.signOut() }
-        }
+        }.disabled(accountActionsDisabled)
       }
       if runtime.accountConnected && RuntimeLocation.deployment != .local {
-        menu.addAction("Sign out of Tonk", enabled: !accountActionsDisabled) {
-          signingOut = true
-          Task {
-            defer { signingOut = false }
-            do {
-              try await runtime.signOut()
-              model.openedSpace = nil
-              showingChat = false
-            } catch { accountError = error.localizedDescription }
-          }
-        }
+        Button("Sign Out of Tonk") {
+          signOutOfTonk()
+        }.disabled(accountActionsDisabled)
       }
-      return menu
     }
   }
 
@@ -535,6 +545,149 @@ struct ContentView: View {
     }
   }
 
+  private var pageTitle: String {
+    switch page {
+    case .allLinks: "All links"
+    case .agentLinks: "For agents"
+    case .space(let id): runtime.spaces.first(where: { $0.id == id })?.title ?? "Spaces"
+    case nil: "Spaces"
+    }
+  }
+
+  private var selectedSpace: TonkSpace? {
+    guard case .space(let id) = page else { return nil }
+    return runtime.spaces.first(where: { $0.id == id })
+  }
+
+  private func startNewLink() {
+    guard let first = model.openedSpace ?? selectedSpace ?? runtime.spaces.first else { return }
+    newLink = NewLinkRequest(id: first.id)
+  }
+
+  private func signOutOfTonk() {
+    signingOut = true
+    Task {
+      defer { signingOut = false }
+      do {
+        try await runtime.signOut()
+        access.reset()
+        model.openedSpace = nil
+        showingChat = false
+        page = nil
+      } catch { accountError = error.localizedDescription }
+    }
+  }
+
+  /// Opens a space view in the live runtime, with chat beside it.
+  private func open(_ view: SpaceViewEntry, in space: TonkSpace) {
+    Task {
+      guard let space = await runtime.spaceForOpening(space) else { return }
+      if await model.enterSpace(space) {
+        runtime.openSpace(space, at: view.url(in: space))
+        model.openedSpace = space
+        showingChat = false
+      }
+    }
+  }
+
+  private var sidebarToggle: some View {
+    let visible = sidebarColumns != .detailOnly
+    return Button {
+      withAnimation { sidebarColumns = visible ? .detailOnly : .all }
+    } label: {
+      Image(systemName: "sidebar.left").frame(width: 20, height: 20)
+    }
+    .nativeControl(circular: true).controlSize(.large)
+    .keyboardShortcut("s", modifiers: [.command, .control])
+    .accessibilityLabel(visible ? "Hide sidebar" : "Show sidebar")
+    .help(visible ? "Hide sidebar (⌃⌘S)" : "Show sidebar (⌃⌘S)")
+  }
+
+  private var desktop: some View {
+    NavigationSplitView(columnVisibility: $sidebarColumns) {
+      DesktopSidebar(
+        runtime: runtime, access: access, selection: $page, search: $spaceSearch,
+        searchFocused: $searchFocused,
+        onNewLink: startNewLink,
+        onSettings: { showProviderSettings = true },
+        onSignOut: runtime.accountConnected && RuntimeLocation.deployment != .local
+          ? signOutOfTonk : nil
+      )
+      .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+      // Replaced by a circular toggle that matches the window's other controls.
+      .toolbar(removing: .sidebarToggle)
+      .toolbar {
+        // Trailing edge of the sidebar, where the system toggle sat. It stays
+        // in the titlebar when the sidebar collapses, so one toggle serves both.
+        if #available(macOS 26.0, *) {
+          ToolbarSpacer(.flexible)
+        }
+        ToolbarItem(id: "toggle-sidebar", placement: .automatic) { sidebarToggle }
+          .customGlassToolbarItem()
+      }
+    } detail: {
+      Group {
+        switch page {
+        case .space:
+          if let space = selectedSpace {
+            SpaceOverviewView(
+              space: space, access: access,
+              canRefresh: runtime.accountConnected && !runtime.showingCachedCatalog,
+              onOpenView: { open($0, in: space) },
+              onNewLink: startNewLink)
+          } else {
+            CatalogStatusView(runtime: runtime)
+          }
+        case .allLinks:
+          LinksPageView(
+            agentsOnly: false, spaces: runtime.spaces, access: access, onNewLink: startNewLink)
+        case .agentLinks:
+          LinksPageView(
+            agentsOnly: true, spaces: runtime.spaces, access: access, onNewLink: startNewLink)
+        case nil:
+          CatalogStatusView(runtime: runtime)
+        }
+      }
+      .background(.background)
+    }
+    .disabled(model.busy || model.connecting || model.creatingSpace || runtime.pendingSpace != nil)
+    .onChange(of: runtime.spaces.map(\.id), initial: true) { _, ids in
+      if runtime.catalogLoaded { access.setCatalog(runtime.spaces) }
+      // Keep a space selected; fall back when it leaves the account.
+      if case .space(let id) = page, ids.contains(id) { return }
+      if page == nil, let fixture = ActivityFixture.initialPage(runtime.spaces) {
+        page = fixture
+      } else if page == nil
+        || page.map({ if case .space = $0 { true } else { false } }) == true
+      {
+        page = ids.first.map { .space($0) }
+      }
+    }
+    .onChange(of: runtime.accountConnected) { _, connected in
+      // Nothing learned under one account may show under the next.
+      if !connected { access.reset() }
+    }
+    .task(id: runtime.catalogLoaded && runtime.accountConnected ? runtime.spaces.map(\.id) : nil) {
+      guard runtime.catalogLoaded && runtime.accountConnected else { return }
+      await access.refreshAll(runtime.spaces)
+    }
+  }
+
+  @ViewBuilder private var noticeToast: some View {
+    if let notice = access.notice {
+      Text(notice)
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .controlSurface()
+        .padding(.bottom, 24)
+        .transition(.opacity)
+        .task(id: notice) {
+          do { try await Task.sleep(for: .seconds(4)) } catch { return }
+          if access.notice == notice { access.notice = nil }
+        }
+        .accessibilityAddTraits(.updatesFrequently)
+    }
+  }
+
   private func submit() {
     guard showingChat, model.canSend, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     else {
@@ -544,4 +697,9 @@ struct ContentView: View {
     draft = ""
     Task { await model.send(text) }
   }
+}
+
+/// Which space the New link sheet starts on.
+struct NewLinkRequest: Identifiable {
+  let id: String
 }
