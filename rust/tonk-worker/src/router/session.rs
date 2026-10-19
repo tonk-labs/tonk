@@ -1096,9 +1096,7 @@ mod tests {
 
         // The notebook index route matched, so the notebook's own model is
         // what the shell mounts rather than the profile's `/{*rest}`
-        // fallback. Compared against the NOT-FOUND model rather than a
-        // literal: the index concept is anchor-named, so its entity derives
-        // from its body and no URI is stable to assert.
+        // fallback.
         let concept = stamped_field(
             &app,
             "nb",
@@ -1138,6 +1136,10 @@ mod tests {
         assert_ne!(
             concept, "tonk:not-found",
             "/notebook on a profile must not fall through to not-found"
+        );
+        assert_eq!(
+            concept, "tonk:notebook/index-route",
+            "/notebook on a profile mounts the notebook index's pinned model"
         );
 
         // And the location its view builds reaches the profile endpoint.
