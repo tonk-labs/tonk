@@ -27,7 +27,7 @@ struct DesktopSidebar: View {
         Label("All Links", systemImage: "link")
           .badge(access.allLinks.count)
           .tag(DesktopPage.allLinks)
-        Label("For Agents", systemImage: "cpu")
+        Label { Text("Connections") } icon: { BotGlyph() }
           .badge(access.agentLinks.count)
           .tag(DesktopPage.agentLinks)
       }

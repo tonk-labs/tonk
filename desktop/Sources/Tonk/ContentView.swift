@@ -223,7 +223,7 @@ struct ContentView: View {
               model.startSpaceChat()
             } label: {
               Image(systemName: "square.and.pencil").frame(width: 20, height: 20)
-            }.nativeControl(circular: true).accessibilityLabel("New chat").help("New chat (⌘N)")
+            }.nativeControl(circular: true).accessibilityLabel("New chat").help("New chat (⇧⌘N)")
               .disabled(chatActionsDisabled)
             Button {
               showHistory = true
@@ -263,7 +263,7 @@ struct ContentView: View {
         }
         .nativeControl(circular: true).controlSize(.large)
         .accessibilityLabel("New Link")
-        .help("New Link (⇧⌘N)")
+        .help("New Link (⌘N)")
         .disabled(runtime.spaces.isEmpty || !runtime.accountConnected)
       }.customGlassToolbarItem()
     }
@@ -549,7 +549,7 @@ struct ContentView: View {
   private var pageTitle: String {
     switch page {
     case .allLinks: "All links"
-    case .agentLinks: "For agents"
+    case .agentLinks: "Connections"
     case .space(let id): runtime.spaces.first(where: { $0.id == id })?.title ?? "Spaces"
     case nil: "Spaces"
     }

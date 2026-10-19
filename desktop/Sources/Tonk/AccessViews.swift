@@ -1,3 +1,4 @@
+import AppKit
 import HarnessCore
 import SwiftUI
 
@@ -24,15 +25,19 @@ struct InitialsStack: View {
           .background(.fill.secondary, in: Circle())
           .background(Color(nsColor: .windowBackgroundColor), in: Circle())
           .overlay { Circle().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1) }
-          .help(member.displayName)
+          .overlay { ToolTip(text: member.displayName) }
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel(member.displayName)
       }
       if members.count > limit {
+        let hidden = members.dropFirst(limit).map(\.displayName)
         Text("+\(members.count - limit)").font(.caption).foregroundStyle(.secondary)
           .padding(.leading, 10)
+          .overlay { ToolTip(text: AccessText.list(hidden)) }
+          .accessibilityLabel(AccessText.list(hidden))
       }
     }
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(AccessText.list(members.map(\.displayName)))
+    .accessibilityElement(children: .contain)
   }
 }
 
@@ -142,4 +147,45 @@ struct AccessLinkRow: View {
       "The public address stops working and readers lose access."
     }
   }
+}
+
+/// A robot head for agent connections; SF Symbols has no public bot glyph.
+struct BotGlyph: View {
+  var body: some View {
+    BotShape()
+      .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+      .frame(width: 17, height: 17)
+      .accessibilityHidden(true)
+  }
+}
+
+/// Drawn on a 24-point grid and scaled to fit.
+private struct BotShape: Shape {
+  func path(in rect: CGRect) -> Path {
+    let s = min(rect.width, rect.height) / 24
+    func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+      CGPoint(x: rect.midX + (x - 12) * s, y: rect.midY + (y - 12) * s)
+    }
+    var path = Path()
+    path.addRoundedRect(
+      in: CGRect(origin: p(4, 8), size: CGSize(width: 16 * s, height: 12 * s)),
+      cornerSize: CGSize(width: 2 * s, height: 2 * s))
+    for (from, to) in [
+      ((12, 8), (12, 4)), ((12, 4), (8, 4)),  // antenna
+      ((2, 14), (4, 14)), ((20, 14), (22, 14)),  // ears
+      ((9, 13), (9, 15)), ((15, 13), (15, 15)),  // eyes
+    ] as [((CGFloat, CGFloat), (CGFloat, CGFloat))] {
+      path.move(to: p(from.0, from.1))
+      path.addLine(to: p(to.0, to.1))
+    }
+    return path
+  }
+}
+
+/// An AppKit tooltip. SwiftUI's `.help` does not reach plain views inside a
+/// grouped form's rows, so the roster's initials would otherwise show nothing.
+private struct ToolTip: NSViewRepresentable {
+  let text: String
+  func makeNSView(context: Context) -> NSView { NSView() }
+  func updateNSView(_ nsView: NSView, context: Context) { nsView.toolTip = text }
 }
