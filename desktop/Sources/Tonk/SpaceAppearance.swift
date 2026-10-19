@@ -56,8 +56,9 @@ struct EditableSpaceIcon: View {
     let editing = hovering && enabled
     Button(action: onEdit) {
       if editing {
+        // The row's own foreground, not the accent: on the selected row the
+        // accent matches the selection and the pencil would vanish.
         Image(systemName: "pencil.circle.fill")
-          .foregroundStyle(.tint)
           .transition(.scale(scale: 0.6).combined(with: .opacity))
       } else {
         SpaceIcon(space: space, shared: shared)
