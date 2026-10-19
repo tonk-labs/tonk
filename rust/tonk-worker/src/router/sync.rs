@@ -1589,6 +1589,7 @@ async fn watch_repo(
     };
     pin_mut!(observations);
     state.read().await.sync_queue.watched(repo);
+    log!("{repo} is watched");
     while let Some(observed) = observations.next().await {
         // A profile switch rebuilds the reactor, and removing the space
         // evicts it: this watch then answers to a branch nobody holds.
@@ -1600,6 +1601,7 @@ async fn watch_repo(
                 .and_then(|held| held.branches().read().get("main").cloned())
         };
         if !current.is_some_and(|current| std::sync::Arc::ptr_eq(&current, branch)) {
+            log!("{repo} is no longer watched: its branch was replaced");
             return;
         }
         match observed {
@@ -1611,6 +1613,8 @@ async fn watch_repo(
             Err(error) => log!("{repo}: a watched head was not recorded: {error}"),
         }
     }
+    // The socket's report says why: closed, or ended by the service.
+    log!("{repo} is no longer watched: its watch ended");
 }
 
 /// Replace a due session with a disposable operator and bounded in-memory

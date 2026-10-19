@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use worker::worker_sys::WebSocketRequestResponsePair;
 use worker::{
     DurableObject, Env, ListOptions, Method, Request, Response, Result, State, Storage, WebSocket,
-    WebSocketIncomingMessage, WebSocketPair, console_error, durable_object,
+    WebSocketIncomingMessage, WebSocketPair, console_error, console_log, durable_object,
 };
 
 use crate::error::Refusal;
@@ -145,32 +145,53 @@ impl DurableObject for Live {
         let Some(socket) = ws.deserialize_attachment::<Attachment>()? else {
             return Ok(());
         };
+        let mut clock = Clock::start();
         let invoked = invoked(&bytes);
         if let Some(invoked) = &invoked
             && let Err(refusal) = self.admissible(&socket, invoked).await
         {
+            console_log!(
+                "socket {}: frame refused at screening in {}ms",
+                socket.id,
+                clock.lap()
+            );
             return send(
                 &ws,
                 &refused(invoked.id, Some(invoked.invocation.clone()), &refusal),
             );
         }
+        let screened = clock.lap();
 
         let access = self.access()?;
         let mut session = self.session(&socket.id).await?;
         let reply = session.receive(&access, &bytes).await;
+        let received = clock.lap();
         self.save(&socket.id, &session).await?;
+        let saved = clock.lap();
         let Some(reply) = reply else {
             return Ok(());
         };
         send(&ws, &reply)?;
+        let mut fanned = None;
         if let Some(invoked) = &invoked {
             self.meter(invoked, &reply);
             if let (Reply::Answer { status, .. }, Some((space, cell))) = (&reply, &invoked.writes)
                 && (200..300).contains(status)
             {
                 self.fan_out(&socket.subject, space, cell).await?;
+                fanned = Some(clock.lap());
             }
         }
+        console_log!(
+            "socket {}: {} in {}ms (screen {screened}ms, verify and perform {received}ms, \
+             save {saved}ms{})",
+            socket.id,
+            outcome(&reply),
+            clock.total(),
+            fanned
+                .map(|ms| format!(", fan-out {ms}ms"))
+                .unwrap_or_default(),
+        );
         Ok(())
     }
 
@@ -185,15 +206,23 @@ impl DurableObject for Live {
     async fn websocket_close(
         &self,
         ws: WebSocket,
-        _code: usize,
-        _reason: String,
-        _was_clean: bool,
+        code: usize,
+        reason: String,
+        was_clean: bool,
     ) -> Result<()> {
-        self.forget(&ws).await
+        let watched = self.forget(&ws).await?;
+        console_log!(
+            "socket {watched}: closed with code {code}{}{reason}, {}clean",
+            if reason.is_empty() { "" } else { ": " },
+            if was_clean { "" } else { "not " },
+        );
+        Ok(())
     }
 
-    async fn websocket_error(&self, ws: WebSocket, _error: worker::Error) -> Result<()> {
-        self.forget(&ws).await
+    async fn websocket_error(&self, ws: WebSocket, error: worker::Error) -> Result<()> {
+        let watched = self.forget(&ws).await?;
+        console_error!("socket {watched}: failed: {error}");
+        Ok(())
     }
 }
 
@@ -213,11 +242,14 @@ impl Live {
             return Response::error(format!("this socket speaks {SUBPROTOCOL}"), 426);
         }
         let pair = WebSocketPair::new()?;
+        let id = fresh_id()?;
         pair.server.serialize_attachment(Attachment {
-            id: fresh_id()?,
-            subject,
+            id: id.clone(),
+            subject: subject.clone(),
         })?;
+        let subject = format!("{subject} as {id}");
         self.state.accept_web_socket(&pair.server);
+        console_log!("socket accepted for {subject}");
         let mut response = Response::from_websocket(pair.client)?;
         response
             .headers_mut()
@@ -268,11 +300,13 @@ impl Live {
         let did: Did = subject
             .parse()
             .map_err(|_| worker::Error::RustError(format!("{subject} is not a DID")))?;
+        let mut clock = Clock::start();
         let access = self.access()?;
         let resolve = CellScope::new(Subject::from(did.clone()), space, cell).resolve();
         let state = Provider::<memory::Resolve>::execute(access.provider(), resolve)
             .await
             .map_err(|error| worker::Error::RustError(error.to_string()))?;
+        let read = clock.lap();
         let change = Change {
             subject: &did,
             space,
@@ -285,25 +319,40 @@ impl Live {
             async move {
                 let socket = ws.deserialize_attachment::<Attachment>()?;
                 let Some(socket) = socket.filter(|socket| socket.subject == subject) else {
-                    return Ok(());
+                    return Ok((0, 0));
                 };
                 let mut session = self.session(&socket.id).await?;
                 let replies = session.deliver(access, change, RECHECK, at).await;
                 if replies.is_empty() {
-                    return Ok(());
+                    return Ok((0, 0));
                 }
                 self.save(&socket.id, &session).await?;
+                let mut ended = 0;
                 for reply in &replies {
+                    if let Reply::Ended { status, .. } = reply {
+                        console_log!("socket {}: watch ended with {status}", socket.id);
+                        ended += 1;
+                    }
                     send(&ws, reply)?;
                 }
-                Ok::<(), worker::Error>(())
+                Ok::<_, worker::Error>((replies.len() - ended, ended))
             }
         });
-        for delivered in join_all(deliveries).await {
-            if let Err(error) = delivered {
-                console_error!("a change was not delivered to a socket: {error}");
+        let (mut delivered, mut ended) = (0, 0);
+        for outcome in join_all(deliveries).await {
+            match outcome {
+                Ok((states, ends)) => {
+                    delivered += states;
+                    ended += ends;
+                }
+                Err(error) => console_error!("a change was not delivered to a socket: {error}"),
             }
         }
+        console_log!(
+            "fan-out of {space}/{cell}: {delivered} delivered, {ended} watches ended \
+             in {}ms (read back {read}ms)",
+            clock.total()
+        );
         Ok(())
     }
 
@@ -324,12 +373,18 @@ impl Live {
         Ok(())
     }
 
-    /// Drop what a closed socket watched.
-    async fn forget(&self, ws: &WebSocket) -> Result<()> {
-        if let Some(socket) = ws.deserialize_attachment::<Attachment>()? {
-            self.state.storage().delete(&watches(&socket.id)).await?;
-        }
-        Ok(())
+    /// Drop what a closed socket watched, and say which socket it was and
+    /// how many watches it held.
+    async fn forget(&self, ws: &WebSocket) -> Result<String> {
+        let Some(socket) = ws.deserialize_attachment::<Attachment>()? else {
+            return Ok("(unnamed)".into());
+        };
+        let held = self.session(&socket.id).await?.watches().count();
+        self.state.storage().delete(&watches(&socket.id)).await?;
+        Ok(format!(
+            "{} of {} with {held} watches",
+            socket.id, socket.subject
+        ))
     }
 
     /// Meter the frame's invocation as a request's is.
@@ -525,6 +580,45 @@ fn fresh_id() -> Result<String> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|error| worker::Error::RustError(error.to_string()))?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Milliseconds spent, by the platform's clock, which in a Worker moves
+/// on across I/O: what each step of handling a frame waited on.
+struct Clock {
+    started: f64,
+    lapped: f64,
+}
+
+impl Clock {
+    fn start() -> Self {
+        let now = worker::Date::now().as_millis() as f64;
+        Self {
+            started: now,
+            lapped: now,
+        }
+    }
+
+    /// Milliseconds since the last lap.
+    fn lap(&mut self) -> u64 {
+        let now = worker::Date::now().as_millis() as f64;
+        let lap = now - self.lapped;
+        self.lapped = now;
+        lap as u64
+    }
+
+    /// Milliseconds since the start.
+    fn total(&self) -> u64 {
+        (worker::Date::now().as_millis() as f64 - self.started) as u64
+    }
+}
+
+/// What a reply to a frame was, as a log line names it.
+fn outcome(reply: &Reply) -> String {
+    match reply {
+        Reply::Answer { status, .. } => format!("answered {status}"),
+        Reply::State { .. } => "began a watch".into(),
+        Reply::Ended { status, .. } => format!("ended a watch with {status}"),
+    }
 }
 
 fn now() -> u64 {
