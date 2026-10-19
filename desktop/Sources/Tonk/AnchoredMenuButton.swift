@@ -10,6 +10,6 @@ struct AnchoredMenuButton<Content: View>: View {
       Label("More Options", systemImage: "ellipsis")
     }
     .menuIndicator(.hidden)
-    .help("Refresh, account and model settings")
+    .help("Refresh, open in browser and sync status")
   }
 }
