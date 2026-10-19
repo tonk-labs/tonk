@@ -14,15 +14,6 @@ struct LinksPageView: View {
       return rows.isEmpty ? nil : (space, rows)
     }
     Form {
-      Section {
-      } footer: {
-        Text(
-          agentsOnly
-            ? "Links agents use to read and change a space. Each lasts 90 days and can be revoked at any time."
-            : "Every way into your spaces: plain links for people, links for agents, and public addresses."
-        )
-        .foregroundStyle(.secondary)
-      }
       if let error = access.errors["account"] {
         Section {
           Text("Agent links could not be refreshed: " + error)
@@ -43,7 +34,7 @@ struct LinksPageView: View {
                 ? "Loading links…"
                 : (!access.errors.isEmpty
                   ? "Some links could not be loaded."
-                  : (agentsOnly ? "No agent links yet." : "No links yet."))
+                  : (agentsOnly ? "No connections yet." : "No links yet."))
             )
             .foregroundStyle(.secondary)
             Spacer()

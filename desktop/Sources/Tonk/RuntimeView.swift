@@ -22,6 +22,9 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   var cachedAccountRoot: String?
   var liveAccountRoot: String?
   @Published var selectedSpace: TonkSpace?
+  /// The space window's page loads on its own; the account page stays home.
+  @Published var spaceLoading = false
+  @Published var spaceError: String?
   @Published var catalogRecoveryStarted: Date?
   @Published var catalogLoading = false
   @Published var catalogLoaded = false
@@ -34,7 +37,11 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   var callback: BrowserCallback?
   var mcpBridge: LocalRuntimeBridge?
   var mcpConnectionFile: URL?
+  /// The account page: catalog, access and agent tools run here, always at home.
   let webView: WKWebView
+  /// The open space's page, shown in the space window. Same website data, so
+  /// the same account and worker.
+  let spaceWebView: WKWebView
   let inspection = RuntimeInspection()
 
   override init() {
@@ -52,20 +59,28 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     }
     // The native picker can cover/detach this view while still querying its worker.
     configuration.preferences.inactiveSchedulingPolicy = .none
+    let spaceConfiguration = WKWebViewConfiguration()
+    spaceConfiguration.websiteDataStore = configuration.websiteDataStore
+    spaceConfiguration.preferences.inactiveSchedulingPolicy = .none
     // Tonk carries this presentation flag into its sealed guest iframes.
-    configuration.userContentController.addUserScript(
-      WKUserScript(
-        source: "window.__tonkHideFab = true;",
-        injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+    for controller in [configuration.userContentController, spaceConfiguration.userContentController] {
+      controller.addUserScript(
+        WKUserScript(
+          source: "window.__tonkHideFab = true;",
+          injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+    }
     // User-selected remotes are restricted by the navigation delegate, not a static bundle list.
-    inspection.install(on: configuration.userContentController)
+    inspection.install(on: spaceConfiguration.userContentController)
     webView = WKWebView(frame: .zero, configuration: configuration)
+    spaceWebView = WKWebView(frame: .zero, configuration: spaceConfiguration)
     super.init()
     catalogObservation.model = self
     configuration.userContentController.add(catalogObservation, name: "catalogChanged")
-    webView.navigationDelegate = self
-    webView.uiDelegate = self
-    webView.isInspectable = true
+    for view in [webView, spaceWebView] {
+      view.navigationDelegate = self
+      view.uiDelegate = self
+      view.isInspectable = true
+    }
   }
 
   func load() {
@@ -73,19 +88,33 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     error = nil
     ready = false
     if !accountStatusKnown { accountMessage = nil }
-    // Reloading stays on the open view of the selected space.
-    let current = webView.url.flatMap { url in selectedSpace?.contains(url) == true ? url : nil }
-    webView.load(URLRequest(url: current ?? selectedSpace?.url ?? RuntimeLocation.home))
+    webView.load(URLRequest(url: RuntimeLocation.home))
+  }
+
+  /// Reloads the space window, staying on its open view.
+  func reloadSpace() {
+    guard let space = selectedSpace else { return }
+    let current = spaceWebView.url.flatMap { space.contains($0) ? $0 : nil }
+    openSpace(space, at: current)
   }
 
   func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-    inspection.reset()
+    if webView === spaceWebView {
+      inspection.reset()
+      spaceLoading = true
+      spaceError = nil
+      return
+    }
     catalogObservation.generation = UUID().uuidString
     loading = true
     error = nil
   }
 
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    if webView === spaceWebView {
+      spaceLoading = false
+      return
+    }
     loading = false
     catalogTask?.cancel()
     catalogTask = Task {
@@ -106,11 +135,11 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     _ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
     withError error: Error
   ) {
-    fail(error)
+    fail(error, in: webView)
   }
 
   func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-    fail(error)
+    fail(error, in: webView)
   }
 
   func applyAccountStatus(_ account: [String: Any]) throws {
@@ -122,13 +151,23 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   }
 
   func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+    if webView === spaceWebView {
+      spaceLoading = false
+      spaceError = "This space stopped. Reload to reconnect."
+      return
+    }
     loading = false
     ready = false
     error = "The Tonk runtime stopped. Reload to reconnect."
   }
 
-  private func fail(_ failure: Error) {
+  private func fail(_ failure: Error, in view: WKWebView) {
     if (failure as NSError).code == NSURLErrorCancelled { return }
+    if view === spaceWebView {
+      spaceLoading = false
+      spaceError = failure.localizedDescription
+      return
+    }
     loading = false
     ready = false
     error = failure.localizedDescription
@@ -193,9 +232,10 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   }
 }
 
+/// Each web view lives in exactly one window, so it is returned as is.
 struct RuntimeView: NSViewRepresentable {
-  @ObservedObject var model: RuntimeModel
-  func makeNSView(context: Context) -> WKWebView { model.webView }
+  let webView: WKWebView
+  func makeNSView(context: Context) -> WKWebView { webView }
   func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 

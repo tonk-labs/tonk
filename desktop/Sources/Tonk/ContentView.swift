@@ -7,6 +7,10 @@ struct ContentView: View {
   @ObservedObject var model: HarnessModel
   @ObservedObject var runtime: RuntimeModel
   @ObservedObject var access: AccessModel
+  /// The hub lists spaces and links; a space window shows one space's view with its chat.
+  var isSpace = false
+  @Environment(\.openWindow) private var openWindow
+  @Environment(\.dismissWindow) private var dismissWindow
   private var draft: String {
     get { model.saved.conversation.draft ?? "" }
     nonmutating set {
@@ -52,21 +56,24 @@ struct ContentView: View {
 
   private var workspaceLayers: some View {
     ZStack {
-      GeometryReader { geometry in
-        AnimatedSidebar(
-          isVisible: showingChat, reduceMotion: reduceMotion,
-          maximumWidth: geometry.size.width / 2,
-          sidebar: chat, detail: workspace,
-          onVisibilitySettled: { visible in
-            if showingChat == visible { composing = visible }
-          }
-        )
-      }
-      .modifier(RuntimeToolbarBackground(enabled: !reduceTransparency))
-      .opacity(model.openedSpace != nil || runtime.nativeSignInPending ? 1 : 0)
-      .allowsHitTesting(model.openedSpace != nil)
-      .accessibilityHidden(model.openedSpace == nil)
-      if model.openedSpace == nil {
+      if isSpace {
+        GeometryReader { geometry in
+          AnimatedSidebar(
+            isVisible: showingChat, reduceMotion: reduceMotion,
+            maximumWidth: geometry.size.width / 2,
+            sidebar: chat, detail: workspace,
+            onVisibilitySettled: { visible in
+              if showingChat == visible { composing = visible }
+            }
+          )
+        }
+        .modifier(RuntimeToolbarBackground(enabled: !reduceTransparency))
+      } else {
+        // The account page stays mounted out of sight; the passkey sheet needs it on screen.
+        RuntimeView(webView: runtime.webView)
+          .opacity(runtime.nativeSignInPending ? 1 : 0)
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
         if !runtime.showsSpacePicker {
           if runtime.accountStatusKnown {
             TonkWelcomeView(runtime: runtime)
@@ -94,7 +101,7 @@ struct ContentView: View {
       )
       .focusedSceneValue(
         \.focusSearch,
-        model.openedSpace == nil && runtime.showsSpacePicker
+        !isSpace && runtime.showsSpacePicker
           ? { searchFocused = true } : nil
       )
       .focusedSceneValue(\.refreshContent, refreshDisabled ? nil : refreshContent)
@@ -104,14 +111,16 @@ struct ContentView: View {
       )
       .focusedSceneValue(
         \.toggleAgentSidebar,
-        model.openedSpace == nil || signingOut ? nil : toggleAgentSidebar
+        !isSpace || model.openedSpace == nil || signingOut ? nil : toggleAgentSidebar
       )
       .focusedSceneValue(
-        \.openSpaceInBrowser, model.openedSpace == nil || signingOut ? nil : openSpaceInBrowser
+        \.openSpaceInBrowser,
+        !isSpace || model.openedSpace == nil || signingOut ? nil : openSpaceInBrowser
       )
       .navigationTitle(
-        model.openedSpace?.title
-          ?? (runtime.showsSpacePicker
+        isSpace
+          ? (model.openedSpace?.title ?? "")
+          : (runtime.showsSpacePicker
             ? pageTitle : (RuntimeLocation.deployment == .production ? "" : "Tonk"))
       )
       .navigationSubtitle(
@@ -125,6 +134,21 @@ struct ContentView: View {
       )
       .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
       .disabled(signingOut)
+      .onChange(of: model.openedSpace?.id, initial: true) { _, id in
+        if isSpace {
+          if id == nil { dismissWindow(id: "space") }
+        } else if id != nil {
+          // Any path that opens a space (a view, chat history, agents) shows it here.
+          openWindow(id: "space")
+        }
+      }
+      .onDisappear {
+        guard isSpace else { return }
+        // Closing the window leaves the space.
+        model.openedSpace = nil
+        showingChat = false
+        runtime.closeSpace()
+      }
   }
 
   var body: some View {
@@ -184,7 +208,7 @@ struct ContentView: View {
 
   @ToolbarContentBuilder
   private var windowToolbar: some ToolbarContent {
-    if model.openedSpace != nil {
+    if isSpace {
       ToolbarItem(id: "toggle-chat", placement: .navigation) {
         Button {
           toggleAgentSidebar()
@@ -195,24 +219,11 @@ struct ContentView: View {
           .help(showingChat ? "Hide chat (⌘B)" : "Show chat (⌘B)")
       }.customGlassToolbarItem()
     }
-    if model.openedSpace != nil {
-      ToolbarItem(placement: .navigation) {
-        Button {
-          model.openedSpace = nil
-          showingChat = false
-        } label: {
-          Image(systemName: "chevron.left").frame(width: 20, height: 20)
-        }.nativeControl(circular: true).controlSize(.large)
-          .accessibilityLabel("Back to overview").help("Back to overview")
-          .keyboardShortcut("[", modifiers: .command)
-          .disabled(model.busy || model.creatingSpace)
-      }.customGlassToolbarItem()
-    }
-    if model.openedSpace != nil {
+    if isSpace {
       ToolbarItem(id: "space-actions", placement: .primaryAction) {
         GlassControls {
           HStack(spacing: 8) {
-            if runtime.loading || runtime.catalogLoading {
+            if runtime.spaceLoading || runtime.catalogLoading {
               ProgressView()
                 .controlSize(.small)
                 .frame(width: 16, height: 16)
@@ -223,7 +234,7 @@ struct ContentView: View {
               model.startSpaceChat()
             } label: {
               Image(systemName: "square.and.pencil").frame(width: 20, height: 20)
-            }.nativeControl(circular: true).accessibilityLabel("New chat").help("New chat (⌘N)")
+            }.nativeControl(circular: true).accessibilityLabel("New chat").help("New chat (⇧⌘N)")
               .disabled(chatActionsDisabled)
             Button {
               showHistory = true
@@ -243,32 +254,33 @@ struct ContentView: View {
         }.padding(.vertical, 4)
       }.customGlassToolbarItem()
     }
-    if model.openedSpace == nil
+    if !isSpace
       && runtime.showsSpacePicker
     {
+      if runtime.loading || runtime.catalogLoading {
+        ToolbarItem(id: "refreshing", placement: .primaryAction) {
+          ProgressView()
+            .controlSize(.small)
+            .frame(width: 16, height: 16)
+            .accessibilityLabel("Refreshing spaces")
+            .help("Refreshing…")
+        }.customGlassToolbarItem()
+      }
       ToolbarItem(id: "new-link", placement: .primaryAction) {
-        HStack(spacing: 12) {
-          if runtime.loading || runtime.catalogLoading {
-            ProgressView()
-              .controlSize(.small)
-              .frame(width: 16, height: 16)
-              .accessibilityLabel("Refreshing spaces")
-              .help("Refreshing…")
-          }
-          Button {
-            startNewLink()
-          } label: {
-            Label("New Link", systemImage: "plus")
-          }
-          .labelStyle(.titleAndIcon)
-          .help("New Link (⇧⌘N)")
-          .disabled(runtime.spaces.isEmpty || !runtime.accountConnected)
+        Button {
+          startNewLink()
+        } label: {
+          Image(systemName: "link.badge.plus").frame(width: 20, height: 20)
         }
+        .nativeControl(circular: true).controlSize(.large)
+        .accessibilityLabel("New Link")
+        .help("New Link (⌘N)")
+        .disabled(runtime.spaces.isEmpty || !runtime.accountConnected)
       }.customGlassToolbarItem()
     }
     ToolbarItem(id: "more-options", placement: .primaryAction) {
       moreMenu
-    }.customGlassToolbarItem()
+    }
   }
 
   private var refreshDisabled: Bool {
@@ -276,13 +288,13 @@ struct ContentView: View {
   }
 
   private func refreshContent() {
-    if model.openedSpace == nil {
+    if !isSpace {
       Task {
         await runtime.refreshSpaces()
         await access.refreshAll(runtime.spaces)
       }
     } else {
-      runtime.load()
+      runtime.reloadSpace()
     }
   }
 
@@ -299,26 +311,13 @@ struct ContentView: View {
     AnchoredMenuButton {
       Button("Refresh", systemImage: "arrow.clockwise", action: refreshContent)
         .disabled(refreshDisabled)
-      if model.openedSpace != nil {
+      if isSpace {
         Button("Open in Browser", systemImage: "arrow.up.right.square", action: openSpaceInBrowser)
       }
-      if let space = model.openedSpace ?? selectedSpace {
+      if let space = isSpace ? model.openedSpace : selectedSpace {
         Button("Sync Status…", systemImage: "arrow.triangle.2.circlepath") {
           syncStatusSpace = space
         }
-      }
-      Divider()
-      Button("Settings…", systemImage: "gearshape") { showProviderSettings = true }
-        .disabled(accountActionsDisabled)
-      if model.provider == .chatGPT && model.signedIn {
-        Button("Sign Out of ChatGPT") {
-          Task { await model.signOut() }
-        }.disabled(accountActionsDisabled)
-      }
-      if runtime.accountConnected && RuntimeLocation.deployment != .local {
-        Button("Sign Out of Tonk") {
-          signOutOfTonk()
-        }.disabled(accountActionsDisabled)
       }
     }
   }
@@ -520,22 +519,22 @@ struct ContentView: View {
 
   private var workspace: some View {
     ZStack {
-      RuntimeView(model: runtime)
+      RuntimeView(webView: runtime.spaceWebView)
         .allowsHitTesting(runtime.selectedSpace != nil)
         .accessibilityHidden(runtime.selectedSpace == nil)
-      if let error = runtime.error {
+      if let error = runtime.spaceError {
         ContentUnavailableView {
-          Label("Couldn’t open Tonk", systemImage: "network")
+          Label("Couldn’t open this space", systemImage: "network")
         } description: {
           Text(error)
         } actions: {
-          Button("Try again") { runtime.load() }
+          Button("Try again") { runtime.reloadSpace() }
         }.background(.background)
       }
     }
     .background(.background)
     .overlay(alignment: .top) {
-      if runtime.loading {
+      if runtime.spaceLoading {
         HStack(spacing: 8) {
           ProgressView().controlSize(.small)
           Text("Loading space…").font(.callout)
@@ -548,7 +547,7 @@ struct ContentView: View {
   private var pageTitle: String {
     switch page {
     case .allLinks: "All links"
-    case .agentLinks: "For agents"
+    case .agentLinks: "Connections"
     case .space(let id): runtime.spaces.first(where: { $0.id == id })?.title ?? "Spaces"
     case nil: "Spaces"
     }
@@ -560,7 +559,8 @@ struct ContentView: View {
   }
 
   private func startNewLink() {
-    guard let first = model.openedSpace ?? selectedSpace ?? runtime.spaces.first else { return }
+    guard let first = (isSpace ? model.openedSpace : selectedSpace) ?? runtime.spaces.first
+    else { return }
     newLink = NewLinkRequest(id: first.id)
   }
 

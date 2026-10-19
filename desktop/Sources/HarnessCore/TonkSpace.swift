@@ -3,6 +3,9 @@ import Foundation
 public struct TonkSpace: Identifiable, Codable, Equatable, Sendable {
   public let subject: String
   public let name: String?
+  /// The account's chosen sidebar symbol and tint, synced on the account directory.
+  public let icon: String?
+  public let color: String?
   public var id: String { subject }
   public var title: String {
     let title = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

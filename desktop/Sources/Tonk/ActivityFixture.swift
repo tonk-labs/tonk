@@ -38,7 +38,7 @@ enum ActivityFixture {
     model.openedSpace = space
     model.showingChat = true
     model.runtime = runtime
-    runtime.webView.loadHTMLString(
+    runtime.spaceWebView.loadHTMLString(
       "<p>Layout fixture only. No live worker or model.</p>", baseURL: nil)
   }
 }

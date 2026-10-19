@@ -45,15 +45,26 @@ struct TonkApp: App {
     .windowToolbarStyle(.unified)
     .commands {
       CommandGroup(replacing: .newItem) {
-        Button("New chat") {
+        Button("New Chat") {
           model.startSpaceChat()
         }
-        .keyboardShortcut("n").disabled(
+        .keyboardShortcut("n", modifiers: [.command, .shift]).disabled(
           model.openedSpace == nil || model.busy || model.creatingSpace || model.loginPending
             || model.connecting)
       }
       WindowCommands()
     }
+
+    // One space at a time, with its chat; opening another view reuses it.
+    Window("Space", id: "space") {
+      ContentView(model: model, runtime: runtime, access: access, isSpace: true)
+        .frame(minWidth: 700, minHeight: 500)
+        .background(WindowAppearance())
+    }
+    .defaultSize(width: 1180, height: 780)
+    .windowToolbarStyle(.unified)
+    // A restored window would have no space to show.
+    .restorationBehavior(.disabled)
   }
 }
 

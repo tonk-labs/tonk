@@ -259,6 +259,21 @@ pub mod space {
     #[domain("xyz.tonk.space")]
     #[pick(last)]
     pub struct FoundedBy(pub Entity);
+
+    /// The SF Symbol name this account shows for the space in the desktop
+    /// sidebar. A personal label on the account directory, so it follows
+    /// the account to every device; the desktop writes it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[pick(last)]
+    pub struct Icon(pub String);
+
+    /// The named color token tinting the space's sidebar icon, alongside
+    /// [`Icon`].
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[pick(last)]
+    pub struct Color(pub String);
 }
 
 /// Attributes describing a device authorization — an
