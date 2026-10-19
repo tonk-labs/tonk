@@ -100,9 +100,13 @@ extension RuntimeModel: ModelChoiceAccount {
       const field = (the, as) => ({the, as, cardinality: 'one'});
       const text = (key, the) => ({kind: 'durable', concept: {with: {[key]: field(the, 'Text')}}});
       // Read the stored model now, so choosing the default retracts exactly what is there.
+      // A query needs one required field; the model is only stored beside a provider.
       const rows = await api(base + '/query', {
-        predicate: {with: {model: {...field('xyz.tonk.model-choice/model', 'Text'), optional: true}}},
-        terms: {this: root, model: {'?': {name: 'model'}}}
+        predicate: {with: {
+          provider: field('xyz.tonk.model-choice/provider', 'Text'),
+          model: {...field('xyz.tonk.model-choice/model', 'Text'), optional: true}
+        }},
+        terms: {this: root, provider: {'?': {name: 'provider'}}, model: {'?': {name: 'model'}}}
       });
       const stored = rows[0]?.fields?.model;
       const claims = [{op: 'assert', application: {
