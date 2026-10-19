@@ -509,6 +509,13 @@ fn watches(id: &str) -> String {
 /// Where the record of accepted invocations is kept, by invocation.
 const PRESENTED: &str = "presented/";
 
+/// The least time between two prunings of the record. Each alarm wakes
+/// the object, and accepted invocations stop being fresh a second or so
+/// apart, so pruning each as it lapses woke a busy object every second.
+/// A record kept past its freshness costs only its storage: the
+/// invocation is refused as stale either way.
+const PRUNE_EVERY_SECONDS: u64 = 60;
+
 /// The invocations the object accepted, kept in its storage, each until it
 /// is no longer fresh: memory would be lost each time the object
 /// hibernates, and an invocation captured before could be presented again
@@ -534,9 +541,9 @@ impl Presented for Stored {
             console_error!("an accepted invocation could not be recorded: {error}");
             return false;
         }
-        // Forget it once it is no longer fresh, if nothing is due sooner.
+        // Forget it once it is no longer fresh, if no pruning is due already.
         if matches!(self.0.get_alarm().await, Ok(None)) {
-            let wait = Duration::from_secs(until.saturating_sub(now).max(1));
+            let wait = Duration::from_secs(until.saturating_sub(now).max(PRUNE_EVERY_SECONDS));
             if let Err(error) = self.0.set_alarm(wait).await {
                 console_error!("the record of accepted invocations will not be pruned: {error}");
             }
@@ -546,7 +553,8 @@ impl Presented for Stored {
 }
 
 /// Delete the records of invocations no longer fresh at `now`, and wake
-/// again when the next one stops being.
+/// again when the next one stops being, but no sooner than
+/// [`PRUNE_EVERY_SECONDS`].
 async fn forget_expired(storage: &Storage, now: u64) -> Result<()> {
     let held = storage
         .list_with_options(ListOptions::new().prefix(PRESENTED))
@@ -570,7 +578,9 @@ async fn forget_expired(storage: &Storage, now: u64) -> Result<()> {
     }
     if let Some(next) = next {
         storage
-            .set_alarm(Duration::from_secs(next.saturating_sub(now).max(1)))
+            .set_alarm(Duration::from_secs(
+                next.saturating_sub(now).max(PRUNE_EVERY_SECONDS),
+            ))
             .await?;
     }
     Ok(())
