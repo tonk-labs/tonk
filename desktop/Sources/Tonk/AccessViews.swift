@@ -1,4 +1,3 @@
-import AppKit
 import HarnessCore
 import SwiftUI
 
@@ -13,25 +12,23 @@ struct LinkBadge: View {
 }
 
 /// A space's people: a summary and overlapping initials. Hovering an initial
-/// grows it into a pill with the member's full name.
+/// grows it into a pill with the member's full name; past the limit, a "+N"
+/// chip opens a list of everyone.
 struct Roster: View {
   let summary: String
   let members: [SpaceMember]
   var limit = 6
   @State private var hovered: SpaceMember.ID?
+  @State private var listShown = false
+  @State private var overMore = false
+  @State private var overList = false
 
   var body: some View {
     HStack(spacing: 10) {
       Text(summary)
       HStack(spacing: -6) {
         ForEach(members.prefix(limit)) { chip($0) }
-        if members.count > limit {
-          let hidden = members.dropFirst(limit).map(\.displayName)
-          Text("+\(members.count - limit)").font(.caption).foregroundStyle(.secondary)
-            .padding(.leading, 10)
-            .overlay { ToolTip(text: AccessText.list(hidden)) }
-            .accessibilityLabel(AccessText.list(hidden))
-        }
+        if members.count > limit { more }
       }
       .accessibilityElement(children: .contain)
     }
@@ -48,13 +45,8 @@ struct Roster: View {
       }
     }
     .padding(.horizontal, open ? 8 : 0)
-    .frame(minWidth: 24, minHeight: 24)
-    .background(.fill.secondary, in: Capsule())
-    .background(Color(nsColor: .windowBackgroundColor), in: Capsule())
-    .clipShape(Capsule())
-    .overlay { Capsule().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1) }
+    .rosterChip()
     .zIndex(open ? 1 : 0)
-    .contentShape(Capsule())
     .onHover { over in
       if over {
         hovered = member.id
@@ -64,6 +56,71 @@ struct Roster: View {
     }
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(member.displayName)
+  }
+
+  /// Opens on hover and stays open while the pointer is over the chip or the list;
+  /// a click opens it too, so it also works from the keyboard.
+  private var more: some View {
+    Button {
+      listShown.toggle()
+    } label: {
+      Text("+\(members.count - limit)").font(.caption.weight(.semibold))
+        .padding(.horizontal, 4)
+        .rosterChip()
+    }
+    .buttonStyle(.plain)
+    .onHover { overMore = $0; settleList() }
+    .popover(isPresented: $listShown, arrowEdge: .bottom) {
+      MemberList(members: members)
+        .onHover { overList = $0; settleList() }
+    }
+    .accessibilityLabel("Show all \(members.count) members")
+  }
+
+  private func settleList() {
+    if overMore || overList {
+      listShown = true
+      return
+    }
+    // A short grace lets the pointer cross from the chip into the popover.
+    Task {
+      try? await Task.sleep(for: .milliseconds(250))
+      if !overMore && !overList { listShown = false }
+    }
+  }
+}
+
+/// Everyone in a space, one initial and name per row.
+private struct MemberList: View {
+  let members: [SpaceMember]
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 8) {
+        ForEach(members) { member in
+          HStack(spacing: 8) {
+            Text(member.initial).font(.caption.weight(.semibold)).rosterChip()
+              .accessibilityHidden(true)
+            Text(member.displayName).lineLimit(1)
+          }
+        }
+      }
+      .padding(12)
+    }
+    .frame(minWidth: 180, maxHeight: 320)
+    .fixedSize(horizontal: true, vertical: false)
+  }
+}
+
+extension View {
+  /// The roster's initial circle, which grows into a capsule around wider content.
+  fileprivate func rosterChip() -> some View {
+    frame(minWidth: 24, minHeight: 24)
+      .background(.fill.secondary, in: Capsule())
+      .background(Color(nsColor: .windowBackgroundColor), in: Capsule())
+      .clipShape(Capsule())
+      .overlay { Capsule().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1) }
+      .contentShape(Capsule())
   }
 }
 
@@ -209,12 +266,4 @@ private struct BotShape: Shape {
     }
     return path
   }
-}
-
-/// An AppKit tooltip. SwiftUI's `.help` does not reach plain views inside a
-/// grouped form's rows, so the roster's "+N" overflow would otherwise show nothing.
-private struct ToolTip: NSViewRepresentable {
-  let text: String
-  func makeNSView(context: Context) -> NSView { NSView() }
-  func updateNSView(_ nsView: NSView, context: Context) { nsView.toolTip = text }
 }
