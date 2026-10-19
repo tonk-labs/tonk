@@ -10,7 +10,9 @@ use dialog_common::ConditionalSync;
 use dialog_credentials::{Credential, SignerCredential};
 use dialog_effects::credential::{self as credential_fx, CredentialError, prelude::*};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
-use dialog_peer::{Allowance, OpenCredential, Peer, PeerError, PeerSpace, SpaceVaultExt as _};
+use dialog_peer::{
+    Allowance, OpenCredential, Peer, PeerError, PeerSpace, SpaceVaultExt as _, StepFuture,
+};
 use dialog_repository::{
     ACCESS_BRANCH, AddAddressError, Branch, ConnectError, ConnectedBranch, ConnectedReplica,
     HeldCaches, PeersEnv, Repository, ResolveEnv, SiteAddress, Upstream, contact,
@@ -22,29 +24,23 @@ use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Principal as _;
 use std::fmt::Display;
 
-/// The future an [`Upgrade`] returns.
-#[cfg(not(target_arch = "wasm32"))]
-pub type UpgradeFuture<'a> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
-/// The future an [`Upgrade`] returns (single-threaded wasm form).
-#[cfg(target_arch = "wasm32")]
-pub type UpgradeFuture<'a> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + 'a>>;
-
 /// Moves a profile's state branch an earlier release wrote to the layout
 /// this release writes, before opening the profile writes into it.
 ///
-/// Opening runs it only when the branch needs migrating. The state branch
-/// is the profile's account branch, which also keeps the profile
-/// library's definitions, so a profile the worker or the CLI opens is
-/// given the whole move (storage, definitions and rules) from the layer
-/// that knows the definitions; this crate sits below it.
+/// Opening runs it every time, and it decides whether anything is left
+/// to move: a move an earlier open left half done, storage rewritten but
+/// definitions not, is finished by the next open. The state branch is the
+/// profile's account branch, which also keeps the profile library's
+/// definitions, so a profile the worker or the CLI opens is given the
+/// whole move (storage, definitions and rules) from the layer that knows
+/// the definitions; this crate sits below it.
 ///
-/// Every step must hold however often it runs: a move that fails is run
-/// once more over the refreshed branch, which finishes what is left.
+/// Every step must hold however often it runs: a move that fails because
+/// another writer moved the branch first is run once more over the
+/// refreshed branch, which finishes what is left.
 pub trait Upgrade<S: PeerSpace>: ConditionalSync {
-    /// Migrate `branch`, acting as `peer`.
-    fn upgrade<'a>(&'a self, branch: &'a Branch, peer: &'a Peer<S>) -> UpgradeFuture<'a>;
+    /// Migrate `branch`, acting as `peer`, if anything is left to move.
+    fn upgrade<'a>(&'a self, branch: &'a Branch, peer: &'a Peer<S>) -> StepFuture<'a>;
 }
 
 /// The name the key of the system tonk runs as is kept under, in the
@@ -297,35 +293,32 @@ where
     Ok(peer)
 }
 
-/// Move `peer`'s state branch with `upgrade` when an earlier release laid
-/// it out. Onboarding writes the branch directly, outside the reactor's
-/// migration gate, and a commit into the earlier layout is refused.
+/// Move `peer`'s state branch with `upgrade`, which finds whatever an
+/// earlier release, or an earlier open that failed partway, left to move.
+/// Onboarding writes the branch directly, outside the reactor's migration
+/// gate, and a commit into the earlier layout is refused.
 async fn migrate_state<S: PeerSpace>(
     peer: &Peer<S>,
     upgrade: &dyn Upgrade<S>,
 ) -> Result<(), PeerError> {
     let state = peer.state();
-    if !state
-        .needs_migration(peer)
-        .await
-        .map_err(|error| PeerError::Upgrade(error.to_string()))?
-    {
-        return Ok(());
-    }
     let Err(first) = upgrade.upgrade(state, peer).await else {
         return Ok(());
     };
     // Another process opening the same profile can move it first, so this
-    // one's commit on the same head loses; or a step after the storage
-    // rewrite can fail, leaving a branch the storage gate no longer flags.
-    // Every step holds however often it runs, so the whole move runs once
-    // more over the refreshed branch: it finishes what is left, and a
-    // failure it meets again is reported.
+    // one's commit on the same head loses. Every step holds however often
+    // it runs, so when the refreshed head shows another writer, the whole
+    // move runs once more over it and finishes what is left. When nothing
+    // else wrote, the failure would only repeat, so it is reported as is.
+    let ours = state.revision();
     state.refresh(peer).await.map_err(|error| {
         PeerError::Upgrade(format!(
             "{first}; refreshing the branch to retry failed: {error}"
         ))
     })?;
+    if state.revision() == ours {
+        return Err(first);
+    }
     upgrade
         .upgrade(state, peer)
         .await
@@ -895,137 +888,16 @@ mod tests {
     where
         S: PeerSpace,
     {
-        fn upgrade<'a>(&'a self, branch: &'a Branch, peer: &'a Peer<S>) -> UpgradeFuture<'a> {
+        fn upgrade<'a>(&'a self, branch: &'a Branch, peer: &'a Peer<S>) -> StepFuture<'a> {
             Box::pin(async move {
                 branch
                     .migrate()
                     .perform(peer)
                     .await
                     .map(|_| ())
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| PeerError::Upgrade(error.to_string()))
             })
         }
-    }
-
-    /// Moves the branch through a handle of its own, as another process
-    /// opening the same profile does, and then loses its own commit once.
-    struct Raced(std::sync::atomic::AtomicBool);
-
-    impl<S: PeerSpace> Upgrade<S> for Raced {
-        fn upgrade<'a>(&'a self, branch: &'a Branch, peer: &'a Peer<S>) -> UpgradeFuture<'a> {
-            Box::pin(async move {
-                if self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                    return MigrateBranch.upgrade(branch, peer).await;
-                }
-                let other = Repository::from(peer.did())
-                    .branch(branch.name())
-                    .open()
-                    .perform(peer)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                MigrateBranch.upgrade(&other, peer).await?;
-                Err("version mismatch".to_string())
-            })
-        }
-    }
-
-    /// Rewrites the storage and then fails every later step.
-    struct Stranded;
-
-    impl<S: PeerSpace> Upgrade<S> for Stranded {
-        fn upgrade<'a>(&'a self, branch: &'a Branch, peer: &'a Peer<S>) -> UpgradeFuture<'a> {
-            Box::pin(async move {
-                branch
-                    .migrate_storage()
-                    .perform(peer)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                Err("the definitions did not move".to_string())
-            })
-        }
-    }
-
-    /// Two processes opening a profile an earlier release wrote both find
-    /// it needing to move, and only one move lands. The other opens the
-    /// moved profile instead of failing.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[dialog_common::test]
-    async fn it_opens_a_profile_another_process_migrated_first() -> anyhow::Result<()> {
-        use dialog_storage::provider::storage::NativeSpace;
-
-        let temp = tempfile::tempdir()?;
-        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
-        let open = |upgrade: &'static dyn Upgrade<NativeSpace>| {
-            let directory = directory.clone();
-            async move {
-                let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
-                open_peer(
-                    Location::new(directory.clone(), "tonk"),
-                    directory,
-                    Storage::<NativeSpace>::default().owned_by(system.did()),
-                    &credentials,
-                    &system,
-                    true,
-                    upgrade,
-                )
-                .await
-            }
-        };
-
-        let peer = open(&MigrateBranch).await?;
-        peer.state().rekey_storage(0).perform(&peer).await?;
-        drop(peer);
-
-        static RACED: Raced = Raced(std::sync::atomic::AtomicBool::new(false));
-        let peer = open(&RACED).await?;
-        assert!(!peer.state().needs_migration(&peer).await?);
-        peer.secrets()
-            .site("tonk-after-race-v1")
-            .save(b"kept".to_vec())
-            .perform(&peer)
-            .await?;
-        Ok(())
-    }
-
-    /// A move that rewrites the storage and then fails leaves a branch the
-    /// storage gate no longer flags. Opening reports the failure rather
-    /// than taking the rewritten storage for a finished move.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[dialog_common::test]
-    async fn it_reports_a_move_that_fails_after_the_storage_rewrite() -> anyhow::Result<()> {
-        use dialog_storage::provider::storage::NativeSpace;
-
-        let temp = tempfile::tempdir()?;
-        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
-        let open = |upgrade: &'static dyn Upgrade<NativeSpace>| {
-            let directory = directory.clone();
-            async move {
-                let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
-                open_peer(
-                    Location::new(directory.clone(), "tonk"),
-                    directory,
-                    Storage::<NativeSpace>::default().owned_by(system.did()),
-                    &credentials,
-                    &system,
-                    true,
-                    upgrade,
-                )
-                .await
-            }
-        };
-
-        let peer = open(&MigrateBranch).await?;
-        peer.state().rekey_storage(0).perform(&peer).await?;
-        drop(peer);
-
-        let Err(error) = open(&Stranded).await else {
-            panic!("opening reports the failed move");
-        };
-        assert!(
-            error.to_string().contains("the definitions did not move"),
-            "{error}"
-        );
-        Ok(())
     }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

@@ -111,7 +111,9 @@ where
 /// profile library's definitions, and onboarding writes it directly when
 /// the profile opens. Moving only its storage there would leave the later
 /// [`migrate`] gate, which asks only about storage, nothing to do, and
-/// the definitions under their earlier identities.
+/// the definitions under their earlier identities. So this moves the
+/// branch when its storage or any of its definitions is in the earlier
+/// form, and a move an earlier open left half done is finished.
 ///
 /// [`Upgrade`]: tonk_account::peer::Upgrade
 pub struct ProfileUpgrade;
@@ -125,12 +127,23 @@ where
         &'a self,
         branch: &'a dialog_repository::Branch,
         peer: &'a dialog_peer::Peer<S>,
-    ) -> tonk_account::peer::UpgradeFuture<'a> {
+    ) -> dialog_peer::StepFuture<'a> {
         Box::pin(async move {
+            let failed = |error: ReactorError| dialog_peer::PeerError::Upgrade(error.to_string());
+            let needed = branch
+                .needs_migration(peer)
+                .await
+                .map_err(|error| failed(error.into()))?
+                || tonk_schema::upgrade::has_legacy_definitions(branch, peer)
+                    .await
+                    .map_err(|reason| failed(ReactorError::Upgrade { reason }))?;
+            if !needed {
+                return Ok(());
+            }
             migrate_branch(branch, peer)
                 .await
                 .map(|_| ())
-                .map_err(|error| error.to_string())
+                .map_err(failed)
         })
     }
 }
@@ -366,8 +379,11 @@ mod tests {
     use dialog_artifacts::{Entity, Pick, Relation, Statement, Update, Value};
     use dialog_capability::Principal as _;
     use dialog_effects::storage::{Directory, Location};
+    use dialog_peer::{Peer, PeerError, StepFuture};
+    use dialog_repository::{Branch, Repository};
     use dialog_storage::provider::storage::{NativeSpace, Storage};
-    use tonk_account::peer::{open_peer, open_system};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tonk_account::peer::{Upgrade, open_peer, open_system};
 
     /// A claim by its raw relation, as the earlier release recorded
     /// definitions.
@@ -387,30 +403,30 @@ mod tests {
         }
     }
 
-    /// A profile an earlier release wrote keeps library definitions on its
-    /// state branch in that release's form. Opening it moves the storage
-    /// and the definitions together, so the later storage-gated
-    /// [`super::migrate`] finding nothing to do leaves nothing behind.
-    #[dialog_common::test]
-    async fn it_upgrades_the_definitions_of_a_profile_an_earlier_release_wrote()
-    -> anyhow::Result<()> {
-        let temp = tempfile::tempdir()?;
-        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
-        let open = || async {
-            let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
-            open_peer(
-                Location::new(directory.clone(), "tonk"),
-                directory.clone(),
-                Storage::<NativeSpace>::default().owned_by(system.did()),
-                &credentials,
-                &system,
-                true,
-                &ProfileUpgrade,
-            )
-            .await
-        };
+    /// Open the profile `tonk` kept in `directory`, moving its state with
+    /// `upgrade`.
+    async fn open(
+        directory: &Directory,
+        upgrade: &dyn Upgrade<NativeSpace>,
+    ) -> anyhow::Result<Peer<NativeSpace>> {
+        let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+        Ok(open_peer(
+            Location::new(directory.clone(), "tonk"),
+            directory.clone(),
+            Storage::<NativeSpace>::default().owned_by(system.did()),
+            &credentials,
+            &system,
+            true,
+            upgrade,
+        )
+        .await?)
+    }
 
-        let peer = open().await?;
+    /// Leave in `directory` a profile as an earlier release wrote it: a
+    /// library definition recorded that release's way, on a branch laid
+    /// out before the number band.
+    async fn write_earlier_profile(directory: &Directory) -> anyhow::Result<()> {
+        let peer = open(directory, &ProfileUpgrade).await?;
         let attribute: dialog_query::AttributeDescriptor = serde_json::from_value(
             serde_json::json!({ "the": "xyz.tonk.note/title", "as": "text:" }),
         )?;
@@ -428,19 +444,120 @@ mod tests {
             });
         }
         transaction.commit().publish().perform(&peer).await?;
-        // How a release before the number band left the branch.
         peer.state().rekey_storage(0).perform(&peer).await?;
-        drop(peer);
+        Ok(())
+    }
 
-        let peer = open().await?;
-        assert!(!peer.state().needs_migration(&peer).await?);
-        let left = tonk_schema::upgrade::upgrade_definitions(peer.state(), &peer)
+    /// Whether `peer`'s state branch is wholly in this release's form.
+    async fn assert_moved(peer: &Peer<NativeSpace>) -> anyhow::Result<()> {
+        assert!(!peer.state().needs_migration(peer).await?);
+        let left = tonk_schema::upgrade::upgrade_definitions(peer.state(), peer)
             .await
             .map_err(anyhow::Error::msg)?;
         assert!(
-            left.moves.is_empty() && left.rewritten.is_empty(),
+            left.is_empty(),
             "the definitions were upgraded when the profile opened: {left:?}"
         );
+        Ok(())
+    }
+
+    /// Moves the branch through a handle of its own, as another process
+    /// opening the same profile does, and then loses its own commit once.
+    struct Raced(AtomicBool);
+
+    impl Upgrade<NativeSpace> for Raced {
+        fn upgrade<'a>(
+            &'a self,
+            branch: &'a Branch,
+            peer: &'a Peer<NativeSpace>,
+        ) -> StepFuture<'a> {
+            Box::pin(async move {
+                if self.0.swap(true, Ordering::SeqCst) {
+                    return ProfileUpgrade.upgrade(branch, peer).await;
+                }
+                let other = Repository::from(peer.did())
+                    .branch(branch.name())
+                    .open()
+                    .perform(peer)
+                    .await
+                    .map_err(|error| PeerError::Upgrade(error.to_string()))?;
+                ProfileUpgrade.upgrade(&other, peer).await?;
+                Err(PeerError::Upgrade("version mismatch".into()))
+            })
+        }
+    }
+
+    /// Rewrites the storage and then fails, as a move interrupted after
+    /// the rewrite does.
+    struct Stranded;
+
+    impl Upgrade<NativeSpace> for Stranded {
+        fn upgrade<'a>(
+            &'a self,
+            branch: &'a Branch,
+            peer: &'a Peer<NativeSpace>,
+        ) -> StepFuture<'a> {
+            Box::pin(async move {
+                branch
+                    .migrate_storage()
+                    .perform(peer)
+                    .await
+                    .map_err(|error| PeerError::Upgrade(error.to_string()))?;
+                Err(PeerError::Upgrade("the definitions did not move".into()))
+            })
+        }
+    }
+
+    /// A profile an earlier release wrote keeps library definitions on its
+    /// state branch in that release's form. Opening it moves the storage
+    /// and the definitions together, so the later storage-gated
+    /// [`super::migrate`] finding nothing to do leaves nothing behind.
+    #[dialog_common::test]
+    async fn it_upgrades_the_definitions_of_a_profile_an_earlier_release_wrote()
+    -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        write_earlier_profile(&directory).await?;
+
+        assert_moved(&open(&directory, &ProfileUpgrade).await?).await
+    }
+
+    /// A move that rewrites the storage and then fails leaves a branch the
+    /// storage gate no longer flags. Opening reports the failure, and the
+    /// next open finishes the move from the definitions still left.
+    #[dialog_common::test]
+    async fn it_finishes_a_move_an_earlier_open_left_half_done() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        write_earlier_profile(&directory).await?;
+
+        let Err(error) = open(&directory, &Stranded).await else {
+            panic!("opening reports the failed move");
+        };
+        assert!(
+            error.to_string().contains("the definitions did not move"),
+            "{error}"
+        );
+
+        assert_moved(&open(&directory, &ProfileUpgrade).await?).await
+    }
+
+    /// Two processes opening a profile an earlier release wrote both find
+    /// it needing to move, and only one move lands. The other opens the
+    /// moved profile instead of failing.
+    #[dialog_common::test]
+    async fn it_opens_a_profile_another_process_migrated_first() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        write_earlier_profile(&directory).await?;
+
+        let peer = open(&directory, &Raced(AtomicBool::new(false))).await?;
+        assert_moved(&peer).await?;
+        peer.secrets()
+            .site("tonk-after-race-v1")
+            .save(b"kept".to_vec())
+            .perform(&peer)
+            .await?;
         Ok(())
     }
 }
