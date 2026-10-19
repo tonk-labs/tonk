@@ -1,8 +1,5 @@
 **
-!Cargo.toml
-!Cargo.lock
-!rust
-!rust/**
+!target/release/tonk-agent-worker
 !mcp
 !mcp/*.mjs
 !mcp/tools.json

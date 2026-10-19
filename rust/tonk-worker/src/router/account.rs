@@ -3,11 +3,11 @@
 
 use crate::worker::DefaultProfile;
 use axum::{Extension, Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::AccountProviderRecord;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 use tonk_worker_api::{
     AccountDisplayNameRequest, AccountDisplayNameResponse, AccountLinkRequest, AccountStatus,
 };

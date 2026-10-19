@@ -31,7 +31,6 @@ use ::axum::{
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::{ArtifactSelector, Entity, Relation, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
@@ -39,6 +38,7 @@ use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 
 use super::AppState;
 use crate::TonkWorkerError;

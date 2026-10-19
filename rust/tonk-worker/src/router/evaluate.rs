@@ -22,7 +22,6 @@ use ::axum::{
     extract::{Path, State},
     http::HeaderMap,
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::Changes;
 use dialog_repository::{RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
@@ -30,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_evaluator::evaluate::{EvaluateError, SyntaxEvaluateExt};
+use tonk_handler_macros::wasm_compat;
 use tonk_notation::{Parsed, Syntax, parse};
 
 use super::AppState;
