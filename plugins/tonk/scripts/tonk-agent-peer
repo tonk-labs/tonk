@@ -11,7 +11,7 @@
 # stdout belongs to the MCP protocol: every message here goes to stderr.
 #
 # Environment, all optional:
-#   TONK_CHANNEL       stable (default), staging, or dev (latest main build)
+#   TONK_CHANNEL       dev (default: latest main build), staging, or stable
 #   TONK_RELEASE       pin an exact release tag (wins over TONK_CHANNEL)
 #   TONK_AGENT_PEER_HOME     peer data directory (default ~/.tonk/agent-peer)
 #   TONK_AGENT_PEER_BINARY   run this binary instead (development)
@@ -25,7 +25,9 @@ REPO="tonk-labs/tonk"
 say() { printf 'tonk-agent-peer: %s\n' "$1" >&2; }
 die() { say "$1"; exit 1; }
 
-CHANNEL="${TONK_CHANNEL:-stable}"
+# Until the agent peer ships in a stable release, installs from the
+# marketplace follow the rolling build of main.
+CHANNEL="${TONK_CHANNEL:-dev}"
 case "$CHANNEL" in
   stable)
     BASE="https://github.com/${REPO}/releases/latest/download"

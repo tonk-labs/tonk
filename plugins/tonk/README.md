@@ -65,7 +65,7 @@ Set these in the environment the host starts MCP servers with:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TONK_CHANNEL` | `stable` | `stable`, `staging`, or `dev` (latest `main` build) |
+| `TONK_CHANNEL` | `dev` | `dev` (latest `main` build), `staging`, or `stable` |
 | `TONK_RELEASE` | | Pin an exact release tag |
 | `TONK_AGENT_PEER_HOME` | `~/.tonk/agent-peer` | Peer data directory |
 | `TONK_AGENT_PEER_RUNTIME` | `runtime/` beside the binary | Guest runtime served to space views |
