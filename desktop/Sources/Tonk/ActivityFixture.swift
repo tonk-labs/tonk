@@ -5,7 +5,14 @@ import SwiftUI
 /// Explicit visual fixture. Never loads an account, a provider or existing app data.
 @MainActor
 enum ActivityFixture {
-  static func prepare(model: HarnessModel, runtime: RuntimeModel) {
+  static let space = try? JSONDecoder().decode(
+    TonkSpace.self,
+    from: Data(#"{"subject":"did:key:zFixture","name":"Activity layout fixture"}"#.utf8))
+
+  static var requested: Bool { ProcessInfo.processInfo.arguments.contains("--activity-fixture") }
+
+  /// Fills a space window with the fixture chat and a static page.
+  static func prepare(model: HarnessModel, page: SpacePage) {
     let args = ProcessInfo.processInfo.arguments
     guard RuntimeLocation.deployment == .local, args.contains("--data-dir"),
       args.contains("--web-data-id"), model.saved.conversation.messages.isEmpty
@@ -13,11 +20,7 @@ enum ActivityFixture {
       NSApp.terminate(nil)
       return
     }
-    guard
-      let space = try? JSONDecoder().decode(
-        TonkSpace.self,
-        from: Data(#"{"subject":"did:key:zFixture","name":"Activity layout fixture"}"#.utf8))
-    else { return }
+    guard let space else { return }
     model.saved.conversation.space = space
     model.saved.conversation.messages = [
       ChatMessage(id: "first", role: "user", text: "Create a checklist."),
@@ -37,9 +40,7 @@ enum ActivityFixture {
       messageID: "second")
     model.openedSpace = space
     model.showingChat = true
-    model.runtime = runtime
-    runtime.spaceWebView.loadHTMLString(
-      "<p>Layout fixture only. No live worker or model.</p>", baseURL: nil)
+    page.showFixture(space, html: "<p>Layout fixture only. No live worker or model.</p>")
   }
 }
 

@@ -6,8 +6,13 @@ private struct SearchFocusKey: FocusedValueKey { typealias Value = () -> Void }
 private struct OpenSpaceInBrowserKey: FocusedValueKey { typealias Value = () -> Void }
 private struct ToggleAgentSidebarKey: FocusedValueKey { typealias Value = () -> Void }
 private struct NewLinkKey: FocusedValueKey { typealias Value = () -> Void }
+private struct NewChatKey: FocusedValueKey { typealias Value = () -> Void }
 
 extension FocusedValues {
+  var newChat: (() -> Void)? {
+    get { self[NewChatKey.self] }
+    set { self[NewChatKey.self] = newValue }
+  }
   var newLink: (() -> Void)? {
     get { self[NewLinkKey.self] }
     set { self[NewLinkKey.self] = newValue }
@@ -42,6 +47,7 @@ struct WindowCommands: Commands {
   @FocusedValue(\.openSpaceInBrowser) private var openSpaceInBrowser
   @FocusedValue(\.toggleAgentSidebar) private var toggleAgentSidebar
   @FocusedValue(\.newLink) private var newLink
+  @FocusedValue(\.newChat) private var newChat
 
   var body: some Commands {
     CommandGroup(replacing: .appSettings) {
@@ -52,6 +58,12 @@ struct WindowCommands: Commands {
       Button("New Link…") { newLink?() }
         .keyboardShortcut("n")
         .disabled(newLink == nil)
+    }
+    CommandGroup(replacing: .newItem) {
+      // Each space window has its own chat; this starts one in the focused window.
+      Button("New Chat") { newChat?() }
+        .keyboardShortcut("n", modifiers: [.command, .shift])
+        .disabled(newChat == nil)
     }
     CommandGroup(after: .toolbar) {
       Button("Refresh") { refreshContent?() }
