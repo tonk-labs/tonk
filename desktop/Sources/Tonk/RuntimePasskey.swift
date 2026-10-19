@@ -72,7 +72,7 @@ extension RuntimeModel {
       catalogLoaded = false
       catalogBranch = nil
       spaces = []
-      selectedSpace = nil
+      accountEpoch += 1
       webView.load(URLRequest(url: RuntimeLocation.home))
       for _ in 0..<60 {
         try await Task.sleep(for: .seconds(1))

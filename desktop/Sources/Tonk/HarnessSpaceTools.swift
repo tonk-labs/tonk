@@ -79,7 +79,7 @@ extension HarnessModel {
           : (tool == "tonk_query" ? "Reading local space" : "Validating notation")
         recordToolActivity(activity, messageID: origin)
         let result = try await runtime.performBuildTool(
-          space, tool: tool, arguments: params["arguments"])
+          space, tool: tool, arguments: params["arguments"], page: page)
         let data = try JSONEncoder().encode(result)
         if activeTurnID == params["turnId"].string { activity = "Thinking" }
         return SpaceTools.response(String(decoding: data, as: UTF8.self), success: true)
@@ -89,7 +89,7 @@ extension HarnessModel {
       if tool == "tonk_inspect_view" {
         activity = "Inspecting space preview"
         recordToolActivity("Inspecting attached space preview", messageID: origin)
-        let text = try await runtime.inspectView(space)
+        let text = try await runtime.inspectView(space, in: page)
         if activeTurnID == params["turnId"].string { activity = "Thinking" }
         return SpaceTools.response(text, success: true)
       }

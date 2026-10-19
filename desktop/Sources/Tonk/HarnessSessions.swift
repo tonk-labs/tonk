@@ -31,6 +31,10 @@ extension HarnessModel {
 
   func openChat(_ id: String, connectInBackground: Bool = false) async -> Bool {
     guard storageAvailable, !busy, !creatingSpace, !connecting, !loginPending else { return false }
+    guard !store.isOpenElsewhere(id) else {
+      error = "This chat is open in another window."
+      return false
+    }
     do {
       var next = saved
       try next.restoreChat(id)
@@ -64,8 +68,12 @@ extension HarnessModel {
 
   func openSpaceChat(_ space: TonkSpace, connectInBackground: Bool = false) async -> Bool {
     guard storageAvailable, !busy, !creatingSpace, !connecting, !loginPending else { return false }
-    if saved.conversation.space?.id == space.id { return true }
-    if let existing = saved.chats(in: space.id).first {
+    // Each window keeps its own chat: skip any that another window has open.
+    if saved.conversation.space?.id == space.id, !store.isOpenElsewhere(saved.activeSessionID) {
+      persist()
+      return true
+    }
+    if let existing = saved.chats(in: space.id).first(where: { !store.isOpenElsewhere($0.id) }) {
       return await openChat(existing.id, connectInBackground: connectInBackground)
     }
     attachSpace(space)

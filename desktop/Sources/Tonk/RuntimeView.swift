@@ -21,10 +21,9 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   var catalogCache: SpaceCatalogCache?
   var cachedAccountRoot: String?
   var liveAccountRoot: String?
-  @Published var selectedSpace: TonkSpace?
-  /// The space window's page loads on its own; the account page stays home.
-  @Published var spaceLoading = false
-  @Published var spaceError: String?
+  /// Bumped whenever the account signs out or changes, so every space window closes.
+  @Published var accountEpoch = 0
+  var pages: [WeakPage] = []
   @Published var catalogRecoveryStarted: Date?
   @Published var catalogLoading = false
   @Published var catalogLoaded = false
@@ -38,11 +37,9 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   var mcpBridge: LocalRuntimeBridge?
   var mcpConnectionFile: URL?
   /// The account page: catalog, access and agent tools run here, always at home.
+  /// Each space window has its own page on the same website data (`SpacePage`).
   let webView: WKWebView
-  /// The open space's page, shown in the space window. Same website data, so
-  /// the same account and worker.
-  let spaceWebView: WKWebView
-  let inspection = RuntimeInspection()
+  let websiteDataStore: WKWebsiteDataStore
 
   override init() {
     let configuration = WKWebViewConfiguration()
@@ -59,28 +56,23 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     }
     // The native picker can cover/detach this view while still querying its worker.
     configuration.preferences.inactiveSchedulingPolicy = .none
-    let spaceConfiguration = WKWebViewConfiguration()
-    spaceConfiguration.websiteDataStore = configuration.websiteDataStore
-    spaceConfiguration.preferences.inactiveSchedulingPolicy = .none
-    // Tonk carries this presentation flag into its sealed guest iframes.
-    for controller in [configuration.userContentController, spaceConfiguration.userContentController] {
-      controller.addUserScript(
-        WKUserScript(
-          source: "window.__tonkHideFab = true;",
-          injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
-    }
-    // User-selected remotes are restricted by the navigation delegate, not a static bundle list.
-    inspection.install(on: spaceConfiguration.userContentController)
+    Self.hideFab(in: configuration.userContentController)
+    websiteDataStore = configuration.websiteDataStore
     webView = WKWebView(frame: .zero, configuration: configuration)
-    spaceWebView = WKWebView(frame: .zero, configuration: spaceConfiguration)
     super.init()
     catalogObservation.model = self
     configuration.userContentController.add(catalogObservation, name: "catalogChanged")
-    for view in [webView, spaceWebView] {
-      view.navigationDelegate = self
-      view.uiDelegate = self
-      view.isInspectable = true
-    }
+    webView.navigationDelegate = self
+    webView.uiDelegate = self
+    webView.isInspectable = true
+  }
+
+  /// Tonk carries this presentation flag into its sealed guest iframes.
+  static func hideFab(in controller: WKUserContentController) {
+    controller.addUserScript(
+      WKUserScript(
+        source: "window.__tonkHideFab = true;",
+        injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
   }
 
   func load() {
@@ -91,30 +83,13 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     webView.load(URLRequest(url: RuntimeLocation.home))
   }
 
-  /// Reloads the space window, staying on its open view.
-  func reloadSpace() {
-    guard let space = selectedSpace else { return }
-    let current = spaceWebView.url.flatMap { space.contains($0) ? $0 : nil }
-    openSpace(space, at: current)
-  }
-
   func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-    if webView === spaceWebView {
-      inspection.reset()
-      spaceLoading = true
-      spaceError = nil
-      return
-    }
     catalogObservation.generation = UUID().uuidString
     loading = true
     error = nil
   }
 
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-    if webView === spaceWebView {
-      spaceLoading = false
-      return
-    }
     loading = false
     catalogTask?.cancel()
     catalogTask = Task {
@@ -135,11 +110,11 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     _ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
     withError error: Error
   ) {
-    fail(error, in: webView)
+    fail(error)
   }
 
   func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-    fail(error, in: webView)
+    fail(error)
   }
 
   func applyAccountStatus(_ account: [String: Any]) throws {
@@ -151,23 +126,13 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   }
 
   func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-    if webView === spaceWebView {
-      spaceLoading = false
-      spaceError = "This space stopped. Reload to reconnect."
-      return
-    }
     loading = false
     ready = false
     error = "The Tonk runtime stopped. Reload to reconnect."
   }
 
-  private func fail(_ failure: Error, in view: WKWebView) {
+  private func fail(_ failure: Error) {
     if (failure as NSError).code == NSURLErrorCancelled { return }
-    if view === spaceWebView {
-      spaceLoading = false
-      spaceError = failure.localizedDescription
-      return
-    }
     loading = false
     ready = false
     error = failure.localizedDescription
@@ -177,33 +142,33 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
   ) {
-    guard let url = navigationAction.request.url else {
-      decisionHandler(.cancel)
-      return
-    }
+    decisionHandler(Self.policy(for: navigationAction))
+  }
+
+  /// User-selected remotes are restricted here, not by a static bundle list.
+  static func policy(for navigationAction: WKNavigationAction) -> WKNavigationActionPolicy {
+    guard let url = navigationAction.request.url else { return .cancel }
     // The Tonk renderer owns its sandboxed guest frames; restrict top-level navigation only.
-    if navigationAction.targetFrame?.isMainFrame == false {
-      decisionHandler(.allow)
-      return
-    }
-    if RuntimeLocation.isEmbedded(url) {
-      decisionHandler(.allow)
-      return
-    }
+    if navigationAction.targetFrame?.isMainFrame == false { return .allow }
+    if RuntimeLocation.isEmbedded(url) { return .allow }
     if navigationAction.navigationType == .linkActivated && RuntimeLocation.isExternal(url) {
       NSWorkspace.shared.open(url)
     }
-    decisionHandler(.cancel)
+    return .cancel
   }
 
   func webView(
     _ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
     for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures
   ) -> WKWebView? {
+    Self.openExternally(navigationAction)
+    return nil
+  }
+
+  static func openExternally(_ navigationAction: WKNavigationAction) {
     if let url = navigationAction.request.url, RuntimeLocation.isExternal(url) {
       NSWorkspace.shared.open(url)
     }
-    return nil
   }
 
   /// Read-only probe; there is no JavaScript-to-native privileged bridge.

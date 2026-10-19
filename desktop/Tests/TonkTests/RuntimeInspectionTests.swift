@@ -8,7 +8,7 @@ import XCTest
 final class RuntimeInspectionTests: XCTestCase {
   func testNativeFabFlagIsAvailableBeforePageScriptsOnEveryLoad() async throws {
     let runtime = RuntimeModel()
-    let webView = runtime.spaceWebView
+    let webView = runtime.makePage().webView
     webView.navigationDelegate = nil
     for _ in 0..<2 {
       webView.loadHTMLString(
@@ -32,12 +32,14 @@ final class RuntimeInspectionTests: XCTestCase {
     runtime.loading = false
     runtime.catalogLoaded = true
     runtime.catalogBranch = "main"
+    let page = runtime.makePage()
     for stage in 0..<3 {
       if stage == 1 { runtime.spaces = [space] }
-      if stage == 2 { runtime.selectedSpace = space }
+      // Showing other content: the page is open but not on this space.
+      if stage == 2 { page.showFixture(space, html: "<p>Not the space</p>") }
       do {
         _ = try await runtime.performBuildTool(
-          space, tool: "tonk_inspect_view", arguments: .object([:]))
+          space, tool: "tonk_inspect_view", arguments: .object([:]), page: stage == 2 ? page : nil)
         XCTFail("Must reject missing membership, selection, or matching loaded URL")
       } catch {
         XCTAssertTrue(error is HarnessError)

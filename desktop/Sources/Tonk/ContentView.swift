@@ -9,8 +9,9 @@ struct ContentView: View {
   @ObservedObject var access: AccessModel
   /// The hub lists spaces and links; a space window shows one space's view with its chat.
   var isSpace = false
+  /// The space window's own page. The hub has none.
+  var spacePage: SpacePage?
   @Environment(\.openWindow) private var openWindow
-  @Environment(\.dismissWindow) private var dismissWindow
   private var draft: String {
     get { model.saved.conversation.draft ?? "" }
     nonmutating set {
@@ -87,7 +88,8 @@ struct ContentView: View {
     }
   }
 
-  private var windowContent: some View {
+  /// The window's commands, split out so the type checker copes with the chain.
+  private var commandTargets: some View {
     workspaceLayers
       .nativeControl()
       .containerBackground(
@@ -105,6 +107,7 @@ struct ContentView: View {
           ? { searchFocused = true } : nil
       )
       .focusedSceneValue(\.refreshContent, refreshDisabled ? nil : refreshContent)
+      .focusedSceneValue(\.newChat, newChatAction)
       .focusedSceneValue(
         \.newLink,
         runtime.spaces.isEmpty || !runtime.accountConnected || signingOut ? nil : startNewLink
@@ -117,6 +120,10 @@ struct ContentView: View {
         \.openSpaceInBrowser,
         !isSpace || model.openedSpace == nil || signingOut ? nil : openSpaceInBrowser
       )
+  }
+
+  private var windowContent: some View {
+    commandTargets
       .navigationTitle(
         isSpace
           ? (model.openedSpace?.title ?? "")
@@ -134,21 +141,6 @@ struct ContentView: View {
       )
       .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
       .disabled(signingOut)
-      .onChange(of: model.openedSpace?.id, initial: true) { _, id in
-        if isSpace {
-          if id == nil { dismissWindow(id: "space") }
-        } else if id != nil {
-          // Any path that opens a space (a view, chat history, agents) shows it here.
-          openWindow(id: "space")
-        }
-      }
-      .onDisappear {
-        guard isSpace else { return }
-        // Closing the window leaves the space.
-        model.openedSpace = nil
-        showingChat = false
-        runtime.closeSpace()
-      }
   }
 
   var body: some View {
@@ -177,14 +169,9 @@ struct ContentView: View {
         ChatHistoryView(
           model: model, space: model.openedSpace
         ) { session in
+          // History lists only this space's chats, so the window keeps its space.
           Task {
             if await model.openChat(session.id) {
-              if let space = model.saved.conversation.space {
-                runtime.openSpace(space)
-                model.openedSpace = space
-              } else {
-                runtime.showSpaces()
-              }
               showingChat = true
               showHistory = false
             }
@@ -223,12 +210,8 @@ struct ContentView: View {
       ToolbarItem(id: "space-actions", placement: .primaryAction) {
         GlassControls {
           HStack(spacing: 8) {
-            if runtime.spaceLoading || runtime.catalogLoading {
-              ProgressView()
-                .controlSize(.small)
-                .frame(width: 16, height: 16)
-                .accessibilityLabel("Refreshing space")
-                .help("Refreshing…")
+            if let spacePage {
+              PageActivity(page: spacePage, catalogLoading: runtime.catalogLoading)
             }
             Button {
               model.startSpaceChat()
@@ -283,6 +266,14 @@ struct ContentView: View {
     }
   }
 
+  /// New Chat for the focused space window; the hub has no chat.
+  private var newChatAction: (() -> Void)? {
+    guard isSpace, model.openedSpace != nil, !model.busy, !model.creatingSpace,
+      !model.loginPending, !model.connecting
+    else { return nil }
+    return { model.startSpaceChat() }
+  }
+
   private var refreshDisabled: Bool {
     runtime.loading || runtime.catalogLoading || runtime.signInPending
   }
@@ -294,7 +285,7 @@ struct ContentView: View {
         await access.refreshAll(runtime.spaces)
       }
     } else {
-      runtime.reloadSpace()
+      spacePage?.reload()
     }
   }
 
@@ -517,30 +508,11 @@ struct ContentView: View {
     }
   }
 
-  private var workspace: some View {
-    ZStack {
-      RuntimeView(webView: runtime.spaceWebView)
-        .allowsHitTesting(runtime.selectedSpace != nil)
-        .accessibilityHidden(runtime.selectedSpace == nil)
-      if let error = runtime.spaceError {
-        ContentUnavailableView {
-          Label("Couldn’t open this space", systemImage: "network")
-        } description: {
-          Text(error)
-        } actions: {
-          Button("Try again") { runtime.reloadSpace() }
-        }.background(.background)
-      }
-    }
-    .background(.background)
-    .overlay(alignment: .top) {
-      if runtime.spaceLoading {
-        HStack(spacing: 8) {
-          ProgressView().controlSize(.small)
-          Text("Loading space…").font(.callout)
-        }.padding(.horizontal, 16).padding(.vertical, 10).controlSurface()
-          .padding(16).allowsHitTesting(false)
-      }
+  @ViewBuilder private var workspace: some View {
+    if let spacePage {
+      SpaceWorkspace(page: spacePage)
+    } else {
+      Color.clear
     }
   }
 
@@ -578,16 +550,10 @@ struct ContentView: View {
     }
   }
 
-  /// Opens a space view in the live runtime, with chat beside it.
+  /// Opens a space view in its own window, with chat beside it. Opening the
+  /// same view again brings its window forward.
   private func open(_ view: SpaceViewEntry, in space: TonkSpace) {
-    Task {
-      guard let space = await runtime.spaceForOpening(space) else { return }
-      if await model.enterSpace(space) {
-        runtime.openSpace(space, at: view.url(in: space))
-        model.openedSpace = space
-        showingChat = false
-      }
-    }
+    openWindow(value: SpaceWindowRequest(subject: space.subject, url: view.url(in: space)))
   }
 
   private var sidebarToggle: some View {
