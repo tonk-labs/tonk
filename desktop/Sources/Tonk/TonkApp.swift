@@ -54,6 +54,17 @@ struct TonkApp: App {
       }
       WindowCommands()
     }
+
+    // One space at a time, with its chat; opening another view reuses it.
+    Window("Space", id: "space") {
+      ContentView(model: model, runtime: runtime, access: access, isSpace: true)
+        .frame(minWidth: 700, minHeight: 500)
+        .background(WindowAppearance())
+    }
+    .defaultSize(width: 1180, height: 780)
+    .windowToolbarStyle(.unified)
+    // A restored window would have no space to show.
+    .restorationBehavior(.disabled)
   }
 }
 

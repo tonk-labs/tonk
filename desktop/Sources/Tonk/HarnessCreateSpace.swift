@@ -41,7 +41,7 @@ extension HarnessModel {
       runtime.openSpace(space)
       // Let the hosted worker settle before the agent's first space tool.
       for _ in 0..<60 {
-        if !runtime.loading { break }
+        if !runtime.spaceLoading { break }
         try await Task.sleep(for: .seconds(1))
       }
       creatingSpace = false

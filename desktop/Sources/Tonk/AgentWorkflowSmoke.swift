@@ -58,7 +58,7 @@ enum AgentWorkflowSmoke {
         "tool": name, "loading": runtime.loading, "catalogLoading": runtime.catalogLoading,
         "catalogLoaded": runtime.catalogLoaded, "cached": runtime.showingCachedCatalog,
         "catalogError": runtime.catalogError ?? "", "signInPending": runtime.signInPending,
-        "branch": runtime.catalogBranch ?? "", "url": runtime.webView.url?.absoluteString ?? "",
+        "branch": runtime.catalogBranch ?? "", "url": runtime.spaceWebView.url?.absoluteString ?? "",
         "member": runtime.spaces.contains { $0.subject == model.saved.conversation.space?.subject },
       ]
       return await model.callSpaceTool(
@@ -170,7 +170,7 @@ enum AgentWorkflowSmoke {
         model.openedSpace = space
         runtime.openSpace(space)
         try await wait("reopened space ready") {
-          !runtime.loading && runtime.catalogLoaded && runtime.webView.url == space.url
+          !runtime.loading && !runtime.spaceLoading && runtime.catalogLoaded && runtime.spaceWebView.url == space.url
         }
         let rows = try await query("integration-task:\n  this: urn:test:task:one\n")
         try check(
@@ -218,7 +218,7 @@ enum AgentWorkflowSmoke {
         model.openedSpace = space
         runtime.openSpace(space)
         try await wait("selected space ready") {
-          !runtime.loading && runtime.catalogLoaded && runtime.webView.url == space.url
+          !runtime.loading && !runtime.spaceLoading && runtime.catalogLoaded && runtime.spaceWebView.url == space.url
         }
         beginTurn()
         try check(
@@ -273,7 +273,7 @@ enum AgentWorkflowSmoke {
           """ + "\n" + view + "\n" + (try example("space-home")))
         model.openedSpace = space
         runtime.openSpace(space)
-        try await wait("home ready") { !runtime.loading && runtime.webView.url == space.url }
+        try await wait("home ready") { !runtime.spaceLoading && runtime.spaceWebView.url == space.url }
         let inspection = try await rendered("First task")
         report["inspection"] = try JSONSerialization.jsonObject(
           with: JSONEncoder().encode(inspection))
@@ -294,7 +294,7 @@ enum AgentWorkflowSmoke {
         _ = try await rendered("Updated first task")
         try check(true, "Record update renders without navigation")
         try await runtime.inspection.clickWorkflowCheckbox(
-          in: runtime.webView, title: "Updated first task")
+          in: runtime.spaceWebView, title: "Updated first task")
         try await wait("checkbox event persisted") {
           let result = try await query("integration-task:\n  this: urn:test:task:one\n")
           return result["matches_after"].array.first?["results"].array.first?["fields"]["done"]

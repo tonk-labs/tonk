@@ -8,7 +8,7 @@ extension RuntimeModel {
     // The worker still enforces authority for every request.
     guard catalogLoaded, !showingCachedCatalog, catalogError == nil,
       spaces.contains(where: { $0.id == space.id }),
-      catalogBranch != nil, !loading, !signInPending
+      catalogBranch != nil, !loading, !spaceLoading, !signInPending
     else {
       throw HarnessError.message(
         "The attached space is not ready or is no longer in this account. Refresh spaces and try again."
