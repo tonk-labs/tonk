@@ -67,6 +67,35 @@ const LEGACY_ATTRIBUTE: [&str; 3] = [
     "db.attribute/select",
 ];
 
+/// Whether `branch` still holds an attribute recorded the earlier way that
+/// [`upgrade_definitions`] would move: one index read per earlier relation
+/// when there is none. One this release cannot decode is left as it is,
+/// so it does not count.
+pub async fn has_legacy_definitions<Env: QueryEnv>(
+    branch: &Branch,
+    env: &Env,
+) -> Result<bool, String> {
+    let mut legacy: BTreeSet<Entity> = BTreeSet::new();
+    for relation in LEGACY_ATTRIBUTE {
+        for claim in select(
+            branch,
+            env,
+            ArtifactSelector::new().the(relation_named(relation)?),
+        )
+        .await?
+        {
+            legacy.insert(claim.of);
+        }
+    }
+    for entity in legacy {
+        let claims = select(branch, env, ArtifactSelector::new().of(entity)).await?;
+        if legacy_descriptor(&claims).is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Upgrade every attribute and concept definition `branch` holds in the
 /// earlier shape, in one commit. See the [module documentation](self).
 pub async fn upgrade_definitions<Env>(

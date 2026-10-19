@@ -1417,6 +1417,7 @@ pub async fn open_profile(
         &credentials,
         &system,
         create,
+        &dialog_reactor::ProfileUpgrade,
     )
     .await
     .with_context(|| format!("failed to open profile '{name}'"))?;
