@@ -1275,6 +1275,16 @@ pub struct SyncQueue {
     /// only being begun (`false`). A watched repo is left out of the
     /// polling sweep: its watch says when it has something to pull.
     watching: std::sync::Mutex<HashMap<String, bool>>,
+    /// Repo name → the wake of the loop that syncs it as it changes (see
+    /// [`space_loop`]). A wake that comes while that loop syncs is kept
+    /// for its next wait, so none is lost.
+    loops: std::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Notify>>>,
+    /// Woken when a repo with no loop yet is marked: the loop that begins
+    /// space loops sleeps on it (see [`push_loops`]).
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    /// Repo name → held while it syncs, by its loop and by a drain alike,
+    /// so one repo never syncs twice at once.
+    syncing: std::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl SyncQueue {
@@ -1285,6 +1295,36 @@ impl SyncQueue {
         if let Ok(mut dirty) = self.dirty.lock() {
             dirty.insert(repo.to_owned(), now);
         }
+        self.wake(repo);
+    }
+
+    /// Wake the loop of `repo`, or, when it has none yet, the loop that
+    /// begins one.
+    fn wake(&self, repo: &str) {
+        let running = self
+            .loops
+            .lock()
+            .ok()
+            .and_then(|loops| loops.get(repo).cloned());
+        match running {
+            Some(wake) => wake.notify_one(),
+            None => self.wake.notify_one(),
+        }
+    }
+
+    /// What the loop that begins space loops waits on, held apart from the
+    /// queue so waiting does not hold the state lock the queue lives behind.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn waker(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        self.wake.clone()
+    }
+
+    /// The lock held while `repo` syncs.
+    fn syncing(&self, repo: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.syncing
+            .lock()
+            .map(|mut syncing| syncing.entry(repo.to_owned()).or_default().clone())
+            .unwrap_or_default()
     }
 
     /// How many repos have un-pushed local commits waiting.
@@ -1323,13 +1363,72 @@ impl SyncQueue {
         repos
     }
 
-    /// Record that a watch of `repo`'s upstream said it moved: the next
-    /// drain sweeps it.
+    /// Begin a loop for every marked repo that has none, answering each
+    /// with the wake its loop sleeps on.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn begin_loops(&self) -> Vec<(String, std::sync::Arc<tokio::sync::Notify>)> {
+        let mut marked: Vec<String> = Vec::new();
+        for slot in [&self.dirty, &self.moved] {
+            if let Ok(map) = slot.lock() {
+                marked.extend(map.keys().cloned());
+            }
+        }
+        let Ok(mut loops) = self.loops.lock() else {
+            return Vec::new();
+        };
+        let mut begun = Vec::new();
+        for repo in marked {
+            if !loops.contains_key(&repo) {
+                let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+                loops.insert(repo.clone(), wake.clone());
+                begun.push((repo, wake));
+            }
+        }
+        begun
+    }
+
+    /// Whether the loop waking on `wake` is still the loop of `repo`: it
+    /// is not once the repo is [forgotten](Self::forget).
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn is_loop_of(
+        &self,
+        repo: &str,
+        wake: &std::sync::Arc<tokio::sync::Notify>,
+    ) -> bool {
+        self.loops
+            .lock()
+            .map(|loops| {
+                loops
+                    .get(repo)
+                    .is_some_and(|running| std::sync::Arc::ptr_eq(running, wake))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Claim `repo` when it has un-pushed commits or a moved upstream,
+    /// dropping both marks: its loop syncs it. A mark made while it syncs
+    /// is claimed on the loop's next pass, so only its newest head is
+    /// pushed, never each one between. The retry set is left to the drain,
+    /// so a repo that keeps failing does not spin its loop.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn claim(&self, repo: &str) -> bool {
+        let mut claimed = false;
+        for slot in [&self.dirty, &self.moved] {
+            if let Ok(mut map) = slot.lock() {
+                claimed |= map.remove(repo).is_some();
+            }
+        }
+        claimed
+    }
+
+    /// Record that a watch of `repo`'s upstream said it moved: its loop
+    /// pulls it.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub(crate) fn moved(&self, repo: &str, now: f64) {
         if let Ok(mut moved) = self.moved.lock() {
             moved.insert(repo.to_owned(), now);
         }
+        self.wake(repo);
     }
 
     /// Begin watching `repo`, answering `false` when a watch of it is
@@ -1404,6 +1503,15 @@ impl SyncQueue {
         if let Ok(mut moved) = self.moved.lock() {
             moved.remove(repo);
         }
+        // Its loop, woken, finds it is no longer the repo's and ends.
+        let running = self
+            .loops
+            .lock()
+            .ok()
+            .and_then(|mut loops| loops.remove(repo));
+        if let Some(wake) = running {
+            wake.notify_one();
+        }
     }
 }
 
@@ -1426,12 +1534,10 @@ impl SyncQueue {
 pub async fn drain_sync(state: &AppState) {
     // One drain at a time, and concurrent triggers coalesce instead of
     // queueing: a keepalive beat arriving while a transact-triggered
-    // drain runs would only repeat the same sweep, and letting them
-    // interleave is how branch commits tear (session rotation and the
-    // account ensure both write without a per-branch lock in dialog).
-    // Whatever this beat would have pushed, the next one covers.
-    static DRAIN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let Ok(_serialized) = DRAIN.try_lock() else {
+    // drain runs would only repeat the same sweep. Whatever this beat
+    // would have pushed, the next one covers.
+    static DRAINING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let Ok(_draining) = DRAINING.try_lock() else {
         return;
     };
 
@@ -1474,6 +1580,10 @@ pub async fn drain_sync(state: &AppState) {
         .collect();
 
     for repo in &order {
+        // A space its loop is syncing waits for it: the drain then finds
+        // it current, rather than reconciling it a second time at once.
+        let syncing = state.read().await.sync_queue.syncing(repo);
+        let _syncing = syncing.lock().await;
         if let Err(e) = sync_repository(state, repo).await {
             // Push didn't fully land — re-mark so the next heartbeat retries.
             log!("drain_sync: {repo} did not fully reconcile: {e}");
@@ -1509,6 +1619,80 @@ pub async fn drain_sync(state: &AppState) {
     }
 }
 
+/// Push each local commit as it is made, and pull each head a watch
+/// delivers as it arrives, rather than when a drain's schedule comes round.
+///
+/// A drain runs on its own schedule (a debounce, held off while a page
+/// loads and after the last drain, else the loop's tick) and sweeps every
+/// open repository and the account, so a change waited seconds on either
+/// side for one. Instead each space gets a loop of its own the first time
+/// it is marked dirty or moved, and this loop begins them: it sleeps until
+/// a space with no loop is marked. Spaces sync apart, so one slow to push
+/// holds up no other. It ends when `stopped` says the worker is being
+/// replaced.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn push_loops(state: AppState, stopped: std::rc::Rc<dyn Fn() -> bool>) {
+    let wake = state.read().await.sync_queue.waker();
+    loop {
+        let begun = state.read().await.sync_queue.begin_loops();
+        for (repo, space) in begun {
+            wasm_bindgen_futures::spawn_local(space_loop(
+                state.clone(),
+                repo,
+                space,
+                stopped.clone(),
+            ));
+        }
+        wake.notified().await;
+        if stopped() {
+            return;
+        }
+    }
+}
+
+/// Sync `repo` each time it is marked dirty or moved, and sleep between.
+///
+/// A space committed to while it syncs is synced once more after, with its
+/// newest head: the commits between are never pushed one by one. A sync
+/// that fails leaves the space to the drain's retry, so a failing remote
+/// does not spin it. Offline, the marks wait for the drain on
+/// reconnecting. It ends when the worker is being replaced or the space is
+/// forgotten.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn space_loop(
+    state: AppState,
+    repo: String,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    stopped: std::rc::Rc<dyn Fn() -> bool>,
+) {
+    loop {
+        if stopped() {
+            return;
+        }
+        let syncing = {
+            let tonk = state.read().await;
+            if !tonk.sync_queue.is_loop_of(&repo, &wake) {
+                return;
+            }
+            (!crate::worker::offline() && tonk.sync_queue.claim(&repo))
+                .then(|| tonk.sync_queue.syncing(&repo))
+        };
+        let Some(syncing) = syncing else {
+            wake.notified().await;
+            continue;
+        };
+        let _syncing = syncing.lock().await;
+        if let Err(error) = sync_repository(&state, &repo).await {
+            log!("sync of {repo} did not fully reconcile: {error}");
+            state
+                .read()
+                .await
+                .sync_queue
+                .requeue(&repo, current_millis());
+        }
+    }
+}
+
 /// Watch the upstream of every open repository not watched yet, so a
 /// change another device makes is pulled when it lands rather than when
 /// the next sweep comes round.
@@ -1516,11 +1700,11 @@ pub async fn drain_sync(state: &AppState) {
 /// A repository whose `main` pulls from exactly one branch, at a service
 /// that can follow it, is watched; any other, and one whose watch ends,
 /// is left to the sweep, which tries the watch again on its next tick. A
-/// delivered head marks the repository [`moved`](SyncQueue::moved) and
-/// calls `drain`, which syncs it through the same reconciliation as a
+/// delivered head marks the repository [`moved`](SyncQueue::moved), which
+/// wakes its [`space_loop`] to sync it through the same reconciliation as a
 /// sweep.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn watch_open_repos(state: &AppState, drain: std::rc::Rc<dyn Fn()>) {
+pub(crate) async fn watch_open_repos(state: &AppState) {
     let open: Vec<(String, std::sync::Arc<dialog_reactor::BranchState>)> = {
         let tonk = state.read().await;
         let repos = tonk.reactor.repos().read();
@@ -1543,23 +1727,21 @@ pub(crate) async fn watch_open_repos(state: &AppState, drain: std::rc::Rc<dyn Fn
             tonk.operator.clone()
         };
         let state = state.clone();
-        let drain = drain.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            watch_repo(&state, &repo, &branch, &operator, drain.as_ref()).await;
+            watch_repo(&state, &repo, &branch, &operator).await;
             state.read().await.sync_queue.end_watching(&repo);
         });
     }
 }
 
 /// Follow `repo`'s upstream until the watch ends, marking the repository
-/// moved and calling `drain` for each head that is ahead of the one known.
+/// moved and syncing it for each head that is ahead of the one known.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn watch_repo(
     state: &AppState,
     repo: &str,
     branch: &std::sync::Arc<dialog_reactor::BranchState>,
     operator: &crate::worker::DefaultOperator,
-    drain: &dyn Fn(),
 ) {
     use dialog_repository::{Observation, Upstream};
     use futures_util::{StreamExt as _, pin_mut};
@@ -1606,8 +1788,9 @@ async fn watch_repo(
         }
         match observed {
             Ok(Observation::Advanced(_) | Observation::Diverged) => {
+                // Wakes its loop, which pulls it now rather than on the
+                // next drain's schedule.
                 state.read().await.sync_queue.moved(repo, current_millis());
-                drain();
             }
             Ok(Observation::Stale) => {}
             Err(error) => log!("{repo}: a watched head was not recorded: {error}"),
