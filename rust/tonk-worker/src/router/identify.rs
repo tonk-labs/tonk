@@ -1,10 +1,10 @@
 //! Identity endpoint for retrieving the user's DID.
 
 use ::axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
+use tonk_handler_macros::wasm_compat;
 
 use super::AppState;
 use crate::TonkWorkerError;

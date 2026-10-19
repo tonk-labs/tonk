@@ -20,7 +20,6 @@ use ::axum::{
     body::Bytes,
     extract::{Path, State},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_capability::Subject;
 use dialog_credentials::{Ed25519Signer, key::KeyExport};
 use dialog_effects::Use;
@@ -30,6 +29,7 @@ use dialog_varsig::Principal;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 use tonk_invite::{Invite, InviteAudience, Ticket, home_address_meta, shortcut::ShortcutRequest};
 use tonk_schema::{Invitation, InvitationExecution};
 use url::Url;
