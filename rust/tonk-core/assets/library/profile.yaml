@@ -130,6 +130,30 @@ concept!: &space
       the: xyz.tonk.space/color
       as: text
 
+# The chat model this account last chose in the desktop. Only the choice
+# syncs: API keys stay in each Mac's Keychain, and executable paths and
+# base URLs stay on the Mac they describe, so a Mac without a key for the
+# chosen provider keeps its own.
+#
+# ENTITY: the account's root DID.
+concept!: &model-choice
+  this: tonk:model-choice
+  description: The desktop chat provider and model this account uses.
+  with:
+    provider:
+      description: >
+        The provider token the desktop understands, such as `claude`,
+        `chatGPT`, `anthropic` or `disabled`. A desktop that does not know
+        the token ignores it.
+      the: xyz.tonk.model-choice/provider
+      as: text
+  maybe:
+    model:
+      description: >
+        The provider's model ID. Absent means the provider's default.
+      the: xyz.tonk.model-choice/model
+      as: text
+
 # The Add Space command. The Hub's named creation dialogs submit this shape.
 # The worker records the replica, seeds the repository, and navigates the
 # creator. The command is transient and is swept before the durable commit.
