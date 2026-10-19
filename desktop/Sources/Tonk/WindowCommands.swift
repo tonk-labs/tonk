@@ -56,10 +56,10 @@ struct WindowCommands: Commands {
     CommandGroup(after: .toolbar) {
       Button("Refresh") { refreshContent?() }
         .keyboardShortcut("r").disabled(refreshContent == nil)
-      Button("Toggle agent sidebar") { toggleAgentSidebar?() }
+      Button("Toggle Agent Sidebar") { toggleAgentSidebar?() }
         .keyboardShortcut("b", modifiers: .command)
         .disabled(toggleAgentSidebar == nil)
-      Button("Open in browser") { openSpaceInBrowser?() }
+      Button("Open in Browser") { openSpaceInBrowser?() }
         .keyboardShortcut(.rightArrow, modifiers: .command)
         .disabled(openSpaceInBrowser == nil)
     }

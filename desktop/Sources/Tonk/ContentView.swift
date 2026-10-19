@@ -246,29 +246,30 @@ struct ContentView: View {
     if model.openedSpace == nil
       && runtime.showsSpacePicker
     {
+      if runtime.loading || runtime.catalogLoading {
+        ToolbarItem(id: "refreshing", placement: .primaryAction) {
+          ProgressView()
+            .controlSize(.small)
+            .frame(width: 16, height: 16)
+            .accessibilityLabel("Refreshing spaces")
+            .help("Refreshing…")
+        }.customGlassToolbarItem()
+      }
       ToolbarItem(id: "new-link", placement: .primaryAction) {
-        HStack(spacing: 12) {
-          if runtime.loading || runtime.catalogLoading {
-            ProgressView()
-              .controlSize(.small)
-              .frame(width: 16, height: 16)
-              .accessibilityLabel("Refreshing spaces")
-              .help("Refreshing…")
-          }
-          Button {
-            startNewLink()
-          } label: {
-            Label("New Link", systemImage: "plus")
-          }
-          .labelStyle(.titleAndIcon)
-          .help("New Link (⇧⌘N)")
-          .disabled(runtime.spaces.isEmpty || !runtime.accountConnected)
+        Button {
+          startNewLink()
+        } label: {
+          Image(systemName: "link.badge.plus").frame(width: 20, height: 20)
         }
+        .nativeControl(circular: true).controlSize(.large)
+        .accessibilityLabel("New Link")
+        .help("New Link (⇧⌘N)")
+        .disabled(runtime.spaces.isEmpty || !runtime.accountConnected)
       }.customGlassToolbarItem()
     }
     ToolbarItem(id: "more-options", placement: .primaryAction) {
       moreMenu
-    }.customGlassToolbarItem()
+    }
   }
 
   private var refreshDisabled: Bool {

@@ -45,7 +45,7 @@ struct TonkApp: App {
     .windowToolbarStyle(.unified)
     .commands {
       CommandGroup(replacing: .newItem) {
-        Button("New chat") {
+        Button("New Chat") {
           model.startSpaceChat()
         }
         .keyboardShortcut("n").disabled(

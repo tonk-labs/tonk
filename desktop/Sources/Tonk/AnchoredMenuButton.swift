@@ -5,13 +5,11 @@ struct AnchoredMenuButton<Content: View>: View {
   @ViewBuilder var content: () -> Content
 
   var body: some View {
+    // A plain toolbar menu takes the toolbar's own glass, like its other items.
     Menu(content: content) {
-      Image(systemName: "ellipsis").frame(width: 20, height: 20)
+      Label("More Options", systemImage: "ellipsis")
     }
-    .menuStyle(.borderlessButton)
     .menuIndicator(.hidden)
-    .fixedSize()
-    .nativeControl(circular: true).controlSize(.large)
-    .accessibilityLabel("More Options").help("Refresh, account and model settings")
+    .help("Refresh, account and model settings")
   }
 }
