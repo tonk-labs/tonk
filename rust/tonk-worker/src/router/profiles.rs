@@ -15,12 +15,12 @@ use std::ops::Deref;
 use std::sync::{Arc, atomic::Ordering};
 
 use axum::{Extension, Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::Entity;
 use dialog_varsig::Did;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 use tonk_schema::prelude::DidExt as _;
 use tonk_worker_api::{ActivateProfileRequest, ProfileRosterEntry, ProfilesResponse};
 

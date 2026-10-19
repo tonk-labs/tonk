@@ -18,13 +18,13 @@ use ::axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_csv::{CsvExporter, CsvImporter};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 
 use super::AppState;
 use super::evaluate::EvaluatePath;

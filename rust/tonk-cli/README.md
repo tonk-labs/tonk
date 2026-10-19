@@ -230,16 +230,19 @@ issue independent links into the same CLI; each remains a separate credential
 and local replica. Browser issuance remains subject to the published CLI release
 gates.
 
-Connection imports trust the built-in Tonk deployment (`https://tonk.network`).
-For an explicitly selected development deployment, pass its HTTPS origin or a
+Connection imports join through the deployment the link was issued on: the
+origin of its signed `/ucan/` endpoint, the same deployment a browser join
+uses. To restrict an import to one deployment, pass its HTTPS origin or a
 loopback HTTP origin with `--via`, for example
-`tonk join --via https://staging.tonk.xyz TOOL_LINK`. The command-line option
-overrides `TONK_CONNECTION_ORIGIN`, which remains available for development
-environments. This selection chooses service routing only; it does not open a
-browser. The importer requires the signed grant endpoint to match that origin's
-`/ucan/` and verifies `/.well-known/tonk` without following redirects. It never
-chooses an approval page from the invite, loads an unrelated account's endpoint,
-or sends the secret-bearing fragment to discovery.
+`tonk join --via https://staging.tonk.xyz TOOL_LINK`; a link for any other
+deployment is then refused with `connection_untrusted_route`, naming both. The
+command-line option overrides `TONK_CONNECTION_ORIGIN`, which sets the same
+restriction for an environment. Either way the importer requires the signed
+grant endpoint to be its origin's `/ucan/` route over HTTPS (or loopback HTTP)
+and verifies `/.well-known/tonk` without following redirects. Selection chooses
+service routing only; it does not open a browser. It never chooses an approval
+page from the invite, loads an unrelated account's endpoint, or sends the
+secret-bearing fragment to discovery.
 
 ### Older invitation links and interrupted handoffs
 

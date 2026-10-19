@@ -243,6 +243,43 @@
 
         inherit (menuHelpers) makeMenu makeDevShellHook menuTestCommand;
 
+        # The native suites also build as three archives, one per CI runner.
+        # The single archive kept all four cores busy for most of its build,
+        # so only more runners shorten it. `rest` excludes rather than lists
+        # packages, so a new crate lands there by default.
+        nativeTestGroups = {
+          worker = "--package tonk-worker";
+          cli = "--package tonk-cli";
+          rest = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-worker --exclude tonk-cli";
+        };
+        # Each variant's profile, as in the whole-workspace archives below.
+        nativeTestProfiles = {
+          debug = "test";
+          release = "release-test";
+          ci = "ci-test";
+        };
+        forNativeTestGroups =
+          f:
+          pkgs.lib.concatMapAttrs (
+            variant: profile:
+            pkgs.lib.mapAttrs' (group: selection: f variant profile group selection) nativeTestGroups
+          ) nativeTestProfiles;
+        nativeGroupPackages = forNativeTestGroups (
+          variant: profile: group: selection:
+          pkgs.lib.nameValuePair "tests-native-${variant}-${group}" (buildTestArchive {
+            name = "native-${variant}-${group}";
+            inherit profile;
+            args = "${selection} --features integration-tests";
+          })
+        );
+        nativeGroupCommands = forNativeTestGroups (
+          variant: _: group: _:
+          pkgs.lib.nameValuePair "test:native:${variant}:${group}" (menuTestCommand {
+            description = "Native ${variant} tests, ${group} group (one CI runner's share)";
+            package = "tests-native-${variant}-${group}";
+          })
+        );
+
         commands = {
           "build:web" = {
             description = "Build the Tonk web application";
@@ -561,7 +598,8 @@
             description = "Test Desktop against an isolated local runtime";
             command = "exec bash desktop/scripts/dev.sh test:workflow \"$@\"";
           };
-        };
+        }
+        // nativeGroupCommands;
 
         menu = makeMenu commands;
 
@@ -701,6 +739,17 @@
             (buildTrunkCrate {
               pname = "tonk-ui";
               trunkConfig = "./rust/tonk-ui/Trunk.toml";
+              # The builds Trunk runs for the three `rel="rust"` links in
+              # rust/tonk-ui/index.html, with the features `preBuild` adds.
+              # Keep profiles, binaries and features in step with those links.
+              depsBuildCommand = ''
+                cargo build --profile wasm-ui-release \
+                  --manifest-path rust/tonk-ui/Cargo.toml --bin ui --features connection-invites
+                cargo build --profile wasm-worker-release \
+                  --manifest-path rust/tonk-ui/Cargo.toml --bin worker --features connection-invites
+                cargo build --profile wasm-release \
+                  --manifest-path rust/tonk-guest/Cargo.toml --bin guest
+              '';
               TONK_POSTHOG_KEY = posthogKey;
               postFixup = ''
                 ${./rust/tonk-ui/scripts/stamp-service-worker.sh} "$out"
@@ -717,9 +766,11 @@
                 '';
               });
 
-          tonk-ui-preview = tonk-ui.overrideAttrs (_: {
-            pname = "tonk-ui-preview";
-          });
+          # Previews and staging once enabled invitations that production
+          # lacked. `tonk-ui` now enables them everywhere, so these name the
+          # same derivation. A renamed copy would hash differently and make
+          # every deployment's Wrangler build compile the browser bundle again.
+          tonk-ui-preview = tonk-ui;
 
           # Reduced browser optimization caused worker Wasm traps in account
           # flows. Share the established browser output between PR deployment
@@ -754,23 +805,11 @@
             '';
           };
 
-          tonk-cloudflare-preview-artifacts = tonk-cloudflare-artifacts.overrideAttrs (_: {
-            pname = "tonk-cloudflare-preview-assets";
-            buildPhase = ''
-              mkdir -p ./build
-              cp -r ${tonk-access-service} ./build/tonk-access-service
-              cp -r ${tonk-ui-preview} ./build/tonk-ui
-            '';
-          });
-
-          tonk-cloudflare-ci-artifacts = tonk-cloudflare-artifacts.overrideAttrs (_: {
-            pname = "tonk-cloudflare-ci-assets";
-            buildPhase = ''
-              mkdir -p ./build
-              cp -r ${tonk-access-service} ./build/tonk-access-service
-              cp -r ${tonk-ui-ci} ./build/tonk-ui
-            '';
-          });
+          # Same output as `tonk-cloudflare-artifacts`, for the same reason as
+          # `tonk-ui-preview`: Wrangler's preview, dev and staging build
+          # commands then find the bundle the workflow already built.
+          tonk-cloudflare-preview-artifacts = tonk-cloudflare-artifacts;
+          tonk-cloudflare-ci-artifacts = tonk-cloudflare-artifacts;
 
           # This package is used by integration tests to run a web server
           # over a local deployment of tonk-ui with Caddy as reverse proxy
@@ -890,7 +929,8 @@
               $SIBLING_SITE
               EOF
             '';
-        };
+        }
+        // nativeGroupPackages;
       }
     );
 

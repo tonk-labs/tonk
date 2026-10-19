@@ -3,12 +3,13 @@ import HarnessCore
 
 @MainActor
 extension RuntimeModel {
-  func requireSpaceReady(_ space: TonkSpace) throws {
+  /// `page`, when given, is the window the request comes from; tools wait for it to load.
+  func requireSpaceReady(_ space: TonkSpace, page: SpacePage? = nil) throws {
     // A background catalog read does not invalidate confirmed live membership.
     // The worker still enforces authority for every request.
     guard catalogLoaded, !showingCachedCatalog, catalogError == nil,
       spaces.contains(where: { $0.id == space.id }),
-      catalogBranch != nil, !loading, !signInPending
+      catalogBranch != nil, !loading, page?.loading != true, !signInPending
     else {
       throw HarnessError.message(
         "The attached space is not ready or is no longer in this account. Refresh spaces and try again."

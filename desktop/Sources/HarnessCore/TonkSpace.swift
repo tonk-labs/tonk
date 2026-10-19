@@ -3,6 +3,9 @@ import Foundation
 public struct TonkSpace: Identifiable, Codable, Equatable, Sendable {
   public let subject: String
   public let name: String?
+  /// The account's chosen sidebar symbol and tint, synced on the account directory.
+  public let icon: String?
+  public let color: String?
   public var id: String { subject }
   public var title: String {
     let title = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -10,6 +13,15 @@ public struct TonkSpace: Identifiable, Codable, Equatable, Sendable {
   }
   public var url: URL {
     RuntimeLocation.home.appendingPathComponent("space").appendingPathComponent(subject)
+  }
+
+  /// Whether `url` is this space's home or one of its views.
+  public func contains(_ other: URL) -> Bool {
+    let home = url
+    guard other.scheme == home.scheme, other.host == home.host, other.port == home.port else {
+      return false
+    }
+    return other.path == home.path || other.path.hasPrefix(home.path + "/")
   }
 
   public static func decodeCatalog(_ data: Data) throws -> [Self] {

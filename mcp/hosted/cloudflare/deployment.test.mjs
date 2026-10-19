@@ -32,8 +32,21 @@ test('deployment channels bind distinct issuers, storage and matching providers'
     assert.equal(config.vars.TONK_MCP_SPACE, undefined);
     assert.equal(config.vars.TONK_MCP_DCR, undefined);
   }
-  assert.ok(configs.every((config) => config.routes.length === 0));
-  assert.equal(configs.at(-1).vars.TONK_MCP_ISSUER, 'https://tonk-mcp.tonk.workers.dev');
+  const [pr, , dev, staging, stable] = configs;
+  assert.equal(pr.vars.TONK_MCP_ISSUER, 'https://tonk-mcp-pr-1091.tonk.workers.dev');
+  assert.equal(pr.workers_dev, true);
+  assert.deepEqual(pr.routes, []);
+  for (const [config, domain] of [
+    [dev, 'agent-dev.tonk.host'],
+    [staging, 'agent-staging.tonk.host'],
+    [stable, 'agent.tonk.host'],
+  ]) {
+    assert.equal(config.vars.TONK_MCP_ISSUER, `https://${domain}`);
+    assert.equal(config.workers_dev, false);
+    assert.deepEqual(config.routes, [{ pattern: domain, custom_domain: true }]);
+    // One-level names only: the tonk.host zone has no nested subdomains.
+    assert.equal(domain.split('.').length <= 3, true);
+  }
 });
 test('deployment rejects cross-channel providers and malformed input before provisioning', () => {
   const valid = {

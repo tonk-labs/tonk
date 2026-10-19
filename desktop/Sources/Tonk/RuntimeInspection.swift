@@ -177,16 +177,19 @@ final class RuntimeInspection: NSObject, WKScriptMessageHandler {
 
 @MainActor
 extension RuntimeModel {
-  func inspectView(_ space: TonkSpace) async throws -> String {
+  /// Inspects `page`, the chat's own window, or else any open window showing `space`.
+  func inspectView(_ space: TonkSpace, in page: SpacePage? = nil) async throws -> String {
+    let page = page ?? openPage(showing: space)
     func check() throws {
-      try requireSpaceReady(space)
-      guard selectedSpace?.id == space.id, webView.url == space.url else {
+      try requireSpaceReady(space, page: page)
+      guard let page, page.shows(space) else {
         throw HarnessError.message("Open the attached space in the preview before inspecting it.")
       }
       try Task.checkCancellation()
     }
     try check()
-    let result = try await inspection.snapshot(in: webView)
+    guard let page else { throw HarnessError.message("No preview is open.") }
+    let result = try await page.inspection.snapshot(in: page.webView)
     try check()
     let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
     return String(decoding: data, as: UTF8.self)

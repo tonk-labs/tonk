@@ -11,7 +11,7 @@ use axum::{Router, body::Body, http::Request};
 use serde_json::{Value, json};
 use tower_service::Service;
 
-use super::agent_link::{clear_journal, create_journal, request_detailed, request_method};
+use super::agent_link::{clear_journal, create_journal, request_detailed};
 use crate::TonkState;
 
 /// A long-lived local peer over one private data directory.
@@ -247,7 +247,7 @@ impl LocalPeer {
         .await;
         drop(state);
         stored.map_err(|()| "Could not save the space membership.".to_owned())?;
-        let name = request_method(
+        let name = request_detailed(
             &mut self.router,
             &format!("/api/repository/{}", subject.repo_key()),
             "",
@@ -301,13 +301,13 @@ async fn join(router: &mut Router, link: &str) -> Result<Value, String> {
 
 async fn list(router: &mut Router, peer: String) -> Result<Value, String> {
     let failed = || "Could not read this peer's spaces.".to_owned();
-    let profile = request_method(router, "/api/profile", "", "GET")
+    let profile = request_detailed(router, "/api/profile", "", "GET")
         .await
         .map_err(|_| failed())?;
     let mut spaces = Vec::new();
     for entry in profile["space"].as_array().into_iter().flatten() {
         let key = entry["key"].as_str().unwrap_or_default();
-        let label = request_method(router, &format!("/api/repository/{key}"), "", "GET")
+        let label = request_detailed(router, &format!("/api/repository/{key}"), "", "GET")
             .await
             .ok()
             .and_then(|info| info["label"].as_str().map(str::to_owned));

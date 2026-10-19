@@ -86,8 +86,8 @@ jobs:
     runs-on: 'ubuntu-latest'
     # Build the source-dependent archive once. The shards below realize these
     # exact store paths via workflow artifacts, including for forks without
-    # Cachix write credentials. Browser assets build independently in parallel.
-    # Cold native archive builds can exceed 30 minutes before tests start.
+    # Cachix write credentials. The CLI and browser assets build on their own
+    # runners in parallel, so this compile has the runner's cores to itself.
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
@@ -96,10 +96,6 @@ jobs:
           fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
       - uses: ./.github/actions/resolve-release
         if: github.ref_type == 'tag' && inputs.version == ''
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
       - uses: wimpysworld/nothing-but-nix@main
         with:
           root-safe-haven: 40960
@@ -110,23 +106,61 @@ jobs:
         with:
           name: tonk-test-cache
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-      - name: 'Build end-to-end test inputs'
+      - name: 'Build end-to-end test archive'
         shell: bash
         run: |
-          time nix build --accept-flake-config --print-build-logs --no-link ".#tonk-cli$CI_SUFFIX" ".#tests-e2e$CI_SUFFIX"
-          cli="$(nix eval --raw ".#tonk-cli$CI_SUFFIX.outPath")"
+          time nix build --accept-flake-config --print-build-logs --no-link ".#tests-e2e$CI_SUFFIX"
           archive="$(nix eval --raw ".#tests-e2e$CI_SUFFIX.outPath")"
           mkdir -p e2e-native/cargo-timings
           cp -r "$archive/cargo-timings/." e2e-native/cargo-timings/
           printf '%s\n' "$archive" > e2e-native/cargo-timings/store-path.txt
-          mapfile -t closure < <(nix-store --query --requisites "$cli" "$archive")
+          mapfile -t closure < <(nix-store --query --requisites "$archive")
           time nix-store --export "${closure[@]}" | gzip -1 > e2e-native/closure.nar.gz
-          printf 'TONK_BIN=%s/bin/tonk\nTONK_E2E_ARCHIVE=%s/tests-e2e%s.tar.zst\n' "$cli" "$archive" "$CI_SUFFIX" > e2e-native/paths.env
+          printf 'TONK_E2E_ARCHIVE=%s/tests-e2e%s.tar.zst\n' "$archive" "$CI_SUFFIX" > e2e-native/paths.env
           du -h e2e-native/closure.nar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: e2e-native
           path: e2e-native/
+          compression-level: 0
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 1
+
+  e2e-cli-build:
+    if: inputs.version == ''
+    name: 'Build end-to-end CLI'
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
+          fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
+      - uses: ./.github/actions/resolve-release
+        if: github.ref_type == 'tag' && inputs.version == ''
+      - uses: wimpysworld/nothing-but-nix@main
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Build the CLI the shards drive'
+        shell: bash
+        run: |
+          time nix build --accept-flake-config --print-build-logs --no-link ".#tonk-cli$CI_SUFFIX"
+          cli="$(nix eval --raw ".#tonk-cli$CI_SUFFIX.outPath")"
+          mkdir -p e2e-cli
+          mapfile -t closure < <(nix-store --query --requisites "$cli")
+          nix-store --export "${closure[@]}" | gzip -1 > e2e-cli/closure.nar.gz
+          printf 'TONK_BIN=%s/bin/tonk\n' "$cli" > e2e-cli/paths.env
+          du -h e2e-cli/closure.nar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-cli
+          path: e2e-cli/
           compression-level: 0
           overwrite: true
           if-no-files-found: error
@@ -168,14 +202,14 @@ jobs:
 
   e2e-shard:
     if: inputs.version == ''
-    name: 'End-to-end shard ${{ matrix.shard }}/3'
-    needs: ['e2e-build', 'e2e-browser-build']
+    name: 'End-to-end shard ${{ matrix.shard }}/8'
+    needs: ['e2e-build', 'e2e-cli-build', 'e2e-browser-build']
     runs-on: 'ubuntu-latest'
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -199,12 +233,18 @@ jobs:
           path: e2e-native
       - uses: actions/download-artifact@v4
         with:
+          name: e2e-cli
+          path: e2e-cli
+      - uses: actions/download-artifact@v4
+        with:
           name: e2e-browser
           path: e2e-browser
       - name: Restore exact end-to-end inputs
         shell: bash
         run: |
           time gzip -dc e2e-native/closure.nar.gz | nix-store --import
+          time gzip -dc e2e-cli/closure.nar.gz | nix-store --import
+          cat e2e-cli/paths.env >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/tonk-e2e-ui"
           tar -xzf e2e-browser/e2e-browser.tar.gz -C "$RUNNER_TEMP/tonk-e2e-ui"
           cat e2e-native/paths.env >> "$GITHUB_ENV"
@@ -223,7 +263,7 @@ jobs:
           TONK_E2E_DIAGNOSTICS_DIR: '${{ runner.temp }}/tonk-e2e-diagnostics'
         run: |
           time nix develop --accept-flake-config .#ci --command test:e2e \
-            --partition 'count:${{ matrix.shard }}/3'
+            --partition 'count:${{ matrix.shard }}/8'
       - name: 'Upload end-to-end timing diagnostics'
         if: always()
         uses: actions/upload-artifact@v4
@@ -281,16 +321,20 @@ jobs:
         run: |
           nix develop --accept-flake-config .#ci --command test:sw
 
+  # The native suites build as three archives (worker, cli, rest; see
+  # `nativeTestGroups` in flake.nix) on separate runners: one archive kept a
+  # runner's four cores saturated for most of its build. `Tests (native, ...)`
+  # below keeps the required contexts.
   tests:
-    name: 'Tests'
+    name: 'Native tests (${{ matrix.profile }}) ${{ matrix.group }}'
     runs-on: 'ubuntu-latest'
     timeout-minutes: 75
     strategy:
       # Finish every test leg even if another leg or its cleanup fails.
       fail-fast: false
       matrix:
-        platform: ["native", "web"]
         profile: ["debug", "release"]
+        group: ["worker", "cli", "rest"]
     steps:
       # Keep branch-protection contexts stable and state plainly that optimized
       # suites are deferred. Main/tag runs execute every matrix cell below.
@@ -315,15 +359,10 @@ jobs:
         run: python3 .release-controller/scripts/release_stamp.py "$VERSION"
       - uses: ./.github/actions/resolve-release
         if: github.ref_type == 'tag' && inputs.version == ''
-      - name: Free disk space
-        if: github.event_name != 'pull_request' || matrix.profile != 'release'
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
       - if: github.event_name != 'pull_request' || matrix.profile != 'release'
         uses: wimpysworld/nothing-but-nix@main
         with:
-          # Reserve ~40 GB on / so the web test leg has temp headroom.
+          # Reserve ~40 GB on / for test temp files.
           root-safe-haven: 40960
       - if: github.event_name != 'pull_request' || matrix.profile != 'release'
         uses: cachix/install-nix-action@v31
@@ -348,12 +387,124 @@ jobs:
             --accept-flake-config \
             --set-env-var TMPDIR "$RUNNER_TEMP" \
             .#ci \
-            --command test:${{matrix.platform}}:"$TEST_PROFILE"
+            --command test:native:"$TEST_PROFILE":${{ matrix.group }}
       - name: Upload Cargo build timings
         if: always() && (github.event_name != 'pull_request' || matrix.profile != 'release')
         uses: actions/upload-artifact@v4
         with:
-          name: cargo-timings-${{ matrix.platform }}-${{ matrix.profile }}
+          name: cargo-timings-native-${{ matrix.profile }}-${{ matrix.group }}
           path: ${{ runner.temp }}/cargo-timings/
           if-no-files-found: ignore
           retention-days: 14
+
+  native:
+    if: always()
+    name: 'Tests (native, ${{ matrix.profile }})'
+    needs: ['tests']
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        profile: ["debug", "release"]
+    steps:
+      - name: Defer optimized tests to main and release tags
+        if: github.event_name == 'pull_request' && matrix.profile == 'release'
+        run: echo 'Optimized tests were not run on this PR. They run on main and v* release tags; PR correctness coverage runs in the debug context.' | tee -a "$GITHUB_STEP_SUMMARY"
+      # `needs` reports the group matrix as one result, so a failing group of
+      # either profile fails both contexts. The group jobs name the profile.
+      - name: 'Require every native test group'
+        env:
+          GROUP_RESULT: '${{ needs.tests.result }}'
+        run: test "$GROUP_RESULT" = success
+
+  # Browser test execution takes about as long as compiling the archive, so the
+  # suite runs in shards. Each shard realizes the same archive derivation (one
+  # of them builds it, the others build it in parallel or substitute it), then
+  # runs its partition. `Tests (web, ...)` below keeps the required contexts.
+  web-tests:
+    name: 'Web tests (${{ matrix.profile }}) ${{ matrix.shard }}/4'
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ["debug", "release"]
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Defer optimized tests to main and release tags
+        if: github.event_name == 'pull_request' && matrix.profile == 'release'
+        run: echo 'Optimized tests were not run on this PR. They run on main and v* release tags; PR correctness coverage runs in the debug context.' | tee -a "$GITHUB_STEP_SUMMARY"
+      - if: github.event_name != 'pull_request' || matrix.profile != 'release'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
+          fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
+      - uses: actions/checkout@v4
+        if: inputs.version != ''
+        with:
+          ref: ${{ github.sha }}
+          path: .release-controller
+          persist-credentials: false
+      - name: Stamp the selected candidate
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python3 .release-controller/scripts/release_stamp.py "$VERSION"
+      - uses: ./.github/actions/resolve-release
+        if: github.ref_type == 'tag' && inputs.version == ''
+      - if: github.event_name != 'pull_request' || matrix.profile != 'release'
+        uses: wimpysworld/nothing-but-nix@main
+        with:
+          # Reserve ~40 GB on / so browser profiles have temp headroom.
+          root-safe-haven: 40960
+      - if: github.event_name != 'pull_request' || matrix.profile != 'release'
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - if: github.event_name != 'pull_request' || matrix.profile != 'release'
+        uses: cachix/cachix-action@v16
+        continue-on-error: true
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Run tests'
+        if: github.event_name != 'pull_request' || matrix.profile != 'release'
+        env:
+          TEST_PROFILE: ${{ github.event_name == 'pull_request' && 'ci' || matrix.profile }}
+          TONK_BUILD_TIMINGS_DIR: ${{ runner.temp }}/cargo-timings
+        shell: bash
+        run: |
+          nix develop \
+            --accept-flake-config \
+            --set-env-var TMPDIR "$RUNNER_TEMP" \
+            .#ci \
+            --command test:web:"$TEST_PROFILE" \
+            --partition 'count:${{ matrix.shard }}/4'
+      - name: Upload Cargo build timings
+        if: always() && matrix.shard == 1 && (github.event_name != 'pull_request' || matrix.profile != 'release')
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-timings-web-${{ matrix.profile }}
+          path: ${{ runner.temp }}/cargo-timings/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  web:
+    if: always()
+    name: 'Tests (web, ${{ matrix.profile }})'
+    needs: ['web-tests']
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        profile: ["debug", "release"]
+    steps:
+      - name: Defer optimized tests to main and release tags
+        if: github.event_name == 'pull_request' && matrix.profile == 'release'
+        run: echo 'Optimized tests were not run on this PR. They run on main and v* release tags; PR correctness coverage runs in the debug context.' | tee -a "$GITHUB_STEP_SUMMARY"
+      # `needs` reports the shard matrix as one result, so a failing shard of
+      # either profile fails both contexts. The shard jobs name the profile.
+      - name: 'Require every web test shard'
+        env:
+          SHARD_RESULT: '${{ needs.web-tests.result }}'
+        run: test "$SHARD_RESULT" = success

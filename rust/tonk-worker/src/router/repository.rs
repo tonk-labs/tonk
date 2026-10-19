@@ -17,7 +17,6 @@ use ::axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_credentials::Ed25519Signer;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
@@ -31,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
     Branch as MetaBranch, Invitation, InvitedVia, MemberName, MemberRole, Membership, Remote,

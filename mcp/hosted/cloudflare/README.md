@@ -1,18 +1,25 @@
 # Cloudflare MCP deployment
 
 The repository Deploy workflow builds the matching frontend assets, deploys Tonk,
-and then deploys MCP on a fresh Docker runner. The generated Wrangler config is
+and then deploys MCP on a fresh Docker runner. A parallel job builds the
+container's `tonk-agent-worker` in `rust:1.93.0-bookworm`, the Debian release
+the image runs, and the image copies that binary in. The generated Wrangler config is
 ignored. Deployment requires the existing `CLOUDFLARE_ACCOUNT_ID` and
 `CLOUDFLARE_API_TOKEN` secrets, with Workers, Containers and R2 permissions.
 
-| Trigger | MCP worker | Tonk provider |
-| --- | --- | --- |
-| Same-repository PR | `tonk-mcp-pr-N` | Matching `pr-N` access preview |
-| Push to main | `tonk-mcp-dev` | `https://tonk.foundation` |
-| Prerelease v tag | `tonk-mcp-staging` | `https://staging.tonk.xyz` |
-| Final v tag | `tonk-mcp` | `https://tonk.network` |
+| Trigger | MCP worker | MCP URL | Tonk provider |
+| --- | --- | --- | --- |
+| Same-repository PR | `tonk-mcp-pr-N` | `https://tonk-mcp-pr-N.<subdomain>.workers.dev/mcp` | Matching `pr-N` access preview |
+| Push to main | `tonk-mcp-dev` | `https://agent-dev.tonk.host/mcp` | `https://tonk.foundation` |
+| Prerelease v tag | `tonk-mcp-staging` | `https://agent-staging.tonk.host/mcp` | `https://staging.tonk.xyz` |
+| Final v tag | `tonk-mcp` | `https://agent.tonk.host/mcp` | `https://tonk.network` |
 
-Each worker has its own workers.dev URL and private checkpoint bucket. Configure
+Each worker has its own origin and private checkpoint bucket. Release channels
+are served only from their `tonk.host` custom domain (one-level names; the zone
+has no nested subdomains), with workers.dev disabled because the Worker answers
+only its issuer origin. PR previews stay on workers.dev so they leave no DNS
+records behind. Custom domains need the deploy token to hold Workers Routes and
+DNS edit permissions on the `tonk.host` zone. Configure
 clients for Streamable HTTP without OAuth; every query/evaluation supplies an
 agent link. CI smoke checks the deployed commit, public tool discovery, required
 link fields and rejection of missing links. It does not exercise real user data.
@@ -29,6 +36,9 @@ using `tonk.foundation`. CI uses `prepare-deployment.mjs` instead. From the root
 npm --prefix mcp ci --ignore-scripts
 npm --prefix mcp/hosted/cloudflare ci
 TONK_UI_DIST=/absolute/path/to/tonk-ui npm --prefix mcp run build:hosted-assets
+docker run --rm --platform linux/amd64 -v "$PWD:/src" -w /src rust:1.93.0-bookworm sh -c \
+  'apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev clang cmake &&
+   cargo build --locked --release -p tonk-worker --features native-host --bin tonk-agent-worker'
 docker build --platform linux/amd64 -f mcp/hosted/cloudflare/Dockerfile.worker -t tonk-chatgpt:test .
 cd mcp/hosted/cloudflare
 npx --no-install wrangler deploy --dry-run --containers-rollout=none --config wrangler.toml

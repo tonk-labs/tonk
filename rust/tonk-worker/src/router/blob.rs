@@ -7,7 +7,6 @@ use ::axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::{ArtifactSelector, Entity, Relation, Value};
 use dialog_effects::blob::BlobError;
 use dialog_repository::{Blob, CommitError, RepositoryExt as _};
@@ -16,6 +15,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_handler_macros::wasm_compat;
 
 use super::AppState;
 use super::claim::RawClaim;
