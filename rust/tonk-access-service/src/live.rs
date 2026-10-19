@@ -26,6 +26,7 @@ use async_trait::async_trait;
 use dialog_capability::{Did, Provider, Subject};
 use dialog_effects::memory;
 use dialog_effects::memory::prelude::CellScope;
+use dialog_effects::memory::{CellState, Edition, Version};
 use dialog_remote_ucan::socket::{
     Change, PING, PONG, Reply, Request as Frame, SUBPROTOCOL, Session,
 };
@@ -80,6 +81,10 @@ struct Invoked {
     container: Vec<u8>,
     /// The cell it writes, when it writes one.
     writes: Option<(String, String)>,
+    /// The bytes a write stores, as the frame carried them.
+    payload: Option<Vec<u8>>,
+    /// Whether the write empties the cell rather than storing bytes.
+    deletes: bool,
 }
 
 /// One space's live side.
@@ -119,7 +124,7 @@ impl DurableObject for Live {
             (Method::Get, "/ucan/") => self.accept(&req, subject),
             (Method::Post, "/changed") => {
                 let changed: Changed = req.json().await?;
-                self.fan_out(&subject, &changed.space, &changed.cell)
+                self.fan_out(&subject, &changed.space, &changed.cell, None)
                     .await?;
                 Response::empty()
             }
@@ -175,10 +180,16 @@ impl DurableObject for Live {
         let mut fanned = None;
         if let Some(invoked) = &invoked {
             self.meter(invoked, &reply);
-            if let (Reply::Answer { status, .. }, Some((space, cell))) = (&reply, &invoked.writes)
+            if let (
+                Reply::Answer {
+                    status, version, ..
+                },
+                Some((space, cell)),
+            ) = (&reply, &invoked.writes)
                 && (200..300).contains(status)
             {
-                self.fan_out(&socket.subject, space, cell).await?;
+                let written = written(invoked, version.as_deref());
+                self.fan_out(&socket.subject, space, cell, written).await?;
                 fanned = Some(clock.lap());
             }
         }
@@ -296,16 +307,28 @@ impl Live {
 
     /// Tell every socket's watches of the cell `cell` in `space` what it
     /// holds now, all at once.
-    async fn fan_out(&self, subject: &str, space: &str, cell: &str) -> Result<()> {
+    async fn fan_out(
+        &self,
+        subject: &str,
+        space: &str,
+        cell: &str,
+        written: Option<CellState>,
+    ) -> Result<()> {
         let did: Did = subject
             .parse()
             .map_err(|_| worker::Error::RustError(format!("{subject} is not a DID")))?;
         let mut clock = Clock::start();
         let access = self.access()?;
-        let resolve = CellScope::new(Subject::from(did.clone()), space, cell).resolve();
-        let state = Provider::<memory::Resolve>::execute(access.provider(), resolve)
-            .await
-            .map_err(|error| worker::Error::RustError(error.to_string()))?;
+        let told = written.is_some();
+        let state = match written {
+            Some(state) => state,
+            None => {
+                let resolve = CellScope::new(Subject::from(did.clone()), space, cell).resolve();
+                Provider::<memory::Resolve>::execute(access.provider(), resolve)
+                    .await
+                    .map_err(|error| worker::Error::RustError(error.to_string()))?
+            }
+        };
         let read = clock.lap();
         let change = Change {
             subject: &did,
@@ -350,8 +373,13 @@ impl Live {
         }
         console_log!(
             "fan-out of {space}/{cell}: {delivered} delivered, {ended} watches ended \
-             in {}ms (read back {read}ms)",
-            clock.total()
+             in {}ms ({})",
+            clock.total(),
+            if told {
+                "as written".to_string()
+            } else {
+                format!("read back {read}ms")
+            }
         );
         Ok(())
     }
@@ -416,7 +444,12 @@ impl Live {
 /// What the frame `bytes` invokes, when it is an invocation that can be
 /// read.
 fn invoked(bytes: &[u8]) -> Option<Invoked> {
-    let Frame::Invoke { id, container, .. } = Frame::decode(bytes).ok()? else {
+    let Frame::Invoke {
+        id,
+        container,
+        payload,
+    } = Frame::decode(bytes).ok()?
+    else {
         return None;
     };
     let chain = InvocationChain::try_from(Container::from_bytes(&container).ok()?).ok()?;
@@ -425,9 +458,31 @@ fn invoked(bytes: &[u8]) -> Option<Invoked> {
         invocation: chain.invocation.to_cid().to_string(),
         subject: chain.subject().to_string(),
         writes: crate::socket::cell_written(&chain),
+        deletes: chain.command().0.iter().map(String::as_str).eq(DELETE),
         container,
+        payload,
     })
 }
+
+/// What the cell a frame wrote now holds, as its answer tells: the bytes
+/// the frame stored, at the version the answer names, or nothing once
+/// deleted. `None` when the answer does not say, and the cell is then
+/// read back. A cell holds exactly what was written to it, at the version
+/// the write was answered with, so this is what reading it back would
+/// find, without the read.
+fn written(invoked: &Invoked, version: Option<&str>) -> Option<CellState> {
+    invoked.writes.as_ref()?;
+    if invoked.deletes {
+        return Some(None);
+    }
+    Some(Some(Edition {
+        content: invoked.payload.clone()?,
+        version: Version::from(version?.to_string()),
+    }))
+}
+
+/// The command that empties a cell.
+const DELETE: [&str; 4] = ["use", "delete", "memory", "cell"];
 
 /// Hand a socket upgrade for `/ucan/?sub=<space>` to the space's object.
 pub async fn connect(req: Request, env: &Env) -> Result<Response> {

@@ -547,6 +547,12 @@ async fn perform(
     screen_provisioning(container_bytes, env).await?;
     let screened = Date::now().as_millis();
     let described = crate::describe::describe(verified.chain());
+    // Who invoked, by the end of its DID: enough to tell two clients'
+    // requests apart in a log.
+    let invoker = {
+        let did = verified.chain().issuer().to_string();
+        did[did.len().saturating_sub(6)..].to_string()
+    };
     // A cell write is reported to its space's watches once it lands.
     let written = crate::socket::cell_written(verified.chain())
         .map(|(space, cell)| (verified.subject().to_string(), space, cell));
@@ -600,16 +606,29 @@ async fn perform(
     for (name, value) in &described {
         let _ = headers.set(name, value);
     }
+    let total = Date::now().as_millis().saturating_sub(started);
     let _ = headers.set(
         "Server-Timing",
         &format!(
-            "authorize;dur={}, screen;dur={}, store;dur={}, total;dur={}, cache;desc={}",
+            "authorize;dur={}, screen;dur={}, store;dur={}, total;dur={total}, cache;desc={}",
             authorized.saturating_sub(started),
             screened.saturating_sub(authorized),
             stored.saturating_sub(screened),
-            Date::now().as_millis().saturating_sub(started),
             cache.as_str()
         ),
+    );
+    // The same breakdown for a log, which sees neither the request's
+    // credential nor the response's headers.
+    let [(_, command), _, (_, arguments)] = &described;
+    console_log!(
+        "{command} by …{invoker}: {} in {total}ms (authorize {}ms, screen {}ms, store {}ms, \
+         cache {}, {bytes} bytes) {}",
+        answer.status,
+        authorized.saturating_sub(started),
+        screened.saturating_sub(authorized),
+        stored.saturating_sub(screened),
+        cache.as_str(),
+        arguments.chars().take(160).collect::<String>(),
     );
     let response = match answer.body {
         Content::Bytes(body) => Response::from_bytes(body),

@@ -322,6 +322,19 @@ fn is_upstream_moved(error: &crate::reactor::ReactorError) -> bool {
     )
 }
 
+/// Whether `error` is a push refused by a head write that said where
+/// upstream stands: dialog records that head before answering, so a pull
+/// can merge it without asking the remote again.
+fn is_recorded_conflict(error: &crate::reactor::ReactorError) -> bool {
+    matches!(
+        error,
+        crate::reactor::ReactorError::Push(dialog_repository::PushError::NonFastForward {
+            actual: Some(_),
+            ..
+        })
+    )
+}
+
 /// Whether `error` is the typed "branch head moved under us" mismatch raised
 /// when a concurrent commit advances the local head during pull.
 fn is_head_moved(error: &crate::reactor::ReactorError) -> bool {
@@ -868,8 +881,14 @@ pub async fn push(
                     params.repo
                 );
                 let head = session.handle().revision();
-                match pull_through_moved_head(&tonk_state, &params.repo, &params.branch, &session)
-                    .await
+                match pull_through_moved_head(
+                    &tonk_state,
+                    &params.repo,
+                    &params.branch,
+                    &session,
+                    false,
+                )
+                .await
                 {
                     Ok(after) => {
                         if after.is_some() && after != head {
@@ -1128,16 +1147,30 @@ pub async fn sync(
 
     let before = session.handle().revision();
 
+    // A watched space is told each head its upstream moves to, and the
+    // watch records it, so the pull merges that head rather than asking
+    // the remote where it stands: a round trip on every sync, the one a
+    // delivered head wakes included. A head the watch has not delivered
+    // yet is not lost: the push below is refused for it, and pulls it.
+    let assume_upstream = params.branch == "main" && tonk_state.sync_queue.is_watched(&params.repo);
+
     // Pull with bounded refresh-and-retry on a head that moved under us.
-    let after_pull =
-        match pull_through_moved_head(&tonk_state, &params.repo, &params.branch, &session).await {
-            Ok(after) => after,
-            Err(error) => {
-                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-                publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
-                return Err(error);
-            }
-        };
+    let after_pull = match pull_through_moved_head(
+        &tonk_state,
+        &params.repo,
+        &params.branch,
+        &session,
+        assume_upstream,
+    )
+    .await
+    {
+        Ok(after) => after,
+        Err(error) => {
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
+            return Err(error);
+        }
+    };
     // A pull that moved the head changed what every live view over this
     // branch shows; deliver it now rather than after the push settles —
     // a refused or empty push left views waiting on a repaint that only
@@ -1146,20 +1179,68 @@ pub async fn sync(
         deliver_pulled_head(&tonk_state, &params.repo, &params.branch, &session).await;
     }
 
-    match tonk_state
-        .reactor
-        .repository(&params.repo)
-        .branch(&params.branch)
-        // The pull above just resolved this branch's upstream head, so
-        // the push does not resolve it again. What that gives up is
-        // early refusal when another writer moved upstream between the
-        // two: the novelty ships first and the conditional head write
-        // rejects it, which `sync_failure` reports as the same conflict.
-        .push()
-        .assuming_upstream()
-        .perform(&tonk_state.operator)
-        .await
-    {
+    // Another writer landing first refuses the push. It is pulled and
+    // pushed onto at once, rather than left for the drain to retry on its
+    // own schedule, which held a change back for seconds at a time while
+    // two devices took turns editing.
+    let mut attempt = 0;
+    let pushed = loop {
+        let pushed = tonk_state
+            .reactor
+            .repository(&params.repo)
+            .branch(&params.branch)
+            // The pull above just settled this branch's upstream head, so
+            // the push does not resolve it again. What that gives up is
+            // early refusal when another writer moved upstream between
+            // the two: the novelty ships first and the conditional head
+            // write rejects it.
+            .push()
+            .assuming_upstream()
+            .perform(&tonk_state.operator)
+            .await;
+        match pushed {
+            Err(e) if is_upstream_moved(&e) && attempt + 1 < SYNC_RETRY_LIMIT => {
+                attempt += 1;
+                log!(
+                    "Push raced an upstream update on {}@{} (attempt {attempt}); pulling",
+                    params.branch,
+                    params.repo
+                );
+                // A refusal that said where upstream stands recorded it,
+                // so the pull merges that head without asking again.
+                let head = session.handle().revision();
+                match pull_through_moved_head(
+                    &tonk_state,
+                    &params.repo,
+                    &params.branch,
+                    &session,
+                    is_recorded_conflict(&e),
+                )
+                .await
+                {
+                    Ok(after) => {
+                        if after.is_some() && after != head {
+                            deliver_pulled_head(
+                                &tonk_state,
+                                &params.repo,
+                                &params.branch,
+                                &session,
+                            )
+                            .await;
+                        }
+                    }
+                    Err(error) => {
+                        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                        publish_failure_status(&tonk_state, &params.repo, &params.branch, &error)
+                            .await;
+                        return Err(error);
+                    }
+                }
+            }
+            pushed => break pushed,
+        }
+    };
+    match pushed {
         Ok(pushed) => {
             log!("Push succeeded: {}@{}", params.branch, params.repo);
             let after = session.handle().revision();
@@ -1205,7 +1286,9 @@ pub async fn sync(
 }
 
 /// Pull `repo`/`branch` into `session`, refreshing and retrying when a
-/// local commit advances the head mid-merge.
+/// local commit advances the head mid-merge. With `assume_upstream`, the
+/// pull merges the upstream head last recorded instead of asking the
+/// remote for it.
 ///
 /// Since `tonk-2026-06-21` a pull publishes its merged head CAS'd against
 /// the version it merged from, so a racing commit fails the pull with a
@@ -1218,10 +1301,16 @@ async fn pull_through_moved_head(
     repo: &str,
     branch: &str,
     session: &crate::reactor::BranchSession,
+    assume_upstream: bool,
 ) -> Result<Option<Revision>, TonkWorkerError> {
     let hydrate = super::account_state::is_account_key(tonk_state, repo).await;
     for attempt in 0..SYNC_RETRY_LIMIT {
         let pull = tonk_state.reactor.repository(repo).branch(branch).pull();
+        let pull = if assume_upstream {
+            pull.assuming_upstream()
+        } else {
+            pull
+        };
         let pulled = if hydrate {
             pull.download()
                 .operational()
@@ -1663,7 +1752,16 @@ pub async fn drain_sync(state: &AppState) {
         }
         swept
     };
-    if !account_already_swept {
+    // A watched account is swept when its watch says it moved, and when
+    // this device commits to it, by its own loop.
+    let account_watched = {
+        let tonk = state.read().await;
+        match super::account_state::require_ready_account_state(&tonk).await {
+            Ok(ready) => tonk.sync_queue.is_watched(&ready.key),
+            Err(_) => false,
+        }
+    };
+    if !account_already_swept && !account_watched {
         let tonk = state.read().await;
         let (status, swept) = super::account_state::ensure_account_state_swept(&tonk).await;
         if status != tonk_account::AccountStateStatus::Unconfigured
@@ -1783,10 +1881,59 @@ pub(crate) async fn watch_open_repos(state: &AppState) {
         };
         let state = state.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            watch_repo(&state, &repo, &branch, &operator).await;
+            let held = |tonk: &crate::worker::TonkState| {
+                let repos = tonk.reactor.repos().read();
+                repos
+                    .get(&repo)
+                    .and_then(|held| held.branches().read().get("main").cloned())
+            };
+            watch_repo(&state, &repo, &branch, &operator, held).await;
             state.read().await.sync_queue.end_watching(&repo);
         });
     }
+    watch_account(state).await;
+}
+
+/// Watch the account's upstream, as an open space's is, so another
+/// device's change to it is pulled when it lands, and the drain stops
+/// sweeping it on every tick to find out.
+///
+/// The account rides the profile's active branch, which no space
+/// represents, so it is followed under the account's key: a delivered
+/// head marks that key moved, and its loop sweeps the account.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn watch_account(state: &AppState) {
+    let (key, branch, operator) = {
+        let tonk = state.read().await;
+        let Ok(ready) = super::account_state::require_ready_account_state(&tonk).await else {
+            return;
+        };
+        let Some(branch) = account_branch(&tonk) else {
+            return;
+        };
+        if !tonk.sync_queue.begin_watching(&ready.key) {
+            return;
+        }
+        (ready.key, branch, tonk.operator.clone())
+    };
+    let state = state.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        watch_repo(&state, &key, &branch, &operator, account_branch).await;
+        state.read().await.sync_queue.end_watching(&key);
+    });
+}
+
+/// The branch the account rides, as the reactor holds it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn account_branch(
+    tonk: &crate::worker::TonkState,
+) -> Option<std::sync::Arc<dialog_reactor::BranchState>> {
+    tonk.reactor
+        .profile_repo_state()?
+        .branches()
+        .read()
+        .get(&tonk.active_branch)
+        .cloned()
 }
 
 /// Follow `repo`'s upstream until the watch ends, marking the repository
@@ -1797,6 +1944,7 @@ async fn watch_repo(
     repo: &str,
     branch: &std::sync::Arc<dialog_reactor::BranchState>,
     operator: &crate::worker::DefaultOperator,
+    held: impl Fn(&crate::worker::TonkState) -> Option<std::sync::Arc<dialog_reactor::BranchState>>,
 ) {
     use dialog_repository::{Observation, Upstream};
     use futures_util::{StreamExt as _, pin_mut};
@@ -1830,21 +1978,34 @@ async fn watch_repo(
     while let Some(observed) = observations.next().await {
         // A profile switch rebuilds the reactor, and removing the space
         // evicts it: this watch then answers to a branch nobody holds.
-        let current = {
-            let tonk = state.read().await;
-            let repos = tonk.reactor.repos().read();
-            repos
-                .get(repo)
-                .and_then(|held| held.branches().read().get("main").cloned())
-        };
+        let current = held(&*state.read().await);
         if !current.is_some_and(|current| std::sync::Arc::ptr_eq(&current, branch)) {
             log!("{repo} is no longer watched: its branch was replaced");
             return;
         }
         match observed {
-            Ok(Observation::Advanced(_) | Observation::Diverged) => {
-                // Wakes its loop, which pulls it now rather than on the
-                // next drain's schedule.
+            Ok(Observation::Advanced(_)) => {
+                // Wakes its loop, which pulls the head just recorded now
+                // rather than on the next drain's schedule.
+                state.read().await.sync_queue.moved(repo, current_millis());
+            }
+            Ok(Observation::Diverged) => {
+                // Nothing was recorded, and the loop's pull merges the
+                // head last recorded, so ask the remote where it stands:
+                // that records it. Through a handle opened for it, since
+                // a fetch records against the edition its handle last saw.
+                let fetched = match remote.branch(name.clone()).open().perform(operator).await {
+                    Ok(fresh) => fresh
+                        .fetch()
+                        .perform(operator)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string()),
+                    Err(error) => Err(error.to_string()),
+                };
+                if let Err(error) = fetched {
+                    log!("{repo}: a diverged head could not be fetched: {error}");
+                }
                 state.read().await.sync_queue.moved(repo, current_millis());
             }
             Ok(Observation::Stale) => {}
