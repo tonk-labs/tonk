@@ -147,6 +147,10 @@ section) takes the same three:
 - `/space/<space>/<entity>@<model>!<facet>` — one entity through an
   explicit facet.
 
+These three are routes the standard library ships. To give a page its
+own path (`/notes`, `/notes/<note>`), write a `route!`: `tonk help
+routes`.
+
 Handing the repo to someone else is a separate act: `tonk invite`.
 
 ## Render to HTML headlessly: `tonk render`
@@ -511,6 +515,7 @@ route and is distinct from the seeded `portal` concept above.
 
 ---
 
-For interactivity (clicks, forms) see `tonk help events`. Don't
+For pages at their own paths see `tonk help routes`. For
+interactivity (clicks, forms) see `tonk help events`. Don't
 memorize built-ins — run `tonk show` / `tonk concept` /
 `tonk view` to see what's on the branch.
