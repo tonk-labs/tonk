@@ -43,7 +43,7 @@ struct LinksPageView: View {
                 ? "Loading links…"
                 : (!access.errors.isEmpty
                   ? "Some links could not be loaded."
-                  : (agentsOnly ? "No agent links yet." : "No links yet."))
+                  : (agentsOnly ? "No connections yet." : "No links yet."))
             )
             .foregroundStyle(.secondary)
             Spacer()

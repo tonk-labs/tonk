@@ -48,7 +48,7 @@ struct TonkApp: App {
         Button("New Chat") {
           model.startSpaceChat()
         }
-        .keyboardShortcut("n").disabled(
+        .keyboardShortcut("n", modifiers: [.command, .shift]).disabled(
           model.openedSpace == nil || model.busy || model.creatingSpace || model.loginPending
             || model.connecting)
       }

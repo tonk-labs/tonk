@@ -48,9 +48,9 @@ struct WindowCommands: Commands {
       Button("Settings…") { modelSettings?() }
         .keyboardShortcut(",").disabled(modelSettings == nil)
     }
-    CommandGroup(after: .newItem) {
+    CommandGroup(before: .newItem) {
       Button("New Link…") { newLink?() }
-        .keyboardShortcut("n", modifiers: [.command, .shift])
+        .keyboardShortcut("n")
         .disabled(newLink == nil)
     }
     CommandGroup(after: .toolbar) {
