@@ -5,21 +5,35 @@ import SwiftUI
 @main
 struct TonkApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-  @StateObject private var model = HarnessModel()
+  /// The one saved chat state, shared by the hub and every space window.
+  private let archive: ChatArchive
+  /// The hub's chat model: provider settings and sign-in. Space windows have their own.
+  @StateObject private var model: HarnessModel
   @StateObject private var runtime = RuntimeModel()
+  @StateObject private var access = AccessModel()
+
+  init() {
+    let archive = ChatArchive(directory: HarnessModel.defaultRoot)
+    self.archive = archive
+    _model = StateObject(wrappedValue: HarnessModel(store: archive.handle(claimsChats: false)))
+  }
 
   var body: some Scene {
     Window(RuntimeLocation.deployment.title, id: "main") {
-      ContentView(model: model, runtime: runtime)
+      ContentView(model: model, runtime: runtime, access: access)
         .frame(minWidth: 850, minHeight: 580)
         .background(WindowAppearance())
+        .modifier(OpenActivityFixture())
         .task {
-          if ProcessInfo.processInfo.arguments.contains("--activity-fixture") {
-            ActivityFixture.prepare(model: model, runtime: runtime)
+          if ActivityFixture.requested { return }
+          if ProcessInfo.processInfo.arguments.contains("--links-fixture") {
+            ActivityFixture.prepareLinks(runtime: runtime, access: access)
+            ActivityFixture.snapshotIfRequested(runtime: runtime, access: access)
             return
           }
           runtime.prepareCatalogCache(directory: model.root)
-          delegate.model = model
+          access.prepare(directory: model.root, runtime: runtime)
+          delegate.archive = archive
           delegate.runtime = runtime
           model.runtime = runtime
           await runtime.startMCPBridge(root: model.root)
@@ -38,14 +52,31 @@ struct TonkApp: App {
     .windowToolbarStyle(.unified)
     .commands {
       WindowCommands()
-      CommandGroup(replacing: .newItem) {
-        Button("New chat") {
-          model.startSpaceChat()
-        }
-        .keyboardShortcut("n").disabled(
-          model.openedSpace == nil || model.busy || model.creatingSpace || model.loginPending
-            || model.connecting)
+    }
+
+    // One window per space view, each with its own page and chat.
+    WindowGroup("Space", for: SpaceWindowRequest.self) { $request in
+      if let request {
+        SpaceWindow(request: request, runtime: runtime, access: access, archive: archive)
+          .frame(minWidth: 700, minHeight: 500)
+          .background(WindowAppearance())
       }
+    }
+    .defaultSize(width: 1180, height: 780)
+    .windowToolbarStyle(.unified)
+    // A restored window would open before the account and its spaces load.
+    .restorationBehavior(.disabled)
+  }
+}
+
+/// The activity fixture draws a space window with a chat, so it opens one.
+private struct OpenActivityFixture: ViewModifier {
+  @Environment(\.openWindow) private var openWindow
+
+  func body(content: Content) -> some View {
+    content.task {
+      guard ActivityFixture.requested, let space = ActivityFixture.space else { return }
+      openWindow(value: SpaceWindowRequest(subject: space.subject, url: nil))
     }
   }
 }
@@ -65,7 +96,7 @@ private struct WindowAppearance: NSViewRepresentable {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-  weak var model: HarnessModel?
+  var archive: ChatArchive?
   weak var runtime: RuntimeModel?
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
@@ -95,7 +126,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
   func applicationWillTerminate(_ notification: Notification) {
     runtime?.stopMCPBridge()
-    model?.shutdown()
+    // Saves and stops the hub's chat model and every space window's.
+    archive?.shutdown()
   }
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }

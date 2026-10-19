@@ -41,7 +41,7 @@ mod subscribe;
 mod subscription;
 mod transaction;
 
-pub use branch::{BranchReference, BranchSession, BranchState, Upgraded, migrate};
+pub use branch::{BranchReference, BranchSession, BranchState, ProfileUpgrade, Upgraded, migrate};
 pub use command::{
     CommandHandler, CommandRegistry, Decode, EntityFacts, Migrated, MigratedCommand, RunFuture,
     TypedCommand,

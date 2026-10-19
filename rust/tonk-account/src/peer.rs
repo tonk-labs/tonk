@@ -10,7 +10,9 @@ use dialog_common::ConditionalSync;
 use dialog_credentials::{Credential, SignerCredential};
 use dialog_effects::credential::{self as credential_fx, CredentialError, prelude::*};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
-use dialog_peer::{Allowance, OpenCredential, Peer, PeerError, PeerSpace, SpaceVaultExt as _};
+use dialog_peer::{
+    Allowance, OpenCredential, Peer, PeerError, PeerSpace, SpaceVaultExt as _, StepFuture,
+};
 use dialog_repository::{
     ACCESS_BRANCH, AddAddressError, Branch, ConnectError, ConnectedBranch, ConnectedReplica,
     HeldCaches, PeersEnv, Repository, ResolveEnv, SiteAddress, Upstream, contact,
@@ -21,6 +23,25 @@ use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Principal as _;
 use std::fmt::Display;
+
+/// Moves a profile's state branch an earlier release wrote to the layout
+/// this release writes, before opening the profile writes into it.
+///
+/// Opening runs it every time, and it decides whether anything is left
+/// to move: a move an earlier open left half done, storage rewritten but
+/// definitions not, is finished by the next open. The state branch is the
+/// profile's account branch, which also keeps the profile library's
+/// definitions, so a profile the worker or the CLI opens is given the
+/// whole move (storage, definitions and rules) from the layer that knows
+/// the definitions; this crate sits below it.
+///
+/// Every step must hold however often it runs: a move that fails because
+/// another writer moved the branch first is run once more over the
+/// refreshed branch, which finishes what is left.
+pub trait Upgrade<S: PeerSpace>: ConditionalSync {
+    /// Migrate `branch`, acting as `peer`, if anything is left to move.
+    fn upgrade<'a>(&'a self, branch: &'a Branch, peer: &'a Peer<S>) -> StepFuture<'a>;
+}
 
 /// The name the key of the system tonk runs as is kept under, in the
 /// credential store of the profile directory. The system owns the storage
@@ -135,7 +156,8 @@ where
 /// Open the peer a profile is: its key opened from `credentials` under the
 /// name `location` gives, its [home](home) space in `storage`, its records
 /// in the home's [`ACCESS_BRANCH`], granted the storage by `system`,
-/// spaces it names resolving against `base`, and [onboarded](onboard).
+/// spaces it names resolving against `base`, its records moved by
+/// `upgrade` when an earlier release wrote them, and [onboarded](onboard).
 /// With `create` false, a profile that holds no key is refused rather
 /// than given one.
 pub async fn open_peer<S>(
@@ -145,6 +167,7 @@ pub async fn open_peer<S>(
     credentials: &CredentialStore<S>,
     system: &SignerCredential,
     create: bool,
+    upgrade: &dyn Upgrade<S>,
 ) -> Result<Peer<S>, PeerError>
 where
     S: PeerSpace + Resource<Location, Error: Display>,
@@ -158,6 +181,7 @@ where
         system,
         create,
         ACCESS_BRANCH,
+        upgrade,
     )
     .await
 }
@@ -167,6 +191,7 @@ where
 /// branch of a profile is its own account, with its own account vault,
 /// custody and delegations, so a profile on another account's branch
 /// acts for that account and nothing it holds for another.
+#[allow(clippy::too_many_arguments)]
 pub async fn open_peer_on<S>(
     location: Location,
     base: Directory,
@@ -175,6 +200,7 @@ pub async fn open_peer_on<S>(
     system: &SignerCredential,
     create: bool,
     branch: &str,
+    upgrade: &dyn Upgrade<S>,
 ) -> Result<Peer<S>, PeerError>
 where
     S: PeerSpace + Resource<Location, Error: Display>,
@@ -189,6 +215,7 @@ where
         create,
         branch,
         None,
+        upgrade,
     )
     .await
 }
@@ -210,6 +237,7 @@ pub async fn open_peer_holding<S>(
     create: bool,
     branch: &str,
     caches: &HeldCaches,
+    upgrade: &dyn Upgrade<S>,
 ) -> Result<Peer<S>, PeerError>
 where
     S: PeerSpace + Resource<Location, Error: Display>,
@@ -224,6 +252,7 @@ where
         create,
         branch,
         Some(caches),
+        upgrade,
     )
     .await
 }
@@ -238,6 +267,7 @@ async fn open<S>(
     create: bool,
     branch: &str,
     caches: Option<&HeldCaches>,
+    upgrade: &dyn Upgrade<S>,
 ) -> Result<Peer<S>, PeerError>
 where
     S: PeerSpace + Resource<Location, Error: Display>,
@@ -256,10 +286,43 @@ where
         Some(caches) => builder.with(caches.clone()).build().await?,
         None => builder.build().await?,
     };
+    migrate_state(&peer, upgrade).await?;
     onboard(&peer)
         .await
         .map_err(|error| PeerError::State(error.to_string()))?;
     Ok(peer)
+}
+
+/// Move `peer`'s state branch with `upgrade`, which finds whatever an
+/// earlier release, or an earlier open that failed partway, left to move.
+/// Onboarding writes the branch directly, outside the reactor's migration
+/// gate, and a commit into the earlier layout is refused.
+async fn migrate_state<S: PeerSpace>(
+    peer: &Peer<S>,
+    upgrade: &dyn Upgrade<S>,
+) -> Result<(), PeerError> {
+    let state = peer.state();
+    let Err(first) = upgrade.upgrade(state, peer).await else {
+        return Ok(());
+    };
+    // Another process opening the same profile can move it first, so this
+    // one's commit on the same head loses. Every step holds however often
+    // it runs, so when the refreshed head shows another writer, the whole
+    // move runs once more over it and finishes what is left. When nothing
+    // else wrote, the failure would only repeat, so it is reported as is.
+    let ours = state.revision();
+    state.refresh(peer).await.map_err(|error| {
+        PeerError::Upgrade(format!(
+            "{first}; refreshing the branch to retry failed: {error}"
+        ))
+    })?;
+    if state.revision() == ours {
+        return Err(first);
+    }
+    upgrade
+        .upgrade(state, peer)
+        .await
+        .map_err(|again| PeerError::Upgrade(format!("{first}; retrying failed: {again}")))
 }
 
 /// Where the home space of the profile `profile` is: among the spaces it
@@ -713,6 +776,7 @@ mod tests {
             &credentials,
             &system,
             true,
+            &MigrateBranch,
         )
         .await?;
 
@@ -762,6 +826,80 @@ mod tests {
         Ok(())
     }
 
+    /// A profile an earlier release wrote keeps its state branch laid out
+    /// the way that release keyed values, and this release refuses to
+    /// commit into such a tree. Opening it moves the branch to this
+    /// release's layout, so what the profile seals afterwards is kept.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_migrates_a_profile_an_earlier_release_wrote() -> anyhow::Result<()> {
+        use dialog_storage::provider::storage::NativeSpace;
+
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        let open = || async {
+            let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+            open_peer(
+                Location::new(directory.clone(), "tonk"),
+                directory.clone(),
+                Storage::<NativeSpace>::default().owned_by(system.did()),
+                &credentials,
+                &system,
+                true,
+                &MigrateBranch,
+            )
+            .await
+        };
+
+        let peer = open().await?;
+        let did = peer.did();
+        let authority = peer.authority().await?;
+        // How a release before the number band left the branch.
+        peer.state().rekey_storage(0).perform(&peer).await?;
+        assert!(peer.state().needs_migration(&peer).await?);
+        drop(peer);
+
+        let peer = open().await?;
+        assert_eq!(peer.did(), did);
+        assert_eq!(peer.authority().await?, authority);
+        assert!(!peer.state().needs_migration(&peer).await?);
+        peer.secrets()
+            .site("tonk-after-migration-v1")
+            .save(b"kept".to_vec())
+            .perform(&peer)
+            .await?;
+        assert_eq!(
+            peer.secrets()
+                .site("tonk-after-migration-v1")
+                .load::<Vec<u8>>()
+                .perform(&peer)
+                .await?,
+            b"kept".to_vec()
+        );
+        Ok(())
+    }
+
+    /// [`Branch::migrate`]: the storage rewrite and the rule upgrade, without
+    /// the definitions upgrade. Enough for a profile that keeps no library
+    /// definitions, as in this crate's tests.
+    struct MigrateBranch;
+
+    impl<S> Upgrade<S> for MigrateBranch
+    where
+        S: PeerSpace,
+    {
+        fn upgrade<'a>(&'a self, branch: &'a Branch, peer: &'a Peer<S>) -> StepFuture<'a> {
+            Box::pin(async move {
+                branch
+                    .migrate()
+                    .perform(peer)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| PeerError::Upgrade(error.to_string()))
+            })
+        }
+    }
+
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
@@ -800,6 +938,7 @@ mod tests {
                 &credentials,
                 &system,
                 true,
+                &MigrateBranch,
             )
             .await
         };
@@ -853,6 +992,7 @@ mod tests {
             &credentials,
             &system,
             false,
+            &MigrateBranch,
         )
         .await?;
 
@@ -917,6 +1057,7 @@ mod tests {
             &credentials,
             &system,
             true,
+            &MigrateBranch,
         )
         .await?;
         let ucan = service("https://tonk.network/ucan");
@@ -972,6 +1113,7 @@ mod tests {
             &credentials,
             &system,
             true,
+            &MigrateBranch,
         )
         .await?;
         let onboarded = peer.authority().await?;

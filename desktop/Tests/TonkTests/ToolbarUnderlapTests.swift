@@ -18,11 +18,12 @@ final class ToolbarUnderlapTests: XCTestCase {
     guard #available(macOS 26.0, *) else { throw XCTSkip("Requires WebKit content insets") }
     _ = NSApplication.shared
     let runtime = RuntimeModel()
+    let page = runtime.makePage()
     let host = NSHostingController(
       rootView: GeometryReader { _ in
         AnimatedSidebar(
           isVisible: false, reduceMotion: true, sidebar: Color.gray,
-          detail: RuntimeView(model: runtime))
+          detail: RuntimeView(webView: page.webView))
       }.modifier(RuntimeToolbarBackground(enabled: underlap)))
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
@@ -38,9 +39,9 @@ final class ToolbarUnderlapTests: XCTestCase {
       host.view.layoutSubtreeIfNeeded()
       try await Task.sleep(for: .milliseconds(100))
       host.view.layoutSubtreeIfNeeded()
-      let webFrame = runtime.webView.convert(runtime.webView.bounds, to: nil)
+      let webFrame = page.webView.convert(page.webView.bounds, to: nil)
       XCTAssertEqual(webFrame.maxY, window.contentLayoutRect.maxY, accuracy: 1)
-      XCTAssertEqual(runtime.webView.obscuredContentInsets.top, 0)
+      XCTAssertEqual(page.webView.obscuredContentInsets.top, 0)
     }
   }
 }

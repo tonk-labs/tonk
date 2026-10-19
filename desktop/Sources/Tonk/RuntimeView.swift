@@ -21,7 +21,9 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   var catalogCache: SpaceCatalogCache?
   var cachedAccountRoot: String?
   var liveAccountRoot: String?
-  @Published var selectedSpace: TonkSpace?
+  /// Bumped whenever the account signs out or changes, so every space window closes.
+  @Published var accountEpoch = 0
+  var pages: [WeakPage] = []
   @Published var catalogRecoveryStarted: Date?
   @Published var catalogLoading = false
   @Published var catalogLoaded = false
@@ -34,8 +36,10 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   var callback: BrowserCallback?
   var mcpBridge: LocalRuntimeBridge?
   var mcpConnectionFile: URL?
+  /// The account page: catalog, access and agent tools run here, always at home.
+  /// Each space window has its own page on the same website data (`SpacePage`).
   let webView: WKWebView
-  let inspection = RuntimeInspection()
+  let websiteDataStore: WKWebsiteDataStore
 
   override init() {
     let configuration = WKWebViewConfiguration()
@@ -52,13 +56,8 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     }
     // The native picker can cover/detach this view while still querying its worker.
     configuration.preferences.inactiveSchedulingPolicy = .none
-    // Tonk carries this presentation flag into its sealed guest iframes.
-    configuration.userContentController.addUserScript(
-      WKUserScript(
-        source: "window.__tonkHideFab = true;",
-        injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
-    // User-selected remotes are restricted by the navigation delegate, not a static bundle list.
-    inspection.install(on: configuration.userContentController)
+    Self.hideFab(in: configuration.userContentController)
+    websiteDataStore = configuration.websiteDataStore
     webView = WKWebView(frame: .zero, configuration: configuration)
     super.init()
     catalogObservation.model = self
@@ -68,16 +67,23 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     webView.isInspectable = true
   }
 
+  /// Tonk carries this presentation flag into its sealed guest iframes.
+  static func hideFab(in controller: WKUserContentController) {
+    controller.addUserScript(
+      WKUserScript(
+        source: "window.__tonkHideFab = true;",
+        injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+  }
+
   func load() {
     loading = true
     error = nil
     ready = false
     if !accountStatusKnown { accountMessage = nil }
-    webView.load(URLRequest(url: selectedSpace?.url ?? RuntimeLocation.home))
+    webView.load(URLRequest(url: RuntimeLocation.home))
   }
 
   func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-    inspection.reset()
     catalogObservation.generation = UUID().uuidString
     loading = true
     error = nil
@@ -136,33 +142,33 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
   ) {
-    guard let url = navigationAction.request.url else {
-      decisionHandler(.cancel)
-      return
-    }
+    decisionHandler(Self.policy(for: navigationAction))
+  }
+
+  /// User-selected remotes are restricted here, not by a static bundle list.
+  static func policy(for navigationAction: WKNavigationAction) -> WKNavigationActionPolicy {
+    guard let url = navigationAction.request.url else { return .cancel }
     // The Tonk renderer owns its sandboxed guest frames; restrict top-level navigation only.
-    if navigationAction.targetFrame?.isMainFrame == false {
-      decisionHandler(.allow)
-      return
-    }
-    if RuntimeLocation.isEmbedded(url) {
-      decisionHandler(.allow)
-      return
-    }
+    if navigationAction.targetFrame?.isMainFrame == false { return .allow }
+    if RuntimeLocation.isEmbedded(url) { return .allow }
     if navigationAction.navigationType == .linkActivated && RuntimeLocation.isExternal(url) {
       NSWorkspace.shared.open(url)
     }
-    decisionHandler(.cancel)
+    return .cancel
   }
 
   func webView(
     _ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
     for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures
   ) -> WKWebView? {
+    Self.openExternally(navigationAction)
+    return nil
+  }
+
+  static func openExternally(_ navigationAction: WKNavigationAction) {
     if let url = navigationAction.request.url, RuntimeLocation.isExternal(url) {
       NSWorkspace.shared.open(url)
     }
-    return nil
   }
 
   /// Read-only probe; there is no JavaScript-to-native privileged bridge.
@@ -191,9 +197,10 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   }
 }
 
+/// Each web view lives in exactly one window, so it is returned as is.
 struct RuntimeView: NSViewRepresentable {
-  @ObservedObject var model: RuntimeModel
-  func makeNSView(context: Context) -> WKWebView { model.webView }
+  let webView: WKWebView
+  func makeNSView(context: Context) -> WKWebView { webView }
   func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 

@@ -8,6 +8,7 @@ use dialog_credentials::{Credential, Ed25519Signer, SignerCredential};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::time::Timestamp;
+use dialog_varsig::Principal as _;
 use serde_json::Value;
 use tonk_invite::connection::{AgentInvite, candidate_build_scopes, grant_set_id};
 use tower_service::Service;
@@ -89,9 +90,12 @@ impl AgentLinkWorker {
             return Err("Agent storage capacity reached.".into());
         }
         let journal = directory.join("pending-evaluation");
-        let state = open(&directory, &invite)
-            .await
-            .map_err(|_| "Could not open the isolated agent worker.".to_owned())?;
+        let state = open(&directory, &invite).await.map_err(|error| match error
+            .downcast_ref::<ReplicaLocationError>()
+        {
+            Some(reason) => format!("Could not open the isolated agent worker ({reason})."),
+            None => "Could not open the isolated agent worker.".to_owned(),
+        })?;
         let (mut router, state, hub) = crate::api_router_with_state(state);
         let base = format!("/api/repository/{subject}/branch/main");
         let result = async {
@@ -99,11 +103,11 @@ impl AgentLinkWorker {
                 // Fresh authorization without pulling over unpublished local state.
                 if synchronize {
                     request_method(&mut router, &format!("{base}/sync/status"), "", "GET")
-                        .await.map_err(|_| "Retained state authorization failed.".to_owned())?;
+                        .await.map_err(|error| error.describe("Retained state authorization failed."))?;
                 }
                 if recovering {
                     request(&mut router, &format!("{base}/sync/push"), "").await
-                        .map_err(|_| "Retained state publication could not be confirmed.".to_owned())?;
+                        .map_err(|error| error.describe("Retained state publication could not be confirmed."))?;
                     clear_journal(&journal).map_err(|_| "Could not clear recovery journal.".to_owned())?;
                     return Ok(serde_json::json!({"published_retained_state": true}));
                 }
@@ -114,19 +118,19 @@ impl AgentLinkWorker {
                 if recovering { return Err("No retained evaluation to recover.".into()); }
                 if synchronize {
                     request(&mut router, &format!("{base}/sync/pull"), "").await
-                        .map_err(|_| "Space pull failed; no evaluation was dispatched.".to_owned())?;
+                        .map_err(|error| error.describe(PULL_FAILED))?;
                 }
             }
             if writing && synchronize {
                 create_journal(&journal).map_err(|_| "Could not persist evaluation journal; no evaluation was dispatched.".to_owned())?;
             }
             let mut result = request(&mut router, &format!("{base}/evaluate?transact={writing}"), document)
-                .await.map_err(|_| if writing {
-                    "Evaluation could not be confirmed. Do not repeat it; query the space first.".to_owned()
-                } else { "The worker query could not be completed.".to_owned() })?;
+                .await.map_err(|error| error.describe(if writing {
+                    "Evaluation could not be confirmed. Do not repeat it; query the space first."
+                } else { "The worker query could not be completed." }))?;
             if writing && synchronize {
                 request(&mut router, &format!("{base}/sync/push"), "").await
-                    .map_err(|_| "Applied locally; remote push could not be confirmed. Do not repeat the write.".to_owned())?;
+                    .map_err(|error| error.describe("Applied locally; remote push could not be confirmed. Do not repeat the write."))?;
                 clear_journal(&journal).map_err(|_| "Publication succeeded but recovery journal could not be cleared.".to_owned())?;
             } else if journal.exists() {
                 result["recovery"] = serde_json::json!({"required": true, "message": "Retained local state; publication or evaluation outcome is unresolved. Do not repeat the write."});
@@ -139,7 +143,45 @@ impl AgentLinkWorker {
     }
 }
 
-async fn request(router: &mut Router, path: &str, document: &str) -> Result<Value, ()> {
+/// Only stable categories cross the agent boundary. Never retain an upstream
+/// message/body: either can contain credentials or submitted notation.
+#[derive(Debug, PartialEq, Eq)]
+enum RequestFailure {
+    Unavailable,
+    Http {
+        status: u16,
+        code: Option<&'static str>,
+    },
+}
+
+const PULL_FAILED: &str = "Space pull failed; no evaluation was dispatched.";
+
+impl RequestFailure {
+    /// Append only the status and allowlisted code to a fixed message.
+    fn describe(&self, message: &str) -> String {
+        match self {
+            Self::Unavailable => message.to_owned(),
+            Self::Http { status, code } => match code {
+                Some(code) => format!("{message} (HTTP {status}; {code})"),
+                None => format!("{message} (HTTP {status})"),
+            },
+        }
+    }
+}
+
+fn sync_error_code(body: &[u8]) -> Option<&'static str> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    match value.get("error")?.get("code")?.as_str()? {
+        "CREDENTIAL_REVOKED" => Some("CREDENTIAL_REVOKED"),
+        "NOT_PROVISIONED" => Some("NOT_PROVISIONED"),
+        "SYNC_CONFLICT" => Some("SYNC_CONFLICT"),
+        "SYNC_UNAVAILABLE" => Some("SYNC_UNAVAILABLE"),
+        "UPSTREAM_ERROR" => Some("UPSTREAM_ERROR"),
+        _ => None,
+    }
+}
+
+async fn request(router: &mut Router, path: &str, document: &str) -> Result<Value, RequestFailure> {
     request_method(router, path, document, "POST").await
 }
 
@@ -148,7 +190,7 @@ async fn request_method(
     path: &str,
     document: &str,
     method: &str,
-) -> Result<Value, ()> {
+) -> Result<Value, RequestFailure> {
     let response = router
         .call(
             Request::builder()
@@ -156,17 +198,24 @@ async fn request_method(
                 .uri(path)
                 .header("content-type", "text/plain")
                 .body(Body::from(document.to_owned()))
-                .map_err(|_| ())?,
+                .map_err(|_| RequestFailure::Unavailable)?,
         )
         .await
-        .map_err(|_| ())?;
-    if !response.status().is_success() {
-        return Err(());
+        .map_err(|_| RequestFailure::Unavailable)?;
+    let status = response.status();
+    if !status.is_success() {
+        // Error diagnostics need only a small JSON envelope. Oversized or
+        // malformed errors still retain status, never any response text.
+        let body = axum::body::to_bytes(response.into_body(), 16_384).await;
+        return Err(RequestFailure::Http {
+            status: status.as_u16(),
+            code: body.ok().and_then(|body| sync_error_code(&body)),
+        });
     }
     let body = axum::body::to_bytes(response.into_body(), 2_000_000)
         .await
-        .map_err(|_| ())?;
-    serde_json::from_slice(&body).map_err(|_| ())
+        .map_err(|_| RequestFailure::Unavailable)?;
+    serde_json::from_slice(&body).map_err(|_| RequestFailure::Unavailable)
 }
 
 fn lock_root(root: &Path) -> std::io::Result<std::fs::File> {
@@ -234,6 +283,112 @@ fn clear_journal(path: &Path) -> std::io::Result<()> {
     std::fs::File::open(path.parent().unwrap())?.sync_all()
 }
 
+/// A checkpoint may move the host root, but not the grant partition or the
+/// subject's storage name. This never follows the old absolute path.
+fn same_scoped_replica(previous: &Location, current: &Location, subject: &str) -> bool {
+    let (Directory::At(previous_root), Directory::At(current_root)) =
+        (&previous.directory, &current.directory)
+    else {
+        return false;
+    };
+    let previous_root = Path::new(previous_root);
+    let current_root = Path::new(current_root);
+    previous.name == subject
+        && current.name == subject
+        && previous_root.is_absolute()
+        && !previous_root.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+        && previous_root.file_name() == Some(std::ffi::OsStr::new("spaces"))
+        && current_root.file_name() == Some(std::ffi::OsStr::new("spaces"))
+        && previous_root.parent().and_then(Path::file_name)
+            == current_root.parent().and_then(Path::file_name)
+}
+
+/// A fixed relocation refusal reason. It names no path, DID or upstream text,
+/// so it may be reported to the agent for operator diagnosis.
+#[derive(Debug)]
+struct ReplicaLocationError(&'static str);
+
+impl std::fmt::Display for ReplicaLocationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for ReplicaLocationError {}
+
+fn refuse(reason: &'static str) -> Box<dyn std::error::Error> {
+    Box::new(ReplicaLocationError(reason))
+}
+
+/// Repair only the authorized replica's profile-local location after restore.
+/// Verify the restored credential and data first: missing data must not be
+/// replaced by a fresh empty replica, particularly when a pending evaluation is
+/// retained. Records in a layout this repair does not own are left unchanged.
+async fn relocate_replica(
+    state: &TonkState,
+    subject: &dialog_varsig::Did,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let key = subject.to_string();
+    let peer = state.profile.did();
+    let recorded = dialog_repository::spaces::find(
+        state.profile.state(),
+        &peer,
+        subject.as_ref(),
+        &state.profile,
+    )
+    .await
+    .map_err(|_| refuse("replica registry unavailable"))?;
+    let (recorded_subject, previous) = match recorded.as_slice() {
+        [] => return Ok(()),
+        [entry] => entry,
+        _ => return Err(refuse("ambiguous scoped replica location")),
+    };
+    if recorded_subject != subject {
+        return Err(refuse("scoped replica identity mismatch"));
+    }
+    let current = state.registry.space_location(&key);
+    if previous == &current || !same_scoped_replica(previous, &current, &key) {
+        return Ok(());
+    }
+    let credential = Subject::from(did!("local:storage"))
+        .attenuate(storage_fx::Storage)
+        .attenuate(current.clone())
+        .load()
+        .perform(state.profile.storage())
+        .await
+        .map_err(|_| refuse("restored replica missing"))?;
+    if credential.did() != *subject {
+        return Err(refuse("restored replica identity mismatch"));
+    }
+    // Every mounted replica has replica metadata; its absence means the
+    // restore carried the credential without the replica's branch data.
+    let restored = dialog_repository::Repository::from(credential)
+        .branch(super::repository::META_BRANCH)
+        .open()
+        .perform(&state.operator)
+        .await
+        .map_err(|_| refuse("restored replica data missing"))?;
+    if restored.revision().is_none() {
+        return Err(refuse("restored replica data missing"));
+    }
+    dialog_repository::spaces::record(
+        state.profile.state(),
+        &peer,
+        subject,
+        &key,
+        &current,
+        &state.profile,
+    )
+    .await
+    .map_err(|_| refuse("replica registry unavailable"))?;
+    Ok(())
+}
+
 async fn open(
     directory: &Path,
     invite: &AgentInvite,
@@ -269,6 +424,10 @@ async fn open(
             .save(UcanDelegation(chain.clone()))
             .perform(&state.operator)
             .await?;
+    }
+    if let Err(error) = relocate_replica(&state, invite.grants().subject()).await {
+        state.shutdown();
+        return Err(error);
     }
     super::join::mount_replica(
         &state,
@@ -316,6 +475,250 @@ mod tests {
             .unwrap()
     }
 
+    #[test]
+    fn relocation_accepts_only_the_same_grant_and_subject() {
+        let current = Location::new(Directory::At("/new/grant-id/spaces".into()), "subject");
+        let old = Location::new(Directory::At("/old/grant-id/spaces".into()), "subject");
+        assert!(same_scoped_replica(&old, &current, "subject"));
+        for previous in [
+            Location::new(Directory::At("/old/other-grant/spaces".into()), "subject"),
+            Location::new(Directory::At("/old/grant-id/other".into()), "subject"),
+            Location::new(
+                Directory::At("/old/grant-id/spaces".into()),
+                "other-subject",
+            ),
+            Location::new(Directory::At("/old/../grant-id/spaces".into()), "subject"),
+        ] {
+            assert!(!same_scoped_replica(&previous, &current, "subject"));
+        }
+    }
+
+    #[tokio::test]
+    async fn relocation_preserves_retained_evaluation_and_branch_revision() {
+        let root =
+            std::env::temp_dir().join(format!("tonk-agent-relocate-{}", rand::random::<u64>()));
+        let original = root.join("original");
+        let restored = root.join("restored");
+        let remote = "http://127.0.0.1:9/ucan/".parse().unwrap();
+        let owner = Signer::from(Ed25519Signer::generate().await.unwrap());
+        let agent_link = link([44; 32], &owner, &remote).await;
+        let mut worker = AgentLinkWorker::new(original.clone(), remote.clone());
+        let written = worker.execute("tonk_evaluate", &agent_link,
+            "concept!: &retained\n  with:\n    title: { the: example.retained/title, as: text, description: Test title }\nretained!:\n  this: urn:retained\n  title: Keep this work\n", false).await.unwrap();
+        let grant = std::fs::read_dir(&original)
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| entry.path().is_dir())
+            .unwrap()
+            .file_name();
+        let journal = Path::new(&grant).join("pending-evaluation");
+        std::fs::write(original.join(&journal), b"retained-marker").unwrap();
+        std::fs::rename(&original, &restored).unwrap();
+        assert!(!original.exists());
+        // An old path may still exist in a test or overlapping rollout. Give
+        // it a fresh empty replica: the restored worker must use its own data,
+        // not succeed accidentally by following the obsolete location.
+        let mut replacement = AgentLinkWorker::new(original.clone(), remote.clone());
+        replacement
+            .execute("tonk_query", &agent_link, "concept:", false)
+            .await
+            .unwrap();
+        assert!(original.exists());
+        let mut worker = AgentLinkWorker::new(restored.clone(), remote);
+        let read = worker
+            .execute("tonk_query", &agent_link, "retained:", false)
+            .await
+            .unwrap();
+        assert_eq!(read["revision_after"], written["revision_after"]);
+        assert!(read.to_string().contains("Keep this work"));
+        assert_eq!(read["recovery"]["required"], true);
+        assert_eq!(
+            std::fs::read(restored.join(&journal)).unwrap(),
+            b"retained-marker"
+        );
+        assert!(
+            worker
+                .execute(
+                    "tonk_evaluate",
+                    &agent_link,
+                    "retained!:\n  this: urn:retained\n  title: Must not replace\n",
+                    false
+                )
+                .await
+                .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn relocation_refuses_missing_or_wrong_restored_credential() {
+        let root = std::env::temp_dir().join(format!(
+            "tonk-agent-reject-relocate-{}",
+            rand::random::<u64>()
+        ));
+        let directory = root.join("grant-id");
+        let state = TonkState::open_native(&directory).await.unwrap();
+        let subject = Ed25519Signer::generate().await.unwrap().did();
+        let wrong = Ed25519Signer::generate().await.unwrap().did();
+        let key = subject.to_string();
+        let old = Location::new(Directory::At("/old/grant-id/spaces".into()), key.clone());
+        dialog_repository::spaces::record(
+            state.profile.state(),
+            &state.profile.did(),
+            &subject,
+            &key,
+            &old,
+            &state.profile,
+        )
+        .await
+        .unwrap();
+        let current = state.registry.space_location(&key);
+        assert!(relocate_replica(&state, &subject).await.is_err());
+        assert!(!directory.join("spaces").join(&key).exists());
+        tonk_account::peer::mount_verifier(state.profile.storage(), current, &wrong)
+            .await
+            .unwrap();
+        assert_eq!(
+            relocate_replica(&state, &subject)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "restored replica identity mismatch"
+        );
+        let recorded = dialog_repository::spaces::find(
+            state.profile.state(),
+            &state.profile.did(),
+            &key,
+            &state.profile,
+        )
+        .await
+        .unwrap();
+        assert_eq!(recorded, vec![(subject, old)]);
+        state.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn relocation_refuses_credential_without_replica_data_and_keeps_legacy_records() {
+        let root = std::env::temp_dir().join(format!(
+            "tonk-agent-partial-relocate-{}",
+            rand::random::<u64>()
+        ));
+        let directory = root.join("grant-id");
+        let state = TonkState::open_native(&directory).await.unwrap();
+        let peer = state.profile.did();
+        let subject = Ed25519Signer::generate().await.unwrap().did();
+        let key = subject.to_string();
+        let old = Location::new(Directory::At("/old/grant-id/spaces".into()), key.clone());
+        dialog_repository::spaces::record(
+            state.profile.state(),
+            &peer,
+            &subject,
+            &key,
+            &old,
+            &state.profile,
+        )
+        .await
+        .unwrap();
+        let current = state.registry.space_location(&key);
+        tonk_account::peer::mount_verifier(state.profile.storage(), current, &subject)
+            .await
+            .unwrap();
+        assert_eq!(
+            relocate_replica(&state, &subject)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "restored replica data missing"
+        );
+
+        // A layout this repair does not own is left for the ordinary mount.
+        let legacy = Location::new(Directory::Current, key.clone());
+        dialog_repository::spaces::record(
+            state.profile.state(),
+            &peer,
+            &subject,
+            &key,
+            &legacy,
+            &state.profile,
+        )
+        .await
+        .unwrap();
+        relocate_replica(&state, &subject).await.unwrap();
+        let recorded =
+            dialog_repository::spaces::find(state.profile.state(), &peer, &key, &state.profile)
+                .await
+                .unwrap();
+        assert_eq!(recorded, vec![(subject, legacy)]);
+        state.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    async fn error_response(status: u16, body: String) -> RequestFailure {
+        let mut router = Router::new().route(
+            "/fixture",
+            axum::routing::post(move || async move {
+                (axum::http::StatusCode::from_u16(status).unwrap(), body)
+            }),
+        );
+        request(&mut router, "/fixture", "").await.unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn pull_diagnostics_preserve_only_status_and_allowlisted_code() {
+        for code in [
+            "CREDENTIAL_REVOKED",
+            "NOT_PROVISIONED",
+            "SYNC_CONFLICT",
+            "SYNC_UNAVAILABLE",
+            "UPSTREAM_ERROR",
+        ] {
+            let body = serde_json::json!({"error": {
+                "code": code, "kind": "upstream", "message": "private-secret",
+                "agent_link": "https://example.test/#tonk-agent-v2=private-secret"
+            }})
+            .to_string();
+            let failure = error_response(503, body).await;
+            assert_eq!(
+                failure,
+                RequestFailure::Http {
+                    status: 503,
+                    code: Some(code)
+                }
+            );
+            assert_eq!(
+                failure.describe(PULL_FAILED),
+                format!("Space pull failed; no evaluation was dispatched. (HTTP 503; {code})")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn pull_diagnostics_do_not_echo_unknown_malformed_or_oversized_errors() {
+        for body in [
+            serde_json::json!({"error": {"code": "private-secret", "message": "private-secret"}})
+                .to_string(),
+            "private-secret".to_owned(),
+            format!(
+                "{{\"error\":{{\"code\":\"SYNC_UNAVAILABLE\",\"message\":\"{}\"}}}}",
+                "private-secret".repeat(2000)
+            ),
+        ] {
+            let failure = error_response(502, body).await;
+            assert_eq!(
+                failure,
+                RequestFailure::Http {
+                    status: 502,
+                    code: None
+                }
+            );
+            assert_eq!(
+                failure.describe(PULL_FAILED),
+                "Space pull failed; no evaluation was dispatched. (HTTP 502)"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn agent_link_evaluates_and_queries_the_ordinary_worker() {
         let root = std::env::temp_dir().join(format!("tonk-agent-spike-{}", rand::random::<u64>()));
@@ -354,6 +757,27 @@ mod tests {
         assert!(!query.to_string().contains("Must not persist"));
         assert!(!query.to_string().contains("tonk-agent-v2"));
 
+        // The hosted failure followed these read-only documents. Exercise the
+        // same sequence against a closed/reopened native replica each time;
+        // malformed queries may fail, but must not poison a later valid read.
+        let revision = query["revision_after"].clone();
+        for document in [
+            "concept:\n  name: ?",
+            "help:",
+            "concept:\n  name:",
+            "concept:\n  this: concept:note",
+        ] {
+            let _ = spike
+                .execute("tonk_query", &agent_link, document, false)
+                .await;
+        }
+        let after_errors = spike
+            .execute("tonk_query", &agent_link, "spike-record:\n", false)
+            .await
+            .unwrap();
+        assert_eq!(after_errors["revision_after"], revision);
+        assert!(after_errors.to_string().contains("Agent link works"));
+
         assert!(
             spike
                 .execute("tonk_query", "", "spike-record:\n", false)
@@ -380,7 +804,8 @@ mod tests {
             .call("tonk_query", &agent_link, "spike-record:\n")
             .await
             .unwrap_err();
-        assert_eq!(denied, "Space pull failed; no evaluation was dispatched.");
+        assert!(denied.starts_with("Space pull failed; no evaluation was dispatched."));
+        assert!(!denied.contains("tonk-agent-v2"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

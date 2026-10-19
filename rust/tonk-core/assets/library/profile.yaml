@@ -112,6 +112,23 @@ concept!: &space
         else's invite; hosted ownership is still decided by `provider`.
       the: xyz.tonk.space/founded-at
       as: natural:64
+    icon:
+      description: >
+        The symbol this account shows for the space in the desktop
+        sidebar, as an SF Symbol name from the desktop's own short list.
+        A personal label, not part of the space: it lives on the account
+        directory, so every device signed into the account shows the same
+        icon and nobody else sees it. Absent means the default icon.
+      the: xyz.tonk.space/icon
+      as: text
+    color:
+      description: >
+        The tint this account gives the space's sidebar icon, as a named
+        color token such as `blue` or `orange`. Like `icon`, it is the
+        account's own preference and syncs with the directory. Absent
+        means the sidebar's default tint.
+      the: xyz.tonk.space/color
+      as: text
 
 # The Add Space command. The Hub's named creation dialogs submit this shape.
 # The worker records the replica, seeds the repository, and navigates the

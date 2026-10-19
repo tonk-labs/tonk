@@ -17,6 +17,9 @@ enum AgentWorkflowSmoke {
       return
     }
     let reportURL = URL(fileURLWithPath: reportPath)
+    // The workflow drives one space page of its own, as a space window would.
+    let page = runtime.makePage()
+    model.page = page
     var report: [String: Any] = [
       "passed": false, "scope": "Local native MCP, WebKit worker and renderer",
     ]
@@ -58,7 +61,7 @@ enum AgentWorkflowSmoke {
         "tool": name, "loading": runtime.loading, "catalogLoading": runtime.catalogLoading,
         "catalogLoaded": runtime.catalogLoaded, "cached": runtime.showingCachedCatalog,
         "catalogError": runtime.catalogError ?? "", "signInPending": runtime.signInPending,
-        "branch": runtime.catalogBranch ?? "", "url": runtime.webView.url?.absoluteString ?? "",
+        "branch": runtime.catalogBranch ?? "", "url": page.webView.url?.absoluteString ?? "",
         "member": runtime.spaces.contains { $0.subject == model.saved.conversation.space?.subject },
       ]
       return await model.callSpaceTool(
@@ -122,7 +125,7 @@ enum AgentWorkflowSmoke {
       func call(_ name: String, _ arguments: JSONValue = .object([:])) async throws -> JSONValue {
         if name != "tonk_guide", let space = model.saved.conversation.space {
           try await wait("attached space ready before " + name) {
-            try runtime.requireSpaceReady(space)
+            try runtime.requireSpaceReady(space, page: page)
             return true
           }
         }
@@ -168,9 +171,9 @@ enum AgentWorkflowSmoke {
           throw HarnessError.message("Saved space missing")
         }
         model.openedSpace = space
-        runtime.openSpace(space)
+        page.open(space)
         try await wait("reopened space ready") {
-          !runtime.loading && runtime.catalogLoaded && runtime.webView.url == space.url
+          !runtime.loading && !page.loading && runtime.catalogLoaded && page.webView.url == space.url
         }
         let rows = try await query("integration-task:\n  this: urn:test:task:one\n")
         try check(
@@ -216,9 +219,9 @@ enum AgentWorkflowSmoke {
         report["space"] = subject
         model.attachSpace(space)
         model.openedSpace = space
-        runtime.openSpace(space)
+        page.open(space)
         try await wait("selected space ready") {
-          !runtime.loading && runtime.catalogLoaded && runtime.webView.url == space.url
+          !runtime.loading && !page.loading && runtime.catalogLoaded && page.webView.url == space.url
         }
         beginTurn()
         try check(
@@ -272,8 +275,8 @@ enum AgentWorkflowSmoke {
                 where: {this: ?this, title: ?title}
           """ + "\n" + view + "\n" + (try example("space-home")))
         model.openedSpace = space
-        runtime.openSpace(space)
-        try await wait("home ready") { !runtime.loading && runtime.webView.url == space.url }
+        page.open(space)
+        try await wait("home ready") { !page.loading && page.webView.url == space.url }
         let inspection = try await rendered("First task")
         report["inspection"] = try JSONSerialization.jsonObject(
           with: JSONEncoder().encode(inspection))
@@ -293,8 +296,8 @@ enum AgentWorkflowSmoke {
           "integration-task!:\n  this: urn:test:task:one\n  title: \"Updated first task\"\n")
         _ = try await rendered("Updated first task")
         try check(true, "Record update renders without navigation")
-        try await runtime.inspection.clickWorkflowCheckbox(
-          in: runtime.webView, title: "Updated first task")
+        try await page.inspection.clickWorkflowCheckbox(
+          in: page.webView, title: "Updated first task")
         try await wait("checkbox event persisted") {
           let result = try await query("integration-task:\n  this: urn:test:task:one\n")
           return result["matches_after"].array.first?["results"].array.first?["fields"]["done"]
@@ -352,7 +355,7 @@ enum AgentWorkflowSmoke {
         model.busy = false
         model.attachSpace(other)
         model.openedSpace = other
-        runtime.openSpace(other)
+        page.open(other)
         beginTurn()
         let isolated = try await query("concept:\n  name: \"integration-task\"\n")
         try check(
@@ -361,7 +364,7 @@ enum AgentWorkflowSmoke {
         model.busy = false
         model.attachSpace(space)
         model.openedSpace = space
-        runtime.openSpace(space)
+        page.open(space)
         beginTurn()
         _ = try await rendered("Updated first task")
         try check(true, "Switching back restores the authored view")

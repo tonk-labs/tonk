@@ -90,6 +90,7 @@ final class AnimatedSidebarTests: XCTestCase {
     window.contentViewController = controller
     window.setContentSize(NSSize(width: 1180, height: 780))
     defer { window.close() }
+    window.orderFront(nil)
     controller.view.layoutSubtreeIfNeeded()
     var settled: [Bool] = []
     let opened = expectation(description: "Opening animation completed")
@@ -117,5 +118,29 @@ final class AnimatedSidebarTests: XCTestCase {
     XCTAssertEqual(settled, [true, false])
     XCTAssertEqual(
       controller.detailHost.view.frame.width, controller.view.bounds.width, accuracy: 1)
+  }
+
+  func testHiddenWindowSettlesWithoutWaitingForAnimation() async {
+    _ = NSApplication.shared
+    let controller = SidebarSplitController(
+      sidebar: Color.white, detail: Color.gray, isVisible: false)
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780),
+      styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentViewController = controller
+    defer { window.close() }
+    controller.view.layoutSubtreeIfNeeded()
+    XCTAssertFalse(window.isVisible)
+    let closed = expectation(description: "Hidden window settles at latest request")
+    controller.onVisibilitySettled = { visible in
+      XCTAssertFalse(visible)
+      closed.fulfill()
+    }
+    controller.setSidebarVisible(true, animated: true)
+    XCTAssertFalse(controller.splitViewItems[0].isCollapsed)
+    controller.setSidebarVisible(false, animated: true)
+    XCTAssertTrue(controller.splitViewItems[0].isCollapsed)
+    await fulfillment(of: [closed], timeout: 1)
   }
 }
