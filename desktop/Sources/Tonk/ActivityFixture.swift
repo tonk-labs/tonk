@@ -10,6 +10,10 @@ enum ActivityFixture {
     from: Data(#"{"subject":"did:key:zFixture","name":"Activity layout fixture"}"#.utf8))
   static var requested: Bool { ProcessInfo.processInfo.arguments.contains("--activity-fixture") }
 
+  static var compactWindow: Bool {
+    requested && ProcessInfo.processInfo.arguments.contains("--compact-window-fixture")
+  }
+
   static func prepare(model: HarnessModel, page: SpacePage) {
     let args = ProcessInfo.processInfo.arguments
     guard RuntimeLocation.deployment == .local, args.contains("--data-dir"),

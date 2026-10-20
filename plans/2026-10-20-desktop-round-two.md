@@ -174,3 +174,38 @@ App build and strict signature verification passed; 21 focused archive, chrome
 and access-action tests passed. Older OS rendering was not visually exercised.
 Logs: `/tmp/round2-native-controls-build.log` and
 `/tmp/round2-native-controls-tests.log`.
+
+## UX walkthrough follow-up
+
+- Both the account name/avatar and cog open a Settings sheet directly; Command-,
+  uses the same destination. Account details remain in the Figma grouped layout,
+  with an explicit Chat Agent Configure entry and return path.
+- The 300-point sidebar now gives the space/view hierarchy its own wrapping row.
+  Sharing sits below it, so neither breadcrumbs nor sharing compete for width.
+- Collapsed chrome previews for three seconds, animates its reveal/hide, and has
+  a persistent accessible reveal affordance. Reduce Motion removes translation
+  and animation. Restoring/collapsing the sidebar resets the preview.
+- Copy Link is a real native prominent glass button, separate from the native
+  sharing menu. The former split Menu ignored prominent styling on macOS 27.
+  Tint follows the OS accent (Graphite on the verified machine). A full-size
+  glass menu control replaces the squeezed arrow. The bar has a system background
+  behind its material, keeping secondary text legible over bright hosted content.
+- Added `--compact-window-fixture` alongside `--activity-fixture` for repeatable
+  700-point-wide visual checks; normal window defaults are unchanged.
+
+Verified on macOS 27: both footer entry points, Command-comma, nested Chat Agent
+settings/cancel return, light compact sidebar and floating toolbar, dark sidebar
+and floating toolbar, visible reveal affordance, Command-B, sharing menu, and
+closing one of two view windows while retaining the other page/chat. The compact
+window is 700 points wide; native content sizing can increase its 500-point default
+height. Desktop automation stalled twice, including one long inspection call;
+subsequent inspections returned normally. No production account mutations were
+performed during the walkthrough.
+
+Final ad-hoc build, strict codesign verification, generated MCP consistency and
+whitespace checks passed. 25 focused sidebar/chrome/archive/access-action tests
+passed with zero failures. Logs: `/tmp/tonk-ux-final-build.log` and
+`/tmp/tonk-ux-final-tests.log`. Older macOS, alternate system accent colors,
+VoiceOver, Reduce Motion/Transparency on-device, and live backend sharing/provider
+flows remain unverified in this pass. Backend gaps listed above are unchanged;
+none blocks these UI fixes. CI must be checked against the new commit separately.

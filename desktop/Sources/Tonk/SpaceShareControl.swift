@@ -10,27 +10,35 @@ struct SpaceShareControl: View {
   @State private var publishing = false
 
   var body: some View {
-    Menu {
-      Button("Publish…") { publishing = true }
-    } label: {
-      Label {
-        Text(copied ? "Copied" : "Copy Link")
-      } icon: {
-        DesktopGlyph(name: copied ? "imgIconCheck" : "imgIconLink1", size: 14)
-      }
-      .labelStyle(ShareLabelStyle(compact: compact))
-    } primaryAction: {
-      guard !copying else { return }
-      copying = true
-      Task {
-        copied = await access.copyDefaultLink(in: space)
-        copying = false
-        try? await Task.sleep(for: .milliseconds(1500))
-        copied = false
+    GlassControls {
+      HStack(spacing: 10) {
+        Button {
+          guard !copying else { return }
+          copying = true
+          Task {
+            copied = await access.copyDefaultLink(in: space)
+            copying = false
+            try? await Task.sleep(for: .milliseconds(1500))
+            copied = false
+          }
+        } label: {
+          Label(copied ? "Copied" : "Copy Link", systemImage: copied ? "checkmark" : "link")
+            .labelStyle(ShareLabelStyle(compact: compact))
+        }
+        .nativeControl(prominent: true).controlSize(.large)
+        .disabled(copying)
+        .accessibilityLabel(copied ? "Copied" : "Copy Link")
+        Menu {
+          Button("Publish…") { publishing = true }
+        } label: {
+          Label("Sharing Options", systemImage: "chevron.down")
+            .labelStyle(.iconOnly)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .frame(width: 28, height: 28).controlSurface(radius: 14)
+        .help("Sharing Options").accessibilityLabel("Sharing Options")
       }
     }
-    .nativeControl(prominent: true).controlSize(.large)
-    .accessibilityLabel(copied ? "Copied" : "Copy Link")
     .sheet(isPresented: $publishing) { PublishSpaceSheet(space: space, access: access) }
   }
 }

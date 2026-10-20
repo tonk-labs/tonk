@@ -62,7 +62,10 @@ struct TonkApp: App {
           .background(WindowAppearance())
       }
     }
-    .defaultSize(width: 1200, height: 800)
+    .defaultSize(
+      width: ActivityFixture.compactWindow ? 700 : 1200,
+      height: ActivityFixture.compactWindow ? 500 : 800
+    )
     .windowStyle(.hiddenTitleBar)
     .windowToolbarStyle(.unified)
     // A restored window would open before the account and its spaces load.

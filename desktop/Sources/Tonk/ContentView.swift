@@ -29,6 +29,9 @@ struct ContentView: View {
   @State private var sidebarColumns = NavigationSplitViewVisibility.all
   @State private var newLink: NewLinkRequest?
   @State private var topChromeHovered = false
+  @State private var chromePreview = true
+  @State private var showAccountSettings = false
+  private var chromeVisible: Bool { topChromeHovered || chromePreview }
   @State private var showHistory = false
   @State private var showProviderSettings = false
   @State private var accountError: String?
@@ -75,9 +78,28 @@ struct ContentView: View {
               .frame(maxWidth: .infinity).frame(height: 52)
               .overlay {
                 collapsedChrome
-                  .opacity(topChromeHovered ? 1 : 0)
-                  .allowsHitTesting(topChromeHovered)
-                  .accessibilityHidden(!topChromeHovered)
+                  .opacity(chromeVisible ? 1 : 0)
+                  .offset(y: chromeVisible || reduceMotion ? 0 : -16)
+                  .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: chromeVisible)
+                  .allowsHitTesting(chromeVisible)
+                  .accessibilityHidden(!chromeVisible)
+              }
+              .overlay(alignment: .top) {
+                if !chromeVisible {
+                  Button {
+                    chromePreview = true
+                  } label: {
+                    Label("Show Window Controls", systemImage: "chevron.down")
+                      .labelStyle(.iconOnly).font(.caption.weight(.semibold))
+                      .frame(width: 44, height: 20)
+                  }.buttonStyle(.plain).controlSurface(radius: 10)
+                    .padding(.top, 4).help("Show window controls, or move the pointer to the top")
+                }
+              }
+              .task(id: chromePreview) {
+                guard chromePreview else { return }
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                chromePreview = false
               }
           }
         }
@@ -112,7 +134,7 @@ struct ContentView: View {
       )
       .focusedSceneValue(
         \.modelSettings,
-        accountActionsDisabled || signingOut ? nil : { showProviderSettings = true }
+        signingOut ? nil : { showAccountSettings = true }
       )
       .focusedSceneValue(
         \.focusSearch,
@@ -169,6 +191,9 @@ struct ContentView: View {
       } message: {
         Text(accountError ?? "")
       }
+      .sheet(isPresented: $showAccountSettings) {
+        DesktopSettingsView(model: model, access: access, onSignOut: signOutOfTonk)
+      }
       .sheet(isPresented: $showProviderSettings) {
         ProviderSettingsView(model: model)
       }
@@ -180,7 +205,11 @@ struct ContentView: View {
       }
       .overlay(alignment: .bottom) { noticeToast }
       .onChange(of: showingChat) { _, visible in
-        if !visible { composing = false }
+        topChromeHovered = false
+        if !visible {
+          composing = false
+          chromePreview = true
+        }
       }
       .onChange(of: model.saved.activeSessionID) { _, _ in composing = showingChat }
   }
@@ -385,11 +414,12 @@ struct ContentView: View {
         viewSidebarToggle
         viewMoreMenu
       }.frame(height: 36).background(ViewWindowDragRegion())
-      HStack(spacing: 6) {
-        viewAddress
+      sidebarAddress
+      HStack {
         if let space = model.openedSpace {
-          SpaceShareControl(space: space, access: access, compact: true)
+          SpaceShareControl(space: space, access: access)
         }
+        Spacer(minLength: 0)
       }
       if showHistory {
         ChatHistoryView(
@@ -430,6 +460,24 @@ struct ContentView: View {
       .accessibilityLabel("More Options")
   }
 
+  private var sidebarAddress: some View {
+    HStack(alignment: .top, spacing: 8) {
+      if let space = model.openedSpace {
+        SpaceSyncControl(runtime: runtime, space: space)
+        VStack(alignment: .leading, spacing: 4) {
+          Button(space.title) { openWindow(id: "main") }
+            .buttonStyle(.plain).fontWeight(.semibold)
+            .help("Show spaces and links")
+          Label(viewTitle ?? "Home", systemImage: "arrow.turn.down.right")
+            .foregroundStyle(.secondary)
+        }.lineLimit(2).fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }.font(.system(size: 13)).padding(10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+  }
+
   private var viewAddress: some View {
     HStack(spacing: 7) {
       if let space = model.openedSpace {
@@ -462,7 +510,8 @@ struct ContentView: View {
       if let space = model.openedSpace { SpaceShareControl(space: space, access: access) }
       viewMoreMenu
     }.padding(.horizontal, 16).frame(height: 52)
-      .background(.regularMaterial).background(ViewWindowDragRegion())
+      .background(.bar).background(Color(nsColor: .windowBackgroundColor))
+      .background(ViewWindowDragRegion())
       .shadow(color: .black.opacity(0.1), radius: 5, y: 3)
       .contentShape(Rectangle())
   }
@@ -658,7 +707,7 @@ struct ContentView: View {
         runtime: runtime, access: access, selection: $page, search: $spaceSearch,
         searchFocused: $searchFocused,
         onNewLink: startNewLink,
-        onSettings: { showProviderSettings = true },
+        onSettings: { showAccountSettings = true },
         onSignOut: runtime.accountConnected && RuntimeLocation.deployment != .local
           ? signOutOfTonk : nil
       )

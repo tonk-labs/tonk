@@ -112,36 +112,23 @@ struct DesktopSidebar: View {
   private var footer: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 8) {
-        Text(AccessText.initials(access.accountName ?? ""))
-          .font(.caption.weight(.semibold))
-          .frame(width: 22, height: 22)
-          .background(.fill.secondary, in: Circle())
-          .accessibilityHidden(true)
-        Button {
-          selection = .account
-        } label: {
-          Text(access.accountName ?? (runtime.accountConnected ? "Your Account" : "Not Signed In"))
+        Button(action: onSettings) {
+          HStack(spacing: 8) {
+            Text(AccessText.initials(access.accountName ?? ""))
+              .font(.caption.weight(.semibold))
+              .frame(width: 22, height: 22)
+              .background(.fill.secondary, in: Circle())
+              .accessibilityHidden(true)
+            Text(
+              access.accountName ?? (runtime.accountConnected ? "Your Account" : "Not Signed In")
+            )
             .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-        }.buttonStyle(.plain).help("Account")
-        Spacer(minLength: 4)
-        Menu {
-          Button("New Link…", action: onNewLink)
-            .disabled(runtime.spaces.isEmpty || !runtime.accountConnected)
-          Divider()
-          Button("Account") { selection = .account }
-          Button("Chat Agent Settings…", action: onSettings)
-          if let onSignOut {
-            Divider()
-            Button("Sign Out of Tonk", action: onSignOut)
-          }
-        } label: {
-          // A titled label keeps its name; a bare symbol reads as "Gear Shape".
-          Label("Account and Settings", systemImage: "gearshape").labelStyle(.iconOnly)
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Account and Settings")
+          }.contentShape(Rectangle())
+        }.buttonStyle(.plain).help("Settings")
+        Button(action: onSettings) {
+          Label("Settings", systemImage: "gearshape").labelStyle(.iconOnly)
+        }.buttonStyle(.plain).help("Settings")
+
       }
     }
     .font(.system(size: 13))
