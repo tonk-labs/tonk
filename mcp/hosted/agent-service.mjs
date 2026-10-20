@@ -32,7 +32,9 @@ export async function createAgentService({ issuer, provider, binary, directory, 
       return handler.fetch(request);
     },
     async close() {
-      await backend.close({ cancel: true });
+      // Finish the active bounded invocation and its checkpoint. Do not start
+      // queued work during rollout, or kill a write because its client closed.
+      await backend.close({ drain: false });
       await handler.close();
     },
   };

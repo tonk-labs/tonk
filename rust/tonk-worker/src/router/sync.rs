@@ -2054,8 +2054,9 @@ async fn watch_repo(
     log!("{repo} is no longer watched: its watch ended");
 }
 
-/// Replace a due session with a disposable operator and bounded in-memory
-/// grant. Account and profile authority survives without invitation replay.
+/// Re-issue a due session's bounded in-memory grant to the same operator
+/// with a later expiry. Account and profile authority survives without
+/// invitation replay.
 /// Build over the existing storage pool outside the state write lock, then
 /// install only if the observed generation is still current. Losing
 /// candidates and construction failures have no durable session effects.
@@ -2093,7 +2094,7 @@ where
     }
 
     // Signing happens outside the write lock; existing readers finish
-    // before the new operator and expiry are installed together.
+    // before the renewed operator and expiry are installed together.
     let session = build(profile, storage).await?;
 
     let mut tonk = state.write().await;
@@ -2429,10 +2430,13 @@ mod renewal_tests {
         let (_app, state, _lsp) = api_router_with_state(test_state().await);
         let before = operator_did(&state).await;
         let head = revision(&state).await;
-        state.write().await.session_expires_at = crate::session::now();
+        let due = crate::session::now();
+        state.write().await.session_expires_at = due;
         ensure_session_authority(&state).await.unwrap();
         let renewed = operator_did(&state).await;
-        assert_ne!(before, renewed);
+        let extended = state.read().await.session_expires_at;
+        assert_eq!(before, renewed, "renewal keeps the operator key");
+        assert!(extended > due, "renewal extends the grant");
         assert_eq!(revision(&state).await, head);
         {
             let tonk = state.read().await;
@@ -2455,6 +2459,7 @@ mod renewal_tests {
         }
         ensure_session_authority(&state).await.unwrap();
         assert_eq!(operator_did(&state).await, renewed);
+        assert_eq!(state.read().await.session_expires_at, extended);
     }
 
     #[dialog_common::test]
@@ -2481,6 +2486,9 @@ mod renewal_tests {
         let (_app, state, _lsp) = api_router_with_state(test_state().await);
         let head = revision(&state).await;
         state.write().await.session_expires_at = crate::session::now();
+        // Both candidates carry the same operator key, so the loser marks
+        // its expiry to tell the two apart.
+        let losing = u64::MAX;
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
         let winner = async {
@@ -2490,8 +2498,8 @@ mod renewal_tests {
             })
             .await
             .unwrap();
-            let installed = operator_did(&state).await;
-            installed_tx.send(installed.clone()).unwrap();
+            let installed = state.read().await.session_expires_at;
+            installed_tx.send(()).unwrap();
             installed
         };
         let loser = renew_session_with(&state, |profile, _storage| async move {
@@ -2500,16 +2508,19 @@ mod renewal_tests {
                     .await
                     .unwrap();
             ready_tx.send(()).unwrap();
-            let installed = installed_rx.await.unwrap();
-            assert_ne!(candidate.operator.did().to_string(), installed);
-            Ok(candidate)
+            installed_rx.await.unwrap();
+            Ok(crate::session::Session {
+                expires_at: losing,
+                ..candidate
+            })
         });
         let (installed, result) = futures_util::join!(winner, loser);
         result.unwrap();
-        assert_eq!(operator_did(&state).await, installed);
+        assert_ne!(installed, losing);
+        assert_eq!(state.read().await.session_expires_at, installed);
         assert_eq!(revision(&state).await, head);
         ensure_session_authority(&state).await.unwrap();
-        assert_eq!(operator_did(&state).await, installed);
+        assert_eq!(state.read().await.session_expires_at, installed);
     }
 }
 

@@ -12,10 +12,23 @@
 //! stolen device at most one session lifetime even if the registry is
 //! unreachable.
 //!
-//! Each boot and renewal creates a disposable operator and a matching
-//! bounded grant held only in memory. Membership and invitation authority
-//! belong to accounts and profiles, so replacing this final hop needs no
-//! invitation replay or durable session write.
+//! The operator key is derived from the profile and the access branch
+//! under a fixed label, so the same profile on the same branch signs as
+//! the same operator across boots and renewals. The operator is part of
+//! the identity of every history it writes: a fresh key per boot would
+//! start a new lineage each time and grow the version vector without
+//! bound. The time bound lives on the grant alone, and each boot and
+//! renewal issues a new bounded grant to that key, held only in memory.
+//! Membership and invitation authority belong to accounts and profiles,
+//! so re-issuing this final hop needs no invitation replay or durable
+//! session write.
+//!
+//! A stable key means a renewal re-delegates to whatever key held the
+//! lapsed grant. The key is never stored or exported: it is re-derived
+//! from the profile key on each boot, sealed in the browser, and on
+//! native held only in the memory of the process that also holds the
+//! profile seed. Reaching it therefore takes the profile, which already
+//! holds everything the operator could be granted.
 //!
 //! Renewal rides the sync drain — the regular beat this worker has —
 //! rather than chasing every presign path. The gap that leaves: a
@@ -48,16 +61,22 @@ pub use tonk_identity::session::SESSION_TTL_SECONDS;
 /// drives the worker, and a quiet page can go a while between drains.
 pub const RENEWAL_MARGIN_SECONDS: u64 = 60 * 60;
 
+/// The label every worker session's operator key is derived under. The
+/// access branch follows it, so each of the profile's accounts signs as
+/// its own operator. Changing it changes every worker operator, and so
+/// forks every history they write.
+const SESSION_CONTEXT: &[u8] = b"tonk/worker-session/v1/";
+
 /// A signing session: the operator that signs presigns, and the moment
 /// the delegation authorizing it stops being valid.
 pub struct Session<S: Clone = DefaultSpace> {
-    /// The operator, keyed for this session alone.
+    /// The operator, keyed by the profile and the access branch.
     pub operator: Peer<S, SessionMode>,
     /// Expiry of the `profile → operator` delegation, unix seconds.
     pub expires_at: u64,
 }
 
-/// Open a fresh signing session for `profile`.
+/// Open a signing session for `profile`.
 ///
 /// The session shares the profile's storage, so its operator mounts into
 /// the same pool as every handle already open against it. A session built
@@ -81,16 +100,15 @@ pub async fn open_on<S: PeerSpace>(
     rotate(profile, access_branch).await
 }
 
-/// Create a fresh operator and bounded in-memory profile grant.
-/// Existing session credentials and delegations are left untouched.
+/// Derive the branch's operator and issue it a new bounded in-memory
+/// profile grant. The operator key is the same on every call for the same
+/// profile and branch; only the grant and its expiry are new. Existing
+/// session credentials and delegations are left untouched.
 pub async fn rotate<S: PeerSpace>(
     profile: &Peer<S>,
     access_branch: &str,
 ) -> Result<Session<S>, TonkWorkerError> {
-    let mut context = [0u8; 32];
-    getrandom::fill(&mut context).map_err(|error| {
-        TonkWorkerError::Internal(format!("failed to generate session entropy: {error}"))
-    })?;
+    let context = [SESSION_CONTEXT, access_branch.as_bytes()].concat();
     let expiration = Timestamp::new(SystemTime::now() + Duration::from_secs(SESSION_TTL_SECONDS))
         .map_err(|error| {
         TonkWorkerError::Internal(format!("session expiration out of range: {error}"))
@@ -192,15 +210,62 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_creates_distinct_sessions_across_opens() {
+    async fn it_keeps_the_operator_across_opens() {
         let profile = scratch().await;
 
         let first = open(&profile).await.unwrap();
         let second = open(&profile).await.unwrap();
 
-        assert_ne!(first.operator.did(), second.operator.did());
+        assert_eq!(first.operator.did(), second.operator.did());
         assert_eq!(first.operator.home().clone(), profile.did());
         assert_eq!(second.operator.home().clone(), profile.did());
+    }
+
+    #[dialog_common::test]
+    async fn it_derives_the_operator_from_the_label_and_access_branch() {
+        let profile = scratch().await;
+
+        let session = open_on(&profile, "account").await.unwrap();
+        let expected = profile
+            .credential()
+            .derive(b"tonk/worker-session/v1/account")
+            .await
+            .unwrap();
+
+        assert_eq!(session.operator.did(), expected.did());
+    }
+
+    #[dialog_common::test]
+    async fn it_derives_a_distinct_operator_per_access_branch() {
+        let profile = scratch().await;
+
+        let main = open(&profile).await.unwrap();
+        let account = open_on(&profile, "account").await.unwrap();
+        let again = open_on(&profile, "account").await.unwrap();
+
+        assert_ne!(main.operator.did(), account.operator.did());
+        assert_eq!(account.operator.did(), again.operator.did());
+    }
+
+    #[dialog_common::test]
+    async fn it_renews_the_grant_without_changing_the_operator() {
+        let profile = scratch().await;
+        let space = retain_space(&profile, &open(&profile).await.unwrap().operator).await;
+        let first = open(&profile).await.unwrap();
+
+        // Expiry is in whole seconds; let one pass so the renewal's bound
+        // is observably later.
+        crate::sleep(web_time::Duration::from_millis(1100))
+            .await
+            .unwrap();
+        let renewed = rotate(&profile, crate::router::repository::PROFILE_BRANCH)
+            .await
+            .unwrap();
+
+        assert_eq!(renewed.operator.did(), first.operator.did());
+        assert!(renewed.expires_at > first.expires_at);
+        assert_proof(&profile, &first, &space).await;
+        assert_proof(&profile, &renewed, &space).await;
     }
 
     async fn access_revision(
@@ -262,7 +327,7 @@ mod tests {
         assert_eq!(access_revision(&profile, &first.operator).await, revision);
         let second = open(&profile).await.unwrap();
         assert_eq!(access_revision(&profile, &second.operator).await, revision);
-        assert_ne!(first.operator.did(), second.operator.did());
+        assert_eq!(first.operator.did(), second.operator.did());
         assert_eq!(second.operator.home().clone(), profile.did());
         for session in [&first, &second] {
             assert_proof(&profile, session, &space).await;

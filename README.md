@@ -85,6 +85,12 @@ To install the pre-release channel instead, set `TONK_CHANNEL=staging`:
 curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=staging sh
 ```
 
+To follow the latest build of `main`, set `TONK_CHANNEL=dev`. It moves with every merge, so it can read and write whatever `main` does:
+
+```sh
+curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=dev sh
+```
+
 You can also download a `tonk-<platform>.tar.gz` directly from the [releases page](https://github.com/tonk-labs/tonk/releases) and extract the `tonk` binary onto your `PATH`. Newly published macOS binaries are Developer ID signed and notarized by Apple.
 
 ### Update
@@ -95,7 +101,8 @@ tonk update
 
 This upgrades an install made by the install script on its recorded
 channel. A default install follows the stable GitHub release; an install
-made with `TONK_CHANNEL=staging` follows the rolling staging release. It
+made with `TONK_CHANNEL=staging` follows the rolling staging release, and
+one made with `TONK_CHANNEL=dev` the rolling build of `main`. It
 verifies the download against the release checksums, checks the new
 binary runs, and only then replaces the old one — so a failed update
 leaves your working `tonk` untouched. On macOS it preserves the published
@@ -109,7 +116,7 @@ update --enable-check`. It never runs in CI.
 Check what you have with `tonk --version`. `tonk update` and the daily
 release check follow the channel in the matching install receipt; the
 ambient `TONK_CHANNEL` value does not switch an existing binary. Rerun
-the installer with or without `TONK_CHANNEL=staging` to deliberately
+the installer with or without `TONK_CHANNEL=staging` (or `dev`) to deliberately
 switch that installation's channel.
 
 If `tonk` was installed some other way, `tonk update` says so instead
