@@ -40,10 +40,13 @@ after an unknown outcome and must not repeat uncertain notation.
 ## Verification and deployment
 
 The new subprocess regression failed before the change and passes afterward.
+A second regression closes a real HTTP socket after hosted dispatch to an actual
+worker subprocess; it fails with cancellation/SIGTERM without the fix and passes
+with the fix, confirming publication completion and checkpoint with one dispatch.
 Focused controls cover query cancellation, queued evaluation cancellation,
 checkpoint ordering, explicit force cancellation, and hosted graceful shutdown.
 Fresh validation on isolated upstream commit
-`0115c2fcd89f6f15fa11a55cceb9721fd1ffa575`: MCP tests 36/36, hosted tests 65/65,
+`0115c2fcd89f6f15fa11a55cceb9721fd1ffa575`: MCP tests 36/36, hosted tests 66/66,
 scoped Prettier checks and `git diff --check` pass. A real MCP client read-only
 probe of the old Pilot 4 grant returned recovery metadata, so no live write or
 retained-state publication was attempted there. A separate fresh target query
