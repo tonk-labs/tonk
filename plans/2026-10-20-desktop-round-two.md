@@ -158,3 +158,19 @@ chrome and sidebar tests passed. Logs: `/tmp/round2-multi-build.log` and
 `/tmp/round2-multi-tests.log`. CI at merge commit `c4230186e2` passed 47 jobs
 with three conditional skips, including Desktop; CI for the fixture commit is
 checked separately on the PR. The deployed/backend flows above remain unverified.
+
+## Native control rendering follow-up
+
+Figma establishes layout and hierarchy; control rendering follows the running OS.
+Removed painted circles/capsules from the chrome actions, model selector and send
+button in favor of the existing native control styles (system glass on macOS 26+
+including 27; native bordered controls on earlier supported versions). Sharing
+uses a native Menu with a Copy Link primary action. More keeps the accessible
+native menu presentation with the system glass/material surface.
+
+Verified light/dark native controls on macOS 27.0.1, More menu accessibility and
+opening, sharing-menu sheet handoff, sidebar collapse and floating chrome.
+App build and strict signature verification passed; 21 focused archive, chrome
+and access-action tests passed. Older OS rendering was not visually exercised.
+Logs: `/tmp/round2-native-controls-build.log` and
+`/tmp/round2-native-controls-tests.log`.

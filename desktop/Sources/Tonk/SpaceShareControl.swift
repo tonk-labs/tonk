@@ -10,38 +10,38 @@ struct SpaceShareControl: View {
   @State private var publishing = false
 
   var body: some View {
-    HStack(spacing: 0) {
-      Button {
-        copying = true
-        Task {
-          copied = await access.copyDefaultLink(in: space)
-          copying = false
-          try? await Task.sleep(for: .milliseconds(1500))
-          copied = false
-        }
-      } label: {
-        HStack(spacing: 6) {
-          DesktopGlyph(name: copied ? "imgIconCheck" : "imgIconLink1", size: 14)
-          if !compact { Text(copied ? "Copied" : "Copy Link") }
-        }
-        .padding(.leading, 11).padding(.trailing, 8).frame(height: 28)
-      }.buttonStyle(.plain).disabled(copying)
-        .accessibilityLabel(copied ? "Copied" : "Copy Link")
-      Menu {
-        Button("Publish…") { publishing = true }
-      } label: {
-        Label {
-          Text("Sharing options")
-        } icon: {
-          DesktopGlyph(name: "r2IconChevronDown", size: 12).foregroundStyle(.white)
-        }.labelStyle(.iconOnly).frame(width: 26, height: 28)
-      }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().frame(width: 26, height: 28)
-        .tint(.white)
-        .accessibilityLabel("Sharing options")
+    Menu {
+      Button("Publish…") { publishing = true }
+    } label: {
+      Label {
+        Text(copied ? "Copied" : "Copy Link")
+      } icon: {
+        DesktopGlyph(name: copied ? "imgIconCheck" : "imgIconLink1", size: 14)
+      }
+      .labelStyle(ShareLabelStyle(compact: compact))
+    } primaryAction: {
+      guard !copying else { return }
+      copying = true
+      Task {
+        copied = await access.copyDefaultLink(in: space)
+        copying = false
+        try? await Task.sleep(for: .milliseconds(1500))
+        copied = false
+      }
     }
-    .font(.system(size: 13, weight: .medium)).foregroundStyle(.white)
-    .background(DesktopStyle.accent, in: Capsule())
+    .nativeControl(prominent: true).controlSize(.large)
+    .accessibilityLabel(copied ? "Copied" : "Copy Link")
     .sheet(isPresented: $publishing) { PublishSpaceSheet(space: space, access: access) }
+  }
+}
+
+private struct ShareLabelStyle: LabelStyle {
+  let compact: Bool
+  func makeBody(configuration: Configuration) -> some View {
+    HStack(spacing: 6) {
+      configuration.icon
+      if !compact { configuration.title }
+    }
   }
 }
 

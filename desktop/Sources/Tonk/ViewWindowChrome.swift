@@ -80,9 +80,8 @@ struct ViewChromeButton: View {
   let asset: String
   var action: () -> Void
   var body: some View {
-    Button(action: action) { DesktopGlyph(name: asset, size: 15).frame(width: 28, height: 28) }
-      .buttonStyle(.plain).background(Color(nsColor: .textBackgroundColor), in: Circle())
-      .overlay(Circle().strokeBorder(.primary.opacity(0.07), lineWidth: 0.5))
+    Button(action: action) { DesktopGlyph(name: asset, size: 15) }
+      .nativeControl(circular: true).controlSize(.large)
       .help(title).accessibilityLabel(title)
   }
 }

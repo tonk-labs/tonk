@@ -425,8 +425,8 @@ struct ContentView: View {
       }
       .labelStyle(.iconOnly).frame(width: 28, height: 28)
     }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-      .frame(width: 28, height: 28)
-      .background(Color(nsColor: .textBackgroundColor), in: Circle())
+      .frame(width: 28, height: 28).controlSurface(radius: 14)
+      .help("More Options")
       .accessibilityLabel("More Options")
   }
 
@@ -504,8 +504,8 @@ struct ContentView: View {
       HStack(spacing: 4) {
         Text(model.connecting ? "Connecting…" : model.modelLabel).lineLimit(1)
         DesktopGlyph(name: "r2IconChevronDown1", size: 11)
-      }.font(.system(size: 12, weight: .medium)).padding(.horizontal, 9).frame(height: 24)
-    }.buttonStyle(.plain).background(.quaternary, in: Capsule())
+      }.font(.system(size: 12, weight: .medium))
+    }.nativeControl()
       .help("Chat Agent Settings: \(model.modelLabel)")
       .accessibilityLabel("Chat Agent Settings: \(model.modelLabel)")
       .disabled(accountActionsDisabled)
@@ -577,13 +577,9 @@ struct ContentView: View {
                 "Stop reply")
             } else {
               Button(action: submit) {
-                DesktopGlyph(name: "r2IconArrowUp", size: 14).frame(width: 26, height: 26)
+                DesktopGlyph(name: "r2IconArrowUp", size: 14)
               }
-              .buttonStyle(.plain)
-              .foregroundStyle(canSubmit ? Color.white : Color.secondary)
-              .background(
-                canSubmit ? DesktopStyle.accent : Color.primary.opacity(0.06), in: Circle()
-              )
+              .nativeControl(prominent: true, circular: true)
               .disabled(!canSubmit)
               .accessibilityLabel("Send message")
             }
