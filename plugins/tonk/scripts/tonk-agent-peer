@@ -2,7 +2,8 @@
 # Launch the local Tonk peer as this plugin's stdio MCP server.
 #
 # The peer is a native binary published with each Tonk release, together with
-# the guest runtime its live views use. This launcher fetches them for this
+# the guest runtime its live views use and the Claude Desktop extension
+# (tonk-peer.mcpb) it can offer to install. This launcher fetches them for this
 # platform, verifies the archive against the release's checksums.txt, caches
 # them, and execs the peer. It checks for a newer build on every start and
 # keeps using the cached one when offline. The Claude Desktop extension ships
@@ -102,6 +103,11 @@ update() {
     [ -d "${CACHE}/runtime" ] && mv "${CACHE}/runtime" "${CACHE}/runtime.old"
     mv "$tmp/runtime" "${CACHE}/runtime"
     rm -rf "${CACHE}/runtime.old"
+  fi
+  # So does the Claude Desktop extension, which tonk_install_extension opens
+  # with Desktop when the user asks for live views in Desktop chat.
+  if [ -f "$tmp/tonk-peer.mcpb" ]; then
+    mv -f "$tmp/tonk-peer.mcpb" "${CACHE}/tonk-peer.mcpb"
   fi
   # A newer binary is a new file, so running peers keep theirs; its fresh
   # modification time is how a running owner learns it is outdated.

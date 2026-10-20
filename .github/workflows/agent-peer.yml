@@ -152,17 +152,19 @@ jobs:
       - name: Prepare assets
         run: |
           set -euo pipefail
+          # The Desktop extension rides in each archive, checksummed with the
+          # binary, so the peer can offer to install it (tonk_install_extension).
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version'])")
+          plugins/tonk/package-mcpb.sh "$version" tonk-agent-peer-dev tonk-peer.mcpb
           for platform in macos-arm64 linux-x86_64; do
             install -m 0755 "artifacts/$platform/tonk-agent-peer" tonk-agent-peer
             # The launcher installs the guest runtime beside the binary.
             rm -rf runtime && cp -R artifacts/runtime runtime
-            tar -czf "tonk-agent-peer-$platform.tar.gz" tonk-agent-peer runtime
+            tar -czf "tonk-agent-peer-$platform.tar.gz" tonk-agent-peer runtime tonk-peer.mcpb
             rm -rf tonk-agent-peer runtime
           done
           sha256sum tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz > checksums.txt
           plugins/tonk/package.sh tonk-plugin.zip tonk-agent-peer-dev
-          version=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version'])")
-          plugins/tonk/package-mcpb.sh "$version" tonk-agent-peer-dev tonk-peer.mcpb
       - name: Replace the rolling dev release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -209,17 +211,19 @@ jobs:
       - name: Prepare assets
         run: |
           set -euo pipefail
+          # The Desktop extension rides in each archive, checksummed with the
+          # binary, so the peer can offer to install it (tonk_install_extension).
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version'])")
+          plugins/tonk/package-mcpb.sh "$version" "$TAG" tonk-peer.mcpb
           for platform in macos-arm64 linux-x86_64; do
             install -m 0755 "artifacts/$platform/tonk-agent-peer" tonk-agent-peer
             # The launcher installs the guest runtime beside the binary.
             rm -rf runtime && cp -R artifacts/runtime runtime
-            tar -czf "tonk-agent-peer-$platform.tar.gz" tonk-agent-peer runtime
+            tar -czf "tonk-agent-peer-$platform.tar.gz" tonk-agent-peer runtime tonk-peer.mcpb
             rm -rf tonk-agent-peer runtime
           done
           sha256sum tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz > checksums.txt
           plugins/tonk/package.sh tonk-plugin.zip "$TAG"
-          version=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version'])")
-          plugins/tonk/package-mcpb.sh "$version" "$TAG" tonk-peer.mcpb
       - name: Replace the preview release
         env:
           GH_TOKEN: ${{ github.token }}

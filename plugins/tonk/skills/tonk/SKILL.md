@@ -7,8 +7,8 @@ description: Use when the user pastes a Tonk share link, asks to work in a Tonk 
 
 This machine runs a local Tonk peer with its own identity. The `tonk-peer` MCP
 server exposes it, with `tonk_list_spaces`, `tonk_join`, `tonk_query`,
-`tonk_evaluate`, `tonk_display`, `tonk_show` and `tonk_guide`. This skill is
-about those tools.
+`tonk_evaluate`, `tonk_display`, `tonk_show`, `tonk_guide` and
+`tonk_install_extension`. This skill is about those tools.
 
 A different server, the hosted Tonk connector, may also be connected. It has
 only `tonk_query` and `tonk_evaluate`, needs the space's agent link on every
@@ -31,17 +31,21 @@ extension's tools do not.
 - **Both copies available:** in Claude Desktop, call `tonk_display` and
   `tonk_show` from the extension's copy. Any copy works for everything else.
 - **Only this plugin's copy, in Claude Desktop, and the user wants to see
-  things** (or tells you a view showed only text): say once that live views
-  need the Tonk extension, and offer the steps:
-  1. Download
-     [tonk-peer.mcpb](https://github.com/tonk-labs/tonk/releases/download/tonk-agent-peer-dev/tonk-peer.mcpb).
-  2. Open it (double-click, or drag it into the Claude Desktop window), and
-     choose **Install**.
-  3. Start a new chat.
+  things** (or tells you a view showed only text): answer with the text
+  result, then say once that live views need the Tonk extension and ask
+  whether to install it. Only if the user says yes, call
+  `tonk_install_extension`. It opens Claude Desktop's own install screen, where
+  the user confirms; relay what it returns (choose **Install**, then start a
+  new chat). It updates itself the same way the plugin does.
 
-  It updates itself the same way the plugin does. Answer with the text result
-  meanwhile. Don't repeat the offer in the same conversation, and never try to
-  install it yourself.
+  If the tool reports it can't open Desktop, give the manual steps instead:
+  download
+  [tonk-peer.mcpb](https://github.com/tonk-labs/tonk/releases/download/tonk-agent-peer-dev/tonk-peer.mcpb),
+  open it (double-click, or drag it into the Claude Desktop window), choose
+  **Install**, and start a new chat.
+
+  Never call `tonk_install_extension` without the user's yes in this
+  conversation, and don't repeat the offer once they've declined.
 - **Not in Claude Desktop** (Claude Code in a terminal, for example): views
   never render there. Text is expected; don't mention the extension. If you
   can't tell where the user is, ask before offering it.

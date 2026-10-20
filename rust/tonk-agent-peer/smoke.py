@@ -22,6 +22,7 @@ import urllib.request
 EXPECTED_TOOLS = {
     "tonk_list_spaces", "tonk_join", "tonk_query", "tonk_evaluate", "tonk_guide",
     "tonk_show", "tonk_watch", "tonk_display", "tonk_view_log",
+    "tonk_install_extension",
 }
 APP_MIME = "text/html;profile=mcp-app"
 # A stand-in guest runtime directory; the real pack is built from tonk-ui.
@@ -139,6 +140,10 @@ def main(binary):
             raise AssertionError("missing guest document must 404")
         except urllib.error.HTTPError as missing:
             assert missing.code == 404 and "not installed" in missing.read().decode()
+        # Off macOS the tool points at the download instead of opening Desktop.
+        if sys.platform != "darwin":
+            failed, offer = first.tool("tonk_install_extension")
+            assert failed and "macOS only" in offer["content"][0]["text"], offer
         failed, log = first.tool("tonk_view_log")
         assert not failed and any("/space-runtime.json -> 200" in line
                                   for line in log["structuredContent"]["log"]), log

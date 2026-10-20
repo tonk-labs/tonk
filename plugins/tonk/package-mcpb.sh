@@ -52,6 +52,7 @@ cat > "$work/manifest.json" <<EOF
     { "name": "tonk_display", "description": "Render entities with their own Tonk displays" },
     { "name": "tonk_show", "description": "Show a live view of a query" },
     { "name": "tonk_view_log", "description": "Diagnose live views" },
+    { "name": "tonk_install_extension", "description": "Open Claude Desktop's install screen for this extension" },
     { "name": "tonk_guide", "description": "Read Tonk's authoring manuals" }
   ],
   "compatibility": { "platforms": ["darwin", "linux"] }
