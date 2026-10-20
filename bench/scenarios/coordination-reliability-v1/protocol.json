@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "coordination-reliability-v1",
+  "purpose": "Publication reliability measured separately from model coordination quality.",
+  "cases": [
+    {"id": "independent-writes", "writers": 2, "rounds": 2, "round_interval_ms": 0, "max_start_lateness_ms": 250, "artifact_scope": "operation"},
+    {"id": "same-artifact", "writers": 2, "rounds": 1, "round_interval_ms": 0, "max_start_lateness_ms": 250, "artifact_scope": "case"},
+    {"id": "sustained-burst", "writers": 2, "rounds": 12, "round_interval_ms": 100, "max_start_lateness_ms": 250, "artifact_scope": "operation"}
+  ],
+  "write_contract": "Each operation writes its own uniquely named field and payload hash. Same-artifact operations additionally write one shared field with distinct submitted values. Every independently published field must survive. The final shared-field value must be one submitted value, and at least two independent replica readbacks must agree after writer completion to establish convergence. This protocol does not impose expected-head CAS, semantic conflict rejection, or preservation of both shared-field values. A committing local evaluation must be observed exactly once; final inventory alone cannot detect replay of identical writes.",
+  "concurrency": "Release both writers at a barrier in each registered round. Start intervals must overlap in every round. Burst round offsets are scheduled from the first barrier, not from completion of the previous write.",
+  "observation": "An external adapter produces one receipt per operation, independent readback of that operation's field, and a final complete inventory from a fresh observer after all writers exit. Bind the observations to the plan SHA-256 and identify the fixture/build and transport. No model session is needed.",
+  "failure_policy": "Retain every registered operation and failed case. Publication retries inside the product are counted; the adapter must not replay an uncertain write. Recovery must identify readback or retained-publication resolution. Missing evidence is unknown, never a zero latency or a quality score.",
+  "metrics": ["completed_operations", "completion_rate", "publication_latency_ms", "readback_latency_ms", "end_to_end_latency_ms", "recovery_required", "recovery_resolved", "recovery_unresolved", "local_evaluation_count", "unknown_local_evaluation_counts", "replayed_local_evaluations", "duplicate_operation_receipts", "duplicate_final_records", "lost_independent_fields", "chosen_value_valid", "shared_field_converged", "round_overlap_ms"],
+  "quality": "No reliability metric contributes points to the frozen coordination quality rubric. Past scenarios, protocols and runs remain unchanged.",
+  "scope": "Synthetic scorer tests prove measurement machinery only. Actual reliability evidence requires external receipts from the real product fixture or deployed service; label the exercised boundary explicitly."
+}
