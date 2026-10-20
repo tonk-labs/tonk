@@ -10407,9 +10407,34 @@ pub(crate) mod tests {
         // while the space was absent, and once the join lands it has to
         // load the space without the visitor reloading.
         enter_space_view(&visitor).await?;
-        wait_for_displayed(&visitor, ".blank-canvas")
-            .await
-            .context("the visitor's page renders the space itself, without a reload")?;
+        if let Err(error) = wait_for_displayed(&visitor, ".blank-canvas").await {
+            // Bisect diagnostic: what the visitor's worker holds when the
+            // view is stuck, and whether waiting or a reload renders it.
+            visitor.enter_default_frame().await.ok();
+            let base = format!("/api/repository/{}", urlencoding::encode(&subject));
+            let repository = get_json(&visitor, &base).await;
+            eprintln!("BISECT repository: {repository:?}");
+            let query = serde_json::json!({
+                "terms": { "this": { "?": { "name": "this" } }, "subject": { "?": { "name": "subject" } } },
+                "predicate": { "with": {
+                    "subject": { "the": "dialog.replica/subject", "as": "Entity", "cardinality": "one" }
+                } }
+            });
+            let rows = post_json(&visitor, &format!("{base}/branch/main/query"), query).await;
+            eprintln!("BISECT replica rows: {rows:?}");
+            let status = get_json(&visitor, &format!("{base}/branch/main/sync/status")).await;
+            eprintln!("BISECT sync status: {status:?}");
+            enter_space_view(&visitor).await.ok();
+            let late = wait_for_displayed(&visitor, ".blank-canvas").await.is_ok();
+            eprintln!("BISECT rendered after 30s more: {late}");
+            visitor.enter_default_frame().await.ok();
+            visitor.refresh().await.ok();
+            enter_space_view(&visitor).await.ok();
+            let reloaded = wait_for_displayed(&visitor, ".blank-canvas").await.is_ok();
+            eprintln!("BISECT rendered after a reload: {reloaded}");
+            return Err(error)
+                .context("the visitor's page renders the space itself, without a reload");
+        }
         visitor.enter_default_frame().await?;
         open_space_actions(&visitor).await?;
         // The menu is open (its home action shows), so what is missing from
