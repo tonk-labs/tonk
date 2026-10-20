@@ -49,6 +49,21 @@ impl AgentLinkWorker {
         if !recovering && (document.trim().is_empty() || document.len() > 32_000) {
             return Err("Provide one inline notation document, up to 32 KB.".into());
         }
+        if writing {
+            // Syntax rejection has no effects. Parse the whole document before
+            // opening a replica or journaling an evaluation as uncertain.
+            let parsed = tonk_notation::parse(document);
+            if let Some(first) = parsed.diagnostics.first() {
+                return Err(format!(
+                    "Invalid notation (line {}, column {}); no evaluation was dispatched.",
+                    first.range.start.line + 1,
+                    first.range.start.character + 1
+                ));
+            }
+            if parsed.syntax.is_none() {
+                return Err("Invalid notation; no evaluation was dispatched.".into());
+            }
+        }
         if link.len() > 160_000 {
             return Err("Agent link exceeds limit.".into());
         }
