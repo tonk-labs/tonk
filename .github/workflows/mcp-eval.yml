@@ -65,13 +65,13 @@ jobs:
           ref: ${{ needs.validate.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Trust the workspace checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Confirm exact checked-out source
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ needs.validate.outputs.source_sha }}"
-      - name: Trust the workspace checkout
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Install runtime build dependencies
         run: |
           apt-get update
@@ -87,9 +87,37 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  assets:
+    name: Build pinned MCP browser assets
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: wimpysworld/nothing-but-nix@main
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - name: Build MCP assets from the pinned source
+        run: |
+          nix build --accept-flake-config .#tonk-cloudflare-artifacts
+          TONK_UI_DIST="$PWD/result/tonk-ui" nix --accept-flake-config develop .#ci --command \
+            node mcp/hosted/build-assets.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-browser-assets-${{ needs.validate.outputs.source_sha }}
+          path: mcp/hosted/public
+          if-no-files-found: error
+          retention-days: 3
+
   deploy:
     name: Pinned isolated MCP evaluation
-    needs: [validate, agent-worker]
+    needs: [validate, agent-worker, assets]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -120,21 +148,29 @@ jobs:
         run: chmod 0755 target/release/tonk-agent-worker
       - name: Require executable pinned agent worker
         run: test -x target/release/tonk-agent-worker
-      - uses: wimpysworld/nothing-but-nix@main
-      - uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Build MCP assets from the pinned source
+      - name: Verify Docker and Node deployment prerequisites
         run: |
-          nix build --accept-flake-config .#tonk-cloudflare-artifacts
-          TONK_UI_DIST="$PWD/result/tonk-ui" nix --accept-flake-config develop .#ci --command \
-            node mcp/hosted/build-assets.mjs
+          set -euo pipefail
+          node --version
+          npm --version
+          npx --version
+          docker --version
+          docker info >/dev/null
+      - name: Install MCP deployment dependencies
+        run: |
+          npm ci --prefix mcp --ignore-scripts
+          npm ci --prefix mcp/hosted/cloudflare
+          cd mcp
+          node -e "import('@modelcontextprotocol/client')"
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcp-browser-assets-${{ needs.validate.outputs.source_sha }}
+          path: mcp/hosted/public
       - name: Test isolated deployment configuration
         run: |
-          npm ci --prefix mcp/hosted/cloudflare
           node --test mcp/hosted/cloudflare/eval-deployment.test.mjs
       - name: Read account workers.dev subdomain
         id: account
@@ -146,7 +182,7 @@ jobs:
           response="$(curl --fail-with-body --silent --show-error \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain")"
-          subdomain="$(jq -er '.success == true and .result.subdomain' <<<"$response")"
+          subdomain="$(jq -er 'if .success == true then .result.subdomain else error("workers subdomain lookup failed") end' <<<"$response")"
           [[ "$subdomain" =~ ^[a-z0-9-]+$ ]]
           printf 'subdomain=%s\n' "$subdomain" >> "$GITHUB_OUTPUT"
       - name: Create isolated configuration and checkpoint bucket
