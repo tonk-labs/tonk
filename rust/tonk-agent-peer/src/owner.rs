@@ -208,7 +208,7 @@ async fn run(
     // Views ask where the owner serves the worker API, whichever process
     // renders them.
     if tool == "tonk_peer_origin" {
-        return Ok(json!({ "origin": origin }));
+        return Ok(json!({ "origin": origin, "token": crate::loopback::token() }));
     }
     if tool == "tonk_view_log" {
         return Ok(json!({ "origin": origin, "log": crate::loopback::log() }));

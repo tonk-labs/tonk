@@ -5,10 +5,10 @@
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-        ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
-        ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
-        ServerConfig, Tool,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Icon,
+        Implementation, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+        ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+        ResourceContents, ServerCapabilities, ServerConfig, Tool,
     },
     service::RequestContext,
 };
@@ -86,6 +86,29 @@ fn text(result: Value, error: bool) -> CallToolResult {
     }
 }
 
+/// Tonk's app icon, inline: hosts show it next to the server's tools.
+fn icon_data_uri() -> String {
+    const PNG: &[u8] = include_bytes!("icon.png");
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::from("data:image/png;base64,");
+    for chunk in PNG.chunks(3) {
+        let bytes = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(bytes[0]) << 16) | (u32::from(bytes[1]) << 8) | u32::from(bytes[2]);
+        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            out.push(if i <= chunk.len() {
+                ALPHABET[(n >> shift & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
 fn guide_topic(topic: &str) -> Option<&'static str> {
     if topic == "context" {
         Some(guide::AGENT)
@@ -102,7 +125,18 @@ impl ServerHandler for Server {
                 .enable_resources()
                 .build(),
         )
-        .with_server_info(Implementation::new("tonk", env!("CARGO_PKG_VERSION")))
+        .with_server_info(
+            // Not plain "tonk": that is the hosted connector's name, and a
+            // host may use only one server of a name.
+            Implementation::new("tonk-peer", env!("CARGO_PKG_VERSION"))
+                .with_title("Tonk")
+                .with_website_url("https://github.com/tonk-labs/tonk/tree/main/plugins/tonk")
+                .with_icons(vec![
+                    Icon::new(icon_data_uri())
+                        .with_mime_type("image/png")
+                        .with_sizes(vec!["117x117".into()]),
+                ]),
+        )
         .with_instructions(guide::AGENT)
     }
 

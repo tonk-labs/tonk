@@ -38,6 +38,8 @@
   <script>
     (() => {
       const origin = __TONK_PEER_ORIGIN__,
+        // Every request to the peer carries its token; see loopback.rs.
+        token = __TONK_PEER_TOKEN__,
         frame = document.querySelector('iframe'),
         errorMessage = document.querySelector('#error'),
         statusLine = document.querySelector('#status');
@@ -48,6 +50,7 @@
         try {
           fetch(origin + '/agent-peer/log', {
             method: 'POST',
+            headers: { 'x-tonk-peer-token': token },
             body: String(step).slice(0, 2000),
             credentials: 'omit',
           }).catch(() => {});
@@ -88,6 +91,7 @@
         for (const key of ['accept', 'content-type'])
           if (incoming.has(key)) headers.set(key, incoming.get(key));
         headers.set('x-tonk-client-id', clientId);
+        headers.set('x-tonk-peer-token', token);
         const response = await fetch(origin + path, {
           ...options,
           headers,
@@ -118,7 +122,12 @@
         // (the framed guest never says hello), so load the guest inline.
         trace('loading the display guest inline');
         ++serial;
-        const html = await (await fetch(origin + '/display-guest.html')).text();
+        const html = await (
+          await fetch(origin + '/display-guest.html', {
+            headers: { 'x-tonk-peer-token': token },
+            credentials: 'omit',
+          })
+        ).text();
         frame.removeAttribute('src');
         frame.srcdoc = html;
         size();
@@ -332,7 +341,10 @@
         );
         size();
         trace('loading the guest runtime');
-        const response = await fetch(origin + '/space-runtime.json', { credentials: 'omit' });
+        const response = await fetch(origin + '/space-runtime.json', {
+          headers: { 'x-tonk-peer-token': token },
+          credentials: 'omit',
+        });
         if (!response.ok) throw Error(await response.text());
         pack = await response.json();
         trace('guest runtime loaded; waiting for the tool result');

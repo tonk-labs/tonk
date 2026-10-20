@@ -197,10 +197,18 @@ impl Views {
         let origin = owner["origin"]
             .as_str()
             .ok_or("The local peer did not say where it serves views.")?;
-        let html = DISPLAY.replace(
-            "__TONK_PEER_ORIGIN__",
-            &serde_json::to_string(origin).expect("string"),
-        );
+        let token = owner["token"]
+            .as_str()
+            .ok_or("The local peer did not give views its token.")?;
+        let html = DISPLAY
+            .replace(
+                "__TONK_PEER_ORIGIN__",
+                &serde_json::to_string(origin).expect("string"),
+            )
+            .replace(
+                "__TONK_PEER_TOKEN__",
+                &serde_json::to_string(token).expect("string"),
+            );
         let Value::Object(meta) = json!({
             "ui": {
                 "csp": { "connectDomains": [origin], "frameDomains": [origin] },

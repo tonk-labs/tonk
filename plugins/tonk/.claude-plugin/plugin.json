@@ -1,10 +1,19 @@
 {
   "name": "tonk",
   "displayName": "Tonk",
-  "description": "Work in shared Tonk spaces through a local peer. Paste a space's share link and the agent joins it under this machine's own identity, then reads and writes the space while the peer keeps it in sync.",
-  "author": { "name": "Tonk Labs" },
+  "version": "0.1.0",
+  "description": "Work in shared Tonk spaces through a local peer. Paste a space's share link and Claude joins it under this computer's own identity, reads and writes the space, and shows its things in the conversation rendered by Tonk, while the peer keeps it in sync.",
+  "icon": "./icon.png",
+  "author": {
+    "name": "Tonk Labs"
+  },
   "homepage": "https://github.com/tonk-labs/tonk/tree/main/plugins/tonk",
   "repository": "https://github.com/tonk-labs/tonk",
   "license": "MIT",
-  "keywords": ["tonk", "local-first", "collaboration", "ucan"]
+  "keywords": [
+    "tonk",
+    "local-first",
+    "collaboration",
+    "ucan"
+  ]
 }

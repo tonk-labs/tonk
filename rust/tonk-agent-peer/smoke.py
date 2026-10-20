@@ -10,6 +10,7 @@ to the first and sees the same peer, and that a malformed link is refused
 without echoing its secret. Needs no network.
 """
 import json
+import re
 import shutil
 import os
 import subprocess
@@ -41,7 +42,8 @@ class Session:
             "capabilities": {},
             "clientInfo": {"name": "tonk-agent-peer-smoke", "version": "0"},
         })
-        assert info["serverInfo"]["name"] == "tonk", info
+        assert info["serverInfo"]["name"] == "tonk-peer", info
+        assert info["serverInfo"]["icons"][0]["src"].startswith("data:image/png;base64,"), info
         assert "tools" in info["capabilities"], info
         self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
@@ -100,7 +102,24 @@ def main(binary):
         assert peer_origin.startswith("http://127.0.0.1:"), space["_meta"]
         assert space["_meta"]["ui"]["csp"]["frameDomains"] == [peer_origin], space["_meta"]
         assert json.dumps(peer_origin) in space["text"] and "__TONK_PEER_ORIGIN__" not in space["text"]
-        with urllib.request.urlopen(peer_origin + "/space-runtime.json", timeout=5) as response:
+        # The view carries the peer's token; nothing else may use the API.
+        match = re.search(r'token = "([0-9a-f]{64})"', space["text"])
+        assert match and "__TONK_PEER_TOKEN__" not in space["text"], space["text"][:200]
+        token = {"x-tonk-peer-token": match.group(1)}
+
+        def peer_get(path, timeout=5):
+            return urllib.request.urlopen(
+                urllib.request.Request(peer_origin + path, headers=token), timeout=timeout)
+
+        for path, headers in [("/api/profile", {}), ("/api/profile", {"x-tonk-peer-token": "0" * 64})]:
+            try:
+                urllib.request.urlopen(
+                    urllib.request.Request(peer_origin + path, headers=headers), timeout=5)
+                raise AssertionError("the peer API must refuse requests without its token")
+            except urllib.error.HTTPError as refused:
+                assert refused.code == 401, refused.code
+                assert refused.headers["Access-Control-Allow-Origin"] == "*"
+        with peer_get("/space-runtime.json") as response:
             assert response.headers["Access-Control-Allow-Origin"] == "*"
             assert json.load(response)["stand_in"] is True
         preflight = urllib.request.Request(
@@ -112,18 +131,18 @@ def main(binary):
             assert response.status == 204, response.status
             assert response.headers["Access-Control-Allow-Private-Network"] == "true"
             assert "x-tonk-client-id" in response.headers["Access-Control-Allow-Headers"]
-        with urllib.request.urlopen(peer_origin + "/api/profile", timeout=30) as response:
+        with peer_get("/api/profile", timeout=30) as response:
             assert response.headers["Access-Control-Allow-Origin"] == "*"
             assert response.status == 200
         try:
-            urllib.request.urlopen(peer_origin + "/worker-guest.html", timeout=5)
+            peer_get("/worker-guest.html")
             raise AssertionError("missing guest document must 404")
         except urllib.error.HTTPError as missing:
             assert missing.code == 404 and "not installed" in missing.read().decode()
         failed, log = first.tool("tonk_view_log")
         assert not failed and any("/space-runtime.json -> 200" in line
                                   for line in log["structuredContent"]["log"]), log
-        with urllib.request.urlopen(peer_origin + "/display-guest.html", timeout=5) as response:
+        with peer_get("/display-guest.html") as response:
             assert "tonk-display-mount" in response.read().decode()
         failed, closed = first.tool("tonk_display", {
             "space": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",

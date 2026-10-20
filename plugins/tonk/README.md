@@ -1,11 +1,12 @@
 # Tonk plugin
 
-Work in shared Tonk spaces from Claude Code and Cowork through a local peer.
+Work in shared Tonk spaces from Claude through a local peer.
 
-Paste a space's share link into a conversation and the agent joins the space
-under this machine's own peer identity. After that the link is no longer
-needed: any session on this machine can read and write the space, and the
-peer keeps it in sync in the background while a session is open.
+Paste a space's share link into a conversation and Claude joins the space
+under this computer's own peer identity. After that the link is no longer
+needed: any session on this computer can read and write the space, show its
+things in the conversation rendered by Tonk itself, and the peer keeps the
+space in sync while a session is open.
 
 ## Install
 
@@ -14,50 +15,65 @@ claude plugin marketplace add tonk-labs/tonk
 claude plugin install tonk@tonk
 ```
 
-The first session downloads the signed `tonk-agent-peer` binary for your platform
-from the latest Tonk release and verifies it against the release's
-`checksums.txt`. macOS (Apple Silicon) and Linux (x86_64) are supported.
+In Claude Desktop, add the `tonk-labs/tonk` marketplace under Customize →
+Plugins and install Tonk from it. macOS (Apple Silicon) and Linux (x86_64) are
+supported.
 
-To try a pull request's build, use the one-line `claude --plugin-url …` from the
-**Agent peer preview** comment on the pull request.
+To try a pull request's build, use the one-line `claude --plugin-url …` from
+the **Agent peer preview** comment on the pull request.
+
+## What this plugin runs and connects to
+
+The plugin itself is a launcher script, a skill and an MCP server declaration.
+Everything it runs, fetches or sends:
+
+- **It downloads the Tonk peer.** On every start the launcher
+  (`scripts/tonk-agent-peer`) fetches `checksums.txt` from the Tonk release it
+  follows on GitHub (`github.com/tonk-labs/tonk/releases`), and when that lists
+  a newer archive for your platform, downloads it, verifies its SHA-256
+  against `checksums.txt`, and installs it in `~/.tonk/bin/<channel>`. The
+  archive holds the `tonk-agent-peer` binary, built from this repository by
+  its CI, and the guest runtime that renders views. Offline, it runs the copy
+  it already has. It then runs the binary as the plugin's stdio MCP server.
+  Tagged releases are Developer ID signed and notarized; builds of `main`
+  are not.
+- **The peer keeps its identity and data locally,** in `~/.tonk/agent-peer`:
+  a key it generates on first use (a file in that private directory, not the
+  OS keychain yet), the spaces it joined, and their replicas.
+- **It talks to the Tonk service of each space you join.** A share link names
+  the service (for example `tonk.foundation`); the peer redeems the link
+  there, then pulls and pushes that space's changes to the same service,
+  every few seconds while a session is open. It contacts no other service,
+  sends nothing to Anthropic or to the plugin's authors, and joins only links
+  you give it in the conversation.
+- **It serves views on this computer only.** For live views in the
+  conversation, the peer serves its own API on `127.0.0.1` at a random port.
+  Every request must carry a random token that the peer creates when it
+  starts and gives only to the views the host loads from it, so other
+  programs and web pages on the computer cannot use it.
 
 ## How it works
 
-- **One peer per machine.** The peer's identity and data live in
-  `~/.tonk/agent-peer`. Every session on the machine is the same peer.
+- **One peer per computer.** Every session on the computer is the same peer.
 - **One owner at a time.** Hosts start an MCP server per session. The first to
-  need the peer owns it: it keeps the worker open and syncs every 30 seconds.
-  Other sessions forward their calls to it. When the owner's session ends, the
-  next call anywhere takes over.
+  need the peer owns it: it keeps the worker open and syncs. Other sessions
+  forward their calls to it. When the owner's session ends, the next call
+  anywhere takes over, and a newer build takes over from an older one.
 - **Any Tonk service.** Like the browser, the peer joins a space on whichever
-  service its link names. It joins only links you give it in the conversation.
+  service its link names.
 
-## Live views (experimental)
+## Live views
 
-`tonk_show` renders the result of a query as a live view inside the
-conversation, using MCP Apps. The view keeps itself current by long-polling the
-peer (`tonk_watch`, which only the view can call), so changes made anywhere,
-including other people's, appear within seconds.
+Where the host renders MCP Apps (Claude Desktop chat), two tools show a
+space in the conversation:
 
-Views render where the host supports MCP Apps from a local server: Claude
-Desktop chat, through the `tonk.mcpb` extension from a release, and possibly
-Cowork. Claude Code shows the result as text. The extension carries the same
-launcher as the plugin, pinned to its release: it installs once and updates
-itself on every start, and a newer build takes over from an older peer still
-running in another session. The extension and the plugin run the same peer
-and share its data directory.
+- `tonk_display` renders things with their concept's own display, through
+  Tonk's guest runtime: the same `<tonk-display>` the web app uses, live and
+  interactive.
+- `tonk_show` renders a query's result and keeps it current.
 
-`tonk_display` renders entities in the conversation with their concept's own
-display, through Tonk's real guest runtime: the same `<tonk-display>` the web
-app uses, live and interactive. The peer that owns the data directory serves
-its worker API on a loopback port, and the view relays the guest's requests
-there, as the browser relays them to its service worker. The guest runtime
-(`space-runtime.json`) ships in the extension under `server/runtime`.
-`tonk_view_log` shows what recent views requested and reported, for when one
+Claude Code shows the results as text. `tonk_view_log` explains a view that
 stays blank.
-
-The loopback API is not authenticated yet: while a peer runs, any local
-process or page that finds its port can act as that peer.
 
 ## Configuration
 
@@ -68,12 +84,16 @@ Set these in the environment the host starts MCP servers with:
 | `TONK_CHANNEL` | `dev` | `dev` (latest `main` build), `staging`, or `stable` |
 | `TONK_RELEASE` | | Pin an exact release tag |
 | `TONK_AGENT_PEER_HOME` | `~/.tonk/agent-peer` | Peer data directory |
-| `TONK_AGENT_PEER_RUNTIME` | `runtime/` beside the binary | Guest runtime served to space views |
+| `TONK_AGENT_PEER_RUNTIME` | `runtime/` beside the binary | Guest runtime served to views |
 | `TONK_AGENT_PEER_BINARY` | | Run a local build instead (development) |
 
 ## Not yet
 
-- Signing in to an account, so peers on several machines act for one account.
-- Keeping the peer key in the OS keychain; it is a file in the private data
-  directory for now.
+- Signing in to an account, so peers on several computers act for one
+  account.
+- Keeping the peer key in the OS keychain.
 - Sync while no session is open.
+
+## License
+
+MIT

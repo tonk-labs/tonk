@@ -5,7 +5,7 @@ description: Use when the user pastes a Tonk share link, asks to work in a Tonk 
 
 # Working in Tonk spaces
 
-This machine runs a local Tonk peer with its own identity. The `tonk` MCP
+This machine runs a local Tonk peer with its own identity. The `tonk-peer` MCP
 server exposes it.
 
 ## Joining a space
