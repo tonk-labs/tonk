@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use ::axum::{
     Router,
-    extract::{DefaultBodyLimit, State},
+    extract::State,
     middleware::{self, Next},
     response::Response,
     routing::get,
@@ -287,12 +287,6 @@ pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
     api_router_from_state(Arc::new(RwLock::new(state)))
 }
 
-/// Largest accepted `POST …/blob` body. The handler buffers the whole
-/// upload in service-worker memory before writing it to the blob store,
-/// so this caps that buffer, not just the wire size. Keep this conservative
-/// until the browser upload and remote sync paths stream end to end.
-pub const BLOB_UPLOAD_LIMIT: usize = 64 * 1024 * 1024;
-
 /// Variant of [`api_router`] that also surfaces the wrapped
 /// [`AppState`] handle. The worker uses this so it can consult
 /// shared state (notably the guest-binding map) outside the
@@ -500,12 +494,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // `tonk:blob` models; `Content-Type` there comes from the asset's
         // `tonk.dialog.asset/media-type` fact, which POST asserts, or the
         // legacy `xyz.tonk.blob/content-type` one older blobs carry.
-        // The upload body is buffered whole in the service worker (no
-        // streaming yet), so the limit is a deliberate ceiling rather than
-        // axum's 2 MiB default — which real image files routinely exceed.
+        // Both stream: neither holds a whole blob in the worker's memory.
         .route(
             "/api/repository/{repo}/branch/{branch}/blob",
-            post(blob::upload).layer(DefaultBodyLimit::max(BLOB_UPLOAD_LIMIT)),
+            post(blob::upload),
         )
         .route(
             "/api/repository/{repo}/branch/{branch}/blob/{entity}",

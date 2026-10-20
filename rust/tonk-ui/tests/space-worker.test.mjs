@@ -23,9 +23,11 @@ const SPACE = "did:key:zSpace";
 // that does not has to ask the worker above for it, and bring the space here.
 // `offline` is whether the server can be reached for a newer worker.
 // `incumbent` is whether another worker is the active one as this one starts.
+// `blobs` answers what the Rust worker's `/blob` routes are asked, as they
+// would; every request it is handed is kept in `stored`.
 function site({
   host = "bspace.tonk.test", routes = {}, failing = false, holds = true, offline = false, incumbent = false,
-  lingers = false, shell = "SHELL",
+  lingers = false, shell = "SHELL", blobs = () => new Response("", { status: 404 }),
 } = {}) {
   // How often the worker asked the browser to look for a newer one.
   const looked = { count: 0 };
@@ -48,11 +50,16 @@ function site({
   const listeners = {};
   // What the routes were asked for, by path.
   const asked = [];
+  const stored = [];
   const rust = new Proxy(
     {
       onfetch: async ({ request }) => {
         if (failing) throw new Error("the database is not open");
         const path = new URL(request.url).pathname;
+        if (/\/branch\/main\/blob(\/|$)/.test(path)) {
+          stored.push(request);
+          return blobs(request);
+        }
         const route = /\/branch\/main\/http(\/.*)$/.exec(path)?.[1];
         if (route === undefined) return new Response("", { status: 404 });
         asked.push(route);
@@ -137,11 +144,12 @@ function site({
     ),
   );
 
-  const request = (path, { mode = "cors", method = "GET" } = {}) => ({
+  const request = (path, { mode = "cors", method = "GET", headers = {}, ...rest } = {}) => ({
     url: new URL(path, origin).href,
     method,
     mode,
-    headers: new Headers(),
+    headers: new Headers(headers),
+    ...rest,
   });
   // What the worker answers a request with, or `undefined` when it leaves
   // the request to the network.
@@ -204,7 +212,7 @@ function site({
   // A page tells the worker something, handing over `ports`.
   const message = (data, ports = []) => listeners.message({ data, ports, waitUntil() {} });
   return {
-    answer, admit, asked, connect, stages, looked, activated, lifecycle, stores, message, worker: self,
+    answer, admit, asked, stored, connect, stages, looked, activated, lifecycle, stores, message, worker: self,
   };
 }
 
@@ -566,6 +574,83 @@ test("what a space's worker was still answering when it restarted is asked again
     refused.status >= 500 || /restarted/.test(refused.error ?? ""),
     `a write is not asked twice: ${JSON.stringify(refused)}`,
   );
+});
+
+const ASSET = "/asset:QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
+
+test("an asset read is the store's to answer, range and all, and streams as it is read", async () => {
+  // The route's answer to a range, as the Rust worker gives it: a stream.
+  const pieces = ["l", "o"];
+  const { answer, stored } = site({
+    blobs: () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            const piece = pieces.shift();
+            if (piece === undefined) controller.close();
+            else controller.enqueue(new TextEncoder().encode(piece));
+          },
+        }),
+        {
+          status: 206,
+          headers: { "content-range": "bytes 3-4/11", "content-length": "2", "accept-ranges": "bytes" },
+        },
+      ),
+  });
+
+  const response = await answer(ASSET, { headers: { range: "bytes=3-4" } });
+
+  const [asked] = stored;
+  assert.equal(asked.method, "GET");
+  assert.equal(asked.headers.get("range"), "bytes=3-4", "the range is passed to the store");
+  assert.match(new URL(asked.url).pathname, /\/branch\/main\/blob\/asset:QmYwAP/);
+  assert.equal(response.status, 206);
+  assert.equal(response.headers.get("content-range"), "bytes 3-4/11");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.deepEqual(pieces, ["o"], "no more is read than the stream's queue holds until the page reads it");
+  assert.equal(await response.text(), "lo");
+});
+
+test("an asset's HEAD is passed to the store as one", async () => {
+  const { answer, stored } = site({
+    blobs: () => new Response(null, { headers: { "content-length": "11" } }),
+  });
+
+  const response = await answer(ASSET, { method: "HEAD" });
+
+  assert.equal(stored[0].method, "HEAD");
+  assert.equal(response.headers.get("content-length"), "11");
+  assert.equal(response.body, null);
+});
+
+test("an upload is passed to the store as it arrives, not read whole first", async () => {
+  const { answer, stored } = site({
+    blobs: () => new Response(JSON.stringify({ entity: "asset:stored", size: 6 })),
+  });
+  const pieces = ["up", "lo", "ad"];
+  const body = new ReadableStream({
+    pull(controller) {
+      const piece = pieces.shift();
+      if (piece === undefined) controller.close();
+      else controller.enqueue(new TextEncoder().encode(piece));
+    },
+  });
+  const whole = () => assert.fail("the upload was read whole");
+
+  const response = await answer("/", {
+    method: "PUT",
+    headers: { "content-type": "text/plain" },
+    body,
+    arrayBuffer: whole,
+    blob: whole,
+  });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.headers.get("location"), "/asset:stored");
+  const [upload] = stored;
+  assert.equal(upload.method, "POST");
+  assert.equal(upload.headers.get("content-type"), "text/plain");
+  assert.equal(await upload.text(), "upload");
 });
 
 test("a page's icon is read from this origin, and kept for when there is no network", async () => {

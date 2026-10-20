@@ -1663,22 +1663,46 @@ async function serveShell() {
 const SHELL_MARK = '<meta name="tonk-shell" content="worker" />';
 
 // Read an asset from the space's own database, through the same route a
-// page's `/api/.../blob/...` read takes.
-async function readAsset(hash) {
+// page's `/api/.../blob/...` read takes. The route answers a `HEAD` and a
+// `Range` itself, and its body streams from the store as it is read.
+async function readAsset(hash, asked) {
     const space = await heldSpace();
-    if (!space) return { status: 404, headers: [], body: new TextEncoder().encode("not found").buffer };
+    if (!space) return new Response("not found", { status: 404 });
     const worker = await siteWorker();
+    const headers = new Headers();
+    const range = asked.headers.get("range");
+    if (range) headers.set("range", range);
     const request = new Request(
         new URL(`/api/repository/${space}/branch/main/blob/asset:${hash}`, self.location.origin),
+        { method: asked.method, headers },
     );
-    const response = await worker.onfetch({
+    return worker.onfetch({
         request,
         clientId: "",
         resultingClientId: "",
         waitUntil() {},
     });
-    return { status: response.status, headers: [...response.headers], body: await response.arrayBuffer() };
 }
+
+// Whether a request may carry a stream as its body, so an upload can pass
+// to the store as it arrives. Where it may not (Firefox), the body is handed
+// on as a blob, which the browser keeps out of this script's memory.
+const STREAMS_REQUESTS = (() => {
+    let duplex = false;
+    try {
+        const typed = new Request(self.location.href, {
+            method: "POST",
+            body: new ReadableStream(),
+            get duplex() {
+                duplex = true;
+                return "half";
+            },
+        }).headers.has("content-type");
+        return duplex && !typed;
+    } catch {
+        return false;
+    }
+})();
 
 // Store a request's body as an asset of the space, through the same route a
 // page's upload takes: the bytes go into the space's store and the commit
@@ -1694,7 +1718,9 @@ async function storeAsset(event) {
     }
     const request = new Request(
         new URL(`/api/repository/${space}/branch/main/blob`, self.location.origin),
-        { method: "POST", headers, body: await event.request.arrayBuffer() },
+        STREAMS_REQUESTS && event.request.body
+            ? { method: "POST", headers, body: event.request.body, duplex: "half" }
+            : { method: "POST", headers, body: await event.request.blob() },
     );
     const response = await worker.onfetch({
         request,
@@ -1716,7 +1742,7 @@ async function storeAsset(event) {
 // it) is author content like any the space renders, so it carries the
 // site's policy as the shell does.
 async function serveAsset(hash, request) {
-    const reply = await readAsset(hash);
+    const reply = await readAsset(hash, request);
     const headers = new Headers(reply.headers);
     headers.set("x-content-type-options", "nosniff");
     if (request.mode === "navigate") {
@@ -1728,20 +1754,7 @@ async function serveAsset(hash, request) {
         );
         headers.set("permissions-policy", NO_PASSKEYS);
     }
-    if (reply.status !== 200) {
-        return new Response(reply.body, { status: reply.status, headers });
-    }
-    headers.set("accept-ranges", "bytes");
-    const range = parseRange(request.headers.get("range"), reply.body.byteLength);
-    if (!range) {
-        headers.set("content-length", String(reply.body.byteLength));
-        return new Response(request.method === "HEAD" ? null : reply.body, { headers });
-    }
-    const [start, end] = range;
-    headers.set("content-range", `bytes ${start}-${end}/${reply.body.byteLength}`);
-    headers.set("content-length", String(end - start + 1));
-    const body = request.method === "HEAD" ? null : reply.body.slice(start, end + 1);
-    return new Response(body, { status: 206, headers });
+    return new Response(reply.body, { status: reply.status, headers });
 }
 
 // What the space's routes answer a path with: the response a `route/http!`
@@ -1790,22 +1803,6 @@ async function serveRoute(request, otherwise) {
         headers.set("permissions-policy", NO_PASSKEYS);
     }
     return new Response(request.method === "HEAD" ? null : reply.body, { headers });
-}
-
-// A single `bytes=` range, clamped to the body. Anything else reads whole.
-function parseRange(header, size) {
-    const match = /^bytes=(\d*)-(\d*)$/.exec(header ?? "");
-    if (!match || size === 0) return null;
-    const [, from, to] = match;
-    if (from === "" && to === "") return null;
-    if (from === "") {
-        const suffix = Math.min(Number(to), size);
-        return [size - suffix, size - 1];
-    }
-    const start = Number(from);
-    if (start >= size) return null;
-    const end = to === "" ? size - 1 : Math.min(Number(to), size - 1);
-    return end < start ? null : [start, end];
 }
 
 // What a page on a space's origin may ask this worker directly: the space's

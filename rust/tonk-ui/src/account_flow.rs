@@ -3139,6 +3139,93 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A space's page stores an asset by putting it to its own origin, and
+    /// reads it back whole, in part, or only its headers, through its
+    /// space's worker.
+    #[dialog_common::test]
+    async fn it_stores_an_asset_and_reads_it_back_in_parts(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        create_space(&driver, "Assets").await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let read = loop {
+            enter_space_view(&driver).await?;
+            let read = driver
+                .execute_async(
+                    r#"
+                    const done = arguments[arguments.length - 1];
+                    (async () => {
+                        // An asset is the space's: wait for the worker to hold it.
+                        if (!navigator.serviceWorker.controller) return done(null);
+                        const health = await (await fetch("/api/health")).json();
+                        if (!health.space) return done(null);
+                        const size = 3 * 1024 * 1024;
+                        const bytes = new Uint8Array(size).map((_, index) => index % 251);
+                        const put = await fetch("/", {
+                            method: "PUT",
+                            headers: { "content-type": "application/octet-stream" },
+                            body: new Blob([bytes]),
+                        });
+                        if (put.status !== 201) return done({ put: put.status, error: await put.text() });
+                        const at = put.headers.get("location");
+                        const whole = await fetch(at);
+                        const all = new Uint8Array(await whole.arrayBuffer());
+                        const part = await fetch(at, { headers: { range: "bytes=1000-1999" } });
+                        const some = new Uint8Array(await part.arrayBuffer());
+                        const head = await fetch(at, { method: "HEAD" });
+                        done({
+                            at,
+                            whole: whole.status,
+                            length: whole.headers.get("content-length"),
+                            ranges: whole.headers.get("accept-ranges"),
+                            same: all.length === size && all.every((byte, index) => byte === bytes[index]),
+                            part: part.status,
+                            range: part.headers.get("content-range"),
+                            slice: some.length === 1000 && some.every((byte, index) => byte === bytes[1000 + index]),
+                            head: head.status,
+                            headLength: head.headers.get("content-length"),
+                        });
+                    })().catch(error => done({ error: String(error) }));
+                    "#,
+                    vec![],
+                )
+                .await
+                .map(|value| value.json().clone())
+                .unwrap_or(serde_json::Value::Null);
+            driver.enter_default_frame().await?;
+            if !read.is_null() {
+                break read;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the space's worker never came to hold its space"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        let size = (3 * 1024 * 1024).to_string();
+        assert!(
+            read["at"]
+                .as_str()
+                .is_some_and(|at| at.starts_with("/asset:")),
+            "the asset was not stored: {read}"
+        );
+        assert_eq!(read["whole"], 200, "{read}");
+        assert_eq!(read["length"], size.as_str(), "{read}");
+        assert_eq!(read["ranges"], "bytes", "{read}");
+        assert_eq!(read["same"], true, "the asset read back differs: {read}");
+        assert_eq!(read["part"], 206, "{read}");
+        assert_eq!(
+            read["range"],
+            format!("bytes 1000-1999/{size}").as_str(),
+            "{read}"
+        );
+        assert_eq!(read["slice"], true, "the range read back differs: {read}");
+        assert_eq!(read["head"], 200, "{read}");
+        assert_eq!(read["headLength"], size.as_str(), "{read}");
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// SPACE-14: the Hub creates one independently identified copy.
     #[dialog_common::test]
     async fn it_duplicates_a_space_from_the_hub_menu(env: TestEnvironment) -> Result<()> {
