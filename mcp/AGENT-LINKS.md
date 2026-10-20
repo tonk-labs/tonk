@@ -63,6 +63,10 @@ the active call and rejects queued calls. A disconnected client must still query
 before deciding what to do next; completion does not guarantee delivery of its
 response, and a platform kill can still interrupt the call.
 
+Evaluation documents are parsed before replica storage is opened or a pending
+marker is created. Syntax rejection reports a location when available and
+confirms that no evaluation was dispatched; correct the document and submit it again.
+
 Normally the worker pulls, evaluates once, and pushes writes. Before evaluation
 it synchronously persists a pending marker. If evaluation, push, or process
 termination leaves an unknown outcome, subsequent writes are blocked and pulls

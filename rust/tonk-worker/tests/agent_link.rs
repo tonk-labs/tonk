@@ -8,6 +8,62 @@ use tonk_invite::connection::{AgentInvite, candidate_build_scopes};
 use tonk_worker::AgentLinkWorker;
 
 #[tokio::test]
+async fn malformed_evaluation_is_rejected_before_replica_or_journal_creation() -> anyhow::Result<()>
+{
+    let root = std::env::temp_dir().join(format!(
+        "tonk-agent-invalid-notation-{}",
+        rand::random::<u64>()
+    ));
+    let remote = "http://127.0.0.1:9/ucan/".parse()?;
+    let owner = Signer::from(Ed25519Signer::generate().await?);
+    let seed = [47; 32];
+    let recipient = Ed25519Signer::import(&seed).await?;
+    let now = Timestamp::now();
+    let deadline = Timestamp::try_from((now.to_unix() + 3600) as i128)?;
+    let scopes = candidate_build_scopes(&owner.did());
+    let mut chains = Vec::new();
+    for scope in &scopes {
+        let grant = DelegationBuilder::new()
+            .issuer(owner.clone())
+            .audience(&recipient.did())
+            .subject(scope.subject.clone())
+            .command(scope.command.0.clone())
+            .policy(scope.policy())
+            .expiration(deadline)
+            .meta(tonk_invite::home_address_meta(&remote))
+            .try_build()
+            .await?;
+        chains.push(DelegationChain::new(grant));
+    }
+    let link = AgentInvite::new(seed, chains, &scopes, &remote, now)
+        .await?
+        .to_url("https://tonk.example/agent")?;
+    let mut worker = AgentLinkWorker::new(root.clone(), remote);
+    // The failed live dossier used an unquoted colon-space in this scalar.
+    // Reject the entire stream before opening storage, pulling, or journaling.
+    let malformed = "relay-artifact!:\n  id: RES-SRC-D01\n  sources: RES-D01; ACC-D01; OPS-D01; scope boundary: same building access window; Alder only\n";
+    let valid = "concept!: &valid-record\n  with:\n    title: { the: example.valid/title, as: text, description: Test title }\nvalid-record!:\n  title: Must not be committed from an invalid stream\n";
+    for (document, line) in [
+        (malformed.to_owned(), 3),
+        (format!("{valid}---\n{malformed}"), 9),
+    ] {
+        let error = worker
+            .call("tonk_evaluate", &link, &document)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            format!("Invalid notation (line {line}, column 53); no evaluation was dispatched.")
+        );
+        assert!(
+            !root.exists(),
+            "malformed notation must not create a replica or journal"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn agent_link_syncs_and_reads_back_from_an_independent_replica() -> anyhow::Result<()> {
     let service = access_service(AccessServiceSettings::default()).await?;
     let owner_key = Ed25519Signer::generate().await?;
@@ -108,6 +164,33 @@ async fn agent_link_syncs_and_reads_back_from_an_independent_replica() -> anyhow
         .call("tonk_query", &link, "spike-record:\n")
         .await
         .map_err(anyhow::Error::msg)?;
+    // A malformed document is rejected before a pending marker is created.
+    // Correcting the syntax must permit a normal pull/evaluate/push afterward.
+    let malformed = "spike-record!:\n  title: archive; scope boundary: same building\n";
+    let rejected = writer
+        .call("tonk_evaluate", &link, malformed)
+        .await
+        .unwrap_err();
+    assert!(rejected.starts_with("Invalid notation (line 2, column "));
+    assert!(rejected.ends_with("no evaluation was dispatched."));
+    writer
+        .call(
+            "tonk_evaluate",
+            &link,
+            "spike-record!:\n  title: Valid publication after syntax rejection\n",
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let read = reader
+        .call("tonk_query", &link, "spike-record:\n")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert!(
+        read.to_string()
+            .contains("Valid publication after syntax rejection")
+    );
+    assert!(read.get("recovery").is_none());
+
     // Simulate a restart after publication but before clearing the journal.
     let replica = std::fs::read_dir(root.join("writer"))?
         .filter_map(Result::ok)
