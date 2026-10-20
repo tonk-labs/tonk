@@ -126,3 +126,15 @@ grants rather than agents, preventing one grant from being counted as one identi
 - No live grants/accounts were created or revoked. No installed app was replaced,
   and no release or installation was performed. The implementation is being committed
   and submitted for review at the user’s request.
+
+## PR integration status
+
+The implementation commit is `830ba3073e`, based on `d44a6face0`. The branch also
+contains 11 earlier Desktop precursor commits not in `origin/main` by ancestry.
+A read-only merge check against `b2fde22922` found conflicts in 19 files, including
+ContentView, TonkApp, runtime/window handling, related tests, and two inherited
+Rust/profile changes. Main now contains a different space-window structure.
+The PR is submitted as a draft: reconciliation with current main and rerunning
+checks on the integrated result remain outstanding. The local verification above
+applies to this branch, not to a merged candidate. No conflict resolution or
+replacement of main's newer behavior is implied by these results.
