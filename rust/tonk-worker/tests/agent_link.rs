@@ -389,3 +389,117 @@ async fn revoke(remote: &str, owner: Ed25519Signer, chain: &DelegationChain) -> 
     anyhow::ensure!(success, "fixture revocation failed");
     Ok(())
 }
+
+#[tokio::test]
+async fn storage_admission_reports_safe_distinct_reasons_before_dispatch() -> anyhow::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let root = std::env::temp_dir().join(format!("tonk-agent-admission-{}", rand::random::<u64>()));
+    let remote = "http://127.0.0.1:9/ucan/".parse()?;
+    let owner = Signer::from(Ed25519Signer::generate().await?);
+    let seed = [47; 32];
+    let recipient = Ed25519Signer::import(&seed).await?;
+    let now = Timestamp::now();
+    let deadline = Timestamp::try_from((now.to_unix() + 3600) as i128)?;
+    let scopes = candidate_build_scopes(&owner.did());
+    let mut chains = Vec::new();
+    for scope in &scopes {
+        let grant = DelegationBuilder::new()
+            .issuer(owner.clone())
+            .audience(&recipient.did())
+            .subject(scope.subject.clone())
+            .command(scope.command.0.clone())
+            .policy(scope.policy())
+            .expiration(deadline)
+            .meta(tonk_invite::home_address_meta(&remote))
+            .try_build()
+            .await?;
+        chains.push(DelegationChain::new(grant));
+    }
+    let link = AgentInvite::new(seed, chains, &scopes, &remote, now)
+        .await?
+        .to_url("https://tonk.example/agent")?;
+
+    std::fs::DirBuilder::new().mode(0o700).create(&root)?;
+    let capacity = root.join("file-capacity");
+    std::fs::DirBuilder::new().mode(0o700).create(&capacity)?;
+    // The lock itself is the 3501st file: a successful prior invocation may
+    // have checkpointed more files than the next invocation admits.
+    for i in 0..3500 {
+        std::fs::File::create(capacity.join(i.to_string()))?;
+    }
+    let bytes = root.join("byte-capacity");
+    std::fs::DirBuilder::new().mode(0o700).create(&bytes)?;
+    std::fs::File::create(bytes.join("sparse"))?.set_len(192 * 1024 * 1024 + 1)?;
+    let invalid = root.join("invalid");
+    std::fs::create_dir(&invalid)?;
+    std::fs::set_permissions(&invalid, std::fs::Permissions::from_mode(0o755))?;
+    let busy = root.join("busy");
+    std::fs::DirBuilder::new().mode(0o700).create(&busy)?;
+    let lock = std::fs::File::create(busy.join("worker.lock"))?;
+    lock.lock()?;
+    let dangling = root.join("dangling-lock");
+    std::fs::DirBuilder::new().mode(0o700).create(&dangling)?;
+    let outside_lock = root.join("outside-lock-target");
+    std::os::unix::fs::symlink(&outside_lock, dangling.join("worker.lock"))?;
+    let unavailable_parent = root.join("unavailable");
+    std::fs::File::create(&unavailable_parent)?;
+    let unavailable = unavailable_parent.join("child");
+    let mut unavailable_worker = AgentLinkWorker::new(unavailable.clone(), remote.clone());
+    let unavailable_error = unavailable_worker
+        .call("tonk_query", &link, "concept:\n")
+        .await
+        .unwrap_err();
+    let mut mismatches = Vec::new();
+    if unavailable_error != "Agent storage is unavailable; no evaluation was dispatched." {
+        mismatches.push(format!(
+            "unexpected I/O failure category: {unavailable_error:?}"
+        ));
+    }
+    assert!(!unavailable.exists());
+    for (directory, expected) in [
+        (
+            &capacity,
+            "Agent storage file capacity reached; operator attention is required.",
+        ),
+        (
+            &bytes,
+            "Agent storage byte capacity reached; operator attention is required.",
+        ),
+        (
+            &invalid,
+            "Agent storage is invalid; operator attention is required.",
+        ),
+        (
+            &busy,
+            "Agent storage is busy; no evaluation was dispatched.",
+        ),
+        (
+            &dangling,
+            "Agent storage is invalid; operator attention is required.",
+        ),
+    ] {
+        let mut worker = AgentLinkWorker::new(directory.clone(), remote.clone());
+        let actual = worker
+            .call("tonk_query", &link, "concept:\n")
+            .await
+            .unwrap_err();
+        if actual != expected {
+            mismatches.push(format!("expected {expected:?}, got {actual:?}"));
+        }
+        assert!(
+            std::fs::read_dir(directory)?.all(|entry| !entry
+                .unwrap()
+                .file_type()
+                .unwrap()
+                .is_dir()),
+            "admission failure must not open a replica"
+        );
+    }
+    if outside_lock.exists() {
+        mismatches.push("invalid lock opened its symlink target".to_owned());
+    }
+    drop(lock);
+    std::fs::remove_dir_all(&root)?;
+    anyhow::ensure!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    Ok(())
+}
