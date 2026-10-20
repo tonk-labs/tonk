@@ -97,7 +97,7 @@ fn with_cors_headers(response: Response) -> Response {
     );
     let _ = headers.set(
         "Access-Control-Expose-Headers",
-        "Content-Type, Content-Length, Content-Range, ETag, Server-Timing, UCAN-Command, UCAN-Subject, UCAN-Arguments",
+        "Content-Type, Content-Length, Content-Range, ETag, Retry-After, Server-Timing, UCAN-Command, UCAN-Subject, UCAN-Arguments",
     );
     response.with_headers(headers)
 }
@@ -406,20 +406,47 @@ fn record_invocation(
     env: &Env,
     ctx: &Context,
 ) {
+    if let Some(write) = metering(body_bytes, outcome, reason, bytes, env) {
+        ctx.wait_until(write);
+    }
+}
+
+/// The write that meters the invocation `body_bytes` carries, to run
+/// after the answer is sent: under a request's `Context`, or a Durable
+/// Object's state for a frame of a socket. `None` when there is nothing
+/// to record.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn metering(
+    body_bytes: &[u8],
+    outcome: &'static str,
+    reason: Option<String>,
+    bytes: u64,
+    env: &Env,
+) -> Option<impl std::future::Future<Output = ()> + 'static> {
     use crate::store::ingest::{D1Ingest, IngestStore};
 
     let now = Date::now().as_millis() / 1_000;
-    let Some(record) = crate::metering::collect(body_bytes, outcome, reason, bytes, now) else {
-        return;
-    };
+    let record = crate::metering::collect(body_bytes, outcome, reason, bytes, now)?;
     match env.d1("INGEST") {
-        Ok(database) => ctx.wait_until(async move {
+        Ok(database) => Some(async move {
             if let Err(err) = D1Ingest::new(database).record(&record).await {
                 console_error!("metering write failed: {err}");
             }
         }),
-        Err(err) => console_error!("metering skipped, no INGEST binding: {err}"),
+        Err(err) => {
+            console_error!("metering skipped, no INGEST binding: {err}");
+            None
+        }
     }
+}
+
+/// Screen the subject of the invocation `body_bytes` carries, as a
+/// request is screened before it is served: a socket's frame is too.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn screen(body_bytes: &[u8], env: &Env) -> std::result::Result<(), Refusal> {
+    screen_provisioning(body_bytes, env)
+        .await
+        .map_err(|failure| failure.refusal)
 }
 
 /// Authorize the container and answer the signed permit, together
@@ -520,6 +547,15 @@ async fn perform(
     screen_provisioning(container_bytes, env).await?;
     let screened = Date::now().as_millis();
     let described = crate::describe::describe(verified.chain());
+    // Who invoked, by the end of its DID: enough to tell two clients'
+    // requests apart in a log.
+    let invoker = {
+        let did = verified.chain().issuer().to_string();
+        did[did.len().saturating_sub(6)..].to_string()
+    };
+    // A cell write is reported to its space's watches once it lands.
+    let written = crate::socket::cell_written(verified.chain())
+        .map(|(space, cell)| (verified.subject().to_string(), space, cell));
 
     // A write's bytes are the body, metered as declared; the layer
     // reads them as they arrive.
@@ -540,6 +576,11 @@ async fn perform(
         Answer::Performed(answer) => answer,
     };
     let stored = Date::now().as_millis();
+    if let Some((subject, space, cell)) = written
+        && (200..300).contains(&answer.status)
+    {
+        ctx.wait_until(crate::live::changed(env.clone(), subject, space, cell));
+    }
     let cache = access.provider().outcome();
     let fills = access.provider().take_fills();
     if !fills.is_empty() {
@@ -559,19 +600,35 @@ async fn perform(
     if let Some(version) = &answer.version {
         let _ = headers.set("ETag", &format!("\"{version}\""));
     }
+    if let Some(seconds) = answer.retry_after {
+        let _ = headers.set("Retry-After", &seconds.to_string());
+    }
     for (name, value) in &described {
         let _ = headers.set(name, value);
     }
+    let total = Date::now().as_millis().saturating_sub(started);
     let _ = headers.set(
         "Server-Timing",
         &format!(
-            "authorize;dur={}, screen;dur={}, store;dur={}, total;dur={}, cache;desc={}",
+            "authorize;dur={}, screen;dur={}, store;dur={}, total;dur={total}, cache;desc={}",
             authorized.saturating_sub(started),
             screened.saturating_sub(authorized),
             stored.saturating_sub(screened),
-            Date::now().as_millis().saturating_sub(started),
             cache.as_str()
         ),
+    );
+    // The same breakdown for a log, which sees neither the request's
+    // credential nor the response's headers.
+    let [(_, command), _, (_, arguments)] = &described;
+    console_log!(
+        "{command} by …{invoker}: {} in {total}ms (authorize {}ms, screen {}ms, store {}ms, \
+         cache {}, {bytes} bytes) {}",
+        answer.status,
+        authorized.saturating_sub(started),
+        screened.saturating_sub(authorized),
+        stored.saturating_sub(screened),
+        cache.as_str(),
+        arguments.chars().take(160).collect::<String>(),
     );
     let response = match answer.body {
         Content::Bytes(body) => Response::from_bytes(body),
@@ -905,7 +962,7 @@ thread_local! {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn shared_resolver() -> std::sync::Arc<dialog_remote_ucan_s3::DefaultResolver> {
+pub(crate) fn shared_resolver() -> std::sync::Arc<dialog_remote_ucan_s3::DefaultResolver> {
     RESOLVER.with(|cached| {
         cached
             .get_or_init(|| {
@@ -934,10 +991,8 @@ pub(crate) fn permit_key(env: &Env) -> std::result::Result<PermitKey, Refusal> {
         if let Some(key) = cached.get() {
             return Ok(key.clone());
         }
-        let seed = env
-            .secret("SERVICE_SECRET_KEY")
-            .map_err(|e| Refusal::unclassified(format!("Missing SERVICE_SECRET_KEY: {e}")))?
-            .to_string();
+        let seed = crate::secret::secret(env, "SERVICE_SECRET_KEY")
+            .map_err(|e| Refusal::unclassified(format!("Missing SERVICE_SECRET_KEY: {e}")))?;
         let key = PermitKey::derive(&seed).map_err(Refusal::unclassified)?;
         let _ = cached.set(key.clone());
         Ok(key)

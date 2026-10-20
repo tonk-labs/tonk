@@ -7,12 +7,12 @@ test('deployment channels bind distinct issuers, storage and matching providers'
     {
       channel: 'preview',
       pullRequest: 1091,
-      provider: 'https://pr-1091-tonk-access-service-preview.tonk.workers.dev',
+      provider: 'https://tonk-access-service-pr-1091.tonk.workers.dev',
     },
     {
       channel: 'preview',
       pullRequest: 1092,
-      provider: 'https://pr-1092-tonk-access-service-preview.tonk.workers.dev',
+      provider: 'https://tonk-access-service-pr-1092.tonk.workers.dev',
     },
     { channel: 'dev', provider: 'https://tonk.foundation' },
     { channel: 'staging', provider: 'https://staging.tonk.xyz' },
@@ -53,7 +53,7 @@ test('deployment rejects cross-channel providers and malformed input before prov
     ...base,
     channel: 'preview',
     pullRequest: 1091,
-    provider: 'https://pr-1091-tonk-access-service-preview.tonk.workers.dev',
+    provider: 'https://tonk-access-service-pr-1091.tonk.workers.dev',
   };
   for (const override of [
     { provider: 'https://tonk.network' },
@@ -63,6 +63,10 @@ test('deployment rejects cross-channel providers and malformed input before prov
     { channel: 'production' },
     { channel: 'stable' },
     { provider: valid.provider + '/settings' },
+    // Another pull request's worker, and the alias of the shared preview
+    // worker previews were uploaded to before each had its own.
+    { provider: 'https://tonk-access-service-pr-1092.tonk.workers.dev' },
+    { provider: 'https://pr-1091-tonk-access-service-preview.tonk.workers.dev' },
   ])
     assert.throws(() => deployment({ ...valid, ...override }));
 });
