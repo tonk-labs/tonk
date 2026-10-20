@@ -319,23 +319,19 @@ async fn mint_for(
     // historical fact ("you were invited to a space called X", true
     // after any rename), which the claimer uses as the space's first
     // label until content syncs.
-    let mut meta = std::collections::BTreeMap::new();
+    // Use the same account identity as the roster, including the onboarding
+    // account before linking. Invite::new validates its path to the signer.
+    let inviter = site::member_did(site)
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to resolve inviter identity: {e:#}")))?;
+    let mut meta = tonk_invite::inviter_meta(&inviter);
     if let Some(remote) = &parsed_remote {
         meta.extend(tonk_invite::home_address_meta(remote));
     }
     if let Some(name) = crate::account_spaces::repository_name(site).await {
         meta.extend(tonk_invite::space_name_meta(&name));
     }
-    let mut delegate = site
-        .profile
-        .access()
-        .claim(Subject::from(site.repository.did()).attenuate(Use))
-        .delegate(audience.clone());
-    if !meta.is_empty() {
-        delegate = delegate.meta(meta);
-    }
-    let delegation: UcanDelegation = delegate
-        .perform(&site.operator)
+    let delegation = mint_invitation_delegation(site, &inviter, &audience, meta)
         .await
         .map_err(|e| InviteError::Io(format!("failed to build delegation: {e}")))?;
     let chain = delegation.into_chain();
@@ -390,6 +386,58 @@ async fn mint_for(
         subject: site.repository.did(),
         audience,
     })
+}
+
+/// Prove the space through the selected account before signing its invitation.
+/// General device proof search can pick another valid root; that proves access,
+/// but cannot establish the account identity we put in the invitation.
+async fn mint_invitation_delegation(
+    site: &TonkSite,
+    inviter: &Did,
+    audience: &Did,
+    meta: std::collections::BTreeMap<String, ipld_core::ipld::Ipld>,
+) -> anyhow::Result<UcanDelegation> {
+    use anyhow::Context as _;
+    use dialog_capability::access::{Authorization as _, Proof as _};
+
+    let profile = site.profile.did();
+    if inviter == &profile {
+        // Isolated connection profiles have no ambient account identity.
+        return Ok(site
+            .profile
+            .access()
+            .claim(Subject::from(site.repository.did()).attenuate(Use))
+            .delegate(audience.clone())
+            .meta(meta)
+            .perform(&site.operator)
+            .await?);
+    }
+    let mut chain = site::recover_prefix(
+        &site.profile,
+        site.operator.local(),
+        &site.repository.did(),
+        inviter,
+    )
+    .await?
+    .context("the space has no authority path to the inviter account")?;
+    let identity = site::recover_prefix(&site.profile, site.operator.local(), inviter, &profile)
+        .await?
+        .context("the inviter account has no authority path to this device")?;
+    for grant in identity.proofs() {
+        chain = chain.push(grant.clone())?;
+    }
+    let scope = dialog_ucan::Scope {
+        subject: dialog_ucan_core::subject::Subject::Specific(site.repository.did()),
+        command: dialog_ucan_core::command::Command::parse("/use")?,
+        parameters: dialog_ucan::Parameters::default(),
+    };
+    // The canonical proof supplies its own bounds; do not carry a lifetime
+    // obtained by proving the device through a different root.
+    Ok(dialog_ucan::UcanProof::from_chain(&chain, scope)
+        .claim(site.profile.credential().signer().clone())?
+        .meta(meta)
+        .delegate(audience.clone())
+        .await?)
 }
 
 /// Whether a link built on `base` lands on `remote`'s origin: no base,
