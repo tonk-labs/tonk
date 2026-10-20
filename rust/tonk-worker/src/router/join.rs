@@ -645,6 +645,7 @@ async fn open_space(tonk: &TonkState, ticket: Ticket) -> Result<JoinOutcome, Joi
         .map_err(|error| {
             JoinFailure::claim_failed(format!("failed to adopt the opened branch: {error}"))
         })?;
+    adopt_waiting_views(tonk, &key).await;
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     record_initialized_replica_in_profile(tonk, &subject)
         .await
@@ -657,6 +658,25 @@ async fn open_space(tonk: &TonkState, ticket: Ticket) -> Result<JoinOutcome, Joi
         subject,
         renewed: false,
     })
+}
+
+/// Hand the space just installed under `key` to the views that subscribed
+/// to it while it was absent. A page opened at the space's address mounts
+/// them before the join, and they wait in the reactor until something
+/// acquires the branch: the join opened it through the repository, not the
+/// reactor, and `Reactor::refresh_branch` reconciles only a branch the
+/// reactor already holds. Acquiring it here adopts them and schedules their
+/// poll, which the join's drain delivers, so the page needs no reload.
+async fn adopt_waiting_views(tonk: &TonkState, key: &str) {
+    if let Err(error) = tonk
+        .reactor
+        .repository(key)
+        .branch(DEFAULT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        log!("join: views waiting on '{key}' were not handed the space: {error}");
+    }
 }
 
 /// Claim the ticket a space keeps for the public principal, signed as
@@ -955,6 +975,7 @@ async fn perform_join(
         .map_err(|error| {
             JoinFailure::claim_failed(format!("failed to adopt the joined branch: {error}"))
         })?;
+    adopt_waiting_views(tonk, &prepared.key).await;
     // Deliver the fresh snapshot the refresh scheduled for any
     // subscriptions the rebind carried over — a live view left waiting
     // for the next commit waits forever on a branch nothing edits.
@@ -1833,16 +1854,15 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
                 );
             }
             // A space's own address (bare, or a ticket link) is already
-            // the page the join ran on. When the join installed the space,
-            // its view mounted while the space was absent, and a route
-            // change to where the page already is re-mounts nothing: the
-            // view stayed on its loading state until a manual reload. Load
-            // the space afresh instead, in place of the entry, which also
-            // keeps a ticket link's seed out of the history. A space that
-            // was already here (a page that opened its own space a moment
-            // before the directory listed it) needs no reload.
+            // the page the join ran on, and its views, mounted while the
+            // space was absent, were handed the space when the join
+            // installed it (`adopt_waiting_views`): the page stays where it
+            // is. A ticket link's address carries its seed, so it gives
+            // way to the space's own in the history, without a load.
             if opens_in_place(&url) && !outcome.renewed {
-                crate::router::navigate::notify_replace(env.client(), &href);
+                if matches!(Ticket::parse_url(&url), Ok(Some(_))) {
+                    crate::router::navigate::notify_replace_route(env.client(), &href);
+                }
             } else {
                 crate::router::navigate::notify_navigate(env.client(), &href);
             }
@@ -2011,10 +2031,11 @@ mod invite_presence_tests {
     }
 
     /// A join from a space's own address, bare or as a ticket link, raw or
-    /// percent-encoded, runs on that space's page, so its success reloads
-    /// the page in place; a join from anywhere else navigates to the space.
+    /// percent-encoded, runs on that space's page, so its success leaves
+    /// the page where it is; a join from anywhere else navigates to the
+    /// space.
     #[test]
-    fn it_reloads_in_place_after_a_join_from_the_spaces_own_address() {
+    fn it_stays_in_place_after_a_join_from_the_spaces_own_address() {
         use super::opens_in_place;
         let space = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
         let encoded = space.replace(':', "%3A");

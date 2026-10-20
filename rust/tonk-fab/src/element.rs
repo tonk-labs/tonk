@@ -213,7 +213,19 @@ impl CustomElement for TonkFab {
         }
         match name.as_str() {
             "flip" => bar::apply_flip(this),
-            "data-sync-status" | "data-observer" => bar::update(this),
+            "data-sync-status" => {
+                // A space installed after this bar mounted, by a join from
+                // its own address, reaches the status subscription first.
+                // Ask again whether the device holds it, rather than keep
+                // the answer from before it arrived.
+                if this.has_attribute(UNKNOWN_SPACE_ATTR)
+                    && let Some(endpoint) = host_repository_endpoint(this)
+                {
+                    spawn_local(check_presence(this.clone(), endpoint));
+                }
+                bar::update(this)
+            }
+            "data-observer" => bar::update(this),
             // The space is what every subscription is addressed to. The
             // subtree is authored ONCE, so a bar whose `space` was blank at
             // authoring time — an unsubstituted first projection — carries

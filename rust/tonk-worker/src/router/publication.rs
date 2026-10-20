@@ -335,6 +335,159 @@ mod tests {
             .expect("the serving host answers the claim")
     }
 
+    /// The SSE frames a subscription response carries within `wait`, each
+    /// as its JSON payload, ending early at the first that `until` accepts.
+    async fn frames_within(
+        body: axum::body::Body,
+        wait: std::time::Duration,
+        until: impl Fn(&serde_json::Value) -> bool,
+    ) -> Vec<serde_json::Value> {
+        use http_body_util::BodyExt as _;
+        let mut body = body;
+        let mut buffered = Vec::new();
+        let mut frames = Vec::new();
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            while let Some(end) = buffered
+                .windows(2)
+                .position(|bytes: &[u8]| bytes == b"\n\n")
+            {
+                let event: Vec<u8> = buffered.drain(..end + 2).collect();
+                let text = String::from_utf8_lossy(&event[..end]).to_string();
+                if let Some(json) = text.strip_prefix("data: ")
+                    && let Ok(frame) = serde_json::from_str::<serde_json::Value>(json)
+                {
+                    let done = until(&frame);
+                    frames.push(frame);
+                    if done {
+                        return frames;
+                    }
+                }
+            }
+            match tokio::time::timeout_at(deadline, body.frame()).await {
+                Ok(Some(Ok(frame))) => {
+                    if let Ok(bytes) = frame.into_data() {
+                        buffered.extend_from_slice(&bytes);
+                    }
+                }
+                _ => return frames,
+            }
+        }
+    }
+
+    /// A page opened at a published space's address mounts its view
+    /// before the space is on the device, so the view's subscription waits
+    /// for it. Opening the space has to hand that subscription the space
+    /// by itself: no reload of the page, and no other request that happens
+    /// to touch the branch.
+    #[dialog_common::test]
+    async fn opening_a_space_delivers_it_to_a_view_that_subscribed_while_it_was_absent() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        let (tonk, _service, root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await
+                .expect("the device grant mints");
+        crate::router::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "visitor".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().expect("the grant serializes")),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .expect("the root persists");
+        let (owner_app, owner, _hub) = crate::router::api_router_with_state(tonk);
+        let key = super::super::repository::create_space_inner(&owner, "Open Garden", None)
+            .await
+            .expect("the space creates");
+        super::super::repository::enable_sync_inner(&owner, &key, &remote)
+            .await
+            .expect("the remote attaches");
+        let pushed = owner_app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{key}/branch/main/sync/push"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(pushed.status().is_success(), "the owner pushes the space");
+        let address = {
+            let tonk = owner.read().await;
+            publish(&tonk, &key).await.expect("the owner publishes")
+        };
+
+        let visitor = crate::router::repository::profile_library_tests::test_state().await;
+        crate::router::repository::bootstrap_profile(&visitor)
+            .await
+            .expect("the visitor's profile boots");
+        let (visitor_app, visitor, _hub) = crate::router::api_router_with_state(visitor);
+
+        // The view mounts while the space is absent: its subscription is
+        // answered with the empty set and waits.
+        let query = serde_json::json!({
+            "terms": {
+                "this": { "?": { "name": "this" } },
+                "subject": { "?": { "name": "subject" } }
+            },
+            "predicate": { "with": {
+                "subject": { "the": "dialog.replica/subject", "as": "Entity", "cardinality": "one" }
+            } }
+        });
+        let subscribed = visitor_app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{key}/branch/main/query"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("accept", "text/event-stream")
+                    .body(Body::from(query.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(subscribed.status().is_success(), "the view subscribes");
+        let holds = {
+            let key = key.clone();
+            move |frame: &serde_json::Value| {
+                frame
+                    .to_string()
+                    .contains(&format!("\"subject\":\"{key}\""))
+            }
+        };
+        let frames = tokio::spawn(frames_within(
+            subscribed.into_body(),
+            std::time::Duration::from_secs(10),
+            holds.clone(),
+        ));
+
+        // Open the space as the page's join command does: the join, then
+        // the drain of the polls it scheduled. Nothing else touches it.
+        {
+            let tonk = visitor.read().await;
+            super::super::join::join_invite(&tonk, &address)
+                .await
+                .expect("the visitor opens the published space");
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        }
+
+        let frames = frames.await.expect("the reader runs");
+        assert!(
+            frames.iter().any(&holds),
+            "the waiting view never heard of the space it opened: {frames:?}"
+        );
+    }
+
     /// Publishing against a live access service leaves a `/use/get` ticket
     /// for the public principal that a visitor to the space's bare address
     /// claims, and unpublishing takes it back so the next visitor finds

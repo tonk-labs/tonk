@@ -20,7 +20,7 @@ use tonk_common::log;
 /// redirect is lost, and the user can navigate from the Hub.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
-    post_navigate(client, href, false);
+    post_navigate(client, href, Navigation::Push);
 }
 
 /// [`notify_navigate`] as a fresh load that replaces the page's current
@@ -33,11 +33,36 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
 /// address it came from out of the history.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
-    post_navigate(client, href, true);
+    post_navigate(client, href, Navigation::Load);
+}
+
+/// [`notify_replace`] without the load: `href` takes the place of the
+/// page's current history entry and the page re-routes to it where it is
+/// (`{ type: "navigate", href, replace: true, reload: false }`).
+///
+/// For a page whose views follow the change live but whose address must
+/// not stay reachable with Back: a ticket link's, which carries its seed.
+/// A page from before this message existed reads only `replace` and loads
+/// `href` afresh, as [`notify_replace`] does.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn notify_replace_route(client: Option<&crate::router::ClientId>, href: &str) {
+    post_navigate(client, href, Navigation::Route);
+}
+
+/// How a navigate message moves the page.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Navigation {
+    /// A client-side route change, pushing a history entry.
+    Push,
+    /// A fresh load in place of the current history entry.
+    Load,
+    /// A client-side route change in place of the current history entry.
+    Route,
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn post_navigate(client: Option<&crate::router::ClientId>, href: &str, replace: bool) {
+fn post_navigate(client: Option<&crate::router::ClientId>, href: &str, navigation: Navigation) {
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::{JsFuture, spawn_local};
 
@@ -89,8 +114,11 @@ fn post_navigate(client: Option<&crate::router::ClientId>, href: &str, replace: 
             &JsValue::from_str("href"),
             &JsValue::from_str(&href),
         );
-        if replace {
+        if navigation != Navigation::Push {
             let _ = js_sys::Reflect::set(&message, &JsValue::from_str("replace"), &JsValue::TRUE);
+        }
+        if navigation == Navigation::Route {
+            let _ = js_sys::Reflect::set(&message, &JsValue::from_str("reload"), &JsValue::FALSE);
         }
         if let Err(e) = client.post_message(&message) {
             log!("navigate: post_message(navigate) failed: {e:?}");
@@ -112,6 +140,12 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
 /// No page on this host either; see [`notify_navigate`].
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
+    notify_navigate(client, href);
+}
+
+/// No page on this host either; see [`notify_navigate`].
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn notify_replace_route(client: Option<&crate::router::ClientId>, href: &str) {
     notify_navigate(client, href);
 }
 

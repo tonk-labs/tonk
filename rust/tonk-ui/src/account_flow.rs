@@ -625,10 +625,9 @@ pub(crate) mod tests {
     }
 
     /// Wait for `selector` to be displayed in the space's own view,
-    /// entering the view's frames afresh on every look. A page that
-    /// reloads meanwhile (a join that installs the space reloads the page
-    /// in place) replaces the frames, and a frame entered before it is
-    /// detached: searching it would never find what the new page renders.
+    /// entering the view's frames afresh on every look. A frame that is
+    /// replaced meanwhile (a guest re-mounting, or the page loading again)
+    /// is detached, and searching it would never find what replaced it.
     async fn wait_for_space_view_displayed(
         driver: &WebDriver,
         selector: &str,
@@ -10426,6 +10425,11 @@ pub(crate) mod tests {
         assert!(address.as_str().contains("did%3Akey%3A"), "{address}");
         let visitor = env.blank_driver().await?;
         goto(&visitor, address.as_str()).await?;
+        // Marks this document: a reload would replace it, and the mark
+        // with it.
+        visitor
+            .execute("window.__tonkVisitorDocument = true;", Vec::new())
+            .await?;
         let observed = await_space_page(&visitor, "the visitor sees the space", |state| {
             state["name"] == "Open Garden" && state["observing"] == true
         })
@@ -10436,12 +10440,21 @@ pub(crate) mod tests {
         );
         // And the space itself renders, not just the bar: its view mounted
         // while the space was absent, and once the join lands it has to
-        // load the space without the visitor reloading. The join reloads
-        // the page in place when it lands, which can be after the bar
-        // shows, so the view's frames are entered afresh while waiting.
+        // load the space in the same document, without a reload. The view's
+        // frames are entered afresh while waiting, so a frame replaced
+        // meanwhile is not searched after it is gone.
         wait_for_space_view_displayed(&visitor, ".blank-canvas")
             .await
-            .context("the visitor's page renders the space itself, without a reload")?;
+            .context("the visitor's page renders the space itself")?;
+        visitor.enter_default_frame().await?;
+        let same_document = visitor
+            .execute("return window.__tonkVisitorDocument === true;", Vec::new())
+            .await?;
+        assert_eq!(
+            same_document.json().as_bool(),
+            Some(true),
+            "the visitor's page rendered the space by loading again"
+        );
         visitor.enter_default_frame().await?;
         open_space_actions(&visitor).await?;
         // The menu is open (its home action shows), so what is missing from
