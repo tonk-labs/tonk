@@ -42,7 +42,8 @@ class Session:
             "capabilities": {},
             "clientInfo": {"name": "tonk-agent-peer-smoke", "version": "0"},
         })
-        assert info["serverInfo"]["name"] == "tonk", info
+        assert info["serverInfo"]["name"] == "tonk-peer", info
+        assert info["serverInfo"]["icons"][0]["src"].startswith("data:image/png;base64,"), info
         assert "tools" in info["capabilities"], info
         self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
