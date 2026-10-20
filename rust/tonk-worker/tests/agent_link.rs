@@ -173,6 +173,7 @@ async fn agent_link_syncs_and_reads_back_from_an_independent_replica() -> anyhow
         .unwrap_err();
     assert!(rejected.starts_with("Invalid notation (line 2, column "));
     assert!(rejected.ends_with("no evaluation was dispatched."));
+    let valid_write_started = std::time::Instant::now();
     writer
         .call(
             "tonk_evaluate",
@@ -181,6 +182,10 @@ async fn agent_link_syncs_and_reads_back_from_an_independent_replica() -> anyhow
         )
         .await
         .map_err(anyhow::Error::msg)?;
+    eprintln!(
+        "agent-link valid write local elapsed_ms={:.3}",
+        valid_write_started.elapsed().as_secs_f64() * 1000.0
+    );
     let read = reader
         .call("tonk_query", &link, "spike-record:\n")
         .await
@@ -190,6 +195,66 @@ async fn agent_link_syncs_and_reads_back_from_an_independent_replica() -> anyhow
             .contains("Valid publication after syntax rejection")
     );
     assert!(read.get("recovery").is_none());
+
+    // Valid YAML can still be rejected by analysis. This exact query-like
+    // document from the live failure must not poison a later valid write.
+    let before_rejection = writer
+        .call("tonk_query", &link, "spike-record:\n")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let rejected = writer
+        .call("tonk_evaluate", &link, "tonk/repository: {name}")
+        .await
+        .unwrap_err();
+    let expected = "Write validation failed; no evaluation was dispatched. (HTTP 400)";
+    if rejected != expected {
+        // The baseline intentionally fails here. Remove only this fixture's
+        // own temporary data before returning its concrete mismatch.
+        std::fs::remove_dir_all(&root)?;
+        anyhow::bail!("semantic rejection mismatch: expected {expected}; got {rejected}");
+    }
+    let after_rejection = writer
+        .call("tonk_query", &link, "spike-record:\n")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        after_rejection["revision_after"],
+        before_rejection["revision_after"]
+    );
+    assert!(after_rejection.get("recovery").is_none());
+    let corrected_write = writer
+        .call(
+            "tonk_evaluate",
+            &link,
+            "spike-record!:\n  title: Valid publication after semantic rejection\n",
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        corrected_write["revision_before"], after_rejection["revision_after"],
+        "validation must not commit before the actual write starts"
+    );
+    assert_ne!(
+        corrected_write["revision_after"], corrected_write["revision_before"],
+        "the corrected write must commit after validation"
+    );
+    let corrected = reader
+        .call(
+            "tonk_query",
+            &link,
+            "spike-record:\n  title: Valid publication after semantic rejection\n",
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        corrected["matches_before"][0]["results"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "the corrected publication must be independently readable exactly once"
+    );
+    assert!(corrected.get("recovery").is_none());
 
     // Simulate a restart after publication but before clearing the journal.
     let replica = std::fs::read_dir(root.join("writer"))?
