@@ -40,7 +40,16 @@ See **Progress**. First inspected at 8d5035bea4, plus `feat/desktop-links`,
   off the inviter the roster records (so a re-shared link draws under the
   member who shared it), tags agents and words them "joined via Ada's link".
   Desktop reads both, counts agent members as agents rather than people, and
-  badges them. Remaining: agent-link grants write a roster row.
+  badges them.
+- **Roster provenance, slice 4 (agent links on the roster)**: on
+  `feat/agent-link-roster`, stacked on slice 3. Minting an agent link writes
+  the agent's roster row into the space from the issuer's worker: membership
+  keyed on the link's recipient key, `MemberKind::agent`, `InvitedBy` the
+  issuing account, role member, a petname. Fully revoking the link retracts
+  it. Best-effort on both sides: a roster write never fails the mint or the
+  revocation. Limits: each link is its own key, so each mint is its own row
+  until step 2 gives an agent one key; a local peer that redeems an agent link
+  acts through its own key, which the row does not name.
 
 Motivating build: a shared team agent on Pi Durable in a Cloudflare Durable
 Object, reached first through a bot in the team Discord, acting in Tonk spaces.
