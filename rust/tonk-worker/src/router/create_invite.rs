@@ -211,6 +211,10 @@ async fn mint_invite(
     // independently, the name as the invitation's historical fact ("you
     // were invited to a space called X", true after any rename).
     let mut meta = home_address_meta(&remote.access_url);
+    // Bind the sender to this account's identity authority, independently of
+    // the original space owner at the beginning of a reshared proof chain.
+    let account = super::identity::local_root(&tonk).await?;
+    meta.extend(tonk_invite::inviter_meta(&account.root_did));
     if let Some(name) =
         super::repository::repository_display_name(&tonk, &repository, &repo_name).await
     {

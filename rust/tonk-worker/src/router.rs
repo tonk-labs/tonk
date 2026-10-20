@@ -54,6 +54,8 @@ mod account_deletion;
 mod ceremony;
 pub(crate) mod customer;
 mod email_status;
+#[cfg(all(test, feature = "integration-tests", not(target_arch = "wasm32")))]
+mod identity_discovery_spike;
 mod link_timing;
 mod sign_in_via;
 
