@@ -1207,14 +1207,19 @@ pub async fn sync(
                     params.repo
                 );
                 // A refusal that said where upstream stands recorded it,
-                // so the pull merges that head without asking again.
+                // so the first pull after it merges that head without
+                // asking again. Only the first: dialog records a head only
+                // when it is newer than the one recorded, so a refusal can
+                // leave the record behind the remote, and a pull trusting
+                // it again would merge nothing new and lose the same race
+                // every time. Any later attempt asks the remote.
                 let head = session.handle().revision();
                 match pull_through_moved_head(
                     &tonk_state,
                     &params.repo,
                     &params.branch,
                     &session,
-                    is_recorded_conflict(&e),
+                    attempt == 1 && is_recorded_conflict(&e),
                 )
                 .await
                 {
