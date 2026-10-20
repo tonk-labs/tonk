@@ -5,8 +5,9 @@
 # the guest runtime its live views use and the Claude Desktop extension
 # (tonk-peer.mcpb) it can offer to install. This launcher fetches them for this
 # platform, verifies the archive against the release's checksums.txt, caches
-# them, and execs the peer. It checks for a newer build on every start and
-# keeps using the cached one when offline. The Claude Desktop extension ships
+# them, and execs the peer. It checks for a newer build on every start, in
+# the background once a build is cached, and keeps using the cached one when
+# offline. The Claude Desktop extension ships
 # this same launcher, so both update themselves.
 #
 # stdout belongs to the MCP protocol: every message here goes to stderr.
@@ -116,8 +117,14 @@ update() {
   say "installed tonk-agent-peer from ${CHANNEL}"
 }
 
-if ! (update); then
-  [ -x "$BIN" ] || die "could not download tonk-agent-peer from ${BASE}"
-  say "could not check for an update; using the cached binary"
+# Hosts wait only a few seconds for a new session's tools, so a cached peer
+# starts at once and the update runs beside it: a newer build lands as a new
+# file, and the running owner hands over to it (see owner.rs). Only the very
+# first start waits for the download.
+if [ -x "$BIN" ]; then
+  (update || say "could not check for an update; using the cached binary") \
+    </dev/null >/dev/null &
+  exec "$BIN"
 fi
+(update) || die "could not download tonk-agent-peer from ${BASE}"
 exec "$BIN"

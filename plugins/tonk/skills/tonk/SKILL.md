@@ -10,11 +10,20 @@ server exposes it, with `tonk_list_spaces`, `tonk_join`, `tonk_query`,
 `tonk_evaluate`, `tonk_display`, `tonk_show`, `tonk_guide` and
 `tonk_install_extension`. This skill is about those tools.
 
+Find these tools before anything else. Their full names carry a prefix, such
+as `mcp__plugin_tonk_tonk-peer__tonk_list_spaces`, or
+`mcp__remote-devices__plugin_tonk_tonk-peer__tonk_list_spaces` when the
+session reaches this computer through Claude Desktop, and there they are
+often deferred: listed by name only until you load them. If they aren't
+loaded, search your tools for `tonk` (with a tool search, where you have one)
+and load them. Don't look in connector directories or registries for them:
+the peer is a local server, not a connector.
+
 A different server, the hosted Tonk connector, may also be connected. It has
 only `tonk_query` and `tonk_evaluate`, needs the space's agent link on every
-call, and knows nothing about joined spaces. If `tonk_list_spaces` is not
-available, the local peer is not connected to this session: say so, rather
-than treating the hosted connector as the peer.
+call, and knows nothing about joined spaces. Only if a tool search finds no
+`tonk_list_spaces` is the local peer unavailable to this session: say so,
+rather than treating the hosted connector as the peer.
 
 ## Live views in Claude Desktop
 
