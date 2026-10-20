@@ -67,8 +67,13 @@ Evaluation documents are parsed before replica storage is opened or a pending
 marker is created. Syntax rejection reports a location when available and
 confirms that no evaluation was dispatched; correct the document and submit it again.
 
-Normally the worker pulls, evaluates once, and pushes writes. Before evaluation
-it synchronously persists a pending marker. If evaluation, push, or process
+Normally the worker pulls and validates writes with a read-only dry run before
+dispatching the committing evaluation once and pushing it. A validation rejection
+confirms that the write was not dispatched; correct the document and submit it
+again. Validation never clears an existing recovery marker. State can change
+between validation and dispatch, so a later failure still requires recovery.
+Before the committing evaluation it synchronously persists a pending marker.
+If evaluation, push, or process
 termination leaves an unknown outcome, subsequent writes are blocked and pulls
 cannot overwrite retained state. Authorized queries inspect the retained state
 and include `recovery.required`. They must still pass a fresh remote read check.

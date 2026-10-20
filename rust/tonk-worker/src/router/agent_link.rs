@@ -137,6 +137,12 @@ impl AgentLinkWorker {
                 }
             }
             if writing && synchronize {
+                // Use the ordinary read-only pipeline to reject analysis/plan
+                // errors before marking a committing invocation as uncertain.
+                // State can still change afterward: any actual-dispatch failure
+                // keeps the journal, regardless of its HTTP status.
+                request(&mut router, &format!("{base}/evaluate?transact=false"), document)
+                    .await.map_err(|error| error.describe("Write validation failed; no evaluation was dispatched."))?;
                 create_journal(&journal).map_err(|_| "Could not persist evaluation journal; no evaluation was dispatched.".to_owned())?;
             }
             let mut result = request(&mut router, &format!("{base}/evaluate?transact={writing}"), document)
