@@ -1,5 +1,8 @@
 #![cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 
+// Storybook SYNC-02/SYNC-04: native worker/MCP publication boundaries.
+// Whole browser and CLI recovery journeys require their own runtime evidence.
+
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
