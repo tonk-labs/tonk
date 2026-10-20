@@ -445,6 +445,7 @@ mod tests {
             } }
         });
         let subscribed = visitor_app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri(format!("/api/repository/{key}/branch/main/query"))
@@ -471,6 +472,57 @@ mod tests {
             holds.clone(),
         ));
 
+        // The view's site asks for its page too, and watches for the stamp
+        // that answers it. With the space absent there is nothing to stamp
+        // against yet.
+        let site = "site:visitor-view";
+        let stamp = serde_json::json!({
+            "terms": {
+                "this": site,
+                "path": { "?": { "name": "path" } }
+            },
+            "predicate": { "with": {
+                "path": { "the": "xyz.tonk.site/path", "as": "Text", "cardinality": "one" }
+            } }
+        });
+        let stamped = visitor_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{key}/branch/main/query"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("accept", "text/event-stream")
+                    .body(Body::from(stamp.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(stamped.status().is_success(), "the site subscribes");
+        let lands = |frame: &serde_json::Value| frame.to_string().contains("\"path\":\"/\"");
+        let stamps = tokio::spawn(frames_within(
+            stamped.into_body(),
+            std::time::Duration::from_secs(10),
+            lands,
+        ));
+        <crate::router::CommandEnv as dialog_capability::Provider<
+            tonk_schema::command::Load,
+        >>::execute(
+            &crate::router::CommandEnv::new(
+                visitor.clone(),
+                crate::router::CommandOrigin {
+                    repo: key.clone(),
+                    branch: "main".to_string(),
+                    client: Some(crate::router::ClientId("visitor-page".to_string())),
+                },
+            ),
+            tonk_schema::command::Load {
+                this: site.parse().expect("the site entity parses"),
+                path: tonk_schema::domain::command::load::Path("/".to_string()),
+            },
+        )
+        .await;
+
         // Open the space as the page's join command does: the join, then
         // the drain of the polls it scheduled. Nothing else touches it.
         {
@@ -485,6 +537,11 @@ mod tests {
         assert!(
             frames.iter().any(&holds),
             "the waiting view never heard of the space it opened: {frames:?}"
+        );
+        let stamps = stamps.await.expect("the site reader runs");
+        assert!(
+            stamps.iter().any(lands),
+            "the page the view asked for while the space was absent was never stamped: {stamps:?}"
         );
     }
 

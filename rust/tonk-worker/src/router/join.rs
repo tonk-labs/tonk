@@ -677,6 +677,7 @@ async fn adopt_waiting_views(tonk: &TonkState, key: &str) {
     {
         log!("join: views waiting on '{key}' were not handed the space: {error}");
     }
+    crate::router::session::stamp_waiting_sites(tonk, key).await;
 }
 
 /// Claim the ticket a space keeps for the public principal, signed as
