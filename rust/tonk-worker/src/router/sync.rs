@@ -1732,8 +1732,13 @@ pub async fn drain_sync(state: &AppState) {
         // A space its loop is syncing waits for it: the drain then finds
         // it current, rather than reconciling it a second time at once.
         let syncing = state.read().await.sync_queue.syncing(repo);
-        let _syncing = syncing.lock().await;
-        if let Err(e) = sync_repository(state, repo).await {
+        let _syncing = reporting(&format!("drain waiting to sync {repo}"), syncing.lock()).await;
+        if let Err(e) = reporting(
+            &format!("drain's sync of {repo}"),
+            sync_repository(state, repo),
+        )
+        .await
+        {
             // Push didn't fully land — re-mark so the next heartbeat retries.
             log!("drain_sync: {repo} did not fully reconcile: {e}");
             let tonk = state.read().await;
@@ -1775,6 +1780,32 @@ pub async fn drain_sync(state: &AppState) {
             log!("drain_sync: account state did not fully reconcile: {error}");
         }
     }
+}
+
+/// Run `work`, logging every 30 s it is still running, so a sync that
+/// never ends says which it is: a hung one holds its space's lock, and
+/// the drain's, until the worker is killed.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn reporting<T>(what: &str, work: impl std::future::Future<Output = T>) -> T {
+    use futures_util::future::{Either, select};
+    let started = current_millis();
+    let mut work = std::pin::pin!(work);
+    loop {
+        let tick = std::pin::pin!(crate::sleep(web_time::Duration::from_secs(30)));
+        match select(work.as_mut(), tick).await {
+            Either::Left((done, _)) => return done,
+            Either::Right(_) => log!(
+                "{what} is still running after {}s",
+                ((current_millis() - started) / 1000.0) as u64
+            ),
+        }
+    }
+}
+
+/// Off the worker there is no one to tell: `work` is awaited as it is.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn reporting<T>(_what: &str, work: impl std::future::Future<Output = T>) -> T {
+    work.await
 }
 
 /// Push each local commit as it is made, and pull each head a watch
@@ -1825,6 +1856,7 @@ async fn space_loop(
 ) {
     loop {
         if stopped() {
+            log!("{repo} no longer syncs here: this worker is being replaced");
             return;
         }
         let syncing = {
@@ -1839,8 +1871,9 @@ async fn space_loop(
             wake.notified().await;
             continue;
         };
-        let _syncing = syncing.lock().await;
-        if let Err(error) = sync_repository(&state, &repo).await {
+        let _syncing = reporting(&format!("waiting to sync {repo}"), syncing.lock()).await;
+        let synced = reporting(&format!("sync of {repo}"), sync_repository(&state, &repo)).await;
+        if let Err(error) = synced {
             log!("sync of {repo} did not fully reconcile: {error}");
             state
                 .read()
