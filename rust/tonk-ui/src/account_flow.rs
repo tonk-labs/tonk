@@ -624,6 +624,37 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Wait for `selector` to be displayed in the space's own view,
+    /// entering the view's frames afresh on every look. A page that
+    /// reloads meanwhile (a join that installs the space reloads the page
+    /// in place) replaces the frames, and a frame entered before it is
+    /// detached: searching it would never find what the new page renders.
+    async fn wait_for_space_view_displayed(
+        driver: &WebDriver,
+        selector: &str,
+    ) -> Result<WebElement> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last: String;
+        loop {
+            match enter_space_view(driver).await {
+                Ok(()) => match driver.find(By::Css(selector.to_string())).await {
+                    Ok(found) if found.is_displayed().await.unwrap_or(false) => return Ok(found),
+                    Ok(_) => last = "element was hidden".to_string(),
+                    Err(error) => last = error.to_string(),
+                },
+                Err(error) => last = error.to_string(),
+            }
+            if tokio::time::Instant::now() >= deadline {
+                driver.enter_default_frame().await.ok();
+                let state = page_diagnostic_state(driver).await;
+                return Err(anyhow!(
+                    "timed out waiting for `{selector}` in the space view; last={last}; page={state}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn wait_for_displayed(driver: &WebDriver, selector: &str) -> Result<WebElement> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut last: String;
@@ -10405,9 +10436,10 @@ pub(crate) mod tests {
         );
         // And the space itself renders, not just the bar: its view mounted
         // while the space was absent, and once the join lands it has to
-        // load the space without the visitor reloading.
-        enter_space_view(&visitor).await?;
-        wait_for_displayed(&visitor, ".blank-canvas")
+        // load the space without the visitor reloading. The join reloads
+        // the page in place when it lands, which can be after the bar
+        // shows, so the view's frames are entered afresh while waiting.
+        wait_for_space_view_displayed(&visitor, ".blank-canvas")
             .await
             .context("the visitor's page renders the space itself, without a reload")?;
         visitor.enter_default_frame().await?;
