@@ -1,6 +1,8 @@
 //! The owner's worker API on a loopback port, for Tonk views rendered in the
-//! host's conversation (MCP Apps). Spike: no authentication yet, so any local
-//! process or page that finds the port acts as this peer.
+//! host's conversation (MCP Apps). Every request must carry this process's
+//! random token in `x-tonk-peer-token`; the token reaches only the views the
+//! host loads from this server's app resources, so other local processes and
+//! web pages that find the port cannot act as this peer.
 //!
 //! The view page relays the sealed guest's requests here, the way the browser
 //! relays them to its service worker. Besides the worker routes, it serves the
@@ -44,6 +46,7 @@ pub async fn start(router: Router) -> std::io::Result<(String, JoinHandle<()>)> 
         .merge(router)
         .layer(middleware::from_fn(client_id))
         .layer(middleware::from_fn(trace))
+        .layer(middleware::from_fn(authorize))
         .layer(middleware::from_fn(cors));
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
@@ -209,6 +212,45 @@ fn missing(name: &str) -> Response {
             "The Tonk guest runtime ({name}) is not installed beside this peer."
         )))
         .expect("missing response")
+}
+
+/// The secret that views present on every request, random per process.
+pub fn token() -> &'static str {
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    TOKEN.get_or_init(|| {
+        use std::io::Read;
+        let mut bytes = [0u8; 32];
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut random| random.read_exact(&mut bytes))
+            .expect("the system random source is readable");
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    })
+}
+
+/// Refuse any request without the token. Preflights never reach here: the
+/// browser sends them without custom headers, and [`cors`] answers them.
+async fn authorize(request: Request, next: Next) -> Response {
+    let presented = request
+        .headers()
+        .get("x-tonk-peer-token")
+        .and_then(|value| value.to_str().ok());
+    if presented.is_some_and(|presented| constant_time_eq(presented.as_bytes(), token().as_bytes()))
+    {
+        return next.run(request).await;
+    }
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .body(Body::from("This peer only answers its own views."))
+        .expect("refusal response")
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .fold(0u8, |difference, (a, b)| difference | (a ^ b))
+            == 0
 }
 
 /// The worker tags subscriptions and site entities by client; the view page
