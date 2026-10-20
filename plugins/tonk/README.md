@@ -24,8 +24,10 @@ the **Agent peer preview** comment on the pull request.
 
 ## What this plugin runs and connects to
 
-The plugin itself is a launcher script, a skill and an MCP server declaration.
-Everything it runs, fetches or sends:
+The plugin itself is a launcher script, a skill, and `tonk.mcpb`: an MCP
+bundle that holds only a copy of the launcher, so that Claude Desktop chat,
+Cowork and Claude Code all start the same server. Everything it runs,
+fetches or sends:
 
 - **It downloads the Tonk peer.** On every start the launcher
   (`scripts/tonk-agent-peer`) fetches `checksums.txt` from the Tonk release it

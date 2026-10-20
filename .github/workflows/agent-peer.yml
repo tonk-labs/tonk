@@ -97,16 +97,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: 'Manifests parse and the launcher is valid shell'
         run: |
           set -euo pipefail
-          for manifest in .claude-plugin/marketplace.json plugins/tonk/.claude-plugin/plugin.json plugins/tonk/.mcp.json; do
+          for manifest in .claude-plugin/marketplace.json plugins/tonk/.claude-plugin/plugin.json; do
             python3 -m json.tool "$manifest" > /dev/null
           done
           sh -n plugins/tonk/scripts/tonk-agent-peer
           sh -n plugins/tonk/package.sh
           sh -n plugins/tonk/package-mcpb.sh
           test -x plugins/tonk/scripts/tonk-agent-peer
+      # The plugin's server is the committed tonk.mcpb, which carries a copy
+      # of the launcher and plugin.json's version; it must not drift.
+      - name: 'The bundled server matches the launcher'
+        run: |
+          set -euo pipefail
+          unzip -p plugins/tonk/tonk.mcpb server/tonk-agent-peer | diff - plugins/tonk/scripts/tonk-agent-peer
+          bundled="$(unzip -p plugins/tonk/tonk.mcpb manifest.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          declared="$(python3 -c 'import json; print(json.load(open("plugins/tonk/.claude-plugin/plugin.json"))["version"])')"
+          test "$bundled" = "$declared" || { echo "::error::tonk.mcpb is $bundled, plugin.json is $declared; run plugins/tonk/package-mcpb.sh $declared '' plugins/tonk/tonk.mcpb"; exit 1; }
+      # Installed plugins update only when plugin.json's version changes.
+      - name: 'A changed plugin bumps its version'
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet "$BASE" HEAD -- plugins/tonk ':!plugins/tonk/README.md'; then exit 0; fi
+          before="$(git show "$BASE:plugins/tonk/.claude-plugin/plugin.json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))')"
+          after="$(python3 -c 'import json; print(json.load(open("plugins/tonk/.claude-plugin/plugin.json"))["version"])')"
+          test "$before" != "$after" || { echo "::error::plugins/tonk changed but plugin.json is still $after; raise its version so installed plugins update"; exit 1; }
       - uses: actions/setup-node@v4
         with:
           node-version: 24
