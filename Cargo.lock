@@ -948,8 +948,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-artifacts"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -988,8 +988,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-capability"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "async-trait",
  "base58",
@@ -1014,8 +1014,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-common"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1045,8 +1045,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-credentials"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1071,8 +1071,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-csv"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "async-trait",
  "base58",
@@ -1086,8 +1086,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-did-web"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "async-trait",
  "base58",
@@ -1109,8 +1109,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-effects"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "async-trait",
  "base58",
@@ -1124,8 +1124,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-identity"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1142,8 +1142,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-macros"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "blake3",
  "convert_case",
@@ -1154,8 +1154,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-network"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1170,16 +1170,16 @@ dependencies = [
 
 [[package]]
 name = "dialog-number"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "zmij",
 ]
 
 [[package]]
 name = "dialog-peer"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1219,8 +1219,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-query"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1288,8 +1288,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-remote-fs"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1305,8 +1305,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-remote-s3"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1344,8 +1344,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-remote-ucan"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1381,8 +1381,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-remote-ucan-s3"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1419,8 +1419,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-repository"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1463,8 +1463,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-search-tree"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1495,8 +1495,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-storage"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1538,8 +1538,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-ucan"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "async-trait",
  "base58",
@@ -1559,8 +1559,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-ucan-core"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "base64",
  "dialog-varsig",
@@ -1587,8 +1587,8 @@ dependencies = [
 
 [[package]]
 name = "dialog-varsig"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",
@@ -2733,8 +2733,8 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "merkle-reference"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fcell-subscriptions#e7fbce0e4a0e3f2619187dfa8c4f9db0b5f3ea2b"
+version = "0.4.0-rc.3"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=c731b5a0296e34c564131d50e3f58aaa69a5c462#c731b5a0296e34c564131d50e3f58aaa69a5c462"
 dependencies = [
  "blake3",
 ]
