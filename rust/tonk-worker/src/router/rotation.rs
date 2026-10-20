@@ -22,7 +22,8 @@ use dialog_varsig::{Did, Principal as _};
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_schema::{
-    InvitedVia, MemberKind, MemberName, MemberRole, Membership, SeedKind, prelude::DidExt as _,
+    InvitedBy, InvitedVia, MemberKind, MemberName, MemberRole, Membership, SeedKind,
+    prelude::DidExt as _,
 };
 
 use crate::TonkWorkerError;
@@ -788,6 +789,28 @@ async fn migrate_membership_rows(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("{space}: read account provenance: {error:?}"))
         })?;
+    let previous_inviters: Vec<InvitedBy> = branch
+        .query()
+        .select(Query::<InvitedBy> {
+            this: Term::from(previous_entity.clone()),
+            inviter: Term::var("inviter"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("{space}: read inviter: {error:?}")))?;
+    let replacement_inviters: Vec<InvitedBy> = branch
+        .query()
+        .select(Query::<InvitedBy> {
+            this: Term::from(replacement_entity.clone()),
+            inviter: Term::var("inviter"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("{space}: read account inviter: {error:?}"))
+        })?;
     // An agent stays an agent under its new account: re-rooting a peer
     // that signed in carries its kind across with the rest of its row.
     let previous_kinds: Vec<MemberKind> = branch
@@ -836,6 +859,15 @@ async fn migrate_membership_rows(
             transaction = transaction.assert(MemberName {
                 this: replacement_entity.clone(),
                 name: row.name.clone(),
+            });
+        }
+        transaction = transaction.retract(row);
+    }
+    for row in previous_inviters {
+        if replacement_inviters.is_empty() {
+            transaction = transaction.assert(InvitedBy {
+                this: replacement_entity.clone(),
+                inviter: row.inviter.clone(),
             });
         }
         transaction = transaction.retract(row);

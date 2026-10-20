@@ -77,8 +77,8 @@ use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
 use tonk_invite::{Invite, InviteAudience, Ticket};
 use tonk_schema::{
-    Invitation, InvitationExecution, InvitedVia, MemberKind, MemberName, MemberRole, Membership,
-    Replica, RepositoryName, SeedKind, prelude::DidExt as _,
+    Invitation, InvitationExecution, InvitedBy, InvitedVia, MemberKind, MemberName, MemberRole,
+    Membership, Replica, RepositoryName, SeedKind, prelude::DidExt as _,
 };
 use tonk_worker_api::JoinFailureKind;
 use zeroize::Zeroizing;
@@ -424,6 +424,9 @@ pub(crate) struct PreparedJoin {
     invitation: Invitation,
     /// Audience metadata recorded beside the invitation.
     invitation_execution: InvitationExecution,
+    /// The account that issued the invite, from the chain as parsed (see
+    /// [`tonk_schema::inviting_account`]).
+    inviter: Did,
     subject: Did,
     key: String,
     /// The account the chain terminates at: the passkey root when one is
@@ -817,6 +820,7 @@ async fn prepare_parsed_join(
     // (the chain has a specific subject).
     let invitation = Invitation::from_chain(invite.invitation_chain())
         .expect("Invite invariant: chain has a specific subject");
+    let inviter = tonk_schema::inviting_account(&invite.chain);
 
     let open = matches!(&invite.audience, InviteAudience::Open { .. });
     let invitation_execution =
@@ -855,6 +859,7 @@ async fn prepare_parsed_join(
         invite,
         invitation,
         invitation_execution,
+        inviter,
         subject,
         key,
         member,
@@ -991,6 +996,7 @@ async fn perform_join(
         &tonk.operator,
         &prepared.invitation,
         &prepared.invitation_execution,
+        &prepared.inviter,
         &prepared.member,
         &prepared.subject,
         agent,
@@ -1542,6 +1548,10 @@ fn membership_has_name(names: &[MemberName], membership: &Membership) -> bool {
 /// is cardinality-one, so blindly stamping `member` would demote a
 /// founder who reclaims their own invite.
 ///
+/// [`InvitedBy`] is stamped with [`InvitedVia`], first-wins the same way:
+/// the inviting account is read from the chain, so it names whoever
+/// issued this link, not the space's founder.
+///
 /// A claimer that declares itself an `agent` is stamped
 /// [`MemberKind::agent`], on a renewal too: the kind is sticky, so a
 /// later claim that does not declare it never removes it.
@@ -1557,6 +1567,7 @@ async fn claim_changes<Env: BranchEnv>(
     env: &Env,
     invitation: &Invitation,
     invitation_execution: &InvitationExecution,
+    inviter: &Did,
     member: &Did,
     subject: &Did,
     agent: bool,
@@ -1659,8 +1670,10 @@ async fn claim_changes<Env: BranchEnv>(
     let already_roled = roles.iter().any(|role| role.this == *membership.this());
     let already_named = membership_has_name(&names, &membership);
 
-    // A member claiming their own invite is not provenance.
-    let self_invite = invitation.inviter.0 == member.this();
+    // A member claiming their own invite is not provenance. The inviting
+    // account follows the chain to its end, so this holds for a link the
+    // member re-shared too, where the first hop still names the founder.
+    let self_invite = inviter == member;
 
     let mut changes = Changes::new();
     invitation.clone().assert(&mut changes);
@@ -1675,6 +1688,7 @@ async fn claim_changes<Env: BranchEnv>(
     }
     if !already_stamped && !self_invite {
         InvitedVia::new(membership.this().clone(), invitation.this().clone()).assert(&mut changes);
+        InvitedBy::new(membership.this().clone(), inviter).assert(&mut changes);
     }
     if stamp_agent {
         MemberKind::agent(membership.this().clone()).assert(&mut changes);
@@ -3210,6 +3224,26 @@ pub(crate) mod tests {
             .is_agent
     }
 
+    /// A claim stamps who brought the member in: the account that issued
+    /// the link, read from the chain, not the chain's first hop.
+    #[dialog_common::test]
+    async fn it_records_the_account_that_issued_the_invite() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (url, key) = handcrafted_invite_url(120, 121).await;
+        let issuer = {
+            let parsed = Invite::parse_url(&url).await.unwrap();
+            tonk_schema::inviting_account(&parsed.chain)
+        };
+
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+
+        let membership = own_membership(&state, &key).await;
+        let stamps = crate::router::tests::content_invited_by(&state, &key).await;
+        assert_eq!(stamps.len(), 1, "one inviter stamp");
+        assert_eq!(stamps[0].this, membership);
+        assert_eq!(stamps[0].inviter.0, issuer.this());
+    }
+
     /// A claimer that declares itself an agent is stamped one on the
     /// roster, and the member list reports it.
     #[dialog_common::test]
@@ -3302,7 +3336,7 @@ pub(crate) mod tests {
         let (url, key) = handcrafted_invite_url(40, 41).await;
         let expected = {
             let parsed = Invite::parse_url(&url).await.unwrap();
-            Invitation::from_chain(&parsed.chain).unwrap()
+            tonk_schema::inviting_account(&parsed.chain)
         };
 
         assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
@@ -3327,8 +3361,8 @@ pub(crate) mod tests {
             .expect("self present");
         assert_eq!(
             me.invited_by.as_deref(),
-            Some(expected.inviter.0.to_string().as_str()),
-            "claimer records the invitation's inviter as provenance",
+            Some(expected.this().to_string().as_str()),
+            "claimer records the account that issued the invite",
         );
     }
 
@@ -3496,6 +3530,22 @@ pub(crate) mod tests {
         assert!(
             !stamps.iter().any(|s| s.this == membership_entity),
             "self-claims must not stamp provenance",
+        );
+        let inviters = crate::router::tests::content_invited_by(&state, &key).await;
+        assert!(
+            !inviters.iter().any(|s| s.this == membership_entity),
+            "nor who invited them",
+        );
+        // The minted chain runs space -> root -> device -> link: the
+        // inviting account is the root the device acts for, which is this
+        // member, so the claim is recognised as their own.
+        let minted_chain = Invite::parse_url(minted.url().as_str())
+            .await
+            .unwrap()
+            .chain;
+        assert_eq!(
+            tonk_schema::inviting_account(&minted_chain).this(),
+            member_entity,
         );
 
         // The creator is the founder, and reclaiming their own invite must
