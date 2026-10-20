@@ -17,12 +17,14 @@ export function agentLinkBackend({
   let pending = Promise.resolve();
   let queued = 0,
     closed = false,
+    drainQueued = true,
     failed = false;
   return {
     capabilities: ['tonk_query', 'tonk_evaluate'],
     agentLinkSelection: true,
-    async close({ cancel = false } = {}) {
+    async close({ cancel = false, drain = true } = {}) {
       closed = true;
+      drainQueued = drain;
       if (cancel) lifetime.abort();
       await pending;
     },
@@ -48,6 +50,7 @@ export function agentLinkBackend({
       queued++;
       const task = pending.then(async () => {
         if (failed) throw new TonkToolError('Agent storage requires recovery.');
+        if (closed && !drainQueued) throw new TonkToolError('Agent worker is shutting down.');
         signal?.throwIfAborted();
         let link;
         try {
@@ -96,7 +99,11 @@ export function agentLinkBackend({
             binary,
             dataDirectory,
             remote,
-            signal,
+            // Once dispatched, finish a write and checkpoint even if its HTTP
+            // client disappears. Killing it mid-publication creates avoidable
+            // unknown outcomes. Explicit host cancellation and the native
+            // process deadline still bound execution; queued calls remain cancellable.
+            signal: tool === 'tonk_evaluate' ? lifetime.signal : signal,
             input: { tool, agent_link: link, document: args.document },
           });
         } finally {
