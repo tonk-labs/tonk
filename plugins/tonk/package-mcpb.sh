@@ -1,14 +1,13 @@
 #!/bin/sh
-# Package the Tonk MCP bundle (.mcpb): the plugin's launcher in Claude Desktop
-# extension packaging.
+# Package the Tonk Desktop extension (tonk-peer.mcpb): the plugin's launcher in
+# Claude Desktop extension packaging.
 #
 #   plugins/tonk/package-mcpb.sh VERSION RELEASE_TAG OUT.mcpb
 #
-# The plugin declares its server as this bundle (plugins/tonk/tonk.mcpb, built
-# with an empty RELEASE_TAG so it follows TONK_CHANNEL), because Claude Desktop
-# chat loads local servers that plugins bundle as extensions, and Claude Code
-# unpacks it and runs the same launcher. Releases also publish it on its own,
-# pinned to RELEASE_TAG, to install as a standalone extension.
+# Releases publish it next to the plugin, for Claude Desktop chat: Desktop
+# renders MCP Apps views only from servers it runs as extensions (or from
+# claude_desktop_config.json), never from a plugin's server, even one the
+# plugin bundles as a .mcpb. See docs/claude-desktop-plugin-internals.md.
 #
 # The bundle carries the launcher, not the peer itself: on every start it
 # fetches the newest verified peer build (and the guest runtime for live

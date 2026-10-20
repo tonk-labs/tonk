@@ -1,7 +1,7 @@
 #!/bin/sh
 # Package the plugin as a zip that `claude --plugin-url`, `--plugin-dir` and
-# Claude Desktop's plugin upload accept, optionally pinning its launcher, and
-# the MCP bundle that carries it, to one release.
+# Claude Desktop's plugin upload accept, optionally pinning its launcher to one
+# release.
 #
 #   plugins/tonk/package.sh OUT.zip [RELEASE_TAG]
 set -eu
@@ -18,8 +18,5 @@ sed -i.bak \
   "$launcher"
 rm -f "$launcher.bak"
 chmod 0755 "$launcher"
-# The server the plugin declares is the bundled launcher: pin that copy too.
-version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$here/.claude-plugin/plugin.json")"
-"$here/package-mcpb.sh" "$version" "$release" "$work/tonk/tonk.mcpb"
 case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
 (cd "$work/tonk" && zip -qr "$out" .)

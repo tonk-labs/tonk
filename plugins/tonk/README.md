@@ -19,15 +19,18 @@ In Claude Desktop, add the `tonk-labs/tonk` marketplace under Customize →
 Plugins and install Tonk from it. macOS (Apple Silicon) and Linux (x86_64) are
 supported.
 
+For live views in Claude Desktop chat, also install the Tonk extension: download
+[`tonk-peer.mcpb`](https://github.com/tonk-labs/tonk/releases/download/tonk-agent-peer-dev/tonk-peer.mcpb)
+and open it. See [Live views](#live-views) for why it's separate.
+
 To try a pull request's build, use the one-line `claude --plugin-url …` from
 the **Agent peer preview** comment on the pull request.
 
 ## What this plugin runs and connects to
 
-The plugin itself is a launcher script, a skill, and `tonk.mcpb`: an MCP
-bundle that holds only a copy of the launcher, so that Claude Desktop chat,
-Cowork and Claude Code all start the same server. Everything it runs,
-fetches or sends:
+The plugin itself is a launcher script and a skill. The optional Tonk extension
+(`tonk-peer.mcpb`, published with each release) holds only a copy of the same
+launcher. Everything they run, fetch or send:
 
 - **It downloads the Tonk peer.** On every start the launcher
   (`scripts/tonk-agent-peer`) fetches `checksums.txt` from the Tonk release it
@@ -66,16 +69,24 @@ fetches or sends:
 
 ## Live views
 
-Where the host renders MCP Apps (Claude Desktop chat), two tools show a
-space in the conversation:
+Two tools show a space in the conversation where the host renders MCP Apps:
 
 - `tonk_display` renders things with their concept's own display, through
   Tonk's guest runtime: the same `<tonk-display>` the web app uses, live and
   interactive.
 - `tonk_show` renders a query's result and keeps it current.
 
-Claude Code shows the results as text. `tonk_view_log` explains a view that
-stays blank.
+Claude Desktop renders these views only from servers it runs as extensions,
+not from a plugin's server, so in Desktop chat they need the Tonk extension,
+[`tonk-peer.mcpb`](https://github.com/tonk-labs/tonk/releases/download/tonk-agent-peer-dev/tonk-peer.mcpb).
+It runs the same self-updating launcher, as the same peer: one identity and
+one set of spaces whichever copy Claude calls. With only the plugin installed,
+the tools work and return their results as text. Claude Code always shows
+text. `tonk_view_log` explains a view that stays blank.
+
+The directory no longer lists extensions, which is why the extension is a
+separate download. Details in
+[docs/claude-desktop-plugin-internals.md](https://github.com/tonk-labs/tonk/blob/main/docs/claude-desktop-plugin-internals.md).
 
 ## Configuration
 

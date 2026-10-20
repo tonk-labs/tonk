@@ -16,9 +16,35 @@ call, and knows nothing about joined spaces. If `tonk_list_spaces` is not
 available, the local peer is not connected to this session: say so, rather
 than treating the hosted connector as the peer.
 
-`tonk_display` and `tonk_show` draw live views only where the host renders
-MCP Apps, such as a local Claude Desktop chat. Elsewhere, including sessions
-that reach this computer remotely, they return the data as text.
+## Live views in Claude Desktop
+
+`tonk_display` and `tonk_show` draw live, interactive views in Claude Desktop
+chat, but only when the **Tonk Desktop extension** serves them. Desktop does
+not render views from a plugin's server, so this plugin's own copy of the
+tools returns the data as text there. Both copies are the same peer, with the
+same identity and spaces.
+
+You can tell the copies apart by name: this plugin's tools have `plugin_tonk_`
+in their names (for example `plugin_tonk_tonk-peer__tonk_display`); the
+extension's tools do not.
+
+- **Both copies available:** in Claude Desktop, call `tonk_display` and
+  `tonk_show` from the extension's copy. Any copy works for everything else.
+- **Only this plugin's copy, in Claude Desktop, and the user wants to see
+  things** (or tells you a view showed only text): say once that live views
+  need the Tonk extension, and offer the steps:
+  1. Download
+     [tonk-peer.mcpb](https://github.com/tonk-labs/tonk/releases/download/tonk-agent-peer-dev/tonk-peer.mcpb).
+  2. Open it (double-click, or drag it into the Claude Desktop window), and
+     choose **Install**.
+  3. Start a new chat.
+
+  It updates itself the same way the plugin does. Answer with the text result
+  meanwhile. Don't repeat the offer in the same conversation, and never try to
+  install it yourself.
+- **Not in Claude Desktop** (Claude Code in a terminal, for example): views
+  never render there. Text is expected; don't mention the extension. If you
+  can't tell where the user is, ask before offering it.
 
 ## Joining a space
 

@@ -93,8 +93,16 @@ plugin directory.
 
 ## Options for Tonk today
 
-1. Plugin (skill, auto-update, Code and Cowork) plus the standalone extension
-   (views in chat). Two installs, works now.
+The directory no longer accepts extensions (`.mcpb`) and asks for local servers
+to be shipped in a plugin, which is exactly where views can't render. And a
+plugin that declares its server as a bundled `.mcpb` is held for a reviewer
+("Bundled MCP server not inspected").
+
+1. **What we ship:** the plugin (skill, auto-update, Code and Cowork) declares
+   a plain stdio server, and releases publish the extension separately as
+   `tonk-peer.mcpb`. The skill tells the agent to offer the extension when the
+   user wants views in Desktop chat and only the plugin's copy of the tools is
+   there. Two installs, works now.
 2. Have the launcher add a `tonk-peer` entry to `claude_desktop_config.json`
    on first run, with consent. One install, views render, but Desktop needs a
    restart, chat sees the tools twice, and directory review will likely object.
