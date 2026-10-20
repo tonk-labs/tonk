@@ -386,8 +386,10 @@ final class AccessModel: ObservableObject {
         member: field('xyz.tonk.membership/member', 'Entity'),
         role: field('xyz.tonk.membership/role', 'Entity', true),
         name: field('xyz.tonk.membership/name', 'Text', true),
-        invitation: field('xyz.tonk.membership/invitation', 'Entity', true)
-      }, ['member', 'role', 'name', 'invitation']),
+        invitation: field('xyz.tonk.membership/invitation', 'Entity', true),
+        inviter: field('xyz.tonk.membership/inviter', 'Entity', true),
+        kind: field('xyz.tonk.membership/kind', 'Entity', true)
+      }, ['member', 'role', 'name', 'invitation', 'inviter', 'kind']),
       safe(query({
         subject: field('xyz.tonk.invitation/subject', 'Entity'),
         kind: field('xyz.tonk.invitation-execution/kind', 'Text')
@@ -428,7 +430,8 @@ final class AccessModel: ObservableObject {
       else { return nil }
       return SpaceMember(
         did: did, name: fields["name"] as? String, role: fields["role"] as? String,
-        invitation: fields["invitation"] as? String)
+        invitation: fields["invitation"] as? String, inviter: fields["inviter"] as? String,
+        kind: fields["kind"] as? String)
     }
     .sorted { ($0.isFounder ? 0 : 1, $0.displayName) < ($1.isFounder ? 0 : 1, $1.displayName) }
   }
