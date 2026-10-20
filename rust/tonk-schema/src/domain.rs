@@ -78,7 +78,7 @@ pub mod replica {
     /// [`dialog.branch/revision`]: https://github.com/dialog-db/dialog-db
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("tonk.dialog.replica")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct ActiveBranch(pub Entity);
 }
 
@@ -158,8 +158,31 @@ pub mod tonk_branch {
     /// means.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("tonk.dialog.branch")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Upstream(pub Entity);
+}
+
+/// What came of a claim on a space that the space's own worker was handed
+/// (`tonk/claim-membership`). Overlay-only, on the space's content branch,
+/// at the entity of the command that asked: the person's profile reads it
+/// there and nothing keeps it.
+pub mod membership_claim {
+    use super::Attribute;
+
+    /// `claimed`, or the kind of failure a join reports (`revoked`,
+    /// `unavailable`, `refused`, `malformed`, `audience-mismatch`,
+    /// `claim-failed`).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.membership-claim")]
+    #[pick(last)]
+    pub struct Outcome(pub String);
+
+    /// Operator-facing context for a failure. Empty for a claim that
+    /// landed. Never an upstream body.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.membership-claim")]
+    #[pick(last)]
+    pub struct Detail(pub String);
 }
 
 /// Attributes for the account-level space directory — one entry per
@@ -189,7 +212,7 @@ pub mod space {
     /// open locally (the hollow, replicate-on-first-visit space).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.space")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Local(pub bool);
 
     /// Whether a replication for this space is in flight on this device.
@@ -198,7 +221,7 @@ pub mod space {
     /// and a worker that dies mid-pull leaves nothing to clear.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.space")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Replicating(pub bool);
 
     /// The account providing this space with the access service. Its
@@ -210,7 +233,7 @@ pub mod space {
     /// (a timestamp here would give each writer its own value).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.space")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Provider(pub Entity);
 
     /// The space's display name, mirrored into the account directory
@@ -236,7 +259,7 @@ pub mod space {
     /// what distinguishes the two.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.space")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct FoundedAt(pub u64);
 
     /// The sync endpoint this space is served from — the UCAN address
@@ -246,7 +269,7 @@ pub mod space {
     /// queried. Absent for a local-only space.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.space")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct HomeAddress(pub String);
 
     /// The profile that founded the space.
@@ -257,7 +280,7 @@ pub mod space {
     /// account, and the founding device leaves no other trace.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.space")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct FoundedBy(pub Entity);
 }
 
@@ -283,14 +306,14 @@ pub mod recovery {
     /// every assertion. What an assertion names to select this credential.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.recovery")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct CredentialId(pub String);
 
     /// Unix seconds at credential creation — when Tonk ran the ceremony,
     /// not anything the authenticator signs.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.recovery")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct CreatedAt(pub u64);
 
     /// The browser and operating system where creation ran, e.g. `Chrome
@@ -298,20 +321,20 @@ pub mod recovery {
     /// WebAuthn does not expose those reliably.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.recovery")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct CreatedOn(pub String);
 
     /// The WebAuthn `user.name` this credential was created with — what a
     /// passkey manager lists the entry under.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.recovery")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Name(pub String);
 
     /// The WebAuthn `user.displayName`.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.recovery")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct DisplayName(pub String);
 }
 
@@ -325,7 +348,7 @@ pub mod device {
     /// window still gets a new creation time.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.device")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct CreatedAt(pub u64);
 
     /// Human label for the device, e.g. "Chrome on macOS".
@@ -335,7 +358,7 @@ pub mod device {
     /// of requiring a round trip to the account service.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.device")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Title(pub String);
 
     /// Why the delegation exists, e.g. `case:device-link`.
@@ -349,7 +372,7 @@ pub mod device {
     /// exists so a list can filter without opening envelopes.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.device")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Reason(pub Entity);
 }
 
@@ -378,7 +401,7 @@ pub mod sync {
     /// supersedes the prior value rather than accumulating.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.sync")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Enabled(pub bool);
 
     /// The live sync *observation* — one of many variants (`sync:idle` /
@@ -389,7 +412,7 @@ pub mod sync {
     /// stale accumulated value.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.sync")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Status(pub Entity);
 }
 
@@ -409,34 +432,34 @@ pub mod site {
     /// The matched document path on this site.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.site")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Path(pub String);
 
     /// The document fragment (URL hash) on this site.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.site")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Anchor(pub String);
 
     /// The space (repository name) the tab is on — the `did:key:…` routing key
     /// parsed from the URL's `/space/{segment}` prefix.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.site")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Space(pub String);
 
     /// The active branch name the tab is on — the `{branch}` component parsed
     /// from the space segment (`{branch}@{name}`, defaults to `"main"`).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.site")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Branch(pub String);
 
     /// The active replica entity for this site (this device's replica of the
     /// space the tab is on).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.site")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Replica(pub Entity);
 
     /// The branch the tab is on, as an ENTITY.
@@ -457,7 +480,7 @@ pub mod site {
     /// disagree with the name beside it.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.site")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct BranchEntity(pub Entity);
 
     /// The branch the PROFILE is on, whichever repository the tab is
@@ -467,19 +490,19 @@ pub mod site {
     /// only ever right while the profile had one branch.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.site")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct ProfileBranch(pub String);
 
     /// The matched route entity (the route-table entry that matched the path).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.site")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Route(pub Entity);
 
     /// The matched route's concept — the model the shell mounts on the site.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.site")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Concept(pub Entity);
 }
 
@@ -491,13 +514,13 @@ pub mod route {
     /// The axum/matchit path pattern, fed to `matchit::insert`.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.route")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Path(pub String);
 
     /// The route model to mount when this path matches.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.route")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Concept(pub Entity);
 }
 
@@ -510,13 +533,13 @@ pub mod route_http {
     /// The path pattern, in the same syntax a `route` uses.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.route.http")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Path(pub String);
 
     /// The response's body, as text.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.route.http")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Body(pub String);
 }
 
@@ -536,7 +559,7 @@ pub mod check {
     /// silently clobber the first's record.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.replica")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Checking(pub Entity);
 
     /// When the last check completed on this device.
@@ -546,7 +569,7 @@ pub mod check {
     /// result to say "pending".
     #[derive(Attribute, Clone, PartialEq, PartialOrd)]
     #[domain("xyz.tonk.replica")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Checked(pub f64);
 
     /// Why the last check failed, asserted only on failure.
@@ -556,7 +579,7 @@ pub mod check {
     /// part.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.replica")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Failure(pub String);
 }
 
@@ -582,13 +605,13 @@ pub mod seed {
     /// custom seed is a different URL at the same shape.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Source(pub String);
 
     /// The seed this one replaced, or `seed:none` on a first install.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Prior(pub Entity);
 
     /// The installed seed an available one would supersede.
@@ -598,7 +621,7 @@ pub mod seed {
     /// joining it against the space's install record.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Replaces(pub Entity);
 
     /// The version of the commit that installed this seed.
@@ -619,7 +642,7 @@ pub mod seed {
     /// `Version::from_key_bytes` — its entity is a one-way hash.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Version(pub String);
 
     /// The version of the commit that installed this seed, which holds its
@@ -638,7 +661,7 @@ pub mod seed {
     /// over what the space chose since.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.seed")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct InstallVersion(pub String);
 }
 
@@ -1131,6 +1154,41 @@ pub mod command {
         pub struct Chain(pub String);
     }
 
+    /// Attributes of the `space/publish` command.
+    pub mod publish {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The space to make readable by anyone: dispatched routeless from
+        /// the FAB, the command names its target. Derived attribute:
+        /// `xyz.tonk.publish/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.publish")]
+        pub struct Space(pub Entity);
+
+        /// The click's timestamp, so a repeated press is a new command.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.publish")]
+        pub struct Time(pub f64);
+    }
+
+    /// Attributes of the `space/unpublish` command.
+    pub mod unpublish {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The space to make private again. Derived attribute:
+        /// `xyz.tonk.unpublish/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.unpublish")]
+        pub struct Space(pub Entity);
+
+        /// The click's timestamp, so a repeated press is a new command.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.unpublish")]
+        pub struct Time(pub f64);
+    }
+
     /// Attributes of the `member/expel` command.
     pub mod expel {
         use super::super::Entity;
@@ -1418,6 +1476,89 @@ pub mod command {
             #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
             #[domain("xyz.tonk.command.record-invite")]
             pub struct Seed(pub String);
+        }
+
+        /// `tonk/retain-invite` — a space's own worker keeps the record of
+        /// an invitation the person's profile issued to a named audience.
+        pub mod retain_invite {
+            use dialog_query::Attribute;
+
+            /// The base58 delegation chain the invitation grants.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.retain-invite")]
+            pub struct Proof(pub String);
+
+            /// The base58 `profile -> account` union edge retained beside
+            /// the chain, or empty when the profile has no account root.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.retain-invite")]
+            pub struct Union(pub String);
+
+            /// Whether the invitation is open to whoever redeems it.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.retain-invite")]
+            pub struct Open(pub bool);
+        }
+
+        /// `tonk/admit-member` — a space's own worker admits a member as
+        /// admin, with the hop the person's page minted.
+        pub mod admit_member {
+            use super::super::super::Entity;
+            use dialog_query::Attribute;
+
+            /// The DID the member's membership is keyed on.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.admit-member")]
+            pub struct Member(pub Entity);
+
+            /// The page-minted `promoter-account -> member` hop, base58.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.admit-member")]
+            pub struct Hop(pub String);
+        }
+
+        /// `tonk/claim-membership` — a space's own worker commits a claim
+        /// on the space that the person's profile prepared.
+        pub mod claim_membership {
+            use super::super::super::Entity;
+            use dialog_query::Attribute;
+
+            /// The invitation's base58 delegation chain as it was issued,
+            /// before the claim extended it. The invitation's record is
+            /// derived from it.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.claim-membership")]
+            pub struct Invitation(pub String);
+
+            /// The base58 chain extended to the claiming account, retained
+            /// in the space so the hop that admits the member is provable
+            /// from it.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.claim-membership")]
+            pub struct Chain(pub String);
+
+            /// Whether the invitation is open to whoever redeems it.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.claim-membership")]
+            pub struct Open(pub bool);
+
+            /// The account the claim is for.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.claim-membership")]
+            pub struct Member(pub Entity);
+
+            /// The name the member goes by, written when the roster has
+            /// none for them.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.claim-membership")]
+            pub struct Name(pub String);
+
+            /// Whether the space's remote has to honour the chain before
+            /// anything is written: the space is pulled, and what the pull
+            /// brought is checked to be a space.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.claim-membership")]
+            pub struct Authorize(pub bool);
         }
 
         /// `tonk/move-membership` — a space's own worker moves a roster
@@ -1712,7 +1853,7 @@ pub mod account_link {
     /// The account this device is linked to on the active branch.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.link")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Account(pub Entity);
 }
 
@@ -1723,20 +1864,20 @@ pub mod ceremony_status {
     /// `authorize-device`, or `add-passkey`.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.ceremony")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Ceremony(pub String);
 
     /// Where the ceremony got to. See [`crate::ceremony_state`].
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.ceremony")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct State(pub String);
 
     /// What to tell the person, when the state alone does not say:
     /// the reason a ceremony failed, or where a finished one leads.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.ceremony")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Detail(pub String);
 }
 
@@ -1750,7 +1891,7 @@ pub mod registration {
         /// The address typed so far, empty at first.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.registration-address")]
-        #[cardinality(one)]
+        #[pick(last)]
         pub struct Email(pub String);
     }
 
@@ -1762,7 +1903,7 @@ pub mod registration {
         /// The address the account will have.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.registration-naming")]
-        #[cardinality(one)]
+        #[pick(last)]
         pub struct Email(pub String);
     }
 
@@ -1773,7 +1914,7 @@ pub mod registration {
         /// `create` or `log-in`, see [`crate::registration::kind`].
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.registration-ceremony")]
-        #[cardinality(one)]
+        #[pick(last)]
         pub struct Kind(pub String);
     }
 
@@ -1785,7 +1926,7 @@ pub mod registration {
         /// `create` or `log-in`: which ceremony brought the account here.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.registration-confirming")]
-        #[cardinality(one)]
+        #[pick(last)]
         pub struct Kind(pub String);
     }
 
@@ -1797,7 +1938,7 @@ pub mod registration {
         /// The address typed so far, empty at first.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.registration-via")]
-        #[cardinality(one)]
+        #[pick(last)]
         pub struct Origin(pub String);
     }
 
@@ -1808,13 +1949,13 @@ pub mod registration {
         /// `create` or `log-in`: which ceremony failed.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.registration-failed")]
-        #[cardinality(one)]
+        #[pick(last)]
         pub struct Kind(pub String);
 
         /// What went wrong, in words a person can act on.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.registration-failed")]
-        #[cardinality(one)]
+        #[pick(last)]
         pub struct Message(pub String);
     }
 }
@@ -1826,7 +1967,7 @@ pub mod email_status {
     /// address the user has since edited is recognisable as stale.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.email-status")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Address(pub String);
 
     /// What the access service said: `unregistered` (create an
@@ -1836,7 +1977,7 @@ pub mod email_status {
     /// reached, which is not an answer about the address).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.email-status")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct State(pub String);
 }
 
@@ -1889,7 +2030,7 @@ pub mod roster {
     /// they cannot go stale: nothing persists them.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.roster")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Name(pub String);
 
     /// The account name to show for a profile, as of this read.
@@ -1905,7 +2046,7 @@ pub mod roster {
     /// on every read and never written down, so there is nothing to drift.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.roster")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Label(pub String);
 
     /// The access service a profile's account is attached to, as of this
@@ -1915,7 +2056,7 @@ pub mod roster {
     /// OVERLAY ONLY, for the same reason as [`Label`].
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.roster")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Provider(pub String);
 
     /// Whether this row is the profile the browser is currently using.
@@ -1924,7 +2065,7 @@ pub mod roster {
     /// worker, not of any profile, so it has no durable home at all.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.roster")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Active(pub bool);
 }
 
@@ -1936,7 +2077,7 @@ pub mod account {
     /// deterministic winner when linked devices write concurrently.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct DisplayName(pub String);
 
     /// Whether this device is linking the account right now. Overlay-only:
@@ -1945,7 +2086,7 @@ pub mod account {
     /// leaves nothing to clear.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Linking(pub bool);
 
     /// The account's registration state with the access service, as one
@@ -1966,52 +2107,53 @@ pub mod account {
     /// When enrollment recorded the address, unix seconds.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct RegisteredAt(pub u64);
 
     /// When activation was observed, unix seconds. Its presence is what
     /// makes an account served.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct ActivatedAt(pub u64);
 
     /// When the service withdrew, unix seconds.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct SuspendedAt(pub u64);
 
-    /// The derived status label: `case:onboarding`, `case:registered`,
-    /// `case:active`, or `case:suspended`. Never written directly — the
-    /// deductive rules in `profile.yaml` conclude it.
+    /// The derived status label: `case:suspended`, `case:active`,
+    /// `case:registered`, `case:retired` or `case:onboarding`, the
+    /// first listed that a rule derives. Never written directly — the
+    /// deductive rules in `profile.yaml` conclude it, one per case.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Status(pub Entity);
 
     /// When this device minted its onboarding account, unix seconds.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct OnboardingMintedAt(pub u64);
 
     /// The local keypair holding the onboarding account.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct OnboardingCustodian(pub Entity);
 
     /// When a real account took over from the onboarding one, unix seconds.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct OnboardingRetiredAt(pub u64);
 
     /// Why the service withdrew, in words a person can act on.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct SuspensionReason(pub String);
 
     /// The email address the account enrolled with.
@@ -2020,7 +2162,7 @@ pub mod account {
     /// enrollment still knows which address the activation link went to.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct CustomerEmail(pub String);
 
     /// The account's provider: the UCAN access-service endpoint this
@@ -2042,7 +2184,7 @@ pub mod account {
     /// the same one through sync.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct ProviderAddress(pub String);
     /// Where anything sealed for this account is addressed: the X25519
     /// public key as a `did:key:z6LS…` entity. Every device can seal to
@@ -2052,7 +2194,7 @@ pub mod account {
     /// their own recipient and need no history here.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.account")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct SealedInbox(pub Entity);
 }
 
@@ -2065,7 +2207,7 @@ pub mod custody {
     /// sealed to, as an entity.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.secret")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct To(pub Entity);
 
     /// Who sealed a message, when that is known and worth recording.
@@ -2073,26 +2215,26 @@ pub mod custody {
     /// would invent an author the seal does not bind.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.secret")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Sender(pub Entity);
 
     /// The sealed bytes of a message.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.secret")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Message(pub Vec<u8>);
 
     /// What a sealed principal is: `tonk:space` for a space's signing key,
     /// `tonk:invite` for an invite principal's.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.secret")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Kind(pub Entity);
 
     /// The message whose plaintext is a principal's ed25519 seed.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.secret")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Seed(pub Entity);
 }
 
@@ -2117,7 +2259,7 @@ pub mod repo {
     /// Markdown agent context carried by the repository subject.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.repo")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Agents(pub String);
 }
 
@@ -2169,7 +2311,7 @@ pub mod credential {
     /// rather than needing one of its own.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.credential")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Link(pub String);
 }
 
@@ -2205,7 +2347,7 @@ pub mod invite {
     /// representable (granted-with-a-reason, denied-without-one).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.invite")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Status(pub Entity);
 
     /// The finished invite URL, present only once granted.
@@ -2214,7 +2356,7 @@ pub mod invite {
     /// request in flight simply has no url yet.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.invite")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Url(pub String);
 }
 
@@ -2226,13 +2368,13 @@ pub mod share {
     /// remote, so it is the only one that offers the prompt.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.share")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Blocked(pub String);
 
     /// The sentence shown to the user.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.share")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Detail(pub String);
 
     /// The timestamp of the command this refusal answers, echoed back from
@@ -2246,7 +2388,7 @@ pub mod share {
     /// retracting it on the next success.
     #[derive(Attribute, Clone, PartialEq, PartialOrd)]
     #[domain("xyz.tonk.share")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Time(pub f64);
 }
 
@@ -2342,7 +2484,7 @@ pub mod membership {
     /// [`MemberRole`]: crate::MemberRole
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.membership")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Role(pub Entity);
 
     /// A member's self-asserted display name for the repository —
@@ -2367,7 +2509,7 @@ pub mod transplant {
     /// joins against facts still anchored on the origin subject.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.transplant")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Origin(pub Entity);
 
     /// The origin's last published head record, byte-exact. The record
@@ -2375,13 +2517,13 @@ pub mod transplant {
     /// verifiable after the origin's own stores are gone.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.transplant")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Revision(pub Vec<u8>);
 
     /// The tree root the transplant adopted.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.transplant")]
-    #[cardinality(one)]
+    #[pick(last)]
     pub struct Tree(pub String);
 }
 

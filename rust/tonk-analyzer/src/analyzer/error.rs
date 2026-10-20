@@ -218,6 +218,19 @@ pub enum AnalyzeDiagnosticKind {
         /// The field where the variable appears.
         field: String,
     },
+    /// An anchor is declared under the name of a built-in anchor: a
+    /// type (`text`, `integer`, ...) or a pick (`last`, `all`, ...).
+    /// Within the document the name means the declaration, so `as:
+    /// text` or `pick: all` there no longer names the built-in.
+    #[error(
+        "`&{name}` shadows the built-in `{name}` in this document — \
+         `{name}` here means this declaration, not the built-in; choose another \
+         name to keep using the built-in"
+    )]
+    ShadowsBuiltin {
+        /// The anchor name.
+        name: String,
+    },
     /// A raw domain write's literal carries a different value type
     /// than a branch-declared attribute advertises. The write still
     /// commits — raw domains are open-ended — but typed readers (a
@@ -246,6 +259,31 @@ pub enum AnalyzeDiagnosticKind {
         /// than a list so the type stays small enough to return by
         /// value.
         known: String,
+    },
+    /// An attribute body writes `cardinality:`, the spelling earlier
+    /// releases used for what is now the attribute's pick. It is read
+    /// (`one` is `pick: :last`, the default; `many` is `pick: :all`) so
+    /// the templates and notebooks those releases published still
+    /// evaluate, and warned about so new documents write the pick.
+    #[error("`cardinality: {value}` is deprecated — {advice}")]
+    DeprecatedCardinality {
+        /// The value as written (`one`, `:one`, `"one"`).
+        value: String,
+        /// What to write instead.
+        advice: String,
+    },
+    /// A keyword-valued field (`pick:`, `role:`) writes the bare or
+    /// quoted word earlier releases used instead of the keyword. It is
+    /// read as the keyword, and warned about so the document moves to
+    /// the spelling the guide teaches.
+    #[error("`{field}: {word}` is the older spelling of the keyword `{field}: :{keyword}`")]
+    OlderKeywordSpelling {
+        /// The field name.
+        field: String,
+        /// The value as written.
+        word: String,
+        /// The keyword it reads as.
+        keyword: String,
     },
     /// the author gets a heads-up with the spelling that would.
     #[error("{attribute} is declared {declared}, this literal stores {found} — {hint}")]
@@ -277,6 +315,9 @@ impl AnalyzeDiagnosticKind {
             Self::SingleOccurrenceVariableAssertionField { .. } => {
                 "E_SINGLE_OCCURRENCE_VARIABLE_ASSERTION_FIELD"
             }
+            Self::ShadowsBuiltin { .. } => "W_SHADOWS_BUILTIN",
+            Self::DeprecatedCardinality { .. } => "W_DEPRECATED_CARDINALITY",
+            Self::OlderKeywordSpelling { .. } => "W_OLDER_KEYWORD_SPELLING",
             Self::DeclaredTypeDivergence { .. } => "W_DECLARED_TYPE_DIVERGENCE",
             Self::UnknownEmbed { .. } => "W_UNKNOWN_EMBED",
         }
@@ -364,6 +405,19 @@ pub enum AnalyzeErrorKind {
         name: String,
         /// Underlying `id:<name>` parse error.
         reason: String,
+    },
+    /// An `&anchor` name is a valid `id:<name>` entity URI but the
+    /// notation could not reference it back: a bare `Demo` or `demo_1`
+    /// reads as a string, `42` as a number. Dialog accepts the name;
+    /// the notation's reference grammar is narrower, so the name is
+    /// refused where it is written rather than where it is used.
+    #[error(
+        "anchor name {name:?} can't be referenced — a name must be lowercase segments \
+         (letters, digits, `-`, `.`, `+`) joined by `/`, starting with a letter"
+    )]
+    UnreferenceableAnchorName {
+        /// The anchor name written after `&`.
+        name: String,
     },
     /// Assertion body had no fields — nothing to write.
     #[error("assertion `{head}!` has no fields — at least one is required")]
@@ -480,6 +534,48 @@ pub enum AnalyzeErrorKind {
     InvalidViewBindings {
         /// Underlying encoder message.
         reason: String,
+    },
+    /// `..: _` in a query body. The rest-marker retracts, which only
+    /// an assertion (`head!:`) does; a query has nothing to retract,
+    /// so the marker would otherwise be silently ignored.
+    #[error(
+        "`..: _` retracts the rest of an entity's attributes, so it only applies to an \
+         assertion; did you mean `{head}!:`?"
+    )]
+    RestRetractionInQuery {
+        /// The query's head as written.
+        head: String,
+    },
+    /// `..: _` on a claim-domain head (`xyz.tonk!:`). A domain has no
+    /// schema, so there is no closed set of attributes for the
+    /// rest-marker to retract.
+    #[error(
+        "`..: _` cannot follow claim domain {domain:?}: a domain has no schema, so it has \
+         no set of attributes for `..` to stand for"
+    )]
+    RestRetractionOnDomain {
+        /// The claim domain on the head.
+        domain: String,
+    },
+    /// A retraction (`field: _` or `..: _`) on an assertion whose
+    /// `this:` reaches no existing entity — omitted (the entity is
+    /// derived from the body) or a `?var` no query binds (the
+    /// variable mints a fresh entity). A fresh entity has nothing to
+    /// retract, so the expression would only write the named fields
+    /// onto a new, partial instance.
+    #[error(
+        "`{concept}!` retracts {retracted} but {selector_form}, so there is no existing \
+         entity to retract from. Set `this:` to the entity: a name, a URI, or a `?var` a \
+         query binds (`{concept}:\n  this: ?var\n  …` then `{concept}!:\n  this: ?var\n  ..: _`)."
+    )]
+    RetractionWithoutEntity {
+        /// The concept being asserted.
+        concept: String,
+        /// What the body retracts, as written (`` `..: _` `` or
+        /// `` `age: _` ``).
+        retracted: String,
+        /// How `this:` failed to select an entity.
+        selector_form: String,
     },
     /// A field in the body doesn't appear in the head concept's
     /// `with` map.
@@ -625,16 +721,14 @@ pub enum AnalyzeErrorKind {
     /// shape prevents accidentally creating "ghost" entities
     /// with one or two fields set.
     ///
-    /// The error is suppressed in two cases:
-    /// - A preceding query expression binds the `?var` in
-    ///   `this:` (the user is intentionally updating an
-    ///   existing entity, partial updates are fine).
-    /// - The body contains `..: _` (the rest-marker explicitly
-    ///   declares "I know what I'm doing about every other
-    ///   field" — the unmentioned fields get retracted).
+    /// The error is suppressed when a preceding query expression
+    /// binds the `?var` in `this:` (the user is intentionally
+    /// updating an existing entity, partial updates are fine).
+    /// A body that retracts (`field: _`, `..: _`) here is refused
+    /// earlier, as [`Self::RetractionWithoutEntity`].
     #[error(
         "`{concept}!` body sets only some of the concept's fields ({set:?}; missing: {missing:?}) but {selector_form}. \
-         Either query for an existing entity first (`{concept}:\n  this: ?var\n  …`), set every field, or add `..: _` to acknowledge the partial."
+         Either query for an existing entity first (`{concept}:\n  this: ?var\n  …`) or set every field."
     )]
     IncompleteAssertion {
         /// The concept whose schema was being asserted against.
@@ -688,6 +782,7 @@ impl AnalyzeErrorKind {
             Self::UnboundMutationVariable { .. } => "E_UNBOUND_MUTATION_VARIABLE",
             Self::InvalidSubjectUri { .. } => "E_INVALID_SUBJECT_URI",
             Self::InvalidAnchorName { .. } => "E_INVALID_ANCHOR_NAME",
+            Self::UnreferenceableAnchorName { .. } => "E_UNREFERENCEABLE_ANCHOR_NAME",
             Self::AssertionWithoutFields { .. } => "E_ASSERTION_WITHOUT_FIELDS",
             Self::InvalidAttributeBody { .. } => "E_INVALID_ATTRIBUTE_BODY",
             Self::InvalidConceptBody { .. } => "E_INVALID_CONCEPT_BODY",
@@ -701,6 +796,9 @@ impl AnalyzeErrorKind {
             Self::UnknownEventSourceField { .. } => "E_UNKNOWN_EVENT_SOURCE_FIELD",
             Self::InvalidViewBindings { .. } => "E_INVALID_VIEW_BINDINGS",
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",
+            Self::RestRetractionInQuery { .. } => "E_REST_RETRACTION_IN_QUERY",
+            Self::RestRetractionOnDomain { .. } => "E_REST_RETRACTION_ON_DOMAIN",
+            Self::RetractionWithoutEntity { .. } => "E_RETRACTION_WITHOUT_ENTITY",
             Self::DuplicateConceptField { .. } => "E_DUPLICATE_CONCEPT_FIELD",
             Self::UnknownFormulaOperand { .. } => "E_UNKNOWN_FORMULA_OPERAND",
             Self::MissingFormulaOperand { .. } => "E_MISSING_FORMULA_OPERAND",

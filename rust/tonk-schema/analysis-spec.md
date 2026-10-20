@@ -349,7 +349,7 @@ for match_frame in matches {
 attribute! person-name:
   the:         io.gozala.person/name
   as:          Text
-  cardinality: one
+  cardinality: :one
   description: The person's name
 ```
 
@@ -397,12 +397,12 @@ five claims (`id`, `type`, `cardinality`, `description`, `name`).
 attribute! person-name:
   the:         io.gozala.person/name
   as:          Text
-  cardinality: one
+  cardinality: :one
 
 attribute! person-age:
   the:         io.gozala.person/age
   as:          UnsignedInteger
-  cardinality: one
+  cardinality: :one
 
 concept! person:
   with:
@@ -461,12 +461,12 @@ shape is whatever the built-in `concept` schema declares.
 attribute! ?person-name:
   the:         io.gozala.person/name
   as:          Text
-  cardinality: one
+  cardinality: :one
 
 attribute! ?person-age:
   the:         io.gozala.person/age
   as:          UnsignedInteger
-  cardinality: one
+  cardinality: :one
 
 concept! person:
   with:
@@ -649,7 +649,7 @@ and are not retracted.
 attribute! person-name:
   the:         io.gozala.person/name
   as:          Text
-  cardinality: one
+  cardinality: :one
 
 concept! person:
   with:

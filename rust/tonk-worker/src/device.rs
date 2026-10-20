@@ -171,7 +171,33 @@ pub fn set_standing(standing: Standing) {
     let _ = STANDING.set(standing);
 }
 
+/// Whether spaces render on origins of their own, each with a worker that
+/// holds it. So wherever a site's script started this worker and said it is a
+/// person's: that script runs on the profile's origin, beside the spaces'.
+/// A host nothing told its standing (the CLI, a test) has one database.
+pub(crate) fn spaces_have_origins() -> bool {
+    STANDING.get() == Some(&Standing::Person)
+}
+
 impl Registry {
+    /// Explicit native registries keep content beside their profile, never in
+    /// the hosting process's working directory. Browser storage is unchanged.
+    pub(crate) fn space_location(&self, name: &str) -> Location {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Directory::At(root) = &self.directory {
+            return Location::new(
+                Directory::At(
+                    std::path::Path::new(root)
+                        .join("spaces")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                name,
+            );
+        }
+        space_location(name)
+    }
+
     /// The one this device actually uses.
     pub(crate) fn device() -> Self {
         Self {
@@ -216,7 +242,7 @@ impl Registry {
         // Space names resolve against the directory the worker has always
         // kept its spaces in.
         let location = Location::new(self.directory.clone(), name);
-        let base = space_location("").directory;
+        let base = self.space_location("").directory;
         let profile = match self.standing {
             Standing::Person => {
                 tonk_account::peer::open_peer(
@@ -268,7 +294,7 @@ impl Registry {
                 })?;
         tonk_account::peer::open_peer_on(
             Location::new(self.directory.clone(), name),
-            space_location("").directory,
+            self.space_location("").directory,
             storage.clone(),
             &credentials,
             &system,
@@ -451,14 +477,23 @@ impl Registry {
         operator: &DefaultOperator,
     ) -> Result<Branch, TonkWorkerError> {
         let registry = self.open_self(storage).await?;
-        Repository::from(registry.did())
+        let branch = Repository::from(registry.did())
             .branch(ROSTER_BRANCH)
             .open()
             .perform(operator)
             .await
             .map_err(|error| {
                 TonkWorkerError::Internal(format!("failed to open the profile roster: {error}"))
-            })
+            })?;
+        // The roster is written directly, outside the reactor: a roster an
+        // earlier release wrote is moved to this release's format first,
+        // since a commit into the earlier layout is refused.
+        dialog_reactor::migrate(&branch, operator)
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("failed to migrate the profile roster: {error}"))
+            })?;
+        Ok(branch)
     }
 
     /// The stored roster, ordered by storage name; empty when no entry was

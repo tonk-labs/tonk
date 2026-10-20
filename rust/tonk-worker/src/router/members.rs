@@ -319,10 +319,56 @@ impl dialog_capability::Provider<tonk_schema::command::PromoteMember>
             log!("member/promote: no/unparseable member, space, or chain; skipping");
             return;
         };
+        // The chains the promotion composes onto and the roster it stamps
+        // are the space's. Where a worker of its own holds the space, that
+        // worker admits the member.
+        if self.from_profile() && self.state().read().await.spaces_elsewhere() {
+            let admitted = async {
+                let claim = super::space_reach::command(
+                    &[
+                        ("member", "xyz.tonk.command.admit-member/member", "Entity"),
+                        ("hop", "xyz.tonk.command.admit-member/hop", "Text"),
+                    ],
+                    serde_json::json!({ "member": member.to_string(), "hop": command.chain.0 }),
+                )?;
+                let peer = super::space_reach::peer(&repo);
+                super::space_reach::run(peer, peer.content(), claim).await
+            };
+            if let Err(error) = admitted.await {
+                log!("member/promote for {member} on {repo} failed: {error}");
+            }
+            return;
+        }
         let tonk = self.state().read().await;
         match admit_member(&tonk, &repo, &member, hop).await {
             Ok(target) => log!("member/promote: {member} is an admin of {repo} ({target})"),
             Err(error) => log!("member/promote for {member} on {repo} failed: {error}"),
+        }
+    }
+}
+
+/// Run [`AdmitMember`]: admit, in the space this worker holds, the member
+/// the person's profile was asked to promote.
+///
+/// [`AdmitMember`]: tonk_schema::command::AdmitMember
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::AdmitMember> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::AdmitMember) {
+        let repo = self.origin().repo.clone();
+        let decoded = (|| {
+            let member: Did = command.member.0.to_string().parse().ok()?;
+            let bytes = bs58::decode(&command.hop.0).into_vec().ok()?;
+            Some((member, DelegationChain::try_from(bytes.as_slice()).ok()?))
+        })();
+        let Some((member, hop)) = decoded else {
+            log!("admit member on {repo}: no/unparseable member or hop; skipping");
+            return;
+        };
+        let tonk = self.state().read().await;
+        match admit_member(&tonk, &repo, &member, hop).await {
+            Ok(target) => log!("admit member: {member} is an admin of {repo} ({target})"),
+            Err(error) => log!("admit member {member} on {repo} failed: {error}"),
         }
     }
 }
@@ -646,6 +692,73 @@ mod tests {
         assert!(
             promote.iter().all(|attribute| !expel.contains(attribute)),
             "promote {promote:?} and expel {expel:?} share no trigger attribute"
+        );
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod forwarding_tests {
+    use dialog_capability::Provider;
+    use tonk_schema::command::PromoteMember;
+    use tonk_schema::domain::command::promote::{Chain, Member, Space};
+
+    use crate::router::space_reach::stand_in;
+    use crate::router::{CommandEnv, CommandOrigin};
+
+    const SPACE: &str = "did:key:z6MkkAKBuUTy2r88au4Ehu6uUwdRRpDYnKd1euvreZi3YG7M";
+    const MEMBER: &str = "did:key:z6Mki8Mf2Trp2qmXqNoSihfVi9sEg8Z4aSCSnyUfadj4jB1E";
+
+    /// The bar promotes a member on the person's profile, naming the space.
+    /// Where the space is held by a worker of its own, the profile passes
+    /// the promotion on to that worker and touches nothing of the space.
+    #[dialog_common::test]
+    async fn it_passes_a_promotion_on_to_the_spaces_own_worker() {
+        let state = crate::router::command::tests::native::test_state().await;
+        state
+            .read()
+            .await
+            .site_origins
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        // Any chain decodes: the hop is checked by the worker that admits.
+        let hop = {
+            use dialog_credentials::{Ed25519Signer, Signer};
+            use dialog_ucan_core::subject::Subject as UcanSubject;
+            use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+
+            let account = Ed25519Signer::generate().await.unwrap();
+            let member: dialog_varsig::Did = MEMBER.parse().unwrap();
+            let space: dialog_varsig::Did = SPACE.parse().unwrap();
+            let grant = DelegationBuilder::new()
+                .issuer(Signer::from(account))
+                .audience(&member)
+                .subject(UcanSubject::Specific(space))
+                .command(vec![])
+                .try_build()
+                .await
+                .unwrap();
+            bs58::encode(DelegationChain::new(grant).to_bytes().unwrap()).into_string()
+        };
+        stand_in::answer_with(|_| Ok(serde_json::json!({})));
+
+        let env = CommandEnv::new(state.clone(), CommandOrigin::default());
+        <CommandEnv as Provider<PromoteMember>>::execute(
+            &env,
+            PromoteMember {
+                this: "cmd:promote-one".parse().unwrap(),
+                member: Member(MEMBER.parse().unwrap()),
+                space: Space(SPACE.parse().unwrap()),
+                chain: Chain(hop),
+            },
+        )
+        .await;
+
+        assert_eq!(
+            stand_in::asked(),
+            [(
+                SPACE.to_owned(),
+                "POST".to_owned(),
+                format!("/api/repository/{SPACE}/branch/main/transact"),
+            )]
         );
     }
 }

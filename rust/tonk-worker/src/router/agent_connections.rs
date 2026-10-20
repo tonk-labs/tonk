@@ -253,11 +253,7 @@ pub(crate) async fn mint(
         ));
     }
     let root = super::identity::local_root(&tonk).await?;
-    let repository = tonk
-        .profile
-        .space(&repo)
-        .load()
-        .perform(&tonk.operator)
+    let repository = super::repository::space_named(&tonk, &repo)
         .await
         .map_err(failure)?;
     let subject = repository.did();
@@ -611,11 +607,13 @@ async fn confirmation_elsewhere(
     use tonk_worker_api::Conclusion;
 
     const CONFIRMED: &str = "Agent connection confirmed";
-    let path = format!("/api/repository/{}/branch/main/query", group.repo);
+    let peer = super::space_reach::peer(&group.repo);
     let ask = async |query: ConceptQuery| -> Result<Vec<Conclusion>, TonkWorkerError> {
-        let body = serde_json::to_value(WireQuery::from(&query)).map_err(failure)?;
-        let rows = super::space_reach::ask(&group.repo, "POST", &path, Some(&body)).await?;
-        serde_json::from_value(rows).map_err(failure)
+        peer.content()
+            .query(WireQuery::from(&query))
+            .perform(&peer)
+            .await
+            .map_err(failure)
     };
     let entity: dialog_artifacts::Entity = format!("id:tonk:agent-connection:{}", group.id)
         .parse()
@@ -759,11 +757,7 @@ pub async fn revoke(
         .ok_or_else(|| {
             TonkWorkerError::NotFound("agent invitation not found in this account".into())
         })?;
-    let repository = tonk
-        .profile
-        .space(&group.repo)
-        .load()
-        .perform(&tonk.operator)
+    let repository = super::repository::space_named(&tonk, &group.repo)
         .await
         .map_err(failure)?;
     if repository.did().as_str() != group.subject {
@@ -896,12 +890,9 @@ mod tests {
         let signer =
             <Ed25519Signer<Extractable> as ExtractableKey>::import(&rand::random::<[u8; 32]>())
                 .await?;
-        // Worker operators resolve named spaces from cwd on native targets.
-        // Keep the replica, as well as the profile, inside this fixture's directory.
-        let repo = directory
-            .join("reported-space")
-            .to_string_lossy()
-            .into_owned();
+        // The explicit native registry resolves names below its own spaces
+        // directory. The repository name is an identifier, not an absolute path.
+        let repo = "reported-space".to_owned();
         Subject::from(tonk.profile.did())
             .attenuate(Space::new(&repo))
             .create_with(signer.clone())

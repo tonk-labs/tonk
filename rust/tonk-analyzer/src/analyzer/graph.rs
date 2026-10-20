@@ -649,6 +649,18 @@ impl Graph {
         scope: &Scope,
         resolver: &R,
     ) -> Result<Resolved, AnalyzeError> {
+        // An anchor the document declares under a built-in anchor's
+        // name, a type's or a pick's, shadows it within the document.
+        for expression in &syntax.expressions {
+            if let Expression::Claim(Effectful {
+                anchor: Some(anchor),
+                ..
+            }) = expression
+                && tonk_notation::builtin(&anchor.name).is_some()
+            {
+                scope.shadowed_builtins.lock().insert(anchor.name.clone());
+            }
+        }
         // Pass 1 — attribute needs (concept `with:` dependencies).
         for need in &self.needs {
             match need {
@@ -747,7 +759,7 @@ impl Graph {
             let anchor = anchor.as_ref();
             match pending.kind {
                 DeclarationKind::Attribute => {
-                    let plan = parse_attribute_body(a)?;
+                    let plan = parse_attribute_body(a, scope)?;
                     let entity = plan.entity.clone();
                     let attribute = AttrDef {
                         entity: entity.clone(),
@@ -1295,8 +1307,8 @@ view!: &counter/view
     async fn it_resolves_a_self_contained_document_without_touching_the_resolver() {
         let syntax = must_parse(
             "concept!: &point\n  description: \"a point\"\n  with:\n    \
-             x:\n      description: \"x coord\"\n      the: demo/x\n      \
-             cardinality: one\n      as: signed-integer\npoint!: &origin\n  x: 0\n",
+             x:\n      description: \"x coord\"\n      the: \"demo/x\"\n      \
+             cardinality: :one\n      as: signed-integer\npoint!: &origin\n  x: 0\n",
         );
         let scope = Scope::new();
         let graph = push(&syntax).expect("push");

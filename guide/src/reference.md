@@ -22,7 +22,7 @@ A head ending in `!` writes; without `!` it queries.
 | `this:` | The entity to operate on: omitted (derived from content), `?v` (variable), bare name, or `did:key:…`. |
 | `with:` | In `concept!`/`command!`, the field-name to attribute map.       |
 | `when:` | In `rule!`, the list of premises that must hold.                |
-| `..: _` | Retract every attribute the concept selects that is not named.   |
+| `..: _` | Retract every attribute the concept selects that is not named. Assertions only, and `this:` must select an existing entity. |
 
 ## Field values
 
@@ -41,8 +41,8 @@ A head ending in `!` writes; without `!` it queries.
 | Field         | Values                                         |
 |---------------|------------------------------------------------|
 | `the`         | `domain/name` URI, the attribute's identity.   |
-| `as`          | `text`, `entity`, `unsigned-integer`, `float`. |
-| `cardinality` | `one` (default) or `many`.                     |
+| `as`          | `text`, `entity`, `natural`, `integer`, `float`, `boolean`. |
+| `pick`        | `last` (default), `all`, `top`, `max` or `min`. |
 | `description` | Required.                                      |
 
 ## `<tonk-display>`

@@ -424,10 +424,11 @@ pub struct TonkState {
     /// Spaces whose seed this worker instance already checked against the
     /// shipped bundle. See [`crate::router::adopt::SeedUpgrades`].
     pub(crate) seed_upgrades: crate::router::adopt::SeedUpgrades,
-    /// Whether this deployment renders each space on an origin of its own,
-    /// where the space's own worker holds its content. This worker then
-    /// creates a space's identity and leaves its content to that worker
-    /// (see `router::repository::SpaceSeed`).
+    /// Whether each space renders on an origin of its own, where the
+    /// space's own worker holds it. This worker, the person's profile's, then
+    /// creates a space's identity and mounts nothing of it (see
+    /// `router::space_directory`). So for a person's worker started by a
+    /// site's script (see [`crate::device::spaces_have_origins`]).
     pub site_origins: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Routing keys the hidden account repository answers to, resolved lazily.
     /// Consulted by the middleware that keeps that repository off the generic
@@ -459,6 +460,34 @@ impl TonkState {
     /// [`space_reach`](crate::router::space_reach)).
     pub(crate) fn spaces_elsewhere(&self) -> bool {
         self.site_origins.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// End a native host generation and release its live query subscriptions.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn shutdown(&self) {
+        self.retire();
+    }
+
+    /// Open the ordinary worker runtime in an explicit native storage directory.
+    /// The caller owns authentication, process isolation and the directory's
+    /// lifetime. No default user profile or process working directory is used.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn open_native(directory: &std::path::Path) -> Result<Self, crate::TonkWorkerError> {
+        std::fs::create_dir_all(directory.join("spaces"))
+            .map_err(|error| crate::TonkWorkerError::Internal(error.to_string()))?;
+        let directory = directory
+            .canonicalize()
+            .map_err(|error| crate::TonkWorkerError::Internal(error.to_string()))?;
+        let registry = crate::device::Registry {
+            profile: "hosted".to_owned(),
+            directory: dialog_effects::storage::Directory::At(
+                directory.to_string_lossy().into_owned(),
+            ),
+            standing: Default::default(),
+        };
+        let storage = registry.storage().await?;
+        let profile = registry.open_profile(&storage, "hosted").await?;
+        boot_state(storage, "hosted".to_owned(), profile, registry).await
     }
 
     /// Enter the one-way retiring state and release every query stream.
@@ -1843,7 +1872,11 @@ pub(crate) async fn boot_state_with_profile_library(
         sync_queue: Default::default(),
         clients: Default::default(),
         seed_upgrades: Default::default(),
-        site_origins: Default::default(),
+        // Known before anything runs, the chores of starting included: they
+        // would mount spaces that are another worker's to hold.
+        site_origins: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            crate::device::spaces_have_origins(),
+        )),
         account_keys: Default::default(),
         profile_library,
         registry,
@@ -2267,6 +2300,48 @@ impl TonkServiceWorker {
         })
     }
 
+    /// The person's account's authority over `space`, as this profile has
+    /// it on record, for the space's own worker to compose onto. Resolves
+    /// to the chain, base58.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "spaceAuthority")]
+    pub fn space_authority(&self, space: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            let authority = crate::router::revoke_invite::authority_for_space(&tonk, &space)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(JsValue::from_str(&authority))
+        })
+    }
+
+    /// Sign and publish the revocation of a grant on `space` that its own
+    /// worker asked for: `request` is what that worker sent, as JSON.
+    /// Resolves to the access service's receipt, as JSON.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "revokeGrant")]
+    pub fn revoke_grant(&self, space: String, request: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let request = serde_json::from_str(&request)
+                .map_err(|e| JsError::new(&format!("revocation request: {e}")))?;
+            let tonk = state.read().await;
+            let receipt = crate::router::revoke_invite::revoke_for_space(&tonk, &space, request)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            let receipt = serde_json::to_string(&receipt)
+                .map_err(|e| JsError::new(&format!("revocation receipt: {e}")))?;
+            Ok(JsValue::from_str(&receipt))
+        })
+    }
+
     /// Where `space` syncs and which account this profile acts for, as its
     /// own worker last has to have taken them up. Resolves to
     /// `{ remote, account, name }`, the remote `null` for a space that only exists
@@ -2420,23 +2495,6 @@ impl TonkServiceWorker {
                 .await
                 .map_err(|e| JsError::new(&e.to_string()))?;
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-            Ok(JsValue::UNDEFINED)
-        })
-    }
-
-    /// Say whether this deployment renders each space on an origin of its
-    /// own. Where it does, this worker creates a space's identity and leaves
-    /// its content to the worker of the space's origin.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[wasm_bindgen(js_name = "setSiteOrigins")]
-    pub fn set_site_origins(&self, on: bool) -> Promise {
-        let state = self.state.clone();
-        future_to_promise(async move {
-            state
-                .read()
-                .await
-                .site_origins
-                .store(on, std::sync::atomic::Ordering::Relaxed);
             Ok(JsValue::UNDEFINED)
         })
     }
@@ -3050,4 +3108,133 @@ fn event_source_client_id(event: &web_sys::ExtendableMessageEvent) -> Option<Str
     let source = event.source()?;
     let client: web_sys::Client = source.dyn_into().ok()?;
     Some(client.id())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod native_host_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn native_worker_boots_the_shared_router_in_isolated_storage() {
+        let directory =
+            std::env::temp_dir().join(format!("tonk-worker-host-{}", rand::random::<u64>()));
+        let state = TonkState::open_native(&directory)
+            .await
+            .expect("native worker boot");
+        let did = state.profile.did().to_string();
+        assert!(matches!(state.registry.space_location("example").directory,
+            dialog_effects::storage::Directory::At(ref path) if path == &directory.canonicalize().unwrap().join("spaces").to_string_lossy()));
+        let (router, _) = crate::api_router(state);
+        let response = router
+            .clone()
+            .oneshot(
+                ::axum::http::Request::builder()
+                    .uri("/api/profile")
+                    .body(::axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), ::axum::http::StatusCode::OK);
+        let created = router
+            .clone()
+            .oneshot(
+                ::axum::http::Request::builder()
+                    .method("PUT")
+                    .uri("/api/repository/host-test")
+                    .header("content-type", "application/json")
+                    .body(::axum::body::Body::from(r#"{"branch":{"main":{}}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = created.status();
+        let bytes = ::axum::body::to_bytes(created.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            ::axum::http::StatusCode::CREATED,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let repository: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let key = repository["name"].as_str().expect("routing key");
+        let document = "concept!: &host-example\n  with:\n    title: { the: example.host/title, as: text, description: Test title }\nhost-example!:\n  this: urn:host:record\n  title: Shared worker\n";
+        let evaluated = router
+            .clone()
+            .oneshot(
+                ::axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/repository/{key}/branch/main/evaluate"))
+                    .header("content-type", "text/plain")
+                    .body(::axum::body::Body::from(document))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = evaluated.status();
+        let bytes = ::axum::body::to_bytes(evaluated.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            ::axum::http::StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        for document in [
+            "library/install!:\n  component: tonk:library/notebook\n  time: 1.0\n",
+            "notebook/named!:\n  this: urn:host:notebook\n  title: General commands\nblock/edit!:\n  subject: urn:host:block\n  notebook: urn:host:notebook\n  source: Written through the shared worker\n",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    ::axum::http::Request::builder()
+                        .method("POST")
+                        .uri(format!("/api/repository/{key}/branch/main/evaluate"))
+                        .header("content-type", "text/plain")
+                        .body(::axum::body::Body::from(document))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = ::axum::body::to_bytes(response.into_body(), 1_000_000)
+                .await
+                .unwrap();
+            assert_eq!(
+                status,
+                ::axum::http::StatusCode::OK,
+                "{}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+        drop(router);
+        let reopened = TonkState::open_native(&directory)
+            .await
+            .expect("reopen native worker");
+        assert_eq!(reopened.profile.did().to_string(), did);
+        let (router, _) = crate::api_router(reopened);
+        let read = router
+            .oneshot(
+                ::axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/repository/{key}/branch/main/evaluate?transact=false"
+                    ))
+                    .header("content-type", "text/plain")
+                    .body(::axum::body::Body::from("notebook/block:\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.status(), ::axum::http::StatusCode::OK);
+        let bytes = ::axum::body::to_bytes(read.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("Written through the shared worker"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

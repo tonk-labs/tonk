@@ -24,3 +24,8 @@ import "../webawesome/components/tab/tab.js";
 import "../webawesome/components/tab-panel/tab-panel.js";
 import "../webawesome/components/comparison/comparison.js";
 import "../webawesome/components/badge/badge.js";
+
+// Where `<wa-icon>` reads an icon from. A guest on an origin of its own
+// points this at the icons the app ships there (`/webawesome/icons`), in
+// place of Font Awesome's host.
+export { setIconPath } from "../webawesome/utilities/base-path.js";

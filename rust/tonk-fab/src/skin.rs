@@ -78,7 +78,7 @@ button{ font:inherit; letter-spacing:inherit; color:inherit; background:none; bo
 .w{ --_wash-on: color-mix(in srgb, var(--_on) 16%, transparent); }
 .disc{ width:14px; height:14px; border-radius:50%; background:var(--_ink); flex:none; }
 .disc.offline{ background:transparent; border:2px solid var(--_ink); }
-.disc.paused{ background:linear-gradient(135deg,var(--_ink) 0 50%,transparent 50% 100%); border:1.5px solid var(--_ink); }
+.disc.paused,.disc.observing{ background:linear-gradient(135deg,var(--_ink) 0 50%,transparent 50% 100%); border:1.5px solid var(--_ink); }
 .disc.alert{ animation:fabb-blink var(--_blink) var(--_ease) infinite; }
 /* the terminal block cursor — shared by bar cells and fields */
 .cur{ display:inline-block; width:7px; height:13px; background:var(--_ink); flex:none;
@@ -139,6 +139,13 @@ mod tests {
     fn it_holds_every_animation_in_a_hidden_tab() {
         assert!(SKIN.contains(".w.vispause *"));
         assert!(SKIN.contains("animation-play-state:paused !important"));
+    }
+
+    #[test]
+    fn it_draws_an_observer_as_the_paused_disc() {
+        // An observer syncs nothing of its own, as a paused space does:
+        // the same half-filled disc says so. The label tells them apart.
+        assert!(SKIN.contains(".disc.paused,.disc.observing{ background:linear-gradient(135deg"));
     }
 
     #[test]

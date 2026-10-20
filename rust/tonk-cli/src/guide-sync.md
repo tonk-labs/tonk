@@ -6,7 +6,9 @@ remote branch that `tonk pull` fetches and merges and `tonk push` advances.
 `tonk remote set-upstream` selects the upstream.
 
 Committing data commands pull before the write and push afterwards when an
-upstream is configured. `--no-sync` disables that wrapper for one command.
+upstream is configured. If another writer moved the upstream in between, the
+push is refused; the command then pulls, merging both sides' facts, and pushes
+again, a few times before giving up. `--no-sync` disables that wrapper for one command.
 `--dry-run` never contacts the upstream because it cannot commit.
 
 `tonk status` fetches and reports whether local main is synced, ahead, behind,
