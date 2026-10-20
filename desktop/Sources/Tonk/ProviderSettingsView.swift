@@ -23,7 +23,11 @@ struct ProviderSettingsView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 20) {
-      Text("Settings").font(.title2.weight(.semibold))
+      Text("Chat Agent Settings").font(.system(size: 15, weight: .semibold))
+      Text(
+        "The chat agent edits as you, only in Tonk’s chat. Agent accounts have their own identity and access, separate from this chat."
+      )
+      .font(.system(size: 12)).foregroundStyle(.secondary)
       VStack(alignment: .leading, spacing: 12) {
         HStack {
           Text("Provider")
@@ -224,7 +228,7 @@ struct ProviderSettingsView: View {
           .disabled(model.loginPending || model.connecting)
       }.controlSize(.regular)
     }
-    .padding(24).frame(width: 540).nativeControl().disabled(saving)
+    .padding(22).frame(width: 440).nativeControl().disabled(saving)
     .task { if !model.connected { await model.connect() } }
     .interactiveDismissDisabled(saving)
     .sheet(isPresented: $showAdvancedSettings) { AdvancedSettingsView() }

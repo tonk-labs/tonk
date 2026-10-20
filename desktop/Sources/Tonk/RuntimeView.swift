@@ -22,6 +22,7 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   var cachedAccountRoot: String?
   var liveAccountRoot: String?
   @Published var selectedSpace: TonkSpace?
+  @Published var selectedView: SpaceViewEntry?
   /// The space window's page loads on its own; the account page stays home.
   @Published var spaceLoading = false
   @Published var spaceError: String?
@@ -63,7 +64,9 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     spaceConfiguration.websiteDataStore = configuration.websiteDataStore
     spaceConfiguration.preferences.inactiveSchedulingPolicy = .none
     // Tonk carries this presentation flag into its sealed guest iframes.
-    for controller in [configuration.userContentController, spaceConfiguration.userContentController] {
+    for controller in [
+      configuration.userContentController, spaceConfiguration.userContentController,
+    ] {
       controller.addUserScript(
         WKUserScript(
           source: "window.__tonkHideFab = true;",

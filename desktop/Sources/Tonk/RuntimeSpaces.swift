@@ -127,6 +127,7 @@ extension RuntimeModel {
   func openSpace(_ space: TonkSpace, at url: URL? = nil) {
     spaceLoading = true
     selectedSpace = space
+    if selectedView?.url(in: space) != url { selectedView = nil }
     spaceError = nil
     let target = url.flatMap { space.contains($0) ? $0 : nil } ?? space.url
     spaceWebView.load(URLRequest(url: target))
@@ -140,6 +141,7 @@ extension RuntimeModel {
   /// Leaves the space window's page blank, so a later space never flashes the last one.
   func closeSpace() {
     selectedSpace = nil
+    selectedView = nil
     spaceLoading = false
     spaceError = nil
     spaceWebView.loadHTMLString("", baseURL: nil)

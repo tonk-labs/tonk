@@ -35,11 +35,23 @@ enum ActivityFixture {
     model.saved.conversation.appendToolActivity(
       "Evaluation could not be confirmed. Do not repeat it; query the space first.",
       messageID: "second")
+    runtime.selectedSpace = space
+    runtime.selectedView = SpaceViewEntry(model: "fixture", title: "Fixture view", isHome: true)
+    if args.contains("--loading-fixture") { runtime.spaceLoading = true }
+    if let index = args.firstIndex(of: "--appearance"), args.indices.contains(index + 1) {
+      NSApp.appearance = NSAppearance(named: args[index + 1] == "dark" ? .darkAqua : .aqua)
+    }
     model.openedSpace = space
     model.showingChat = true
     model.runtime = runtime
-    runtime.spaceWebView.loadHTMLString(
-      "<p>Layout fixture only. No live worker or model.</p>", baseURL: nil)
+    // The production navigation policy intentionally rejects about:blank.
+    // This isolated fixture uses no worker, account or remote content.
+    runtime.spaceWebView.navigationDelegate = nil
+    if !args.contains("--loading-fixture") {
+      runtime.spaceWebView.loadHTMLString(
+        "<style>body{font:13px system-ui;padding:24px;color:#777}</style><p>Layout fixture only. No live worker or model.</p>",
+        baseURL: nil)
+    }
   }
 }
 
@@ -133,7 +145,17 @@ extension ActivityFixture {
       AccessEvent(
         date: now.addingTimeInterval(-5), subject: team, action: .made, kind: .agent,
         target: "cycle"))
-    access.showFixture(fixture, agents: agents, accountName: "Eileen Wagner", journal: journal)
+    access.showFixture(
+      fixture, agents: agents, accountName: "Eileen Wagner", journal: journal,
+      email: "eileen@example.test",
+      passkeys: [
+        AccountPasskey(
+          id: "fixture-one", createdOn: "iCloud Keychain on this Mac",
+          createdAt: now.addingTimeInterval(-18 * 86_400)),
+        AccountPasskey(
+          id: "fixture-two", createdOn: "Firefox on macOS",
+          createdAt: now.addingTimeInterval(-39 * 86_400)),
+      ])
     runtime.spaces = spaces
     runtime.catalogLoaded = true
     runtime.accountConnected = true
@@ -191,6 +213,8 @@ extension ActivityFixture {
       args.indices.contains(index + 1)
     else { return nil }
     switch args[index + 1] {
+    case "address-book": return .addressBook
+    case "account": return .account
     case "all": return .allLinks
     case "agents": return .agentLinks
     case let name: return spaces.first(where: { $0.title == name }).map { .space($0.id) }

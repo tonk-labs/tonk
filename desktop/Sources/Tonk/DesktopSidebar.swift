@@ -3,6 +3,8 @@ import SwiftUI
 
 enum DesktopPage: Hashable {
   case allLinks
+  case addressBook
+  case account
   case agentLinks
   case space(String)
 }
@@ -27,12 +29,26 @@ struct DesktopSidebar: View {
   var body: some View {
     List(selection: $selection) {
       Section {
-        Label("All Links", systemImage: "link")
-          .badge(access.allLinks.count)
-          .tag(DesktopPage.allLinks)
-        Label { Text("Connections") } icon: { BotGlyph() }
-          .badge(access.agentLinks.count)
-          .tag(DesktopPage.agentLinks)
+        Label {
+          Text("All Links")
+        } icon: {
+          DesktopGlyph(name: "imgIconLink")
+        }
+        .tag(DesktopPage.allLinks)
+        Label {
+          Text("Connections")
+        } icon: {
+          DesktopGlyph(name: "imgIconPlug")
+        }
+        .badge(access.agentLinks.count)
+        .tag(DesktopPage.agentLinks)
+        Label {
+          Text("Address Book")
+        } icon: {
+          DesktopGlyph(name: "imgIconBookUser")
+        }
+        .badge(access.contacts.count)
+        .tag(DesktopPage.addressBook)
       }
       Section("Spaces") {
         ForEach(spaces) { space in
@@ -45,30 +61,29 @@ struct DesktopSidebar: View {
               enabled: runtime.accountConnected
             ) { customizing = space.id }
           }
-            .badge(access.links(for: space.id).count)
-            .tag(DesktopPage.space(space.id))
-            .help(space.title)
-            .onHover { over in
-              if over {
-                hovered = space.id
-              } else if hovered == space.id {
-                hovered = nil
-              }
+          .tag(DesktopPage.space(space.id))
+          .help(space.title)
+          .onHover { over in
+            if over {
+              hovered = space.id
+            } else if hovered == space.id {
+              hovered = nil
             }
-            .contextMenu {
-              Button("Change Icon…") { customizing = space.id }
-                .disabled(!runtime.accountConnected)
+          }
+          .contextMenu {
+            Button("Change Icon…") { customizing = space.id }
+              .disabled(!runtime.accountConnected)
+          }
+          .popover(
+            isPresented: Binding(
+              get: { customizing == space.id },
+              set: { if !$0 { customizing = nil } }),
+            arrowEdge: .trailing
+          ) {
+            SpaceAppearancePicker(space: space, shared: shared) { icon, color in
+              save(space, icon: icon, color: color)
             }
-            .popover(
-              isPresented: Binding(
-                get: { customizing == space.id },
-                set: { if !$0 { customizing = nil } }),
-              arrowEdge: .trailing
-            ) {
-              SpaceAppearancePicker(space: space, shared: shared) { icon, color in
-                save(space, icon: icon, color: color)
-              }
-            }
+          }
         }
         if spaces.isEmpty && !search.isEmpty {
           Text("No Matching Spaces").foregroundStyle(.secondary)
@@ -76,6 +91,9 @@ struct DesktopSidebar: View {
       }
     }
     .listStyle(.sidebar)
+    .font(.system(size: 13))
+    .environment(\.defaultMinListRowHeight, 28)
+    .controlSize(.small)
     .searchable(text: $search, placement: .sidebar, prompt: "Search Spaces")
     .searchFocused(searchFocused)
     .safeAreaInset(edge: .bottom, spacing: 0) { footer }
@@ -96,17 +114,22 @@ struct DesktopSidebar: View {
       HStack(spacing: 8) {
         Text(AccessText.initials(access.accountName ?? ""))
           .font(.caption.weight(.semibold))
-          .frame(width: 26, height: 26)
+          .frame(width: 22, height: 22)
           .background(.fill.secondary, in: Circle())
           .accessibilityHidden(true)
-        Text(access.accountName ?? (runtime.accountConnected ? "Your Account" : "Not Signed In"))
-          .lineLimit(1)
+        Button {
+          selection = .account
+        } label: {
+          Text(access.accountName ?? (runtime.accountConnected ? "Your Account" : "Not Signed In"))
+            .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+        }.buttonStyle(.plain).help("Account")
         Spacer(minLength: 4)
         Menu {
           Button("New Link…", action: onNewLink)
             .disabled(runtime.spaces.isEmpty || !runtime.accountConnected)
           Divider()
-          Button("Settings…", action: onSettings)
+          Button("Account") { selection = .account }
+          Button("Chat Agent Settings…", action: onSettings)
           if let onSignOut {
             Divider()
             Button("Sign Out of Tonk", action: onSignOut)
@@ -121,7 +144,8 @@ struct DesktopSidebar: View {
         .help("Account and Settings")
       }
     }
-    .padding(.horizontal, 16).padding(.vertical, 12)
+    .font(.system(size: 13))
+    .padding(.horizontal, 10).padding(.vertical, 10)
     .overlay(alignment: .top) { Divider() }
   }
 }

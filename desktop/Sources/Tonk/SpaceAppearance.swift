@@ -11,6 +11,18 @@ enum SpaceAppearance {
     "house", "briefcase", "graduationcap", "paintpalette", "music.note", "gamecontroller",
   ]
 
+  static let assets = Dictionary(
+    uniqueKeysWithValues: zip(
+      icons,
+      [
+        "appearanceLayoutGrid", "appearanceUsers1", "appearanceBook1", "appearanceListChecks",
+        "appearanceFolder", "appearanceFileText",
+        "appearanceStar", "appearanceHeart", "appearanceLeaf1", "appearanceZap", "appearanceFlag",
+        "appearanceCalendar",
+        "appearanceHouse", "appearanceBriefcase", "appearanceGraduationCap", "appearancePalette",
+        "appearanceMusic", "appearanceGamepad",
+      ]))
+
   static let colors: [(token: String, name: String, color: Color)] = [
     ("red", "Red", .red), ("orange", "Orange", .orange), ("yellow", "Yellow", .yellow),
     ("green", "Green", .green), ("teal", "Teal", .teal), ("blue", "Blue", .blue),
@@ -34,7 +46,9 @@ struct SpaceIcon: View {
   let shared: Bool
 
   var body: some View {
-    let image = Image(systemName: SpaceAppearance.symbol(for: space, shared: shared))
+    let image = DesktopGlyph(
+      name: SpaceAppearance.assets[SpaceAppearance.symbol(for: space, shared: shared)]
+        ?? "appearanceLayoutGrid", size: 16)
     if let tint = SpaceAppearance.color(space.color) {
       image.foregroundStyle(tint)
     } else {
@@ -99,19 +113,20 @@ struct SpaceAppearancePicker: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("Icon").font(.headline)
-      LazyVGrid(columns: Array(repeating: GridItem(.fixed(32), spacing: 6), count: 6), spacing: 6) {
+      Text("Icon").font(.system(size: 13, weight: .semibold))
+      LazyVGrid(columns: Array(repeating: GridItem(.fixed(28), spacing: 4), count: 6), spacing: 4) {
         ForEach(SpaceAppearance.icons, id: \.self) { symbol in
           Button {
             icon = symbol
             onChange(icon, color)
           } label: {
-            Image(systemName: symbol)
-              .frame(width: 32, height: 32)
+            DesktopGlyph(name: SpaceAppearance.assets[symbol] ?? "appearanceLayoutGrid", size: 16)
+              .frame(width: 28, height: 28)
               .foregroundStyle(SpaceAppearance.color(color) ?? .primary)
               .background(
                 shownIcon == symbol ? AnyShapeStyle(.selection) : AnyShapeStyle(.clear),
-                in: RoundedRectangle(cornerRadius: 7))
+                in: RoundedRectangle(cornerRadius: 7)
+              )
               .contentShape(RoundedRectangle(cornerRadius: 7))
           }
           .buttonStyle(.plain)
@@ -119,14 +134,30 @@ struct SpaceAppearancePicker: View {
           .accessibilityAddTraits(shownIcon == symbol ? .isSelected : [])
         }
       }
-      Text("Color").font(.headline)
-      LazyVGrid(columns: Array(repeating: GridItem(.fixed(32), spacing: 6), count: 6), spacing: 6) {
+      Text("Colour").font(.system(size: 13, weight: .semibold))
+      LazyVGrid(columns: Array(repeating: GridItem(.fixed(28), spacing: 4), count: 6), spacing: 4) {
         swatch(token: nil, name: "Default", fill: AnyShapeStyle(.secondary))
-        ForEach(SpaceAppearance.colors, id: \.token) { entry in
+        ForEach(
+          SpaceAppearance.colors.filter {
+            ["red", "orange", "green", "blue", "purple"].contains($0.token)
+          }, id: \.token
+        ) { entry in
           swatch(token: entry.token, name: entry.name, fill: AnyShapeStyle(entry.color))
         }
       }
       HStack {
+        Menu("More Colours") {
+          ForEach(
+            SpaceAppearance.colors.filter {
+              !["red", "orange", "green", "blue", "purple"].contains($0.token)
+            }, id: \.token
+          ) { entry in
+            Button(entry.name) {
+              color = entry.token
+              onChange(icon, color)
+            }
+          }
+        }.menuStyle(.borderlessButton).fixedSize()
         Spacer()
         Button("Reset") {
           icon = nil
@@ -136,8 +167,9 @@ struct SpaceAppearancePicker: View {
         .disabled(icon == nil && color == nil)
       }
     }
-    .padding(20)
-    .frame(width: 262)
+    .font(.system(size: 12)).controlSize(.small)
+    .padding(14)
+    .frame(width: 216)
   }
 
   private func swatch(token: String?, name: String, fill: AnyShapeStyle) -> some View {

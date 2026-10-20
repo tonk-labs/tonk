@@ -69,6 +69,44 @@ final class RuntimeAccountTests: XCTestCase {
     }
   }
 
+  func testAccountDisplayFactsUseActiveBranchAndOnlyCurrentAccountMetadata() async throws {
+    let webView = try await fixtureWebView()
+    let result = try await webView.callAsyncJavaScript(
+      """
+      const root = {rootDid: 'did:key:account'};
+      const requests = [];
+      async function api(path, body) {
+        requests.push({path, body});
+        const fields = body.predicate.with;
+        if (fields.branch) return [{fields:{branch:'branch-entity'}}];
+        if (fields.name) return [{fields:{name:'account/test'}}];
+        if (path !== '/api/profile/branch/account%2Ftest/query') throw new Error('Wrong branch');
+        if (fields.email) {
+          if (body.terms.this !== root.rootDid) throw new Error('Unscoped email read');
+          return [{fields:{email:'person@example.test'}}];
+        }
+        if (fields.sender) {
+          if (body.terms.sender !== root.rootDid) throw new Error('Unscoped envelope read');
+          return [{fields:{to:'old'}},{fields:{to:'new'}},{fields:{to:'new'}}];
+        }
+        return [{fields:{createdOn:body.terms.this === 'old' ? 'Safari' : 'Chrome',
+          createdAt:body.terms.this === 'old' ? 100 : 200}}];
+      }
+      const details = await (async () => { \(AccountDisplayFacts.script) })();
+      return {details, requests};
+      """, arguments: [:], in: nil, contentWorld: .page)
+    let object = try XCTUnwrap(result as? [String: Any])
+    let details = try XCTUnwrap(object["details"] as? [String: Any])
+    XCTAssertEqual(details["email"] as? String, "person@example.test")
+    let passkeys = try XCTUnwrap(details["passkeys"] as? [[String: Any]])
+    XCTAssertEqual(passkeys.compactMap { $0["createdOn"] as? String }, ["Chrome", "Safari"])
+    XCTAssertEqual((object["requests"] as? [Any])?.count, 6)
+    let serialized = String(
+      decoding: try JSONSerialization.data(withJSONObject: details), as: UTF8.self)
+    XCTAssertFalse(serialized.contains("did:key"))
+    XCTAssertFalse(serialized.contains("credential"))
+  }
+
   private func fixtureWebView() async throws -> WKWebView {
     let view = WKWebView()
     view.loadHTMLString("<p>Account fixture</p>", baseURL: nil)

@@ -25,12 +25,12 @@ struct Roster: View {
 
   var body: some View {
     HStack(spacing: 10) {
-      Text(summary)
       HStack(spacing: -6) {
         ForEach(members.prefix(limit)) { chip($0) }
         if members.count > limit { more }
       }
       .accessibilityElement(children: .contain)
+      Text(summary).lineLimit(1)
     }
     .animation(.spring(duration: 0.35, bounce: 0.2), value: hovered)
   }
@@ -69,10 +69,16 @@ struct Roster: View {
         .rosterChip()
     }
     .buttonStyle(.plain)
-    .onHover { overMore = $0; settleList() }
+    .onHover {
+      overMore = $0
+      settleList()
+    }
     .popover(isPresented: $listShown, arrowEdge: .bottom) {
       MemberList(members: members)
-        .onHover { overList = $0; settleList() }
+        .onHover {
+          overList = $0
+          settleList()
+        }
     }
     .accessibilityLabel("Show all \(members.count) members")
   }
@@ -115,7 +121,7 @@ private struct MemberList: View {
 extension View {
   /// The roster's initial circle, which grows into a capsule around wider content.
   fileprivate func rosterChip() -> some View {
-    frame(minWidth: 24, minHeight: 24)
+    frame(minWidth: 22, minHeight: 22)
       .background(.fill.secondary, in: Capsule())
       .background(Color(nsColor: .windowBackgroundColor), in: Capsule())
       .clipShape(Capsule())
@@ -131,8 +137,8 @@ struct LinkKindIcon: View {
   var body: some View {
     switch kind {
     case .agent: BotGlyph()
-    case .publicRead: Image(systemName: "globe")
-    case .person, .scoped: Image(systemName: "link")
+    case .publicRead: DesktopGlyph(name: "imgIconGlobe", size: 14)
+    case .person, .scoped: DesktopGlyph(name: "imgIconLink", size: 14)
     }
   }
 }
@@ -144,6 +150,7 @@ struct AccessLinkRow: View {
   @ObservedObject var access: AccessModel
   @State private var confirming = false
   @State private var resetting = false
+  @State private var publishing = false
 
   var body: some View {
     TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -153,19 +160,26 @@ struct AccessLinkRow: View {
           .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 2) {
           HStack(spacing: 6) {
-            Text(link.title)
+            Text(
+              link.kind == .person
+                && space.map({ access.defaultLink(in: $0)?.id != link.id }) == true
+                ? "Shared link" : link.title)
             if link.forAgents { LinkBadge(text: "for agents") }
           }
-          Text(link.detail(now: context.date)).font(.callout).foregroundStyle(.secondary)
+          Text(link.detail(now: context.date)).font(.system(size: 12)).foregroundStyle(.secondary)
           if let usage = link.usage(madeAt: access.madeAt(link), now: context.date) {
-            Text(usage).font(.callout).foregroundStyle(.secondary)
+            Text(usage).font(.system(size: 12)).foregroundStyle(.secondary)
           }
         }
         .lineLimit(1)
-        Spacer(minLength: 12)
+        Spacer(minLength: 6)
         actions
       }
       .padding(.vertical, 2)
+    }
+    .font(.system(size: 13))
+    .sheet(isPresented: $publishing) {
+      if let space { PublishSpaceSheet(space: space, access: access) }
     }
     .accessibilityElement(children: .contain)
     .confirmationDialog(confirmTitle, isPresented: $confirming) {
@@ -196,11 +210,15 @@ struct AccessLinkRow: View {
         }
         .disabled(busy || space == nil)
       }
-      Button(link.kind == .publicRead ? "Make Private…" : "Revoke…") {
-        resetting = false
-        confirming = true
+      if link.kind == .publicRead {
+        Button("Settings…") { publishing = true }.disabled(busy || space == nil)
+      } else if !link.canReset {
+        Button("Revoke…") {
+          resetting = false
+          confirming = true
+        }
+        .disabled(busy || space == nil)
       }
-      .disabled(busy || space == nil)
       Button("Copy") { access.copyLink(link) }
         .disabled(busy || stored == nil)
         .help(
@@ -208,7 +226,7 @@ struct AccessLinkRow: View {
             ? "Only links made on this Mac can be copied. Reset it or make a new link to get one."
             : "Copy link")
     }
-    .buttonStyle(.bordered)
+    .buttonStyle(.bordered).controlSize(.small).buttonBorderShape(.capsule)
   }
 
   private var confirmTitle: String {
@@ -238,32 +256,6 @@ struct AccessLinkRow: View {
 /// A robot head for agent connections; SF Symbols has no public bot glyph.
 struct BotGlyph: View {
   var body: some View {
-    BotShape()
-      .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-      .frame(width: 17, height: 17)
-      .accessibilityHidden(true)
-  }
-}
-
-/// Drawn on a 24-point grid and scaled to fit.
-private struct BotShape: Shape {
-  func path(in rect: CGRect) -> Path {
-    let s = min(rect.width, rect.height) / 24
-    func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-      CGPoint(x: rect.midX + (x - 12) * s, y: rect.midY + (y - 12) * s)
-    }
-    var path = Path()
-    path.addRoundedRect(
-      in: CGRect(origin: p(4, 8), size: CGSize(width: 16 * s, height: 12 * s)),
-      cornerSize: CGSize(width: 2 * s, height: 2 * s))
-    for (from, to) in [
-      ((12, 8), (12, 4)), ((12, 4), (8, 4)),  // antenna
-      ((2, 14), (4, 14)), ((20, 14), (22, 14)),  // ears
-      ((9, 13), (9, 15)), ((15, 13), (15, 15)),  // eyes
-    ] as [((CGFloat, CGFloat), (CGFloat, CGFloat))] {
-      path.move(to: p(from.0, from.1))
-      path.addLine(to: p(to.0, to.1))
-    }
-    return path
+    DesktopGlyph(name: "imgIconBot", size: 16)
   }
 }

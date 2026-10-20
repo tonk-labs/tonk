@@ -41,7 +41,7 @@ xcrun actool "$PWD/Resources/Tonk.icon" \
     --app-icon Tonk \
     --output-partial-info-plist "$PWD/.build/tonk-icon-info.plist"
 /usr/libexec/PlistBuddy -c "Merge '$PWD/.build/tonk-icon-info.plist'" "$app/Contents/Info.plist"
-for bundle in ".build/$configuration/textual_Textual.bundle" ".build/$configuration/swiftui-math_SwiftUIMath.bundle"; do
+for bundle in ".build/$configuration/Tonk_Tonk.bundle" ".build/$configuration/textual_Textual.bundle" ".build/$configuration/swiftui-math_SwiftUIMath.bundle"; do
     ditto "$bundle" "$app/Contents/Resources/$(basename "$bundle")"
 done
 sign_args=()

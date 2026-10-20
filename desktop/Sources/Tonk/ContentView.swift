@@ -27,6 +27,7 @@ struct ContentView: View {
   @State private var page: DesktopPage?
   @State private var sidebarColumns = NavigationSplitViewVisibility.all
   @State private var newLink: NewLinkRequest?
+  @State private var topChromeHovered = false
   @State private var showHistory = false
   @State private var showProviderSettings = false
   @State private var accountError: String?
@@ -61,13 +62,26 @@ struct ContentView: View {
           AnimatedSidebar(
             isVisible: showingChat, reduceMotion: reduceMotion,
             maximumWidth: geometry.size.width / 2,
-            sidebar: chat, detail: workspace,
+            sidebar: viewSidebar, detail: viewDetail,
             onVisibilitySettled: { visible in
               if showingChat == visible { composing = visible }
             }
           )
         }
-        .modifier(RuntimeToolbarBackground(enabled: !reduceTransparency))
+        .overlay(alignment: .top) {
+          if !showingChat {
+            ViewChromeHoverRegion { topChromeHovered = $0 }
+              .frame(maxWidth: .infinity).frame(height: 52)
+              .overlay {
+                collapsedChrome
+                  .opacity(topChromeHovered ? 1 : 0)
+                  .allowsHitTesting(topChromeHovered)
+                  .accessibilityHidden(!topChromeHovered)
+              }
+          }
+        }
+        .background(ViewWindowConfiguration())
+        .ignoresSafeArea(.container, edges: .top)
       } else {
         // The account page stays mounted out of sight; the passkey sheet needs it on screen.
         RuntimeView(webView: runtime.webView)
@@ -119,12 +133,13 @@ struct ContentView: View {
       )
       .navigationTitle(
         isSpace
-          ? (model.openedSpace?.title ?? "")
+          ? (runtime.selectedView?.title ?? model.openedSpace?.title ?? "Space")
           : (runtime.showsSpacePicker
             ? pageTitle : (RuntimeLocation.deployment == .production ? "" : "Tonk"))
       )
       .navigationSubtitle(
-        RuntimeLocation.deployment == .production ? "" : RuntimeLocation.home.absoluteString
+        isSpace || RuntimeLocation.deployment == .production
+          ? "" : RuntimeLocation.home.absoluteString
       )
       .toolbar { windowToolbar }
       .toolbarBackground(
@@ -132,7 +147,7 @@ struct ContentView: View {
           ? AnyShapeStyle(Color(nsColor: .textBackgroundColor)) : AnyShapeStyle(.ultraThinMaterial),
         for: .windowToolbar
       )
-      .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+      .toolbarBackgroundVisibility(isSpace ? .hidden : .visible, for: .windowToolbar)
       .disabled(signingOut)
       .onChange(of: model.openedSpace?.id, initial: true) { _, id in
         if isSpace {
@@ -173,24 +188,6 @@ struct ContentView: View {
         NewLinkSheet(spaces: runtime.spaces, access: access, subject: request.id)
       }
       .overlay(alignment: .bottom) { noticeToast }
-      .sheet(isPresented: $showHistory) {
-        ChatHistoryView(
-          model: model, space: model.openedSpace
-        ) { session in
-          Task {
-            if await model.openChat(session.id) {
-              if let space = model.saved.conversation.space {
-                runtime.openSpace(space)
-                model.openedSpace = space
-              } else {
-                runtime.showSpaces()
-              }
-              showingChat = true
-              showHistory = false
-            }
-          }
-        }
-      }
       .onChange(of: showingChat) { _, visible in
         if !visible { composing = false }
       }
@@ -208,78 +205,17 @@ struct ContentView: View {
 
   @ToolbarContentBuilder
   private var windowToolbar: some ToolbarContent {
-    if isSpace {
-      ToolbarItem(id: "toggle-chat", placement: .navigation) {
-        Button {
-          toggleAgentSidebar()
-        } label: {
-          Image(systemName: "sidebar.left").frame(width: 20, height: 20)
-        }.nativeControl(circular: true).controlSize(.large)
-          .accessibilityLabel(showingChat ? "Hide chat" : "Show chat")
-          .help(showingChat ? "Hide chat (⌘B)" : "Show chat (⌘B)")
+    if !isSpace && runtime.showsSpacePicker, let space = selectedSpace {
+      ToolbarItem(id: "share-space", placement: .primaryAction) {
+        SpaceShareControl(space: space, access: access)
+          .disabled(!runtime.accountConnected)
+      }.customGlassToolbarItem()
+      ToolbarItem(id: "space-sync", placement: .navigation) {
+        SpaceSyncControl(runtime: runtime, space: space)
       }.customGlassToolbarItem()
     }
-    if isSpace {
-      ToolbarItem(id: "space-actions", placement: .primaryAction) {
-        GlassControls {
-          HStack(spacing: 8) {
-            if runtime.spaceLoading || runtime.catalogLoading {
-              ProgressView()
-                .controlSize(.small)
-                .frame(width: 16, height: 16)
-                .accessibilityLabel("Refreshing space")
-                .help("Refreshing…")
-            }
-            Button {
-              model.startSpaceChat()
-            } label: {
-              Image(systemName: "square.and.pencil").frame(width: 20, height: 20)
-            }.nativeControl(circular: true).accessibilityLabel("New chat").help("New chat (⇧⌘N)")
-              .disabled(chatActionsDisabled)
-            Button {
-              showHistory = true
-            } label: {
-              Image(systemName: "clock").frame(width: 20, height: 20)
-            }.nativeControl(circular: true).accessibilityLabel("Chat history").help("Chat history")
-              .keyboardShortcut("h", modifiers: [.command, .shift])
-              .disabled(chatActionsDisabled)
-            Divider().frame(height: 18).padding(.horizontal, 4)
-            Button {
-              newLink = model.openedSpace.map { NewLinkRequest(id: $0.id) }
-            } label: {
-              Image(systemName: "link.badge.plus").frame(width: 20, height: 20)
-            }.nativeControl(circular: true).accessibilityLabel("New link").help("New link")
-              .disabled(runtime.loading || !runtime.accountConnected)
-          }.labelStyle(.titleAndIcon).fixedSize().controlSize(.large)
-        }.padding(.vertical, 4)
-      }.customGlassToolbarItem()
-    }
-    if !isSpace
-      && runtime.showsSpacePicker
-    {
-      if runtime.loading || runtime.catalogLoading {
-        ToolbarItem(id: "refreshing", placement: .primaryAction) {
-          ProgressView()
-            .controlSize(.small)
-            .frame(width: 16, height: 16)
-            .accessibilityLabel("Refreshing spaces")
-            .help("Refreshing…")
-        }.customGlassToolbarItem()
-      }
-      ToolbarItem(id: "new-link", placement: .primaryAction) {
-        Button {
-          startNewLink()
-        } label: {
-          Image(systemName: "link.badge.plus").frame(width: 20, height: 20)
-        }
-        .nativeControl(circular: true).controlSize(.large)
-        .accessibilityLabel("New Link")
-        .help("New Link (⌘N)")
-        .disabled(runtime.spaces.isEmpty || !runtime.accountConnected)
-      }.customGlassToolbarItem()
-    }
-    ToolbarItem(id: "more-options", placement: .primaryAction) {
-      moreMenu
+    if !isSpace {
+      ToolbarItem(id: "more-options", placement: .primaryAction) { moreMenu }
     }
   }
 
@@ -326,27 +262,24 @@ struct ContentView: View {
     VStack(spacing: 0) {
       ScrollViewReader { reader in
         ScrollView {
-          LazyVStack(alignment: .leading, spacing: 22) {
+          LazyVStack(alignment: .leading, spacing: 12) {
             ForEach(ChatTranscript.grouped(model.saved.conversation.messages)) { message in
-              VStack(alignment: .leading, spacing: 7) {
-                if message.role == "user" {
-                  Text("You")
-                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+              HStack {
+                if message.role == "user" { Spacer(minLength: 24) }
+                VStack(alignment: .leading, spacing: 7) {
+                  if message.role == "assistant" {
+                    HStack(spacing: 6) {
+                      DesktopGlyph(name: "r2IconBot", size: 14)
+                      Text(agentName)
+                    }.font(.system(size: 12)).foregroundStyle(.secondary)
+                  }
+                  MessageMarkdown(text: message.text).font(.system(size: 13))
                 }
-                MessageMarkdown(text: message.text)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-              }
-              .padding(message.role == "user" ? 14 : 0)
-              .background(
-                message.role == "user" ? Color(nsColor: .controlBackgroundColor) : .clear,
-                in: RoundedRectangle(cornerRadius: 14)
-              )
-              .overlay {
-                if message.role == "user" {
-                  RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
-                    .allowsHitTesting(false)
-                }
+                .padding(message.role == "user" ? 10 : 0)
+                .background(
+                  message.role == "user" ? Color(nsColor: .textBackgroundColor) : .clear,
+                  in: RoundedRectangle(cornerRadius: 14))
+                if message.role != "user" { Spacer(minLength: 0) }
               }
               if let entries = message.toolActivity, !entries.isEmpty {
                 DisclosureGroup("Space activity (\(entries.count))") {
@@ -393,7 +326,8 @@ struct ContentView: View {
               Text("Reply stopped").font(.caption).foregroundStyle(.secondary)
             }
             Color.clear.frame(height: 1).id("end")
-          }.frame(maxWidth: 680).padding(24).frame(maxWidth: .infinity)
+          }.frame(maxWidth: 680).padding(.horizontal, 6).padding(.vertical, 10).frame(
+            maxWidth: .infinity)
         }
         .overlay {
           if model.connecting {
@@ -404,11 +338,13 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .textBackgroundColor))
           } else if model.saved.conversation.messages.isEmpty && !model.busy {
-            Text("Send a message to start")
-              .foregroundStyle(.secondary)
-              .multilineTextAlignment(.center)
-              .padding(24)
-              .allowsHitTesting(false)
+            Text(
+              "Ask \(agentName) to change anything in \(model.openedSpace?.title ?? "this space")."
+            )
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .padding(24)
+            .allowsHitTesting(false)
           }
         }
         .onChange(of: model.saved.conversation.messages) { _, _ in
@@ -417,35 +353,167 @@ struct ContentView: View {
       }
 
     }
-    .background(Color(nsColor: .textBackgroundColor))
+    .background(DesktopStyle.group)
     .safeAreaInset(edge: .top, spacing: 0) {
-      chatHeader.padding(12).background(Color(nsColor: .textBackgroundColor))
+      chatHeader.padding(.bottom, 10).background(DesktopStyle.group)
     }
     .safeAreaInset(edge: .bottom, spacing: 0) { composer }
   }
 
-  private var chatHeader: some View {
-    GlassControls {
-      HStack(spacing: 12) {
-        Label("Chat", systemImage: "bubble.left.and.bubble.right").font(.headline)
-        Spacer(minLength: 8)
-        Button {
-          showProviderSettings = true
-        } label: {
-          HStack(spacing: 6) {
-            Text(model.connecting ? "Connecting…" : model.modelLabel).lineLimit(1)
-            Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
-          }.frame(height: 20)
-        }.nativeControl().help("Model settings: \(model.modelLabel)")
-          .accessibilityLabel("Model settings: \(model.modelLabel)")
-          .disabled(accountActionsDisabled)
-        if !model.connected {
-          Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } }
-            .labelStyle(.iconOnly).nativeControl(circular: true)
-            .help("Reconnect").disabled(model.connecting)
-        }
-      }.padding(.horizontal, 8).padding(.vertical, 4)
+  private var agentName: String {
+    switch model.provider {
+    case .chatGPT: "Codex"
+    case .claude: "Claude"
+    default: model.provider.title
     }
+  }
+
+  private var chatTitle: String {
+    let first = model.saved.conversation.messages.first { $0.role == "user" }?.text
+    return first.map { String($0.replacingOccurrences(of: "\n", with: " ").prefix(80)) }
+      ?? "New chat"
+  }
+
+  private var viewSidebar: some View {
+    VStack(spacing: 10) {
+      HStack(spacing: 6) {
+        ViewWindowControls().frame(width: 56, height: 28).padding(.leading, 6)
+        Spacer(minLength: 4)
+        viewSidebarToggle
+        viewMoreMenu
+      }.frame(height: 36).background(ViewWindowDragRegion())
+      HStack(spacing: 6) {
+        viewAddress
+        if let space = model.openedSpace {
+          SpaceShareControl(space: space, access: access, compact: true)
+        }
+      }
+      if showHistory {
+        ChatHistoryView(
+          model: model, space: model.openedSpace, onOpen: openHistory,
+          inline: true, onBack: { showHistory = false })
+      } else {
+        chat
+      }
+    }.padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 8)
+      .background(DesktopStyle.group)
+  }
+
+  private var viewSidebarToggle: some View {
+    ViewChromeButton(
+      title: showingChat ? "Hide sidebar (⌘B)" : "Show sidebar (⌘B)",
+      asset: "r2IconPanelLeft", action: toggleAgentSidebar)
+  }
+
+  private var viewMoreMenu: some View {
+    Menu {
+      Button("Refresh", action: refreshContent).disabled(refreshDisabled)
+      Button("Open in Browser", action: openSpaceInBrowser)
+      Button("Chat Agent Settings…") { showProviderSettings = true }
+      Button("All Chats") {
+        showingChat = true
+        showHistory = true
+      }
+    } label: {
+      Label {
+        Text("More Options")
+      } icon: {
+        DesktopGlyph(name: "r2IconMore", size: 15)
+      }
+      .labelStyle(.iconOnly).frame(width: 28, height: 28)
+    }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+      .frame(width: 28, height: 28)
+      .background(Color(nsColor: .textBackgroundColor), in: Circle())
+      .accessibilityLabel("More Options")
+  }
+
+  private var viewAddress: some View {
+    HStack(spacing: 7) {
+      if let space = model.openedSpace {
+        SpaceSyncControl(runtime: runtime, space: space)
+        Button(space.title) { openWindow(id: "main") }.buttonStyle(.plain)
+          .fontWeight(.semibold).lineLimit(1).help("Show spaces and links")
+        DesktopGlyph(name: "r2IconChevronRight", size: 12).foregroundStyle(.secondary)
+        Text(runtime.selectedView?.title ?? "Home").foregroundStyle(.secondary).lineLimit(1)
+      }
+      Spacer(minLength: 0)
+    }.font(.system(size: 13)).padding(.horizontal, 10).frame(height: 32)
+      .background(
+        showingChat ? Color(nsColor: .textBackgroundColor) : Color.clear,
+        in: RoundedRectangle(cornerRadius: 10))
+  }
+
+  private var viewDetail: some View {
+    workspace
+      .clipShape(RoundedRectangle(cornerRadius: showingChat ? 12 : 0))
+      .padding(.vertical, showingChat ? 8 : 0).padding(.trailing, showingChat ? 8 : 0)
+      .background(DesktopStyle.group)
+  }
+
+  private var collapsedChrome: some View {
+    HStack(spacing: 10) {
+      ViewWindowControls().frame(width: 56, height: 28)
+      viewSidebarToggle
+      viewAddress.frame(maxWidth: 340)
+      Spacer(minLength: 0)
+      if let space = model.openedSpace { SpaceShareControl(space: space, access: access) }
+      viewMoreMenu
+    }.padding(.horizontal, 16).frame(height: 52)
+      .background(.regularMaterial).background(ViewWindowDragRegion())
+      .shadow(color: .black.opacity(0.1), radius: 5, y: 3)
+      .contentShape(Rectangle())
+  }
+
+  private func openHistory(_ session: ChatSession) {
+    if session.id == model.saved.activeSessionID {
+      showHistory = false
+      return
+    }
+    Task {
+      if await model.openChat(session.id, connectInBackground: true) {
+        if let space = model.saved.conversation.space {
+          if runtime.selectedSpace?.id != space.id { runtime.openSpace(space) }
+          model.openedSpace = space
+        }
+        showingChat = true
+        showHistory = false
+      }
+    }
+  }
+
+  private var chatHeader: some View {
+    VStack(alignment: .leading, spacing: 1) {
+      HStack(spacing: 4) {
+        Text(chatTitle).font(.system(size: 13, weight: .semibold)).lineLimit(1).help(chatTitle)
+        Spacer(minLength: 0)
+        ViewChromeButton(title: "All Chats", asset: "r2IconMessages") {
+          model.saved.checkpointChat()
+          showHistory = true
+        }.disabled(chatActionsDisabled).keyboardShortcut("h", modifiers: [.command, .shift])
+        ViewChromeButton(title: "New Chat", asset: "r2IconSquarePen") { model.startSpaceChat() }
+          .disabled(chatActionsDisabled)
+      }
+      Text("Chat agent · edits \(model.openedSpace?.title ?? "this space") as you")
+        .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
+    }.padding(.leading, 6).padding(.top, 6)
+  }
+
+  private var composerModel: some View {
+    Button {
+      showProviderSettings = true
+    } label: {
+      HStack(spacing: 4) {
+        Text(model.connecting ? "Connecting…" : model.modelLabel).lineLimit(1)
+        DesktopGlyph(name: "r2IconChevronDown1", size: 11)
+      }.font(.system(size: 12, weight: .medium)).padding(.horizontal, 9).frame(height: 24)
+    }.buttonStyle(.plain).background(.quaternary, in: Capsule())
+      .help("Chat Agent Settings: \(model.modelLabel)")
+      .accessibilityLabel("Chat Agent Settings: \(model.modelLabel)")
+      .disabled(accountActionsDisabled)
+  }
+
+  private var canSubmit: Bool {
+    model.canSend && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
   private var composer: some View {
@@ -487,32 +555,46 @@ struct ContentView: View {
           }
         }.frame(maxWidth: .infinity).padding(20)
       } else {
-        HStack(alignment: .bottom, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
           TextField(
-            "Message this space…", text: Binding(get: { draft }, set: { draft = $0 }),
+            "Ask \(agentName) to change \(model.openedSpace?.title ?? "this space")…",
+            text: Binding(get: { draft }, set: { draft = $0 }),
             axis: .vertical
           )
           .textFieldStyle(.plain).lineLimit(1...8).focused($composing)
-          .frame(minHeight: 28, alignment: .center)
+          .frame(minHeight: 20, alignment: .center)
           .onSubmit { submit() }.disabled(!model.canSend)
           .accessibilityLabel("Message")
-          if model.busy {
-            Button {
-              Task { await model.stopTurn() }
-            } label: {
-              Image(systemName: "stop.fill").frame(width: 20, height: 20)
-            }
-            .nativeControl(circular: true).disabled(!model.canStop).accessibilityLabel("Stop reply")
-          } else {
-            Button(action: submit) { Image(systemName: "arrow.up").frame(width: 20, height: 20) }
-              .nativeControl(prominent: true, circular: true)
-              .disabled(
-                !model.canSend || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          HStack {
+            composerModel
+            Spacer(minLength: 4)
+            if model.busy {
+              Button {
+                Task { await model.stopTurn() }
+              } label: {
+                Image(systemName: "stop.fill").frame(width: 20, height: 20)
+              }
+              .nativeControl(circular: true).disabled(!model.canStop).accessibilityLabel(
+                "Stop reply")
+            } else {
+              Button(action: submit) {
+                DesktopGlyph(name: "r2IconArrowUp", size: 14).frame(width: 26, height: 26)
+              }
+              .buttonStyle(.plain)
+              .foregroundStyle(canSubmit ? Color.white : Color.secondary)
+              .background(
+                canSubmit ? DesktopStyle.accent : Color.primary.opacity(0.06), in: Circle()
               )
+              .disabled(!canSubmit)
               .accessibilityLabel("Send message")
+            }
           }
-        }.controlSize(.regular).padding(16).controlSurface(radius: 24)
-          .padding(.horizontal, 16).padding(.bottom, 16).padding(.top, 8)
+        }.controlSize(.small).padding(10)
+          .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
+          .overlay(
+            RoundedRectangle(cornerRadius: 16).strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
+          )
+          .padding(.top, 6)
       }
     }
   }
@@ -533,19 +615,24 @@ struct ContentView: View {
       }
     }
     .background(.background)
-    .overlay(alignment: .top) {
+    .overlay {
       if runtime.spaceLoading {
-        HStack(spacing: 8) {
+        VStack(spacing: 10) {
           ProgressView().controlSize(.small)
-          Text("Loading space…").font(.callout)
-        }.padding(.horizontal, 16).padding(.vertical, 10).controlSurface()
-          .padding(16).allowsHitTesting(false)
+          Text("Opening \(runtime.selectedView?.title ?? model.openedSpace?.title ?? "space")…")
+            .font(.system(size: 13))
+          Text("Getting the latest from \(model.openedSpace?.title ?? "your space")")
+            .font(.system(size: 12)).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+          .background(Color(nsColor: .windowBackgroundColor)).allowsHitTesting(false)
       }
     }
   }
 
   private var pageTitle: String {
     switch page {
+    case .addressBook: "Address Book"
+    case .account: "Account"
     case .allLinks: "All links"
     case .agentLinks: "Connections"
     case .space(let id): runtime.spaces.first(where: { $0.id == id })?.title ?? "Spaces"
@@ -583,6 +670,7 @@ struct ContentView: View {
     Task {
       guard let space = await runtime.spaceForOpening(space) else { return }
       if await model.enterSpace(space) {
+        runtime.selectedView = view
         runtime.openSpace(space, at: view.url(in: space))
         model.openedSpace = space
         showingChat = false
@@ -613,7 +701,8 @@ struct ContentView: View {
         onSignOut: runtime.accountConnected && RuntimeLocation.deployment != .local
           ? signOutOfTonk : nil
       )
-      .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+      .frame(minWidth: 192, idealWidth: 192)
+      .navigationSplitViewColumnWidth(min: 192, ideal: 192, max: 240)
       // Replaced by a circular toggle that matches the window's other controls.
       .toolbar(removing: .sidebarToggle)
       .toolbar {
@@ -634,7 +723,7 @@ struct ContentView: View {
               space: space, access: access,
               canRefresh: runtime.accountConnected && !runtime.showingCachedCatalog,
               onOpenView: { open($0, in: space) },
-              onNewLink: startNewLink)
+              onNewLink: { Task { await access.copyDefaultLink(in: space) } })
           } else {
             CatalogStatusView(runtime: runtime)
           }
@@ -642,8 +731,13 @@ struct ContentView: View {
           LinksPageView(
             agentsOnly: false, spaces: runtime.spaces, access: access, onNewLink: startNewLink)
         case .agentLinks:
-          LinksPageView(
-            agentsOnly: true, spaces: runtime.spaces, access: access, onNewLink: startNewLink)
+          ConnectionsPageView(
+            spaces: runtime.spaces, access: access, model: model,
+            onSettings: { showProviderSettings = true })
+        case .addressBook:
+          AddressBookView(access: access, spaces: runtime.spaces)
+        case .account:
+          DesktopAccountView(access: access, onSignOut: signOutOfTonk)
         case nil:
           CatalogStatusView(runtime: runtime)
         }

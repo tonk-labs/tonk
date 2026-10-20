@@ -10,6 +10,80 @@ final class AccessActionsTests: XCTestCase {
       0]
   }
 
+  func testCopyDefaultReusesRetainedGrantWithoutMinting() async throws {
+    let space = try space()
+    let store = LinkStoreStub()
+    store.values["retained"] = "synthetic retained link"
+    var copies: [String] = []
+    let access = AccessModel(
+      vault: store,
+      copyToPasteboard: {
+        copies.append($0)
+        return true
+      })
+    access.showFixture(
+      [
+        space.id: SpaceAccess(links: [
+          AccessLink(kind: .person, subject: space.id, target: "missing", usedBy: nil),
+          AccessLink(kind: .person, subject: space.id, target: "retained", usedBy: nil),
+        ])
+      ], agents: [], accountName: "Tester", journal: AccessJournal())
+    let copied = await access.copyDefaultLink(in: space)
+    XCTAssertTrue(copied)
+    XCTAssertEqual(copies, ["synthetic retained link"])
+    XCTAssertTrue(access.journal.events.isEmpty)
+  }
+
+  func testMissingDefaultSecretRequiresExplicitReset() async throws {
+    let space = try space()
+    let access = AccessModel(
+      vault: LinkStoreStub(),
+      copyToPasteboard: { _ in
+        XCTFail("No secret")
+        return false
+      })
+    access.showFixture(
+      [
+        space.id: SpaceAccess(links: [
+          AccessLink(kind: .person, subject: space.id, target: "missing", usedBy: nil)
+        ])
+      ], agents: [], accountName: "Tester", journal: AccessJournal())
+    let copied = await access.copyDefaultLink(in: space)
+    XCTAssertFalse(copied)
+    XCTAssertTrue(access.notice?.contains("Reset") == true)
+    XCTAssertTrue(access.journal.events.isEmpty)
+  }
+
+  func testNewDefaultDoesNotReportCopiedWhenPasteboardFails() async throws {
+    let runtime = AccessRuntimeStub()
+    let store = LinkStoreStub()
+    let access = AccessModel(vault: store, copyToPasteboard: { _ in false })
+    access.runtime = runtime
+    let copied = await access.copyDefaultLink(in: try space())
+    XCTAssertFalse(copied)
+    XCTAssertNotNil(store.values["replacement"])
+    XCTAssertTrue(access.notice?.contains("couldn’t be copied") == true)
+  }
+
+  func testAddressBookPersistsByAccountAndResetHidesIt() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runtime = AccessRuntimeStub()
+    let access = AccessModel(vault: LinkStoreStub())
+    access.prepare(directory: directory, runtime: runtime)
+    await access.refreshAccount()
+    let contact = DesktopContact(id: "did:key:zContact", name: "Contact", labels: ["Team"])
+    try access.saveContact(contact)
+    let restored = AccessModel(vault: LinkStoreStub())
+    restored.prepare(directory: directory, runtime: runtime)
+    XCTAssertTrue(restored.contacts.isEmpty)
+    await restored.refreshAccount()
+    XCTAssertEqual(restored.contacts, [contact])
+    restored.reset()
+    XCTAssertTrue(restored.contacts.isEmpty)
+  }
+
   func testResetDoesNotRevokeOldLinkWhenReplacementCannotBeCopied() async throws {
     let space = try space()
     let runtime = AccessRuntimeStub()
@@ -149,6 +223,35 @@ final class AccessActionsTests: XCTestCase {
     XCTAssertNil(access.errors[space.id])
   }
 
+  func testLocalPasskeyMetadataIsOptionalAndClearedWithAccount() async throws {
+    let access = AccessModel(vault: LinkStoreStub())
+    let runtime = AccessRuntimeStub()
+    access.runtime = runtime
+    runtime.passkey = ["createdOn": "MacBook", "createdAt": 1_700_000_000.0]
+    runtime.accountDetails = [
+      "accountDetailsLoaded": true, "email": "test@example.test",
+      "passkeys": [["id": "0", "createdOn": "Browser", "createdAt": 1_700_000_001.0]],
+    ]
+    await access.refreshAll([])
+    XCTAssertEqual(access.accountEmail, "test@example.test")
+    XCTAssertEqual(access.accountPasskeys.first?.createdOn, "Browser")
+    XCTAssertEqual(access.passkeyCreatedOn, "MacBook")
+    XCTAssertEqual(access.passkeyCreatedAt, Date(timeIntervalSince1970: 1_700_000_000))
+    runtime.passkey = [:]
+    runtime.accountDetails = [:]
+    await access.refreshAll([])
+    XCTAssertNil(access.accountEmail)
+    XCTAssertTrue(access.accountPasskeys.isEmpty)
+    XCTAssertFalse(access.accountDetailsLoaded)
+    XCTAssertNil(access.passkeyCreatedOn)
+    XCTAssertNil(access.passkeyCreatedAt)
+    runtime.passkey = ["createdOn": "MacBook", "createdAt": 1_700_000_000.0]
+    await access.refreshAll([])
+    access.reset()
+    XCTAssertNil(access.passkeyCreatedOn)
+    XCTAssertNil(access.passkeyCreatedAt)
+  }
+
   func testResetDuringAccountReadDoesNotContinueLoadingPreviousCatalog() async throws {
     let access = AccessModel(vault: LinkStoreStub())
     let runtime = AccessRuntimeStub()
@@ -227,6 +330,8 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
   var revoked: [String] = []
   var revokeFails = false
   var accountFails = false
+  var passkey: [String: Any] = [:]
+  var accountDetails: [String: Any] = [:]
   var permissionDenied = false
   var accountRead: (() async -> Void)?
   var mintRead: (() async -> Void)?
@@ -242,7 +347,9 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
     if script == AccessModel.accountScript {
       await accountRead?()
       if accountFails { throw HarnessError.message("Offline") }
-      return ["connections": [], "name": "Verifier", "root": "did:key:zVerifier"]
+      return accountDetails.merging([
+        "connections": [], "name": "Verifier", "root": "did:key:zVerifier", "passkey": passkey,
+      ]) { _, value in value }
     }
     if script == AccessModel.spaceScript {
       spaceReads += 1

@@ -12,7 +12,7 @@ struct TonkApp: App {
   var body: some Scene {
     Window(RuntimeLocation.deployment.title, id: "main") {
       ContentView(model: model, runtime: runtime, access: access)
-        .frame(minWidth: 850, minHeight: 580)
+        .frame(minWidth: 700, minHeight: 500)
         .background(WindowAppearance())
         .task {
           if ProcessInfo.processInfo.arguments.contains("--activity-fixture") {
@@ -41,7 +41,7 @@ struct TonkApp: App {
           }
         }
     }
-    .defaultSize(width: 1180, height: 780)
+    .defaultSize(width: 800, height: 600)
     .windowToolbarStyle(.unified)
     .commands {
       CommandGroup(replacing: .newItem) {
@@ -61,8 +61,9 @@ struct TonkApp: App {
         .frame(minWidth: 700, minHeight: 500)
         .background(WindowAppearance())
     }
-    .defaultSize(width: 1180, height: 780)
+    .defaultSize(width: 1200, height: 800)
     .windowToolbarStyle(.unified)
+    .windowStyle(.hiddenTitleBar)
     // A restored window would have no space to show.
     .restorationBehavior(.disabled)
   }

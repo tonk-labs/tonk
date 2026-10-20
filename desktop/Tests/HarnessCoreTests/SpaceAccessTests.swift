@@ -23,6 +23,18 @@ final class SpaceAccessTests: XCTestCase {
     XCTAssertTrue(agents[0].isLive)
   }
 
+  func testConnectionOriginComesFromWorkerNotClientName() throws {
+    let data = Data(
+      #"[{"id":"a","subject":"did:key:zSpace","recipient":"did:key:zA","kind":"terminal","expiresAt":1800604800,"status":"active"},{"id":"b","subject":"did:key:zSpace","label":"Provisioned MCP agent","confirmed":true,"installations":[{"id":"i","name":"Codex CLI"}],"expiresAt":1800604800,"status":"active"},{"id":"c","subject":"did:key:zSpace","kind":"future-kind","expiresAt":1800604800,"status":"active"}]"#
+        .utf8)
+    let grants = try JSONDecoder().decode([AgentConnection].self, from: data)
+    XCTAssertTrue(grants[0].isTerminalAuthorization)
+    XCTAssertEqual(grants[0].recipient, "did:key:zA")
+    XCTAssertFalse(grants[1].isTerminalAuthorization)
+    XCTAssertNil(grants[1].recipient)
+    XCTAssertFalse(grants[2].isTerminalAuthorization)
+  }
+
   func testLinksDescribeWhatEachGrantAllows() {
     let members = [
       SpaceMember(did: "did:key:zMira", name: "Mira", role: "tonk:member", invitation: "tonk:inv"),
@@ -44,12 +56,14 @@ final class SpaceAccessTests: XCTestCase {
       members: members, isPublic: true)
     XCTAssertEqual(
       links.map(\.id), ["publicRead:" + subject, "person:bafy1", "person:bafy2", "agent:g1"])
-    XCTAssertEqual(links[0].detail(now: now), "Anyone · Read · Whole space · Never expires")
-    XCTAssertEqual(links[1].detail(now: now), "Anyone · Write · Whole space · Never expires")
+    XCTAssertEqual(links[0].detail(now: now), "Anyone · Read-only · Whole space · Never expires")
+    XCTAssertEqual(
+      links[1].detail(now: now), "Anyone · Read and write · Whole space · Never expires")
     XCTAssertEqual(links[1].usage(madeAt: nil, now: now), "Used by Mira and Lu")
     // An older worker cannot say who claimed it, so nothing is claimed either way.
     XCTAssertNil(links[2].usage(madeAt: nil, now: now))
-    XCTAssertEqual(links[3].detail(now: now), "Anyone · Write · Whole space · Expires in 7 days")
+    XCTAssertEqual(
+      links[3].detail(now: now), "Anyone · Read and write · Whole space · Expires in 7 days")
     XCTAssertEqual(links[3].usage(madeAt: now, now: now), "Made just now · No registered clients")
     XCTAssertTrue(links[3].forAgents)
     XCTAssertTrue(links[1].canReset)
@@ -64,7 +78,8 @@ final class SpaceAccessTests: XCTestCase {
       members: [SpaceMember(did: "did:key:zJonas", name: "Jonas", role: nil, invitation: nil)],
       isPublic: false)
     XCTAssertEqual(links[0].title, "Link for Jonas")
-    XCTAssertEqual(links[0].detail(now: now), "Jonas · Write · Whole space · Never expires")
+    XCTAssertEqual(
+      links[0].detail(now: now), "Jonas · Read and write · Whole space · Never expires")
   }
 
   func testPeopleSummaryNamesTheFounder() {
@@ -78,7 +93,7 @@ final class SpaceAccessTests: XCTestCase {
         AgentConnection(id: "b", subject: subject, expiresAt: 0, status: "revoked"),
       ],
       selfDid: "did:key:zMe")
-    XCTAssertEqual(access.peopleSummary, "Kai’s space · 2 people, 1 agent")
+    XCTAssertEqual(access.peopleSummary, "Kai’s space · 2 people, 1 access grant")
     access.selfDid = "did:key:zKai"
     access.agents = []
     XCTAssertEqual(access.peopleSummary, "Your space · 2 people")

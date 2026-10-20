@@ -5,6 +5,8 @@ struct ChatHistoryView: View {
   @ObservedObject var model: HarnessModel
   let space: TonkSpace?
   let onOpen: (ChatSession) -> Void
+  var inline = false
+  var onBack: () -> Void = {}
   @Environment(\.dismiss) private var dismiss
   @State private var search = ""
   private var allSessions: [ChatSession] {
@@ -17,6 +19,9 @@ struct ChatHistoryView: View {
     allSessions.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }
   }
   var body: some View {
+    if inline { inlineHistory } else { sheetHistory }
+  }
+  private var sheetHistory: some View {
     VStack(alignment: .leading, spacing: 16) {
       Text("Chats in \(space?.title ?? "this space")")
         .font(.title2.weight(.semibold))
@@ -72,4 +77,75 @@ struct ChatHistoryView: View {
     }.padding(24).frame(width: 520, height: 440, alignment: .topLeading).nativeControl()
 
   }
+  private var inlineHistory: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 4) {
+        Button(action: onBack) { Image(systemName: "chevron.left").frame(width: 28, height: 28) }
+          .buttonStyle(.plain).background(Color(nsColor: .textBackgroundColor), in: Circle())
+          .accessibilityLabel("Back to Chat")
+        Text("Chats").font(.system(size: 13, weight: .semibold))
+        Spacer()
+        ViewChromeButton(title: "New Chat", asset: "r2IconSquarePen") {
+          model.startSpaceChat()
+          onBack()
+        }.disabled(model.busy || model.connecting || model.creatingSpace || model.loginPending)
+      }
+      Text("In \(space?.title ?? "this space")")
+        .font(.system(size: 12)).foregroundStyle(.secondary).padding(.leading, 32)
+      TextField("Search chats", text: $search).textFieldStyle(.roundedBorder)
+        .accessibilityLabel("Search chats")
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 2) {
+          ForEach(["Today", "Yesterday", "Previous 7 Days", "Older"], id: \.self) { group in
+            let rows = sessions.filter { dateGroup($0.updatedAt) == group }
+            if !rows.isEmpty {
+              Text(group).font(.system(size: 11)).foregroundStyle(.secondary)
+                .padding(.horizontal, 8).padding(.top, 10).padding(.bottom, 4)
+              ForEach(rows) { session in
+                Button {
+                  onOpen(session)
+                } label: {
+                  HStack {
+                    Text(session.title).lineLimit(1)
+                    Spacer(minLength: 8)
+                    Text(AccessText.relative(session.updatedAt, now: Date())).font(
+                      .system(size: 11)
+                    )
+                    .foregroundStyle(
+                      .secondary)
+                  }.font(.system(size: 13)).padding(.horizontal, 8).frame(height: 30)
+                    .contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                  .background(
+                    session.id == model.saved.activeSessionID
+                      ? Color.primary.opacity(0.06) : .clear,
+                    in: RoundedRectangle(cornerRadius: 6)
+                  )
+                  .disabled(
+                    model.busy || model.connecting || model.creatingSpace || model.loginPending)
+              }
+            }
+          }
+          if sessions.isEmpty {
+            Text(allSessions.isEmpty ? "No chats yet" : "No matching chats")
+              .font(.system(size: 13)).foregroundStyle(.secondary).padding(8)
+          }
+        }
+      }
+      if let error = model.error { Text(error).font(.caption).foregroundStyle(.secondary) }
+    }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+  }
+
+  private func dateGroup(_ date: Date) -> String {
+    let calendar = Calendar.current
+    if calendar.isDateInToday(date) { return "Today" }
+    if calendar.isDateInYesterday(date) { return "Yesterday" }
+    if let weekAgo = calendar.date(byAdding: .day, value: -7, to: calendar.startOfDay(for: Date())),
+      date >= weekAgo
+    {
+      return "Previous 7 Days"
+    }
+    return "Older"
+  }
+
 }

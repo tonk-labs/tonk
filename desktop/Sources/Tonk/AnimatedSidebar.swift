@@ -43,11 +43,13 @@ final class SidebarSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     detailHost = NSHostingController(rootView: detail)
     sidebarItem = NSSplitViewItem(viewController: sidebarHost)
     super.init(nibName: nil, bundle: nil)
+    sidebarHost.safeAreaRegions = []
+    detailHost.safeAreaRegions = []
     sidebarHost.sizingOptions = []
     detailHost.sizingOptions = []
     splitView.isVertical = true
     splitView.dividerStyle = .thin
-    sidebarItem.minimumThickness = 340
+    sidebarItem.minimumThickness = 300
     // Visibility is owned by the toolbar/keyboard binding, not divider gestures.
     sidebarItem.canCollapse = false
     sidebarItem.canCollapseFromWindowResize = false

@@ -27,10 +27,53 @@ final class AccessModel: ObservableObject {
   @Published private(set) var agentConnections: [AgentConnection] = []
   @Published private(set) var accountName: String?
   @Published private(set) var selfDid: String?
+  @Published private(set) var accountEmail: String?
+  @Published private(set) var accountPasskeys: [AccountPasskey] = []
+  @Published private(set) var accountDetailsLoaded = false
+  @Published private(set) var accountDetailsError: String?
+  @Published private(set) var passkeyCreatedOn: String?
+  @Published private(set) var passkeyCreatedAt: Date?
   @Published private(set) var journal = AccessJournal()
   /// Link operations in flight, keyed by link id or `new:<subject>`.
   @Published private(set) var working: Set<String> = []
   @Published var notice: String?
+
+  @Published private(set) var savedContacts: [String: [DesktopContact]] = [:]
+  private var contactsURL: URL?
+
+  var contacts: [DesktopContact] {
+    var byID = Dictionary(
+      (savedContacts[selfDid ?? ""] ?? []).map { ($0.id, $0) },
+      uniquingKeysWith: { first, _ in first })
+    for state in spaces.values {
+      for member in state.members where byID[member.did] == nil {
+        byID[member.did] = DesktopContact(id: member.did, name: member.displayName, labels: [])
+      }
+    }
+    return byID.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+  }
+
+  func saveContact(_ contact: DesktopContact) throws {
+    guard let root = selfDid, let contactsURL else {
+      throw HarnessError.message("Sign in before saving a contact.")
+    }
+    var updated = savedContacts
+    var list = updated[root] ?? []
+    list.removeAll { $0.id == contact.id }
+    list.append(contact)
+    updated[root] = list
+    try JSONEncoder().encode(updated).write(to: contactsURL, options: .atomic)
+    savedContacts = updated
+  }
+
+  func updateDisplayName(_ name: String) async throws {
+    guard let runtime else { throw HarnessError.message("Sign in before changing your name.") }
+    let started = generation
+    let result = try await runtime.accountScript(
+      "return await api('/api/account/display-name', {name});", arguments: ["name": name])
+    guard generation == started else { return }
+    accountName = result["name"] as? String ?? name
+  }
 
   weak var runtime: (any SpaceAccessRuntime)?
   private var journalURL: URL?
@@ -58,17 +101,25 @@ final class AccessModel: ObservableObject {
   /// For layout fixtures only: show prepared access without a runtime.
   func showFixture(
     _ fixture: [String: SpaceAccess], agents: [AgentConnection], accountName: String,
-    journal: AccessJournal
+    journal: AccessJournal, email: String? = nil, passkeys: [AccountPasskey] = []
   ) {
     spaces = fixture
     catalog = fixture.keys.sorted()
     agentConnections = agents
     self.accountName = accountName
+    self.accountEmail = email
+    self.accountPasskeys = passkeys
+    self.accountDetailsLoaded = email != nil || !passkeys.isEmpty
     self.journal = journal
   }
 
   func prepare(directory: URL, runtime: any SpaceAccessRuntime) {
     self.runtime = runtime
+    contactsURL = directory.appendingPathComponent("address-book.json")
+    if let contactsURL, let data = try? Data(contentsOf: contactsURL) {
+      savedContacts =
+        (try? JSONDecoder().decode([String: [DesktopContact]].self, from: data)) ?? [:]
+    }
     journalURL = directory.appendingPathComponent("access-journal.json")
     if let journalURL { journal = AccessJournal.load(from: journalURL) }
   }
@@ -83,6 +134,12 @@ final class AccessModel: ObservableObject {
     agentConnections = []
     accountName = nil
     selfDid = nil
+    passkeyCreatedOn = nil
+    passkeyCreatedAt = nil
+    accountEmail = nil
+    accountPasskeys = []
+    accountDetailsLoaded = false
+    accountDetailsError = nil
     accountLoaded = false
     loading = []
     working = []
@@ -126,6 +183,20 @@ final class AccessModel: ObservableObject {
       agentConnections = try JSONDecoder().decode([AgentConnection].self, from: data)
       accountName = (result["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
       selfDid = (result["root"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+      let passkey = result["passkey"] as? [String: Any]
+      passkeyCreatedOn = passkey?["createdOn"] as? String
+      passkeyCreatedAt = (passkey?["createdAt"] as? Double).map(Date.init(timeIntervalSince1970:))
+      accountEmail = result["email"] as? String
+      accountDetailsLoaded = result["accountDetailsLoaded"] as? Bool ?? false
+      accountDetailsError = result["accountDetailsError"] as? String
+      accountPasskeys = (result["passkeys"] as? [[String: Any]] ?? []).compactMap { row in
+        guard let id = row["id"] as? String, let label = row["createdOn"] as? String else {
+          return nil
+        }
+        return AccountPasskey(
+          id: id, createdOn: label,
+          createdAt: (row["createdAt"] as? Double).map(Date.init(timeIntervalSince1970:)))
+      }
       accountLoaded = true
       errors["account"] = nil
     } catch {
@@ -140,7 +211,13 @@ final class AccessModel: ObservableObject {
     if (!response.ok) throw new Error('Agent connections could not be loaded (HTTP ' + response.status + ').');
     const connections = await response.json();
     if (!Array.isArray(connections)) throw new Error('Invalid agent connections response.');
-    return {name: profile.display_name || profile.displayName || '', root: root.rootDid || '',
+    let details = {};
+    if (root.rootDid) {
+      try {
+        details = {...await (async () => { \(AccountDisplayFacts.script) })(), accountDetailsLoaded: true};
+      } catch { details = {accountDetailsError: 'Account details could not be loaded. Try refreshing.'}; }
+    }
+    return {...details, name: profile.display_name || profile.displayName || '', root: root.rootDid || '', passkey: root.passkey || null,
             connections: Array.isArray(connections) ? connections : []};
     """
 
@@ -331,11 +408,12 @@ final class AccessModel: ObservableObject {
     working.insert("new:" + space.id)
     defer { if generation == started { working.remove("new:" + space.id) } }
     do {
+      var copied = false
       switch kind {
       case .person:
         let (url, target) = try await mintPersonLink(runtime: runtime, space: space)
         guard generation == started else { return false }
-        finishMint(url: url, target: target, kind: .person, space: space)
+        copied = finishMint(url: url, target: target, kind: .person, space: space)
       case .agent:
         let before = Set(agentConnections.map(\.id))
         let link = try await runtime.createCLILink(space)
@@ -345,7 +423,7 @@ final class AccessModel: ObservableObject {
         let fresh = agentConnections.filter {
           $0.subject == space.subject && !before.contains($0.id)
         }
-        finishMint(
+        copied = finishMint(
           url: link, target: fresh.count == 1 ? fresh[0].id : nil, kind: .agent, space: space)
       case .publicRead:
         try await setPublic(true, space: space, runtime: runtime)
@@ -361,12 +439,39 @@ final class AccessModel: ObservableObject {
         return true
       }
       await refresh(space)
-      return true
+      return copied
     } catch {
       guard generation == started else { return false }
       notice = "Couldn’t make the link: " + Self.message(error)
       return false
     }
+  }
+
+  /// Reuse an existing open grant; never mint another merely because this Mac
+  /// cannot recover its secret. That case requires the explicit Reset action.
+  func defaultLink(in space: TonkSpace) -> AccessLink? {
+    let links = links(for: space.id).filter { $0.kind == .person && $0.status == "active" }
+    return links.first(where: { storedLink($0) != nil }) ?? links.first
+  }
+
+  @discardableResult
+  func copyDefaultLink(in space: TonkSpace) async -> Bool {
+    if spaces[space.id] == nil { await refresh(space) }
+    guard spaces[space.id] != nil, errors[space.id] == nil else {
+      notice = "Refresh this space before copying its default link."
+      return false
+    }
+    if let link = defaultLink(in: space) {
+      guard let value = storedLink(link) else {
+        notice =
+          "This Mac does not have the default link. Reset it in Links to create a replacement."
+        return false
+      }
+      let copied = copy(value)
+      notice = copied ? "Link copied" : "Couldn’t copy the link"
+      return copied
+    }
+    return await make(.person, in: space)
   }
 
   func copyLink(_ link: AccessLink) {
@@ -458,12 +563,16 @@ final class AccessModel: ObservableObject {
     return (url.absoluteString, targets.count == 1 ? targets[0] : nil)
   }
 
-  private func finishMint(url: String, target: String?, kind: AccessLinkKind, space: TonkSpace) {
+  private func finishMint(url: String, target: String?, kind: AccessLinkKind, space: TonkSpace)
+    -> Bool
+  {
     let storageWarning = retain(url, target: target)
     record(.made, kind: kind, target: target, space: space)
+    let copied = copy(url)
     notice =
-      (copy(url) ? "Link copied." : "The link was made, but couldn’t be copied.")
+      (copied ? "Link copied." : "The link was made, but couldn’t be copied.")
       + storageWarning
+    return copied
   }
 
   private func retain(_ url: String, target: String?) -> String {

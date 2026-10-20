@@ -35,6 +35,9 @@ public struct AgentConnection: Decodable, Equatable, Sendable {
   public let id: String
   public let subject: String
   public let label: String
+  /// Authorization origin, not an account kind or transport.
+  public let kind: String?
+  public let recipient: String?
   public let expiresAt: Double
   public let status: String
   public let confirmed: Bool
@@ -43,11 +46,14 @@ public struct AgentConnection: Decodable, Equatable, Sendable {
 
   public init(
     id: String, subject: String, label: String = "", expiresAt: Double, status: String = "active",
-    confirmed: Bool = false, spaceName: String? = nil, installations: [Installation] = []
+    confirmed: Bool = false, spaceName: String? = nil, installations: [Installation] = [],
+    kind: String? = nil, recipient: String? = nil
   ) {
     self.id = id
     self.subject = subject
     self.label = label
+    self.kind = kind
+    self.recipient = recipient
     self.expiresAt = expiresAt
     self.status = status
     self.confirmed = confirmed
@@ -56,7 +62,7 @@ public struct AgentConnection: Decodable, Equatable, Sendable {
   }
 
   enum CodingKeys: String, CodingKey {
-    case id, subject, label, expiresAt, status, confirmed, spaceName, installations
+    case id, subject, label, expiresAt, status, confirmed, spaceName, installations, kind, recipient
   }
 
   public init(from decoder: Decoder) throws {
@@ -64,12 +70,18 @@ public struct AgentConnection: Decodable, Equatable, Sendable {
     id = try container.decode(String.self, forKey: .id)
     subject = try container.decode(String.self, forKey: .subject)
     label = try container.decodeIfPresent(String.self, forKey: .label) ?? ""
+    kind = try container.decodeIfPresent(String.self, forKey: .kind)
+    recipient = try container.decodeIfPresent(String.self, forKey: .recipient)
     expiresAt = try container.decode(Double.self, forKey: .expiresAt)
     status = try container.decode(String.self, forKey: .status)
     confirmed = try container.decodeIfPresent(Bool.self, forKey: .confirmed) ?? false
     spaceName = try container.decodeIfPresent(String.self, forKey: .spaceName)
     installations = try container.decodeIfPresent([Installation].self, forKey: .installations) ?? []
   }
+
+  /// Only the worker's explicit terminal origin identifies CLI authorization.
+  /// A client name or confirmation does not establish a provisioned account.
+  public var isTerminalAuthorization: Bool { kind == "terminal" }
 
   public var isLive: Bool { status == "active" || status == "partial" }
 }
@@ -165,14 +177,14 @@ public struct AccessLink: Equatable, Sendable, Identifiable {
 
   public var title: String {
     switch kind {
-    case .person: "Plain link"
+    case .person: "Default link"
     case .scoped: "Link for \(audience)"
     case .agent: "Agent link"
     case .publicRead: "Public link"
     }
   }
 
-  public var ability: String { kind == .publicRead ? "Read" : "Write" }
+  public var ability: String { kind == .publicRead ? "Read-only" : "Read and write" }
 
   /// Open invites can be replaced in place; other kinds are revoked.
   public var canReset: Bool { kind == .person }
@@ -245,7 +257,8 @@ public struct SpaceAccess: Equatable, Sendable {
     let people = members.count == 1 ? "1 person" : "\(members.count) people"
     let agentCount = liveAgents.count
     let counts =
-      agentCount == 0 ? people : people + ", \(agentCount) agent\(agentCount == 1 ? "" : "s")"
+      agentCount == 0
+      ? people : people + ", \(agentCount) access grant\(agentCount == 1 ? "" : "s")"
     return [owner, counts].compactMap { $0 }.joined(separator: " · ")
   }
 
