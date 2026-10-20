@@ -115,6 +115,119 @@ console.log('TONK_AGENT_LINK_RESULT ' + JSON.stringify({ result: { title: 'café
   }
 });
 
+test('a dispatched write survives client disconnect and checkpoints before the next call', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'tonk-agent-disconnect-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const binary = join(directory, 'worker.mjs');
+  await writeFile(
+    binary,
+    `#!${process.execPath}
+for await (const chunk of process.stdin) {}
+setTimeout(() => console.log('TONK_AGENT_LINK_RESULT {"result":{"published":true}}'), 100);
+`,
+    { mode: 0o700 },
+  );
+  let dispatched;
+  const ready = new Promise((resolve) => {
+    dispatched = resolve;
+  });
+  const events = [];
+  const backend = agentLinkBackend({
+    binary,
+    dataDirectory: directory,
+    remote: 'https://access.example/ucan/',
+    run: (options) => {
+      events.push(options.input.tool);
+      const result = invoke(options);
+      dispatched();
+      return result;
+    },
+    checkpoint: {
+      save: async () => {
+        events.push('checkpoint');
+      },
+    },
+  });
+  const args = { agent_link: 'https://access.example/agent#fixture', document: 'concept:\n' };
+  const controller = new AbortController();
+  const write = backend.call('tonk_evaluate', args, controller.signal);
+  await ready;
+  controller.abort();
+  const query = backend.call('tonk_query', args);
+  assert.deepEqual(await write, { published: true });
+  await query;
+  assert.deepEqual(events, ['tonk_evaluate', 'checkpoint', 'tonk_query', 'checkpoint']);
+  await backend.close();
+});
+
+test('disconnected queries and queued writes still cancel without dispatching another write', async () => {
+  let dispatched;
+  const ready = new Promise((resolve) => {
+    dispatched = resolve;
+  });
+  const calls = [];
+  const backend = agentLinkBackend({
+    remote: 'https://access.example/ucan/',
+    run: async ({ input, signal }) => {
+      calls.push(input.tool);
+      dispatched();
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+      signal.throwIfAborted();
+    },
+  });
+  const args = { agent_link: 'https://access.example/agent#fixture', document: 'concept:\n' };
+  const queryController = new AbortController();
+  const query = backend.call('tonk_query', args, queryController.signal);
+  await ready;
+  const writeController = new AbortController();
+  const write = backend.call('tonk_evaluate', args, writeController.signal);
+  writeController.abort();
+  queryController.abort();
+  await assert.rejects(query, { name: 'AbortError' });
+  await assert.rejects(write, { name: 'AbortError' });
+  assert.deepEqual(calls, ['tonk_query']);
+  await backend.close();
+});
+
+test('graceful shutdown finishes the active write and checkpoint but rejects queued work', async () => {
+  let dispatched, finish;
+  const ready = new Promise((resolve) => {
+    dispatched = resolve;
+  });
+  const hold = new Promise((resolve) => {
+    finish = resolve;
+  });
+  let calls = 0,
+    saved = 0;
+  const backend = agentLinkBackend({
+    remote: 'https://access.example/ucan/',
+    run: async ({ signal }) => {
+      calls++;
+      dispatched();
+      await hold;
+      assert.equal(signal.aborted, false);
+      return { result: { published: true } };
+    },
+    checkpoint: {
+      save: async () => {
+        saved++;
+      },
+    },
+  });
+  const args = { agent_link: 'https://access.example/agent#fixture', document: 'concept:\n' };
+  const write = backend.call('tonk_evaluate', args);
+  await ready;
+  const queued = backend.call('tonk_evaluate', args);
+  const queuedFailure = assert.rejects(queued, /shutting down/);
+  const closing = backend.close({ drain: false });
+  finish();
+  assert.deepEqual(await write, { published: true });
+  await queuedFailure;
+  await closing;
+  assert.equal(calls, 1);
+  assert.equal(saved, 1);
+});
+
 test('MCP discovers without OAuth and requires an agent link on every query/evaluation', async () => {
   const calls = [];
   const backend = agentLinkBackend({

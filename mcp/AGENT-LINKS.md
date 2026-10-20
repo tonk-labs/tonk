@@ -56,6 +56,13 @@ replicas, 192 MiB and 3500 files; capacity failure requires operator attention.
 There is no automatic eviction of retained work. These are bounded deployment
 limits, not measured capacity targets.
 
+Client cancellation stops queued calls and active queries. Once an evaluation
+is dispatched, it finishes under the same two-minute process deadline and saves
+its checkpoint even if the client disconnects. Graceful hosted shutdown drains
+the active call and rejects queued calls. A disconnected client must still query
+before deciding what to do next; completion does not guarantee delivery of its
+response, and a platform kill can still interrupt the call.
+
 Normally the worker pulls, evaluates once, and pushes writes. Before evaluation
 it synchronously persists a pending marker. If evaluation, push, or process
 termination leaves an unknown outcome, subsequent writes are blocked and pulls

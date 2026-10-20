@@ -3,6 +3,64 @@ import assert from 'node:assert/strict';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createAgentService } from './agent-service.mjs';
 
+test('hosted shutdown drains the active write through checkpoint without cancelling it', async () => {
+  let dispatched, finish;
+  const ready = new Promise((resolve) => {
+    dispatched = resolve;
+  });
+  const hold = new Promise((resolve) => {
+    finish = resolve;
+  });
+  let workerSignal,
+    saved = false;
+  const service = await createAgentService({
+    issuer: 'https://mcp.example',
+    provider: 'https://tonk.example',
+    directory: '/unused',
+    checkpoint: {
+      save: async () => {
+        saved = true;
+      },
+    },
+    run: async ({ signal }) => {
+      workerSignal = signal;
+      dispatched();
+      await hold;
+      return { result: { matches_after: [] } };
+    },
+  });
+  const response = service.fetch(
+    new Request('https://mcp.example/mcp', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'mcp-protocol-version': '2025-03-26',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'tonk_evaluate',
+          arguments: {
+            agent_link: 'https://tonk.example/agent#fixture',
+            document: 'concept:\n',
+          },
+        },
+      }),
+    }),
+  );
+  await ready;
+  const closing = service.close();
+  const wasAborted = workerSignal.aborted;
+  finish();
+  await response;
+  await closing;
+  assert.equal(wasAborted, false);
+  assert.equal(saved, true);
+});
+
 test('hosted URL discovers without OAuth, checkpoints calls, and rejects old auth endpoints', async () => {
   let writes = 0,
     saved = 0;
