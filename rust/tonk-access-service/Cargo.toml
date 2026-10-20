@@ -116,6 +116,9 @@ tokio-tungstenite = { workspace = true, optional = true }
 
 [features]
 default = []
+# Hold each write on a socket as long as the production bucket would, so a
+# local test sees the frames an object takes meanwhile.
+test-latency = []
 # Enable test helpers (local access service server)
 helpers = [
   "dep:anyhow",

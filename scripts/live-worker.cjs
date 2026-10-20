@@ -118,13 +118,40 @@ async function main() {
     assert.ok(told.includes(Buffer.from(fixture.content)), 'the watch was told what the cell holds');
     socket.close();
 
+    // A watch begun while a write to another cell is being performed on
+    // the same socket, as a tab pushes and watches when it starts: the
+    // object takes the watch while the write waits on the bucket, and the
+    // write answered must not undo the watch.
+    {
+      const { socket, next } = await open();
+      socket.send(new Uint8Array(fixture.raced.write));
+      socket.send(new Uint8Array(fixture.raced.watch));
+      const answers = [await next(), await next()];
+      assert.ok(answers.some(answer => answer.includes(Buffer.from('State'))),
+        `the raced watch was not accepted: ${answers.map(String)}`);
+      const published = await worker.dispatchFetch('http://localhost/ucan/', {
+        method: 'POST',
+        headers: {
+          Authorization: fixture.raced.publish,
+          'Content-Type': 'application/octet-stream',
+          Accept: 'application/octet-stream',
+        },
+        body: new Uint8Array(fixture.content),
+      });
+      assert.equal(published.status, 200, `the raced write answered ${published.status}`);
+      const told = await next().catch(() => null);
+      assert.ok(told && told.includes(Buffer.from('State')),
+        'a watch begun beside a write on its socket was not told of the next write');
+      socket.close();
+    }
+
     await refusedAsReplayed('on another socket');
     // Started anew over the same storage, as an object is after it was
     // evicted: nothing it held in memory survives, the record must.
     await worker.dispose();
     worker = new Miniflare(options);
     await refusedAsReplayed('after the object started anew');
-    console.log('live worker: a watch was told of a write over HTTP, a ping was answered, and a replay was refused across a restart');
+    console.log('live worker: a watch was told of a write over HTTP, also one begun beside a write on its socket, a ping was answered, and a replay was refused across a restart');
   } finally { await worker.dispose(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -168,10 +168,21 @@ impl DurableObject for Live {
         let screened = clock.lap();
 
         let access = self.access()?;
-        let mut session = self.session(&socket.id).await?;
+        let before = self.held(&socket.id).await?;
+        let mut session = Session::restore(before.clone());
         let reply = session.receive(&access, &bytes).await;
+        // The bucket answers a local test at once, and the object takes
+        // the next frame only while one waits: this stands in for the
+        // bucket's latency in production.
+        #[cfg(feature = "test-latency")]
+        if invoked
+            .as_ref()
+            .is_some_and(|invoked| invoked.writes.is_some())
+        {
+            worker::Delay::from(Duration::from_millis(300)).await;
+        }
         let received = clock.lap();
-        self.save(&socket.id, &session).await?;
+        self.save(&socket.id, &before, &session).await?;
         let saved = clock.lap();
         let Some(reply) = reply else {
             return Ok(());
@@ -344,12 +355,13 @@ impl Live {
                 let Some(socket) = socket.filter(|socket| socket.subject == subject) else {
                     return Ok((0, 0));
                 };
-                let mut session = self.session(&socket.id).await?;
+                let before = self.held(&socket.id).await?;
+                let mut session = Session::restore(before.clone());
                 let replies = session.deliver(access, change, RECHECK, at).await;
                 if replies.is_empty() {
                     return Ok((0, 0));
                 }
-                self.save(&socket.id, &session).await?;
+                self.save(&socket.id, &before, &session).await?;
                 let mut ended = 0;
                 for reply in &replies {
                     if let Reply::Ended { status, .. } = reply {
@@ -384,19 +396,52 @@ impl Live {
         Ok(())
     }
 
-    /// The watches socket `id` began.
-    async fn session(&self, id: &str) -> Result<Session> {
-        let watches: Option<Vec<Subscription>> = self.state.storage().get(&watches(id)).await?;
-        Ok(Session::restore(watches.unwrap_or_default()))
+    /// The watches socket `id` began, each kept under its own key.
+    async fn held(&self, id: &str) -> Result<Vec<Subscription>> {
+        let listed = self
+            .state
+            .storage()
+            .list_with_options(ListOptions::new().prefix(&watches(id)))
+            .await?;
+        let mut held = Vec::new();
+        listed.for_each(&mut |value, _| {
+            if let Some(watch) = value
+                .as_string()
+                .and_then(|json| serde_json::from_str::<Subscription>(&json).ok())
+            {
+                held.push(watch);
+            }
+        });
+        Ok(held)
     }
 
-    /// Keep what socket `id` watches.
-    async fn save(&self, id: &str, session: &Session) -> Result<()> {
-        let held: Vec<Subscription> = session.watches().cloned().collect();
-        if held.is_empty() {
-            self.state.storage().delete(&watches(id)).await?;
-        } else {
-            self.state.storage().put(&watches(id), held).await?;
+    /// Keep what changed in what socket `id` watches since `before`: each
+    /// watch is kept under its own key, and only one begun, rechecked or
+    /// ended is written. Writing the whole set back would undo what another
+    /// event did to it meanwhile: the object takes the next event while one
+    /// waits on the bucket, so a write answered over the socket that read
+    /// the set before a watch was begun on it put back the set without the
+    /// watch, and the socket then followed nothing while its client waited.
+    async fn save(&self, id: &str, before: &[Subscription], session: &Session) -> Result<()> {
+        let storage = self.state.storage();
+        let mut kept = std::collections::HashSet::new();
+        for watch in session.watches() {
+            kept.insert(watch.invocation());
+            if !before.contains(watch) {
+                let json = serde_json::to_string(watch)
+                    .map_err(|error| worker::Error::RustError(error.to_string()))?;
+                storage
+                    .put(&watch_key(id, watch.invocation()), json)
+                    .await?;
+            }
+        }
+        let ended: Vec<String> = before
+            .iter()
+            .filter(|watch| !kept.contains(watch.invocation()))
+            .map(|watch| watch_key(id, watch.invocation()))
+            .collect();
+        if !ended.is_empty() {
+            storage.delete_multiple(ended).await?;
         }
         Ok(())
     }
@@ -407,10 +452,18 @@ impl Live {
         let Some(socket) = ws.deserialize_attachment::<Attachment>()? else {
             return Ok("(unnamed)".into());
         };
-        let held = self.session(&socket.id).await?.watches().count();
-        self.state.storage().delete(&watches(&socket.id)).await?;
+        let held: Vec<String> = self
+            .held(&socket.id)
+            .await?
+            .iter()
+            .map(|watch| watch_key(&socket.id, watch.invocation()))
+            .collect();
+        let count = held.len();
+        for keys in held.chunks(128) {
+            self.state.storage().delete_multiple(keys.to_vec()).await?;
+        }
         Ok(format!(
-            "{} of {} with {held} watches",
+            "{} of {} with {count} watches",
             socket.id, socket.subject
         ))
     }
@@ -557,8 +610,14 @@ fn send(ws: &WebSocket, reply: &Reply) -> Result<()> {
     ws.send_with_bytes(reply.encode())
 }
 
+/// Where socket `id`'s watches are kept, each under its own key.
 fn watches(id: &str) -> String {
-    format!("watches/{id}")
+    format!("watches/{id}/")
+}
+
+/// Where socket `id` keeps the watch `invocation` began.
+fn watch_key(id: &str, invocation: &str) -> String {
+    format!("{}{invocation}", watches(id))
 }
 
 /// Where the record of accepted invocations is kept, by invocation.

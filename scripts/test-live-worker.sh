@@ -14,7 +14,7 @@ if [ -z "${NODE_PATH:-}" ]; then
 fi
 node -e 'require("miniflare")'
 cd "$repo_root/rust/tonk-access-service"
-worker-build --dev --no-opt --out-dir "$build_dir/build" -- --offline
+worker-build --dev --no-opt --out-dir "$build_dir/build" -- --offline --features test-latency
 cd "$repo_root"
 TONK_LIVE_WORKER_SHIM="$build_dir/build/worker/shim.mjs" \
   cargo test --offline -p tonk-access-service --features helpers --test live \

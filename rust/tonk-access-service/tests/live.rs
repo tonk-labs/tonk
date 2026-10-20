@@ -58,6 +58,29 @@ async fn live_worker_tells_a_watch_of_a_write_over_http() -> anyhow::Result<()> 
     let publish = issued(&space, &cell.publish(content.clone(), None)).await;
     let credential = dialog_remote_ucan::credential(Container::from(publish.invocation().chain()))?;
 
+    // A write to another cell with a watch begun right behind it on the
+    // same socket, then a write over HTTP to the watched cell: the write
+    // answered on the socket must not undo the watch begun beside it.
+    let raced = CellScope::new(Subject::from(space.did()), "branch/raced", "revision");
+    let beside = CellScope::new(Subject::from(space.did()), "branch/raced", "other");
+    let raced_watch = issued(&space, &raced.watch()).await;
+    let raced_watch = Request::Invoke {
+        id: Some(2),
+        container: Container::from(raced_watch.invocation().chain()).to_bytes()?,
+        payload: None,
+    }
+    .encode();
+    let beside_write = issued(&space, &beside.publish(content.clone(), None)).await;
+    let beside_write = Request::Invoke {
+        id: Some(3),
+        container: Container::from(beside_write.invocation().chain()).to_bytes()?,
+        payload: Some(content.clone()),
+    }
+    .encode();
+    let raced_publish = issued(&space, &raced.publish(content.clone(), None)).await;
+    let raced_publish =
+        dialog_remote_ucan::credential(Container::from(raced_publish.invocation().chain()))?;
+
     let state = tempfile::tempdir()?;
     let fixture = state.path().join("fixture.json");
     std::fs::write(
@@ -67,6 +90,11 @@ async fn live_worker_tells_a_watch_of_a_write_over_http() -> anyhow::Result<()> 
             "watch": frame,
             "publish": credential,
             "content": content,
+            "raced": {
+                "watch": raced_watch,
+                "write": beside_write,
+                "publish": raced_publish,
+            },
         }))?,
     )?;
     let result = std::process::Command::new("node")
