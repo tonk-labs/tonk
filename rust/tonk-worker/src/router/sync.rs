@@ -301,6 +301,50 @@ async fn publish_settled_status(
 /// of commits.
 const SYNC_RETRY_LIMIT: usize = 4;
 
+/// Admission window for retrying known publication conflicts. An in-flight
+/// push/pull keeps its normal I/O deadline and can finish after this window;
+/// this is not a cancellation deadline for an uncertain publication.
+const PUBLICATION_RETRY_WINDOW: web_time::Duration = web_time::Duration::from_secs(30);
+
+struct PublicationRetry {
+    started: web_time::Instant,
+    conflicts: u32,
+}
+
+impl PublicationRetry {
+    fn new() -> Self {
+        Self {
+            started: web_time::Instant::now(),
+            conflicts: 0,
+        }
+    }
+
+    fn delay(&mut self) -> Option<web_time::Duration> {
+        let remaining = PUBLICATION_RETRY_WINDOW.checked_sub(self.started.elapsed())?;
+        if remaining < web_time::Duration::from_millis(1) {
+            return None;
+        }
+        // Yield to a finite competing burst; jitter avoids writers repeatedly
+        // colliding in step. Cap the delay so a quiet upstream settles promptly.
+        let ceiling = (25_u64 << self.conflicts.min(6)).min(1_000);
+        let floor = ceiling / 2;
+        let delay = floor + rand::random::<u64>() % (ceiling - floor + 1);
+        self.conflicts = self.conflicts.saturating_add(1);
+        Some(web_time::Duration::from_millis(delay).min(remaining))
+    }
+
+    fn admits_retry(&self) -> bool {
+        self.started.elapsed() < PUBLICATION_RETRY_WINDOW
+    }
+
+    async fn wait(&mut self) -> bool {
+        let Some(delay) = self.delay() else {
+            return false;
+        };
+        crate::sleep(delay).await.is_ok() && self.admits_retry()
+    }
+}
+
 /// Whether `error` is a push refused because upstream moved under us.
 ///
 /// Two shapes, one meaning. A push that confirms upstream first is
@@ -838,8 +882,15 @@ pub async fn push(
     // pushing the same branch. Converge the way a sweep does — pull the
     // newer upstream into local, then publish the merge — rather than
     // reporting a conflict the caller can do nothing about but retry.
+    let mut retry = PublicationRetry::new();
     let mut attempt = 0;
     loop {
+        log!(
+            "Push publication attempt {}: {}@{}",
+            attempt + 1,
+            params.branch,
+            params.repo
+        );
         let error = match tonk_state
             .reactor
             .repository(&params.repo)
@@ -860,7 +911,19 @@ pub async fn push(
                     error: None,
                 }));
             }
-            Err(e) if is_upstream_moved(&e) && attempt + 1 < SYNC_RETRY_LIMIT => {
+            Err(e) if is_upstream_moved(&e) => {
+                if !retry.wait().await {
+                    log!(
+                        "Push publication retry window exhausted after {} attempts: {}@{}",
+                        attempt + 1,
+                        params.branch,
+                        params.repo
+                    );
+                    let error = sync_failure(&e);
+                    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                    publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
+                    return Err(error);
+                }
                 attempt += 1;
                 log!(
                     "Push raced an upstream update on {}@{} (attempt {attempt}); pulling",
@@ -881,9 +944,27 @@ pub async fn push(
                             )
                             .await;
                         }
-                        continue;
+                        // Reconciliation can itself spend the remaining
+                        // window. Do not admit another conditional write then.
+                        if retry.admits_retry() {
+                            continue;
+                        }
+                        log!(
+                            "Push publication retry window exhausted after reconciliation: {}@{}",
+                            params.branch,
+                            params.repo
+                        );
+                        sync_failure(&e)
                     }
-                    Err(error) => error,
+                    Err(error) => {
+                        log!(
+                            "Push reconciliation failed after {} publication attempts: {}@{}",
+                            attempt,
+                            params.branch,
+                            params.repo
+                        );
+                        error
+                    }
                 }
             }
             Err(e) => {
@@ -1983,6 +2064,22 @@ mod push_conflict_tests {
 
     use crate::router::repository::profile_library_tests::test_state;
     use crate::router::{AppState, api_router_with_state};
+
+    #[test]
+    fn publication_backoff_is_capped_and_stops_at_the_window() {
+        let mut retry = super::PublicationRetry::new();
+        for _ in 0..32 {
+            let delay = retry.delay().expect("within publication window");
+            assert!(delay >= web_time::Duration::from_millis(12));
+            assert!(delay <= web_time::Duration::from_secs(1));
+        }
+        retry.started = web_time::Instant::now() - super::PUBLICATION_RETRY_WINDOW;
+        assert!(retry.delay().is_none(), "expired windows admit no retry");
+        assert!(
+            !retry.admits_retry(),
+            "a reconciliation that crosses the window admits no conditional publication"
+        );
+    }
 
     async fn post(app: &Router, uri: String, body: &str) -> (StatusCode, serde_json::Value) {
         let response = app
