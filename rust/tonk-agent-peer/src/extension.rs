@@ -15,8 +15,9 @@ use serde_json::{Value, json};
 pub const NAME: &str = "tonk_install_extension";
 
 /// The extension's Desktop identity: `local.mcpb.<author>.<name>`, slugged
-/// from the bundle manifest (author "Tonk Labs", name "tonk-peer").
-const EXTENSION_ID: &str = "local.mcpb.tonk-labs.tonk-peer";
+/// from the bundle manifest (author "Tonk Labs", name "tonk-agent-peer", the
+/// name the extension has had since its first build, so updates replace it).
+const EXTENSION_ID: &str = "local.mcpb.tonk-labs.tonk-agent-peer";
 const BUNDLE: &str = "tonk-peer.mcpb";
 const DOWNLOAD: &str =
     "https://github.com/tonk-labs/tonk/releases/download/tonk-agent-peer-dev/tonk-peer.mcpb";

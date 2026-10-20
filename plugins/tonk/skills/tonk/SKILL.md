@@ -23,7 +23,10 @@ A different server, the hosted Tonk connector, may also be connected. It has
 only `tonk_query` and `tonk_evaluate`, needs the space's agent link on every
 call, and knows nothing about joined spaces. Only if a tool search finds no
 `tonk_list_spaces` is the local peer unavailable to this session: say so,
-rather than treating the hosted connector as the peer.
+rather than treating the hosted connector as the peer. Right after the plugin
+or the extension is installed or updated, Desktop restarts the peer and its
+tools can be missing for about half a minute, so if the first search finds
+none, search once more before concluding.
 
 ## Live views in Claude Desktop
 
@@ -39,6 +42,10 @@ extension's tools do not.
 
 - **Both copies available:** in Claude Desktop, call `tonk_display` and
   `tonk_show` from the extension's copy. Any copy works for everything else.
+- **The extension's copy is there, but the user says the view showed only
+  text:** Desktop renders views only in chats started after the extension was
+  installed or last updated. Say so, and ask the user to start a new chat and
+  ask again there. Don't offer to install the extension again.
 - **Only this plugin's copy, in Claude Desktop, and the user wants to see
   things** (or tells you a view showed only text): answer with the text
   result, then say once that live views need the Tonk extension and ask

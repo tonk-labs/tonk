@@ -9,6 +9,11 @@
 # claude_desktop_config.json), never from a plugin's server, even one the
 # plugin bundles as a .mcpb. See docs/claude-desktop-plugin-internals.md.
 #
+# Desktop runs the launcher itself (it is executable, with a #!/bin/sh line),
+# as it runs a bundled binary: the views of an extension it started as
+# `/bin/sh <launcher>` did not render in our tests, while the same launcher
+# started directly did.
+#
 # The bundle carries the launcher, not the peer itself: on every start it
 # fetches the newest verified peer build (and the guest runtime for live
 # views), so one install keeps itself current, and the downloaded binary is
@@ -29,7 +34,7 @@ grep -q "^PINNED_RELEASE=\"$release\"" "$work/server/tonk-agent-peer"
 cat > "$work/manifest.json" <<EOF
 {
   "manifest_version": "0.3",
-  "name": "tonk-peer",
+  "name": "tonk-agent-peer",
   "display_name": "Tonk",
   "version": "$version",
   "description": "Work in shared Tonk spaces through a local peer, with live views in the conversation.",
@@ -42,7 +47,7 @@ cat > "$work/manifest.json" <<EOF
   "server": {
     "type": "binary",
     "entry_point": "server/tonk-agent-peer",
-    "mcp_config": { "command": "/bin/sh", "args": ["\${__dirname}/server/tonk-agent-peer"], "env": {} }
+    "mcp_config": { "command": "\${__dirname}/server/tonk-agent-peer", "args": [], "env": {} }
   },
   "tools": [
     { "name": "tonk_join", "description": "Join a Tonk space from a share link" },
