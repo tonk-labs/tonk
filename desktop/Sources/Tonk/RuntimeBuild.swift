@@ -3,16 +3,17 @@ import HarnessCore
 
 @MainActor
 extension RuntimeModel {
-  func performBuildTool(_ space: TonkSpace, tool: String, arguments: JSONValue) async throws
-    -> JSONValue
-  {
+  /// `page` is the window the calling chat belongs to, if any.
+  func performBuildTool(
+    _ space: TonkSpace, tool: String, arguments: JSONValue, page: SpacePage? = nil
+  ) async throws -> JSONValue {
     if tool == "tonk_inspect_view" {
       _ = try SpaceTools.validate(tool: tool, arguments: arguments)
-      let text = try await inspectView(space)
+      let text = try await inspectView(space, in: page)
       return try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))
     }
     if TonkToolCatalog.primitiveNames.contains(tool) {
-      try requireSpaceReady(space)
+      try requireSpaceReady(space, page: page)
       try Task.checkCancellation()
       let input = String(decoding: try JSONEncoder().encode(arguments), as: UTF8.self)
       let result: [String: Any]

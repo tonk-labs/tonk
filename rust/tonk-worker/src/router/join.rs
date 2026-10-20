@@ -1627,7 +1627,7 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
 /// landed; `redirected` distinguishes a real shortcut from a host that
 /// answered the probe with content.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
+pub(crate) async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
     use web_sys::Response;
@@ -1659,7 +1659,7 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
 /// Native resolution: fetch without following, read `Location`, resolve
 /// against the short link. Mirrors the CLI's `resolve_shortcut`.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
+pub(crate) async fn resolve_shortcut(short_url: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -3339,10 +3339,12 @@ pub(crate) mod tests {
     }
 
     /// Rebuild all worker state from durable storage after an onboarding
-    /// join. This fixture has no remote: it verifies local content and the
-    /// real storage proof, while network replication needs a served fixture.
+    /// join, as a reboot does: the membership reopens from what the profile
+    /// kept, proven under the newly issued in-memory session grant. This
+    /// fixture has no remote: it verifies local content and the real
+    /// storage proof, while network replication needs a served fixture.
     #[dialog_common::test]
-    async fn it_reopens_an_onboarding_membership_with_a_disposable_session() {
+    async fn it_reopens_an_onboarding_membership_after_a_reboot() {
         let (name, registry, profile_did, operator_did, account, key, before, revision) = {
             let fixture = test_state_without_root().await;
             let initial = crate::worker::boot_state(
@@ -3401,7 +3403,10 @@ pub(crate) mod tests {
         let rebuilt = crate::worker::boot_state(profile.storage().clone(), name, profile, registry)
             .await
             .unwrap();
-        assert_ne!(rebuilt.operator.did(), operator_did);
+        // The operator key is derived from the profile and its access
+        // branch, so a reboot signs as the same operator; only the grant
+        // authorizing it is new, which the proof windows below check.
+        assert_eq!(rebuilt.operator.did(), operator_did);
         assert_eq!(
             crate::onboarding::did(&rebuilt).await.unwrap(),
             Some(account)

@@ -82,10 +82,11 @@ final class RuntimeCatalogCacheTests: XCTestCase {
     let attached = try space()
     try runtime.acceptCatalog([attached], branch: "main", root: "account", status: "registered")
     runtime.loading = false
-    runtime.openSpace(attached)
-    XCTAssertTrue(runtime.spaceLoading)
-    XCTAssertThrowsError(try runtime.requireSpaceReady(attached))
-    runtime.spaceWebView.stopLoading()
+    let page = runtime.makePage()
+    page.open(attached)
+    XCTAssertTrue(page.loading)
+    XCTAssertThrowsError(try runtime.requireSpaceReady(attached, page: page))
+    page.webView.stopLoading()
   }
 
   func testSignedOutResponseClearsSnapshotAndShowsOnboarding() throws {

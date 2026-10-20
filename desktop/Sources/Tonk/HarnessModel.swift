@@ -20,6 +20,8 @@ final class HarnessModel: ObservableObject {
   @Published var error: String?
   @Published var loginPending = false
   weak var runtime: RuntimeModel?
+  /// The space window this chat belongs to; its tools inspect this page.
+  weak var page: SpacePage?
   var cliAdapters: [String: TonkCLI] = [:]
   @Published var creatingSpace = false
   @Published var spaceCreationError: String?
@@ -32,32 +34,26 @@ final class HarnessModel: ObservableObject {
   var apiTask: Task<Void, Never>?
   var apiKey = ""
   let root: URL
-  let store: StateStore
+  let store: any ChatStateStore
   private var loginID: String?
   @Published var turnID: String?
   var activeTurnID: String? { turnID }
   var resumed = false
   private var saveTask: Task<Void, Never>?
   var storageAvailable = true
+  var modelChoiceSyncing = false
+  var modelChoiceSyncAgain = false
 
   init(
-    directory: URL? = nil, apiClient: APIModelClient? = nil, claudeClient: ClaudeCodeClient? = nil
+    directory: URL? = nil, apiClient: APIModelClient? = nil, claudeClient: ClaudeCodeClient? = nil,
+    store: (any ChatStateStore)? = nil
   ) {
     self.claudeClient = claudeClient ?? ClaudeCodeClient()
     self.apiClient = apiClient ?? APIModelClient()
-    let arguments = ProcessInfo.processInfo.arguments
-    if let directory {
-      root = directory
-    } else if let index = arguments.firstIndex(of: "--data-dir"),
-      arguments.indices.contains(index + 1)
-    {
-      root = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
-    } else {
-      root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent(RuntimeLocation.deployment.dataDirectory, isDirectory: true)
-    }
-    store = StateStore(directory: root)
-    do { saved = try store.load() } catch {
+    root = directory ?? Self.defaultRoot
+    self.store = store ?? StateStore(directory: root)
+    (store as? ChatArchive.Handle)?.model = self
+    do { saved = try self.store.load() } catch {
       storageAvailable = false
       self.error =
         "Could not read your saved conversation. It has been preserved at \(root.path)/state.json. \(error.localizedDescription)"
@@ -87,6 +83,16 @@ final class HarnessModel: ObservableObject {
       self.error = message
       self.persist()
     }
+  }
+
+  /// The app's data directory: `--data-dir` when given, else Application Support.
+  static var defaultRoot: URL {
+    let arguments = ProcessInfo.processInfo.arguments
+    if let index = arguments.firstIndex(of: "--data-dir"), arguments.indices.contains(index + 1) {
+      return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+    }
+    return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent(RuntimeLocation.deployment.dataDirectory, isDirectory: true)
   }
 
   var canSend: Bool {
@@ -356,6 +362,7 @@ final class HarnessModel: ObservableObject {
     apiTask?.cancel()
     claudeClient.stop()
     client.stop()
+    (store as? ChatArchive.Handle)?.release()
   }
 
   private func receive(_ method: String, _ params: JSONValue) {

@@ -238,4 +238,44 @@ final class HarnessProviderTests: XCTestCase {
     XCTAssertEqual(model.saved.conversation.messages.map(\.role), ["assistant"])
     XCTAssertEqual(model.saved.conversation.apiHistory?.first?.text, "Continue in the new space")
   }
+
+  @MainActor
+  func testModelChoiceSeedsTheAccountThenFollowsAnotherDesktop() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let model = HarnessModel(directory: directory)
+    try await model.configureProvider(
+      .local, connection: ModelConnection(provider: .local, model: "fixture"), key: "")
+    let account = ModelChoiceAccountStub()
+    let local = ModelChoice(provider: .local, model: "fixture")
+
+    await model.syncModelChoice(with: account)
+    XCTAssertEqual(account.written, [local])
+    XCTAssertEqual(model.saved.syncedModelChoice, local)
+
+    account.remote = .known(ModelChoice(provider: .ollama, model: "llama3"))
+    await model.syncModelChoice(with: account)
+    XCTAssertEqual(model.provider, .ollama)
+    XCTAssertEqual(model.connection.model, "llama3")
+    XCTAssertEqual(account.written, [local])
+    XCTAssertEqual(try StateStore(directory: directory).load().syncedModelChoice?.provider, .ollama)
+
+    // A choice this Mac has no key for is left for later; nothing is overwritten.
+    account.remote = .known(ModelChoice(provider: .anthropic, model: "fixture-model"))
+    await model.syncModelChoice(with: account)
+    XCTAssertEqual(model.provider, .ollama)
+    XCTAssertEqual(model.saved.syncedModelChoice?.provider, .ollama)
+    XCTAssertEqual(account.written, [local])
+  }
+}
+
+@MainActor
+private final class ModelChoiceAccountStub: ModelChoiceAccount {
+  var remote: ModelChoice.RemoteValue?
+  var written: [ModelChoice] = []
+  func readModelChoice() async throws -> ModelChoice.RemoteValue? { remote }
+  func writeModelChoice(_ choice: ModelChoice) async throws {
+    written.append(choice)
+    remote = .known(choice)
+  }
 }

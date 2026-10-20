@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tonk-peer": {
+      "type": "stdio",
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/tonk-agent-peer"
+    }
+  }
+}

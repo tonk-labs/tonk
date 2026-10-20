@@ -52,6 +52,7 @@ extension HarnessModel {
     updated.checkpointChat()
     try store.save(updated)
     saved = updated
+    Task { await syncModelChoice() }
     if changed || executableChanged || !connected {
       await connect()
     } else if selected == .claude {

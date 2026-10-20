@@ -1,0 +1,253 @@
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  # Removes a pull request's preview release when it closes, including with
+  # merge conflicts. Runs the trusted base-branch workflow, never PR code.
+  pull_request_target:
+    types: [closed]
+
+name: 'Agent peer'
+
+# Builds the local peer that the Tonk agent plugin launches on every pull
+# request and every merge to `main`, and drives each build over MCP stdio.
+# A merge also refreshes the rolling `tonk-agent-peer-dev` prerelease, which the
+# plugin's `dev` channel installs. Releases build, sign and publish it from their
+# tag in `release.yml`. Each pull request also gets a `tonk-agent-peer-pr-N`
+# prerelease and a comment with a one-line install of the plugin pinned to it.
+
+concurrency:
+  group: agent-peer-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-peer:
+    name: 'Build ${{ matrix.artifact-name }}'
+    if: github.event_name != 'pull_request_target'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact-name: tonk-agent-peer-linux-x86_64
+          - os: macos-latest
+            artifact-name: tonk-agent-peer-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wimpysworld/nothing-but-nix@main
+        if: runner.os == 'Linux'
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Build tonk-agent-peer'
+        run: nix build --accept-flake-config .#tonk-agent-peer
+      - name: 'Stage tonk-agent-peer artifact'
+        run: |
+          mkdir -p artifacts
+          cp result/bin/tonk-agent-peer artifacts/tonk-agent-peer
+          chmod 0755 artifacts/tonk-agent-peer
+      - name: 'Smoke over MCP stdio'
+        run: python3 rust/tonk-agent-peer/smoke.py artifacts/tonk-agent-peer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: artifacts/tonk-agent-peer
+
+  # Tonk's own guest runtime, which the extension's space view runs to render
+  # a space with its own views. Built from this commit's web app, as the
+  # hosted MCP assets are in publish.yml.
+  guest-runtime:
+    name: 'Build guest runtime'
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wimpysworld/nothing-but-nix@main
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Build the web app'
+        run: nix build --accept-flake-config .#tonk-ui-ci
+      - name: 'Pack the guest runtime'
+        run: |
+          set -euo pipefail
+          # The nix setup above leaves the runner without its own node.
+          TONK_UI_DIST="$PWD/result" nix --accept-flake-config shell nixpkgs#nodejs --command \
+            node mcp/hosted/build-assets.mjs
+          mkdir -p runtime
+          cp mcp/hosted/public/space-runtime.json mcp/hosted/public/worker-guest.html runtime/
+          ls -l runtime
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tonk-guest-runtime
+          path: runtime
+
+  plugin:
+    name: 'Check plugin'
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 'Manifests parse and the launcher is valid shell'
+        run: |
+          set -euo pipefail
+          for manifest in .claude-plugin/marketplace.json plugins/tonk/.claude-plugin/plugin.json plugins/tonk/.mcp.json; do
+            python3 -m json.tool "$manifest" > /dev/null
+          done
+          sh -n plugins/tonk/scripts/tonk-agent-peer
+          sh -n plugins/tonk/package.sh
+          sh -n plugins/tonk/package-mcpb.sh
+          test -x plugins/tonk/scripts/tonk-agent-peer
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 'Validate with Claude Code'
+        run: npx --yes @anthropic-ai/claude-code plugin validate ./plugins/tonk
+
+  # Unsigned beyond the build's ad-hoc signature, like any main build. The
+  # launcher verifies it against this release's checksums.txt.
+  dev-release:
+    name: 'Publish rolling dev build'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: ['build-peer', 'plugin', 'guest-runtime']
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-agent-peer-macos-arm64
+          path: artifacts/macos-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-agent-peer-linux-x86_64
+          path: artifacts/linux-x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-guest-runtime
+          path: artifacts/runtime
+      - name: Prepare assets
+        run: |
+          set -euo pipefail
+          for platform in macos-arm64 linux-x86_64; do
+            install -m 0755 "artifacts/$platform/tonk-agent-peer" tonk-agent-peer
+            # The launcher installs the guest runtime beside the binary.
+            rm -rf runtime && cp -R artifacts/runtime runtime
+            tar -czf "tonk-agent-peer-$platform.tar.gz" tonk-agent-peer runtime
+            rm -rf tonk-agent-peer runtime
+          done
+          sha256sum tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz > checksums.txt
+          plugins/tonk/package.sh tonk-plugin.zip tonk-agent-peer-dev
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version'])")
+          plugins/tonk/package-mcpb.sh "$version" tonk-agent-peer-dev tonk.mcpb
+      - name: Replace the rolling dev release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release delete tonk-agent-peer-dev --yes --cleanup-tag || true
+          gh release create tonk-agent-peer-dev \
+            --target "$GITHUB_SHA" \
+            --prerelease --latest=false \
+            --title 'tonk-agent-peer (dev)' \
+            --notes "Rolling tonk-agent-peer build of main at $GITHUB_SHA for the plugin's dev channel. Not a release." \
+            tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz checksums.txt tonk-plugin.zip \
+            tonk.mcpb
+
+  # A preview a reviewer can install in one line. Same-repository pull
+  # requests only: a fork's token cannot publish releases.
+  preview:
+    name: 'Publish preview'
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: ['build-peer', 'plugin', 'guest-runtime']
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      TAG: tonk-agent-peer-pr-${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-agent-peer-macos-arm64
+          path: artifacts/macos-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-agent-peer-linux-x86_64
+          path: artifacts/linux-x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-guest-runtime
+          path: artifacts/runtime
+      - name: Prepare assets
+        run: |
+          set -euo pipefail
+          for platform in macos-arm64 linux-x86_64; do
+            install -m 0755 "artifacts/$platform/tonk-agent-peer" tonk-agent-peer
+            # The launcher installs the guest runtime beside the binary.
+            rm -rf runtime && cp -R artifacts/runtime runtime
+            tar -czf "tonk-agent-peer-$platform.tar.gz" tonk-agent-peer runtime
+            rm -rf tonk-agent-peer runtime
+          done
+          sha256sum tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz > checksums.txt
+          plugins/tonk/package.sh tonk-plugin.zip "$TAG"
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version'])")
+          plugins/tonk/package-mcpb.sh "$version" "$TAG" tonk.mcpb
+      - name: Replace the preview release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" \
+            --target "$HEAD_SHA" \
+            --prerelease --latest=false \
+            --title "tonk-agent-peer preview (#${{ github.event.pull_request.number }})" \
+            --notes "Preview build of ${{ github.event.pull_request.head.ref }} at $HEAD_SHA. Removed when the pull request closes. Not a release." \
+            tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz checksums.txt tonk-plugin.zip \
+            tonk.mcpb
+      - uses: mshick/add-pr-comment@v2
+        with:
+          message-id: agent-peer-preview
+          message: |
+            **Agent peer preview** · [run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) · [release](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.TAG }})
+
+            Try the Tonk plugin from this pull request in Claude Code (macOS arm64 or Linux x86_64):
+
+            ```
+            claude --plugin-url ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ env.TAG }}/tonk-plugin.zip
+            ```
+
+            The plugin is pinned to this preview's binary. Paste a share or agent link for any Tonk space. Its identity and joined spaces live in `~/.tonk/agent-peer`; remove that directory to start over.
+
+            **Claude Desktop chat with live views:** install [`tonk.mcpb`](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ env.TAG }}/tonk.mcpb) once by opening it. It updates itself: every new chat starts the newest build of this pull request, and a newer build takes over from an older one still running. It is the same peer as the plugin and shares `~/.tonk/agent-peer`. Ask Claude to display things from a joined space (`tonk_display`) or show a query live (`tonk_show`).
+
+  cleanup-preview:
+    name: 'Remove preview'
+    if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Delete the preview release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: tonk-agent-peer-pr-${{ github.event.pull_request.number }}
+        run: gh release delete "$TAG" --yes --cleanup-tag || true

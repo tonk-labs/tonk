@@ -49,6 +49,21 @@ impl AgentLinkWorker {
         if !recovering && (document.trim().is_empty() || document.len() > 32_000) {
             return Err("Provide one inline notation document, up to 32 KB.".into());
         }
+        if writing {
+            // Syntax rejection has no effects. Parse the whole document before
+            // opening a replica or journaling an evaluation as uncertain.
+            let parsed = tonk_notation::parse(document);
+            if let Some(first) = parsed.diagnostics.first() {
+                return Err(format!(
+                    "Invalid notation (line {}, column {}); no evaluation was dispatched.",
+                    first.range.start.line + 1,
+                    first.range.start.character + 1
+                ));
+            }
+            if parsed.syntax.is_none() {
+                return Err("Invalid notation; no evaluation was dispatched.".into());
+            }
+        }
         if link.len() > 160_000 {
             return Err("Agent link exceeds limit.".into());
         }
@@ -78,8 +93,7 @@ impl AgentLinkWorker {
             })
             .collect::<Vec<_>>();
         let id = grant_set_id(&subject, grants.recipient().as_ref(), &cids);
-        let _lock = lock_root(&self.root)
-            .map_err(|_| "Agent storage is unavailable or busy.".to_owned())?;
+        let _lock = lock_root(&self.root).map_err(|error| error.describe().to_owned())?;
         let directory = self.root.join(id);
         if !directory.exists()
             && std::fs::read_dir(&self.root)
@@ -122,6 +136,12 @@ impl AgentLinkWorker {
                 }
             }
             if writing && synchronize {
+                // Use the ordinary read-only pipeline to reject analysis/plan
+                // errors before marking a committing invocation as uncertain.
+                // State can still change afterward: any actual-dispatch failure
+                // keeps the journal, regardless of its HTTP status.
+                request(&mut router, &format!("{base}/evaluate?transact=false"), document)
+                    .await.map_err(|error| error.describe("Write validation failed; no evaluation was dispatched."))?;
                 create_journal(&journal).map_err(|_| "Could not persist evaluation journal; no evaluation was dispatched.".to_owned())?;
             }
             let mut result = request(&mut router, &format!("{base}/evaluate?transact={writing}"), document)
@@ -218,18 +238,120 @@ async fn request_method(
     serde_json::from_slice(&body).map_err(|_| RequestFailure::Unavailable)
 }
 
-fn lock_root(root: &Path) -> std::io::Result<std::fs::File> {
+/// Like [`request_method`], but says why it failed: the worker's status and
+/// the start of its body. Only for callers whose user owns the peer; the
+/// hosted connection keeps worker errors opaque.
+pub(super) async fn request_detailed(
+    router: &mut Router,
+    path: &str,
+    document: &str,
+    method: &str,
+) -> Result<Value, String> {
+    let response = router
+        .call(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header("content-type", "text/plain")
+                .body(Body::from(document.to_owned()))
+                .map_err(|error| error.to_string())?,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 2_000_000)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!("{status}: {}", worker_error(&body)));
+    }
+    serde_json::from_slice(&body).map_err(|error| error.to_string())
+}
+
+/// A worker error body as an agent can act on it: the analyzer's message
+/// with its code and position when the body is the worker's error shape,
+/// else the start of the body.
+pub(super) fn worker_error(body: &[u8]) -> String {
+    if let Ok(value) = serde_json::from_slice::<Value>(body)
+        && let Some(message) = value["error"]["message"].as_str()
+    {
+        let code = value["error"]["code"]
+            .as_str()
+            .or(value["error"]["kind"].as_str());
+        let start = &value["error"]["range"]["start"];
+        let at = match (start["line"].as_u64(), start["character"].as_u64()) {
+            // Ranges are zero-based; editors and people count from one.
+            (Some(line), Some(column)) => format!(" (line {}, column {})", line + 1, column + 1),
+            _ => String::new(),
+        };
+        return match code {
+            Some(code) => format!("{code}: {}{at}", clip(message, 4000)),
+            None => format!("{}{at}", clip(message, 4000)),
+        };
+    }
+    clip(String::from_utf8_lossy(body).trim(), 1000)
+}
+
+fn clip(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_owned();
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
+}
+
+/// Only fixed admission categories cross the agent boundary. Never expose
+/// filesystem errors: their messages may contain private paths or identities.
+#[derive(Debug)]
+enum StorageAdmissionError {
+    Busy,
+    Invalid,
+    ByteCapacity,
+    FileCapacity,
+    Unavailable,
+}
+
+impl StorageAdmissionError {
+    fn describe(&self) -> &'static str {
+        match self {
+            Self::Busy => "Agent storage is busy; no evaluation was dispatched.",
+            Self::Invalid => "Agent storage is invalid; operator attention is required.",
+            Self::ByteCapacity => {
+                "Agent storage byte capacity reached; operator attention is required."
+            }
+            Self::FileCapacity => {
+                "Agent storage file capacity reached; operator attention is required."
+            }
+            Self::Unavailable => "Agent storage is unavailable; no evaluation was dispatched.",
+        }
+    }
+}
+
+impl From<std::io::Error> for StorageAdmissionError {
+    fn from(_: std::io::Error) -> Self {
+        Self::Unavailable
+    }
+}
+
+fn lock_root(root: &Path) -> Result<std::fs::File, StorageAdmissionError> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(root)?;
-    fn validate(path: &Path, bytes: &mut u64, files: &mut usize) -> std::io::Result<()> {
+    fn validate(
+        path: &Path,
+        bytes: &mut u64,
+        files: &mut usize,
+    ) -> Result<(), StorageAdmissionError> {
         let meta = std::fs::symlink_metadata(path)?;
         if meta.file_type().is_symlink()
             || (!meta.is_dir() && (!meta.is_file() || meta.nlink() != 1))
         {
-            return Err(std::io::Error::other("Private regular storage required"));
+            return Err(StorageAdmissionError::Invalid);
         }
         if meta.is_dir() {
             for entry in std::fs::read_dir(path)? {
@@ -239,21 +361,26 @@ fn lock_root(root: &Path) -> std::io::Result<std::fs::File> {
             *bytes += meta.len();
             *files += 1;
         }
-        if *bytes > 192 * 1024 * 1024 || *files > 3500 {
-            return Err(std::io::Error::other("Storage capacity reached"));
+        if *bytes > 192 * 1024 * 1024 {
+            return Err(StorageAdmissionError::ByteCapacity);
+        }
+        if *files > 3500 {
+            return Err(StorageAdmissionError::FileCapacity);
         }
         Ok(())
     }
     let root_meta = std::fs::symlink_metadata(root)?;
     if !root_meta.is_dir() || root_meta.permissions().mode() & 0o077 != 0 {
-        return Err(std::io::Error::other("Private root required"));
+        return Err(StorageAdmissionError::Invalid);
     }
     let lock_path = root.join("worker.lock");
-    if lock_path.exists() {
-        let meta = std::fs::symlink_metadata(&lock_path)?;
-        if !meta.is_file() || meta.nlink() != 1 {
-            return Err(std::io::Error::other("Invalid lock"));
+    match std::fs::symlink_metadata(&lock_path) {
+        Ok(meta) if !meta.is_file() || meta.nlink() != 1 => {
+            return Err(StorageAdmissionError::Invalid);
         }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     let lock = std::fs::OpenOptions::new()
         .create(true)
@@ -262,12 +389,15 @@ fn lock_root(root: &Path) -> std::io::Result<std::fs::File> {
         .write(true)
         .mode(0o600)
         .open(lock_path)?;
-    lock.try_lock().map_err(std::io::Error::other)?;
+    lock.try_lock().map_err(|error| match error {
+        std::fs::TryLockError::WouldBlock => StorageAdmissionError::Busy,
+        std::fs::TryLockError::Error(_) => StorageAdmissionError::Unavailable,
+    })?;
     validate(root, &mut 0, &mut 0)?;
     Ok(lock)
 }
 
-fn create_journal(path: &Path) -> std::io::Result<()> {
+pub(super) fn create_journal(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
         .write(true)
@@ -278,7 +408,7 @@ fn create_journal(path: &Path) -> std::io::Result<()> {
     std::fs::File::open(path.parent().unwrap())?.sync_all()
 }
 
-fn clear_journal(path: &Path) -> std::io::Result<()> {
+pub(super) fn clear_journal(path: &Path) -> std::io::Result<()> {
     std::fs::remove_file(path)?;
     std::fs::File::open(path.parent().unwrap())?.sync_all()
 }

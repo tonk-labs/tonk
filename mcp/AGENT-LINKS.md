@@ -53,11 +53,32 @@ hold an exclusive root lock. The adapter admits at most 32 queued/running calls;
 each process has a two-minute deadline and a three-second forced-exit grace.
 Documents are limited to 32,000 UTF-8 bytes. Storage admission is capped at 64
 replicas, 192 MiB and 3500 files; capacity failure requires operator attention.
+Admission errors distinguish a held root lock (`busy`), invalid private storage,
+byte capacity, file capacity, and ordinary storage unavailability using fixed
+messages. These errors occur before opening a replica, pulling, evaluating, or
+inspecting/creating a publication journal. A capacity or invalid-storage error
+requires operator diagnosis; it must not be treated as transient lock contention.
 There is no automatic eviction of retained work. These are bounded deployment
 limits, not measured capacity targets.
 
-Normally the worker pulls, evaluates once, and pushes writes. Before evaluation
-it synchronously persists a pending marker. If evaluation, push, or process
+Client cancellation stops queued calls and active queries. Once an evaluation
+is dispatched, it finishes under the same two-minute process deadline and saves
+its checkpoint even if the client disconnects. Graceful hosted shutdown drains
+the active call and rejects queued calls. A disconnected client must still query
+before deciding what to do next; completion does not guarantee delivery of its
+response, and a platform kill can still interrupt the call.
+
+Evaluation documents are parsed before replica storage is opened or a pending
+marker is created. Syntax rejection reports a location when available and
+confirms that no evaluation was dispatched; correct the document and submit it again.
+
+Normally the worker pulls and validates writes with a read-only dry run before
+dispatching the committing evaluation once and pushing it. A validation rejection
+confirms that the write was not dispatched; correct the document and submit it
+again. Validation never clears an existing recovery marker. State can change
+between validation and dispatch, so a later failure still requires recovery.
+Before the committing evaluation it synchronously persists a pending marker.
+If evaluation, push, or process
 termination leaves an unknown outcome, subsequent writes are blocked and pulls
 cannot overwrite retained state. Authorized queries inspect the retained state
 and include `recovery.required`. They must still pass a fresh remote read check.

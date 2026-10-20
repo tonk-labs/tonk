@@ -8,6 +8,62 @@ use tonk_invite::connection::{AgentInvite, candidate_build_scopes};
 use tonk_worker::AgentLinkWorker;
 
 #[tokio::test]
+async fn malformed_evaluation_is_rejected_before_replica_or_journal_creation() -> anyhow::Result<()>
+{
+    let root = std::env::temp_dir().join(format!(
+        "tonk-agent-invalid-notation-{}",
+        rand::random::<u64>()
+    ));
+    let remote = "http://127.0.0.1:9/ucan/".parse()?;
+    let owner = Signer::from(Ed25519Signer::generate().await?);
+    let seed = [47; 32];
+    let recipient = Ed25519Signer::import(&seed).await?;
+    let now = Timestamp::now();
+    let deadline = Timestamp::try_from((now.to_unix() + 3600) as i128)?;
+    let scopes = candidate_build_scopes(&owner.did());
+    let mut chains = Vec::new();
+    for scope in &scopes {
+        let grant = DelegationBuilder::new()
+            .issuer(owner.clone())
+            .audience(&recipient.did())
+            .subject(scope.subject.clone())
+            .command(scope.command.0.clone())
+            .policy(scope.policy())
+            .expiration(deadline)
+            .meta(tonk_invite::home_address_meta(&remote))
+            .try_build()
+            .await?;
+        chains.push(DelegationChain::new(grant));
+    }
+    let link = AgentInvite::new(seed, chains, &scopes, &remote, now)
+        .await?
+        .to_url("https://tonk.example/agent")?;
+    let mut worker = AgentLinkWorker::new(root.clone(), remote);
+    // The failed live dossier used an unquoted colon-space in this scalar.
+    // Reject the entire stream before opening storage, pulling, or journaling.
+    let malformed = "relay-artifact!:\n  id: RES-SRC-D01\n  sources: RES-D01; ACC-D01; OPS-D01; scope boundary: same building access window; Alder only\n";
+    let valid = "concept!: &valid-record\n  with:\n    title: { the: example.valid/title, as: text, description: Test title }\nvalid-record!:\n  title: Must not be committed from an invalid stream\n";
+    for (document, line) in [
+        (malformed.to_owned(), 3),
+        (format!("{valid}---\n{malformed}"), 9),
+    ] {
+        let error = worker
+            .call("tonk_evaluate", &link, &document)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            format!("Invalid notation (line {line}, column 53); no evaluation was dispatched.")
+        );
+        assert!(
+            !root.exists(),
+            "malformed notation must not create a replica or journal"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn agent_link_syncs_and_reads_back_from_an_independent_replica() -> anyhow::Result<()> {
     let service = access_service(AccessServiceSettings::default()).await?;
     let owner_key = Ed25519Signer::generate().await?;
@@ -108,6 +164,98 @@ async fn agent_link_syncs_and_reads_back_from_an_independent_replica() -> anyhow
         .call("tonk_query", &link, "spike-record:\n")
         .await
         .map_err(anyhow::Error::msg)?;
+    // A malformed document is rejected before a pending marker is created.
+    // Correcting the syntax must permit a normal pull/evaluate/push afterward.
+    let malformed = "spike-record!:\n  title: archive; scope boundary: same building\n";
+    let rejected = writer
+        .call("tonk_evaluate", &link, malformed)
+        .await
+        .unwrap_err();
+    assert!(rejected.starts_with("Invalid notation (line 2, column "));
+    assert!(rejected.ends_with("no evaluation was dispatched."));
+    let valid_write_started = std::time::Instant::now();
+    writer
+        .call(
+            "tonk_evaluate",
+            &link,
+            "spike-record!:\n  title: Valid publication after syntax rejection\n",
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+    eprintln!(
+        "agent-link valid write local elapsed_ms={:.3}",
+        valid_write_started.elapsed().as_secs_f64() * 1000.0
+    );
+    let read = reader
+        .call("tonk_query", &link, "spike-record:\n")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert!(
+        read.to_string()
+            .contains("Valid publication after syntax rejection")
+    );
+    assert!(read.get("recovery").is_none());
+
+    // Valid YAML can still be rejected by analysis. This exact query-like
+    // document from the live failure must not poison a later valid write.
+    let before_rejection = writer
+        .call("tonk_query", &link, "spike-record:\n")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let rejected = writer
+        .call("tonk_evaluate", &link, "tonk/repository: {name}")
+        .await
+        .unwrap_err();
+    let expected = "Write validation failed; no evaluation was dispatched. (HTTP 400)";
+    if rejected != expected {
+        // The baseline intentionally fails here. Remove only this fixture's
+        // own temporary data before returning its concrete mismatch.
+        std::fs::remove_dir_all(&root)?;
+        anyhow::bail!("semantic rejection mismatch: expected {expected}; got {rejected}");
+    }
+    let after_rejection = writer
+        .call("tonk_query", &link, "spike-record:\n")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        after_rejection["revision_after"],
+        before_rejection["revision_after"]
+    );
+    assert!(after_rejection.get("recovery").is_none());
+    let corrected_write = writer
+        .call(
+            "tonk_evaluate",
+            &link,
+            "spike-record!:\n  title: Valid publication after semantic rejection\n",
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        corrected_write["revision_before"], after_rejection["revision_after"],
+        "validation must not commit before the actual write starts"
+    );
+    assert_ne!(
+        corrected_write["revision_after"], corrected_write["revision_before"],
+        "the corrected write must commit after validation"
+    );
+    let corrected = reader
+        .call(
+            "tonk_query",
+            &link,
+            "spike-record:\n  title: Valid publication after semantic rejection\n",
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        corrected["matches_before"][0]["results"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "the corrected publication must be independently readable exactly once"
+    );
+    assert!(corrected.get("recovery").is_none());
+
     // Simulate a restart after publication but before clearing the journal.
     let replica = std::fs::read_dir(root.join("writer"))?
         .filter_map(Result::ok)
@@ -239,5 +387,119 @@ async fn revoke(remote: &str, owner: Ed25519Signer, chain: &DelegationChain) -> 
         Ok(child.wait()?.success())
     }).await??;
     anyhow::ensure!(success, "fixture revocation failed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn storage_admission_reports_safe_distinct_reasons_before_dispatch() -> anyhow::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let root = std::env::temp_dir().join(format!("tonk-agent-admission-{}", rand::random::<u64>()));
+    let remote = "http://127.0.0.1:9/ucan/".parse()?;
+    let owner = Signer::from(Ed25519Signer::generate().await?);
+    let seed = [47; 32];
+    let recipient = Ed25519Signer::import(&seed).await?;
+    let now = Timestamp::now();
+    let deadline = Timestamp::try_from((now.to_unix() + 3600) as i128)?;
+    let scopes = candidate_build_scopes(&owner.did());
+    let mut chains = Vec::new();
+    for scope in &scopes {
+        let grant = DelegationBuilder::new()
+            .issuer(owner.clone())
+            .audience(&recipient.did())
+            .subject(scope.subject.clone())
+            .command(scope.command.0.clone())
+            .policy(scope.policy())
+            .expiration(deadline)
+            .meta(tonk_invite::home_address_meta(&remote))
+            .try_build()
+            .await?;
+        chains.push(DelegationChain::new(grant));
+    }
+    let link = AgentInvite::new(seed, chains, &scopes, &remote, now)
+        .await?
+        .to_url("https://tonk.example/agent")?;
+
+    std::fs::DirBuilder::new().mode(0o700).create(&root)?;
+    let capacity = root.join("file-capacity");
+    std::fs::DirBuilder::new().mode(0o700).create(&capacity)?;
+    // The lock itself is the 3501st file: a successful prior invocation may
+    // have checkpointed more files than the next invocation admits.
+    for i in 0..3500 {
+        std::fs::File::create(capacity.join(i.to_string()))?;
+    }
+    let bytes = root.join("byte-capacity");
+    std::fs::DirBuilder::new().mode(0o700).create(&bytes)?;
+    std::fs::File::create(bytes.join("sparse"))?.set_len(192 * 1024 * 1024 + 1)?;
+    let invalid = root.join("invalid");
+    std::fs::create_dir(&invalid)?;
+    std::fs::set_permissions(&invalid, std::fs::Permissions::from_mode(0o755))?;
+    let busy = root.join("busy");
+    std::fs::DirBuilder::new().mode(0o700).create(&busy)?;
+    let lock = std::fs::File::create(busy.join("worker.lock"))?;
+    lock.lock()?;
+    let dangling = root.join("dangling-lock");
+    std::fs::DirBuilder::new().mode(0o700).create(&dangling)?;
+    let outside_lock = root.join("outside-lock-target");
+    std::os::unix::fs::symlink(&outside_lock, dangling.join("worker.lock"))?;
+    let unavailable_parent = root.join("unavailable");
+    std::fs::File::create(&unavailable_parent)?;
+    let unavailable = unavailable_parent.join("child");
+    let mut unavailable_worker = AgentLinkWorker::new(unavailable.clone(), remote.clone());
+    let unavailable_error = unavailable_worker
+        .call("tonk_query", &link, "concept:\n")
+        .await
+        .unwrap_err();
+    let mut mismatches = Vec::new();
+    if unavailable_error != "Agent storage is unavailable; no evaluation was dispatched." {
+        mismatches.push(format!(
+            "unexpected I/O failure category: {unavailable_error:?}"
+        ));
+    }
+    assert!(!unavailable.exists());
+    for (directory, expected) in [
+        (
+            &capacity,
+            "Agent storage file capacity reached; operator attention is required.",
+        ),
+        (
+            &bytes,
+            "Agent storage byte capacity reached; operator attention is required.",
+        ),
+        (
+            &invalid,
+            "Agent storage is invalid; operator attention is required.",
+        ),
+        (
+            &busy,
+            "Agent storage is busy; no evaluation was dispatched.",
+        ),
+        (
+            &dangling,
+            "Agent storage is invalid; operator attention is required.",
+        ),
+    ] {
+        let mut worker = AgentLinkWorker::new(directory.clone(), remote.clone());
+        let actual = worker
+            .call("tonk_query", &link, "concept:\n")
+            .await
+            .unwrap_err();
+        if actual != expected {
+            mismatches.push(format!("expected {expected:?}, got {actual:?}"));
+        }
+        assert!(
+            std::fs::read_dir(directory)?.all(|entry| !entry
+                .unwrap()
+                .file_type()
+                .unwrap()
+                .is_dir()),
+            "admission failure must not open a replica"
+        );
+    }
+    if outside_lock.exists() {
+        mismatches.push("invalid lock opened its symlink target".to_owned());
+    }
+    drop(lock);
+    std::fs::remove_dir_all(&root)?;
+    anyhow::ensure!(mismatches.is_empty(), "{}", mismatches.join("\n"));
     Ok(())
 }

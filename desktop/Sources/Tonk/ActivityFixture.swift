@@ -5,7 +5,12 @@ import SwiftUI
 /// Explicit visual fixture. Never loads an account, a provider or existing app data.
 @MainActor
 enum ActivityFixture {
-  static func prepare(model: HarnessModel, runtime: RuntimeModel) {
+  static let space = try? JSONDecoder().decode(
+    TonkSpace.self,
+    from: Data(#"{"subject":"did:key:zFixture","name":"Activity layout fixture"}"#.utf8))
+  static var requested: Bool { ProcessInfo.processInfo.arguments.contains("--activity-fixture") }
+
+  static func prepare(model: HarnessModel, page: SpacePage) {
     let args = ProcessInfo.processInfo.arguments
     guard RuntimeLocation.deployment == .local, args.contains("--data-dir"),
       args.contains("--web-data-id"), model.saved.conversation.messages.isEmpty
@@ -13,11 +18,7 @@ enum ActivityFixture {
       NSApp.terminate(nil)
       return
     }
-    guard
-      let space = try? JSONDecoder().decode(
-        TonkSpace.self,
-        from: Data(#"{"subject":"did:key:zFixture","name":"Activity layout fixture"}"#.utf8))
-    else { return }
+    guard let space else { return }
     model.saved.conversation.space = space
     model.saved.conversation.messages = [
       ChatMessage(id: "first", role: "user", text: "Create a checklist."),
@@ -35,23 +36,18 @@ enum ActivityFixture {
     model.saved.conversation.appendToolActivity(
       "Evaluation could not be confirmed. Do not repeat it; query the space first.",
       messageID: "second")
-    runtime.selectedSpace = space
-    runtime.selectedView = SpaceViewEntry(model: "fixture", title: "Fixture view", isHome: true)
-    if args.contains("--loading-fixture") { runtime.spaceLoading = true }
     if let index = args.firstIndex(of: "--appearance"), args.indices.contains(index + 1) {
       NSApp.appearance = NSAppearance(named: args[index + 1] == "dark" ? .darkAqua : .aqua)
     }
     model.openedSpace = space
     model.showingChat = true
-    model.runtime = runtime
-    // The production navigation policy intentionally rejects about:blank.
-    // This isolated fixture uses no worker, account or remote content.
-    runtime.spaceWebView.navigationDelegate = nil
-    if !args.contains("--loading-fixture") {
-      runtime.spaceWebView.loadHTMLString(
+    // Keep the fixture's static page separate from the production navigation policy.
+    page.webView.navigationDelegate = nil
+    page.showFixture(
+      space,
+      html:
         "<style>body{font:13px system-ui;padding:24px;color:#777}</style><p>Layout fixture only. No live worker or model.</p>",
-        baseURL: nil)
-    }
+      loading: args.contains("--loading-fixture"))
   }
 }
 

@@ -157,6 +157,30 @@ fn it_fetches_staging_for_a_matching_staging_receipt() {
     assert!(stdout.contains("staging"), "stdout: {stdout}");
 }
 
+/// The dev channel follows the rolling `tonk-dev` release of `main`, and
+/// like staging it answers "already current" by commit.
+#[dialog_common::test]
+fn it_fetches_dev_for_a_matching_dev_receipt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let install_dir = running_install_dir();
+    write_receipt(dir.path(), "dev", &install_dir, "abc1234def");
+
+    let endpoint = serve(vec![(
+        "/releases/download/tonk-dev/manifest.json".to_owned(),
+        manifest_body("0.4.0", "abc1234def", "dev"),
+    )]);
+
+    let output = run_update(&endpoint, dir.path(), &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("already current"), "stdout: {stdout}");
+    assert!(stdout.contains("dev"), "stdout: {stdout}");
+}
+
 /// Wait for the recording server to have logged at least one request.
 ///
 /// The update check runs on a BACKGROUND thread, so the probe's exit does

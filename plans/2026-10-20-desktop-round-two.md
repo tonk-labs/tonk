@@ -129,12 +129,21 @@ grants rather than agents, preventing one grant from being counted as one identi
 
 ## PR integration status
 
-The implementation commit is `830ba3073e`, based on `d44a6face0`. The branch also
-contains 11 earlier Desktop precursor commits not in `origin/main` by ancestry.
-A read-only merge check against `b2fde22922` found conflicts in 19 files, including
-ContentView, TonkApp, runtime/window handling, related tests, and two inherited
-Rust/profile changes. Main now contains a different space-window structure.
-The PR is submitted as a draft: reconciliation with current main and rerunning
-checks on the integrated result remain outstanding. The local verification above
-applies to this branch, not to a merged candidate. No conflict resolution or
-replacement of main's newer behavior is implied by these results.
+Merged main at `b2fde22922` into the Round 2 branch and resolved all 19
+conflicted files. The chrome now uses main's per-window SpacePage and chat
+models, shared ChatArchive, account-switch cleanup and model-choice sync.
+View opening uses SpaceWindowRequest; inline history keeps the window's page.
+The inherited Rust/profile resolutions match main without additional changes.
+
+Fresh checks on the integrated source:
+
+- Full Desktop suite: 162 reported, 158 passed, four expected skips, zero failures.
+- Focused ChatArchive, chrome, catalog-cache and inspection suite: 15 passed.
+- Ad-hoc app build, strict signature verification, generated MCP consistency and
+  staged diff whitespace checks passed.
+- Logs: `/tmp/round2-merge-tests.log`, `/tmp/round2-merge-spike.log`, and
+  `/tmp/round2-merge-build.log`.
+
+The earlier native visual checks above predate this merge; native interaction
+and multi-window visual inspection were not repeated on the merged build.
+Hosted CI and the deployed/backend flows listed above remain unverified locally.

@@ -65,9 +65,6 @@ extension RuntimeModel {
       else { throw CallbackError("Invalid catalog account context.") }
       try acceptCatalog(decoded, branch: branch, root: root, status: status)
       if !spaces.isEmpty { catalogRecoveryStarted = nil }
-      if let selectedSpace {
-        self.selectedSpace = spaces.first(where: { $0.id == selectedSpace.id })
-      }
       catalogBranch = result["branch"] as? String
       catalogLoaded = true
     } catch is CancellationError {
@@ -124,26 +121,20 @@ extension RuntimeModel {
     await refreshSpaces()
   }
 
-  func openSpace(_ space: TonkSpace, at url: URL? = nil) {
-    spaceLoading = true
-    selectedSpace = space
-    if selectedView?.url(in: space) != url { selectedView = nil }
-    spaceError = nil
-    let target = url.flatMap { space.contains($0) ? $0 : nil } ?? space.url
-    spaceWebView.load(URLRequest(url: target))
+  /// A page for a new space window, on the account's website data.
+  func makePage() -> SpacePage {
+    let page = SpacePage(dataStore: websiteDataStore)
+    pages.append(WeakPage(page: page))
+    return page
   }
 
-  func showSpaces() {
-    closeSpace()
-    Task { await refreshSpaces() }
+  /// An open window's page showing `space`, for callers with no window of their own.
+  func openPage(showing space: TonkSpace) -> SpacePage? {
+    pages.removeAll { $0.page == nil }
+    return pages.compactMap(\.page).first { $0.shows(space) }
   }
+}
 
-  /// Leaves the space window's page blank, so a later space never flashes the last one.
-  func closeSpace() {
-    selectedSpace = nil
-    selectedView = nil
-    spaceLoading = false
-    spaceError = nil
-    spaceWebView.loadHTMLString("", baseURL: nil)
-  }
+struct WeakPage {
+  weak var page: SpacePage?
 }

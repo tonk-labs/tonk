@@ -832,33 +832,68 @@ pub async fn push(
 
     let before = session.handle().revision();
 
-    match tonk_state
-        .reactor
-        .repository(&params.repo)
-        .branch(&params.branch)
-        .push()
-        .perform(&tonk_state.operator)
-        .await
-    {
-        Ok(_) => {
-            log!("Push succeeded: {}@{}", params.branch, params.repo);
-            let after = session.handle().revision();
-            announce_head(&params.repo, &params.branch, after.clone());
-            Ok(Json(SyncResponse {
-                success: true,
-                disposition: SyncDisposition::Completed,
-                before: before.clone(),
-                after,
-                error: None,
-            }))
-        }
-        Err(e) => {
-            log!("Push failed: {}@{}: {e:?}", params.branch, params.repo);
-            let error = sync_failure(&e);
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
-            Err(error)
-        }
+    // Publishing is a conditional write against the upstream head this
+    // replica last saw, so any other writer landing first refuses it: a
+    // second device, an agent, or this worker's own background sweep
+    // pushing the same branch. Converge the way a sweep does — pull the
+    // newer upstream into local, then publish the merge — rather than
+    // reporting a conflict the caller can do nothing about but retry.
+    let mut attempt = 0;
+    loop {
+        let error = match tonk_state
+            .reactor
+            .repository(&params.repo)
+            .branch(&params.branch)
+            .push()
+            .perform(&tonk_state.operator)
+            .await
+        {
+            Ok(_) => {
+                log!("Push succeeded: {}@{}", params.branch, params.repo);
+                let after = session.handle().revision();
+                announce_head(&params.repo, &params.branch, after.clone());
+                return Ok(Json(SyncResponse {
+                    success: true,
+                    disposition: SyncDisposition::Completed,
+                    before,
+                    after,
+                    error: None,
+                }));
+            }
+            Err(e) if is_upstream_moved(&e) && attempt + 1 < SYNC_RETRY_LIMIT => {
+                attempt += 1;
+                log!(
+                    "Push raced an upstream update on {}@{} (attempt {attempt}); pulling",
+                    params.branch,
+                    params.repo
+                );
+                let head = session.handle().revision();
+                match pull_through_moved_head(&tonk_state, &params.repo, &params.branch, &session)
+                    .await
+                {
+                    Ok(after) => {
+                        if after.is_some() && after != head {
+                            deliver_pulled_head(
+                                &tonk_state,
+                                &params.repo,
+                                &params.branch,
+                                &session,
+                            )
+                            .await;
+                        }
+                        continue;
+                    }
+                    Err(error) => error,
+                }
+            }
+            Err(e) => {
+                log!("Push failed: {}@{}: {e:?}", params.branch, params.repo);
+                sync_failure(&e)
+            }
+        };
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
+        return Err(error);
     }
 }
 
@@ -1094,81 +1129,21 @@ pub async fn sync(
     let before = session.handle().revision();
 
     // Pull with bounded refresh-and-retry on a head that moved under us.
-    let mut after_pull = None;
-    let mut pull_error: Option<TonkWorkerError> = None;
-    // See the pull handler: authorization-bearing branches materialize
-    // their operational regions.
-    let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
-    for attempt in 0..SYNC_RETRY_LIMIT {
-        let pull = tonk_state
-            .reactor
-            .repository(&params.repo)
-            .branch(&params.branch)
-            .pull();
-        let pulled = if hydrate {
-            pull.download()
-                .operational()
-                .perform(&tonk_state.operator)
-                .await
-        } else {
-            pull.perform(&tonk_state.operator).await
+    let after_pull =
+        match pull_through_moved_head(&tonk_state, &params.repo, &params.branch, &session).await {
+            Ok(after) => after,
+            Err(error) => {
+                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
+                return Err(error);
+            }
         };
-        match pulled {
-            Ok(after) => {
-                log!("Pull succeeded: {}@{}", params.branch, params.repo);
-                if hydrate
-                    && let Err(error) =
-                        super::account_state::converge_account_state(&tonk_state).await
-                {
-                    log!("account-state convergence after sync pull failed: {error}");
-                }
-                after_pull = Some(after);
-                pull_error = None;
-                break;
-            }
-            Err(e) if is_head_moved(&e) && attempt + 1 < SYNC_RETRY_LIMIT => {
-                // A commit advanced the head while we merged. Refresh the
-                // handle's view of it and retry from the now-current snapshot.
-                log!(
-                    "Pull raced a commit on {}@{} (attempt {}); refreshing",
-                    params.branch,
-                    params.repo,
-                    attempt + 1
-                );
-                if let Err(refresh_err) = session.handle().refresh(&tonk_state.operator).await {
-                    log!("refresh after raced pull failed: {refresh_err:?}");
-                    pull_error = Some(TonkWorkerError::Internal(
-                        "failed to refresh local branch after a concurrent update".to_string(),
-                    ));
-                    break;
-                }
-            }
-            Err(e) => {
-                log!("Pull failed: {}@{}: {e:?}", params.branch, params.repo);
-                pull_error = Some(sync_failure(&e));
-                break;
-            }
-        }
-    }
-    if let Some(error) = pull_error {
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
-        return Err(error);
-    }
-    let after_pull = after_pull.flatten();
     // A pull that moved the head changed what every live view over this
     // branch shows; deliver it now rather than after the push settles —
     // a refused or empty push left views waiting on a repaint that only
     // a manual refresh provided.
     if after_pull.is_some() && after_pull != before {
-        migrate_adopted_head(&tonk_state, &params.repo, &params.branch).await;
-        tonk_state
-            .reactor
-            .schedule_poll(std::sync::Arc::clone(&session.state));
-        tonk_state
-            .reactor
-            .run_scheduled_polls(&tonk_state.operator)
-            .await;
+        deliver_pulled_head(&tonk_state, &params.repo, &params.branch, &session).await;
     }
 
     match tonk_state
@@ -1227,6 +1202,86 @@ pub async fn sync(
             Err(error)
         }
     }
+}
+
+/// Pull `repo`/`branch` into `session`, refreshing and retrying when a
+/// local commit advances the head mid-merge.
+///
+/// Since `tonk-2026-06-21` a pull publishes its merged head CAS'd against
+/// the version it merged from, so a racing commit fails the pull with a
+/// version mismatch instead of silently dropping the commit. Each retry
+/// reuses the blocks the failed attempt already fetched, so only the cheap
+/// merge+CAS runs again. Authorization-bearing branches materialize their
+/// operational regions and converge account state afterwards.
+async fn pull_through_moved_head(
+    tonk_state: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    session: &crate::reactor::BranchSession,
+) -> Result<Option<Revision>, TonkWorkerError> {
+    let hydrate = super::account_state::is_account_key(tonk_state, repo).await;
+    for attempt in 0..SYNC_RETRY_LIMIT {
+        let pull = tonk_state.reactor.repository(repo).branch(branch).pull();
+        let pulled = if hydrate {
+            pull.download()
+                .operational()
+                .perform(&tonk_state.operator)
+                .await
+        } else {
+            pull.perform(&tonk_state.operator).await
+        };
+        match pulled {
+            Ok(after) => {
+                log!("Pull succeeded: {branch}@{repo}");
+                if hydrate
+                    && let Err(error) =
+                        super::account_state::converge_account_state(tonk_state).await
+                {
+                    log!("account-state convergence after sync pull failed: {error}");
+                }
+                return Ok(after);
+            }
+            Err(e) if is_head_moved(&e) && attempt + 1 < SYNC_RETRY_LIMIT => {
+                // A commit advanced the head while we merged. Refresh the
+                // handle's view of it and retry from the now-current snapshot.
+                log!(
+                    "Pull raced a commit on {branch}@{repo} (attempt {}); refreshing",
+                    attempt + 1
+                );
+                if let Err(refresh_err) = session.handle().refresh(&tonk_state.operator).await {
+                    log!("refresh after raced pull failed: {refresh_err:?}");
+                    return Err(TonkWorkerError::Internal(
+                        "failed to refresh local branch after a concurrent update".to_string(),
+                    ));
+                }
+            }
+            Err(e) => {
+                log!("Pull failed: {branch}@{repo}: {e:?}");
+                return Err(sync_failure(&e));
+            }
+        }
+    }
+    unreachable!("the final attempt returns on every outcome")
+}
+
+/// Repaint every live view over a branch whose head a pull just moved.
+/// Nothing else will: a pull commits nothing locally, so no commit-time
+/// poll runs, and a waiting view repainted only on its next unrelated
+/// poll (or a manual refresh).
+async fn deliver_pulled_head(
+    tonk_state: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    session: &crate::reactor::BranchSession,
+) {
+    migrate_adopted_head(tonk_state, repo, branch).await;
+    tonk_state
+        .reactor
+        .schedule_poll(std::sync::Arc::clone(&session.state));
+    tonk_state
+        .reactor
+        .run_scheduled_polls(&tonk_state.operator)
+        .await;
 }
 
 /// A millisecond wall-clock stamp for sync-queue activity priority.
@@ -1446,8 +1501,9 @@ pub async fn drain_sync(state: &AppState) {
     }
 }
 
-/// Replace a due session with a disposable operator and bounded in-memory
-/// grant. Account and profile authority survives without invitation replay.
+/// Re-issue a due session's bounded in-memory grant to the same operator
+/// with a later expiry. Account and profile authority survives without
+/// invitation replay.
 /// Build over the existing storage pool outside the state write lock, then
 /// install only if the observed generation is still current. Losing
 /// candidates and construction failures have no durable session effects.
@@ -1485,7 +1541,7 @@ where
     }
 
     // Signing happens outside the write lock; existing readers finish
-    // before the new operator and expiry are installed together.
+    // before the renewed operator and expiry are installed together.
     let session = build(profile, storage).await?;
 
     let mut tonk = state.write().await;
@@ -1821,10 +1877,13 @@ mod renewal_tests {
         let (_app, state, _lsp) = api_router_with_state(test_state().await);
         let before = operator_did(&state).await;
         let head = revision(&state).await;
-        state.write().await.session_expires_at = crate::session::now();
+        let due = crate::session::now();
+        state.write().await.session_expires_at = due;
         ensure_session_authority(&state).await.unwrap();
         let renewed = operator_did(&state).await;
-        assert_ne!(before, renewed);
+        let extended = state.read().await.session_expires_at;
+        assert_eq!(before, renewed, "renewal keeps the operator key");
+        assert!(extended > due, "renewal extends the grant");
         assert_eq!(revision(&state).await, head);
         {
             let tonk = state.read().await;
@@ -1847,6 +1906,7 @@ mod renewal_tests {
         }
         ensure_session_authority(&state).await.unwrap();
         assert_eq!(operator_did(&state).await, renewed);
+        assert_eq!(state.read().await.session_expires_at, extended);
     }
 
     #[dialog_common::test]
@@ -1873,6 +1933,9 @@ mod renewal_tests {
         let (_app, state, _lsp) = api_router_with_state(test_state().await);
         let head = revision(&state).await;
         state.write().await.session_expires_at = crate::session::now();
+        // Both candidates carry the same operator key, so the loser marks
+        // its expiry to tell the two apart.
+        let losing = u64::MAX;
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
         let winner = async {
@@ -1882,8 +1945,8 @@ mod renewal_tests {
             })
             .await
             .unwrap();
-            let installed = operator_did(&state).await;
-            installed_tx.send(installed.clone()).unwrap();
+            let installed = state.read().await.session_expires_at;
+            installed_tx.send(()).unwrap();
             installed
         };
         let loser = renew_session_with(&state, |profile, _storage| async move {
@@ -1892,15 +1955,174 @@ mod renewal_tests {
                     .await
                     .unwrap();
             ready_tx.send(()).unwrap();
-            let installed = installed_rx.await.unwrap();
-            assert_ne!(candidate.operator.did().to_string(), installed);
-            Ok(candidate)
+            installed_rx.await.unwrap();
+            Ok(crate::session::Session {
+                expires_at: losing,
+                ..candidate
+            })
         });
         let (installed, result) = futures_util::join!(winner, loser);
         result.unwrap();
-        assert_eq!(operator_did(&state).await, installed);
+        assert_ne!(installed, losing);
+        assert_eq!(state.read().await.session_expires_at, installed);
         assert_eq!(revision(&state).await, head);
         ensure_session_authority(&state).await.unwrap();
-        assert_eq!(operator_did(&state).await, installed);
+        assert_eq!(state.read().await.session_expires_at, installed);
+    }
+}
+
+/// Publishing over `/sync/push` while another writer moves upstream.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod push_conflict_tests {
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    use crate::router::repository::profile_library_tests::test_state;
+    use crate::router::{AppState, api_router_with_state};
+
+    async fn post(app: &Router, uri: String, body: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .method("POST")
+                    .header("content-type", "text/plain")
+                    .body(Body::from(body.to_owned()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap_or_default())
+    }
+
+    async fn put_repo(app: &Router, label: &str) -> String {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{label}"))
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let info: crate::router::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        info.name
+    }
+
+    /// `main` tracks a sibling `upstream` branch: the in-process stand-in
+    /// for a remote that another writer can advance directly.
+    async fn repo_with_sibling_upstream(state: &AppState, app: &Router, label: &str) -> String {
+        let repo = put_repo(app, label).await;
+        let tonk = state.read().await;
+        let repository = tonk
+            .reactor
+            .repository(&repo)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let upstream = repository
+            .repository()
+            .branch("upstream")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let main = tonk
+            .reactor
+            .repository(&repo)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        main.handle()
+            .set_upstream(&upstream)
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        repo
+    }
+
+    async fn commit(app: &Router, repo: &str, branch: &str, marker: &str) {
+        let (status, body) = post(
+            app,
+            format!("/api/repository/{repo}/branch/{branch}/claim/assert/test:{marker}/test/value"),
+            marker,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "commit '{marker}': {body}");
+    }
+
+    async fn push(app: &Router, repo: &str) -> (StatusCode, serde_json::Value) {
+        post(
+            app,
+            format!("/api/repository/{repo}/branch/main/sync/push"),
+            "",
+        )
+        .await
+    }
+
+    async fn holds(state: &AppState, repo: &str, branch: &str, marker: &str) -> bool {
+        use futures_util::StreamExt as _;
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .repository(repo)
+            .branch(branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        session.handle().refresh(&tonk.operator).await.unwrap();
+        let selector = dialog_artifacts::ArtifactSelector::new()
+            .of(format!("test:{marker}").parse().unwrap())
+            .the("test/value".parse().unwrap());
+        let facts = session
+            .handle()
+            .claims()
+            .select(selector)
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        std::pin::pin!(facts).next().await.is_some()
+    }
+
+    #[dialog_common::test]
+    async fn it_publishes_local_changes_after_another_writer_moves_upstream() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let repo = repo_with_sibling_upstream(&state, &app, "push-after-upstream-moved").await;
+
+        commit(&app, &repo, "main", "base").await;
+        let (status, body) = push(&app, &repo).await;
+        assert_eq!(status, StatusCode::OK, "first publish: {body}");
+
+        // Another writer lands on upstream after our last pull, and we
+        // commit locally on top of the stale base.
+        commit(&app, &repo, "upstream", "theirs").await;
+        commit(&app, &repo, "main", "ours").await;
+
+        let (status, body) = push(&app, &repo).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "publish after upstream moved: {body}"
+        );
+        assert!(holds(&state, &repo, "upstream", "ours").await);
+        assert!(holds(&state, &repo, "upstream", "theirs").await);
+        assert!(holds(&state, &repo, "main", "theirs").await);
     }
 }

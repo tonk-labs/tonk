@@ -38,10 +38,10 @@ extension HarnessModel {
       try store.save(next)
       saved = next
       resumed = false
-      runtime.openSpace(space)
+      page?.open(space)
       // Let the hosted worker settle before the agent's first space tool.
       for _ in 0..<60 {
-        if !runtime.spaceLoading { break }
+        if page?.loading != true { break }
         try await Task.sleep(for: .seconds(1))
       }
       creatingSpace = false
