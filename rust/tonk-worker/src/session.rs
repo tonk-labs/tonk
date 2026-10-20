@@ -26,9 +26,9 @@
 //! A stable key means a renewal re-delegates to whatever key held the
 //! lapsed grant. The key is never stored or exported: it is re-derived
 //! from the profile key on each boot, sealed in the browser, and on
-//! native it sits in the same process and directory as the profile seed
-//! that derives it. Reaching it therefore takes the profile, which
-//! already holds everything the operator could be granted.
+//! native held only in the memory of the process that also holds the
+//! profile seed. Reaching it therefore takes the profile, which already
+//! holds everything the operator could be granted.
 //!
 //! Renewal rides the sync drain — the regular beat this worker has —
 //! rather than chasing every presign path. The gap that leaves: a
@@ -63,8 +63,9 @@ pub const RENEWAL_MARGIN_SECONDS: u64 = 60 * 60;
 
 /// The label every worker session's operator key is derived under. The
 /// access branch follows it, so each of the profile's accounts signs as
-/// its own operator.
-const SESSION_CONTEXT: &[u8] = b"tonk/worker-session/";
+/// its own operator. Changing it changes every worker operator, and so
+/// forks every history they write.
+const SESSION_CONTEXT: &[u8] = b"tonk/worker-session/v1/";
 
 /// A signing session: the operator that signs presigns, and the moment
 /// the delegation authorizing it stops being valid.
@@ -218,6 +219,20 @@ mod tests {
         assert_eq!(first.operator.did(), second.operator.did());
         assert_eq!(first.operator.home().clone(), profile.did());
         assert_eq!(second.operator.home().clone(), profile.did());
+    }
+
+    #[dialog_common::test]
+    async fn it_derives_the_operator_from_the_label_and_access_branch() {
+        let profile = scratch().await;
+
+        let session = open_on(&profile, "account").await.unwrap();
+        let expected = profile
+            .credential()
+            .derive(b"tonk/worker-session/v1/account")
+            .await
+            .unwrap();
+
+        assert_eq!(session.operator.did(), expected.did());
     }
 
     #[dialog_common::test]
