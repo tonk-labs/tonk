@@ -144,6 +144,17 @@ Fresh checks on the integrated source:
 - Logs: `/tmp/round2-merge-tests.log`, `/tmp/round2-merge-spike.log`, and
   `/tmp/round2-merge-build.log`.
 
-The earlier native visual checks above predate this merge; native interaction
-and multi-window visual inspection were not repeated on the merged build.
-Hosted CI and the deployed/backend flows listed above remain unverified locally.
+Post-merge native checks passed in an isolated ad-hoc app: light view chrome,
+sidebar collapse and Command-B restoration, top-edge controls and restore button,
+inline history/reopening, two independent windows, closing one while preserving
+the other's page/chat, minimize/restore, full-screen entry, and dark loading.
+The new `--multiple-windows-fixture` flag opens two distinct SpaceWindowRequests
+when combined with `--activity-fixture`; normal app behavior is unchanged.
+Use `--local-runtime`, a fresh `--data-dir`, and an isolated `--web-data-id`.
+Add `--appearance dark --loading-fixture` for the dark loading check.
+
+After the fixture addition, the app build/signature and ten focused archive,
+chrome and sidebar tests passed. Logs: `/tmp/round2-multi-build.log` and
+`/tmp/round2-multi-tests.log`. CI at merge commit `c4230186e2` passed 47 jobs
+with three conditional skips, including Desktop; CI for the fixture commit is
+checked separately on the PR. The deployed/backend flows above remain unverified.

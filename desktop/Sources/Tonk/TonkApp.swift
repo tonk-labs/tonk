@@ -78,6 +78,9 @@ private struct OpenActivityFixture: ViewModifier {
     content.task {
       guard ActivityFixture.requested, let space = ActivityFixture.space else { return }
       openWindow(value: SpaceWindowRequest(subject: space.subject, url: nil))
+      if ProcessInfo.processInfo.arguments.contains("--multiple-windows-fixture") {
+        openWindow(value: SpaceWindowRequest(subject: space.subject, url: space.url))
+      }
     }
   }
 }
