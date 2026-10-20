@@ -53,6 +53,11 @@ hold an exclusive root lock. The adapter admits at most 32 queued/running calls;
 each process has a two-minute deadline and a three-second forced-exit grace.
 Documents are limited to 32,000 UTF-8 bytes. Storage admission is capped at 64
 replicas, 192 MiB and 3500 files; capacity failure requires operator attention.
+Admission errors distinguish a held root lock (`busy`), invalid private storage,
+byte capacity, file capacity, and ordinary storage unavailability using fixed
+messages. These errors occur before opening a replica, pulling, evaluating, or
+inspecting/creating a publication journal. A capacity or invalid-storage error
+requires operator diagnosis; it must not be treated as transient lock contention.
 There is no automatic eviction of retained work. These are bounded deployment
 limits, not measured capacity targets.
 
