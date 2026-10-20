@@ -209,3 +209,16 @@ passed with zero failures. Logs: `/tmp/tonk-ux-final-build.log` and
 VoiceOver, Reduce Motion/Transparency on-device, and live backend sharing/provider
 flows remain unverified in this pass. Backend gaps listed above are unchanged;
 none blocks these UI fixes. CI must be checked against the new commit separately.
+
+## In-window Settings correction
+
+The Settings sheet in the previous follow-up was the wrong navigation surface.
+Both account footer controls now select the main window's Settings detail page.
+The whole footer uses the system accent selection background and exposes selected
+accessibility traits until another page is selected. Command-comma from a view
+window brings the main window forward and selects the same Settings page.
+The provider configuration subdialog remains unchanged.
+
+Verified both footer clicks, clearing selection via All Links, and Command-comma
+from a real Task window on the rebuilt app. Ad-hoc build, strict signature check,
+and diff whitespace check passed. Log: `/tmp/tonk-inline-settings-build.log`.

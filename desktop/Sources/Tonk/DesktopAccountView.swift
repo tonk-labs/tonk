@@ -155,35 +155,23 @@ struct DesktopAccountView: View {
   }
 }
 
-/// One destination for the account footer and the standard Settings command.
+/// In-window destination shared by both account footer controls.
 struct DesktopSettingsView: View {
   @ObservedObject var model: HarnessModel
   @ObservedObject var access: AccessModel
   var onSignOut: () -> Void
-  @Environment(\.dismiss) private var dismiss
   @State private var showChatSettings = false
 
   var body: some View {
     VStack(spacing: 0) {
-      HStack {
-        Text("Settings").font(.headline)
-        Spacer()
-        Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-      }.padding(20)
-      Divider()
-      DesktopAccountView(
-        access: access,
-        onSignOut: {
-          dismiss()
-          onSignOut()
-        })
+      DesktopAccountView(access: access, onSignOut: onSignOut)
       Divider()
       HStack {
         Label("Chat Agent", systemImage: "bubble.left.and.bubble.right")
         Spacer()
         Button("Configure…") { showChatSettings = true }
       }.padding(20)
-    }.frame(width: 600, height: 560).nativeControl()
+    }.frame(maxWidth: .infinity, maxHeight: .infinity).nativeControl()
       .sheet(isPresented: $showChatSettings) { ProviderSettingsView(model: model) }
   }
 }

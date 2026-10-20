@@ -30,7 +30,6 @@ struct ContentView: View {
   @State private var newLink: NewLinkRequest?
   @State private var topChromeHovered = false
   @State private var chromePreview = true
-  @State private var showAccountSettings = false
   private var chromeVisible: Bool { topChromeHovered || chromePreview }
   @State private var showHistory = false
   @State private var showProviderSettings = false
@@ -134,7 +133,7 @@ struct ContentView: View {
       )
       .focusedSceneValue(
         \.modelSettings,
-        signingOut ? nil : { showAccountSettings = true }
+        signingOut ? nil : openSettings
       )
       .focusedSceneValue(
         \.focusSearch,
@@ -191,8 +190,8 @@ struct ContentView: View {
       } message: {
         Text(accountError ?? "")
       }
-      .sheet(isPresented: $showAccountSettings) {
-        DesktopSettingsView(model: model, access: access, onSignOut: signOutOfTonk)
+      .onReceive(NotificationCenter.default.publisher(for: .tonkShowSettings)) { _ in
+        if !isSpace { page = .account }
       }
       .sheet(isPresented: $showProviderSettings) {
         ProviderSettingsView(model: model)
@@ -650,7 +649,7 @@ struct ContentView: View {
   private var pageTitle: String {
     switch page {
     case .addressBook: "Address Book"
-    case .account: "Account"
+    case .account: "Settings"
     case .allLinks: "All links"
     case .agentLinks: "Connections"
     case .space(let id): runtime.spaces.first(where: { $0.id == id })?.title ?? "Spaces"
@@ -667,6 +666,17 @@ struct ContentView: View {
     guard let first = (isSpace ? model.openedSpace : selectedSpace) ?? runtime.spaces.first
     else { return }
     newLink = NewLinkRequest(id: first.id)
+  }
+
+  private func openSettings() {
+    if isSpace {
+      openWindow(id: "main")
+      DispatchQueue.main.async {
+        NotificationCenter.default.post(name: .tonkShowSettings, object: nil)
+      }
+    } else {
+      page = .account
+    }
   }
 
   private func signOutOfTonk() {
@@ -707,7 +717,7 @@ struct ContentView: View {
         runtime: runtime, access: access, selection: $page, search: $spaceSearch,
         searchFocused: $searchFocused,
         onNewLink: startNewLink,
-        onSettings: { showAccountSettings = true },
+        onSettings: openSettings,
         onSignOut: runtime.accountConnected && RuntimeLocation.deployment != .local
           ? signOutOfTonk : nil
       )
@@ -747,7 +757,7 @@ struct ContentView: View {
         case .addressBook:
           AddressBookView(access: access, spaces: runtime.spaces)
         case .account:
-          DesktopAccountView(access: access, onSignOut: signOutOfTonk)
+          DesktopSettingsView(model: model, access: access, onSignOut: signOutOfTonk)
         case nil:
           CatalogStatusView(runtime: runtime)
         }
@@ -811,4 +821,8 @@ struct ContentView: View {
 /// Which space the New link sheet starts on.
 struct NewLinkRequest: Identifiable {
   let id: String
+}
+
+extension Notification.Name {
+  static let tonkShowSettings = Notification.Name("tonk.showSettings")
 }

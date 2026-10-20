@@ -130,9 +130,16 @@ struct DesktopSidebar: View {
         }.buttonStyle(.plain).help("Settings")
 
       }
+      .padding(.horizontal, 8).padding(.vertical, 8)
+      .foregroundStyle(selection == .account ? Color.white : Color.primary)
+      .background(
+        selection == .account ? Color.accentColor : Color.clear,
+        in: RoundedRectangle(cornerRadius: 8)
+      )
+      .accessibilityAddTraits(selection == .account ? .isSelected : [])
     }
     .font(.system(size: 13))
-    .padding(.horizontal, 10).padding(.vertical, 10)
+    .padding(8)
     .overlay(alignment: .top) { Divider() }
   }
 }
