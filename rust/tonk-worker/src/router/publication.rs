@@ -335,6 +335,220 @@ mod tests {
             .expect("the serving host answers the claim")
     }
 
+    /// The SSE frames a subscription response carries within `wait`,
+    /// each as its JSON payload.
+    async fn frames_within(
+        body: axum::body::Body,
+        wait: std::time::Duration,
+        until: impl Fn(&serde_json::Value) -> bool,
+    ) -> Vec<serde_json::Value> {
+        use http_body_util::BodyExt as _;
+        let mut body = body;
+        let mut buffered = Vec::new();
+        let mut frames = Vec::new();
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            while let Some(end) = buffered.windows(2).position(|bytes: &[u8]| bytes == b"\n\n") {
+                let event: Vec<u8> = buffered.drain(..end + 2).collect();
+                let text = String::from_utf8_lossy(&event[..end]).to_string();
+                if let Some(json) = text.strip_prefix("data: ")
+                    && let Ok(frame) = serde_json::from_str::<serde_json::Value>(json)
+                {
+                    let done = until(&frame);
+                    frames.push(frame);
+                    if done {
+                        return frames;
+                    }
+                }
+            }
+            match tokio::time::timeout_at(deadline, body.frame()).await {
+                Ok(Some(Ok(frame))) => {
+                    if let Ok(bytes) = frame.into_data() {
+                        buffered.extend_from_slice(&bytes);
+                    }
+                }
+                _ => return frames,
+            }
+        }
+    }
+
+    /// Reproduction of the visitor end-to-end test without a browser: an
+    /// owner publishes a pushed space, a fresh profile opens it from its
+    /// bare address, and reads `dialog.replica/subject` on the space's
+    /// `main`, the fact the `tonk:blank` view selects. Each step logs its
+    /// time, and the read is retried for 20 s, so a read that answers
+    /// late is told apart from one that never answers.
+    #[dialog_common::test]
+    async fn a_visitor_reads_the_space_it_opened_from_its_address() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        let started = web_time::Instant::now();
+        let lap = |what: &str| eprintln!("REPRO {:>6}ms {what}", started.elapsed().as_millis());
+
+        let (tonk, _service, root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await
+                .expect("the device grant mints");
+        crate::router::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "visitor-repro".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().expect("the grant serializes")),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .expect("the root persists");
+        let (owner_app, owner, _hub) = crate::router::api_router_with_state(tonk);
+        let key = super::super::repository::create_space_inner(&owner, "Open Garden", None)
+            .await
+            .expect("the space creates");
+        super::super::repository::enable_sync_inner(&owner, &key, &remote)
+            .await
+            .expect("the remote attaches");
+        lap("owner: space created and attached");
+        let pushed = owner_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{key}/branch/main/sync/push"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        lap(&format!("owner: pushed ({})", pushed.status()));
+        let address = {
+            let tonk = owner.read().await;
+            publish(&tonk, &key).await.expect("the owner publishes")
+        };
+        lap(&format!("owner: published at {address}"));
+
+        let visitor = crate::router::repository::profile_library_tests::test_state().await;
+        crate::router::repository::bootstrap_profile(&visitor)
+            .await
+            .expect("the visitor's profile boots");
+        let (visitor_app, _visitor, _hub) = crate::router::api_router_with_state(visitor);
+        lap("visitor: profile booted");
+        let query = serde_json::json!({
+            "terms": {
+                "this": { "?": { "name": "this" } },
+                "subject": { "?": { "name": "subject" } }
+            },
+            "predicate": { "with": {
+                "subject": { "the": "dialog.replica/subject", "as": "Entity", "cardinality": "one" }
+            } }
+        });
+        let subscribe = |app: axum::Router| {
+            let query = query.clone();
+            let key = key.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .uri(format!("/api/repository/{key}/branch/main/query"))
+                        .method("POST")
+                        .header("content-type", "application/json")
+                        .header("accept", "text/event-stream")
+                        .body(Body::from(query.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        let holds = {
+            let key = key.clone();
+            move |frame: &serde_json::Value| frame.to_string().contains(&format!("\"subject\":\"{key}\""))
+        };
+        // The view mounts while the space is absent.
+        let early = subscribe(visitor_app.clone()).await;
+        lap(&format!("visitor: subscribed before the join ({})", early.status()));
+        let early = tokio::spawn(frames_within(
+            early.into_body(),
+            std::time::Duration::from_secs(20),
+            holds.clone(),
+        ));
+        let joined = visitor_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/profile/join")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::json!({ "url": address }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = joined.status();
+        let bytes = axum::body::to_bytes(joined.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        lap(&format!(
+            "visitor: joined ({status}): {:.300}",
+            String::from_utf8_lossy(&bytes)
+        ));
+
+        // A fresh subscription, as the page's reload after the join opens.
+        let late = subscribe(visitor_app.clone()).await;
+        lap(&format!("visitor: subscribed after the join ({})", late.status()));
+        let late = frames_within(late.into_body(), std::time::Duration::from_secs(20), holds.clone()).await;
+        lap(&format!(
+            "visitor: the later subscription delivered {} frame(s), the replica {}: {:.400}",
+            late.len(),
+            if late.iter().any(&holds) { "among them" } else { "in none" },
+            serde_json::Value::Array(late.clone())
+        ));
+        let early = early.await.unwrap();
+        lap(&format!(
+            "visitor: the earlier subscription delivered {} frame(s), the replica {}: {:.400}",
+            early.len(),
+            if early.iter().any(&holds) { "among them" } else { "in none" },
+            serde_json::Value::Array(early.clone())
+        ));
+        let deadline = started.elapsed() + std::time::Duration::from_secs(20);
+        let mut reads = 0;
+        loop {
+            reads += 1;
+            let answered = visitor_app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/repository/{key}/branch/main/query"))
+                        .method("POST")
+                        .header("content-type", "application/json")
+                        .header("accept", "application/json")
+                        .body(Body::from(query.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = answered.status();
+            let bytes = axum::body::to_bytes(answered.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body = String::from_utf8_lossy(&bytes).to_string();
+            if reads == 1 || status.is_success() && body.contains(&key) {
+                lap(&format!("visitor: read {reads} answered {status}: {body:.300}"));
+            }
+            if status.is_success() && body.contains(&key) {
+                break;
+            }
+            if started.elapsed() > deadline {
+                lap(&format!("visitor: read {reads} still {status}: {body:.300}"));
+                panic!("the visitor never read the space's replica");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
+
     /// Publishing against a live access service leaves a `/use/get` ticket
     /// for the public principal that a visitor to the space's bare address
     /// claims, and unpublishing takes it back so the next visitor finds

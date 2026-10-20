@@ -261,6 +261,7 @@ jobs:
         shell: bash
         env:
           TONK_E2E_DIAGNOSTICS_DIR: '${{ runner.temp }}/tonk-e2e-diagnostics'
+          TONK_E2E_CHROME_LOG: '1'
         run: |
           time nix develop --accept-flake-config .#ci --command test:e2e \
             --partition 'count:${{ matrix.shard }}/8'

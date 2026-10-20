@@ -190,6 +190,7 @@ impl Reactor {
     ) -> Result<(), ReactorError> {
         self.subscription_lifecycle
             .register(|| {
+                dialog_common::log!("reactor: a subscription waits for {repo}/{branch}");
                 self.pending_subscriptions
                     .lock()
                     .entry((repo.to_owned(), branch.to_owned()))
@@ -235,6 +236,9 @@ impl Reactor {
                     pending.sender,
                 );
             }
+            dialog_common::log!(
+                "reactor: adopted waiting subscriptions on {repo}/{branch}; their poll is scheduled"
+            );
             // Evaluate once so adopted subscribers get a real frame now.
             self.schedule_poll(Arc::clone(state));
         });
@@ -266,6 +270,9 @@ impl Reactor {
             if !unique.iter().any(|seen| Arc::ptr_eq(seen, &state)) {
                 unique.push(state);
             }
+        }
+        if !unique.is_empty() {
+            dialog_common::log!("reactor: running {} scheduled poll(s)", unique.len());
         }
         for state in unique {
             state.poll(env).await;

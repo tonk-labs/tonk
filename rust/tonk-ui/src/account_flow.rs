@@ -10432,6 +10432,13 @@ pub(crate) mod tests {
             enter_space_view(&visitor).await.ok();
             let reloaded = wait_for_displayed(&visitor, ".blank-canvas").await.is_ok();
             eprintln!("BISECT rendered after a reload: {reloaded}");
+            let log = std::fs::read_to_string(env.browser_profile_root.join("chrome.log"))
+                .unwrap_or_default();
+            for line in log.lines().filter(|line| {
+                line.contains("reactor:") || line.contains("join:") || line.contains("subscri")
+            }) {
+                eprintln!("BISECT log: {line:.400}");
+            }
             return Err(error)
                 .context("the visitor's page renders the space itself, without a reload");
         }
