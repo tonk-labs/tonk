@@ -6,7 +6,19 @@ description: Use when the user pastes a Tonk share link, asks to work in a Tonk 
 # Working in Tonk spaces
 
 This machine runs a local Tonk peer with its own identity. The `tonk-peer` MCP
-server exposes it.
+server exposes it, with `tonk_list_spaces`, `tonk_join`, `tonk_query`,
+`tonk_evaluate`, `tonk_display`, `tonk_show` and `tonk_guide`. This skill is
+about those tools.
+
+A different server, the hosted Tonk connector, may also be connected. It has
+only `tonk_query` and `tonk_evaluate`, needs the space's agent link on every
+call, and knows nothing about joined spaces. If `tonk_list_spaces` is not
+available, the local peer is not connected to this session: say so, rather
+than treating the hosted connector as the peer.
+
+`tonk_display` and `tonk_show` draw live views only where the host renders
+MCP Apps, such as a local Claude Desktop chat. Elsewhere, including sessions
+that reach this computer remotely, they return the data as text.
 
 ## Joining a space
 

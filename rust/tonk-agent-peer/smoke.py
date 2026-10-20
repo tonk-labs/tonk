@@ -187,6 +187,11 @@ def main(binary):
         assert failed, refused
         assert seed not in text, refused
 
+        # Views outlive their owner: the next owner serves the same address
+        # with the same token, so an open view keeps working.
+        view_token = open(os.path.join(home, "view-token")).read().strip()
+        assert view_token == match.group(1), "the token lives in the data directory"
+
         # A newer build (a later-installed binary) takes over from an older
         # owner; the older session keeps working by forwarding to it.
         newer = os.path.join(scratch, "newer", "tonk-agent-peer")
@@ -197,6 +202,9 @@ def main(binary):
         third = Session(newer, home)
         failed, taken = third.tool("tonk_list_spaces")
         assert not failed and taken["structuredContent"]["peer"] == peer, taken
+        assert taken["structuredContent"]["owner"]["origin"] == peer_origin, taken
+        with peer_get("/space-runtime.json") as response:
+            assert response.status == 200
         assert taken["structuredContent"]["owner"]["pid"] == third.process.pid, taken
         failed, forwarded = first.tool("tonk_list_spaces")
         assert not failed, forwarded
