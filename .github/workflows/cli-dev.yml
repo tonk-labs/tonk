@@ -87,25 +87,28 @@ jobs:
         with:
           name: tonk-linux-x86_64
           path: artifacts/linux-x86_64
+      # Assets are staged in `dist/`, not `release/`: the repository
+      # tracks its own `release/` (the release policy), and those files must
+      # not ride along into the upload.
       - name: Prepare release assets
         run: |
           set -euo pipefail
-          mkdir -p release
-          cp install.sh release/install.sh
+          mkdir -p dist
+          cp install.sh dist/install.sh
           # Archive each binary as `tonk` so it extracts ready to run,
           # with the executable bit preserved across the download.
           install -m 0755 artifacts/macos-arm64/tonk tonk
-          tar -czf release/tonk-macos-arm64.tar.gz tonk
+          tar -czf dist/tonk-macos-arm64.tar.gz tonk
           install -m 0755 artifacts/linux-x86_64/tonk tonk
-          tar -czf release/tonk-linux-x86_64.tar.gz tonk
+          tar -czf dist/tonk-linux-x86_64.tar.gz tonk
           rm tonk
-          (cd release && sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz > checksums.txt)
+          (cd dist && sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz > checksums.txt)
           version="$(grep -A30 '^\[workspace.package\]' Cargo.toml \
             | grep -m1 '^version' \
             | sed -E 's/.*"([^"]+)".*/\1/')"
           # `channel` must read `dev`: `tonk update` refuses a manifest
           # whose channel differs from the install's.
-          cat > release/manifest.json <<EOF
+          cat > dist/manifest.json <<EOF
           {
             "version": "$version",
             "commit": "$GITHUB_SHA",
@@ -113,8 +116,8 @@ jobs:
             "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
-          python3 -c 'import json,sys; m=json.load(open("release/manifest.json")); [sys.exit(f"manifest missing {k}") for k in ("version","commit","channel","built_at") if not m.get(k)]'
-          cat release/manifest.json
+          python3 -c 'import json,sys; m=json.load(open("dist/manifest.json")); [sys.exit(f"manifest missing {k}") for k in ("version","commit","channel","built_at") if not m.get(k)]'
+          cat dist/manifest.json
       - name: Publish current main build
         env:
           GH_TOKEN: ${{ github.token }}
@@ -145,4 +148,10 @@ jobs:
           else
             gh release create "$tag" --verify-tag --title 'tonk CLI (dev)' --notes "$notes" --prerelease --latest=false
           fi
-          gh release upload "$tag" release/* --clobber
+          gh release upload "$tag" dist/* --clobber
+          # The release holds exactly this build's assets: drop any that
+          # this build did not upload.
+          gh release view "$tag" --json assets --jq '.assets[].name' \
+            | while read -r asset; do
+                [ -f "dist/$asset" ] || gh release delete-asset "$tag" "$asset" --yes
+              done
