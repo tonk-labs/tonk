@@ -1541,7 +1541,7 @@ where
     }
 
     // Signing happens outside the write lock; existing readers finish
-    // before the new operator and expiry are installed together.
+    // before the renewed operator and expiry are installed together.
     let session = build(profile, storage).await?;
 
     let mut tonk = state.write().await;
