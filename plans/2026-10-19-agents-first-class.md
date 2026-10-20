@@ -21,6 +21,15 @@ See **Progress**. First inspected at 8d5035bea4, plus `feat/desktop-links`,
   bytes per boot; renewal re-issues only the bounded grant.
 - **Local agent peer**: landed via tonk-labs/tonk#1111 (#1108 closed). It is the
   local agent runtime this plan assumed.
+- **Roster provenance, slice 1 (agent kind)**: on `feat/agent-roster-provenance`.
+  A `MemberKind` stamp (`xyz.tonk.membership/kind = tonk:agent`) on the
+  membership; `POST /api/profile/join` takes `agent: true` (self-declared,
+  sticky, stamped on renewals too); the local peer always declares it;
+  `MemberInfo.is_agent`; expel retracts it and account rotation carries it.
+  Next slices: sponsor and correct inviter (the minted chain's inviting root,
+  not `Invitation.inviter`, which credits the founder on a re-shared link);
+  FAB and Desktop show the kind (Desktop currently counts every roster row as
+  a person); agent-link grants write a roster row.
 
 Motivating build: a shared team agent on Pi Durable in a Cloudflare Durable
 Object, reached first through a bot in the team Discord, acting in Tonk spaces.
