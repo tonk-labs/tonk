@@ -131,6 +131,9 @@ pub struct MemberInfo {
     /// The inviter's did:key, when provenance was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invited_by: Option<String>,
+    /// Whether the member is an agent rather than a person.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_agent: bool,
 }
 
 /// Read-side view of a repository.

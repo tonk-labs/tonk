@@ -33,8 +33,8 @@ use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
-    Branch as MetaBranch, Invitation, InvitedVia, MemberName, MemberRole, Membership, Remote,
-    RemoteExecution, Replica, RepositoryName, SeedKind, SpaceDescription, SpaceStatus,
+    Branch as MetaBranch, Invitation, InvitedVia, MemberKind, MemberName, MemberRole, Membership,
+    Remote, RemoteExecution, Replica, RepositoryName, SeedKind, SpaceDescription, SpaceStatus,
     TrackingBranch,
 };
 use url::Url;
@@ -191,6 +191,9 @@ pub struct MemberInfo {
     /// The inviter's did:key, when provenance was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invited_by: Option<String>,
+    /// Whether the member is an agent rather than a person.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_agent: bool,
 }
 
 /// Read-side view of a repository.
@@ -7703,7 +7706,7 @@ where
     // meta) so it syncs across replicas. If the content branch can't be
     // opened, leave the roster empty, consistent with the per-query
     // log-and-empty-vec fallbacks below.
-    let (memberships, member_names, invited_via, invitations) = match repository
+    let (memberships, member_names, invited_via, invitations, member_kinds) = match repository
         .branch(CONTENT_BRANCH)
         .open()
         .perform(&tonk.operator)
@@ -7783,13 +7786,41 @@ where
                     Vec::new()
                 }
             };
-            (memberships, member_names, invited_via, invitations)
+            let member_kinds: Vec<MemberKind> = match content
+                .query()
+                .select(Query::<MemberKind> {
+                    this: Term::var("this"),
+                    kind: Term::var("kind"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+            {
+                Ok(rows) => rows,
+                Err(e) => {
+                    log!("MemberKind query on content failed for '{}': {:?}", key, e);
+                    Vec::new()
+                }
+            };
+            (
+                memberships,
+                member_names,
+                invited_via,
+                invitations,
+                member_kinds,
+            )
         }
         Err(e) => {
             log!("No content branch for repository '{}' roster: {}", key, e);
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
         }
     };
+    // membership entities stamped as agents
+    let agents: std::collections::HashSet<_> = member_kinds
+        .iter()
+        .filter(|kind| kind.is_agent())
+        .map(|kind| kind.this.clone())
+        .collect();
 
     // membership entity -> display name
     let names_by_membership: HashMap<_, _> = member_names
@@ -7822,6 +7853,7 @@ where
             name: names_by_membership.get(&m.this).cloned(),
             is_self: self_entity.as_ref() == Some(&m.member.0),
             invited_by: inviter_by_membership.get(&m.this).cloned(),
+            is_agent: agents.contains(&m.this),
         })
         .collect();
     // Deterministic order: self first, then named members

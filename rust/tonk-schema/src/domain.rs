@@ -2232,6 +2232,17 @@ pub mod membership {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.membership")]
     pub struct Name(pub String);
+
+    /// What kind of actor the member is — `tonk:agent` for an agent.
+    /// The [`MemberKind`] stamp's payload. Absent for a person: only the
+    /// agent kind is ever stamped, so a member is a person unless
+    /// something marked it an agent. Cardinality one.
+    ///
+    /// [`MemberKind`]: crate::MemberKind
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.membership")]
+    #[pick(last)]
+    pub struct Kind(pub Entity);
 }
 
 /// Attributes of a [`Transplant`] — an existing space's history
