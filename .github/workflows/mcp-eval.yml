@@ -65,13 +65,13 @@ jobs:
           ref: ${{ needs.validate.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Trust the workspace checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Confirm exact checked-out source
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ needs.validate.outputs.source_sha }}"
-      - name: Trust the workspace checkout
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Install runtime build dependencies
         run: |
           apt-get update
