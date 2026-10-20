@@ -1,0 +1,11 @@
+{
+  "name": "tonk",
+  "owner": { "name": "Tonk Labs" },
+  "plugins": [
+    {
+      "name": "tonk",
+      "source": "./plugins/tonk",
+      "description": "Work in shared Tonk spaces from your agent through a local peer."
+    }
+  ]
+}
