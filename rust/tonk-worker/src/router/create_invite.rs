@@ -902,6 +902,7 @@ mod tests {
                 ..Default::default()
             },
             Some(&previous),
+            None,
         )
         .await;
         assert!(matches!(result, Err(crate::TonkWorkerError::Conflict(_))));

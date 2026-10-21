@@ -163,7 +163,7 @@ async fn send(env: &CommandEnv, command: &SendEmailInvitation) -> Result<(), Ton
             .map_err(|_| unavailable())?;
         bs58::encode(invite.chain.to_bytes().map_err(|_| unavailable())?).into_string()
     };
-    account(env, &root.root_did.to_string()).await?;
+    account(env, root.root_did.as_str()).await?;
     args.clear();
     args.insert("invitation".into(), Promised::String(id.clone()));
     args.insert("original".into(), Promised::String(original));

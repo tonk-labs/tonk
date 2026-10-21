@@ -137,3 +137,18 @@ and `live.rs` (derivable default, non-Send Arc, redundant guard, unnecessary cas
 CI uses Rust 1.93 and is rerunning; full lint/CI success is not claimed. All source
 changes are committed and the worktree is clean. Production deployment, real
 Resend delivery, and signed-in native button interaction remain unverified.
+
+### PR #1152 CI repair (2026-10-21)
+
+At head 40939a786c, run 39632649506 failed debug Web-test compilation because the
+Wasm-only account-generation mint refusal test omitted the new delivery argument.
+Pass `None` to preserve its ordinary handoff case. The same run's Clippy job failed
+on `root_did.to_string()` in email delivery; borrow `root_did.as_str()` instead.
+Only these two source lines are changed, plus this evidence record.
+
+`cargo check --target wasm32-unknown-unknown -p tonk-worker --tests --offline --locked`
+passes, including that previously excluded test. Formatting and diff checks pass.
+A local Rust 1.99 Clippy run no longer reports the changed handler, but fails on
+three existing unnecessary-to-owned warnings in untouched `router/custody.rs`;
+those are left outside scope. CI's pinned Rust 1.93 lint check will verify the
+patch. CI rerun is pending after push; no full green claim yet.
