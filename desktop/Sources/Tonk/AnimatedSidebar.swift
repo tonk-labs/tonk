@@ -43,6 +43,7 @@ final class SidebarSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     detailHost = NSHostingController(rootView: detail)
     sidebarItem = NSSplitViewItem(viewController: sidebarHost)
     super.init(nibName: nil, bundle: nil)
+    splitView = SeamlessSplitView()
     sidebarHost.safeAreaRegions = []
     detailHost.safeAreaRegions = []
     sidebarHost.sizingOptions = []
@@ -101,4 +102,9 @@ final class SidebarSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
       }
     }
   }
+}
+
+/// Still draggable, but draws no hairline: the inset view surface already separates the panes.
+private final class SeamlessSplitView: NSSplitView {
+  override var dividerColor: NSColor { .clear }
 }

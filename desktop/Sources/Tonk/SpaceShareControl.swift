@@ -9,26 +9,34 @@ struct SpaceShareControl: View {
   @State private var copying = false
   @State private var publishing = false
 
-  /// One split button: the face copies the default link, the chevron holds Publish.
+  /// Copy link and Publish as two glass buttons in one group; Copy link carries the accent.
   var body: some View {
-    Menu {
-      Button("Publish…") { publishing = true }
-    } label: {
-      Label(copied ? "Copied" : "Copy link", systemImage: copied ? "checkmark" : "link")
-        .labelStyle(ShareLabelStyle(compact: compact))
-    } primaryAction: {
-      guard !copying else { return }
-      copying = true
-      Task {
-        copied = await access.copyDefaultLink(in: space)
-        copying = false
-        try? await Task.sleep(for: .milliseconds(1500))
-        copied = false
-      }
+    GlassControls {
+      HStack(spacing: 6) {
+        Button {
+          guard !copying else { return }
+          copying = true
+          Task {
+            copied = await access.copyDefaultLink(in: space)
+            copying = false
+            try? await Task.sleep(for: .milliseconds(1500))
+            copied = false
+          }
+        } label: {
+          Label(copied ? "Copied" : "Copy link", systemImage: copied ? "checkmark" : "link")
+            .labelStyle(ShareLabelStyle(compact: compact))
+        }
+        .nativeControl(prominent: true).disabled(copying)
+        .help(copied ? "Copied" : "Copy the space’s default link")
+        .accessibilityLabel(copied ? "Copied" : "Copy link")
+        Button {
+          publishing = true
+        } label: {
+          Label("Publish", systemImage: "globe").labelStyle(ShareLabelStyle(compact: compact))
+        }
+        .nativeControl().help("Publish a read-only link").accessibilityLabel("Publish")
+      }.fixedSize()
     }
-    .menuStyle(.button).nativeControl(prominent: true).fixedSize()
-    .help(copied ? "Copied" : "Copy link, or choose Publish")
-    .accessibilityLabel(copied ? "Copied" : "Copy link")
     .sheet(isPresented: $publishing) { PublishSpaceSheet(space: space, access: access) }
   }
 }
@@ -86,7 +94,12 @@ struct PublishSpaceSheet: View {
           Button("Copy") { access.copyLink(publication) }
         }.padding(12).background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 8))
       }
-      if changing { ProgressView("Updating public access…").controlSize(.small) }
+      if changing {
+        HStack(spacing: 8) {
+          ProgressView().controlSize(.small)
+          Text("Updating public access…").foregroundStyle(.secondary)
+        }
+      }
       HStack {
         if publication != nil {
           Button("Unpublish…") { confirmUnpublish = true }
@@ -129,12 +142,10 @@ struct SpaceSyncControl: View {
   let space: TonkSpace
   @StateObject private var observation = DesktopSyncState()
   @State private var showing = false
-  @State private var held = false
   @State private var hoverTask: Task<Void, Never>?
   var body: some View {
     Button {
-      if !held { showing.toggle() }
-      held = false
+      showing.toggle()
     } label: {
       Image(systemName: observation.symbol).font(.system(size: 12, weight: .semibold))
         .frame(width: 20, height: 24)
@@ -152,13 +163,8 @@ struct SpaceSyncControl: View {
       }
     }
     .onDisappear { hoverTask?.cancel() }
-    .simultaneousGesture(
-      LongPressGesture(minimumDuration: 0.5).onEnded { _ in
-        held = true
-        Task { await observation.toggle(runtime: runtime, space: space) }
-      }
-    )
-    .popover(isPresented: $showing) {
+    // Hangs below the circle, as in frame 4; the default edge opens it off the window.
+    .popover(isPresented: $showing, arrowEdge: .bottom) {
       SyncStatusView(runtime: runtime, space: space, observation: observation)
     }
     .task(id: space.id) {

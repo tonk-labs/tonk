@@ -134,7 +134,7 @@ struct SpaceAppearancePicker: View {
           .accessibilityAddTraits(shownIcon == symbol ? .isSelected : [])
         }
       }
-      Text("Colour").font(.system(size: 13, weight: .semibold))
+      Text("Color").font(.system(size: 13, weight: .semibold))
       LazyVGrid(columns: Array(repeating: GridItem(.fixed(28), spacing: 4), count: 6), spacing: 4) {
         swatch(token: nil, name: "Default", fill: AnyShapeStyle(.secondary))
         ForEach(
@@ -146,18 +146,6 @@ struct SpaceAppearancePicker: View {
         }
       }
       HStack {
-        Menu("More Colours") {
-          ForEach(
-            SpaceAppearance.colors.filter {
-              !["red", "orange", "green", "blue", "purple"].contains($0.token)
-            }, id: \.token
-          ) { entry in
-            Button(entry.name) {
-              color = entry.token
-              onChange(icon, color)
-            }
-          }
-        }.menuStyle(.borderlessButton).fixedSize()
         Spacer()
         Button("Reset") {
           icon = nil

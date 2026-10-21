@@ -11,6 +11,8 @@ struct DesktopAccountView: View {
   @State private var error: String?
   @State private var confirming = false
   @State private var saveTask: Task<Void, Never>?
+  @State private var addingPasskey = false
+  @State private var passkeyError: String?
 
   var body: some View {
     ScrollViewReader { proxy in
@@ -69,17 +71,29 @@ struct DesktopAccountView: View {
                 .foregroundStyle(.secondary).padding(16)
               }
               Divider()
-              Button(action: openAccount) {
+              Button(action: addPasskey) {
                 HStack(spacing: 8) {
                   DesktopGlyph(name: "r2Plus", size: 14)
                   Text("Add a passkey…")
                 }
-              }.buttonStyle(.plain).padding(16).help("Opens your account in the browser")
+              }.buttonStyle(.plain).padding(16).disabled(addingPasskey)
+                .help(
+                  model.runtime?.supportsDirectPasskey == true
+                    ? "Create a passkey on this Mac" : "Opens your account in the browser")
             }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
             Text(
               "A passkey replaces a password. It can live on a device, a browser profile or a password manager."
             )
             .font(.system(size: 12)).foregroundStyle(.secondary)
+            if addingPasskey {
+              HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Follow the passkey prompts…").foregroundStyle(.secondary)
+              }.font(.system(size: 12))
+            }
+            if let passkeyError {
+              Text(passkeyError).font(.system(size: 12)).foregroundStyle(.red)
+            }
           }
           if let detailsError = access.accountDetailsError {
             Text(detailsError).font(.system(size: 12)).foregroundStyle(.secondary)
@@ -108,7 +122,6 @@ struct DesktopAccountView: View {
             }.padding(16)
           }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
           ProviderSettingsView(model: model, embedded: true).id("chat-settings")
-            .background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 12))
         }.frame(maxWidth: 720).padding(28).frame(maxWidth: .infinity)
       }.font(.system(size: 13)).controlSize(.small).buttonBorderShape(.capsule)
         .onAppear {
@@ -134,6 +147,24 @@ struct DesktopAccountView: View {
     if access.accountDetailsLoaded { return access.accountPasskeys }
     guard let label = access.passkeyCreatedOn else { return [] }
     return [AccountPasskey(id: "local", createdOn: label, createdAt: access.passkeyCreatedAt)]
+  }
+
+  private func addPasskey() {
+    guard let runtime = model.runtime, runtime.supportsDirectPasskey else {
+      openAccount()
+      return
+    }
+    addingPasskey = true
+    passkeyError = nil
+    Task {
+      defer { addingPasskey = false }
+      do {
+        try await runtime.addPasskey()
+        await access.refreshAccount()
+      } catch {
+        passkeyError = AccessModel.message(error)
+      }
+    }
   }
 
   private func openAccount() {

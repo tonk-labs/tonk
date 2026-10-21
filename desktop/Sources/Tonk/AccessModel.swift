@@ -163,7 +163,8 @@ final class AccessModel: ObservableObject {
     errors = errors.filter { keep.contains($0.key) || $0.key == "account" }
   }
 
-  var agentLinks: [AccessLink] { allLinks.filter(\.forAgents) }
+  /// Live grants something has connected through; unused links stay in All links.
+  var connections: [AgentConnection] { agentConnections.filter { $0.isLive && $0.hasConnected } }
 
   func madeAt(_ link: AccessLink) -> Date? { journal.madeAt(target: link.target) }
 

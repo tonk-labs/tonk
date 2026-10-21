@@ -25,27 +25,16 @@ struct ProviderSettingsView: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 20) {
-      Text(embedded ? "Chat Agent" : "Chat Agent Settings").font(
-        .system(size: 15, weight: .semibold))
-      Text(
-        "The chat agent edits as you, only in Tonk’s chat. Agent accounts have their own identity and access, separate from this chat."
-      )
-      .font(.system(size: 12)).foregroundStyle(.secondary)
+    // Laid out like the other Settings sections: heading, grouped rows, caption, actions.
+    VStack(alignment: .leading, spacing: 8) {
+      Text(embedded ? "Chat agent" : "Chat agent settings").fontWeight(.semibold)
       VStack(alignment: .leading, spacing: 12) {
         HStack {
           Text("Provider")
           Spacer()
-          Menu {
-            Picker("Provider", selection: $selected) {
-              ForEach(ModelProvider.allCases) { provider in Text(provider.title).tag(provider) }
-            }.pickerStyle(.inline)
-          } label: {
-            HStack(spacing: 8) {
-              Text(selected.title)
-              Image(systemName: "chevron.down").font(.caption.weight(.semibold))
-            }
-          }.modifier(SettingsMenuStyle())
+          Picker("Provider", selection: $selected) {
+            ForEach(ModelProvider.allCases) { provider in Text(provider.title).tag(provider) }
+          }.pickerStyle(.menu).labelsHidden().fixedSize()
             .disabled(model.loginPending || model.connecting)
         }
         if selected == .chatGPT {
@@ -73,26 +62,15 @@ struct ProviderSettingsView: View {
               HStack {
                 Text("Model")
                 Spacer()
-                Menu {
-                  Picker("Model", selection: $connection.model) {
-                    Text("Default from ChatGPT").tag("")
-                    if !connection.model.isEmpty
-                      && !model.subscriptionModels.contains(where: { $0.id == connection.model })
-                    {
-                      Text("Unavailable: \(connection.model)").tag(connection.model).disabled(true)
-                    }
-                    ForEach(model.subscriptionModels) { item in Text(item.name).tag(item.id) }
-                  }.pickerStyle(.inline)
-                } label: {
-                  HStack(spacing: 8) {
-                    Text(
-                      connection.model.isEmpty
-                        ? "Default from ChatGPT"
-                        : model.subscriptionModels.first(where: { $0.id == connection.model })?.name
-                          ?? "Unavailable: \(connection.model)")
-                    Image(systemName: "chevron.down").font(.caption.weight(.semibold))
+                Picker("Model", selection: $connection.model) {
+                  Text("Default from ChatGPT").tag("")
+                  if !connection.model.isEmpty
+                    && !model.subscriptionModels.contains(where: { $0.id == connection.model })
+                  {
+                    Text("Unavailable: \(connection.model)").tag(connection.model).disabled(true)
                   }
-                }.modifier(SettingsMenuStyle())
+                  ForEach(model.subscriptionModels) { item in Text(item.name).tag(item.id) }
+                }.pickerStyle(.menu).labelsHidden().fixedSize()
               }
               if let error = model.modelCatalogError {
                 Text(error).font(.caption).foregroundStyle(.secondary)
@@ -109,34 +87,23 @@ struct ProviderSettingsView: View {
               HStack {
                 Text("Model")
                 Spacer()
-                Menu {
-                  Picker(
-                    "Model",
-                    selection: Binding(
-                      get: { connection.model == "default" ? "" : connection.model },
-                      set: { connection.model = $0 }
-                    )
-                  ) {
-                    Text("Default from Claude Code").tag("")
-                    if !connection.model.isEmpty && connection.model != "default"
-                      && !model.claudeModels.contains(where: { $0.id == connection.model })
-                    {
-                      Text("Unavailable: \(connection.model)").tag(connection.model).disabled(true)
-                    }
-                    ForEach(model.claudeModels.filter { $0.id != "default" }) { item in
-                      Text(item.name).tag(item.id).help(item.description)
-                    }
-                  }.pickerStyle(.inline)
-                } label: {
-                  HStack(spacing: 8) {
-                    Text(
-                      connection.model.isEmpty || connection.model == "default"
-                        ? "Default from Claude Code"
-                        : model.claudeModels.first(where: { $0.id == connection.model })?.name
-                          ?? "Unavailable: \(connection.model)")
-                    Image(systemName: "chevron.down").font(.caption.weight(.semibold))
+                Picker(
+                  "Model",
+                  selection: Binding(
+                    get: { connection.model == "default" ? "" : connection.model },
+                    set: { connection.model = $0 }
+                  )
+                ) {
+                  Text("Default from Claude Code").tag("")
+                  if !connection.model.isEmpty && connection.model != "default"
+                    && !model.claudeModels.contains(where: { $0.id == connection.model })
+                  {
+                    Text("Unavailable: \(connection.model)").tag(connection.model).disabled(true)
                   }
-                }.modifier(SettingsMenuStyle())
+                  ForEach(model.claudeModels.filter { $0.id != "default" }) { item in
+                    Text(item.name).tag(item.id).help(item.description)
+                  }
+                }.pickerStyle(.menu).labelsHidden().fixedSize()
               }
               if let error = model.claudeModelsError {
                 Text(error).font(.caption).foregroundStyle(.secondary)
@@ -200,12 +167,12 @@ struct ProviderSettingsView: View {
           )
           .frame(maxWidth: .infinity, alignment: .trailing)
         }
-      }.controlSize(.regular)
-      Divider()
+      }.controlSize(.regular).padding(16)
+        .background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
       Text(
-        "Changing provider or model starts a new conversation. Your previous transcript is saved on this Mac, and the attached space stays open."
+        "The chat agent edits as you, only in Tonk’s chat. Changing the provider or model starts a new conversation; your transcript stays on this Mac."
       )
-      .font(.caption).foregroundStyle(.secondary)
+      .font(.system(size: 12)).foregroundStyle(.secondary)
       if let error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
       HStack {
         Button("Advanced…") { showAdvancedSettings = true }
@@ -238,9 +205,9 @@ struct ProviderSettingsView: View {
           .return, modifiers: embedded ? [.command] : []
         )
         .disabled(model.loginPending || model.connecting)
-      }.controlSize(.regular)
+      }.controlSize(.regular).padding(.top, 6)
     }
-    .padding(22).frame(width: embedded ? nil : 440).nativeControl().disabled(saving)
+    .padding(embedded ? 0 : 22).frame(width: embedded ? nil : 440).nativeControl().disabled(saving)
     .task { if !model.connected { await model.connect() } }
     .interactiveDismissDisabled(saving)
     .sheet(isPresented: $showAdvancedSettings) { AdvancedSettingsView() }
@@ -316,14 +283,6 @@ struct ProviderSettingsView: View {
         error = nil
       } catch { self.error = error.localizedDescription }
     }
-  }
-}
-
-private struct SettingsMenuStyle: ViewModifier {
-  func body(content: Content) -> some View {
-    content.menuStyle(.borderlessButton).menuIndicator(.hidden)
-      .padding(.horizontal, 8).padding(.vertical, 4)
-      .controlSurface(radius: 12).fixedSize()
   }
 }
 

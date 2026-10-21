@@ -69,7 +69,7 @@ final class DesktopSyncState: ObservableObject {
         detail = "No upstream is available, or sync is paused."
       default:
         status = "Sync status unavailable"
-        detail = "The runtime did not provide a recognised sync state."
+        detail = String(localized: "The runtime did not provide a recognized sync state.")
       }
       checkedAt = Date()
     } catch {
@@ -120,16 +120,12 @@ struct SyncStatusView: View {
         .enabled)
       HStack {
         if observation.canToggle {
-          Button(observation.state == "sync:paused" ? "Resume Syncing" : "Pause Syncing") {
+          Button(observation.state == "sync:paused" ? "Resume syncing" : "Pause syncing") {
             Task { await observation.toggle(runtime: runtime, space: space) }
           }
         }
-        Button("Check Again") { Task { await observation.check(runtime: runtime, space: space) } }
+        Button("Check again") { Task { await observation.check(runtime: runtime, space: space) } }
           .disabled(observation.checking)
-      }
-      if observation.canToggle {
-        Text("Or hold the sync circle for half a second to pause or resume.")
-          .font(.system(size: 12)).foregroundStyle(.secondary)
       }
       if let date = observation.checkedAt {
         Text("Checked \(date.formatted(date: .omitted, time: .shortened))")

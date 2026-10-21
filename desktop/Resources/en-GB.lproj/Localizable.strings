@@ -1,0 +1,4 @@
+/* British spellings for Macs set to British English. Keys are the American
+   source strings exactly as they appear in code. */
+"Color" = "Colour";
+"The runtime did not provide a recognized sync state." = "The runtime did not provide a recognised sync state.";

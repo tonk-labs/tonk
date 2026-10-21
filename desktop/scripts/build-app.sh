@@ -35,6 +35,10 @@ mkdir -p "$app/Contents/MacOS"
 mkdir -p "$app/Contents/Resources"
 cp ".build/$configuration/Tonk" "$app/Contents/MacOS/Tonk"
 cp Resources/Info.plist "$app/Contents/Info.plist"
+# SwiftUI resolves Text keys in the main bundle, so the string tables live there.
+for table in Resources/*.lproj; do
+    ditto "$table" "$app/Contents/Resources/$(basename "$table")"
+done
 xcrun actool "$PWD/Resources/Tonk.icon" \
     --compile "$app/Contents/Resources" \
     --platform macosx --minimum-deployment-target 15.0 \

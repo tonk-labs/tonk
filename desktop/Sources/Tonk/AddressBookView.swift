@@ -25,14 +25,16 @@ struct AddressBookView: View {
     // push the window's own sidebar off screen at the 800-point default size.
     HStack(spacing: 0) {
       VStack(spacing: 0) {
-        VStack(alignment: .leading, spacing: 12) {
+        HStack(spacing: 8) {
           GlassSearchField(
             title: "Name or key", text: $search, focusRequest: searchFocusRequest)
-          Button("Add contact", systemImage: "plus") {
+          Button {
             editing = DesktopContact(id: "", name: "", labels: [])
-          }.nativeControl()
-        }.padding(16)
-        Divider()
+          } label: {
+            Label("Add contact", systemImage: "plus").labelStyle(.iconOnly)
+              .frame(width: 20, height: 20)
+          }.nativeControl(circular: true).controlSize(.large).help("Add contact")
+        }.padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4)
         List(contacts, selection: $selected) { contact in
           HStack(spacing: 10) {
             Text(AccessText.initials(contact.name)).font(.system(size: 10, weight: .semibold))
@@ -51,8 +53,10 @@ struct AddressBookView: View {
                   "Copy key for \(contact.name)")
               }
             }
-          }.padding(.vertical, 9).tag(contact.id).listRowSeparator(.hidden)
-        }.listStyle(.plain).scrollContentBackground(.hidden)
+          }.padding(.vertical, 4).tag(contact.id).listRowSeparator(.hidden)
+        }
+        // The sidebar style insets the selection as a rounded rectangle, as in frame 11.
+        .listStyle(.sidebar).scrollContentBackground(.hidden)
       }.frame(width: 228)
       Divider()
       if let contact = contacts.first(where: { $0.id == selected }) {
@@ -68,7 +72,7 @@ struct AddressBookView: View {
             }
             VStack(alignment: .leading, spacing: 8) {
               Text("did:key").font(.caption).foregroundStyle(.secondary)
-              HStack(alignment: .top) {
+              HStack(alignment: .center) {
                 Text(contact.id).font(.system(size: 12, design: .monospaced)).textSelection(
                   .enabled)
                 Spacer(minLength: 4)

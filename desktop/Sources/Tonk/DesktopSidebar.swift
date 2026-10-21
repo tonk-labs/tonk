@@ -41,7 +41,7 @@ struct DesktopSidebar: View {
         } icon: {
           DesktopGlyph(name: "imgIconPlug")
         }
-        .badge(access.agentLinks.count)
+        .badge(access.connections.count)
         .tag(DesktopPage.agentLinks)
         Label {
           Text("Address book")

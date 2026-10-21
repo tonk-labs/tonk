@@ -35,6 +35,21 @@ final class SpaceAccessTests: XCTestCase {
     XCTAssertFalse(grants[2].isTerminalAuthorization)
   }
 
+  func testOnlyUsedGrantsCountAsConnections() {
+    let unused = AgentConnection(id: "u", subject: "did:key:zSpace", expiresAt: 0)
+    let terminal = AgentConnection(
+      id: "t", subject: "did:key:zSpace", expiresAt: 0, kind: "terminal")
+    let confirmed = AgentConnection(
+      id: "c", subject: "did:key:zSpace", expiresAt: 0, confirmed: true)
+    let registered = AgentConnection(
+      id: "r", subject: "did:key:zSpace", expiresAt: 0,
+      installations: [.init(id: "i", name: "Claude Code")])
+    XCTAssertFalse(unused.hasConnected)
+    XCTAssertTrue(terminal.hasConnected)
+    XCTAssertTrue(confirmed.hasConnected)
+    XCTAssertTrue(registered.hasConnected)
+  }
+
   func testLinksDescribeWhatEachGrantAllows() {
     let members = [
       SpaceMember(did: "did:key:zMira", name: "Mira", role: "tonk:member", invitation: "tonk:inv"),

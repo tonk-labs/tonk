@@ -11,8 +11,6 @@ struct ConnectionsPageView: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 24) {
-        Text("Manage chat, agent identities, and external access.")
-          .font(.system(size: 12)).foregroundStyle(.secondary)
         VStack(alignment: .leading, spacing: 8) {
           Text("Chat agent").font(.system(size: 15, weight: .semibold))
           Text("Edits as you, only in Tonk’s chat beside a view, while you’re chatting.")
@@ -48,9 +46,9 @@ struct ConnectionsPageView: View {
             .background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
         }
         VStack(alignment: .leading, spacing: 8) {
-          Text("External access").font(.system(size: 15, weight: .semibold))
+          Text("Connected agents").font(.system(size: 15, weight: .semibold))
           Text(
-            "MCP, shared links, and CLI access. These grants are not provisioned accounts."
+            "Agents, MCP clients and the CLI that connected through access you granted. Share links stay in All links."
           )
           .font(.system(size: 12)).foregroundStyle(.secondary)
 
@@ -60,13 +58,13 @@ struct ConnectionsPageView: View {
           Button("Try again") { Task { await access.refreshAccount() } }
         }
         ForEach(spaces) { space in
-          let grants = access.agentConnections.filter { $0.subject == space.subject && $0.isLive }
+          let grants = access.connections.filter { $0.subject == space.subject }
           if !grants.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
               HStack {
                 Text(space.title).fontWeight(.semibold)
                 Spacer()
-                Text("\(grants.count) access grant\(grants.count == 1 ? "" : "s")")
+                Text("\(grants.count) connected")
                   .foregroundStyle(.secondary)
               }
               VStack(spacing: 0) {
@@ -78,11 +76,13 @@ struct ConnectionsPageView: View {
             }
           }
         }
-        if access.agentConnections.filter(\.isLive).isEmpty && access.errors["account"] == nil {
-          Text("No external access grants listed.").foregroundStyle(.secondary)
+        if access.connections.isEmpty && access.errors["account"] == nil {
+          Text("No agents have connected yet.").foregroundStyle(.secondary)
         }
       }.padding(20)
-    }.font(.system(size: 13)).controlSize(.small).buttonBorderShape(.capsule)
+    }.font(.system(size: 13)).controlSize(.small)
+      // Flat buttons: these are row actions, not window chrome.
+      .buttonStyle(.bordered).buttonBorderShape(.capsule)
       .sheet(isPresented: $onboarding) {
         VStack(alignment: .leading, spacing: 16) {
           Text("Add an agent").font(.system(size: 15, weight: .semibold))
@@ -91,7 +91,7 @@ struct ConnectionsPageView: View {
           )
           .foregroundStyle(.secondary)
           Text(
-            "An MCP connection, a link pasted into a chat, or CLI authorization can provide access without creating that account. Existing access grants remain manageable under External access."
+            "An MCP connection, a link pasted into a chat, or CLI authorization can provide access without creating that account. Agents that already connected appear under Connected agents."
           )
           .font(.system(size: 12)).foregroundStyle(.secondary)
           HStack {

@@ -391,7 +391,8 @@ struct ContentView: View {
       HStack(spacing: 6) {
         viewAddress
         if let space = model.openedSpace {
-          SpaceShareControl(space: space, access: access, compact: true)
+          // Large controls are 32 points, the breadcrumb pill's height.
+          SpaceShareControl(space: space, access: access, compact: true).controlSize(.large)
         }
       }
       if showHistory {
@@ -503,18 +504,58 @@ struct ContentView: View {
     }.padding(.leading, 6).padding(.top, 6)
   }
 
+  /// A quick model switch in place; the full settings stay one item away.
   private var composerModel: some View {
-    Button {
-      openChatSettings()
+    Menu {
+      if !composerModels.isEmpty {
+        Picker(
+          "Model",
+          selection: Binding(get: { model.connection.model }, set: { chooseModel($0) })
+        ) {
+          ForEach(composerModels, id: \.id) { item in Text(item.name).tag(item.id) }
+        }.pickerStyle(.inline)
+        Divider()
+      }
+      Button("Chat Agent Settings…") { openChatSettings() }
     } label: {
-      HStack(spacing: 4) {
-        Text(model.connecting ? "Connecting…" : model.modelLabel).lineLimit(1)
-        DesktopGlyph(name: "r2IconChevronDown1", size: 11)
-      }.font(.system(size: 12))
-    }.nativeControl()
-      .help("Chat Agent Settings: \(model.modelLabel)")
-      .accessibilityLabel("Chat Agent Settings: \(model.modelLabel)")
-      .disabled(accountActionsDisabled)
+      Text(model.connecting ? "Connecting…" : model.modelLabel).lineLimit(1)
+        .font(.system(size: 12))
+    }
+    .menuStyle(.button).nativeControl().fixedSize()
+    .help("Model: \(model.modelLabel)")
+    .accessibilityLabel("Model: \(model.modelLabel)")
+    .disabled(accountActionsDisabled)
+    .task(id: model.signedIn) {
+      guard model.signedIn, composerModels.count <= 1 else { return }
+      if model.provider == .chatGPT { await model.refreshSubscriptionModels() }
+      if model.provider == .claude { await model.refreshClaudeModels() }
+    }
+  }
+
+  /// The signed-in subscription's models, led by its default; other providers take a typed ID.
+  private var composerModels: [(id: String, name: String)] {
+    guard model.signedIn else { return [] }
+    switch model.provider {
+    case .chatGPT:
+      return [("", "Default from ChatGPT")] + model.subscriptionModels.map { ($0.id, $0.name) }
+    case .claude:
+      return [("", "Default from Claude Code")]
+        + model.claudeModels.filter { $0.id != "default" }.map { ($0.id, $0.name) }
+    default:
+      return []
+    }
+  }
+
+  private func chooseModel(_ id: String) {
+    guard id != model.connection.model else { return }
+    var next = model.connection
+    next.model = id
+    Task {
+      do {
+        try await model.configureProvider(
+          model.provider, connection: next, key: "", codexExecutable: model.saved.codexExecutable)
+      } catch { model.error = error.localizedDescription }
+    }
   }
 
   private var canSubmit: Bool {

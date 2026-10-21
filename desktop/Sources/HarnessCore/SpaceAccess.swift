@@ -84,6 +84,9 @@ public struct AgentConnection: Decodable, Equatable, Sendable {
   public var isTerminalAuthorization: Bool { kind == "terminal" }
 
   public var isLive: Bool { status == "active" || status == "partial" }
+  /// Something actually connected through the grant: a CLI authorization, an agent's
+  /// confirmation, or a registered client. A minted link nobody has used is only a link.
+  public var hasConnected: Bool { isTerminalAuthorization || confirmed || !installations.isEmpty }
 }
 
 /// A roster row from the `tonk:member` facts on a space's content branch.
