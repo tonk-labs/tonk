@@ -5,6 +5,7 @@ use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{HtmlButtonElement, HtmlElement};
 
 /// Accept only the exact local invitation route and opaque locator.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn destination(value: &str) -> bool {
     let Some(id) = value.strip_prefix("/email-invite#") else {
         return false;

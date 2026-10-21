@@ -158,3 +158,10 @@ It gets past the worker lint and reports nested stylesheet conditionals in the
 new email invitation page. Collapse the document/style guards into one let-chain,
 retaining their order and the same stylesheet insertion behavior. No unrelated
 UI or custody warnings are changed. Full pinned lint verification is continuing.
+
+Run 39638838893 confirms the stylesheet guard lints are resolved and exposes the
+last native-only dead-code error: `email_invite::destination` is used only by Wasm
+navigation and tests. Gate it with the same Wasm-or-test condition as its caller
+`account_completion_destination`, preserving the existing unit test and browser
+behavior. The manual runs are necessary while GitHub's PR/webhook/status incident
+delays automatic checks (incident nms1dpzmh9d9). No unrelated source is modified.
