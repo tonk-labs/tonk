@@ -1665,7 +1665,8 @@ async fn run_connection_invite_for(
         &worker_origin().unwrap_or_else(|| "https://tonk.network".into()),
     )
     .map_err(|_| TonkWorkerError::Internal("invalid connection origin".into()))?;
-    let minted = super::agent_connections::mint(env.state().clone(), repo.to_owned(), origin).await;
+    let minted =
+        super::agent_connections::mint(env.state().clone(), repo.to_owned(), origin, None).await;
     let minted = match minted {
         Ok(mut response) => {
             response.url = shortened_or_full(response.url).await;

@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_handler_macros::wasm_compat;
 use tonk_invite::connection::{
-    AgentInvite, DEFAULT_GRANT_TTL_SECONDS, SpaceGrantBundle, candidate_build_scopes, grant_set_id,
-    require_grant_deadline,
+    AgentGrant, AgentInvite, DEFAULT_GRANT_TTL_SECONDS, SpaceGrantBundle, candidate_build_scopes,
+    grant_set_id, require_grant_deadline,
 };
 use tonk_schema::{
     AgentGrantGroup, AgentGrantRevocation, InvitedBy, MemberKind, MemberName, MemberRole,
@@ -246,10 +246,16 @@ async fn issuer_ancestors(
 
 /// Issue one independent bearer. A state read guard pins account and space until
 /// all public records are durable; the returned URL is never stored.
+///
+/// With a `recipient`, the grants go to that key, one the agent already
+/// holds, and the link carries no secret: it names the key, and only its
+/// holder can redeem it. Without one, a key is minted for the link and
+/// travels in it, as before.
 pub(crate) async fn mint(
     state: AppState,
     repo: String,
     origin: RequestOrigin,
+    recipient: Option<Did>,
 ) -> Result<AgentConnectionInviteResponse, TonkWorkerError> {
     enabled()?;
     let tonk = state.read().await;
@@ -294,27 +300,35 @@ pub(crate) async fn mint(
     let now = Timestamp::now();
     let expires = Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128)
         .map_err(failure)?;
-    let (_, seed) = generate_ephemeral().await?;
-    let recipient = dialog_credentials::Ed25519Signer::import(&seed)
-        .await
-        .map_err(failure)?
-        .did();
     let scopes = candidate_build_scopes(&subject);
     let ancestors = issuer_ancestors(&tonk, &scopes, now, expires).await?;
-    let invite = issue(
-        seed,
-        tonk.profile.credential().signer().clone(),
-        ancestors,
-        &scopes,
-        &remote,
-        now,
-        expires,
-    )
-    .await?;
+    let signer = tonk.profile.credential().signer().clone();
+    let base = origin.url().join("agent/").map_err(failure)?;
+    let (grants, url, terminal_request) = match recipient {
+        Some(recipient) => {
+            let grants = issue_to_recipient(
+                &recipient, signer, ancestors, &scopes, &remote, now, expires,
+            )
+            .await?;
+            let url = AgentGrant::new(&recipient, grants.chains().to_vec(), &scopes, &remote, now)
+                .await
+                .map_err(failure)?
+                .to_url(base.as_str())
+                .map_err(failure)?;
+            (grants, url, Some(recipient.to_string()))
+        }
+        None => {
+            let (_, seed) = generate_ephemeral().await?;
+            let invite = issue(seed, signer, ancestors, &scopes, &remote, now, expires).await?;
+            let url = invite.to_url(base.as_str()).map_err(failure)?;
+            (invite.grants().clone(), url, None)
+        }
+    };
+    let recipient = grants.recipient().clone();
     let group = PublicGroup {
-        terminal_request: None,
+        terminal_request,
         version: 1,
-        id: grant_set_id(subject.as_str(), recipient.as_str(), &cids(invite.grants())),
+        id: grant_set_id(subject.as_str(), recipient.as_str(), &cids(&grants)),
         account: root.root_did.to_string(),
         repo: repo.clone(),
         subject: subject.to_string(),
@@ -328,8 +342,7 @@ pub(crate) async fn mint(
         ),
         remote: remote.to_string(),
         issued_at: now.to_unix(),
-        chains: invite
-            .grants()
+        chains: grants
             .chains()
             .iter()
             .map(|chain| chain.to_bytes().map(hex::encode).map_err(failure))
@@ -346,8 +359,7 @@ pub(crate) async fn mint(
         .handle()
         .delegations()
         .retain_all(
-            invite
-                .grants()
+            grants
                 .chains()
                 .iter()
                 .cloned()
@@ -376,9 +388,6 @@ pub(crate) async fn mint(
     if let Err(error) = record_agent_member(&tonk, &repo, &subject, &recipient).await {
         tonk_common::log!("agent invitation: the roster row was not recorded: {error}");
     }
-    let url = invite
-        .to_url(origin.url().join("agent/").map_err(failure)?.as_str())
-        .map_err(failure)?;
     let connection = summarize(&tonk, &group).await?;
     Ok(AgentConnectionInviteResponse { url, connection })
 }
@@ -1204,6 +1213,40 @@ mod tests {
         assert_eq!(cids(parsed.grants()), cids(first.grants()));
         assert!(!format!("{first:?}").contains(&url));
     }
+    /// Grants issued to a key an agent already holds: one grant set per
+    /// space, all to the same key, and a link that names it without a
+    /// secret, which only that key can redeem.
+    #[dialog_common::test]
+    async fn connection_issuer_grants_a_key_the_agent_already_holds() {
+        let (signer, ancestors, scopes, now) = fixture(DEFAULT_GRANT_TTL_SECONDS + 60).await;
+        let deadline =
+            Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128).unwrap();
+        let remote = "https://sync.example.test/ucan/".parse().unwrap();
+        let agent = Ed25519Signer::import(&[59; 32]).await.unwrap().did();
+        let grants = issue_to_recipient(&agent, signer, ancestors, &scopes, &remote, now, deadline)
+            .await
+            .unwrap();
+        assert_eq!(grants.recipient(), &agent);
+        assert_eq!(grants.chains().len(), 6);
+
+        let url = AgentGrant::new(&agent, grants.chains().to_vec(), &scopes, &remote, now)
+            .await
+            .unwrap()
+            .to_url("https://tonk.example/agent/")
+            .unwrap();
+        assert!(url.ends_with(&format!("#tonk-agent-for={agent}")));
+        let redeemed = AgentGrant::parse_url(&url, &agent, &scopes, &remote, now)
+            .await
+            .unwrap();
+        assert_eq!(cids(redeemed.grants()), cids(&grants));
+        let stranger = Ed25519Signer::import(&[60; 32]).await.unwrap().did();
+        assert!(
+            AgentGrant::parse_url(&url, &stranger, &scopes, &remote, now)
+                .await
+                .is_err()
+        );
+    }
+
     #[dialog_common::test]
     async fn connection_issuer_reports_real_ancestor_deadline_without_shortening() {
         let (signer, ancestors, scopes, now) = fixture(3600).await;
