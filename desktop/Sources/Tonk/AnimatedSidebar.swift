@@ -104,7 +104,10 @@ final class SidebarSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
   }
 }
 
-/// Still draggable, but draws no hairline: the inset view surface already separates the panes.
+/// Still draggable, but draws no hairline: the divider takes the sidebar's own fill, so it
+/// reads as part of the sidebar. A clear divider would show the window material instead.
 private final class SeamlessSplitView: NSSplitView {
-  override var dividerColor: NSColor { .clear }
+  override var dividerColor: NSColor {
+    NSColor(named: "DesktopGroup", bundle: .module) ?? .windowBackgroundColor
+  }
 }

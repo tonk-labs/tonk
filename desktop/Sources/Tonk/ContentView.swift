@@ -32,7 +32,8 @@ struct ContentView: View {
   @State private var topChromeHovered = false
   @State private var chromePreview = true
   private var chromeVisible: Bool { topChromeHovered || chromePreview }
-  @State private var showHistory = false
+  /// The chat sidebar opens on its list of chats; choosing one pushes the chat.
+  @State private var showHistory = true
   @State private var settingsShowsChat = false
   @State private var accountError: String?
   @State private var signingOut = false
@@ -82,18 +83,6 @@ struct ContentView: View {
                   .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: chromeVisible)
                   .allowsHitTesting(chromeVisible)
                   .accessibilityHidden(!chromeVisible)
-              }
-              .overlay(alignment: .top) {
-                if !chromeVisible {
-                  Button {
-                    chromePreview = true
-                  } label: {
-                    Label("Show Window Controls", systemImage: "chevron.down")
-                      .labelStyle(.iconOnly).font(.caption.weight(.semibold))
-                      .frame(width: 44, height: 20)
-                  }.buttonStyle(.plain).controlSurface(radius: 10)
-                    .padding(.top, 4).help("Show window controls, or move the pointer to the top")
-                }
               }
               .task(id: chromePreview) {
                 guard chromePreview else { return }
@@ -238,7 +227,10 @@ struct ContentView: View {
 
   private var newChatAction: (() -> Void)? {
     guard isSpace, model.openedSpace != nil, !chatActionsDisabled else { return nil }
-    return { model.startSpaceChat() }
+    return {
+      model.startSpaceChat()
+      showHistory = false
+    }
   }
 
   private var viewTitle: String? {
@@ -391,14 +383,14 @@ struct ContentView: View {
       HStack(spacing: 6) {
         viewAddress
         if let space = model.openedSpace {
-          // Large controls are 32 points, the breadcrumb pill's height.
-          SpaceShareControl(space: space, access: access, compact: true).controlSize(.large)
+          // The share capsule is 32 points, the breadcrumb pill's height.
+          SpaceShareControl(space: space, access: access, compact: true)
         }
       }
       if showHistory {
         ChatHistoryView(
           model: model, space: model.openedSpace, onOpen: openHistory,
-          inline: true, onBack: { showHistory = false })
+          inline: true, onShowChat: { showHistory = false })
       } else {
         chat
       }
@@ -489,19 +481,25 @@ struct ContentView: View {
 
   private var chatHeader: some View {
     VStack(alignment: .leading, spacing: 1) {
-      HStack(spacing: 4) {
-        Text(chatTitle).font(.system(size: 13, weight: .semibold)).lineLimit(1).help(chatTitle)
-        Spacer(minLength: 0)
-        ViewChromeButton(title: "All Chats", asset: "r2IconMessages") {
+      HStack(spacing: 6) {
+        Button {
           model.saved.checkpointChat()
           showHistory = true
-        }.disabled(chatActionsDisabled).keyboardShortcut("h", modifiers: [.command, .shift])
+        } label: {
+          Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold))
+            .frame(width: 20, height: 20)
+        }
+        .nativeControl(circular: true).controlSize(.large)
+        .help("All chats (⇧⌘H)").accessibilityLabel("All chats")
+        .disabled(chatActionsDisabled).keyboardShortcut("h", modifiers: [.command, .shift])
+        Text(chatTitle).font(.system(size: 13, weight: .semibold)).lineLimit(1).help(chatTitle)
+        Spacer(minLength: 0)
         ViewChromeButton(title: "New Chat", asset: "r2IconSquarePen") { model.startSpaceChat() }
           .disabled(chatActionsDisabled)
       }
       Text("Chat agent · edits \(model.openedSpace?.title ?? "this space") as you")
-        .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
-    }.padding(.leading, 6).padding(.top, 6)
+        .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2).padding(.leading, 34)
+    }.padding(.leading, 2).padding(.top, 6)
   }
 
   /// A quick model switch in place; the full settings stay one item away.

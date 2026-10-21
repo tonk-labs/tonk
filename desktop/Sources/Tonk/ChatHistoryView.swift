@@ -6,13 +6,13 @@ struct ChatHistoryView: View {
   let space: TonkSpace?
   let onOpen: (ChatSession) -> Void
   var inline = false
-  var onBack: () -> Void = {}
+  /// Shows the chat pane after New chat; the list is the sidebar's root.
+  var onShowChat: () -> Void = {}
   @Environment(\.dismiss) private var dismiss
   @State private var search = ""
   private var allSessions: [ChatSession] {
     return model.saved.chats(in: space?.id).filter {
       !$0.conversation.messages.isEmpty || !($0.conversation.draft ?? "").isEmpty
-        || ($0.id == model.saved.activeSessionID && model.showingChat)
     }
   }
   private var sessions: [ChatSession] {
@@ -80,18 +80,13 @@ struct ChatHistoryView: View {
   private var inlineHistory: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 4) {
-        Button(action: onBack) { Image(systemName: "chevron.left").frame(width: 28, height: 28) }
-          .buttonStyle(.plain).background(Color(nsColor: .textBackgroundColor), in: Circle())
-          .accessibilityLabel("Back to Chat")
         Text("Chats").font(.system(size: 13, weight: .semibold))
         Spacer()
-        ViewChromeButton(title: "New Chat", asset: "r2IconSquarePen") {
-          model.startSpaceChat()
-          onBack()
-        }.disabled(model.busy || model.connecting || model.creatingSpace || model.loginPending)
-      }
+        ViewChromeButton(title: "New Chat", asset: "r2IconSquarePen", action: startChat)
+          .disabled(model.busy || model.connecting || model.creatingSpace || model.loginPending)
+      }.padding(.leading, 6).padding(.top, 2)
       Text("In \(space?.title ?? "this space"), with \(model.agentName)")
-        .font(.system(size: 12)).foregroundStyle(.secondary).padding(.leading, 32)
+        .font(.system(size: 12)).foregroundStyle(.secondary).padding(.leading, 6)
       HStack(spacing: 6) {
         Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(.secondary)
           .accessibilityHidden(true)
@@ -134,11 +129,27 @@ struct ChatHistoryView: View {
           if sessions.isEmpty {
             Text(allSessions.isEmpty ? "No chats yet" : "No matching chats")
               .font(.system(size: 13)).foregroundStyle(.secondary).padding(8)
+            if allSessions.isEmpty {
+              Button("New chat", action: startChat).nativeControl(prominent: true).padding(
+                .leading, 8
+              )
+              .disabled(
+                model.busy || model.connecting || model.creatingSpace || model.loginPending)
+            }
           }
         }
       }
       if let error = model.error { Text(error).font(.caption).foregroundStyle(.secondary) }
     }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+      // The live chat may not be in the saved list yet; record it before listing.
+      .onAppear {
+        if !model.saved.conversation.messages.isEmpty { model.saved.checkpointChat() }
+      }
+  }
+
+  private func startChat() {
+    model.startSpaceChat()
+    onShowChat()
   }
 
   private func dateGroup(_ date: Date) -> String {
