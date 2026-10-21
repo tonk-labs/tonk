@@ -5443,6 +5443,7 @@ dependencies = [
  "tonk-core",
  "tonk-evaluator",
  "tonk-identity",
+ "tonk-invite",
  "tonk-notation",
  "tonk-worker-api",
  "url",

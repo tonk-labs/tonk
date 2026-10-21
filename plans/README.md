@@ -1,5 +1,20 @@
 # Implementation plans
 
+## Identity discovery research
+
+[2026-10-20 investigation](2026-10-20-identity-discovery-research.md):
+email-to-root discovery and scoped invitation APIs already exist. Recommended
+order is an email/contact sharing slice, domain binding, then optional AT Protocol
+association. Research complete. The [first native integration spike](2026-10-20-identity-discovery-spike.md)
+connects confirmed email lookup to targeted invitations. The
+[sender-attribution fix](2026-10-20-invitation-sender-attribution.md) binds new
+worker invitations to the minting account; the updated spike verifies Bob as
+inviter while Alice remains founder. Local verification passed (1 integration
+test and 64 focused/library tests). The [CLI follow-up](2026-10-20-cli-invitation-sender-attribution.md)
+adds the same signed sender attribution, with seven CLI checks passing and the
+worker spike rerun successfully. Legacy links retain their attribution. Estimates,
+evidence, trust boundaries and proposed verification gates are in the research note.
+
 ## Release gates
 
 | Plan | Priority | Status | Execution order |

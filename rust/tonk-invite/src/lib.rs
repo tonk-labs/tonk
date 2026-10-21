@@ -52,12 +52,14 @@
 //! [`Subject::Specific`]: dialog_ucan_core::subject::Subject::Specific
 //! [`Subject::Any`]: dialog_ucan_core::subject::Subject::Any
 
+mod attribution;
 pub mod connection;
 pub mod local_space_link;
 pub mod public;
 pub mod shortcut;
 pub mod ticket;
 
+pub use attribution::{INVITER, inviter, inviter_meta};
 pub use ticket::Ticket;
 
 use anyhow::{Context, Result};
@@ -251,7 +253,8 @@ impl Invite {
     /// Returns an error if the chain's subject is not
     /// [`Subject::Specific`][dialog_ucan_core::subject::Subject::Specific],
     /// or if `audience` is [`InviteAudience::Open`] and the seed does
-    /// not derive the chain's tail audience DID.
+    /// not derive the chain's tail audience DID, or signed inviter metadata
+    /// is malformed or not bound to the signing identity.
     pub async fn new(
         chain: DelegationChain,
         audience: InviteAudience,
@@ -262,6 +265,7 @@ impl Invite {
             "invite delegation chain must target a specific repo subject; \
              chains with Subject::Any are not valid invites"
         );
+        inviter(&chain)?;
         if let InviteAudience::Open { seed } = &audience {
             let signer = Ed25519Signer::import(seed)
                 .await
