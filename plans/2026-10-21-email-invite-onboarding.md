@@ -152,3 +152,9 @@ A local Rust 1.99 Clippy run no longer reports the changed handler, but fails on
 three existing unnecessary-to-owned warnings in untouched `router/custody.rs`;
 those are left outside scope. CI's pinned Rust 1.93 lint check will verify the
 patch. CI rerun is pending after push; no full green claim yet.
+
+Manual run 39635709341 verifies all four debug Web-test shards after that patch.
+It gets past the worker lint and reports nested stylesheet conditionals in the
+new email invitation page. Collapse the document/style guards into one let-chain,
+retaining their order and the same stylesheet insertion behavior. No unrelated
+UI or custody warnings are changed. Full pinned lint verification is continuing.

@@ -36,15 +36,14 @@ impl CustomElement for EmailInvite {
             return;
         }
         let _ = this.set_attribute("data-bound", "");
-        if let Some(doc) = this.owner_document() {
-            if doc.get_element_by_id("tonk-activate-styles").is_none() {
-                if let Ok(style) = doc.create_element("style") {
-                    style.set_id("tonk-activate-styles");
-                    style.set_text_content(Some(include_str!("account.css")));
-                    if let Some(head) = doc.head() {
-                        let _ = head.append_child(&style);
-                    }
-                }
+        if let Some(doc) = this.owner_document()
+            && doc.get_element_by_id("tonk-activate-styles").is_none()
+            && let Ok(style) = doc.create_element("style")
+        {
+            style.set_id("tonk-activate-styles");
+            style.set_text_content(Some(include_str!("account.css")));
+            if let Some(head) = doc.head() {
+                let _ = head.append_child(&style);
             }
         }
         let id = web_sys::window()
