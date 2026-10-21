@@ -71,7 +71,8 @@ const booting = (async () => {
     mark = performance.now();
     const records = await kept();
     stages.read = performance.now() - mark;
-    const embedder = await wasm_bindgen.boot(bytes, PINNED, 2, 3, records);
+    // Bytes from the cache were checked against their hash as they went in.
+    const embedder = await wasm_bindgen.boot(bytes, PINNED, !cached, 2, 3, records);
     mark = performance.now();
     const written = await embedder.drain();
     await keep(written);

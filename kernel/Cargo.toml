@@ -22,11 +22,15 @@ dialog-query = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb4772
 dialog-repository = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
 dialog-storage = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
 dialog-varsig = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
-wcmp = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "d3ffe606b57536e9af38e474e2203415071ac1a5" }
-wcmp-wasm-core-wasmtime = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "d3ffe606b57536e9af38e474e2203415071ac1a5" }
-wcmp-wasm-core-web = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "d3ffe606b57536e9af38e474e2203415071ac1a5" }
+wcmp = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", branch = "perf/skip-atomic-scan" }
+wcmp-wasm-core-wasmtime = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", branch = "perf/skip-atomic-scan" }
+wcmp-wasm-core-web = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", branch = "perf/skip-atomic-scan" }
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
+
+# The release build, for a profile of the host.
+[profile.profiling]
+inherits = "release"

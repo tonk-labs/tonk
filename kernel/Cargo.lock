@@ -2182,6 +2182,7 @@ dependencies = [
  "tracing",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasmparser 0.258.3",
  "wcmp",
  "wcmp-wasm-core-wasmtime",
  "wcmp-wasm-core-web",
@@ -4341,7 +4342,7 @@ dependencies = [
 [[package]]
 name = "wcmp"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=d3ffe606b57536e9af38e474e2203415071ac1a5#d3ffe606b57536e9af38e474e2203415071ac1a5"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?branch=perf%2Fskip-atomic-scan#9538cc712344818144c06d5ed6a506dd1503fd32"
 dependencies = [
  "anyhow",
  "js-sys",
@@ -4360,7 +4361,7 @@ dependencies = [
 [[package]]
 name = "wcmp-bindgen"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=d3ffe606b57536e9af38e474e2203415071ac1a5#d3ffe606b57536e9af38e474e2203415071ac1a5"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?branch=perf%2Fskip-atomic-scan#9538cc712344818144c06d5ed6a506dd1503fd32"
 dependencies = [
  "anyhow",
  "heck",
@@ -4373,7 +4374,7 @@ dependencies = [
 [[package]]
 name = "wcmp-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=d3ffe606b57536e9af38e474e2203415071ac1a5#d3ffe606b57536e9af38e474e2203415071ac1a5"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?branch=perf%2Fskip-atomic-scan#9538cc712344818144c06d5ed6a506dd1503fd32"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4384,7 +4385,7 @@ dependencies = [
 [[package]]
 name = "wcmp-wasm-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=d3ffe606b57536e9af38e474e2203415071ac1a5#d3ffe606b57536e9af38e474e2203415071ac1a5"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?branch=perf%2Fskip-atomic-scan#9538cc712344818144c06d5ed6a506dd1503fd32"
 dependencies = [
  "anyhow",
  "thiserror 2.0.21",
@@ -4395,7 +4396,7 @@ dependencies = [
 [[package]]
 name = "wcmp-wasm-core-wasmtime"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=d3ffe606b57536e9af38e474e2203415071ac1a5#d3ffe606b57536e9af38e474e2203415071ac1a5"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?branch=perf%2Fskip-atomic-scan#9538cc712344818144c06d5ed6a506dd1503fd32"
 dependencies = [
  "anyhow",
  "tracing",
@@ -4406,7 +4407,7 @@ dependencies = [
 [[package]]
 name = "wcmp-wasm-core-web"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=d3ffe606b57536e9af38e474e2203415071ac1a5#d3ffe606b57536e9af38e474e2203415071ac1a5"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?branch=perf%2Fskip-atomic-scan#9538cc712344818144c06d5ed6a506dd1503fd32"
 dependencies = [
  "anyhow",
  "js-sys",

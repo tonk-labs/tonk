@@ -20,23 +20,28 @@ pub struct Embedder {
     timings: Vec<(String, f64)>,
 }
 
-/// Boot the guest kernel in `bytes`, which must hash to `pin` (BLAKE3, hex),
-/// over a space for a persona, each named by a seed.
+/// Boot the guest kernel in `bytes`, over a space for a persona, each named
+/// by a seed. With `check`, the bytes must hash to `pin` (BLAKE3, hex); a
+/// bootloader that took them from a cache it filled by that hash has
+/// checked them already.
 #[wasm_bindgen]
 pub async fn boot(
     bytes: Uint8Array,
     pin: String,
+    check: bool,
     persona_seed: u8,
     space_seed: u8,
     kept: Array,
 ) -> Result<Embedder, JsError> {
     let bytes = bytes.to_vec();
     let started = platform::now_millis();
-    let hash = blake3::hash(&bytes).to_hex().to_string();
-    if hash != pin {
-        return Err(JsError::new(&format!(
-            "the kernel hashes to {hash}, not the pinned {pin}"
-        )));
+    if check {
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        if hash != pin {
+            return Err(JsError::new(&format!(
+                "the kernel hashes to {hash}, not the pinned {pin}"
+            )));
+        }
     }
     let mut timings = vec![("check".to_owned(), platform::now_millis() - started)];
     let engine = Engine::with_backend(wcmp_wasm_core_web::Web::new())
