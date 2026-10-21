@@ -3,6 +3,7 @@ import SwiftUI
 
 struct DesktopAccountView: View {
   @ObservedObject var access: AccessModel
+  @ObservedObject var model: HarnessModel
   var onSignOut: () -> Void
   @State private var name = ""
   @State private var saving = false
@@ -12,7 +13,7 @@ struct DesktopAccountView: View {
 
   var body: some View {
     ScrollView {
-      VStack(alignment: .leading, spacing: 20) {
+      VStack(alignment: .leading, spacing: 32) {
         VStack(alignment: .leading, spacing: 8) {
           Text("Your details").fontWeight(.semibold)
           VStack(spacing: 0) {
@@ -20,7 +21,7 @@ struct DesktopAccountView: View {
               Text("Display name").frame(width: 120, alignment: .leading)
               TextField("Display name", text: $name).textFieldStyle(.roundedBorder)
                 .onSubmit { scheduleSave(delay: false) }
-            }.padding(12)
+            }.padding(16)
             Divider()
             HStack {
               Text("Email").frame(width: 120, alignment: .leading)
@@ -29,7 +30,7 @@ struct DesktopAccountView: View {
                   ?? (access.accountDetailsLoaded ? "No email registered" : "Not available")
               ).foregroundStyle(.secondary)
               Spacer(minLength: 0)
-            }.padding(12)
+            }.padding(16)
           }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
           Text(
             saving
@@ -57,13 +58,13 @@ struct DesktopAccountView: View {
                   }
                 }
                 Spacer()
-              }.padding(12)
+              }.padding(16)
             }
             if displayedPasskeys.isEmpty {
               Text(
                 access.accountDetailsLoaded ? "No passkeys listed" : "Passkey details unavailable"
               )
-              .foregroundStyle(.secondary).padding(12)
+              .foregroundStyle(.secondary).padding(16)
             }
             Divider()
             Button(action: openAccount) {
@@ -71,7 +72,7 @@ struct DesktopAccountView: View {
                 DesktopGlyph(name: "r2Plus", size: 14)
                 Text("Add a Passkey in Browser…")
               }
-            }.buttonStyle(.plain).padding(12)
+            }.buttonStyle(.plain).padding(16)
           }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
           Text(
             "A passkey replaces a password. It can live on a device, a browser profile or a password manager."
@@ -82,6 +83,8 @@ struct DesktopAccountView: View {
           Text(detailsError).font(.system(size: 12)).foregroundStyle(.secondary)
           Button("Retry Account Details") { Task { await access.refreshAccount() } }
         }
+        ProviderSettingsView(model: model, embedded: true)
+          .background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 12))
         VStack(spacing: 0) {
           HStack {
             VStack(alignment: .leading, spacing: 3) {
@@ -91,7 +94,7 @@ struct DesktopAccountView: View {
             }
             Spacer()
             Button("Sign Out…") { confirming = true }
-          }.padding(12)
+          }.padding(16)
           Divider()
           HStack {
             VStack(alignment: .leading, spacing: 3) {
@@ -101,9 +104,9 @@ struct DesktopAccountView: View {
             }
             Spacer()
             Button("Review Deletion…", action: openAccount).foregroundStyle(.red)
-          }.padding(12)
+          }.padding(16)
         }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
-      }.padding(20)
+      }.frame(maxWidth: 720).padding(28).frame(maxWidth: .infinity)
     }.font(.system(size: 13)).controlSize(.small).buttonBorderShape(.capsule)
       .onAppear { name = access.accountName ?? "" }
       .onChange(of: name) { _, _ in scheduleSave() }
@@ -160,18 +163,8 @@ struct DesktopSettingsView: View {
   @ObservedObject var model: HarnessModel
   @ObservedObject var access: AccessModel
   var onSignOut: () -> Void
-  @State private var showChatSettings = false
-
   var body: some View {
-    VStack(spacing: 0) {
-      DesktopAccountView(access: access, onSignOut: onSignOut)
-      Divider()
-      HStack {
-        Label("Chat Agent", systemImage: "bubble.left.and.bubble.right")
-        Spacer()
-        Button("Configure…") { showChatSettings = true }
-      }.padding(20)
-    }.frame(maxWidth: .infinity, maxHeight: .infinity).nativeControl()
-      .sheet(isPresented: $showChatSettings) { ProviderSettingsView(model: model) }
+    DesktopAccountView(access: access, model: model, onSignOut: onSignOut)
+      .frame(maxWidth: .infinity, maxHeight: .infinity).nativeControl()
   }
 }

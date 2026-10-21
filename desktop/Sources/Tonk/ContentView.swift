@@ -25,6 +25,7 @@ struct ContentView: View {
   }
   @State private var spaceSearch = ""
   @FocusState private var searchFocused: Bool
+  @State private var contactSearchFocusRequest = 0
   @State private var page: DesktopPage?
   @State private var sidebarColumns = NavigationSplitViewVisibility.all
   @State private var newLink: NewLinkRequest?
@@ -123,6 +124,10 @@ struct ContentView: View {
     }
   }
 
+  private func focusCurrentSearch() {
+    if page == .addressBook { contactSearchFocusRequest += 1 } else { searchFocused = true }
+  }
+
   private var commandTargets: some View {
     workspaceLayers
       .nativeControl()
@@ -138,7 +143,7 @@ struct ContentView: View {
       .focusedSceneValue(
         \.focusSearch,
         !isSpace && runtime.showsSpacePicker
-          ? { searchFocused = true } : nil
+          ? focusCurrentSearch : nil
       )
       .focusedSceneValue(\.refreshContent, refreshDisabled ? nil : refreshContent)
       .focusedSceneValue(\.newChat, newChatAction)
@@ -755,7 +760,8 @@ struct ContentView: View {
             spaces: runtime.spaces, access: access, model: model,
             onSettings: { showProviderSettings = true })
         case .addressBook:
-          AddressBookView(access: access, spaces: runtime.spaces)
+          AddressBookView(
+            access: access, spaces: runtime.spaces, searchFocusRequest: contactSearchFocusRequest)
         case .account:
           DesktopSettingsView(model: model, access: access, onSignOut: signOutOfTonk)
         case nil:

@@ -4,6 +4,8 @@ import SwiftUI
 
 struct ProviderSettingsView: View {
   @ObservedObject var model: HarnessModel
+  let embedded: Bool
+  @State private var applied = false
   @Environment(\.dismiss) private var dismiss
   @State private var selected: ModelProvider
   @State private var connection: ModelConnection
@@ -14,7 +16,8 @@ struct ProviderSettingsView: View {
   @State private var showAdvancedSettings = false
   @State private var error: String?
 
-  init(model: HarnessModel) {
+  init(model: HarnessModel, embedded: Bool = false) {
+    self.embedded = embedded
     self.model = model
     _selected = State(initialValue: model.provider)
     _connection = State(initialValue: model.connection)
@@ -23,7 +26,8 @@ struct ProviderSettingsView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 20) {
-      Text("Chat Agent Settings").font(.system(size: 15, weight: .semibold))
+      Text(embedded ? "Chat Agent" : "Chat Agent Settings").font(
+        .system(size: 15, weight: .semibold))
       Text(
         "The chat agent edits as you, only in Tonk’s chat. Agent accounts have their own identity and access, separate from this chat."
       )
@@ -206,10 +210,14 @@ struct ProviderSettingsView: View {
       HStack {
         Button("Advanced…") { showAdvancedSettings = true }
         Spacer()
-        Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+        if applied { Text("Saved").font(.caption).foregroundStyle(.secondary) }
+        if !embedded {
+          Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+        }
         Button(saving ? "Saving…" : "Apply") {
           saving = true
           error = nil
+          applied = false
           connection.model = connection.model.trimmingCharacters(in: .whitespacesAndNewlines)
           connection.baseURL = connection.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
           Task {
@@ -221,14 +229,18 @@ struct ProviderSettingsView: View {
                 error = connectionError
                 return
               }
-              dismiss()
+              key = ""
+              applied = true
+              if !embedded { dismiss() }
             } catch { self.error = error.localizedDescription }
           }
-        }.nativeControl(prominent: true).keyboardShortcut(.defaultAction)
-          .disabled(model.loginPending || model.connecting)
+        }.nativeControl(prominent: true).keyboardShortcut(
+          .return, modifiers: embedded ? [.command] : []
+        )
+        .disabled(model.loginPending || model.connecting)
       }.controlSize(.regular)
     }
-    .padding(22).frame(width: 440).nativeControl().disabled(saving)
+    .padding(22).frame(width: embedded ? nil : 440).nativeControl().disabled(saving)
     .task { if !model.connected { await model.connect() } }
     .interactiveDismissDisabled(saving)
     .sheet(isPresented: $showAdvancedSettings) { AdvancedSettingsView() }
@@ -237,12 +249,15 @@ struct ProviderSettingsView: View {
         connection = model.saved.connections?[value.rawValue] ?? ModelConnection(provider: value)
       }
       key = ""
+      applied = false
       error = nil
       startedSignIn = false
     }
     .onChange(of: model.error) { _, value in
       if startedSignIn { error = value }
     }
+    .onChange(of: connection.model) { _, _ in applied = false }
+    .onChange(of: key) { _, _ in applied = false }
     .onChange(of: connection.baseURL) { _, _ in key = "" }
   }
 

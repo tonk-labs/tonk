@@ -10,6 +10,7 @@ struct DesktopContact: Codable, Identifiable, Equatable {
 struct AddressBookView: View {
   @ObservedObject var access: AccessModel
   let spaces: [TonkSpace]
+  var searchFocusRequest = 0
   @State private var search = ""
   @State private var selected: String?
   @State private var editing: DesktopContact?
@@ -22,35 +23,44 @@ struct AddressBookView: View {
   var body: some View {
     VStack(spacing: 0) {
       HSplitView {
-        List(contacts, selection: $selected) { contact in
-          HStack(spacing: 10) {
-            Text(AccessText.initials(contact.name)).font(.system(size: 10, weight: .semibold))
-              .frame(width: 24, height: 24).background(.quaternary, in: Circle())
-            VStack(alignment: .leading, spacing: 3) {
-              Text(contact.name).lineLimit(1)
-              HStack(spacing: 4) {
-                Text(contact.id).font(.system(size: 11, design: .monospaced))
-                  .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                Button {
-                  copy(contact.id)
-                } label: {
-                  DesktopGlyph(name: "r2CopyKey", size: 12)
+        VStack(spacing: 0) {
+          VStack(alignment: .leading, spacing: 12) {
+            GlassSearchField(
+              title: "Search Contacts", text: $search, focusRequest: searchFocusRequest)
+            Button("Add Contact", systemImage: "plus") {
+              editing = DesktopContact(id: "", name: "", labels: [])
+            }.nativeControl()
+          }.padding(16)
+          Divider()
+          List(contacts, selection: $selected) { contact in
+            HStack(spacing: 10) {
+              Text(AccessText.initials(contact.name)).font(.system(size: 10, weight: .semibold))
+                .frame(width: 24, height: 24).background(.quaternary, in: Circle())
+              VStack(alignment: .leading, spacing: 3) {
+                Text(contact.name).lineLimit(1)
+                HStack(spacing: 4) {
+                  Text(contact.id).font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                  Button {
+                    copy(contact.id)
+                  } label: {
+                    DesktopGlyph(name: "r2CopyKey", size: 12)
+                  }
+                  .buttonStyle(.plain).help("Copy key").accessibilityLabel(
+                    "Copy key for \(contact.name)")
                 }
-                .buttonStyle(.plain).help("Copy key").accessibilityLabel(
-                  "Copy key for \(contact.name)")
               }
-            }
-          }.padding(.vertical, 4).tag(contact.id).listRowSeparator(.hidden)
-        }.listStyle(.plain).scrollContentBackground(.hidden).frame(
-          minWidth: 180, idealWidth: 220, maxWidth: 230)
+            }.padding(.vertical, 9).tag(contact.id).listRowSeparator(.hidden)
+          }.listStyle(.plain).scrollContentBackground(.hidden)
+        }.frame(minWidth: 200, idealWidth: 240, maxWidth: 280)
         if let contact = contacts.first(where: { $0.id == selected }) {
           ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 28) {
               HStack(spacing: 12) {
                 Text(AccessText.initials(contact.name)).font(.system(size: 13, weight: .semibold))
-                  .frame(width: 40, height: 40).background(.quaternary, in: Circle())
+                  .frame(width: 48, height: 48).background(.quaternary, in: Circle())
                 VStack(alignment: .leading, spacing: 4) {
-                  Text(contact.name).font(.system(size: 15, weight: .semibold))
+                  Text(contact.name).font(.system(size: 17, weight: .semibold))
                   Text("Known identity").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
               }
@@ -64,7 +74,7 @@ struct AddressBookView: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(contact.id, forType: .string)
                   }
-                }.padding(12).background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+                }.padding(16).background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
               }
               VStack(alignment: .leading, spacing: 8) {
                 Text("Labels").font(.caption).foregroundStyle(.secondary)
@@ -110,22 +120,18 @@ struct AddressBookView: View {
                     : "Seen in " + shared.map(\.title).joined(separator: " · ")
                 )
               }
-            }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
-          }.frame(minWidth: 220)
+            }.frame(maxWidth: 680, alignment: .leading).padding(28)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }.frame(minWidth: 260)
         } else {
-          Text(contacts.isEmpty ? "No contacts yet" : "Select a contact")
-            .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+          Text(
+            !search.isEmpty && contacts.isEmpty
+              ? "No Matching Contacts" : contacts.isEmpty ? "No contacts yet" : "Select a contact"
+          )
+          .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
         }
       }
     }.font(.system(size: 13))
-      .toolbar {
-        ToolbarItemGroup(placement: .primaryAction) {
-          TextField("Name or key", text: $search).textFieldStyle(.roundedBorder).frame(width: 170)
-          Button("Add Contact", systemImage: "plus") {
-            editing = DesktopContact(id: "", name: "", labels: [])
-          }.labelStyle(.iconOnly)
-        }
-      }
       .sheet(item: $editing) { contact in ContactEditor(contact: contact, access: access) }
       .onChange(of: contacts.map(\.id), initial: true) { _, ids in
         if selected == nil || !ids.contains(selected!) { selected = ids.first }

@@ -222,3 +222,35 @@ The provider configuration subdialog remains unchanged.
 Verified both footer clicks, clearing selection via All Links, and Command-comma
 from a real Task window on the rebuilt app. Ad-hoc build, strict signature check,
 and diff whitespace check passed. Log: `/tmp/tonk-inline-settings-build.log`.
+
+## Settings and Address Book spacing follow-up (2026-10-21)
+
+- Chat Agent is now a real section in the Settings scroll content, with the existing
+  provider/model/account controls and Apply action. Embedded Apply stays on the
+  page and uses Command-Return rather than intercepting ordinary Return in the
+  display-name field. Existing dialog callers retain Cancel and their behavior.
+- Account content has a 720-point maximum width, 28-point outer padding,
+  32-point section separation, and 16-point account row insets.
+- Address Book search and a labeled Add Contact button live above the contact
+  list. They no longer merge with More in the native toolbar. Contact rows have
+  more vertical spacing; details have 28-point insets and section gaps, a larger
+  identity heading, and a readable maximum width. The list can shrink to 200
+  points and is capped at 280 so it does not crowd the detail pane.
+- Live testing exposed Command-F searching Spaces from Address Book. It now
+  routes to Search Contacts. Verified a matching result, no-results message,
+  Escape clearing the filter, and Add Contact/Cancel.
+
+Compared current Figma Address Book (91:2323) and chat settings (95:4398), while
+honoring the requested in-page chat section and native OS controls. Inspected
+large live-account light Settings and compact 800x600 dark fixture Settings and
+Address Book, including scrolling through chat settings and persistent account
+footer selection. No account/provider/grant writes were exercised.
+
+Final app build, strict codesign verification, generated MCP consistency, diff
+check, and full native unit suite passed (162 reported, four expected skips,
+zero failures). Logs: /tmp/tonk-spacing-build.log and
+/tmp/tonk-spacing-tests-final.log. One intermediate SwiftUI type-check timeout
+was resolved by extracting the search command into a method. Hosted CI is checked
+against the resulting commit separately. Backend gaps above are unchanged;
+older OS versions, VoiceOver, provider Apply/sign-in and account mutations remain
+unverified in this pass.
