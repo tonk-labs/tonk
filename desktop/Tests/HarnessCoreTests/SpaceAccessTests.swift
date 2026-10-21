@@ -56,14 +56,15 @@ final class SpaceAccessTests: XCTestCase {
       members: members, isPublic: true)
     XCTAssertEqual(
       links.map(\.id), ["publicRead:" + subject, "person:bafy1", "person:bafy2", "agent:g1"])
-    XCTAssertEqual(links[0].detail(now: now), "Anyone · Read-only · Whole space · Never expires")
     XCTAssertEqual(
-      links[1].detail(now: now), "Anyone · Read and write · Whole space · Never expires")
+      links[0].detail(now: now), "Anyone with the link · Read-only · Whole space · Never expires")
+    XCTAssertEqual(
+      links[1].detail(now: now), "Anyone with the link · Read and write · Never expires")
     XCTAssertEqual(links[1].usage(madeAt: nil, now: now), "Used by Mira and Lu")
     // An older worker cannot say who claimed it, so nothing is claimed either way.
     XCTAssertNil(links[2].usage(madeAt: nil, now: now))
     XCTAssertEqual(
-      links[3].detail(now: now), "Anyone · Read and write · Whole space · Expires in 7 days")
+      links[3].detail(now: now), "Anyone with the link · Read and write · Expires in 7 days")
     XCTAssertEqual(links[3].usage(madeAt: now, now: now), "Made just now · No registered clients")
     XCTAssertTrue(links[3].forAgents)
     XCTAssertTrue(links[1].canReset)
@@ -79,7 +80,7 @@ final class SpaceAccessTests: XCTestCase {
       isPublic: false)
     XCTAssertEqual(links[0].title, "Link for Jonas")
     XCTAssertEqual(
-      links[0].detail(now: now), "Jonas · Read and write · Whole space · Never expires")
+      links[0].detail(now: now), "Jonas · Read and write · Never expires")
   }
 
   func testPeopleSummaryNamesTheFounder() {

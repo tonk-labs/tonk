@@ -42,7 +42,7 @@ struct DesktopAccountView: View {
             .font(.system(size: 12)).foregroundStyle(.secondary)
             if let error {
               Text(error).foregroundStyle(.red)
-              Button("Try Again") { scheduleSave(delay: false) }
+              Button("Try again") { scheduleSave(delay: false) }
             }
           }
           VStack(alignment: .leading, spacing: 8) {
@@ -72,9 +72,9 @@ struct DesktopAccountView: View {
               Button(action: openAccount) {
                 HStack(spacing: 8) {
                   DesktopGlyph(name: "r2Plus", size: 14)
-                  Text("Add a Passkey in Browser…")
+                  Text("Add a passkey…")
                 }
-              }.buttonStyle(.plain).padding(16)
+              }.buttonStyle(.plain).padding(16).help("Opens your account in the browser")
             }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
             Text(
               "A passkey replaces a password. It can live on a device, a browser profile or a password manager."
@@ -85,8 +85,6 @@ struct DesktopAccountView: View {
             Text(detailsError).font(.system(size: 12)).foregroundStyle(.secondary)
             Button("Retry Account Details") { Task { await access.refreshAccount() } }
           }
-          ProviderSettingsView(model: model, embedded: true).id("chat-settings")
-            .background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 12))
           VStack(spacing: 0) {
             HStack {
               VStack(alignment: .leading, spacing: 3) {
@@ -95,7 +93,7 @@ struct DesktopAccountView: View {
                   .font(.system(size: 12)).foregroundStyle(.secondary)
               }
               Spacer()
-              Button("Sign Out…") { confirming = true }
+              Button("Sign out…") { confirming = true }
             }.padding(16)
             Divider()
             HStack {
@@ -105,9 +103,12 @@ struct DesktopAccountView: View {
                   .font(.system(size: 12)).foregroundStyle(.secondary)
               }
               Spacer()
-              Button("Review Deletion…", action: openAccount).foregroundStyle(.red)
+              Button("Delete account…", action: openAccount).foregroundStyle(.red)
+                .help("Opens your account in the browser to review deletion")
             }.padding(16)
           }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+          ProviderSettingsView(model: model, embedded: true).id("chat-settings")
+            .background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 12))
         }.frame(maxWidth: 720).padding(28).frame(maxWidth: .infinity)
       }.font(.system(size: 13)).controlSize(.small).buttonBorderShape(.capsule)
         .onAppear {
@@ -124,7 +125,7 @@ struct DesktopAccountView: View {
         }
         .onDisappear { scheduleSave(delay: false) }
         .confirmationDialog("Sign out on this Mac?", isPresented: $confirming) {
-          Button("Sign Out", action: onSignOut)
+          Button("Sign out", action: onSignOut)
         }
     }
   }

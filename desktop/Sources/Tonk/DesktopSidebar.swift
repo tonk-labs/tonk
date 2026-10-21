@@ -30,7 +30,7 @@ struct DesktopSidebar: View {
     List(selection: $selection) {
       Section {
         Label {
-          Text("All Links")
+          Text("All links")
         } icon: {
           DesktopGlyph(name: "imgIconLink")
         }
@@ -43,7 +43,7 @@ struct DesktopSidebar: View {
         .badge(access.agentLinks.count)
         .tag(DesktopPage.agentLinks)
         Label {
-          Text("Address Book")
+          Text("Address book")
         } icon: {
           DesktopGlyph(name: "imgIconBookUser")
         }
@@ -86,7 +86,7 @@ struct DesktopSidebar: View {
           }
         }
         if spaces.isEmpty && !search.isEmpty {
-          Text("No Matching Spaces").foregroundStyle(.secondary)
+          Text("No matching spaces").foregroundStyle(.secondary)
         }
       }
     }
@@ -94,7 +94,7 @@ struct DesktopSidebar: View {
     .font(.system(size: 13))
     .environment(\.defaultMinListRowHeight, 28)
     .controlSize(.small)
-    .searchable(text: $search, placement: .sidebar, prompt: "Search Spaces")
+    .searchable(text: $search, placement: .sidebar, prompt: "Search spaces")
     .searchFocused(searchFocused)
     .safeAreaInset(edge: .bottom, spacing: 0) { footer }
   }

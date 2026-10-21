@@ -9,46 +9,41 @@ struct SpaceShareControl: View {
   @State private var copying = false
   @State private var publishing = false
 
+  /// One split button: the face copies the default link, the chevron holds Publish.
   var body: some View {
-    GlassControls {
-      HStack(spacing: 10) {
-        Button {
-          guard !copying else { return }
-          copying = true
-          Task {
-            copied = await access.copyDefaultLink(in: space)
-            copying = false
-            try? await Task.sleep(for: .milliseconds(1500))
-            copied = false
-          }
-        } label: {
-          Label(copied ? "Copied" : "Copy Link", systemImage: copied ? "checkmark" : "link")
-            .labelStyle(ShareLabelStyle(compact: compact))
-        }
-        .nativeControl(prominent: true).controlSize(.large)
-        .disabled(copying)
-        .accessibilityLabel(copied ? "Copied" : "Copy Link")
-        Menu {
-          Button("Publish…") { publishing = true }
-        } label: {
-          Label("Sharing Options", systemImage: "chevron.down")
-            .labelStyle(.iconOnly)
-        }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .frame(width: 28, height: 28).controlSurface(radius: 14)
-        .help("Sharing Options").accessibilityLabel("Sharing Options")
+    Menu {
+      Button("Publish…") { publishing = true }
+    } label: {
+      Label(copied ? "Copied" : "Copy link", systemImage: copied ? "checkmark" : "link")
+        .labelStyle(ShareLabelStyle(compact: compact))
+    } primaryAction: {
+      guard !copying else { return }
+      copying = true
+      Task {
+        copied = await access.copyDefaultLink(in: space)
+        copying = false
+        try? await Task.sleep(for: .milliseconds(1500))
+        copied = false
       }
     }
+    .menuStyle(.button).nativeControl(prominent: true).fixedSize()
+    .help(copied ? "Copied" : "Copy link, or choose Publish")
+    .accessibilityLabel(copied ? "Copied" : "Copy link")
     .sheet(isPresented: $publishing) { PublishSpaceSheet(space: space, access: access) }
   }
 }
 
 private struct ShareLabelStyle: LabelStyle {
   let compact: Bool
-  func makeBody(configuration: Configuration) -> some View {
-    HStack(spacing: 6) {
-      configuration.icon
-      if !compact { configuration.title }
+  @ViewBuilder func makeBody(configuration: Configuration) -> some View {
+    if compact {
+      // Icon only, still named by its title for VoiceOver.
+      Label(configuration).labelStyle(.iconOnly)
+    } else {
+      HStack(spacing: 6) {
+        configuration.icon
+        configuration.title
+      }
     }
   }
 }
@@ -67,7 +62,7 @@ struct PublishSpaceSheet: View {
     VStack(alignment: .leading, spacing: 16) {
       Text("Publish \(space.title)").font(.system(size: 15, weight: .semibold))
       Text(
-        "Anyone with the public link can read this space. Nobody can change it through that link."
+        "Published read-only: anyone with the link can read what it opens. Nobody can change anything through it."
       )
       .font(.system(size: 12)).foregroundStyle(.secondary)
       VStack(spacing: 12) {
@@ -97,7 +92,12 @@ struct PublishSpaceSheet: View {
           Button("Unpublish…") { confirmUnpublish = true }
         }
         Spacer()
-        Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+        if publication == nil {
+          Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+        } else {
+          Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).buttonStyle(
+            .borderedProminent)
+        }
         if publication == nil {
           Button("Publish and Copy") {
             changing = true

@@ -36,7 +36,6 @@ struct ContentView: View {
   @State private var settingsShowsChat = false
   @State private var accountError: String?
   @State private var signingOut = false
-  @State private var syncStatusSpace: TonkSpace?
   @FocusState private var composing: Bool
 
   private var startupFailure: String? {
@@ -201,9 +200,6 @@ struct ContentView: View {
           page = .account
         }
       }
-      .sheet(item: $syncStatusSpace) { space in
-        SyncStatusView(runtime: runtime, space: space)
-      }
       .sheet(item: $newLink) { request in
         NewLinkSheet(spaces: runtime.spaces, access: access, subject: request.id)
       }
@@ -237,9 +233,6 @@ struct ContentView: View {
       ToolbarItem(id: "space-sync", placement: .navigation) {
         SpaceSyncControl(runtime: runtime, space: space)
       }.customGlassToolbarItem()
-    }
-    if !isSpace {
-      ToolbarItem(id: "more-options", placement: .primaryAction) { moreMenu }
     }
   }
 
@@ -277,21 +270,6 @@ struct ContentView: View {
 
   private func toggleAgentSidebar() {
     showingChat.toggle()
-  }
-
-  private var moreMenu: some View {
-    AnchoredMenuButton {
-      Button("Refresh", systemImage: "arrow.clockwise", action: refreshContent)
-        .disabled(refreshDisabled)
-      if isSpace {
-        Button("Open in Browser", systemImage: "arrow.up.right.square", action: openSpaceInBrowser)
-      }
-      if let space = isSpace ? model.openedSpace : selectedSpace {
-        Button("Sync Status…", systemImage: "arrow.triangle.2.circlepath") {
-          syncStatusSpace = space
-        }
-      }
-    }
   }
 
   private var chat: some View {
@@ -418,12 +396,11 @@ struct ContentView: View {
         viewSidebarToggle
         viewMoreMenu
       }.frame(height: 36).background(ViewWindowDragRegion())
-      sidebarAddress
-      HStack {
+      HStack(spacing: 6) {
+        viewAddress
         if let space = model.openedSpace {
-          SpaceShareControl(space: space, access: access)
+          SpaceShareControl(space: space, access: access, compact: true)
         }
-        Spacer(minLength: 0)
       }
       if showHistory {
         ChatHistoryView(
@@ -464,32 +441,16 @@ struct ContentView: View {
       .accessibilityLabel("More Options")
   }
 
-  private var sidebarAddress: some View {
-    HStack(alignment: .top, spacing: 8) {
-      if let space = model.openedSpace {
-        SpaceSyncControl(runtime: runtime, space: space)
-        VStack(alignment: .leading, spacing: 4) {
-          Button(space.title) { openWindow(id: "main") }
-            .buttonStyle(.plain).fontWeight(.semibold)
-            .help("Show spaces and links")
-          Label(viewTitle ?? "Home", systemImage: "arrow.turn.down.right")
-            .foregroundStyle(.secondary)
-        }.lineLimit(2).fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-    }.font(.system(size: 13)).padding(10)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-  }
-
+  /// The space and view as one breadcrumb; long names truncate rather than wrap.
   private var viewAddress: some View {
     HStack(spacing: 7) {
       if let space = model.openedSpace {
         SpaceSyncControl(runtime: runtime, space: space)
         Button(space.title) { openWindow(id: "main") }.buttonStyle(.plain)
-          .fontWeight(.semibold).lineLimit(1).help("Show spaces and links")
+          .fontWeight(.semibold).lineLimit(1).help("\(space.title): show spaces and links")
         DesktopGlyph(name: "r2IconChevronRight", size: 12).foregroundStyle(.secondary)
         Text(viewTitle ?? "Home").foregroundStyle(.secondary).lineLimit(1)
+          .help(viewTitle ?? "Home")
       }
       Spacer(minLength: 0)
     }.font(.system(size: 13)).padding(.horizontal, 10).frame(height: 32)
@@ -557,7 +518,7 @@ struct ContentView: View {
       HStack(spacing: 4) {
         Text(model.connecting ? "Connecting…" : model.modelLabel).lineLimit(1)
         DesktopGlyph(name: "r2IconChevronDown1", size: 11)
-      }.font(.system(size: 12, weight: .medium))
+      }.font(.system(size: 12))
     }.nativeControl()
       .help("Chat Agent Settings: \(model.modelLabel)")
       .accessibilityLabel("Chat Agent Settings: \(model.modelLabel)")
@@ -653,7 +614,7 @@ struct ContentView: View {
 
   private var pageTitle: String {
     switch page {
-    case .addressBook: "Address Book"
+    case .addressBook: "Address book"
     case .account: "Settings"
     case .allLinks: "All links"
     case .agentLinks: "Connections"
@@ -779,14 +740,14 @@ struct ContentView: View {
     .disabled(model.busy || model.connecting || model.creatingSpace || runtime.pendingSpace != nil)
     .onChange(of: runtime.spaces.map(\.id), initial: true) { _, ids in
       if runtime.catalogLoaded { access.setCatalog(runtime.spaces) }
-      // Keep a space selected; fall back when it leaves the account.
+      // All links is home; a space that leaves the account falls back to it.
       if case .space(let id) = page, ids.contains(id) { return }
       if page == nil, let fixture = ActivityFixture.initialPage(runtime.spaces) {
         page = fixture
       } else if page == nil
         || page.map({ if case .space = $0 { true } else { false } }) == true
       {
-        page = ids.first.map { .space($0) }
+        page = .allLinks
       }
     }
     .onChange(of: runtime.accountConnected) { _, connected in

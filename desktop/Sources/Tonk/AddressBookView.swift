@@ -21,115 +21,114 @@ struct AddressBookView: View {
     }
   }
   var body: some View {
-    VStack(spacing: 0) {
-      HSplitView {
-        VStack(spacing: 0) {
-          VStack(alignment: .leading, spacing: 12) {
-            GlassSearchField(
-              title: "Search Contacts", text: $search, focusRequest: searchFocusRequest)
-            Button("Add Contact", systemImage: "plus") {
-              editing = DesktopContact(id: "", name: "", labels: [])
-            }.nativeControl()
-          }.padding(16)
-          Divider()
-          List(contacts, selection: $selected) { contact in
-            HStack(spacing: 10) {
-              Text(AccessText.initials(contact.name)).font(.system(size: 10, weight: .semibold))
-                .frame(width: 24, height: 24).background(.quaternary, in: Circle())
-              VStack(alignment: .leading, spacing: 3) {
-                Text(contact.name).lineLimit(1)
-                HStack(spacing: 4) {
-                  Text(contact.id).font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+    // A fixed list beside a flexible detail: a split view's minimums would
+    // push the window's own sidebar off screen at the 800-point default size.
+    HStack(spacing: 0) {
+      VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 12) {
+          GlassSearchField(
+            title: "Name or key", text: $search, focusRequest: searchFocusRequest)
+          Button("Add contact", systemImage: "plus") {
+            editing = DesktopContact(id: "", name: "", labels: [])
+          }.nativeControl()
+        }.padding(16)
+        Divider()
+        List(contacts, selection: $selected) { contact in
+          HStack(spacing: 10) {
+            Text(AccessText.initials(contact.name)).font(.system(size: 10, weight: .semibold))
+              .frame(width: 24, height: 24).background(.quaternary, in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
+              Text(contact.name).lineLimit(1)
+              HStack(spacing: 4) {
+                Text(contact.id).font(.system(size: 11, design: .monospaced))
+                  .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Button {
+                  copy(contact.id)
+                } label: {
+                  DesktopGlyph(name: "r2CopyKey", size: 12)
+                }
+                .buttonStyle(.plain).help("Copy key").accessibilityLabel(
+                  "Copy key for \(contact.name)")
+              }
+            }
+          }.padding(.vertical, 9).tag(contact.id).listRowSeparator(.hidden)
+        }.listStyle(.plain).scrollContentBackground(.hidden)
+      }.frame(width: 228)
+      Divider()
+      if let contact = contacts.first(where: { $0.id == selected }) {
+        ScrollView {
+          VStack(alignment: .leading, spacing: 22) {
+            HStack(spacing: 12) {
+              Text(AccessText.initials(contact.name)).font(.system(size: 13, weight: .semibold))
+                .frame(width: 40, height: 40).background(.quaternary, in: Circle())
+              VStack(alignment: .leading, spacing: 2) {
+                Text(contact.name).font(.system(size: 15, weight: .semibold))
+                Text("Known identity").font(.system(size: 12)).foregroundStyle(.secondary)
+              }
+            }
+            VStack(alignment: .leading, spacing: 8) {
+              Text("did:key").font(.caption).foregroundStyle(.secondary)
+              HStack(alignment: .top) {
+                Text(contact.id).font(.system(size: 12, design: .monospaced)).textSelection(
+                  .enabled)
+                Spacer(minLength: 4)
+                Button("Copy") {
+                  NSPasteboard.general.clearContents()
+                  NSPasteboard.general.setString(contact.id, forType: .string)
+                }
+              }.padding(16).background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+            }
+            VStack(alignment: .leading, spacing: 8) {
+              Text("Labels").font(.caption).foregroundStyle(.secondary)
+              ContactLabelLayout {
+                ForEach(Array(contact.labels.enumerated()), id: \.offset) { index, label in
                   Button {
-                    copy(contact.id)
+                    var updated = contact
+                    updated.labels.remove(at: index)
+                    do {
+                      try access.saveContact(updated)
+                      saveError = nil
+                    } catch { saveError = error.localizedDescription }
                   } label: {
-                    DesktopGlyph(name: "r2CopyKey", size: 12)
-                  }
-                  .buttonStyle(.plain).help("Copy key").accessibilityLabel(
-                    "Copy key for \(contact.name)")
+                    HStack(spacing: 4) {
+                      Text(label)
+                      Image(systemName: "xmark").font(.system(size: 9))
+                    }.padding(.horizontal, 9).frame(height: 24)
+                  }.buttonStyle(.plain).background(.quaternary, in: Capsule())
+                    .accessibilityLabel("Remove label \(label)")
                 }
+                Button("+ Add label") { editing = contact }.buttonStyle(.plain)
+                  .padding(.horizontal, 9).frame(height: 24)
+                  .overlay(
+                    Capsule().strokeBorder(.tertiary, style: StrokeStyle(lineWidth: 1, dash: [3]))
+                  )
+              }.font(.system(size: 12))
+              Text("Suggested: Team · Work · Family · Verified").font(.system(size: 12))
+                .foregroundStyle(.secondary)
+              if let saveError { Text(saveError).foregroundStyle(.red) }
+            }
+            VStack(alignment: .leading, spacing: 8) {
+              Text("Where it came from").font(.caption).foregroundStyle(.secondary)
+              let shared = spaces.filter { space in
+                access.spaces[space.id]?.members.contains { $0.did == contact.id } == true
               }
-            }.padding(.vertical, 9).tag(contact.id).listRowSeparator(.hidden)
-          }.listStyle(.plain).scrollContentBackground(.hidden)
-        }.frame(minWidth: 200, idealWidth: 240, maxWidth: 280)
-        if let contact = contacts.first(where: { $0.id == selected }) {
-          ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-              HStack(spacing: 12) {
-                Text(AccessText.initials(contact.name)).font(.system(size: 13, weight: .semibold))
-                  .frame(width: 48, height: 48).background(.quaternary, in: Circle())
-                VStack(alignment: .leading, spacing: 4) {
-                  Text(contact.name).font(.system(size: 17, weight: .semibold))
-                  Text("Known identity").font(.system(size: 12)).foregroundStyle(.secondary)
-                }
-              }
-              VStack(alignment: .leading, spacing: 8) {
-                Text("did:key").font(.caption).foregroundStyle(.secondary)
-                HStack(alignment: .top) {
-                  Text(contact.id).font(.system(size: 12, design: .monospaced)).textSelection(
-                    .enabled)
-                  Spacer(minLength: 4)
-                  Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(contact.id, forType: .string)
-                  }
-                }.padding(16).background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
-              }
-              VStack(alignment: .leading, spacing: 8) {
-                Text("Labels").font(.caption).foregroundStyle(.secondary)
-                ContactLabelLayout {
-                  ForEach(Array(contact.labels.enumerated()), id: \.offset) { index, label in
-                    Button {
-                      var updated = contact
-                      updated.labels.remove(at: index)
-                      do {
-                        try access.saveContact(updated)
-                        saveError = nil
-                      } catch { saveError = error.localizedDescription }
-                    } label: {
-                      HStack(spacing: 4) {
-                        Text(label)
-                        Image(systemName: "xmark").font(.system(size: 9))
-                      }.padding(.horizontal, 9).frame(height: 24)
-                    }.buttonStyle(.plain).background(.quaternary, in: Capsule())
-                      .accessibilityLabel("Remove label \(label)")
-                  }
-                  Button("+ Add Label") { editing = contact }.buttonStyle(.plain)
-                    .padding(.horizontal, 9).frame(height: 24)
-                    .overlay(
-                      Capsule().strokeBorder(.tertiary, style: StrokeStyle(lineWidth: 1, dash: [3]))
-                    )
-                }.font(.system(size: 12))
-                Text("Suggested: Team · Work · Family · Verified").font(.system(size: 12))
-                  .foregroundStyle(.secondary)
-                Text("Labels are personal notes, not verified account types.").font(
-                  .system(size: 11)
-                ).foregroundStyle(.secondary)
-                Button("Edit Contact…") { editing = contact }
-                if let saveError { Text(saveError).foregroundStyle(.red) }
-              }
-              VStack(alignment: .leading, spacing: 8) {
-                Text("Where it came from").font(.caption).foregroundStyle(.secondary)
-                let shared = spaces.filter { space in
-                  access.spaces[space.id]?.members.contains { $0.did == contact.id } == true
-                }
-                Text(
-                  shared.isEmpty
-                    ? "Saved on this Mac. No shared spaces are currently listed."
-                    : "Seen in " + shared.map(\.title).joined(separator: " · ")
-                )
-              }
-            }.frame(maxWidth: 680, alignment: .leading).padding(28)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }.frame(minWidth: 260)
-        } else {
-          Text(
-            !search.isEmpty && contacts.isEmpty
-              ? "No Matching Contacts" : contacts.isEmpty ? "No contacts yet" : "Select a contact"
+              Text(
+                shared.isEmpty
+                  ? "Saved on this Mac. No shared spaces are currently listed."
+                  : "Seen in " + shared.map(\.title).joined(separator: " · ")
+              )
+            }
+          }.frame(maxWidth: 680, alignment: .leading).padding(.horizontal, 20).padding(
+            .vertical, 18
           )
-          .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }.frame(maxWidth: .infinity)
+      } else {
+        Text(
+          !search.isEmpty && contacts.isEmpty
+            ? "No matching contacts" : contacts.isEmpty ? "No contacts yet" : "Select a contact"
+        )
+        .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
       }
     }.font(.system(size: 13))
       .sheet(item: $editing) { contact in ContactEditor(contact: contact, access: access) }

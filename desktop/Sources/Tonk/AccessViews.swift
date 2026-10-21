@@ -171,7 +171,7 @@ struct AccessLinkRow: View {
             Text(usage).font(.system(size: 12)).foregroundStyle(.secondary)
           }
         }
-        .lineLimit(1)
+        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
         Spacer(minLength: 6)
         actions
       }

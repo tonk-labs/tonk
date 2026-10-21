@@ -189,9 +189,13 @@ public struct AccessLink: Equatable, Sendable, Identifiable {
   /// Open invites can be replaced in place; other kinds are revoked.
   public var canReset: Bool { kind == .person }
 
+  /// Every link opens the whole space; only the public one says so, to set it
+  /// apart from the read-and-write links beside it.
   public func detail(now: Date) -> String {
-    [audience, ability, "Whole space", Self.expiry(expiresAt, status: status, now: now)]
-      .joined(separator: " · ")
+    [
+      audience == "Anyone" ? "Anyone with the link" : audience, ability,
+      kind == .publicRead ? "Whole space" : nil, Self.expiry(expiresAt, status: status, now: now),
+    ].compactMap { $0 }.joined(separator: " · ")
   }
 
   public func usage(madeAt: Date?, now: Date) -> String? {

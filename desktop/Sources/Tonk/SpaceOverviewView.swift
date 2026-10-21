@@ -104,7 +104,7 @@ struct SpaceOverviewView: View {
           HStack {
             Text(state == nil ? "Loading links…" : "No links yet.").foregroundStyle(.secondary)
             Spacer()
-            if state != nil { Button("Copy Link", action: onNewLink) }
+            if state != nil { Button("Copy link", action: onNewLink) }
           }.padding(14)
         } else {
           ForEach(rows) { link in

@@ -14,8 +14,8 @@ struct ConnectionsPageView: View {
         Text("Manage chat, agent identities, and external access.")
           .font(.system(size: 12)).foregroundStyle(.secondary)
         VStack(alignment: .leading, spacing: 8) {
-          Text("Chat Agent").fontWeight(.semibold)
-          Text("Works inside Tonk’s chat and edits the current space as you.")
+          Text("Chat agent").font(.system(size: 15, weight: .semibold))
+          Text("Edits as you, only in Tonk’s chat beside a view, while you’re chatting.")
             .font(.system(size: 12)).foregroundStyle(.secondary)
           HStack(spacing: 12) {
             DesktopGlyph(name: "imgIconMessages", size: 16).foregroundStyle(.secondary)
@@ -30,17 +30,17 @@ struct ConnectionsPageView: View {
               .font(.system(size: 12)).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Settings…", action: onSettings)
+            Button("Settings", action: onSettings)
           }.padding(14).background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
         }
         VStack(alignment: .leading, spacing: 8) {
           HStack {
-            Text("Agent Accounts").fontWeight(.semibold)
+            Text("Agent accounts").font(.system(size: 15, weight: .semibold))
             Spacer()
-            Button("Provision Account…") { onboarding = true }
+            Button("Add an agent") { onboarding = true }
           }
           Text(
-            "Separate identities with their own name and key."
+            "Edit as themselves, under their own name and key, from wherever they run, until you remove them."
           )
           .font(.system(size: 12)).foregroundStyle(.secondary)
           Text("Account provisioning is not available in this build.")
@@ -48,7 +48,7 @@ struct ConnectionsPageView: View {
             .background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
         }
         VStack(alignment: .leading, spacing: 8) {
-          Text("External Access").fontWeight(.semibold)
+          Text("External access").font(.system(size: 15, weight: .semibold))
           Text(
             "MCP, shared links, and CLI access. These grants are not provisioned accounts."
           )
@@ -57,7 +57,7 @@ struct ConnectionsPageView: View {
         }
         if let error = access.errors["account"] {
           Text(error).foregroundStyle(.secondary)
-          Button("Try Again") { Task { await access.refreshAccount() } }
+          Button("Try again") { Task { await access.refreshAccount() } }
         }
         ForEach(spaces) { space in
           let grants = access.agentConnections.filter { $0.subject == space.subject && $0.isLive }
@@ -85,13 +85,13 @@ struct ConnectionsPageView: View {
     }.font(.system(size: 13)).controlSize(.small).buttonBorderShape(.capsule)
       .sheet(isPresented: $onboarding) {
         VStack(alignment: .leading, spacing: 16) {
-          Text("Provision an Agent Account").font(.system(size: 15, weight: .semibold))
+          Text("Add an agent").font(.system(size: 15, weight: .semibold))
           Text(
             "This creates a separate identity with its own name and key, sponsored by you. Account provisioning is not available in this build."
           )
           .foregroundStyle(.secondary)
           Text(
-            "An MCP connection, a link pasted into a chat, or CLI authorization can provide access without creating that account. Existing access grants remain manageable under External Access."
+            "An MCP connection, a link pasted into a chat, or CLI authorization can provide access without creating that account. Existing access grants remain manageable under External access."
           )
           .font(.system(size: 12)).foregroundStyle(.secondary)
           HStack {
@@ -134,7 +134,7 @@ private struct ConnectionRow: View {
         }
       }
       Spacer(minLength: 8)
-      Button("Revoke Access…") { disconnecting = true }
+      Button("Revoke access…") { disconnecting = true }
         .disabled(access.working.contains("agent:" + agent.id))
     }.padding(14)
       .confirmationDialog("Revoke this access grant?", isPresented: $disconnecting) {
