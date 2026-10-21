@@ -4917,6 +4917,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base58",
  "base64",
  "blake3",
  "chrono",
