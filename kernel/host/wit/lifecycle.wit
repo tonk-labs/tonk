@@ -1,0 +1,48 @@
+package sapling:kernel@0.1.0;
+
+/// The calls that the embedder makes into a guest kernel. See PDD008,
+/// "Lifecycle".
+interface lifecycle {
+  use types.{did, version, error};
+  use storage.{layer};
+
+  /// What a worker can do with a layer of its stack.
+  enum access { read, read-write }
+
+  /// One durable layer of the stack of a worker: the scopes that the stack
+  /// links it under, such as `memory:space`, and its access. Most layers have
+  /// one scope. The persona space has two. See PDD008, "The Stack of Each
+  /// Domain".
+  record stacked {
+    layer: layer,
+    scopes: list<string>,
+    /// `read` puts the layer under a read-only link.
+    access: access,
+  }
+
+  /// What a worker gets at boot. The boot names no domain: the guest kernel
+  /// serves what its stack holds.
+  record boot {
+    /// The persona that the worker acts for, if it acts for one.
+    persona: option<did>,
+    /// The durable layers of the stack, the bottom first. The subject, if the
+    /// stack has one, is the layer of `memory:space`.
+    stack: list<stacked>,
+  }
+
+  /// A new version of a cell of a peer that the worker watches.
+  record cell-change {
+    peer: did,
+    subject: did,
+    namespace: string,
+    cell: string,
+    version: version,
+  }
+
+  /// The first call into a new worker.
+  init: async func(boot: boot) -> result<_, error>;
+  /// One or more watched cells of peers changed.
+  sync: async func(changes: list<cell-change>) -> result<_, error>;
+  /// Stop. The process ends at the deadline.
+  shutdown: async func(deadline-ms: u32);
+}

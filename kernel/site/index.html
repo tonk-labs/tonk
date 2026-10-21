@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Kernel spike</title>
+<pre id="out">starting…</pre>
+<script>
+// A space page: register the bootloader with the kernel this page's address
+// pins, and once the worker controls the page, talk to the kernel through
+// ordinary fetches of its own origin.
+const out = document.querySelector("#out");
+const pin = new URL(location.href).searchParams.get("kernel");
+const kind = new URL(location.href).searchParams.get("kind") ?? "test";
+
+async function controlled() {
+    await navigator.serviceWorker.register(`/boot.js?kernel=${pin}`);
+    if (!navigator.serviceWorker.controller) {
+        await new Promise(resolve => navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true }));
+    }
+}
+
+async function ask(method, path, body) {
+    const started = performance.now();
+    const response = await fetch(path, { method, body: method === "GET" ? undefined : body });
+    const text = await response.text();
+    let facts;
+    try { const parsed = JSON.parse(text); if (Array.isArray(parsed)) facts = parsed.length; } catch {}
+    return { method, path, status: response.status, ms: +(performance.now() - started).toFixed(2), facts, text: text.slice(0, 160) };
+}
+
+(async () => {
+    const t0 = performance.now();
+    await controlled();
+    const controlledAt = performance.now() - t0;
+    const boot = await (await fetch("/_boot")).json();
+    const bootedAt = performance.now() - t0;
+    const steps = kind === "test"
+        ? [["GET", "/init"], ["POST", "/echo", "hello from a space page"], ["GET", "/session"], ["POST", "/sign-head", "a head"],
+           ["POST", "/layer", "subject\npublish branch/main kernel first\nresolve branch/main kernel\nput index b\nget index b\nstream-long 1048576"]]
+        : kind === "tonk"
+        ? [["GET", "/api/health"],
+           ["POST", "/api/transact", JSON.stringify([{ the: "xyz.tonk.note/title", of: `note:${Date.now()}`, is: "hello" }])],
+           ["POST", "/api/select", JSON.stringify({ the: "xyz.tonk.note/title" })]]
+        : [["GET", "/api/sapling/subject"], ["GET", "/api/sapling/intent"]];
+    const answers = [];
+    for (const [method, path, body] of steps) answers.push(await ask(method, path, body));
+    // Latency of a request that does no work: the cost of the path itself.
+    const echoes = [];
+    const probe = kind === "test" ? ["POST", "/echo", "x"]
+        : kind === "tonk" ? ["POST", "/api/select", JSON.stringify({ the: "xyz.tonk.note/title" })]
+        : ["GET", "/api/sapling/subject"];
+    for (let i = 0; i < 50; i++) echoes.push((await ask(...probe)).ms);
+    echoes.sort((a, b) => a - b);
+    const result = { kind, pin, controlledAt, bootedAt, boot, answers, latency: { p50: echoes[25], p95: echoes[47] } };
+    out.textContent = JSON.stringify(result, null, 2);
+    document.body.dataset.result = JSON.stringify(result);
+})().catch(error => {
+    out.textContent = String(error.stack ?? error);
+    document.body.dataset.result = JSON.stringify({ error: String(error) });
+});
+</script>

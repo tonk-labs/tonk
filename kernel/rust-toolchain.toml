@@ -1,0 +1,6 @@
+[toolchain]
+# A dated beta: the kernel builds for `wasm32-wasip3`, for which no stable
+# toolchain ships a standard library yet. The beta Sapling pins.
+channel = "beta-2026-10-05"
+components = ["rustfmt", "clippy", "rust-src"]
+targets = ["wasm32-wasip3", "wasm32-unknown-unknown"]
