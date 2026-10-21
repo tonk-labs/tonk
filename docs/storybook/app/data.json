@@ -554,8 +554,8 @@
       "variants": "No upstream/synced/ahead/behind/diverged/unreachable/revoked."
     },
     {
-      "evidence": "Broad sync and access tests.",
-      "gaps": "Lost response after commit, concurrent push, retry/idempotency, bounded timeout.",
+      "evidence": "Broad sync and access tests. Executed native worker/MCP regressions prove finite remote-write bursts settle after more than four refusals, same-artifact replicas converge, and sustained contention or an unknown publication outcome retains local state without repeating evaluation.",
+      "gaps": "Whole CLI/browser journeys under these failures, device restart, and in-flight I/O deadlines; the 30-second retry admission window is not a hard request timeout.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "SYNC-02",
       "title": "Push local main.",
@@ -570,8 +570,8 @@
       "variants": "R0–R6; dirty/ahead/diverged; remote changes during fetch."
     },
     {
-      "evidence": "Data verb and sync integration coverage.",
-      "gaps": "Whole command × all remote states, response loss, local commit succeeds/push fails recovery.",
+      "evidence": "Data verb and sync integration coverage. Native worker processes now verify one committing evaluation through publication retries, immediate stop on unavailable publication or a lost accepted response, and retained-state refusal of another write. A separate 30-operation native reliability workload verifies independently read fields and concurrent-writer convergence.",
+      "gaps": "Whole CLI/browser command × all remote states, device/process loss, and explicit retained-publication recovery; native evidence does not establish hosted runtime behavior.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "SYNC-04",
       "title": "Auto-pull/write/auto-push around a write.",
