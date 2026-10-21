@@ -2177,6 +2177,7 @@ dependencies = [
  "futures",
  "getrandom 0.2.17",
  "js-sys",
+ "serde_json",
  "tokio",
  "tracing",
  "wasm-bindgen",

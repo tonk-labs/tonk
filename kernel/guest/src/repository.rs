@@ -97,14 +97,22 @@ pub struct Repository {
 
 impl Repository {
     /// Opens the repository of the subject of `layer`, whose commits `signer`
-    /// signs. Each revision names the subject as its authority: Dialog's
-    /// `main` has no builder method yet that names another (Sapling's
-    /// branch calls it `profile`).
-    pub async fn open(layer: SharedLayer, signer: SignerCredential) -> Result<Self, Error> {
+    /// signs as `profile`, if any: each revision then names `profile` as its
+    /// authority, as a session of a persona writing into a space of that
+    /// persona does. With none, revisions name the subject.
+    pub async fn open(
+        layer: SharedLayer,
+        signer: SignerCredential,
+        profile: Option<Did>,
+    ) -> Result<Self, Error> {
         let subject = layer.subject();
         let witness = Witness::default();
         let mount = Mount::new(Store::new(layer.clone(), witness.clone()));
         let builder = Peer::operator(signer);
+        let builder = match profile {
+            Some(profile) => builder.profile(profile),
+            None => builder,
+        };
         let storage = Storage::<LayerSpace>::new().owned_by(subject.clone());
         let peer = builder
             .space(DialogRepository::from(subject.clone()).branch(STATE))
@@ -165,6 +173,23 @@ impl Branch {
                 error => witnessed(witness, &error),
             })
             .map(Some)
+    }
+
+    /// Who minted the head revision and whom it names as its authority, as
+    /// its revision record says: `(issuer, authority)`. None on a branch
+    /// with no commit.
+    pub async fn attribution(&self) -> Result<Option<(String, String)>, Error> {
+        let witness = &self.repository.witness;
+        witness.clear();
+        let log = self
+            .branch
+            .log(&self.repository.peer, 1)
+            .await
+            .map_err(|error| witnessed(witness, &error))?;
+        Ok(log
+            .into_iter()
+            .next()
+            .map(|(_, record)| (record.issuer, record.authority)))
     }
 
     /// The artifacts of the branch that `selector` selects.

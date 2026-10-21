@@ -6,7 +6,8 @@
 //! Routes:
 //! - `GET /api/health`: `ok` once booted.
 //! - `POST /api/transact`: a JSON list of `{"the", "of", "is"}` (text values),
-//!   asserted on `main`. Answers the new head's edition count.
+//!   asserted on `main`. Answers who issued the new head and whom it names as
+//!   its authority.
 //! - `POST /api/select`: `{"the"}`, answers the matching facts as JSON.
 
 pub mod world {
@@ -75,8 +76,14 @@ impl lifecycle::Guest for Kernel {
         let layer = guest::HandleLayer::new(space.layer).map_err(invalid)?;
         let subject = layer::Layer::subject(&layer);
         let signer = guest::session_signer().map_err(invalid)?;
-        let _ = (subject, boot.persona);
-        let opened = Repository::open(layer::share(layer), signer)
+        // A worker that holds a space for a persona other than the space
+        // writes as that persona.
+        let profile = boot
+            .persona
+            .filter(|persona| *persona != subject.to_string())
+            .map(|persona| persona.parse().map_err(invalid))
+            .transpose()?;
+        let opened = Repository::open(layer::share(layer), signer, profile)
             .await
             .map_err(invalid)?;
         REPOSITORY.lock().unwrap_or_else(PoisonError::into_inner).0 = Some(opened);
@@ -130,13 +137,23 @@ async fn transact(body: &[u8]) -> Result<Json, String> {
         .branch("main")
         .await
         .map_err(|error| error.to_string())?;
-    let revision = branch
+    branch
         .commit(instructions)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(
-        json!({ "committed": claims.len(), "head": revision.map(|revision| format!("{revision:?}").len()) }),
-    )
+    let branch = repository
+        .branch("main")
+        .await
+        .map_err(|error| error.to_string())?;
+    let attribution = branch
+        .attribution()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(json!({
+        "committed": claims.len(),
+        "issuer": attribution.as_ref().map(|(issuer, _)| issuer),
+        "authority": attribution.as_ref().map(|(_, authority)| authority),
+    }))
 }
 
 async fn select(body: &[u8]) -> Result<Json, String> {

@@ -90,3 +90,35 @@ async fn it_reads_what_an_earlier_kernel_committed() {
         kept.extend(drained);
     }
 }
+
+/// A worker that holds a space for a persona writes as that persona: each
+/// revision names the persona as its authority, and the session key as its
+/// issuer. A worker of the persona's own space names the persona as well.
+#[tokio::test(flavor = "current_thread")]
+async fn it_writes_as_the_persona_it_holds_the_space_for() {
+    let engine = Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap();
+    let bytes = std::fs::read(TONK_KERNEL).unwrap();
+    let space = kernel_host::sapling::did_key(&ed25519_dalek::SigningKey::from_bytes(&[3; 32]));
+    let persona = kernel_host::sapling::did_key(&ed25519_dalek::SigningKey::from_bytes(&[2; 32]));
+    let claim = br#"[{"the":"xyz.tonk.note/title","of":"note:1","is":"hello"}]"#;
+    for (holder, subject) in [(&persona, &space), (&persona, &persona)] {
+        let mut kernel = Kernel::load(&engine, &bytes).await.unwrap();
+        kernel.init(holder, subject).await.unwrap();
+        let answer = kernel
+            .request("POST", "/api/transact", claim)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&answer.body).unwrap();
+        assert_eq!(answer.status, 200, "{body}");
+        assert_eq!(
+            body["authority"],
+            persona.as_str(),
+            "the revision names the persona: {body}"
+        );
+        assert_ne!(
+            body["issuer"],
+            persona.as_str(),
+            "the session key issues it, not the persona: {body}"
+        );
+    }
+}
