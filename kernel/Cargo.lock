@@ -451,27 +451,27 @@ dependencies = [
 
 [[package]]
 name = "cranelift-assembler-x64"
-version = "0.136.4"
+version = "0.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9c587da2696fbaa58e7a2fa2e5bfdd365d0928219f36992304ac1f15e5bc254"
+checksum = "d3307701abcb90554ee72fdb0db36ee0334a4abe380c4d87a5b04a6942613c3a"
 dependencies = [
  "cranelift-assembler-x64-meta",
 ]
 
 [[package]]
 name = "cranelift-assembler-x64-meta"
-version = "0.136.4"
+version = "0.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f28a60027b7556b680b051651291053ec381edf4ffbc01784997ae51a64269bb"
+checksum = "e62d0e19f9f5fa0c4243236df1ffdf139d207600b4402ac41ceba8dbe7ca0f3d"
 dependencies = [
  "cranelift-srcgen",
 ]
 
 [[package]]
 name = "cranelift-bforest"
-version = "0.136.0-rc.1"
+version = "0.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdd8414dc2712147dfc5e2c767bb49ff9d3558c14481d4957d85c15fb8ceba16"
+checksum = "47784bc3c4b57c0182bb8ff04aae5d5f5fc6bae8ba26b1212c9a659b90dab84e"
 dependencies = [
  "cranelift-entity",
  "wasmtime-internal-core",
@@ -479,9 +479,9 @@ dependencies = [
 
 [[package]]
 name = "cranelift-bitset"
-version = "0.136.0-rc.1"
+version = "0.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8290131d0155943c083ad5465eb11f62ab9dd1dc965778aa4ee64eb504b38b39"
+checksum = "e13d120406f713dbce1940751e77bbb14daad1261379b7200c19285953e79a1d"
 dependencies = [
  "serde",
  "serde_derive",
@@ -490,9 +490,9 @@ dependencies = [
 
 [[package]]
 name = "cranelift-codegen"
-version = "0.136.0-rc.1"
+version = "0.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f6448715050f98246f654c49a041eb6eff3e0bf3ffb3b8695aa809955dbb56a"
+checksum = "a53dbec33ff86909e44be6f0ec2d17841aa38b931013707c9fc7279f1f0e5760"
 dependencies = [
  "bumpalo",
  "cranelift-assembler-x64",
@@ -521,9 +521,9 @@ dependencies = [
 
 [[package]]
 name = "cranelift-codegen-meta"
-version = "0.136.0-rc.1"
+version = "0.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0148e9456bf8b36ff031123c7a3e22ff952d69e066f460e0fbe75bb483efe9cf"
+checksum = "42295b38e9182954cb32a71812e3d64d66a90efc0a2ababb73e465ad4a1efccf"
 dependencies = [
  "cranelift-assembler-x64-meta",
  "cranelift-codegen-shared",
@@ -534,24 +534,24 @@ dependencies = [
 
 [[package]]
 name = "cranelift-codegen-shared"
-version = "0.136.4"
+version = "0.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04f9b86d809cec9c4e88b201f1b3ed3b0347674c9ccfbb8c355228669e34be81"
+checksum = "b5200fa877fb64cd30cabe0603f394333f88f69adf63e4db8d48a111d0c9d0dd"
 
 [[package]]
 name = "cranelift-control"
-version = "0.136.4"
+version = "0.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce182038fb10b719841e65fdf5deeee258c684f63439f5be680c2be059274b58"
+checksum = "b86250e480795fbb4425ea703bca7b75282998458ce74f5360843a31949f2bbc"
 dependencies = [
  "arbitrary",
 ]
 
 [[package]]
 name = "cranelift-entity"
-version = "0.136.0-rc.1"
+version = "0.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1d6f2e0d07e7e24b7273ff1b519bdea836f8bf03991845746a98954b923c428"
+checksum = "903c6592c7d600c251d20929f143543b7303ac70b072ad3394d65b29caf56f69"
 dependencies = [
  "cranelift-bitset",
  "serde",
@@ -561,9 +561,9 @@ dependencies = [
 
 [[package]]
 name = "cranelift-frontend"
-version = "0.136.0-rc.1"
+version = "0.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da6e0c600c388d3d24e85fa27bf02928de9146525f6b6cd67b7571ac569db29c"
+checksum = "b929f09b82a270e2aae062945cf86cd9db39c59ad9bead6986ea6b09fcf8a969"
 dependencies = [
  "cranelift-codegen",
  "hashbrown 0.17.1",
@@ -574,26 +574,27 @@ dependencies = [
 
 [[package]]
 name = "cranelift-isle"
-version = "0.136.0-rc.1"
+version = "0.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cad9f899149df67ec195734491abcabe734e2135cc038fa3b8896d8f0554416"
+checksum = "b1c5809e8636a37e5a25ecc35242d33d6e7391c49b67488b83446e2898af2a2f"
 
 [[package]]
 name = "cranelift-native"
-version = "0.136.0-rc.1"
+version = "0.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64bcce98c337e2359bba25b7d33926fe5e2c08fd84407b363af0fdc5b539cf6e"
+checksum = "815c559daf605a5b4ea35530604643c1e87504353c0d1a14763f9c2b9d518493"
 dependencies = [
  "cranelift-codegen",
  "libc",
+ "mach2",
  "target-lexicon",
 ]
 
 [[package]]
 name = "cranelift-srcgen"
-version = "0.136.4"
+version = "0.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b533db1679b4b728568bd490da6533cf50974c48a4d7534e78f1e0e02bc39769"
+checksum = "d633ff621e7f31a943431da0d7dd37c4376766c60bd7171216de1c7ccabfb370"
 
 [[package]]
 name = "crc32fast"
@@ -787,7 +788,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -827,7 +828,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-trait",
  "base58",
@@ -853,7 +854,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -886,7 +887,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -912,7 +913,7 @@ dependencies = [
 [[package]]
 name = "dialog-did-web"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-trait",
  "base58",
@@ -935,7 +936,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-trait",
  "base58",
@@ -950,7 +951,7 @@ dependencies = [
 [[package]]
 name = "dialog-identity"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -968,7 +969,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "blake3",
  "convert_case",
@@ -980,7 +981,7 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -996,7 +997,7 @@ dependencies = [
 [[package]]
 name = "dialog-number"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "zmij",
 ]
@@ -1004,7 +1005,7 @@ dependencies = [
 [[package]]
 name = "dialog-peer"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-trait",
  "base58",
@@ -1044,7 +1045,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1075,7 +1076,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-fs"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1092,7 +1093,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-trait",
  "base58",
@@ -1119,7 +1120,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-trait",
  "base58",
@@ -1151,7 +1152,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-trait",
  "base58",
@@ -1181,7 +1182,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1224,7 +1225,7 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1256,7 +1257,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1289,7 +1290,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "async-trait",
  "base58",
@@ -1310,7 +1311,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "base64 0.22.1",
  "dialog-common",
@@ -1339,7 +1340,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",
@@ -2322,7 +2323,7 @@ dependencies = [
 [[package]]
 name = "merkle-reference"
 version = "0.4.0-rc.3"
-source = "git+https://github.com/dialog-db/dialog-db?rev=ffbb477246aff7a9d3c0f44b632e85da6a92fd16#ffbb477246aff7a9d3c0f44b632e85da6a92fd16"
+source = "git+https://github.com/dialog-db/dialog-db?rev=74939923dd7b6fca586b2face9d1f8167a426712#74939923dd7b6fca586b2face9d1f8167a426712"
 dependencies = [
  "blake3",
 ]
@@ -2685,9 +2686,9 @@ dependencies = [
 
 [[package]]
 name = "pulley-interpreter"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f15f9a81c5a2e29975d4498f173242aaeca8650dd08ec1eaa49eacd4ae6c0d0a"
+checksum = "6af498fa3ca312fe5a07178757781059b75a331f24d53aeb3706e51ad73317bd"
 dependencies = [
  "cranelift-bitset",
  "log",
@@ -2697,13 +2698,13 @@ dependencies = [
 
 [[package]]
 name = "pulley-macros"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9676118efe138df8e9b2547f56dbd2f425ceaf8ad214b1bcf2bfc8328ff7249"
+checksum = "f0ba9959a3a286b7a2fb16466b7d1a804a117f81a98b7ac6d86cabd5ba037f3d"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -3973,18 +3974,17 @@ dependencies = [
 
 [[package]]
 name = "wasm-compose"
-version = "0.258.3"
+version = "0.261.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27dc71f96d21a8b9153da9005c603f4f20d5781b7e6d2675ea0ca5def8713b75"
+checksum = "df7deb87d659b1df555d3195e3df56d1f03b73d165c5a1bc3a0bad24274ea147"
 dependencies = [
  "anyhow",
- "heck",
  "indexmap",
  "log",
  "petgraph",
  "smallvec",
- "wasm-encoder 0.258.3",
- "wasmparser 0.258.3",
+ "wasm-encoder 0.261.0",
+ "wasmparser 0.261.0",
  "wat",
 ]
 
@@ -3996,6 +3996,16 @@ checksum = "f64765e43c000fae008a48db8b288e175e237fc9ce20a26586836878c1bee89f"
 dependencies = [
  "leb128fmt",
  "wasmparser 0.258.3",
+]
+
+[[package]]
+name = "wasm-encoder"
+version = "0.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2608e8bb6d67fd68f5a8d0eb1363d6e7bcbc1f8ded5a0bd3a1e382462b876b22"
+dependencies = [
+ "leb128fmt",
+ "wasmparser 0.261.0",
 ]
 
 [[package]]
@@ -4018,6 +4028,18 @@ dependencies = [
  "indexmap",
  "wasm-encoder 0.258.3",
  "wasmparser 0.258.3",
+]
+
+[[package]]
+name = "wasm-metadata"
+version = "0.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b88de21560ecd49deb8d8f1616b9b695f66fc312c5eca503f43accdc5795339e"
+dependencies = [
+ "anyhow",
+ "indexmap",
+ "wasm-encoder 0.261.0",
+ "wasmparser 0.261.0",
 ]
 
 [[package]]
@@ -4056,6 +4078,18 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
  "semver",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f20f20e44f7e8aeb6744823ea9d869ede51e51be4fdaedede2852282e54d2d8"
+dependencies = [
+ "bitflags",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "semver",
  "serde",
 ]
 
@@ -4072,20 +4106,20 @@ dependencies = [
 
 [[package]]
 name = "wasmprinter"
-version = "0.258.3"
+version = "0.261.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14a457ba8670a3db3d357c1aeac3ed4fe378a76054a221789f0df0ea507e292b"
+checksum = "86a21c9e3325655ba02de3e645bc8357a8b3651a2e3ada25b6dbc37560deb9b7"
 dependencies = [
  "anyhow",
  "termcolor",
- "wasmparser 0.258.3",
+ "wasmparser 0.261.0",
 ]
 
 [[package]]
 name = "wasmtime"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac646c5f9d3e4deb35d83af76b07b6059557e9b3f75353949fd185f71c770054"
+checksum = "2d93539aae382faee7b19650fd966f1f8185599b9cc4adc0a5a8b8f768c11ba9"
 dependencies = [
  "addr2line",
  "async-trait",
@@ -4115,8 +4149,8 @@ dependencies = [
  "target-lexicon",
  "tempfile",
  "wasm-compose",
- "wasm-encoder 0.258.3",
- "wasmparser 0.258.3",
+ "wasm-encoder 0.261.0",
+ "wasmparser 0.261.0",
  "wasmtime-environ",
  "wasmtime-internal-cache",
  "wasmtime-internal-component-macro",
@@ -4130,14 +4164,14 @@ dependencies = [
  "wasmtime-internal-versioned-export-macros",
  "wat",
  "windows-sys 0.61.2",
- "wit-parser",
+ "wit-parser 0.261.0",
 ]
 
 [[package]]
 name = "wasmtime-environ"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "308ace1bde55a597cf36d239fe4bf70e6ac9d36772db3ae1a8950e58c62f3654"
+checksum = "34fd44c205ef29cc3c254253dceb916be586887602e0e380361ed022776cfc10"
 dependencies = [
  "anyhow",
  "cpp_demangle",
@@ -4154,11 +4188,10 @@ dependencies = [
  "semver",
  "serde",
  "serde_derive",
- "sha2",
  "smallvec",
  "target-lexicon",
- "wasm-encoder 0.258.3",
- "wasmparser 0.258.3",
+ "wasm-encoder 0.261.0",
+ "wasmparser 0.261.0",
  "wasmprinter",
  "wasmtime-internal-component-util",
  "wasmtime-internal-core",
@@ -4166,9 +4199,9 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-internal-cache"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4104f3ab8187179e89567b3824ecd7d792d2d1e2b4d05379318f62f53b79995b"
+checksum = "067440fa60ddd5145840e0335ffe0ab4d908a021932b6844c3ad61570abddfef"
 dependencies = [
  "base64 0.22.1",
  "directories-next",
@@ -4186,30 +4219,30 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-internal-component-macro"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4e8313787a231ba22772f605c6c886034c3bcb52d213552c18c87a0c3523d20"
+checksum = "adf0938f1a0f067a60aa07a7f4369fae05ef227314aca64c1abc7b2dc5e80743"
 dependencies = [
  "anyhow",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.9",
  "wasmtime-internal-component-util",
  "wasmtime-internal-wit-bindgen",
- "wit-parser",
+ "wit-parser 0.261.0",
 ]
 
 [[package]]
 name = "wasmtime-internal-component-util"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6118595a83d921e54ee37077a79b3852d40b68a9e3a372a1f3cb7e91e3f096f"
+checksum = "2626398b21bf4b1547fdbadc68afd5cbe69c89ca2a1d6c45fd56fd3b28177b93"
 
 [[package]]
 name = "wasmtime-internal-core"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2092306ae15ca4438eeccc4a535bc0a22c75654f77d6c679bbd250c25deda14"
+checksum = "83d4ac46034b149aed44335595402503094a04e3b70d0cff8c169d83437318b8"
 dependencies = [
  "anyhow",
  "hashbrown 0.17.1",
@@ -4219,9 +4252,9 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-internal-cranelift"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8493664d87c3335f73a2496f5287d82455f11febd4dfd0b44f0c856441f02ab"
+checksum = "1f496bf29d3f2a1d060e0a497a20bfba2a36befe80bdf3e640ba8d3dcab7df35"
 dependencies = [
  "cranelift-codegen",
  "cranelift-control",
@@ -4236,7 +4269,7 @@ dependencies = [
  "smallvec",
  "target-lexicon",
  "thiserror 2.0.21",
- "wasmparser 0.258.3",
+ "wasmparser 0.261.0",
  "wasmtime-environ",
  "wasmtime-internal-core",
  "wasmtime-internal-unwinder",
@@ -4245,9 +4278,9 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-internal-fiber"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15b216c7cc915f4d19a97c624d860b5a241be6f67585d5f5bab1350e4aa3c6a5"
+checksum = "2074dc297d5ec7f0cfff65c248798dfe4bbee4d760fc2956cc0eaf49d2eadef1"
 dependencies = [
  "cc",
  "libc",
@@ -4259,9 +4292,9 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-internal-jit-debug"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3bc5fb229136d8098c61e4e93ceb4664384c75a4f6b0b58cdede50d3873acef"
+checksum = "4e990e2fb7710dd73af071ecf60908072935be7a5c689b4a07e9a2adc7995151"
 dependencies = [
  "cc",
  "object",
@@ -4271,9 +4304,9 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-internal-jit-icache-coherence"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2531f66d8eec15ad18bb2c99c098dbae616101a280d8aabcd609994d721caaa7"
+checksum = "cf25a1b3b925915f845927967554400554db9cebd3a7038a6fca0cf6e9bbaf6a"
 dependencies = [
  "libc",
  "wasmtime-internal-core",
@@ -4282,9 +4315,9 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-internal-unwinder"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "475f14beeecf11e8066c25646d6eaecf24435b973463f7fdd3672f4937758543"
+checksum = "e69eb39fe5baf9e181269e6ced40f407d31afc8e514864e228ef0e087f4f5348"
 dependencies = [
  "cranelift-codegen",
  "log",
@@ -4294,27 +4327,27 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-internal-versioned-export-macros"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c04d74d3ed339826a4b606f7b1c847defef23f449a9244bd386f37f14c9db50c"
+checksum = "a805a26effdf564820580b7c4ce1c00fdee3f4a9465a5aeef944f9e0c254ec2e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.9",
 ]
 
 [[package]]
 name = "wasmtime-internal-wit-bindgen"
-version = "49.0.0-rc.1"
+version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2af57688d83a3c668c358f28127d2e0f0b41eb89b8a0faaaf351301ea22297f"
+checksum = "8511353a609cd60bb91c85f96beef39a63e96ccdc20eb20af1da9b805c499ece"
 dependencies = [
  "anyhow",
  "bitflags",
  "heck",
  "indexmap",
- "wit-component",
- "wit-parser",
+ "wit-component 0.261.0",
+ "wit-parser 0.261.0",
 ]
 
 [[package]]
@@ -4342,7 +4375,7 @@ dependencies = [
 [[package]]
 name = "wcmp"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?branch=perf%2Fskip-atomic-scan#9538cc712344818144c06d5ed6a506dd1503fd32"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=ebda220#ebda220589cfcaf17f77391a7017bbe33678d3d3"
 dependencies = [
  "anyhow",
  "js-sys",
@@ -4351,7 +4384,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wasm-bindgen",
- "wasm-encoder 0.258.3",
+ "wasm-encoder 0.261.0",
  "wasmtime-environ",
  "wcmp-bindgen",
  "wcmp-macros",
@@ -4361,20 +4394,20 @@ dependencies = [
 [[package]]
 name = "wcmp-bindgen"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?branch=perf%2Fskip-atomic-scan#9538cc712344818144c06d5ed6a506dd1503fd32"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=ebda220#ebda220589cfcaf17f77391a7017bbe33678d3d3"
 dependencies = [
  "anyhow",
  "heck",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
- "wit-parser",
+ "wit-parser 0.261.0",
 ]
 
 [[package]]
 name = "wcmp-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?branch=perf%2Fskip-atomic-scan#9538cc712344818144c06d5ed6a506dd1503fd32"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=ebda220#ebda220589cfcaf17f77391a7017bbe33678d3d3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4385,18 +4418,18 @@ dependencies = [
 [[package]]
 name = "wcmp-wasm-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?branch=perf%2Fskip-atomic-scan#9538cc712344818144c06d5ed6a506dd1503fd32"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=ebda220#ebda220589cfcaf17f77391a7017bbe33678d3d3"
 dependencies = [
  "anyhow",
  "thiserror 2.0.21",
  "tracing",
- "wasmparser 0.258.3",
+ "wasmparser 0.261.0",
 ]
 
 [[package]]
 name = "wcmp-wasm-core-wasmtime"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?branch=perf%2Fskip-atomic-scan#9538cc712344818144c06d5ed6a506dd1503fd32"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=ebda220#ebda220589cfcaf17f77391a7017bbe33678d3d3"
 dependencies = [
  "anyhow",
  "tracing",
@@ -4407,14 +4440,14 @@ dependencies = [
 [[package]]
 name = "wcmp-wasm-core-web"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?branch=perf%2Fskip-atomic-scan#9538cc712344818144c06d5ed6a506dd1503fd32"
+source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=ebda220#ebda220589cfcaf17f77391a7017bbe33678d3d3"
 dependencies = [
  "anyhow",
  "js-sys",
  "tracing",
  "wasm-bindgen",
- "wasm-encoder 0.258.3",
- "wasmparser 0.258.3",
+ "wasm-encoder 0.261.0",
+ "wasmparser 0.261.0",
  "wcmp-macros",
  "wcmp-wasm-core",
 ]
@@ -4783,7 +4816,7 @@ checksum = "87445680dfe6d6b5369e884bd63c03a3335268e855365b2fc3f7bcdce96a630e"
 dependencies = [
  "anyhow",
  "heck",
- "wit-parser",
+ "wit-parser 0.258.3",
 ]
 
 [[package]]
@@ -4797,9 +4830,9 @@ dependencies = [
  "indexmap",
  "prettyplease",
  "syn 2.0.119",
- "wasm-metadata",
+ "wasm-metadata 0.258.3",
  "wit-bindgen-core",
- "wit-component",
+ "wit-component 0.258.3",
 ]
 
 [[package]]
@@ -4832,9 +4865,28 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "wasm-encoder 0.258.3",
- "wasm-metadata",
+ "wasm-metadata 0.258.3",
  "wasmparser 0.258.3",
- "wit-parser",
+ "wit-parser 0.258.3",
+]
+
+[[package]]
+name = "wit-component"
+version = "0.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2818766842bd2321074c348fb5c15d8fdb105a9eb78374e6d77c7d4127e1f2f9"
+dependencies = [
+ "anyhow",
+ "bitflags",
+ "indexmap",
+ "log",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "wasm-encoder 0.261.0",
+ "wasm-metadata 0.261.0",
+ "wasmparser 0.261.0",
+ "wit-parser 0.261.0",
 ]
 
 [[package]]
@@ -4854,6 +4906,25 @@ dependencies = [
  "serde_json",
  "unicode-ident",
  "wasmparser 0.258.3",
+]
+
+[[package]]
+name = "wit-parser"
+version = "0.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "962e43c4db2da607b50839a531e5b63473268b40efdf8028d5c54b572ca4f6f6"
+dependencies = [
+ "anyhow",
+ "hashbrown 0.17.1",
+ "id-arena",
+ "indexmap",
+ "log",
+ "semver",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "unicode-ident",
+ "wasmparser 0.261.0",
 ]
 
 [[package]]

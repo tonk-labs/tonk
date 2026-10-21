@@ -12,19 +12,19 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
-wcmp = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", branch = "perf/skip-atomic-scan" }
-wcmp-wasm-core-wasmtime = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", branch = "perf/skip-atomic-scan" }
-wcmp-wasm-core-web = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", branch = "perf/skip-atomic-scan" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+wcmp = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "ebda220" }
+wcmp-wasm-core-wasmtime = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "ebda220" }
+wcmp-wasm-core-web = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "ebda220" }
 
 [profile.release]
 opt-level = 3
