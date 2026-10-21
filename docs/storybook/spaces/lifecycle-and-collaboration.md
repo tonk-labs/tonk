@@ -38,6 +38,28 @@ This import is separate from `tonk space link NAME`: join creates a local
 replica from invitation authority, while space link attaches an existing local
 space to an account and hosted service.
 
+### Invitation sender (`COLLAB-01`, `COLLAB-02`)
+
+When Alice invites Bob and Bob mints a new invitation for Carol, Carol's
+invitation and membership provenance name Bob as inviter. Alice remains the
+space's founder. This applies to new worker and CLI invitations, including
+CLI onboarding and linked accounts. Forwarding an existing URL keeps its
+original signed sender. Older links retain their previous attribution and do
+not establish a verified sender.
+
+> Technical note: the leaf grant signs the minting account DID. Its authority
+> path must connect that account to the signer through identity grants; a
+> space-sharing grant cannot authorize impersonating the upstream owner.
+
+Native regressions exercise confirmed email lookup, competing address-claim
+refusal, targeted invitations and wrong-recipient rejection, then inspect the
+persisted Alice → Bob → Carol provenance and founder role. The CLI also pulls
+Carol's invitation back into Alice's replica. See the
+[worker spike](../../../plans/2026-10-20-identity-discovery-spike.md) and
+[CLI verification](../../../plans/2026-10-20-cli-invitation-sender-attribution.md).
+These checks do not verify browser rendering, real email delivery, interrupted
+claims or cross-device recovery. No contact picker or address book is added.
+
 ### Duplicate a space (`SPACE-14`)
 
 From the Hub row's **more** menu, **duplicate** opens a named creation dialog
@@ -468,3 +490,6 @@ uses artifact `12b87892fca818d5` (2026-09-29).
 Ticket links and public spaces addendum pinned to the commit that adds it, on
 top of `3c83082`; running-product captures use a local debug artifact built
 from that tree (2026-10-09).
+
+Invitation-sender addendum accompanies the discovery and attribution changes
+on base `3abfe85a8b` (2026-10-20); prior visual captures are unchanged.

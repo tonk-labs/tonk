@@ -580,6 +580,12 @@ mod when_recording_roster_facts {
         let parsed = Invite::parse_url(&invite_outcome.url).await?;
         let expected =
             Invitation::from_chain(&parsed.chain).expect("invite chains have a specific subject");
+        let inviter_did = tonk_cli::site::member_did(&inviter.site).await?;
+        assert_eq!(
+            tonk_invite::inviter(&parsed.chain)?,
+            Some(inviter_did.clone())
+        );
+        assert_eq!(expected.inviter.0, inviter_did.this());
 
         // Inviter side: invitation recorded at mint.
         let inviter_meta = inviter

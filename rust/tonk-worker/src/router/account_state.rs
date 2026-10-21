@@ -2170,7 +2170,7 @@ pub(crate) mod tests {
     /// `root` holds and linked to sync it at `remote`: a local root and
     /// an account link, not yet hydrated.
     #[cfg(not(target_arch = "wasm32"))]
-    async fn device_on(
+    pub(crate) async fn device_on(
         root: &Ed25519Signer,
         remote: &str,
         passkey: Option<tonk_worker_api::PasskeyMetadata>,
