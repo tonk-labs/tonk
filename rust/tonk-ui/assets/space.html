@@ -153,19 +153,44 @@
                 // release its deployment was built with.
                 var BOOT_CACHE = "tonk-boot";
                 var BOOT_KEY = "/__boot";
-                async function pinned() {
+                async function bootRecord() {
                     try {
                         var held = await (await caches.open(BOOT_CACHE)).match(BOOT_KEY);
-                        var record = held ? await held.json() : null;
-                        return record && typeof record.pin === "string" ? record.pin : null;
+                        return held ? await held.json() : null;
                     } catch (error) {
                         return null;
                     }
                 }
+                async function pinned() {
+                    var record = await bootRecord();
+                    return record && typeof record.pin === "string" ? record.pin : null;
+                }
 
-                // The release a worker was registered for: its own address says.
+                // The kernel this space runs, on host version 2 (see
+                // `plan/space-kernel.md`): the one its boot record pins, or,
+                // for a space with no record yet, the one this deployment
+                // installs into a space it creates. A deployment that ships
+                // none leaves a new space on a release.
+                async function kernel() {
+                    var record = await bootRecord();
+                    if (record) return record.v === 2 && typeof record.kernel === "string" ? record.kernel : null;
+                    try {
+                        var shipped = await fetch("/_host/kernel.json", { cache: "no-cache" });
+                        if (!shipped.ok) return null;
+                        var id = (await shipped.json()).kernel;
+                        if (typeof id !== "string") return null;
+                        await (await caches.open(BOOT_CACHE)).put(BOOT_KEY, Response.json({ v: 2, kernel: id }));
+                        return id;
+                    } catch (error) {
+                        return null;
+                    }
+                }
+                var KERNEL = kernel();
+
+                // What a worker was registered for: its own address says.
                 function runs(worker) {
-                    return new URL(worker.scriptURL).searchParams.get("pin");
+                    var params = new URL(worker.scriptURL).searchParams;
+                    return params.get("kernel") || params.get("pin");
                 }
 
                 // The worker in control runs another release than the space
@@ -194,7 +219,8 @@
                 // `register()`, and the browser checks for updates on its own.
                 async function control() {
                     var container = navigator.serviceWorker;
-                    var pin = await pinned();
+                    var kernelId = await KERNEL;
+                    var pin = kernelId || (await pinned());
                     if (container.controller) {
                         if (runs(container.controller) !== pin) {
                             if (await switchTo(pin)) return new Promise(function () {});
@@ -208,7 +234,10 @@
                         throw new Error("the site's worker is out of date and could not be replaced");
                     }
                     say("installing its worker");
-                    await container.register("/boot.js" + (pin ? "?pin=" + encodeURIComponent(pin) : ""), {
+                    var script = kernelId
+                        ? "/kernel_boot.js?kernel=" + encodeURIComponent(kernelId)
+                        : "/boot.js" + (pin ? "?pin=" + encodeURIComponent(pin) : "");
+                    await container.register(script, {
                         scope: "/",
                         updateViaCache: "none",
                     });
@@ -461,6 +490,19 @@
                     if (location.pathname === SHELL) history.replaceState(null, "", "/");
                     follow();
                     broker();
+                    // A space that runs a kernel brings nothing of the app's
+                    // up here: whatever its address is, the kernel answers
+                    // it, in a frame of its own.
+                    if (await KERNEL) {
+                        var frame = document.createElement("iframe");
+                        frame.src = location.pathname + location.search;
+                        frame.title = location.pathname;
+                        frame.style.cssText =
+                            "position:fixed;inset:0;width:100%;height:100%;border:0;background:Canvas";
+                        document.body.replaceChildren(frame);
+                        say("ready");
+                        return;
+                    }
                     say("loading");
                     var base = document.createElement("base");
                     base.href = "/";

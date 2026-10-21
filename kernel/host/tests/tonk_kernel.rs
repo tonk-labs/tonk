@@ -12,7 +12,7 @@ const TONK_KERNEL: &str = concat!(
 #[tokio::test(flavor = "current_thread")]
 async fn it_boots_the_tonk_kernel() {
     let engine = Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap();
-    let mut kernel = Kernel::load(&engine, &std::fs::read(TONK_KERNEL).unwrap())
+    let mut kernel = Kernel::load(&engine, &std::fs::read(TONK_KERNEL).unwrap(), [7; 32])
         .await
         .unwrap();
     let space = kernel_host::sapling::did_key(&ed25519_dalek::SigningKey::from_bytes(&[3; 32]));
@@ -50,7 +50,7 @@ async fn it_reads_what_an_earlier_kernel_committed() {
     let persona = kernel_host::sapling::did_key(&ed25519_dalek::SigningKey::from_bytes(&[2; 32]));
     let mut kept = Vec::new();
     for round in 0..3 {
-        let mut kernel = Kernel::load_restoring(&engine, &bytes, kept.clone())
+        let mut kernel = Kernel::load_restoring(&engine, &bytes, [7; 32], kept.clone())
             .await
             .unwrap();
         kernel.init(&persona, &space).await.unwrap();
@@ -102,7 +102,7 @@ async fn it_writes_as_the_persona_it_holds_the_space_for() {
     let persona = kernel_host::sapling::did_key(&ed25519_dalek::SigningKey::from_bytes(&[2; 32]));
     let claim = br#"[{"the":"xyz.tonk.note/title","of":"note:1","is":"hello"}]"#;
     for (holder, subject) in [(&persona, &space), (&persona, &persona)] {
-        let mut kernel = Kernel::load(&engine, &bytes).await.unwrap();
+        let mut kernel = Kernel::load(&engine, &bytes, [7; 32]).await.unwrap();
         kernel.init(holder, subject).await.unwrap();
         let answer = kernel
             .request("POST", "/api/transact", claim)

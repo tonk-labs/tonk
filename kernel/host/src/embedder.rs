@@ -1,6 +1,7 @@
-//! The embedder a service worker's bootloader drives: it boots the guest
-//! kernel a space pins, after checking the bytes against the pin, and hands
-//! it each request of the space's origin.
+//! The embedder a space's service worker drives. A space holds its own
+//! kernel (see [`crate::boot`]): the bootloader installs one into a space
+//! that holds none, boots the one a space pins from what the space's store
+//! keeps, and hands it each request of the space's origin.
 
 use std::rc::Rc;
 
@@ -11,8 +12,8 @@ use wcmp::Engine;
 
 use crate::bindings::sapling::kernel::storage::Edition;
 use crate::kernel::Kernel;
-use crate::platform;
 use crate::sapling::{Change, did_key};
+use crate::{boot, platform};
 
 #[wasm_bindgen]
 pub struct Embedder {
@@ -20,45 +21,56 @@ pub struct Embedder {
     timings: Vec<(String, f64)>,
 }
 
-/// Boot the guest kernel in `bytes`, over a space for a persona, each named
-/// by a seed. With `check`, the bytes must hash to `pin` (BLAKE3, hex); a
-/// bootloader that took them from a cache it filled by that hash has
-/// checked them already.
+/// The `did:key` of the session key made from `seed` (32 bytes).
 #[wasm_bindgen]
-pub async fn boot(
-    bytes: Uint8Array,
-    pin: String,
-    check: bool,
-    persona_seed: u8,
-    space_seed: u8,
-    kept: Array,
-) -> Result<Embedder, JsError> {
-    let bytes = bytes.to_vec();
+pub fn session(seed: Uint8Array) -> Result<String, JsError> {
+    Ok(did_key(&ed25519_dalek::SigningKey::from_bytes(&seed_of(
+        &seed,
+    )?)))
+}
+
+/// The content identifier of a kernel's wasm.
+#[wasm_bindgen(js_name = kernelId)]
+pub fn kernel_id(kernel: Uint8Array) -> String {
+    boot::kernel_id(&kernel.to_vec())
+}
+
+/// The records that install `kernel` into the space `subject`, for the
+/// bootloader to keep with the rest of the space's store.
+#[wasm_bindgen]
+pub fn install(subject: String, kernel: Uint8Array) -> Array {
+    let (_, changes) = boot::install(&subject, &kernel.to_vec());
+    changes.iter().map(to_js).collect()
+}
+
+/// The id of the kernel the space `subject` pins, among the records `kept`,
+/// or `undefined` when it pins none.
+#[wasm_bindgen]
+pub fn pinned(subject: String, kept: Array) -> Result<Option<String>, JsError> {
+    let changes = changes_of(&kept)?;
+    let pinned = boot::pinned(&subject, &changes).map_err(|error| JsError::new(&error))?;
+    Ok(pinned.map(|(id, _)| id))
+}
+
+/// Boot the kernel the space `subject` pins, over the records `kept`, for a
+/// session that signs with the key of `seed`.
+#[wasm_bindgen]
+pub async fn boot(subject: String, seed: Uint8Array, kept: Array) -> Result<Embedder, JsError> {
+    let seed = seed_of(&seed)?;
     let started = platform::now_millis();
-    if check {
-        let hash = blake3::hash(&bytes).to_hex().to_string();
-        if hash != pin {
-            return Err(JsError::new(&format!(
-                "the kernel hashes to {hash}, not the pinned {pin}"
-            )));
-        }
-    }
-    let mut timings = vec![("check".to_owned(), platform::now_millis() - started)];
+    let changes = changes_of(&kept)?;
+    let (_, bytes) = boot::pinned(&subject, &changes)
+        .map_err(|error| JsError::new(&error))?
+        .ok_or_else(|| JsError::new("the space pins no kernel"))?;
+    let mut timings = vec![("restore".to_owned(), platform::now_millis() - started)];
     let engine = Engine::with_backend(wcmp_wasm_core_web::Web::new())
         .map_err(|error| JsError::new(&error.to_string()))?;
-    let started = platform::now_millis();
-    let changes = kept
-        .iter()
-        .map(|record| from_js(&record))
-        .collect::<Result<Vec<_>, _>>()?;
-    timings.push(("restore".to_owned(), platform::now_millis() - started));
-    let mut kernel = Kernel::load_restoring(&engine, &bytes, changes)
+    let mut kernel = Kernel::load_restoring(&engine, &bytes, seed, changes)
         .await
         .map_err(|error| JsError::new(&error))?;
-    let persona = did_key(&ed25519_dalek::SigningKey::from_bytes(&[persona_seed; 32]));
-    let space = did_key(&ed25519_dalek::SigningKey::from_bytes(&[space_seed; 32]));
+    let persona = did_key(&ed25519_dalek::SigningKey::from_bytes(&seed));
     kernel
-        .init(&persona, &space)
+        .init(&persona, &subject)
         .await
         .map_err(|error| JsError::new(&error))?;
     timings.extend(
@@ -71,6 +83,16 @@ pub async fn boot(
         kernel: Rc::new(Mutex::new(kernel)),
         timings,
     })
+}
+
+fn seed_of(seed: &Uint8Array) -> Result<[u8; 32], JsError> {
+    seed.to_vec()
+        .try_into()
+        .map_err(|_| JsError::new("a session key is 32 bytes"))
+}
+
+fn changes_of(kept: &Array) -> Result<Vec<Change>, JsError> {
+    kept.iter().map(|record| from_js(&record)).collect()
 }
 
 #[wasm_bindgen]

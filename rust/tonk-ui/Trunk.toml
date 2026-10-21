@@ -12,6 +12,13 @@ stage = "post_build"
 command = "sh"
 command_arguments = ["scripts/hash-guest.sh"]
 
+# Spaces that run a kernel load the embedder and their first kernel from
+# `/_host/`, which `kernel/build-host.sh` builds.
+[[hooks]]
+stage = "post_build"
+command = "sh"
+command_arguments = ["scripts/copy-kernel-host.sh"]
+
 [serve]
 port = 8080
 # Disable trunk's built-in reload-everything client. A change to a

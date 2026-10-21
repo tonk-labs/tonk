@@ -35,9 +35,10 @@ impl Answer {
 }
 
 impl Kernel {
-    /// Compile and instantiate the guest kernel in `bytes` on `engine`.
-    pub async fn load(engine: &Engine, bytes: &[u8]) -> Result<Kernel, String> {
-        Kernel::load_restoring(engine, bytes, Vec::new()).await
+    /// Compile and instantiate the guest kernel in `bytes` on `engine`, for
+    /// a session that signs with the key of `seed`.
+    pub async fn load(engine: &Engine, bytes: &[u8], seed: [u8; 32]) -> Result<Kernel, String> {
+        Kernel::load_restoring(engine, bytes, seed, Vec::new()).await
     }
 
     /// [`Kernel::load`], with the store holding `changes` an earlier store
@@ -45,6 +46,7 @@ impl Kernel {
     pub async fn load_restoring(
         engine: &Engine,
         bytes: &[u8],
+        seed: [u8; 32],
         changes: Vec<crate::sapling::Change>,
     ) -> Result<Kernel, String> {
         let mut timings = Vec::new();
@@ -66,7 +68,7 @@ impl Kernel {
         Host_::add_to_linker::<_, Sapling>(&mut linker, |host| host)
             .map_err(|error| error.to_string())?;
 
-        let mut host = KernelHost::new([7; 32]);
+        let mut host = KernelHost::new(seed);
         host.restore(changes);
         host.http.set_types(Some(types));
         let mut store = Store::new(engine, host).map_err(|error| error.to_string())?;
