@@ -60,6 +60,7 @@ pub mod inventory;
 pub mod invite;
 pub mod join;
 pub mod listing;
+pub mod log;
 pub mod migrate;
 pub mod onboarding;
 pub mod output;

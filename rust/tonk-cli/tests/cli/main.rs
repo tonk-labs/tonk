@@ -34,6 +34,7 @@ mod invite_revocation;
 mod join_profile;
 mod join_routing;
 mod live_migration;
+mod log;
 mod notation;
 mod render;
 #[cfg(feature = "integration-tests")]
