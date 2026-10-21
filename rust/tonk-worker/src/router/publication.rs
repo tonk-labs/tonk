@@ -17,6 +17,7 @@ use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{RepositoryExt as _, SiteAddress};
 use dialog_ucan::UcanDelegation;
+use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use tonk_common::log;
 use tonk_invite::{Ticket, home_address_meta};
@@ -37,7 +38,9 @@ const READ_COMMAND: &str = "/use/get";
 
 /// Publish the space at `repo` and answer its public address,
 /// `{origin}/space/{did}`. Publishing a space already published answers
-/// the same address and mints nothing.
+/// the same address and mints nothing. A publication record that no
+/// longer stands (an unpublish that failed partway left it without its
+/// ticket or its grant) is retracted and the space published afresh.
 ///
 /// # Errors
 ///
@@ -83,11 +86,13 @@ pub(crate) async fn publish(tonk: &TonkState, repo: &str) -> Result<String, Tonk
     let public = tonk_invite::public::did()
         .await
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
-    if !publications(tonk, session.handle(), &public)
-        .await?
-        .is_empty()
-    {
-        return Ok(address);
+    let recorded = publications(tonk, session.handle(), &public).await?;
+    if !recorded.is_empty() {
+        if publication_stands(tonk, session.handle(), &subject, &remote.access_url).await? {
+            return Ok(address);
+        }
+        log!("publish: '{repo}' records a publication that no longer stands; publishing again");
+        retract_publications(tonk, repo, recorded).await?;
     }
 
     let delegation: UcanDelegation = tonk
@@ -186,8 +191,13 @@ pub(crate) async fn unpublish(tonk: &TonkState, repo: &str) -> Result<(), TonkWo
         })?;
     }
 
-    for (invitation, execution) in publications(tonk, session.handle(), &public).await? {
-        match super::revoke_invite::prove_path_at(
+    // Every grant that still proves to the public principal, not one per
+    // record: a publish that recovered from a stale record leaves the
+    // earlier grant beside the new one, and both have to go. Revoking
+    // retracts the leaf, so the next proof finds the next grant or none.
+    let mut revoked = std::collections::HashSet::new();
+    loop {
+        let path = match super::revoke_invite::prove_path_at(
             session.handle(),
             tonk,
             &subject,
@@ -196,31 +206,104 @@ pub(crate) async fn unpublish(tonk: &TonkState, repo: &str) -> Result<(), TonkWo
         )
         .await
         {
-            Ok(path) => {
-                let target = leaf_cid(&path)?;
-                publish_revocation(tonk, repo, &repository, session.handle(), &path, &target)
-                    .await?;
-                retract_leaf(tonk, session.handle(), &path).await;
+            Ok(path) => path,
+            // Nothing proves to the public principal: every publication
+            // was revoked already, or its chain never retained. Either way
+            // there is nothing left to revoke, only the records.
+            Err(error) => {
+                log!("unpublish: no path left to revoke: {error}");
+                break;
             }
-            // Nothing proves to the public principal: the publication was
-            // revoked already, or its chain never retained. Either way
-            // there is nothing left to revoke, only the record.
-            Err(error) => log!("unpublish: no path to revoke: {error}"),
+        };
+        let target = leaf_cid(&path)?;
+        if !revoked.insert(target) {
+            // Revoked at the service but still retained here: the local
+            // retraction failed, and proving again would find it forever.
+            break;
         }
-        tonk.reactor
-            .repository(repo)
-            .branch(CONTENT_BRANCH)
-            .transaction()
-            .retract(invitation)
-            .retract(execution)
-            .commit()
-            .perform(&tonk.operator)
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!("failed to retract the publication: {error}"))
-            })?;
+        // A refusal keeps the records: a reader who already claimed still
+        // holds a live grant, so the space has not gone private. Unpublish
+        // again revokes it; publishing again finds no ticket and starts
+        // over.
+        publish_revocation(tonk, repo, &repository, session.handle(), &path, &target).await?;
+        retract_leaf(tonk, session.handle(), &path).await;
     }
+
+    let recorded = publications(tonk, session.handle(), &public).await?;
+    retract_publications(tonk, repo, recorded).await?;
     log!("unpublished '{repo}'");
+    Ok(())
+}
+
+/// Whether the space's publication still stands: the service keeps the
+/// public principal's ticket, and the grant it hands a visitor is still
+/// retained on the space. A partial unpublish withdraws the ticket before
+/// it revokes, and retracts the grant before the record, so a record that
+/// outlived either is one a visitor can no longer claim through.
+async fn publication_stands(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    subject: &Did,
+    access_url: &url::Url,
+) -> Result<bool, TonkWorkerError> {
+    let ticket = Ticket::public(subject.clone(), access_url)
+        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    let holder = ticket
+        .holder()
+        .await
+        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    let holder_did = dialog_varsig::Principal::did(&holder);
+    let held = tonk_account::ticket::claim(ticket.remote(), holder, &holder_did, None, subject)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Conflict(format!(
+                "could not check the space's public ticket: {error}"
+            ))
+        })?;
+    let Some(bytes) = held else {
+        return Ok(false);
+    };
+    let Some(leaf) = DelegationChain::try_from(bytes.as_slice())
+        .ok()
+        .and_then(|chain| chain.proof_cids().last().copied())
+    else {
+        return Ok(false);
+    };
+    let retained = branch
+        .delegations()
+        .retained(leaf)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("publication grant lookup failed: {error}"))
+        })?;
+    Ok(retained.is_some())
+}
+
+/// Retract publication records, the facts the bar reads as "public".
+async fn retract_publications(
+    tonk: &TonkState,
+    repo: &str,
+    recorded: Vec<(Invitation, InvitationExecution)>,
+) -> Result<(), TonkWorkerError> {
+    if recorded.is_empty() {
+        return Ok(());
+    }
+    let mut transaction = tonk
+        .reactor
+        .repository(repo)
+        .branch(CONTENT_BRANCH)
+        .transaction();
+    for (invitation, execution) in recorded {
+        transaction = transaction.retract(invitation).retract(execution);
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to retract the publication: {error}"))
+        })?;
     Ok(())
 }
 
@@ -726,6 +809,201 @@ mod tests {
                     .expect("publications read")
                     .is_empty(),
                 "the record the bar reads goes with it"
+            );
+        }
+
+        let account_key = {
+            let tonk = state.read().await;
+            crate::router::account_state::require_ready_account_state(&tonk)
+                .await
+                .expect("the linked account is ready")
+                .key
+                .clone()
+        };
+        let tonk = std::sync::Arc::try_unwrap(state)
+            .unwrap_or_else(|_| panic!("the state has no other holders"))
+            .into_inner();
+        crate::router::account_state::tests::discard(tonk, &account_key);
+        drop(service);
+    }
+
+    /// An unpublish that fails after taking the ticket back leaves the
+    /// publication recorded with nothing a visitor can claim. Publishing
+    /// again has to notice and publish afresh rather than answer the old
+    /// address and mint nothing, and the next unpublish has to revoke the
+    /// grant the failed one left live as well as the new one.
+    #[dialog_common::test]
+    async fn it_publishes_again_after_an_unpublish_that_failed_partway() {
+        let (tonk, service, root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await
+                .expect("the device grant mints");
+        crate::router::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "republication-test".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().expect("the grant serializes")),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .expect("the root persists");
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let key = super::super::repository::create_space_inner(&state, "Republished", None)
+            .await
+            .expect("the space creates");
+        super::super::repository::enable_sync_inner(&state, &key, &remote)
+            .await
+            .expect("the remote attaches");
+        let space: dialog_varsig::Did = key.parse().expect("the key is the space's DID");
+        let public = tonk_invite::public::did()
+            .await
+            .expect("the public key derives");
+
+        let address = {
+            let tonk = state.read().await;
+            let address = publish(&tonk, &key).await.expect("the founder publishes");
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .expect("content branch opens")
+                .handle()
+                .push()
+                .perform(&tonk.operator)
+                .await
+                .expect("published content reaches the service");
+            address
+        };
+        let reader = crate::router::command::tests::native::test_state().await;
+        crate::router::join::join_invite(&*reader.read().await, &address)
+            .await
+            .expect("a visitor opens the published space");
+
+        // The first half of an unpublish: the ticket is taken back, then
+        // the revocation fails, leaving the record and the grant.
+        {
+            let tonk = state.read().await;
+            let ticket = tonk_invite::Ticket::public_for_url(&address)
+                .expect("the address parses")
+                .expect("the address is the public ticket");
+            let withdrawn = tonk_account::ticket::withdraw(
+                dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
+                    ticket.remote().as_str(),
+                )),
+                &space,
+                &public,
+                &tonk.operator,
+            )
+            .await
+            .expect("the ticket is withdrawn");
+            assert!(withdrawn, "the ticket was there to withdraw");
+        }
+        assert!(claim_public(&address, &space).await.is_none());
+
+        // Publishing again restores what a visitor claims.
+        {
+            let tonk = state.read().await;
+            assert_eq!(
+                publish(&tonk, &key)
+                    .await
+                    .expect("the founder publishes again"),
+                address
+            );
+            let branch = tonk
+                .reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .expect("content branch opens");
+            assert_eq!(
+                publications(&tonk, branch.handle(), &public)
+                    .await
+                    .expect("publications read")
+                    .len(),
+                1,
+                "the stale record gives way to the new one"
+            );
+        }
+        assert!(
+            claim_public(&address, &space).await.is_some(),
+            "a republished space keeps the public ticket again"
+        );
+        let newcomer = crate::router::command::tests::native::test_state().await;
+        crate::router::join::join_invite(&*newcomer.read().await, &address)
+            .await
+            .expect("a visitor opens the republished space");
+
+        // A publication that stands is still answered without minting.
+        {
+            let tonk = state.read().await;
+            let grants = || async {
+                tonk.reactor
+                    .repository(&key)
+                    .branch("main")
+                    .acquire(&tonk.operator)
+                    .await
+                    .expect("content branch opens")
+                    .handle()
+                    .delegations()
+                    .issued_to(public.clone())
+                    .perform(&tonk.operator)
+                    .await
+                    .expect("grants read")
+                    .len()
+            };
+            let before = grants().await;
+            publish(&tonk, &key).await.expect("republish");
+            assert_eq!(grants().await, before, "nothing new is minted");
+        }
+
+        // Unpublishing now revokes both grants: the first visitor, whose
+        // grant the failed unpublish left live, stops reading too.
+        {
+            let tonk = state.read().await;
+            unpublish(&tonk, &key)
+                .await
+                .expect("the founder unpublishes");
+        }
+        {
+            let reader = reader.read().await;
+            let branch = reader
+                .profile
+                .space(key.as_str())
+                .load()
+                .perform(&reader.operator)
+                .await
+                .expect("the reader's replica loads")
+                .branch("main")
+                .open()
+                .perform(&reader.operator)
+                .await
+                .expect("the reader's branch opens");
+            branch
+                .pull()
+                .perform(&reader.operator)
+                .await
+                .expect_err("the first visitor's grant is revoked too");
+        }
+        {
+            let tonk = state.read().await;
+            let branch = tonk
+                .reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .expect("content branch opens");
+            assert!(
+                publications(&tonk, branch.handle(), &public)
+                    .await
+                    .expect("publications read")
+                    .is_empty()
             );
         }
 
