@@ -6,8 +6,8 @@ use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject, tim
 use dialog_varsig::Principal;
 use tonk_invite::{
     connection::{
-        AgentInvite, DEFAULT_GRANT_TTL_SECONDS, SpaceGrantBundle, candidate_build_scopes,
-        require_grant_deadline,
+        AgentGrant, AgentInvite, DEFAULT_GRANT_TTL_SECONDS, SpaceGrantBundle,
+        candidate_build_scopes, require_grant_deadline,
     },
     home_address_meta,
     shortcut::{ShortcutRequest, resolve_location},
@@ -164,6 +164,91 @@ async fn connection_two_imports_retain_the_same_key_and_original_grants() {
             cids
         );
     }
+}
+
+/// Grants addressed to a key the agent already holds travel without any
+/// secret: the link names the key, only that key's holder can redeem it,
+/// and the grants arrive exactly as issued.
+#[dialog_common::test]
+async fn keyed_grants_name_their_key_and_carry_no_secret() {
+    let agent_seed = [30; 32];
+    let agent = Ed25519Signer::import(&agent_seed).await.unwrap().did();
+    let other = Ed25519Signer::import(&[31; 32]).await.unwrap().did();
+    let (chains, scopes) = fixture(agent_seed).await;
+    let cids: Vec<_> = chains.iter().map(|c| c.proof_cids().to_vec()).collect();
+
+    let grant = AgentGrant::new(&agent, chains, &scopes, &remote(), now())
+        .await
+        .unwrap();
+    let url = grant.to_url("https://tonk.network/agent/").unwrap();
+    let parsed = Url::parse(&url).unwrap();
+    assert_eq!(
+        parsed.fragment(),
+        Some(format!("tonk-agent-for={agent}").as_str()),
+        "the fragment names the key and nothing else"
+    );
+    assert!(!url.contains(&bs58::encode(agent_seed).into_string()));
+    assert!(AgentGrant::is_url(&url));
+    assert_eq!(AgentGrant::recipient_of(&url).unwrap(), agent);
+
+    let redeemed = AgentGrant::parse_url(&url, &agent, &scopes, &remote(), now())
+        .await
+        .unwrap();
+    assert_eq!(redeemed.grants().recipient(), &agent);
+    assert_eq!(
+        redeemed
+            .grants()
+            .chains()
+            .iter()
+            .map(|c| c.proof_cids().to_vec())
+            .collect::<Vec<_>>(),
+        cids
+    );
+    let hint = AgentGrant::inspect_url(&url, &agent, now()).await.unwrap();
+    assert_eq!(hint.recipient, agent);
+    assert_eq!(hint.remote, remote());
+
+    // Another key cannot redeem it, and a link carrying its own key is a
+    // different kind of link.
+    let error = AgentGrant::parse_url(&url, &other, &scopes, &remote(), now())
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("connection_wrong_recipient"),
+        "{error}"
+    );
+    assert!(
+        AgentInvite::parse_url(&url, &scopes, &remote(), now())
+            .await
+            .is_err()
+    );
+    let (bearer_chains, _) = fixture([23; 32]).await;
+    let bearer = AgentInvite::new([23; 32], bearer_chains, &scopes, &remote(), now())
+        .await
+        .unwrap()
+        .to_url("https://tonk.network/agent/")
+        .unwrap();
+    assert!(!AgentGrant::is_url(&bearer));
+
+    // The shortcut service keeps the fragment client-side, as for bearer links.
+    let shortcut = ShortcutRequest::new(&url).unwrap();
+    let short = shortcut.short_url(&shortcut.expected_hash()).unwrap();
+    let resolved = resolve_location(&short, &shortcut.target).unwrap();
+    AgentGrant::parse_url(&resolved, &agent, &scopes, &remote(), now())
+        .await
+        .unwrap();
+}
+
+/// Grants issued to a different key than the one named do not validate.
+#[dialog_common::test]
+async fn keyed_grants_refuse_chains_issued_to_another_key() {
+    let agent = Ed25519Signer::import(&[30; 32]).await.unwrap().did();
+    let (chains, scopes) = fixture([31; 32]).await;
+    assert!(
+        AgentGrant::new(&agent, chains, &scopes, &remote(), now())
+            .await
+            .is_err()
+    );
 }
 
 #[dialog_common::test]
