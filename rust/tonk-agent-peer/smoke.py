@@ -22,6 +22,7 @@ import urllib.request
 EXPECTED_TOOLS = {
     "tonk_list_spaces", "tonk_join", "tonk_query", "tonk_evaluate", "tonk_guide",
     "tonk_show", "tonk_watch", "tonk_display", "tonk_view_log",
+    "tonk_install_extension",
 }
 APP_MIME = "text/html;profile=mcp-app"
 # A stand-in guest runtime directory; the real pack is built from tonk-ui.
@@ -139,6 +140,10 @@ def main(binary):
             raise AssertionError("missing guest document must 404")
         except urllib.error.HTTPError as missing:
             assert missing.code == 404 and "not installed" in missing.read().decode()
+        # Off macOS the tool points at the download instead of opening Desktop.
+        if sys.platform != "darwin":
+            failed, offer = first.tool("tonk_install_extension")
+            assert failed and "macOS only" in offer["content"][0]["text"], offer
         failed, log = first.tool("tonk_view_log")
         assert not failed and any("/space-runtime.json -> 200" in line
                                   for line in log["structuredContent"]["log"]), log
@@ -187,6 +192,11 @@ def main(binary):
         assert failed, refused
         assert seed not in text, refused
 
+        # Views outlive their owner: the next owner serves the same address
+        # with the same token, so an open view keeps working.
+        view_token = open(os.path.join(home, "view-token")).read().strip()
+        assert view_token == match.group(1), "the token lives in the data directory"
+
         # A newer build (a later-installed binary) takes over from an older
         # owner; the older session keeps working by forwarding to it.
         newer = os.path.join(scratch, "newer", "tonk-agent-peer")
@@ -197,6 +207,9 @@ def main(binary):
         third = Session(newer, home)
         failed, taken = third.tool("tonk_list_spaces")
         assert not failed and taken["structuredContent"]["peer"] == peer, taken
+        assert taken["structuredContent"]["owner"]["origin"] == peer_origin, taken
+        with peer_get("/space-runtime.json") as response:
+            assert response.status == 200
         assert taken["structuredContent"]["owner"]["pid"] == third.process.pid, taken
         failed, forwarded = first.tool("tonk_list_spaces")
         assert not failed, forwarded
