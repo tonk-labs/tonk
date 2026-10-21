@@ -161,7 +161,12 @@ pub async fn evaluate(
         )
         .await;
     }
-    log!("evaluate repo={}, branch={}", path.repo, path.branch);
+    log!(
+        "evaluate repo={}, branch={}, transact={}",
+        path.repo,
+        path.branch,
+        query.transact
+    );
     let (response, transients) = {
         // A READ lock, not a write lock. `tokio`'s `RwLock` is write-preferring, so
         // a single write-lock holder stalls every new reader — a boot-time evaluate
