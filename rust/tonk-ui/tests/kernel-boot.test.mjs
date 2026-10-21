@@ -148,7 +148,10 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     listeners.message({ data, ports: [{ postMessage: (reply) => void (answered = reply) }], waitUntil() {} });
     return answered;
   };
-  return { listeners, imported, fetched, booted, handled, asked, told, handPort, request, message };
+  // The profile passes a request down the port, as it does one a page of
+  // the app asks about this space.
+  const passDown = (call, path) => port.onmessage({ data: { call, request: { method: "GET", path } } });
+  return { listeners, imported, fetched, booted, handled, asked, told, handPort, passDown, request, message };
 }
 
 test("the bootloader loads the host's embedder", () => {
@@ -217,4 +220,16 @@ test("the host's own files go to the network", async () => {
 
 test("the worker speaks the shell's protocol", () => {
   assert.equal(space().message({ type: "protocol" })?.protocol, 2);
+});
+
+test("a request the profile passes down is answered by the kernel", async () => {
+  const site = space();
+  site.handPort();
+  site.passDown(7, "/api/roster");
+  for (let i = 0; i < 50 && !site.asked.some((message) => message.end); i++) await new Promise((r) => setTimeout(r, 5));
+  const answer = site.asked.filter((message) => message.call === 7);
+  assert.equal(answer[0].head.status, 404);
+  assert.equal(new TextDecoder().decode(answer[1].chunk), "not found");
+  assert.equal(answer[2].end, true);
+  assert.deepEqual(site.handled, ["GET /api/roster"]);
 });

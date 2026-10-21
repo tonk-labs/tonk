@@ -103,6 +103,18 @@ function adopt(port) {
             port.postMessage({ pong: data.ping });
             return;
         }
+        // A request the profile passes down about this space, answered by
+        // the kernel as a page's would be.
+        if (typeof data?.call === "number") {
+            answerCall(port, data);
+            return;
+        }
+        // The profile asks for a copy of the space to make another from. A
+        // kernel space has no such copy to give yet.
+        if (typeof data?.ask === "number") {
+            port.postMessage({ answer: data.ask, empty: true });
+            return;
+        }
         const waiter = pending.get(data?.id);
         if (!waiter || data.ack) return;
         pending.delete(data.id);
@@ -212,6 +224,23 @@ async function serveKernel(event) {
     const reply = await embedder.handle(event.request.method, url.pathname + url.search, body);
     event.waitUntil(embedder.drain().then(keep));
     return new Response(reply.body, { status: reply.status });
+}
+
+// Answer a request passed down the port: its status, then its body, then
+// that it has ended, as a release answers one.
+async function answerCall(port, { call, request }) {
+    try {
+        const embedder = await booting;
+        const body = new Uint8Array(await new Response(request.body ?? null).arrayBuffer());
+        const reply = await embedder.handle(request.method, request.path, body);
+        keep(await embedder.drain());
+        port.postMessage({ call, head: { status: reply.status, headers: [] } });
+        const chunk = reply.body.buffer.slice(reply.body.byteOffset, reply.body.byteOffset + reply.body.byteLength);
+        port.postMessage({ call, chunk }, [chunk]);
+        port.postMessage({ call, end: true });
+    } catch (error) {
+        port.postMessage({ call, error: String(error?.message ?? error) });
+    }
 }
 
 self.addEventListener("install", () => self.skipWaiting());
