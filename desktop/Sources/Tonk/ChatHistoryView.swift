@@ -90,13 +90,18 @@ struct ChatHistoryView: View {
           onBack()
         }.disabled(model.busy || model.connecting || model.creatingSpace || model.loginPending)
       }
-      Text("In \(space?.title ?? "this space")")
+      Text("In \(space?.title ?? "this space"), with \(model.agentName)")
         .font(.system(size: 12)).foregroundStyle(.secondary).padding(.leading, 32)
-      TextField("Search chats", text: $search).textFieldStyle(.roundedBorder)
-        .accessibilityLabel("Search chats")
+      HStack(spacing: 6) {
+        Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(.secondary)
+          .accessibilityHidden(true)
+        TextField("Search chats", text: $search).textFieldStyle(.plain)
+          .accessibilityLabel("Search chats")
+      }.font(.system(size: 13)).padding(.horizontal, 10).frame(height: 28)
+        .background(.fill.tertiary, in: Capsule())
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 2) {
-          ForEach(["Today", "Yesterday", "Previous 7 Days", "Older"], id: \.self) { group in
+          ForEach(["Today", "Yesterday", "Previous 7 days", "Older"], id: \.self) { group in
             let rows = sessions.filter { dateGroup($0.updatedAt) == group }
             if !rows.isEmpty {
               Text(group).font(.system(size: 11)).foregroundStyle(.secondary)
@@ -143,7 +148,7 @@ struct ChatHistoryView: View {
     if let weekAgo = calendar.date(byAdding: .day, value: -7, to: calendar.startOfDay(for: Date())),
       date >= weekAgo
     {
-      return "Previous 7 Days"
+      return "Previous 7 days"
     }
     return "Older"
   }

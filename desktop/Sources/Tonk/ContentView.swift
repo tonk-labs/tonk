@@ -284,7 +284,7 @@ struct ContentView: View {
                   if message.role == "assistant" {
                     HStack(spacing: 6) {
                       DesktopGlyph(name: "r2IconBot", size: 14)
-                      Text(agentName)
+                      Text(model.agentName)
                     }.font(.system(size: 12)).foregroundStyle(.secondary)
                   }
                   MessageMarkdown(text: message.text).font(.system(size: 13))
@@ -353,7 +353,7 @@ struct ContentView: View {
             .background(Color(nsColor: .textBackgroundColor))
           } else if model.saved.conversation.messages.isEmpty && !model.busy {
             Text(
-              "Ask \(agentName) to change anything in \(model.openedSpace?.title ?? "this space")."
+              "Ask \(model.agentName) to change anything in \(model.openedSpace?.title ?? "this space")."
             )
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
@@ -372,14 +372,6 @@ struct ContentView: View {
       chatHeader.padding(.bottom, 10).background(DesktopStyle.group)
     }
     .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-  }
-
-  private var agentName: String {
-    switch model.provider {
-    case .chatGPT: "Codex"
-    case .claude: "Claude"
-    default: model.provider.title
-    }
   }
 
   private var chatTitle: String {
@@ -570,7 +562,7 @@ struct ContentView: View {
       } else {
         VStack(alignment: .leading, spacing: 6) {
           TextField(
-            "Ask \(agentName) to change \(model.openedSpace?.title ?? "this space")…",
+            "Ask \(model.agentName) to change \(model.openedSpace?.title ?? "this space")…",
             text: Binding(get: { draft }, set: { draft = $0 }),
             axis: .vertical
           )

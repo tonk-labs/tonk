@@ -21,6 +21,7 @@ struct DesktopSidebar: View {
   /// The space whose icon picker is open, from its context menu.
   @State private var customizing: String?
   @State private var hovered: String?
+  @Environment(\.appearsActive) private var appearsActive
 
   private var spaces: [TonkSpace] {
     runtime.spaces.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }
@@ -109,6 +110,13 @@ struct DesktopSidebar: View {
     }
   }
 
+  /// Matches the list's own selection: accent while the window is key, grey otherwise.
+  private var footerSelection: Color {
+    guard selection == .account else { return .clear }
+    return appearsActive
+      ? .accentColor : Color(nsColor: .unemphasizedSelectedContentBackgroundColor)
+  }
+
   private var footer: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 8) {
@@ -131,11 +139,8 @@ struct DesktopSidebar: View {
 
       }
       .padding(.horizontal, 8).padding(.vertical, 8)
-      .foregroundStyle(selection == .account ? Color.white : Color.primary)
-      .background(
-        selection == .account ? Color.accentColor : Color.clear,
-        in: RoundedRectangle(cornerRadius: 8)
-      )
+      .foregroundStyle(selection == .account && appearsActive ? Color.white : Color.primary)
+      .background(footerSelection, in: RoundedRectangle(cornerRadius: 8))
       .accessibilityAddTraits(selection == .account ? .isSelected : [])
     }
     .font(.system(size: 13))

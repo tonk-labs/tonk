@@ -3,6 +3,15 @@ import HarnessCore
 
 @MainActor
 extension HarnessModel {
+  /// What the chat signs its replies with: the agent, not the subscription.
+  var agentName: String {
+    switch provider {
+    case .chatGPT: "Codex"
+    case .claude: "Claude"
+    default: provider.title
+    }
+  }
+
   var provider: ModelProvider { saved.provider ?? .chatGPT }
   var connection: ModelConnection {
     saved.connections?[provider.rawValue] ?? ModelConnection(provider: provider)
