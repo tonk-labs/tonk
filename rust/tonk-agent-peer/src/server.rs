@@ -13,6 +13,7 @@ use rmcp::{
     service::RequestContext,
 };
 use serde_json::{Value, json};
+use tonk_evaluator::{evaluate::QueryMatchBlock, notation::render_matches};
 
 use std::sync::Arc;
 
@@ -47,6 +48,15 @@ impl Server {
             .filter(|tool| TOOLS.contains(&tool["name"].as_str().unwrap_or_default()))
             .map(|tool| {
                 let mut tool = tool.clone();
+                // The shared catalog describes the hosted connector, which
+                // returns the worker's JSON; the peer answers in notation.
+                if let Some(description) = tool["description"].as_str() {
+                    let description = description.replace(
+                        "Returns the unchanged worker evaluation response.",
+                        NOTATION_RESULT,
+                    );
+                    tool["description"] = json!(description);
+                }
                 if SCOPED.contains(&tool["name"].as_str().unwrap_or_default()) {
                     tool["inputSchema"]["properties"]["space"] = json!({
                         "type": "string",
@@ -66,6 +76,49 @@ impl Server {
         tools.extend(views.tools());
         Self { peer, tools, views }
     }
+}
+
+const NOTATION_RESULT: &str = "Returns the matches as Tonk notation, one `<concept>:` block per match with `this:` and its fields, the same form `tonk eval` prints.";
+
+/// A query or evaluation answered as notation, the form agents read and write:
+/// each match as a `<concept>:` block, and for a write the committed claims and
+/// entities as leading comments. Structured content keeps the matches (and the
+/// commit) without the revision bytes the worker's envelope carries.
+fn notation(tool: &str, response: Value) -> CallToolResult {
+    let Ok(matches) =
+        serde_json::from_value::<Vec<QueryMatchBlock>>(response["matches_after"].clone())
+    else {
+        return text(response, false);
+    };
+    let mut out = String::new();
+    let mut structured = json!({ "matches": response["matches_after"] });
+    if tool == "tonk_evaluate" {
+        let claims = response["commits"]["claims"].as_u64().unwrap_or(0);
+        out.push_str(&format!(
+            "# committed {claims} claim{}\n",
+            if claims == 1 { "" } else { "s" }
+        ));
+        if let Some(entities) = response["commits"]["entities"].as_object() {
+            for (key, entity) in entities {
+                out.push_str(&format!("# {key}: {}\n", entity.as_str().unwrap_or("?")));
+            }
+        }
+        structured["commits"] = response["commits"].clone();
+    }
+    let body = render_matches(&matches);
+    if body.is_empty() {
+        out.push_str("# no matches\n");
+    } else {
+        let count: usize = matches.iter().map(|block| block.results.len()).sum();
+        out.push_str(&body);
+        out.push_str(&format!(
+            "\n# {count} match{}\n",
+            if count == 1 { "" } else { "es" }
+        ));
+    }
+    let mut result = CallToolResult::success(vec![ContentBlock::text(out)]);
+    result.structured_content = Some(structured);
+    result
 }
 
 fn text(result: Value, error: bool) -> CallToolResult {
@@ -177,6 +230,7 @@ impl ServerHandler for Server {
             .into());
         }
         Ok(match self.peer.call(name, arguments).await {
+            Ok(result) if SCOPED.contains(&name) => notation(name, result),
             Ok(result) => text(result, false),
             Err(error) => text(json!(error), true),
         }
@@ -220,5 +274,66 @@ impl ServerHandler for Server {
             ResourceContents::text(body, request.uri.clone()).with_mime_type("text/markdown"),
         ])
         .into())
+    }
+}
+
+#[cfg(test)]
+mod notation_tests {
+    use super::*;
+
+    fn response(claims: u64) -> Value {
+        json!({
+            "revision_before": { "tree": [1, 2, 3] },
+            "revision_after": { "tree": [4, 5, 6] },
+            "matches_before": [],
+            "matches_after": [
+                { "label": "counter", "results": [
+                    { "this": "id:demo-counter", "fields": { "count": 32 } }
+                ] }
+            ],
+            "commits": { "claims": claims, "entities": { "fresh": "id:new-thing" } },
+        })
+    }
+
+    fn body(result: &CallToolResult) -> String {
+        result.content[0].as_text().expect("text").text.clone()
+    }
+
+    #[test]
+    fn a_query_answers_in_notation_without_the_envelope() {
+        let result = notation("tonk_query", response(0));
+        assert_eq!(
+            body(&result),
+            "counter:\n  this: id:demo-counter\n  count: 32\n# 1 match\n"
+        );
+        let structured = result.structured_content.expect("structured");
+        assert_eq!(structured["matches"][0]["label"], "counter");
+        assert!(structured.get("revision_after").is_none(), "{structured}");
+    }
+
+    #[test]
+    fn a_write_leads_with_what_it_committed() {
+        let result = notation("tonk_evaluate", response(2));
+        assert_eq!(
+            body(&result),
+            "# committed 2 claims\n# fresh: id:new-thing\ncounter:\n  this: id:demo-counter\n  count: 32\n# 1 match\n"
+        );
+        assert_eq!(
+            result.structured_content.expect("structured")["commits"]["claims"],
+            2
+        );
+    }
+
+    #[test]
+    fn no_matches_says_so() {
+        let mut empty = response(0);
+        empty["matches_after"] = json!([]);
+        assert_eq!(body(&notation("tonk_query", empty)), "# no matches\n");
+    }
+
+    #[test]
+    fn an_unexpected_shape_passes_through() {
+        let result = notation("tonk_query", json!({ "note": "not an evaluation" }));
+        assert!(body(&result).contains("not an evaluation"));
     }
 }
