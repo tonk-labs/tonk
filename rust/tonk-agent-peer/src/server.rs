@@ -27,6 +27,30 @@ const TOOLS: &[&str] = &[
     "tonk_evaluate",
     "tonk_guide",
 ];
+/// This peer's own tool, outside the shared catalog: no other host holds a
+/// key of its own to ask with.
+const REQUEST_ACCESS: &str = "tonk_request_access";
+
+/// [`REQUEST_ACCESS`]: a signed request a person approves in the browser,
+/// granting spaces to this peer's own key.
+fn request_access_tool() -> Tool {
+    serde_json::from_value(json!({
+        "name": REQUEST_ACCESS,
+        "description": "Ask a person for access to their Tonk spaces under this machine's own agent key. Returns a link for the person to open where they use Tonk, and a verification code: show them the code, and they approve only if the page shows the same one. They then choose the spaces to share; join each link the page gives them with tonk_join. Use this instead of asking for share links when the person wants to give this agent access.",
+        "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false },
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "minLength": 1, "maxLength": 80, "description": "How the person will see this agent, such as \"Claude Code on Jack's MacBook\"." },
+                "origin": { "type": "string", "description": "The Tonk address the person uses. Defaults to https://tonk.network." }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+        }
+    }))
+    .expect("request access tool shape")
+}
+
 /// Tools that act on one joined space take its subject.
 const SCOPED: &[&str] = &["tonk_query", "tonk_evaluate"];
 
@@ -63,6 +87,7 @@ impl Server {
             .collect::<Vec<Tool>>();
         assert_eq!(tools.len(), TOOLS.len(), "catalog misses a peer tool");
         let mut tools = tools;
+        tools.push(request_access_tool());
         tools.extend(views.tools());
         Self { peer, tools, views }
     }
@@ -158,7 +183,7 @@ impl ServerHandler for Server {
         if let Some(result) = self.views.call(&self.peer, name, &arguments).await {
             return Ok(result.into());
         }
-        if !TOOLS.contains(&name) {
+        if !TOOLS.contains(&name) && name != REQUEST_ACCESS {
             return Ok(text(json!("Tool unavailable."), true).into());
         }
         if name == "tonk_guide" {

@@ -32,7 +32,9 @@ pub const REQUEST_TTL_SECONDS: u64 = 60 * 60;
 /// Longest display name a request may carry.
 pub const MAX_NAME_LENGTH: usize = 80;
 
-const PREFIX: &str = "tonk-agent-request=";
+/// Not `tonk-agent-…`: links with that prefix carry grants, and a request carries
+/// none, so the two must never be mistaken for each other.
+const PREFIX: &str = "tonk-access-request=";
 const REQUEST_COMMAND: &[&str] = &["agent", "access", "request"];
 const META_NAME: &str = "tonk.agent.name";
 const MAX_ENCODED_LENGTH: usize = 8 * 1024;
