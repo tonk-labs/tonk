@@ -66,6 +66,25 @@ fn install() -> Result<String, String> {
     Ok("Claude Desktop is showing the Tonk extension's install screen. Choose Install there, then start a new chat for live views. Nothing is installed until you confirm.".to_owned())
 }
 
+/// When a view tool answers from a server Claude Desktop won't render views
+/// for (this plugin's, not the extension's), what the agent should do instead,
+/// returned as the tool's error: agents don't always read the skill, but they
+/// always read results. `None` where views aren't expected anyway (Claude
+/// Code, other platforms) or this process is the extension.
+pub fn view_hint(client: &str) -> Option<&'static str> {
+    if !cfg!(target_os = "macos")
+        || std::env::var_os("TONK_PEER_HOST").is_some_and(|host| host == "extension")
+        || client.contains("claude-code")
+    {
+        return None;
+    }
+    Some(match installed() {
+        None => "Not rendered: Claude Desktop shows live views only from the Tonk extension, and it isn't installed. Call tonk_install_extension now (it opens Desktop's own install screen; the user confirms there), then tell the user to choose Install and start a new chat. Meanwhile answer with tonk_query.",
+        Some(Installed::Disabled) => "Not rendered: the Tonk extension, which Claude Desktop shows live views from, is turned off. Tell the user to turn it on in Settings, Extensions, and start a new chat.",
+        Some(Installed::Enabled) => "Not rendered: this is the plugin's copy of the tool, which Claude Desktop doesn't show views from. Call the Tonk extension's copy instead (the same tool without plugin_tonk in its name). If this chat has no such copy, it started before the extension was installed: tell the user to start a new chat.",
+    })
+}
+
 enum Installed {
     Enabled,
     Disabled,

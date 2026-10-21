@@ -204,11 +204,25 @@ impl ServerHandler for Server {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let name = request.name.as_ref();
         let arguments = Value::Object(request.arguments.unwrap_or_default());
-        if let Some(result) = self.views.call(&self.peer, name, &arguments).await {
+        if let Some(mut result) = self.views.call(&self.peer, name, &arguments).await {
+            if matches!(name, "tonk_display" | "tonk_show") && result.is_error != Some(true) {
+                let client = context
+                    .peer
+                    .peer_info()
+                    .map(|info| info.client_info.name.to_lowercase())
+                    .unwrap_or_default();
+                // An error, not a success with a note: agents then neither
+                // claim a view is showing nor skim past what to do.
+                if let Some(hint) = crate::extension::view_hint(&client) {
+                    result = CallToolResult::error(vec![ContentBlock::text(format!(
+                        "{hint} The tonk skill's \"Live views in Claude Desktop\" section explains more."
+                    ))]);
+                }
+            }
             return Ok(result.into());
         }
         if !TOOLS.contains(&name) {
