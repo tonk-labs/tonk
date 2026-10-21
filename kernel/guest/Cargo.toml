@@ -1,0 +1,27 @@
+[package]
+name = "tonk-kernel"
+description = "A Tonk kernel: a component for the world sapling:kernel, on the latest Dialog"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+async-trait = "0.1"
+blake3 = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+serde_json = "1"
+signature = "2.2"
+wit-bindgen = { version = "0.61.1", features = ["async-spawn", "inter-task-wakeup"] }
+dialog-artifacts.workspace = true
+dialog-capability.workspace = true
+dialog-common.workspace = true
+dialog-credentials.workspace = true
+dialog-effects.workspace = true
+dialog-peer.workspace = true
+dialog-query.workspace = true
+dialog-repository.workspace = true
+dialog-storage.workspace = true
+dialog-varsig.workspace = true

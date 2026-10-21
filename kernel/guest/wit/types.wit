@@ -1,0 +1,66 @@
+package sapling:kernel@0.1.0;
+
+/// The types that the other interfaces of the world share. See PDD007,
+/// "Types".
+interface types {
+  /// A DID, such as `did:key:z6Mk…`.
+  type did = string;
+  /// The hash of a block, as Dialog DB names it.
+  type hash = list<u8>;
+  /// A UCAN container: a chain, or an invocation with its chain.
+  type ucan = list<u8>;
+  /// The version of a cell, for compare and set. Opaque.
+  type version = list<u8>;
+  /// A route to a peer, in the syntax of PDD006. A hint, not an identity.
+  type route = string;
+
+  /// The content of a cell, and its version.
+  record edition {
+    content: list<u8>,
+    version: version,
+  }
+
+  /// A range of the bytes of a blob. With no end, the range runs to the end
+  /// of the blob.
+  record byte-range {
+    start: u64,
+    end: option<u64>,
+  }
+
+  /// The form of the body of a blob read: its raw bytes, or the verified
+  /// stream of PDD013 "The Verified Stream", the groups of the range with
+  /// the hashes that verify each against the hash of the blob alone.
+  enum encoding { raw, bao }
+
+  /// The answer of a blob read: the proof of the range, when the read asks
+  /// for one, and its body.
+  record blob-read {
+    /// The hashes of the subtrees of the Bao tree of the blob beside the
+    /// range, from left to right, with groups of 16 KiB. Empty unless the
+    /// read asks for a proof. See PDD013 "The Proof of a Range".
+    proof: list<hash>,
+    body: stream<u8>,
+  }
+
+  variant error {
+    /// The scope of the handle, or the chain, does not allow this.
+    denied(string),
+    /// A compare and set lost a race. The cell has a new version.
+    conflict,
+    /// The chain of the handle expired. Open the layer again.
+    expired,
+    /// The input is not valid.
+    invalid(string),
+    /// A peer, or the storage, did not answer.
+    unavailable(string),
+    /// No route to a peer answered: a failure of the network, which a
+    /// caller tries again later.
+    unreachable(string),
+    /// An exchange with a peer broke off, or got no answer in time: a
+    /// failure of the network, which a caller tries again later.
+    broke-off(string),
+    /// The blob store of the subject has no room for the bytes: the write
+    /// passes the quota of the device.
+    full(string),
+  }
+}

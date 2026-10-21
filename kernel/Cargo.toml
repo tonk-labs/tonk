@@ -1,0 +1,32 @@
+# A Tonk kernel and the host that runs it: a Wasm component for the world
+# `sapling:kernel`, and the embedder a space's service worker drives on the
+# Wasm Component Model Polyfill. Its own workspace: the kernel builds on the
+# latest Dialog for `wasm32-wasip3`, which the main workspace does not.
+[workspace]
+resolver = "2"
+members = ["guest", "host"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db", rev = "ffbb477246aff7a9d3c0f44b632e85da6a92fd16" }
+wcmp = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "d3ffe606b57536e9af38e474e2203415071ac1a5" }
+wcmp-wasm-core-wasmtime = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "d3ffe606b57536e9af38e474e2203415071ac1a5" }
+wcmp-wasm-core-web = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "d3ffe606b57536e9af38e474e2203415071ac1a5" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

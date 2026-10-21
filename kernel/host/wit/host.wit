@@ -1,0 +1,13 @@
+package sapling:kernel@0.1.0;
+
+/// The interfaces of `sapling:kernel/kernel` that are Sapling's own: what a
+/// host binds with generated code. WASI is defined beside them, dynamically.
+world host {
+  import types;
+  import storage;
+  import session;
+  import application;
+  import network;
+  export lifecycle;
+  export channel;
+}

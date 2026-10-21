@@ -1,0 +1,4 @@
+/target
+/site/embedder.js
+/site/embedder_bg.wasm
+/site/_kernel/

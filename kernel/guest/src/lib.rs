@@ -1,0 +1,189 @@
+//! A Tonk guest kernel: a component for the world `sapling:kernel`, which the
+//! same host and bootloader run as any other kernel. It opens the space's
+//! repository of Dialog DB on the layer of `memory:space`, signs through
+//! `session`, and serves the space's data over `wasi:http/handler`.
+//!
+//! Routes:
+//! - `GET /api/health`: `ok` once booted.
+//! - `POST /api/transact`: a JSON list of `{"the", "of", "is"}` (text values),
+//!   asserted on `main`. Answers the new head's edition count.
+//! - `POST /api/select`: `{"the"}`, answers the matching facts as JSON.
+
+pub mod world {
+    wit_bindgen::generate!({
+        path: "wit",
+        world: "sapling:kernel/kernel",
+        generate_all,
+    });
+}
+
+mod cache;
+mod guest;
+mod http;
+mod layer;
+mod mount;
+mod repository;
+mod signal;
+mod store;
+
+use std::sync::{Mutex, PoisonError};
+
+use dialog_artifacts::{Artifact, ArtifactSelector, Instruction, Value};
+use serde_json::{Value as Json, json};
+
+use repository::Repository;
+use world::exports::sapling::kernel::{channel, lifecycle};
+use world::exports::wasi::http::handler;
+use world::sapling::kernel::types::Error;
+use world::wasi::http::types::{ErrorCode, Method, Request, Response};
+
+/// The space's repository, once `init` opened it. A `static`, not a
+/// thread-local: on `wasm32-wasip3` each export call is a task of its own,
+/// with thread-locals of its own.
+static REPOSITORY: Mutex<Held> = Mutex::new(Held(None));
+
+/// Dialog DB's peer is not `Send`; a component runs on one thread, so a
+/// `static` may hold it.
+struct Held(Option<Repository>);
+
+// SAFETY: a component instance runs on a single thread; nothing here is
+// reached from another.
+unsafe impl Send for Held {}
+
+fn repository() -> Option<Repository> {
+    REPOSITORY
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .0
+        .clone()
+}
+
+fn invalid(error: impl std::fmt::Display) -> Error {
+    Error::Invalid(error.to_string())
+}
+
+struct Kernel;
+
+impl lifecycle::Guest for Kernel {
+    async fn init(boot: lifecycle::Boot) -> Result<(), Error> {
+        let started = world::wasi::clocks::monotonic_clock::now();
+        let space = boot
+            .stack
+            .into_iter()
+            .find(|stacked| stacked.scopes.iter().any(|scope| scope == "memory:space"))
+            .ok_or_else(|| invalid("the boot binds no layer under memory:space"))?;
+        let layer = guest::HandleLayer::new(space.layer).map_err(invalid)?;
+        let subject = layer::Layer::subject(&layer);
+        let signer = guest::session_signer().map_err(invalid)?;
+        let _ = (subject, boot.persona);
+        let opened = Repository::open(layer::share(layer), signer)
+            .await
+            .map_err(invalid)?;
+        REPOSITORY.lock().unwrap_or_else(PoisonError::into_inner).0 = Some(opened);
+        let took = world::wasi::clocks::monotonic_clock::now() - started;
+        eprintln!("tonk-kernel: opened the space in {}us", took / 1000);
+        Ok(())
+    }
+
+    async fn sync(_changes: Vec<lifecycle::CellChange>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn shutdown(_deadline_ms: u32) {}
+}
+
+impl channel::Guest for Kernel {
+    async fn receive(_catchup: Vec<u8>) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+fn text(json: &Json, field: &str) -> Result<String, String> {
+    json.get(field)
+        .and_then(Json::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("`{field}` is not text"))
+}
+
+async fn transact(body: &[u8]) -> Result<Json, String> {
+    let repository = repository().ok_or("the kernel has not booted")?;
+    let claims: Vec<Json> = serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    let instructions = claims
+        .iter()
+        .map(|claim| {
+            Ok(Instruction::Assert(
+                Artifact {
+                    the: text(claim, "the")?
+                        .parse()
+                        .map_err(|error| format!("{error}"))?,
+                    of: text(claim, "of")?
+                        .parse()
+                        .map_err(|error| format!("{error}"))?,
+                    is: Value::String(text(claim, "is")?),
+                    cause: None,
+                },
+                dialog_artifacts::Pick::All,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let branch = repository
+        .branch("main")
+        .await
+        .map_err(|error| error.to_string())?;
+    let revision = branch
+        .commit(instructions)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(
+        json!({ "committed": claims.len(), "head": revision.map(|revision| format!("{revision:?}").len()) }),
+    )
+}
+
+async fn select(body: &[u8]) -> Result<Json, String> {
+    let repository = repository().ok_or("the kernel has not booted")?;
+    let query: Json = serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    let the = text(&query, "the")?
+        .parse()
+        .map_err(|error| format!("{error}"))?;
+    let branch = repository
+        .branch("main")
+        .await
+        .map_err(|error| error.to_string())?;
+    let facts = branch
+        .select(ArtifactSelector::new().the(the))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Json::Array(
+        facts
+            .into_iter()
+            .map(|fact| json!({ "the": fact.the.to_string(), "of": fact.of.to_string(), "is": format!("{:?}", fact.is) }))
+            .collect(),
+    ))
+}
+
+impl handler::Guest for Kernel {
+    async fn handle(request: Request) -> Result<Response, ErrorCode> {
+        let (method, path, _) = http::target(&request);
+        let answer = match (&method, path.as_str()) {
+            (Method::Get, "/api/health") => {
+                return Ok(http::respond(
+                    200,
+                    Some("text/plain"),
+                    match repository() {
+                        Some(_) => b"ok".to_vec(),
+                        None => b"booting".to_vec(),
+                    },
+                ));
+            }
+            (Method::Post, "/api/transact") => transact(&http::read_body(request).await?).await,
+            (Method::Post, "/api/select") => select(&http::read_body(request).await?).await,
+            _ => return Ok(http::respond(404, None, b"not found".to_vec())),
+        };
+        Ok(match answer {
+            Ok(body) => http::json(200, body.to_string()),
+            Err(error) => http::json(500, json!({ "error": error }).to_string()),
+        })
+    }
+}
+
+world::export!(Kernel with_types_in world);
