@@ -91,6 +91,31 @@ without a default; only `CLAUDE_PLUGIN_ROOT`, `PATH`, `HOME` and similar are
 expanded (`CLAUDE_PLUGIN_DATA` is not); the command must resolve inside the
 plugin directory.
 
+## What we tested (macOS, Desktop 2.42304.2, October 2026)
+
+All in threads that reach the computer through the Desktop link, each in a
+chat started after the install:
+
+| Delivered as | Server command | Views |
+| --- | --- | --- |
+| Extension, binary bundled | `${__dirname}/server/tonk-agent-peer` | render |
+| Extension, launcher script | `${__dirname}/server/tonk-agent-peer` (executable, `#!/bin/sh`) | render |
+| Extension, launcher script | `/bin/sh ${__dirname}/server/tonk-agent-peer` | did not render (tested only in chats started before the install, so unconfirmed) |
+| Plugin, the same launcher bundled as `.mcpb` | `${__dirname}/server/tonk-agent-peer` | text only |
+
+Two rules that cost us a day:
+
+- **Views render only in chats started after the extension was installed or
+  updated.** An older chat keeps the tool list it started with and never
+  requests the view, even though the tools still answer. Test in a new chat.
+- **Right after a plugin or extension is installed or updated, Desktop stops
+  and restarts its server (about 30 seconds).** A chat started in that window
+  sees none of its tools.
+
+Views from Anthropic's built-in apps render in the same threads. Mod panes
+don't: a mod in these threads has no surface (`$.session.surfaces()` is `[]`,
+`$.ui.open` resolves `isPlaced: false, reason: "no-surface"`).
+
 ## Options for Tonk today
 
 The directory no longer accepts extensions (`.mcpb`) and asks for local servers
