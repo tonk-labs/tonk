@@ -793,7 +793,7 @@ async fn prepare_parsed_join(
     // Derived from the chain as parsed — a claim pushes a redelegation
     // and changes the leaf. Guaranteed `Some` by the `Invite` invariant
     // (the chain has a specific subject).
-    let invitation = Invitation::from_chain(&invite.chain)
+    let invitation = Invitation::from_chain(invite.invitation_chain())
         .expect("Invite invariant: chain has a specific subject");
 
     let open = matches!(&invite.audience, InviteAudience::Open { .. });
