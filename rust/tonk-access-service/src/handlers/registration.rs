@@ -181,20 +181,19 @@ async fn handle_inner(
         env.d1("CONTROL")
             .map_err(|err| internal(format!("control database: {err}")))?,
     );
-    let service_seed = env
-        .secret("SERVICE_SECRET_KEY")
-        .map_err(|err| internal(format!("SERVICE_SECRET_KEY: {err}")))?
-        .to_string();
+    let service_seed = crate::secret::secret(env, "SERVICE_SECRET_KEY")
+        .map_err(|err| internal(format!("SERVICE_SECRET_KEY: {err}")))?;
     let service = signer_from_hex(&service_seed)
         .map_err(|message| RegistrationError::Internal { message })?;
     // Missing email credentials fail at the SEND, not up front: only
     // enrollment and resend mail anything, and refusing activation over
     // an email secret it never uses stranded every preview environment
     // that lacked one.
-    let email = match (env.secret("RESEND_API_KEY"), env.var("EMAIL_FROM")) {
-        (Ok(api_key), Ok(from)) => {
-            MaybeEmail::Ready(Resend::new(api_key.to_string(), from.to_string()))
-        }
+    let email = match (
+        crate::secret::secret(env, "RESEND_API_KEY"),
+        env.var("EMAIL_FROM"),
+    ) {
+        (Ok(api_key), Ok(from)) => MaybeEmail::Ready(Resend::new(api_key, from.to_string())),
         (api_key, from) => MaybeEmail::Missing(format!(
             "email delivery is not configured: RESEND_API_KEY {}, EMAIL_FROM {}",
             if api_key.is_ok() { "set" } else { "missing" },
@@ -255,10 +254,8 @@ fn internal(message: String) -> RegistrationError {
 
 /// The service's signing identity, from the `SERVICE_SECRET_KEY` secret.
 fn service_signer(env: &Env) -> Result<Ed25519Signer, RegistrationError> {
-    let seed = env
-        .secret("SERVICE_SECRET_KEY")
-        .map_err(|err| internal(format!("SERVICE_SECRET_KEY: {err}")))?
-        .to_string();
+    let seed = crate::secret::secret(env, "SERVICE_SECRET_KEY")
+        .map_err(|err| internal(format!("SERVICE_SECRET_KEY: {err}")))?;
     signer_from_hex(&seed).map_err(|message| RegistrationError::Internal { message })
 }
 
@@ -400,7 +397,13 @@ pub async fn handle_did_document(req: Request, ctx: RouteContext<()>) -> worker:
     // The request's own origin: on the Worker this is the deployment the
     // browser actually reached, which is what a client should sync to.
     let origin = req.url()?.origin().ascii_serialization();
-    let document = did_document(&host, &origin, &signer);
+    // Only a deployment with the socket binding names a socket; one
+    // without answers its upgrade 404.
+    let sockets = ctx
+        .env
+        .durable_object(crate::service::SOCKETS_BINDING)
+        .is_ok();
+    let document = did_document(&host, &origin, &signer, sockets);
     // Pretty-printed: a DID document is something people open and read,
     // and `from_json` would emit it on one line.
     let body = serde_json::to_string_pretty(&document)

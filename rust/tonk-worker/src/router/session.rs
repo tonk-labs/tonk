@@ -65,12 +65,64 @@ pub struct ClientState {
     /// the client: the `/site` endpoints key it `site:<client-id>`, but
     /// the page-minted `tonk:load` command keys it `site:<uuid>`.
     pub sites: std::collections::HashSet<String>,
+    /// Sites this client asked to stamp on a space the device did not hold
+    /// yet, replayed by [`stamp_waiting_sites`] once the space opens.
+    pub waiting: Vec<WaitingSite>,
     /// Latched once this client appeared in `clients.matchAll()`. Until
     /// then the client is presumed to be booting, never dead.
     pub seen_live: bool,
     /// Active-profile generation under which this browser document first
     /// reached a profile-scoped route. Immutable for this Client ID.
     pub context_generation: Option<u64>,
+}
+
+/// A site stamp asked for on a space this device does not hold yet.
+///
+/// A page opened at a space's address mounts its views before joining it,
+/// so their `tonk:load` finds no branch and no replica to stamp against.
+/// Nothing asks again once the join lands, so the claim waits here instead
+/// of being dropped.
+#[derive(Debug, Clone)]
+pub struct WaitingSite {
+    site: String,
+    repo: String,
+    branch: String,
+    path: String,
+    rest: String,
+    anchor: String,
+}
+
+/// Stamp the sites waiting on `repo`, now that the device holds it.
+///
+/// A stamp that still finds no replica waits again.
+pub(crate) async fn stamp_waiting_sites(tonk: &crate::worker::TonkState, repo: &str) {
+    let waiting: Vec<(ClientId, WaitingSite)> = {
+        let mut clients = tonk.clients.write().await;
+        clients
+            .iter_mut()
+            .flat_map(|(client, state)| {
+                let (ready, rest) = std::mem::take(&mut state.waiting)
+                    .into_iter()
+                    .partition::<Vec<_>, _>(|waiting| waiting.repo == repo);
+                state.waiting = rest;
+                ready.into_iter().map(|waiting| (client.clone(), waiting))
+            })
+            .collect()
+    };
+    for (client, waiting) in waiting {
+        stamp_site_on(
+            tonk,
+            &waiting.site,
+            client,
+            &waiting.repo,
+            &waiting.branch,
+            false,
+            &waiting.path,
+            &waiting.rest,
+            waiting.anchor,
+        )
+        .await;
+    }
 }
 
 /// Bind a browser client to the current profile generation, or reject it when
@@ -335,18 +387,28 @@ async fn stamp_site_on(
     } else {
         tonk.reactor.repository(repo).branch(branch_name)
     };
+    let waiting = WaitingSite {
+        site: site.to_owned(),
+        repo: repo.to_owned(),
+        branch: branch_name.to_owned(),
+        path: path.to_owned(),
+        rest: rest.to_owned(),
+        anchor: anchor.clone(),
+    };
     let state = match branch.acquire(&tonk.operator).await {
         Ok(session) => session,
         Err(e) => {
             tonk_common::log!("register_site: failed to acquire branch for {path}: {e}");
+            wait_for_space(tonk, &client, profile, waiting).await;
             return;
         }
     };
 
     let Some(replica) = origin_entity(tonk, &state).await else {
         tonk_common::log!(
-            "[stamp] {site} SKIPPED: no origin_entity (repo={repo} branch={branch_name} rest={rest})"
+            "[stamp] {site} WAITING: no origin_entity (repo={repo} branch={branch_name} rest={rest})"
         );
+        wait_for_space(tonk, &client, profile, waiting).await;
         return;
     };
     let Some(matched) = match_route(tonk, &state, rest).await else {
@@ -446,6 +508,25 @@ async fn stamp_site_on(
         }
         tonk_common::log!("[stamp] {site} WROTE path={path}");
     }
+}
+
+/// Keep a stamp that found no space to land on, so the join that brings the
+/// space replays it. A later claim for the same site replaces it. The
+/// profile is always present, and a stamp without a client has no one to
+/// serve, so neither waits.
+async fn wait_for_space(
+    tonk: &crate::worker::TonkState,
+    client: &ClientId,
+    profile: bool,
+    waiting: WaitingSite,
+) {
+    if profile || client.0.is_empty() {
+        return;
+    }
+    let mut clients = tonk.clients.write().await;
+    let state = clients.entry(client.clone()).or_default();
+    state.waiting.retain(|held| held.site != waiting.site);
+    state.waiting.push(waiting);
 }
 
 /// Build a raw claim stamping a captured route param as a `xyz.tonk.site/{name}`

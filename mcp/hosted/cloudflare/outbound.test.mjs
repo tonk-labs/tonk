@@ -91,7 +91,7 @@ test('credential state uses a separate private conditional object', async () => 
 
 test('deployment provider is exact and isolated from other environments', async () => {
   const env = {
-    TONK_PROVIDER_ORIGIN: 'https://pr-1091-tonk-access-service-preview.tonk.workers.dev',
+    TONK_PROVIDER_ORIGIN: 'https://tonk-access-service-pr-1091.tonk.workers.dev',
   };
   const forwarded = [];
   const forward = async (request) => {

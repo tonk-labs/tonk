@@ -16,6 +16,8 @@ pub struct Pull<'a> {
     download: bool,
     /// Restrict that materialization to the operational regions.
     operational: bool,
+    /// Whether to ask a remote upstream where it stands before merging.
+    confirm_upstream: bool,
 }
 
 impl<'a> Pull<'a> {
@@ -25,7 +27,17 @@ impl<'a> Pull<'a> {
             branch,
             download: false,
             operational: false,
+            confirm_upstream: true,
         }
+    }
+
+    /// Merge the head last recorded for each remote upstream instead of
+    /// asking it where it stands, for a caller that learns of heads as
+    /// they move. See [`dialog_repository::Pull::assuming_upstream`]:
+    /// nothing is risked but staleness.
+    pub fn assuming_upstream(mut self) -> Self {
+        self.confirm_upstream = false;
+        self
     }
 
     /// Materialize every block and blob the adopted revision references
@@ -80,7 +92,13 @@ impl<'a> Pull<'a> {
         let before = cached.handle().revision().map(|r| r.tree);
 
         // Fetch + rebase + persist blocks — no cell writes, no lock.
-        let prepared = cached.handle().pull().prepare(env).await?;
+        let pull = cached.handle().pull();
+        let pull = if self.confirm_upstream {
+            pull
+        } else {
+            pull.assuming_upstream()
+        };
+        let prepared = pull.prepare(env).await?;
 
         // Advance the cells under the transactor lock, so this serializes with
         // commits on the same branch instead of racing the head CAS.

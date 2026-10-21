@@ -255,9 +255,10 @@ pub async fn record_of(
 ) -> Result<Option<RemoteRecord>, RemoteError> {
     Ok(list(site).await?.into_iter().find(|record| {
         record.subject == remote.did()
-            && remote
-                .addresses()
-                .contains(&SiteAddress::from(UcanAddress::new(&record.endpoint)))
+            && tonk_account::peer::reaches(
+                remote.addresses(),
+                &SiteAddress::from(UcanAddress::new(&record.endpoint)),
+            )
     }))
 }
 

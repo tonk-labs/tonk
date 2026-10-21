@@ -48,6 +48,16 @@ run_worker_first = [
 # `/object/` path, and the worker reads and writes the bucket through
 # this binding. That keeps the bytes on an origin browsers reach over
 # HTTP/2, where the S3 endpoint's six-connection cap does not apply.
+# Each space's live side: the Durable Object that keeps its sockets,
+# answers what they carry, and tells their watches of each cell write.
+[[durable_objects.bindings]]
+name = "LIVE"
+class_name = "Live"
+
+[[migrations]]
+tag = "v1-live"
+new_sqlite_classes = ["Live"]
+
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces"
@@ -137,6 +147,16 @@ enabled = true
 head_sampling_rate = 1
 invocation_logs = false
 
+# Each space's live side: the Durable Object that keeps its sockets,
+# answers what they carry, and tells their watches of each cell write.
+[[env.staging.durable_objects.bindings]]
+name = "LIVE"
+class_name = "Live"
+
+[[env.staging.migrations]]
+tag = "v1-live"
+new_sqlite_classes = ["Live"]
+
 [[env.staging.r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces-staging"
@@ -194,6 +214,16 @@ enabled = true
 head_sampling_rate = 1
 invocation_logs = false
 
+# Each space's live side: the Durable Object that keeps its sockets,
+# answers what they carry, and tells their watches of each cell write.
+[[env.dev.durable_objects.bindings]]
+name = "LIVE"
+class_name = "Live"
+
+[[env.dev.migrations]]
+tag = "v1-live"
+new_sqlite_classes = ["Live"]
+
 [[env.dev.r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces-dev"
@@ -229,9 +259,9 @@ namespace_id = "1001"
 [env.dev.vars]
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
-# Preview. Every pull request uploads a version of this environment under a
-# `--preview-alias` and is reached at its own workers.dev URL, so the
-# environment holds no route of its own. `routes = []` is load-bearing: a named
+# Preview. Every pull request deploys this environment as a worker of its own
+# and is reached at that worker's workers.dev URL, so the environment holds no
+# route of its own. `routes = []` is load-bearing: a named
 # environment inherits the top-level `routes`, and deploying it with that
 # inherited entry would reassign the `tonk.network` custom domain away from
 # production.
@@ -241,12 +271,51 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # this worker's presigned URLs, and neither of those belongs in an environment
 # someone else is testing against.
 [env.preview]
+# Each pull request deploys its own worker, as production does, rather than a
+# version of one shared worker: a version can neither create a Durable Object
+# class nor have a preview URL once its worker implements one, so a shared
+# preview could never carry `LIVE`. Continuous integration rewrites this name
+# to `tonk-access-service-pr-<N>` in a copy of this file, deploys it with a
+# plain `wrangler deploy`, which applies the migrations below, and deletes the
+# worker when the pull request closes.
+name = "tonk-access-service-preview"
 workers_dev = true
 routes = []
 
-# Wrangler rebuilds before upload, so it must select the preview artifact too.
+# Wrangler rebuilds before deploying, so it must select the preview artifact too.
 [env.preview.build]
 command = "nix build --accept-flake-config .#tonk-cloudflare-preview-artifacts"
+
+# Each space's live side: the Durable Object that keeps its sockets,
+# answers what they carry, and tells their watches of each cell write.
+[[env.preview.durable_objects.bindings]]
+name = "LIVE"
+class_name = "Live"
+
+[[env.preview.migrations]]
+tag = "v1-live"
+new_sqlite_classes = ["Live"]
+
+# A preview is a worker of its own, so it holds no secret set with `wrangler
+# secret put`: those belong to one worker. Its secrets are the account's,
+# kept in the Secrets Store and read at runtime (`src/secret.rs`), so no
+# deployment ever handles them. They are put in the store once:
+#
+#   wrangler secrets-store secret create <store-id> --remote --scopes workers \
+#     --name TONK_PREVIEW_SERVICE_SECRET_KEY   # 32 hex-encoded seed bytes
+#   wrangler secrets-store secret create <store-id> --remote --scopes workers \
+#     --name TONK_PREVIEW_RESEND_API_KEY
+#
+# Continuous integration fills in the store's id, as it does the databases'.
+[[env.preview.secrets_store_secrets]]
+binding = "SERVICE_SECRET_KEY_STORED"
+store_id = "SECRETS-STORE-REPLACED-PER-DEPLOY"
+secret_name = "TONK_PREVIEW_SERVICE_SECRET_KEY"
+
+[[env.preview.secrets_store_secrets]]
+binding = "RESEND_API_KEY_STORED"
+store_id = "SECRETS-STORE-REPLACED-PER-DEPLOY"
+secret_name = "TONK_PREVIEW_RESEND_API_KEY"
 
 [env.preview.observability]
 enabled = true
@@ -257,6 +326,7 @@ redact_query_string = true
 enabled = true
 head_sampling_rate = 1
 invocation_logs = false
+
 
 [[env.preview.r2_buckets]]
 binding = "BUCKET"
