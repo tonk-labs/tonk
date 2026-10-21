@@ -40,7 +40,8 @@ const READ_COMMAND: &str = "/use/get";
 /// `{origin}/space/{did}`. Publishing a space already published answers
 /// the same address and mints nothing. A publication record that no
 /// longer stands (an unpublish that failed partway left it without its
-/// ticket or its grant) is retracted and the space published afresh.
+/// ticket) is replaced by a fresh publication, and one whose grant was
+/// never retained recovers that grant from its ticket.
 ///
 /// # Errors
 ///
@@ -88,11 +89,22 @@ pub(crate) async fn publish(tonk: &TonkState, repo: &str) -> Result<String, Tonk
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
     let recorded = publications(tonk, session.handle(), &public).await?;
     if !recorded.is_empty() {
-        if publication_stands(tonk, session.handle(), &subject, &remote.access_url).await? {
-            return Ok(address);
+        match publication_standing(tonk, session.handle(), &subject, &remote.access_url).await? {
+            Standing::Stands => return Ok(address),
+            // A publish that stopped after the ticket and the record but
+            // before retaining the grant. The ticket's grant is live and
+            // the service never replaces a ticket, so recover the grant
+            // from it rather than mint another; retaining it is also what
+            // lets an unpublish find it to revoke.
+            Standing::Unretained(chain) => {
+                super::create_invite::retain_invite_authority(tonk, repo, &chain).await?;
+                log!("publish: '{repo}' retained the grant its public ticket hands out");
+                return Ok(address);
+            }
+            Standing::NoTicket => {
+                log!("publish: '{repo}' records a publication with no ticket; publishing again")
+            }
         }
-        log!("publish: '{repo}' records a publication that no longer stands; publishing again");
-        retract_publications(tonk, repo, recorded).await?;
     }
 
     let delegation: UcanDelegation = tonk
@@ -126,10 +138,17 @@ pub(crate) async fn publish(tonk: &TonkState, repo: &str) -> Result<String, Tonk
     let invitation = Invitation::from_chain(&chain)
         .ok_or_else(|| TonkWorkerError::Internal("the publication names no space".into()))?;
     let execution = InvitationExecution::new(&invitation, PUBLIC_KIND);
-    tonk.reactor
+    // The stale records go in the same commit that records this one, so a
+    // publish that stops before here leaves the space's record as it was.
+    let mut transaction = tonk
+        .reactor
         .repository(repo)
         .branch(CONTENT_BRANCH)
-        .transaction()
+        .transaction();
+    for (stale, stale_execution) in recorded {
+        transaction = transaction.retract(stale).retract(stale_execution);
+    }
+    transaction
         .assert(invitation)
         .assert(execution)
         .commit()
@@ -235,17 +254,28 @@ pub(crate) async fn unpublish(tonk: &TonkState, repo: &str) -> Result<(), TonkWo
     Ok(())
 }
 
-/// Whether the space's publication still stands: the service keeps the
-/// public principal's ticket, and the grant it hands a visitor is still
-/// retained on the space. A partial unpublish withdraws the ticket before
-/// it revokes, and retracts the grant before the record, so a record that
-/// outlived either is one a visitor can no longer claim through.
-async fn publication_stands(
+/// How the space's recorded publication stands with its service.
+enum Standing {
+    /// The service keeps the public principal's ticket, and the grant it
+    /// hands a visitor is retained on the space.
+    Stands,
+    /// The service keeps a ticket whose grant the space never retained.
+    Unretained(DelegationChain),
+    /// The service keeps no ticket: an unpublish withdrew it and then
+    /// failed before retracting the record.
+    NoTicket,
+}
+
+/// How the space's publication stands. A partial unpublish withdraws the
+/// ticket before it revokes, so a record that outlived its ticket is one
+/// a visitor can no longer claim through; a partial publish keeps the
+/// ticket and the record but may not have retained the grant.
+async fn publication_standing(
     tonk: &TonkState,
     branch: &dialog_repository::Branch,
     subject: &Did,
     access_url: &url::Url,
-) -> Result<bool, TonkWorkerError> {
+) -> Result<Standing, TonkWorkerError> {
     let ticket = Ticket::public(subject.clone(), access_url)
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
     let holder = ticket
@@ -261,14 +291,16 @@ async fn publication_stands(
             ))
         })?;
     let Some(bytes) = held else {
-        return Ok(false);
+        return Ok(Standing::NoTicket);
     };
-    let Some(leaf) = DelegationChain::try_from(bytes.as_slice())
-        .ok()
-        .and_then(|chain| chain.proof_cids().last().copied())
-    else {
-        return Ok(false);
-    };
+    let chain = DelegationChain::try_from(bytes.as_slice()).map_err(|error| {
+        TonkWorkerError::Internal(format!("the space's public ticket is not a chain: {error}"))
+    })?;
+    let leaf = chain
+        .proof_cids()
+        .last()
+        .copied()
+        .ok_or_else(|| TonkWorkerError::Internal("the public ticket has no leaf".into()))?;
     let retained = branch
         .delegations()
         .retained(leaf)
@@ -277,7 +309,11 @@ async fn publication_stands(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("publication grant lookup failed: {error}"))
         })?;
-    Ok(retained.is_some())
+    Ok(if retained.is_some() {
+        Standing::Stands
+    } else {
+        Standing::Unretained(chain)
+    })
 }
 
 /// Retract publication records, the facts the bar reads as "public".
@@ -962,6 +998,64 @@ mod tests {
             assert_eq!(grants().await, before, "nothing new is minted");
         }
 
+        // A publish that stopped after issuing the ticket but before
+        // retaining its grant: the service will not replace the ticket, so
+        // publishing again has to adopt its grant rather than mint another.
+        let ticketed = DelegationChain::try_from(
+            claim_public(&address, &space)
+                .await
+                .expect("the ticket is held")
+                .as_slice(),
+        )
+        .expect("the ticket is a chain");
+        let leaf = *ticketed.proof_cids().last().expect("the ticket has a leaf");
+        {
+            let tonk = state.read().await;
+            let branch = tonk
+                .reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .expect("content branch opens");
+            let unretain = dialog_ucan::UcanDelegation(DelegationChain::new(
+                ticketed
+                    .proofs()
+                    .last()
+                    .expect("the ticket has a leaf")
+                    .clone(),
+            ));
+            branch
+                .handle()
+                .delegations()
+                .retract(unretain)
+                .perform(&tonk.operator)
+                .await
+                .expect("the grant is unretained");
+            publish(&tonk, &key)
+                .await
+                .expect("publishing adopts the ticket's grant");
+            assert!(
+                branch
+                    .handle()
+                    .delegations()
+                    .retained(leaf)
+                    .perform(&tonk.operator)
+                    .await
+                    .expect("grants read")
+                    .is_some(),
+                "the ticket's grant is retained again"
+            );
+            assert_eq!(
+                publications(&tonk, branch.handle(), &public)
+                    .await
+                    .expect("publications read")
+                    .len(),
+                1,
+                "the record is kept"
+            );
+        }
+
         // Unpublishing now revokes both grants: the first visitor, whose
         // grant the failed unpublish left live, stops reading too.
         {
@@ -989,6 +1083,25 @@ mod tests {
                 .perform(&reader.operator)
                 .await
                 .expect_err("the first visitor's grant is revoked too");
+        }
+        {
+            let newcomer = newcomer.read().await;
+            newcomer
+                .profile
+                .space(key.as_str())
+                .load()
+                .perform(&newcomer.operator)
+                .await
+                .expect("the newcomer's replica loads")
+                .branch("main")
+                .open()
+                .perform(&newcomer.operator)
+                .await
+                .expect("the newcomer's branch opens")
+                .pull()
+                .perform(&newcomer.operator)
+                .await
+                .expect_err("the adopted grant is revoked as well");
         }
         {
             let tonk = state.read().await;
