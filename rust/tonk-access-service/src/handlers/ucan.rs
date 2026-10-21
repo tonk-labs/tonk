@@ -234,6 +234,12 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
             .map(with_cors_headers);
     }
     #[cfg(target_arch = "wasm32")]
+    if crate::invitation::is_invitation(&body_bytes) {
+        return crate::handlers::invitation::handle(&body_bytes, &req, &env)
+            .await
+            .map(with_cors_headers);
+    }
+    #[cfg(target_arch = "wasm32")]
     if registration_command(&body_bytes).is_some() {
         return handle_registration(&body_bytes, &req, &env)
             .await

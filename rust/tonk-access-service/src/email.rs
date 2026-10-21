@@ -179,3 +179,49 @@ mod tests {
         assert!(!html.contains(r#"href="https://tonk.network/activate?one=1&two="#));
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait(?Send)]
+impl crate::invitation::InvitationEmailSender for Resend {
+    async fn send_invitation(
+        &self,
+        email: &str,
+        link: &str,
+        id: &str,
+    ) -> Result<(), crate::invitation::InvitationError> {
+        let text = format!(
+            "You have been invited to a shared space on Tonk. Create an account using this email address, confirm it, then join the space. If you already created an account with this email, sign in to continue. This invitation expires in seven days.\n\n{link}\n\nIf you were not expecting this invitation, you can ignore it."
+        );
+        let html = format!(
+            "<h1>You’re invited to a Tonk space</h1><p>Create an account using this email address, confirm it, then join the space. Already have an account with this email? Sign in to continue.</p><p><a href=\"{link}\">Open invitation</a></p><p>This invitation expires in seven days. If you were not expecting it, you can ignore this email.</p>"
+        );
+        self.0
+            .send_html_idempotent(
+                email,
+                "You’re invited to a Tonk space",
+                &text,
+                &html,
+                &format!("tonk-email-invitation-{id}"),
+            )
+            .await
+            .map_err(|_| crate::invitation::InvitationError::Unavailable)
+    }
+}
+
+#[cfg(any(test, feature = "helpers"))]
+#[async_trait]
+impl crate::invitation::InvitationEmailSender for CapturedEmail {
+    async fn send_invitation(
+        &self,
+        email: &str,
+        link: &str,
+        _id: &str,
+    ) -> Result<(), crate::invitation::InvitationError> {
+        let mut messages = self.0.lock().expect("captured email mutex");
+        let message = (email.to_owned(), link.to_owned());
+        if !messages.contains(&message) {
+            messages.push(message);
+        }
+        Ok(())
+    }
+}
