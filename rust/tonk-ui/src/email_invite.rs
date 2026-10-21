@@ -204,6 +204,11 @@ async fn claim(host: &HtmlElement, id: &str) -> Result<(), String> {
     Err("Joining is taking longer than expected. Select Join Space to retry safely.".into())
 }
 
+async fn resolve_profile() {
+    #[cfg(target_arch = "wasm32")]
+    tonk_host::bridge::resolve_profile_with().await;
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -221,9 +226,4 @@ mod tests {
             assert!(!super::destination(value));
         }
     }
-}
-
-async fn resolve_profile() {
-    #[cfg(target_arch = "wasm32")]
-    tonk_host::bridge::resolve_profile_with().await;
 }

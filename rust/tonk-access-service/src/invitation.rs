@@ -404,9 +404,6 @@ fn decode(value: &str) -> Result<DelegationChain, InvitationError> {
     DelegationChain::try_from(bytes.as_slice()).map_err(|_| InvitationError::Invalid)
 }
 
-#[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
-mod tests;
-
 /// Dispatch hint only. The service verifies all bytes before performing anything.
 pub fn is_invitation(body: &[u8]) -> bool {
     InvocationChain::<AnySignature>::try_from(body)
@@ -415,3 +412,6 @@ pub fn is_invitation(body: &[u8]) -> bool {
             chain.command().0.first().map(String::as_str) == Some("email-invitation")
         })
 }
+
+#[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
+mod tests;

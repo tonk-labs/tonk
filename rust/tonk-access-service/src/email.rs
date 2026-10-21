@@ -148,38 +148,6 @@ impl EmailSender for Resend {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::activation_email_html;
-
-    #[test]
-    fn activation_email_uses_a_styled_verification_button() {
-        let html = activation_email_html("https://tonk.network/activate?token=abc");
-
-        assert!(html.contains("background:#e8e6e4"));
-        assert!(html.contains("background:#38182a"));
-        assert!(html.contains(
-            r#"<img src="https://tonk.network/images/tonk-wordmark.svg" width="132" height="44" alt="tonk""#
-        ));
-        assert!(
-            html.contains(r#"href="https://tonk.network/activate?token=abc" style="display:block"#)
-        );
-        assert!(html.contains(">verify email</a>"));
-    }
-
-    #[test]
-    fn activation_email_escapes_the_link_for_an_html_attribute() {
-        let html = activation_email_html(
-            "https://tonk.network/activate?one=1&two=\"quoted\"&three=<value>",
-        );
-
-        assert!(html.contains(
-            r#"href="https://tonk.network/activate?one=1&amp;two=&quot;quoted&quot;&amp;three=&lt;value&gt;""#
-        ));
-        assert!(!html.contains(r#"href="https://tonk.network/activate?one=1&two="#));
-    }
-}
-
 #[cfg(target_arch = "wasm32")]
 #[async_trait(?Send)]
 impl crate::invitation::InvitationEmailSender for Resend {
@@ -209,7 +177,8 @@ impl crate::invitation::InvitationEmailSender for Resend {
 }
 
 #[cfg(any(test, feature = "helpers"))]
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl crate::invitation::InvitationEmailSender for CapturedEmail {
     async fn send_invitation(
         &self,
@@ -223,5 +192,37 @@ impl crate::invitation::InvitationEmailSender for CapturedEmail {
             messages.push(message);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::activation_email_html;
+
+    #[test]
+    fn activation_email_uses_a_styled_verification_button() {
+        let html = activation_email_html("https://tonk.network/activate?token=abc");
+
+        assert!(html.contains("background:#e8e6e4"));
+        assert!(html.contains("background:#38182a"));
+        assert!(html.contains(
+            r#"<img src="https://tonk.network/images/tonk-wordmark.svg" width="132" height="44" alt="tonk""#
+        ));
+        assert!(
+            html.contains(r#"href="https://tonk.network/activate?token=abc" style="display:block"#)
+        );
+        assert!(html.contains(">verify email</a>"));
+    }
+
+    #[test]
+    fn activation_email_escapes_the_link_for_an_html_attribute() {
+        let html = activation_email_html(
+            "https://tonk.network/activate?one=1&two=\"quoted\"&three=<value>",
+        );
+
+        assert!(html.contains(
+            r#"href="https://tonk.network/activate?one=1&amp;two=&quot;quoted&quot;&amp;three=&lt;value&gt;""#
+        ));
+        assert!(!html.contains(r#"href="https://tonk.network/activate?one=1&two="#));
     }
 }

@@ -111,3 +111,21 @@ fixed the experiment. The full browser ceremony passes on this artifact
 in another tab, original locator restored, reload, Join Space, exact subject.
 A fresh optimized Nix artifact is building for the final repeat. No production
 email, hosted deployment or cross-device recovery was exercised.
+
+### Final browser artifact and CI follow-up
+
+The fresh local Nix rebuild failed with `rustc-LLVM ERROR: No space left on device`.
+Only this task's disposable compiler outputs were reclaimed (5.9 GB); source and
+other worktrees were untouched. Its retry was stopped once CI provided the exact
+PR browser artifact, avoiding a duplicate disk-heavy build.
+
+GitHub run 39630271495, artifact 12359116761 (`e2e-browser`), built the production
+sources at 664c8446bd. Its build ID is `a5592d02b83ddc05`. The full Chrome email /
+signup / activation / reload / exact-space join regression passes on that fresh
+artifact in 67.21 seconds. No shell patching was used for this final run.
+
+CI also exposed two test-configuration issues: the captured-email test transport
+needed the Wasm non-Send async signature, and implementation items followed test
+modules. The annotation and module order are corrected without changing production
+invitation behavior. The focused Wasm check with `helpers` passes after the correction.
+PR #1152 is stacked on #1148; broader CI remains in progress.

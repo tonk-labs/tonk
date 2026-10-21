@@ -507,6 +507,120 @@ impl Store for SqliteStore {
     }
 }
 
+#[async_trait]
+impl super::invitation::InvitationStore for SqliteStore {
+    async fn reserve_invitation(
+        &self,
+        row: &super::invitation::PendingInvitation,
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .0
+            .lock()
+            .expect("store mutex")
+            .execute(
+                super::invitation::RESERVE,
+                params![
+                    row.id,
+                    row.sender,
+                    row.email,
+                    row.space,
+                    row.created_at as i64,
+                    row.expires_at as i64
+                ],
+            )
+            .map_err(map_err)?
+            > 0)
+    }
+    async fn invitation(
+        &self,
+        id: &str,
+    ) -> Result<Option<super::invitation::PendingInvitation>, StoreError> {
+        self.0
+            .lock()
+            .expect("store mutex")
+            .query_row(super::invitation::SELECT, params![id], |r| {
+                Ok(super::invitation::PendingInvitation {
+                    id: r.get("id")?,
+                    sender: r.get("sender")?,
+                    email: r.get("email")?,
+                    space: r.get("space")?,
+                    created_at: r.get("created_at")?,
+                    expires_at: r.get("expires_at")?,
+                    original: r.get("original")?,
+                    recipient: r.get("recipient")?,
+                    completed: r.get("completed")?,
+                    sent_at: r.get("sent_at")?,
+                    cancelled: r.get("cancelled")?,
+                    attempts: r.get("attempts")?,
+                    next_attempt_at: r.get("next_attempt_at")?,
+                })
+            })
+            .optional()
+            .map_err(map_err)
+    }
+    async fn publish_invitation(
+        &self,
+        id: &str,
+        original: &str,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .0
+            .lock()
+            .expect("store mutex")
+            .execute(
+                super::invitation::PUBLISH,
+                params![id, original, now as i64],
+            )
+            .map_err(map_err)?
+            > 0)
+    }
+    async fn lease_invitation(&self, id: &str, now: u64) -> Result<bool, StoreError> {
+        Ok(self
+            .0
+            .lock()
+            .expect("store mutex")
+            .execute(super::invitation::LEASE, params![id, now as i64])
+            .map_err(map_err)?
+            > 0)
+    }
+    async fn invitation_sent(&self, id: &str, now: u64) -> Result<(), StoreError> {
+        self.0
+            .lock()
+            .expect("store mutex")
+            .execute(super::invitation::SENT, params![id, now as i64])
+            .map_err(map_err)?;
+        Ok(())
+    }
+    async fn complete_invitation(
+        &self,
+        id: &str,
+        recipient: &str,
+        completed: &str,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .0
+            .lock()
+            .expect("store mutex")
+            .execute(
+                super::invitation::COMPLETE,
+                params![id, recipient, completed, now as i64],
+            )
+            .map_err(map_err)?
+            > 0)
+    }
+    async fn cancel_invitation(&self, id: &str, sender: &str) -> Result<bool, StoreError> {
+        Ok(self
+            .0
+            .lock()
+            .expect("store mutex")
+            .execute(super::invitation::CANCEL, params![id, sender])
+            .map_err(map_err)?
+            > 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,119 +737,5 @@ mod tests {
             .expect("lookup succeeds")
             .expect("a suspended customer is still found");
         assert_eq!(found.status, CustomerStatus::Suspended);
-    }
-}
-
-#[async_trait]
-impl super::invitation::InvitationStore for SqliteStore {
-    async fn reserve_invitation(
-        &self,
-        row: &super::invitation::PendingInvitation,
-    ) -> Result<bool, StoreError> {
-        Ok(self
-            .0
-            .lock()
-            .expect("store mutex")
-            .execute(
-                super::invitation::RESERVE,
-                params![
-                    row.id,
-                    row.sender,
-                    row.email,
-                    row.space,
-                    row.created_at as i64,
-                    row.expires_at as i64
-                ],
-            )
-            .map_err(map_err)?
-            > 0)
-    }
-    async fn invitation(
-        &self,
-        id: &str,
-    ) -> Result<Option<super::invitation::PendingInvitation>, StoreError> {
-        self.0
-            .lock()
-            .expect("store mutex")
-            .query_row(super::invitation::SELECT, params![id], |r| {
-                Ok(super::invitation::PendingInvitation {
-                    id: r.get("id")?,
-                    sender: r.get("sender")?,
-                    email: r.get("email")?,
-                    space: r.get("space")?,
-                    created_at: r.get("created_at")?,
-                    expires_at: r.get("expires_at")?,
-                    original: r.get("original")?,
-                    recipient: r.get("recipient")?,
-                    completed: r.get("completed")?,
-                    sent_at: r.get("sent_at")?,
-                    cancelled: r.get("cancelled")?,
-                    attempts: r.get("attempts")?,
-                    next_attempt_at: r.get("next_attempt_at")?,
-                })
-            })
-            .optional()
-            .map_err(map_err)
-    }
-    async fn publish_invitation(
-        &self,
-        id: &str,
-        original: &str,
-        now: u64,
-    ) -> Result<bool, StoreError> {
-        Ok(self
-            .0
-            .lock()
-            .expect("store mutex")
-            .execute(
-                super::invitation::PUBLISH,
-                params![id, original, now as i64],
-            )
-            .map_err(map_err)?
-            > 0)
-    }
-    async fn lease_invitation(&self, id: &str, now: u64) -> Result<bool, StoreError> {
-        Ok(self
-            .0
-            .lock()
-            .expect("store mutex")
-            .execute(super::invitation::LEASE, params![id, now as i64])
-            .map_err(map_err)?
-            > 0)
-    }
-    async fn invitation_sent(&self, id: &str, now: u64) -> Result<(), StoreError> {
-        self.0
-            .lock()
-            .expect("store mutex")
-            .execute(super::invitation::SENT, params![id, now as i64])
-            .map_err(map_err)?;
-        Ok(())
-    }
-    async fn complete_invitation(
-        &self,
-        id: &str,
-        recipient: &str,
-        completed: &str,
-        now: u64,
-    ) -> Result<bool, StoreError> {
-        Ok(self
-            .0
-            .lock()
-            .expect("store mutex")
-            .execute(
-                super::invitation::COMPLETE,
-                params![id, recipient, completed, now as i64],
-            )
-            .map_err(map_err)?
-            > 0)
-    }
-    async fn cancel_invitation(&self, id: &str, sender: &str) -> Result<bool, StoreError> {
-        Ok(self
-            .0
-            .lock()
-            .expect("store mutex")
-            .execute(super::invitation::CANCEL, params![id, sender])
-            .map_err(map_err)?
-            > 0)
     }
 }
