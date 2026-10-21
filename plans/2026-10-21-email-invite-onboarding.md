@@ -129,3 +129,11 @@ needed the Wasm non-Send async signature, and implementation items followed test
 modules. The annotation and module order are corrected without changing production
 invitation behavior. The focused Wasm check with `helpers` passes after the correction.
 PR #1152 is stacked on #1148; broader CI remains in progress.
+
+The focused Wasm helpers check and module-order Clippy check pass after the final
+correction. An additional all-warnings-as-errors Wasm Clippy run with local Rust
+1.99 reports four existing warnings in untouched `cached.rs`, `cached/worker.rs`
+and `live.rs` (derivable default, non-Send Arc, redundant guard, unnecessary cast).
+CI uses Rust 1.93 and is rerunning; full lint/CI success is not claimed. All source
+changes are committed and the worktree is clean. Production deployment, real
+Resend delivery, and signed-in native button interaction remain unverified.
