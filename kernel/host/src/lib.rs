@@ -1,6 +1,7 @@
 //! A spike: run a Sapling guest kernel on the Wasm Component Model Polyfill,
 //! natively on Wasmtime's core engine and in a browser on its own.
 
+pub mod boot;
 #[cfg(target_arch = "wasm32")]
 pub mod embedder;
 pub mod http_types;
