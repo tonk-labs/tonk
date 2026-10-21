@@ -253,7 +253,7 @@ jobs:
 
             The plugin is pinned to this preview's binary. Paste a share or agent link for any Tonk space. Its identity and joined spaces live in `~/.tonk/agent-peer`; remove that directory to start over.
 
-            **Claude Desktop chat with live views:** Desktop renders views only from extensions, not from plugin servers, so also install [`tonk-peer.mcpb`](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ env.TAG }}/tonk-peer.mcpb) by opening it. It is the same self-updating peer as the plugin and shares `~/.tonk/agent-peer`. Ask Claude to display things from a joined space (`tonk_display`) or show a query live (`tonk_show`).
+            **Claude Desktop chat:** install the plugin zip above (Customize → Plugins). The first time you ask Claude to show something from a space, it opens Desktop's install screen for the Tonk extension that live views need; choose Install, then start a new chat. Or install [`tonk-peer.mcpb`](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ env.TAG }}/tonk-peer.mcpb) yourself.
 
   cleanup-preview:
     name: 'Remove preview'

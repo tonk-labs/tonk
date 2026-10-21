@@ -19,11 +19,11 @@ In Claude Desktop, add the `tonk-labs/tonk` marketplace under Customize →
 Plugins and install Tonk from it. macOS (Apple Silicon) and Linux (x86_64) are
 supported.
 
-For live views in Claude Desktop chat, also install the Tonk extension. Claude
-offers to do it when you first ask to see something, and opens Desktop's
-install screen if you agree. Or download
-[`tonk-peer.mcpb`](https://github.com/tonk-labs/tonk/releases/download/tonk-agent-peer-dev/tonk-peer.mcpb)
-and open it yourself. See [Live views](#live-views) for why it's separate.
+That's all there is to install. The first time you ask Claude to show
+something from a space in Claude Desktop chat, it opens Desktop's install
+screen for the small Tonk extension that live views need there; choose
+Install, and start a new chat. See [Live views](#live-views) for why views
+need it.
 
 To try a pull request's build, use the one-line `claude --plugin-url …` from
 the **Agent peer preview** comment on the pull request.
@@ -54,11 +54,12 @@ launcher. Everything they run, fetch or send:
   every few seconds while a session is open. It contacts no other service,
   sends nothing to Anthropic or to the plugin's authors, and joins only links
   you give it in the conversation.
-- **It opens Claude Desktop's extension installer only when you agree.** On
-  macOS, when you say yes to installing the Tonk extension for live views,
-  `tonk_install_extension` opens that verified `tonk-peer.mcpb` with Claude
-  Desktop, which shows its own install screen for you to confirm. It changes
-  nothing else, and does nothing when the extension is already installed.
+- **It opens Claude Desktop's extension installer when you ask to see
+  something.** On macOS, when you ask Claude to display or show something and
+  the Tonk extension isn't installed, `tonk_install_extension` opens that
+  verified `tonk-peer.mcpb` with Claude Desktop, which shows its own install
+  screen for you to confirm or cancel. It opens at most once per conversation,
+  changes nothing else, and does nothing when the extension is installed.
 - **It serves views on this computer only.** For live views in the
   conversation, the peer serves its own API on `127.0.0.1` at a random port.
   Every request must carry a random token that the peer creates when it

@@ -6,7 +6,8 @@
 //! extension (`tonk-peer.mcpb`, built with the same release) beside this
 //! binary, verified with the rest of the release archive. This tool opens it
 //! with Claude Desktop, which shows its own install screen: the user confirms
-//! there. The agent calls it only after the user agreed in the conversation.
+//! there. The agent calls it when the user asks to see something and live views
+//! need the extension; the install screen is the user's confirmation.
 use std::path::{Path, PathBuf};
 
 use rmcp::model::{CallToolResult, ContentBlock, Tool};
@@ -26,7 +27,7 @@ pub fn tool() -> Tool {
     serde_json::from_value(json!({
         "name": NAME,
         "title": "Install the Tonk extension in Claude Desktop",
-        "description": "Opens Claude Desktop's install screen for the Tonk extension, which live views (tonk_display, tonk_show) need in Desktop chat. Call it only after the user agreed to install it in this conversation. The user then confirms in Desktop's own install screen.",
+        "description": "Opens Claude Desktop's install screen for the Tonk extension, which live views (tonk_display, tonk_show) need in Desktop chat. Call it when the user asks to display or show something and only the plugin's copy of the tools is present, at most once per conversation. Nothing is installed until the user confirms in Desktop's own install screen.",
         "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
         "annotations": {
             "title": "Install the Tonk extension in Claude Desktop",

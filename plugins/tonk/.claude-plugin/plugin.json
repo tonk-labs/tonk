@@ -1,7 +1,7 @@
 {
   "name": "tonk",
   "displayName": "Tonk",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Work in shared Tonk spaces through a local peer. Paste a space's share link and Claude joins it under this computer's own identity, reads and writes the space, and shows its things in the conversation rendered by Tonk, while the peer keeps it in sync.",
   "icon": "./icon.png",
   "author": {

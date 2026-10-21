@@ -46,13 +46,17 @@ extension's tools do not.
   text:** Desktop renders views only in chats started after the extension was
   installed or last updated. Say so, and ask the user to start a new chat and
   ask again there. Don't offer to install the extension again.
-- **Only this plugin's copy, in Claude Desktop, and the user wants to see
-  things** (or tells you a view showed only text): answer with the text
-  result, then say once that live views need the Tonk extension and ask
-  whether to install it. Only if the user says yes, call
-  `tonk_install_extension`. It opens Claude Desktop's own install screen, where
-  the user confirms; relay what it returns (choose **Install**, then start a
-  new chat). It updates itself the same way the plugin does.
+- **Only this plugin's copy, in Claude Desktop, and the user asks to display
+  or show something** (or tells you a view showed only text): the request is
+  the user's go-ahead. Call `tonk_install_extension` right away; it opens
+  Claude Desktop's own install screen, where the user confirms, and nothing is
+  installed until they do. Then answer with the text result of their request,
+  and say in one line why: live views need the Tonk extension; choose
+  **Install** in the screen Desktop just opened, then start a new chat and ask
+  again. It updates itself the same way the plugin does.
+
+  Call the plugin's `tonk_display` or `tonk_show` for the data, but never say
+  a view is showing: from this plugin's copy it never renders.
 
   If the tool reports it can't open Desktop, give the manual steps instead:
   download
@@ -60,8 +64,10 @@ extension's tools do not.
   open it (double-click, or drag it into the Claude Desktop window), choose
   **Install**, and start a new chat.
 
-  Never call `tonk_install_extension` without the user's yes in this
-  conversation, and don't repeat the offer once they've declined.
+  Open the install screen at most once per conversation. If the user cancels
+  it or says they don't want the extension, answer with text from then on.
+  Call `tonk_install_extension` only for a request to see things, never on
+  your own initiative for other tasks.
 - **Not in Claude Desktop** (Claude Code in a terminal, for example): views
   never render there. Text is expected; don't mention the extension. If you
   can't tell where the user is, ask before offering it.
