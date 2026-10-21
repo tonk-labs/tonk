@@ -15,6 +15,10 @@ struct AddressBookView: View {
   @State private var selected: String?
   @State private var editing: DesktopContact?
   @State private var saveError: String?
+  @State private var addingLabel = false
+  @State private var newLabel = ""
+  @FocusState private var labelFocused: Bool
+  private static let suggestedLabels = ["Team", "Work", "Family", "Verified"]
   private var contacts: [DesktopContact] {
     access.contacts.filter {
       search.isEmpty || ($0.name + $0.id).localizedCaseInsensitiveContains(search)
@@ -54,6 +58,7 @@ struct AddressBookView: View {
               }
             }
           }.padding(.vertical, 4).tag(contact.id).listRowSeparator(.hidden)
+            .contextMenu { Button("Edit Contact…") { editing = contact } }
         }
         // The sidebar style insets the selection as a rounded rectangle, as in frame 11.
         .listStyle(.sidebar).scrollContentBackground(.hidden)
@@ -101,14 +106,41 @@ struct AddressBookView: View {
                   }.buttonStyle(.plain).background(.quaternary, in: Capsule())
                     .accessibilityLabel("Remove label \(label)")
                 }
-                Button("+ Add label") { editing = contact }.buttonStyle(.plain)
-                  .padding(.horizontal, 9).frame(height: 24)
-                  .overlay(
-                    Capsule().strokeBorder(.tertiary, style: StrokeStyle(lineWidth: 1, dash: [3]))
-                  )
+                if addingLabel {
+                  TextField("Label", text: $newLabel).textFieldStyle(.plain)
+                    .focused($labelFocused).frame(width: 96)
+                    .padding(.horizontal, 9).frame(height: 24)
+                    .overlay(Capsule().strokeBorder(Color.accentColor, lineWidth: 1))
+                    .onSubmit { addLabel(newLabel, to: contact) }
+                    .onExitCommand { addingLabel = false }
+                    .onChange(of: labelFocused) { _, focused in
+                      if !focused { addLabel(newLabel, to: contact) }
+                    }
+                } else {
+                  Button("+ Add label") {
+                    newLabel = ""
+                    addingLabel = true
+                    labelFocused = true
+                  }.buttonStyle(.plain)
+                    .padding(.horizontal, 9).frame(height: 24)
+                    .overlay(
+                      Capsule().strokeBorder(.tertiary, style: StrokeStyle(lineWidth: 1, dash: [3]))
+                    )
+                }
               }.font(.system(size: 12))
-              Text("Suggested: Team · Work · Family · Verified").font(.system(size: 12))
-                .foregroundStyle(.secondary)
+              let suggestions = Self.suggestedLabels.filter { suggestion in
+                !contact.labels.contains { $0.caseInsensitiveCompare(suggestion) == .orderedSame }
+              }
+              if !suggestions.isEmpty {
+                HStack(spacing: 4) {
+                  Text("Suggested:")
+                  ForEach(suggestions, id: \.self) { suggestion in
+                    Button(suggestion) { addLabel(suggestion, to: contact) }.buttonStyle(.plain)
+                      .help("Add the label \(suggestion)")
+                    if suggestion != suggestions.last { Text("·") }
+                  }
+                }.font(.system(size: 12)).foregroundStyle(.secondary)
+              }
               if let saveError { Text(saveError).foregroundStyle(.red) }
             }
             VStack(alignment: .leading, spacing: 8) {
@@ -140,6 +172,22 @@ struct AddressBookView: View {
         if selected == nil || !ids.contains(selected!) { selected = ids.first }
       }
   }
+  /// Labels are added in place; the full editor is for a contact's name and key.
+  private func addLabel(_ label: String, to contact: DesktopContact) {
+    let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+    addingLabel = false
+    newLabel = ""
+    guard !trimmed.isEmpty,
+      !contact.labels.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame })
+    else { return }
+    var updated = contact
+    updated.labels.append(trimmed)
+    do {
+      try access.saveContact(updated)
+      saveError = nil
+    } catch { saveError = error.localizedDescription }
+  }
+
   private func copy(_ text: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)

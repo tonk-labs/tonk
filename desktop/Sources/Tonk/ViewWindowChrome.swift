@@ -88,6 +88,9 @@ struct ViewChromeButton: View {
 
 /// Tracks the top edge even when the controls are hidden, without intercepting web clicks.
 struct ViewChromeHoverRegion: NSViewRepresentable {
+  /// How near the top the pointer reveals the controls: a little more than the 52-point
+  /// bar, so it starts sliding in as the pointer approaches.
+  static let revealDistance: CGFloat = 72
   var onHover: (Bool) -> Void
   func makeNSView(context: Context) -> Region { Region(onHover: onHover) }
   func updateNSView(_ view: Region, context: Context) { view.onHover = onHover }
@@ -111,7 +114,8 @@ struct ViewChromeHoverRegion: NSViewRepresentable {
         let point = content.convert(event.locationInWindow, from: nil)
         let atTop =
           content.isFlipped
-          ? point.y <= content.bounds.minY + 52 : point.y >= content.bounds.maxY - 52
+          ? point.y <= content.bounds.minY + ViewChromeHoverRegion.revealDistance
+          : point.y >= content.bounds.maxY - ViewChromeHoverRegion.revealDistance
         self.onHover(atTop && content.bounds.contains(point))
         return event
       }

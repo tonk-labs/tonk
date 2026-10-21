@@ -75,8 +75,8 @@ struct ContentView: View {
         .overlay(alignment: .top) {
           if !showingChat {
             ViewChromeHoverRegion { topChromeHovered = $0 }
-              .frame(maxWidth: .infinity).frame(height: 52)
-              .overlay {
+              .frame(maxWidth: .infinity).frame(height: ViewChromeHoverRegion.revealDistance)
+              .overlay(alignment: .top) {
                 collapsedChrome
                   .opacity(chromeVisible ? 1 : 0)
                   .offset(y: chromeVisible || reduceMotion ? 0 : -16)
