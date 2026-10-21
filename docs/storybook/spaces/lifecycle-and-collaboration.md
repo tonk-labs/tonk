@@ -212,11 +212,13 @@ and in the command palette as "make space public" / "make space private".
 > same space.
 >
 > Opening a space's own address mounts its view before the space is on the
-> device. When the join installs it, the page is already at that address, so
-> a route change would re-mount nothing; the worker answers with a fresh load
-> in place of the history entry instead (which also keeps a ticket link's seed
-> out of the history). A join that finds the space already present, as a page
-> that opened its own new space does, changes nothing.
+> device, and the view's subscriptions wait for it. When the join installs
+> the space it hands them the space, so the page renders it where it is, with
+> no reload. A ticket link's address carries its seed, so after the join it
+> gives way to the space's own address in place of the history entry, again
+> without a load, and Back does not lead to the seed. A join that finds the
+> space already present, as a page that opened its own new space does,
+> changes nothing.
 
 This is the presentation decision for `COLLAB-01`, `COLLAB-03`, `COLLAB-06`,
 `COLLAB-07`, `WEB-16`, `WEB-17`, and `WEB-18`.

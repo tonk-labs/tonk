@@ -331,6 +331,7 @@ forward!(dialog_effects::peer::Find);
 forward!(dialog_effects::peer::Connect);
 forward!(dialog_effects::peer::RemoveAddress);
 forward!(dialog_effects::peer::RemoveName);
+forward!(dialog_did_web::Discover);
 forward!(dialog_repository::Hydrate);
 forward!(dialog_artifacts::Preload);
 forward!(dialog_artifacts::Speculation);

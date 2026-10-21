@@ -116,6 +116,8 @@ pub use sync::{
 };
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use sync::{is_sync_enabled, mark_offline};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) use sync::{push_loops, watch_open_repos};
 // Re-exported so API consumers (the UI) can name the state without
 // depending on `tonk-schema` directly.
 pub use tonk_schema::SyncState;

@@ -41,7 +41,8 @@ impl RecordedRemote {
     /// Whether `replica` is this remote: the same repository, at a peer
     /// reached at this remote's address.
     pub(crate) fn is(&self, replica: &ConnectedReplica) -> bool {
-        replica.did() == self.subject && replica.addresses().contains(&self.address)
+        replica.did() == self.subject
+            && tonk_account::peer::reaches(replica.addresses(), &self.address)
     }
 }
 

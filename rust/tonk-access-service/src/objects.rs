@@ -160,9 +160,11 @@ impl Provider<memory::Publish> for Objects {
         let value: JsValue = Uint8Array::from(content).into();
         match store::put(&self.bucket, &claims, value).await {
             Ok(Some(etag)) => Ok(version_of(&etag)),
+            // R2 does not say what the object holds instead; the access
+            // layer reads the cell back and tells the writer.
             Ok(None) => Err(MemoryError::VersionMismatch {
                 expected: capability.when().cloned(),
-                actual: None,
+                current: memory::Current::Unknown,
             }),
             Err(error) => Err(MemoryError::Storage(format!("put {}: {error}", claims.key))),
         }
@@ -183,7 +185,7 @@ impl Provider<memory::Retract> for Objects {
             Ok(true) => Ok(()),
             Ok(false) => Err(MemoryError::VersionMismatch {
                 expected: Some(capability.when().clone()),
-                actual: None,
+                current: memory::Current::Unknown,
             }),
             Err(error) => Err(MemoryError::Storage(format!(
                 "delete {}: {error}",
