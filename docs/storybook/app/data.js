@@ -586,12 +586,12 @@ window.STORYBOOK_DATA = {
       "variants": "Zero/one/many remotes; service keeps tickets or not (falls back to the access= link); explicit --base-url on or off the remote's origin; shortening on/off/offline; upstream states."
     },
     {
-      "evidence": "Partial invite tests.",
-      "gaps": "Full claim boundary, wrong recipient, root rotation, URL leakage.",
+      "evidence": "Native production HTTP/worker email flow, four service tests and desktop retry/account isolation tests pass. Browser evidence is tracked in the email invitation plan.",
+      "gaps": "Production mail delivery, cross-device recovery, sender cancellation UI, and invitation-record retention policy.",
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "COLLAB-02",
-      "title": "Mint a recipient-root invite.",
-      "variants": "Valid/wrong DID; accountless/account recipient; remote variants."
+      "title": "Mint a recipient-root invite, or email an unregistered recipient through signup and confirmation.",
+      "variants": "Valid/wrong DID; absent/pending/active email; selected account and space; retry/restart/expiry."
     },
     {
       "evidence": "Join, profile, and authority tests; accountless claim terminates at the onboarding account and remains usable after account union.",

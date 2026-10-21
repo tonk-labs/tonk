@@ -33,7 +33,7 @@ account creation, email verification, and joining that exact space.
 
 ## Evidence and remaining work
 
-Inspection only so far. #1145 is a test-only protocol spike, not a production
+Initial inspection: #1145 was a test-only protocol spike, not a production
 endpoint. #1148 remains open. Main checkout has unrelated dirty work and is left
 untouched; implementation uses the existing clean attached worktree.
 
@@ -58,7 +58,7 @@ test. No production email was sent.
 
 The first full HTTP/worker test failed before mint because the pre-existing
 account fixture intentionally served no deployment discovery document. The
-email flow now starts a fixture with deployment discovery enabled; rerun pending.
+email flow now starts a fixture with deployment discovery enabled; the rerun passes.
 The browser artifact is building through Nix; cache download warnings are not
 browser execution evidence. Signup return routing accepts only the exact local
 `/email-invite#<64 lowercase hex>` form. The page resolves the active profile
@@ -73,3 +73,41 @@ not yet expose a pending invitation management screen. Saving a contact remains
 separate from sending. Automatic approval review rejected an optional customer
 deletion trigger for delivery-record cleanup as an unauthorized irreversible
 retention change; it was not applied. No automated row cleanup is added here.
+
+### Checkpoint: production command flow
+
+The real HTTP service + worker regression passes (14.27 seconds): Alice shares
+with Bob; Bob sends to missing Carol; retry captures one email; Mallory cannot
+claim; Carol enrolls but cannot claim before confirmation; the actual activation
+link enables claim; another account cannot take the address; repeat join works.
+Carol's persisted roster names Bob as inviter and Alice as founder. A nonfatal
+account-backup version mismatch was logged in the pre-existing fixture setup;
+this proves local authority/roster behavior, not cross-device backup convergence.
+
+Native Swift suites and Wasm worker/UI/access-service checks pass. The browser
+harness initially picked ambient GCC and failed compiling its TLS dependency
+(missing CoreServices and ARM crypto features); rerunning with Xcode Clang and
+SDK explicitly succeeded. The browser artifact with the profile-return correction
+built successfully.
+
+### Checkpoint: native interface and browser integration
+
+Both Swift suites pass: 83 Tonk + 88 HarnessCore tests, four expected skips and
+zero failures. The ad-hoc native app renders the missing-account sheet and existing
+space picker without clipping. This was an isolated fixture without an authenticated
+root; signed-in native Send Invite was not exercised through the button.
+The CLI check, 51 invitation tests and exact-local-return test pass again.
+
+The WebDriver test requires `integration-tests` (native Chrome orchestration), not
+`web-integration-tests` (which tries to compile the test dependencies for Wasm).
+Its first native run exposed an incorrect test subscription assertion, corrected
+to read `conclusions`/`asserted`. The next run exposed a real boot-screen bug:
+`index.html` did not recognize `tonk-email-invite`, so it intercepted clicks.
+Both CSS teardown and the boot watchdog now recognize the page; startup metrics
+also mark it ready. The first shell-only experiment omitted regenerated integrity
+metadata and correctly failed boot; restamping through the repository script
+fixed the experiment. The full browser ceremony passes on this artifact
+(`662e30117dd50f25`, 15.06 seconds): captured mail, fresh PRF signup, activation
+in another tab, original locator restored, reload, Join Space, exact subject.
+A fresh optimized Nix artifact is building for the final repeat. No production
+email, hosted deployment or cross-device recovery was exercised.
