@@ -19,6 +19,7 @@
 //! used by the `carry` CLI so that field-name facts written by
 //! either tool describe the same concept identically.
 
+use dialog_common::Holds;
 use std::collections::{BTreeSet, HashSet};
 
 use dialog_artifacts::{Entity, Preload, Relation as ArtifactsRelation, Speculation};
@@ -155,7 +156,8 @@ impl ConceptLookupError {
 /// requires; surfacing it as a single trait alias keeps the
 /// builder signatures readable.
 pub trait QueryEnv:
-    Provider<Get>
+    Holds
+    + Provider<Get>
     + Provider<dialog_effects::blob::Read>
     + Provider<Put>
     + Provider<Resolve>
@@ -171,7 +173,8 @@ pub trait QueryEnv:
 }
 
 impl<T> QueryEnv for T where
-    T: Provider<Get>
+    T: Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>

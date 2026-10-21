@@ -19,7 +19,7 @@
 
 use async_trait::async_trait;
 use dialog_capability::{Command, Provider};
-use dialog_common::ConditionalSync;
+use dialog_common::{ConditionalSync, Held, Holds};
 use tonk_schema::concept::QueryEnv;
 use tonk_schema::query_source::Source;
 
@@ -128,6 +128,16 @@ where
     C::Input: 'static,
 {
     async fn execute(&self, _input: C::Input) -> C::Output {
+        match *self {}
+    }
+}
+
+impl Holds for NoQueryEnv {
+    fn held(&self, _key: &str) -> Option<Held> {
+        match *self {}
+    }
+
+    fn hold(&self, _key: String, _handle: Held) {
         match *self {}
     }
 }

@@ -65,7 +65,10 @@ impl Refusal {
                 AuthorizeError::InvalidSignature { .. }
                 | AuthorizeError::InvalidAudience { .. }
                 | AuthorizeError::Expired { .. }
-                | AuthorizeError::NotValidBefore { .. } => 401,
+                | AuthorizeError::NotValidBefore { .. }
+                // A fresh invocation, made now, is expected to succeed.
+                | AuthorizeError::Stale { .. }
+                | AuthorizeError::Replayed { .. } => 401,
                 AuthorizeError::UnprovenSubject { .. }
                 | AuthorizeError::CommandEscalation { .. }
                 | AuthorizeError::PolicyViolation { .. }

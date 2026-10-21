@@ -1688,6 +1688,8 @@ mod tests {
     fn it_classifies_revocation_from_the_typed_reason() {
         let error = sync_failure(&authorization_failure(AuthorizeError::Revoked {
             subject: dialog_capability::did!("key:zSubject"),
+            certificate: None,
+            revocation: None,
         }));
         assert!(matches!(
             error,

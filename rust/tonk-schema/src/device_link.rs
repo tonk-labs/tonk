@@ -8,6 +8,7 @@
 use dialog_artifacts::{ArtifactSelector, Entity, Preload, Speculation, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_common::Holds;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
 use dialog_effects::memory::Resolve;
@@ -85,7 +86,8 @@ pub async fn device_links<Env>(
     env: &Env,
 ) -> Result<Vec<(DeviceLink, String)>, EvaluationError>
 where
-    Env: Provider<Get>
+    Env: Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>

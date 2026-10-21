@@ -170,6 +170,9 @@ fn issuer_proof_failure(error: dialog_capability::access::AuthorizeError) -> Ton
         AuthorizeError::UnavailableProof { .. }
         | AuthorizeError::Unavailable { .. }
         | AuthorizeError::Malformed { .. }
+        // A fresh invocation, made now, is expected to succeed.
+        | AuthorizeError::Stale { .. }
+        | AuthorizeError::Replayed { .. }
         | AuthorizeError::Declined {
             recourse: Recourse::Retry,
             ..
@@ -1064,6 +1067,8 @@ mod tests {
             },
             AuthorizeError::Revoked {
                 subject: did.clone(),
+                certificate: None,
+                revocation: None,
             },
             AuthorizeError::InvalidSignature { issuer: did },
             AuthorizeError::Declined {

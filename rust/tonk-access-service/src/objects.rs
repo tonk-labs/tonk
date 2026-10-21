@@ -19,7 +19,7 @@ use dialog_effects::archive::{self, ArchiveError};
 use dialog_effects::blob::prelude::{BlobImportExt as _, BlobReadExt as _};
 use dialog_effects::blob::{self, BlobError, BlobReader, BlobSink, BlobSource, BlobWriter};
 use dialog_effects::memory::prelude::{PublishExt, ResolveExt, RetractExt};
-use dialog_effects::memory::{self, Edition, MemoryError, Version};
+use dialog_effects::memory::{self, Current, Edition, MemoryError, Version};
 use futures_util::StreamExt as _;
 use sha2_0_10::{Digest, Sha256};
 use worker::js_sys::Uint8Array;
@@ -162,7 +162,7 @@ impl Provider<memory::Publish> for Objects {
             Ok(Some(etag)) => Ok(version_of(&etag)),
             Ok(None) => Err(MemoryError::VersionMismatch {
                 expected: capability.when().cloned(),
-                actual: None,
+                current: Current::Unknown,
             }),
             Err(error) => Err(MemoryError::Storage(format!("put {}: {error}", claims.key))),
         }
@@ -183,7 +183,7 @@ impl Provider<memory::Retract> for Objects {
             Ok(true) => Ok(()),
             Ok(false) => Err(MemoryError::VersionMismatch {
                 expected: Some(capability.when().clone()),
-                actual: None,
+                current: Current::Unknown,
             }),
             Err(error) => Err(MemoryError::Storage(format!(
                 "delete {}: {error}",
