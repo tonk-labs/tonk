@@ -45,7 +45,10 @@ const SAVE_RETRY_LIMIT: usize = 4;
 /// own commits: the `VersionMismatch` leaf renders its text through the
 /// chain.
 fn is_head_moved(error: &impl std::fmt::Display) -> bool {
-    error.to_string().contains("Version mismatch")
+    let error = error.to_string();
+    // A native store refuses a write at once while another holds the
+    // cell's lock, leaving the retry to the writer.
+    error.contains("Version mismatch") || error.contains("Concurrent write in progress")
 }
 
 /// Branch of the registry profile's repository holding the roster of every

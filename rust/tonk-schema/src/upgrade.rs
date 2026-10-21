@@ -23,6 +23,7 @@
 //! The upgrade is idempotent: a second run finds no attribute recorded
 //! the earlier way.
 
+use dialog_common::Holds;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use dialog_artifacts::{
@@ -74,7 +75,8 @@ pub async fn upgrade_definitions<Env>(
     env: &Env,
 ) -> Result<DefinitionsUpgraded, String>
 where
-    Env: QueryEnv
+    Env: Holds
+        + QueryEnv
         + dialog_capability::Provider<dialog_effects::memory::Publish>
         + dialog_capability::Provider<dialog_effects::archive::Import>
         + dialog_capability::Provider<dialog_effects::authority::Attest>

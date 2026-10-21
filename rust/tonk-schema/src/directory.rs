@@ -20,6 +20,7 @@ use crate::{
 use dialog_artifacts::{Entity, Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_common::Holds;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::memory::{Publish, Resolve};
@@ -102,7 +103,8 @@ pub async fn record<Env>(
     env: &Env,
 ) -> Result<(), CommitError>
 where
-    Env: Provider<Get>
+    Env: Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<dialog_effects::blob::Import>
         + Provider<dialog_effects::blob::Size>
@@ -165,7 +167,8 @@ pub async fn spaces<Env>(
     env: &Env,
 ) -> Result<Vec<DirectorySpace>, EvaluationError>
 where
-    Env: Provider<Get>
+    Env: Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
@@ -251,7 +254,8 @@ pub async fn access_endpoints<Env>(
     env: &Env,
 ) -> Result<std::collections::BTreeSet<String>, EvaluationError>
 where
-    Env: Provider<Get>
+    Env: Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
@@ -294,7 +298,8 @@ pub async fn mount_record<Env>(
     env: &Env,
 ) -> Result<Option<MountRecord>, EvaluationError>
 where
-    Env: Provider<Get>
+    Env: Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
@@ -318,7 +323,8 @@ pub async fn mount_record_strict<Env>(
     env: &Env,
 ) -> Result<Option<MountRecord>, EvaluationError>
 where
-    Env: Provider<Get>
+    Env: Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
@@ -341,7 +347,8 @@ async fn read_mount_record<Env>(
     strict: bool,
 ) -> Result<Option<MountRecord>, EvaluationError>
 where
-    Env: Provider<Get>
+    Env: Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>

@@ -294,6 +294,11 @@ const COMMIT_RETRY_LIMIT: usize = 4;
 /// signal to refresh and retry. Matched on the rendered error so the reactor
 /// need not import the dialog error hierarchy; the `VersionMismatch` leaf
 /// renders its distinctive text through the chain.
+///
+/// A native store refuses a write at once while another holds the cell's
+/// lock, and leaves the retry to the writer: that refusal is a race lost
+/// the same way, and is retried the same way.
 fn is_head_moved(error: &CommitError) -> bool {
-    error.to_string().contains("Version mismatch")
+    let error = error.to_string();
+    error.contains("Version mismatch") || error.contains("Concurrent write in progress")
 }

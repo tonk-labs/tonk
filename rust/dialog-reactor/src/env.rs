@@ -12,7 +12,7 @@
 
 use dialog_artifacts::{Preload, Speculation};
 use dialog_capability::{Fork, Provider};
-use dialog_common::ConditionalSync;
+use dialog_common::{ConditionalSync, Holds};
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::blob::{Import as BlobImport, Read as BlobRead};
@@ -39,7 +39,8 @@ impl<T> GetPutProvider for T where T: Provider<Get> + Provider<Put> + Conditiona
 
 /// Bound needed to run a query (`branch.query().select(q).perform`).
 pub trait SelectProvider:
-    Provider<Get>
+    Holds
+    + Provider<Get>
     + Provider<BlobRead>
     + Provider<Put>
     + Provider<Resolve>
@@ -54,7 +55,8 @@ pub trait SelectProvider:
 {
 }
 impl<T> SelectProvider for T where
-    T: Provider<Get>
+    T: Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
@@ -71,7 +73,8 @@ impl<T> SelectProvider for T where
 
 /// Bound needed to commit a transaction (`branch.transaction()...commit().publish().perform`).
 pub trait CommitProvider:
-    Provider<Get>
+    Holds
+    + Provider<Get>
     + Provider<BlobRead>
     + Provider<BlobImport>
     + Provider<dialog_effects::blob::Size>
@@ -91,7 +94,8 @@ pub trait CommitProvider:
 {
 }
 impl<T> CommitProvider for T where
-    T: Provider<Get>
+    T: Holds
+        + Provider<Get>
         + Provider<BlobRead>
         + Provider<BlobImport>
         + Provider<dialog_effects::blob::Size>

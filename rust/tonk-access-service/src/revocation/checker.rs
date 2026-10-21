@@ -55,6 +55,8 @@ where
             // what we can point at.
             revocation: selector.delegation,
             principal,
+            // The index keeps no signed revocation to hand over.
+            proof: None,
         }))
     }
 }

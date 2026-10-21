@@ -3,6 +3,7 @@
 
 use dialog_artifacts::Entity;
 use dialog_common::ConditionalSend;
+use dialog_common::Holds;
 use dialog_query::Concept;
 use dialog_varsig::Did;
 use serde::Serialize;
@@ -485,7 +486,8 @@ pub async fn rotate<'a, Env, Fut>(
 ) -> Result<Rotation, RotateError>
 where
     Fut: Future<Output = Result<(), String>> + ConditionalSend,
-    Env: dialog_capability::Provider<dialog_effects::archive::Get>
+    Env: Holds
+        + dialog_capability::Provider<dialog_effects::archive::Get>
         + dialog_capability::Provider<dialog_effects::blob::Read>
         + dialog_capability::Provider<dialog_effects::archive::Put>
         + dialog_capability::Provider<dialog_effects::archive::Import>
@@ -584,7 +586,8 @@ pub async fn migrate<'a, Env, Fut>(
 ) -> Result<Rotation, RotateError>
 where
     Fut: Future<Output = Result<(), String>> + ConditionalSend,
-    Env: dialog_capability::Provider<dialog_effects::archive::Get>
+    Env: Holds
+        + dialog_capability::Provider<dialog_effects::archive::Get>
         + dialog_capability::Provider<dialog_effects::blob::Read>
         + dialog_capability::Provider<dialog_effects::archive::Put>
         + dialog_capability::Provider<dialog_effects::archive::Import>

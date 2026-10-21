@@ -290,7 +290,6 @@ async fn invitation_graph_updates_late_provenance_and_removes_stale_edges() {
     shadow(&bar, ".members")
         .unchecked_into::<HtmlElement>()
         .click();
-    settle().await;
     drawer_opened(&bar).await;
     let centre = shadow(&bar, ".member-space").get_bounding_client_rect();
     let bounds = panel.get_bounding_client_rect();

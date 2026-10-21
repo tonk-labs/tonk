@@ -52,6 +52,7 @@
 //! `Evaluate::perform` (for `matches_before`) and by
 //! [`EvaluatedCommit::perform`] (for `matches_after` after commit).
 
+use dialog_common::Holds;
 use std::collections::BTreeMap;
 
 use dialog_artifacts::{Changes, Entity, Preload, Speculation, Value};
@@ -159,7 +160,8 @@ pub enum EvaluateError {
 /// `SelectQuery::perform` and `Commit::perform` bounds so the
 /// signature stays a single trait alias.
 pub trait EvaluateEnv:
-    Provider<Get>
+    Holds
+    + Provider<Get>
     + Provider<dialog_effects::blob::Read>
     + Provider<Put>
     + Provider<Resolve>
@@ -176,7 +178,8 @@ pub trait EvaluateEnv:
 }
 
 impl<T> EvaluateEnv for T where
-    T: Provider<Get>
+    T: Holds
+        + Provider<Get>
         + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
