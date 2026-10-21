@@ -79,9 +79,15 @@ pub fn view_hint(client: &str) -> Option<&'static str> {
         return None;
     }
     Some(match installed() {
-        None => "Not rendered: Claude Desktop shows live views only from the Tonk extension, and it isn't installed. Call tonk_install_extension now (it opens Desktop's own install screen; the user confirms there), then tell the user to choose Install and start a new chat. Meanwhile answer with tonk_query.",
-        Some(Installed::Disabled) => "Not rendered: the Tonk extension, which Claude Desktop shows live views from, is turned off. Tell the user to turn it on in Settings, Extensions, and start a new chat.",
-        Some(Installed::Enabled) => "Not rendered: this is the plugin's copy of the tool, which Claude Desktop doesn't show views from. Call the Tonk extension's copy instead (the same tool without plugin_tonk in its name). If this chat has no such copy, it started before the extension was installed: tell the user to start a new chat.",
+        None => {
+            "Not rendered: Claude Desktop shows live views only from the Tonk extension, and it isn't installed. Call tonk_install_extension now (it opens Desktop's own install screen; the user confirms there), then tell the user to choose Install and start a new chat. Meanwhile answer with tonk_query."
+        }
+        Some(Installed::Disabled) => {
+            "Not rendered: the Tonk extension, which Claude Desktop shows live views from, is turned off. Tell the user to turn it on in Settings, Extensions, and start a new chat."
+        }
+        Some(Installed::Enabled) => {
+            "Not rendered: this is the plugin's copy of the tool, which Claude Desktop doesn't show views from. Call the Tonk extension's copy instead (the same tool without plugin_tonk in its name). If this chat has no such copy, it started before the extension was installed: tell the user to start a new chat."
+        }
     })
 }
 
