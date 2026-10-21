@@ -38,6 +38,34 @@ This import is separate from `tonk space link NAME`: join creates a local
 replica from invitation authority, while space link attaches an existing local
 space to an account and hosted service.
 
+### Desktop contact lookup (preparation for `COLLAB-02`)
+
+In the redesigned Desktop Address Book, **Add Contact** accepts a name and
+an email or account key. **Look Up** sends the email to the selected Tonk
+server. A confirmed account shows its DID for review; **Save** records that DID,
+email, server, lookup time, and local labels in the existing address book on
+this Mac. Searching contacts also matches the saved email. Entering a DID
+manually remains available without a network request.
+
+Unconfirmed registration, no account found, and suspended accounts have distinct
+messages and cannot be saved from the email. A network failure, rate limit,
+redirect, or inconsistent account document offers no key and permits retry.
+Changing the input invalidates the old result; closing the sheet or changing
+accounts discards an outstanding lookup. Editing an existing contact keeps its
+key fixed while allowing name/label changes. Old contacts without email metadata
+continue to load.
+
+This is a directory assertion from the lookup date, not a continuing guarantee
+of email ownership. Saving a contact does not grant space access. A missing
+account currently ends at **No Tonk account was found**; invitation delivery and
+registration continuation are a separate increment. Existing labels, including
+“Verified”, remain personal annotations.
+
+Focused native tests cover HTTP results, response binding, stale reads, legacy
+persistence and account separation. Production lookup and a full signed-in
+Desktop invitation journey are not claimed by those tests. Implementation and
+execution evidence: [contact lookup plan](../../../plans/2026-10-21-desktop-contact-email-lookup.md).
+
 ### Invitation sender (`COLLAB-01`, `COLLAB-02`)
 
 When Alice invites Bob and Bob mints a new invitation for Carol, Carol's

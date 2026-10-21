@@ -5,6 +5,7 @@ struct DesktopContact: Codable, Identifiable, Equatable {
   var id: String
   var name: String
   var labels: [String]
+  var emailIdentity: EmailContactIdentity? = nil
 }
 
 struct AddressBookView: View {
@@ -21,7 +22,9 @@ struct AddressBookView: View {
   private static let suggestedLabels = ["Team", "Work", "Family", "Verified"]
   private var contacts: [DesktopContact] {
     access.contacts.filter {
-      search.isEmpty || ($0.name + $0.id).localizedCaseInsensitiveContains(search)
+      search.isEmpty
+        || ($0.name + $0.id + ($0.emailIdentity?.email ?? "")).localizedCaseInsensitiveContains(
+          search)
     }
   }
   var body: some View {
@@ -31,7 +34,7 @@ struct AddressBookView: View {
       VStack(spacing: 0) {
         HStack(spacing: 8) {
           GlassSearchField(
-            title: "Name or key", text: $search, focusRequest: searchFocusRequest)
+            title: "Name, email or key", text: $search, focusRequest: searchFocusRequest)
           Button {
             editing = DesktopContact(id: "", name: "", labels: [])
           } label: {
@@ -86,6 +89,15 @@ struct AddressBookView: View {
                   NSPasteboard.general.setString(contact.id, forType: .string)
                 }
               }.padding(16).background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+            }
+            if let identity = contact.emailIdentity {
+              VStack(alignment: .leading, spacing: 6) {
+                Text(identity.email).textSelection(.enabled)
+                Text(
+                  "Found through \(identity.directory.host ?? identity.directory.absoluteString) on \(identity.checkedAt.formatted(date: .abbreviated, time: .omitted))."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+              }
             }
             VStack(alignment: .leading, spacing: 8) {
               Text("Labels").font(.caption).foregroundStyle(.secondary)
@@ -198,15 +210,50 @@ struct AddressBookView: View {
 private struct ContactEditor: View {
   @State var contact: DesktopContact
   @ObservedObject var access: AccessModel
+  @StateObject private var lookup = ContactLookupModel()
+  @State private var lookupTask: Task<Void, Never>?
   @State private var labels = ""
   @State private var error: String?
+  @State private var account: String?
   @Environment(\.dismiss) private var dismiss
+  private var isNew: Bool { contact.id.isEmpty }
+  private var canSave: Bool {
+    account != nil && account == access.selfDid
+      && (!isNew || lookup.did != nil)
+      && !contact.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      Text("Save Contact").font(.headline)
-      TextField("Name", text: $contact.name)
-      TextField("did:key", text: $contact.id)
-      TextField("Labels, separated by commas", text: $labels)
+      Text(isNew ? "Add Contact" : "Edit Contact").font(.headline)
+      TextField("Name", text: $contact.name).accessibilityLabel("Contact name")
+      if isNew {
+        VStack(alignment: .leading, spacing: 8) {
+          HStack {
+            TextField("Email or did:key", text: $lookup.input)
+              .accessibilityLabel("Email or account key")
+            if lookup.manualDid == nil {
+              Button("Look Up") {
+                lookupTask?.cancel()
+                lookupTask = Task { await lookup.lookup() }
+              }.disabled(
+                lookup.isLoading
+                  || lookup.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+          }
+          if lookup.manualDid == nil {
+            Text("Look up this address through \(RuntimeLocation.home.host ?? "Tonk").")
+              .font(.caption).foregroundStyle(.secondary)
+          }
+          lookupStatus.fixedSize(horizontal: false, vertical: true)
+        }
+      } else {
+        Text(contact.id).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+        if let identity = contact.emailIdentity {
+          Text(identity.email).foregroundStyle(.secondary)
+        }
+      }
+      TextField("Labels, separated by commas", text: $labels).accessibilityLabel("Contact labels")
       Text(
         "Contacts and labels are saved on this Mac. Saving a contact does not grant access or establish an agent identity."
       )
@@ -216,20 +263,65 @@ private struct ContactEditor: View {
         Spacer()
         Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
         Button("Save") {
-          contact.labels = labels.split(separator: ",").map {
+          guard canSave else { return }
+          var updated = contact
+          if isNew, let did = lookup.did {
+            updated.id = did
+            updated.emailIdentity = lookup.identity
+          }
+          updated.name = contact.name.trimmingCharacters(in: .whitespacesAndNewlines)
+          updated.labels = labels.split(separator: ",").map {
             $0.trimmingCharacters(in: .whitespaces)
           }.filter { !$0.isEmpty }
           do {
-            try access.saveContact(contact)
+            try access.saveContact(updated)
             dismiss()
           } catch { self.error = error.localizedDescription }
-        }.keyboardShortcut(.defaultAction)
-          .disabled(
-            !contact.id.hasPrefix("did:key:") || contact.id.count <= 8
-              || contact.name.trimmingCharacters(in: .whitespaces).isEmpty)
+        }.keyboardShortcut(.defaultAction).disabled(!canSave)
       }
-    }.textFieldStyle(.roundedBorder).padding(22).frame(width: 400)
-      .onAppear { labels = contact.labels.joined(separator: ", ") }
+    }.textFieldStyle(.roundedBorder).padding(22).frame(width: 440)
+      .onAppear {
+        labels = contact.labels.joined(separator: ", ")
+        account = access.selfDid
+      }
+      .onChange(of: lookup.input) { _, _ in lookupTask?.cancel() }
+      .onChange(of: access.selfDid) { _, _ in
+        lookupTask?.cancel()
+        lookup.invalidate()
+        dismiss()
+      }
+      .onDisappear {
+        lookupTask?.cancel()
+        lookup.invalidate()
+      }
+  }
+
+  @ViewBuilder
+  private var lookupStatus: some View {
+    if lookup.isLoading {
+      HStack(spacing: 8) {
+        ProgressView().controlSize(.small)
+        Text("Looking up account…").foregroundStyle(.secondary)
+      }
+    } else if let identity = lookup.identity {
+      VStack(alignment: .leading, spacing: 6) {
+        Text("Account found").fontWeight(.medium)
+        Text(identity.rootDid).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+        Text(
+          "This directory has confirmed the email for this account. Review the key before saving."
+        )
+        .font(.caption).foregroundStyle(.secondary)
+      }
+    } else if let result = lookup.result {
+      switch result {
+      case .pending: Text("This email is registered but has not been confirmed yet.")
+      case .notFound: Text("No Tonk account was found for this email on this server.")
+      case .suspended: Text("The account for this email is currently suspended.")
+      case .found: EmptyView()
+      }
+    } else if let error = lookup.error {
+      Text(error).foregroundStyle(.red)
+    }
   }
 }
 
