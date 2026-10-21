@@ -33,7 +33,7 @@ struct ContentView: View {
   @State private var chromePreview = true
   private var chromeVisible: Bool { topChromeHovered || chromePreview }
   @State private var showHistory = false
-  @State private var showProviderSettings = false
+  @State private var settingsShowsChat = false
   @State private var accountError: String?
   @State private var signingOut = false
   @State private var syncStatusSpace: TonkSpace?
@@ -195,11 +195,11 @@ struct ContentView: View {
       } message: {
         Text(accountError ?? "")
       }
-      .onReceive(NotificationCenter.default.publisher(for: .tonkShowSettings)) { _ in
-        if !isSpace { page = .account }
-      }
-      .sheet(isPresented: $showProviderSettings) {
-        ProviderSettingsView(model: model)
+      .onReceive(NotificationCenter.default.publisher(for: .tonkShowSettings)) { notification in
+        if !isSpace {
+          settingsShowsChat = notification.object as? Bool ?? false
+          page = .account
+        }
       }
       .sheet(item: $syncStatusSpace) { space in
         SyncStatusView(runtime: runtime, space: space)
@@ -446,7 +446,7 @@ struct ContentView: View {
     Menu {
       Button("Refresh", action: refreshContent).disabled(refreshDisabled)
       Button("Open in Browser", action: openSpaceInBrowser)
-      Button("Chat Agent Settings…") { showProviderSettings = true }
+      Button("Chat Agent Settings…") { openChatSettings() }
       Button("All Chats") {
         showingChat = true
         showHistory = true
@@ -552,7 +552,7 @@ struct ContentView: View {
 
   private var composerModel: some View {
     Button {
-      showProviderSettings = true
+      openChatSettings()
     } label: {
       HStack(spacing: 4) {
         Text(model.connecting ? "Connecting…" : model.modelLabel).lineLimit(1)
@@ -587,7 +587,7 @@ struct ContentView: View {
       }
 
       if ![.chatGPT, .claude].contains(model.provider) && !model.signedIn {
-        Button("Configure model") { showProviderSettings = true }.padding(20)
+        Button("Configure model") { openChatSettings() }.padding(20)
       } else if model.connected && !model.signedIn {
         VStack(spacing: 10) {
           if model.loginPending {
@@ -673,13 +673,18 @@ struct ContentView: View {
     newLink = NewLinkRequest(id: first.id)
   }
 
-  private func openSettings() {
+  private func openSettings() { showSettings(chat: false) }
+
+  private func openChatSettings() { showSettings(chat: true) }
+
+  private func showSettings(chat: Bool) {
     if isSpace {
       openWindow(id: "main")
       DispatchQueue.main.async {
-        NotificationCenter.default.post(name: .tonkShowSettings, object: nil)
+        NotificationCenter.default.post(name: .tonkShowSettings, object: chat)
       }
     } else {
+      settingsShowsChat = chat
       page = .account
     }
   }
@@ -758,12 +763,13 @@ struct ContentView: View {
         case .agentLinks:
           ConnectionsPageView(
             spaces: runtime.spaces, access: access, model: model,
-            onSettings: { showProviderSettings = true })
+            onSettings: { openChatSettings() })
         case .addressBook:
           AddressBookView(
             access: access, spaces: runtime.spaces, searchFocusRequest: contactSearchFocusRequest)
         case .account:
-          DesktopSettingsView(model: model, access: access, onSignOut: signOutOfTonk)
+          DesktopSettingsView(
+            model: model, access: access, onSignOut: signOutOfTonk, showsChat: settingsShowsChat)
         case nil:
           CatalogStatusView(runtime: runtime)
         }

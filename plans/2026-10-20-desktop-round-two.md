@@ -254,3 +254,14 @@ was resolved by extracting the search command into a method. Hosted CI is checke
 against the resulting commit separately. Backend gaps above are unchanged;
 older OS versions, VoiceOver, provider Apply/sign-in and account mutations remain
 unverified in this pass.
+
+### Consistent Chat Agent entry points
+
+The continued live walkthrough found Connections still opening the old provider
+sheet. Connections Settings, the view More menu, composer model control and
+Configure Model now navigate to the main window's inline Chat Agent section.
+The Settings page scrolls to that section when entered through these controls.
+Verified Connections and a real Task window's composer action both open the
+main Settings destination with the footer selected. Build, strict signature,
+diff check and 21 focused archive/chrome/access tests passed after this fix.
+Logs: /tmp/tonk-settings-routing-build.log and /tmp/tonk-settings-routing-tests.log.
