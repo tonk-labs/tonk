@@ -475,3 +475,180 @@ pub async fn list(
     rows.sort_by(|left, right| left.target_cid.cmp(&right.target_cid));
     Ok(Json(rows))
 }
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod tests {
+    use axum::extract::{Path, State};
+    use axum::{Extension, Json};
+    use dialog_repository::RepositoryExt as _;
+
+    use crate::router::AppState;
+
+    /// Pull the member's replica of `key` from the service, the way a sync
+    /// tick does.
+    async fn pull(member: &AppState, key: &str) -> Result<(), String> {
+        let member = member.read().await;
+        let branch = member
+            .profile
+            .space(key)
+            .load()
+            .perform(&member.operator)
+            .await
+            .expect("the member's replica loads")
+            .branch("main")
+            .open()
+            .perform(&member.operator)
+            .await
+            .expect("the member's branch opens");
+        branch
+            .pull()
+            .perform(&member.operator)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    /// Whether the member's device still retains the certificate `target`.
+    async fn retains(member: &AppState, target: &str) -> bool {
+        let member = member.read().await;
+        member
+            .operator
+            .state()
+            .delegations()
+            .retained(target.parse().expect("the target is a CID"))
+            .perform(&member.operator)
+            .await
+            .expect("the retained certificates read")
+            .is_some()
+    }
+
+    /// A member whose invite link was revoked is cut off, and a fresh link
+    /// lets the same member back in. The refusal of the old chain carries
+    /// the signed revocation, so the member's device drops the revoked hop
+    /// and proves through the new grant instead of presenting the revoked
+    /// chain on every sync.
+    #[dialog_common::test]
+    async fn it_lets_a_member_cut_off_by_a_revoked_invite_back_in_through_a_new_one() {
+        let (tonk, service, root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await
+                .expect("the device grant mints");
+        crate::router::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "reinvite-test".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().expect("the grant serializes")),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .expect("the root persists");
+        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let key = super::super::repository::create_space_inner(&state, "Reinvited", None)
+            .await
+            .expect("the space creates");
+        super::super::repository::enable_sync_inner(&state, &key, &remote)
+            .await
+            .expect("the remote attaches");
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .expect("content branch opens")
+                .handle()
+                .push()
+                .perform(&tonk.operator)
+                .await
+                .expect("the content reaches the service");
+        }
+
+        let origin = crate::axum::RequestOrigin::parse("https://local.example/")
+            .unwrap_or_else(|_| panic!("the origin parses"));
+        let mint = || async {
+            let Json(response) = super::super::create_invite::create_invite(
+                State(state.clone()),
+                Path(key.clone()),
+                Extension(origin.clone()),
+                axum::body::Bytes::new(),
+            )
+            .await
+            .expect("the founder mints an invite");
+            response.url().to_string()
+        };
+
+        let member = crate::router::command::tests::native::test_state().await;
+        let first = mint().await;
+        {
+            let member = member.read().await;
+            let joined = crate::router::join::join_invite(&member, &first)
+                .await
+                .expect("the member joins");
+            assert!(!joined.renewed, "the first join installs a replica");
+        }
+        pull(&member, &key)
+            .await
+            .expect("a member reads the space it joined");
+
+        let Json(rows) = super::list(State(state.clone()), Path(key.clone()))
+            .await
+            .expect("the invitations list");
+        assert_eq!(rows.len(), 1, "one invitation is live: {rows:?}");
+        let target = rows[0].target_cid.clone();
+        assert!(
+            retains(&member, &target).await,
+            "the member proves through the invite hop it claimed"
+        );
+        let Json(receipt) =
+            super::revoke(State(state.clone()), Path((key.clone(), target.clone())))
+                .await
+                .expect("the founder revokes the link");
+        assert!(
+            receipt.recorded,
+            "the access service records the revocation"
+        );
+        assert!(
+            pull(&member, &key).await.is_err(),
+            "revoking the link cuts off the member who joined through it"
+        );
+        // Which retained chain a proof tries first is not fixed, so the
+        // re-join below can pass by luck. This is what makes it reliable:
+        // the refusal carried the signed revocation, and the member's
+        // device dropped the revoked hop rather than keep presenting it.
+        assert!(
+            !retains(&member, &target).await,
+            "the refusal's revocation lets the member drop the revoked hop"
+        );
+
+        let second = mint().await;
+        {
+            let member = member.read().await;
+            let rejoined = crate::router::join::join_invite(&member, &second)
+                .await
+                .expect("the member claims the new link");
+            assert!(rejoined.renewed, "the replica is still here");
+        }
+        pull(&member, &key)
+            .await
+            .expect("a member let back in reads the space again");
+
+        let account_key = {
+            let tonk = state.read().await;
+            crate::router::account_state::require_ready_account_state(&tonk)
+                .await
+                .expect("the linked account is ready")
+                .key
+                .clone()
+        };
+        let tonk = std::sync::Arc::try_unwrap(state)
+            .unwrap_or_else(|_| panic!("the state has no other holders"))
+            .into_inner();
+        crate::router::account_state::tests::discard(tonk, &account_key);
+        drop(service);
+    }
+}

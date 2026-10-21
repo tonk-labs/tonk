@@ -1,10 +1,17 @@
 //! The revocation index: which delegations were withdrawn, and by whom.
 //!
-//! One key per `(target, subject)` fact, value empty, because the key is
-//! the fact. KV offers no compare-and-swap, so a set stored under one
-//! key would let two principals revoking the same delegation clobber
-//! each other with neither seeing a conflict. Distinct keys cannot
-//! collide, so a write needs no read, no merge, and no retry.
+//! One key per `(target, subject)` fact, because the key is the fact.
+//! KV offers no compare-and-swap, so a set stored under one key would
+//! let two principals revoking the same delegation clobber each other
+//! with neither seeing a conflict. Distinct keys cannot collide, so a
+//! write needs no read, no merge, and no retry.
+//!
+//! The value is the signed revocation that established the fact, so a
+//! refusal can hand it to the holder: a holder retracts a revoked
+//! certificate only on evidence it can verify, and without it keeps
+//! presenting the revoked chain beside any newer grant. Keys recorded
+//! before the document was kept carry an empty value, which reads as
+//! "revoked, no document".
 //!
 //! Reads go the other way: for each delegation a chain presents, list
 //! the prefix and intersect the subjects found with the issuers that
@@ -71,10 +78,20 @@ impl std::error::Error for IndexError {}
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait RevocationIndex {
-    /// Record that `subject` withdrew `target`. Idempotent: re-recording
-    /// the same fact answers `false` rather than failing, since the
-    /// revocation is one fact however many times it arrives.
-    async fn record(&self, target: &str, subject: &str) -> Result<bool, IndexError>;
+    /// Record that `subject` withdrew `target`, keeping `document`, the
+    /// signed revocation's container bytes, as the evidence. Idempotent:
+    /// re-recording the same fact answers `false` rather than failing,
+    /// since the revocation is one fact however many times it arrives.
+    async fn record(
+        &self,
+        target: &str,
+        subject: &str,
+        document: &[u8],
+    ) -> Result<bool, IndexError>;
+
+    /// The signed revocation recorded for `subject` withdrawing `target`,
+    /// or `None` when the fact is absent or was recorded without one.
+    async fn document(&self, target: &str, subject: &str) -> Result<Option<Vec<u8>>, IndexError>;
 
     /// Every subject that withdrew `target`.
     ///
@@ -111,8 +128,17 @@ pub trait RevocationIndex {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<I: RevocationIndex + dialog_common::ConditionalSync> RevocationIndex for &I {
-    async fn record(&self, target: &str, subject: &str) -> Result<bool, IndexError> {
-        (*self).record(target, subject).await
+    async fn record(
+        &self,
+        target: &str,
+        subject: &str,
+        document: &[u8],
+    ) -> Result<bool, IndexError> {
+        (*self).record(target, subject, document).await
+    }
+
+    async fn document(&self, target: &str, subject: &str) -> Result<Option<Vec<u8>>, IndexError> {
+        (*self).document(target, subject).await
     }
 
     async fn subjects(&self, target: &str) -> Result<BTreeSet<String>, IndexError> {
@@ -137,8 +163,17 @@ impl<I: RevocationIndex + dialog_common::ConditionalSync> RevocationIndex for &I
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<I: RevocationIndex + dialog_common::ConditionalSync> RevocationIndex for std::sync::Arc<I> {
-    async fn record(&self, target: &str, subject: &str) -> Result<bool, IndexError> {
-        self.as_ref().record(target, subject).await
+    async fn record(
+        &self,
+        target: &str,
+        subject: &str,
+        document: &[u8],
+    ) -> Result<bool, IndexError> {
+        self.as_ref().record(target, subject, document).await
+    }
+
+    async fn document(&self, target: &str, subject: &str) -> Result<Option<Vec<u8>>, IndexError> {
+        self.as_ref().document(target, subject).await
     }
 
     async fn subjects(&self, target: &str) -> Result<BTreeSet<String>, IndexError> {
@@ -157,18 +192,36 @@ impl<I: RevocationIndex + dialog_common::ConditionalSync> RevocationIndex for st
 /// An in-memory index, for tests and the native server.
 #[cfg(any(test, feature = "helpers"))]
 #[derive(Default)]
-pub struct MemoryRevocationIndex(std::sync::Mutex<BTreeSet<String>>);
+pub struct MemoryRevocationIndex(std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>);
 
 #[cfg(any(test, feature = "helpers"))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl RevocationIndex for MemoryRevocationIndex {
-    async fn record(&self, target: &str, subject: &str) -> Result<bool, IndexError> {
+    async fn record(
+        &self,
+        target: &str,
+        subject: &str,
+        document: &[u8],
+    ) -> Result<bool, IndexError> {
         let mut keys = self
             .0
             .lock()
             .map_err(|_| IndexError("revocation index lock poisoned".to_string()))?;
-        Ok(keys.insert(revocation_key(target, subject)))
+        Ok(keys
+            .insert(revocation_key(target, subject), document.to_vec())
+            .is_none())
+    }
+
+    async fn document(&self, target: &str, subject: &str) -> Result<Option<Vec<u8>>, IndexError> {
+        let keys = self
+            .0
+            .lock()
+            .map_err(|_| IndexError("revocation index lock poisoned".to_string()))?;
+        Ok(keys
+            .get(&revocation_key(target, subject))
+            .filter(|document| !document.is_empty())
+            .cloned())
     }
 
     async fn subjects(&self, target: &str) -> Result<BTreeSet<String>, IndexError> {
@@ -179,6 +232,7 @@ impl RevocationIndex for MemoryRevocationIndex {
         let prefix = target_prefix(target);
         Ok(keys
             .range(prefix.clone()..)
+            .map(|(key, _)| key)
             .take_while(|key| key.starts_with(&prefix))
             .filter_map(|key| key.strip_prefix(&prefix).map(ToString::to_string))
             .collect())
@@ -195,8 +249,18 @@ mod tests {
         // the same delegation must both survive, with no read-modify-
         // write between them to lose one.
         let index = MemoryRevocationIndex::default();
-        assert!(index.record("bafyTarget", "did:key:zAlice").await.unwrap());
-        assert!(index.record("bafyTarget", "did:key:zKarl").await.unwrap());
+        assert!(
+            index
+                .record("bafyTarget", "did:key:zAlice", b"")
+                .await
+                .unwrap()
+        );
+        assert!(
+            index
+                .record("bafyTarget", "did:key:zKarl", b"")
+                .await
+                .unwrap()
+        );
 
         let subjects = index.subjects("bafyTarget").await.unwrap();
         assert_eq!(
@@ -208,8 +272,18 @@ mod tests {
     #[dialog_common::test]
     async fn it_reports_a_repeated_revocation_as_already_recorded() {
         let index = MemoryRevocationIndex::default();
-        assert!(index.record("bafyTarget", "did:key:zAlice").await.unwrap());
-        assert!(!index.record("bafyTarget", "did:key:zAlice").await.unwrap());
+        assert!(
+            index
+                .record("bafyTarget", "did:key:zAlice", b"")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !index
+                .record("bafyTarget", "did:key:zAlice", b"")
+                .await
+                .unwrap()
+        );
         assert_eq!(index.subjects("bafyTarget").await.unwrap().len(), 1);
     }
 
@@ -218,9 +292,12 @@ mod tests {
         // Prefix listing must not bleed between targets whose CIDs share
         // a leading substring.
         let index = MemoryRevocationIndex::default();
-        index.record("bafyTarget", "did:key:zAlice").await.unwrap();
         index
-            .record("bafyTargetLonger", "did:key:zKarl")
+            .record("bafyTarget", "did:key:zAlice", b"")
+            .await
+            .unwrap();
+        index
+            .record("bafyTargetLonger", "did:key:zKarl", b"")
             .await
             .unwrap();
 
@@ -241,7 +318,10 @@ mod tests {
         // revoked the target but is not in the presented chain must not
         // make the answer true.
         let index = MemoryRevocationIndex::default();
-        index.record("bafyTarget", "did:key:zAlice").await.unwrap();
+        index
+            .record("bafyTarget", "did:key:zAlice", b"")
+            .await
+            .unwrap();
 
         let in_chain = BTreeSet::from(["did:key:zAlice".to_string(), "did:key:zBob".to_string()]);
         assert!(index.revoked_by_any("bafyTarget", &in_chain).await.unwrap());

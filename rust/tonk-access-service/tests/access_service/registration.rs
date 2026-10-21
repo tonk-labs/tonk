@@ -1966,7 +1966,7 @@ mod custody {
         fixture
             .revocations
             .0
-            .record(&grant.to_string(), key.did().as_ref())
+            .record(&grant.to_string(), key.did().as_ref(), b"")
             .await?;
         let answer = fixture.registration(&container).handle().await;
         assert!(
@@ -1992,7 +1992,7 @@ mod custody {
         fixture
             .revocations
             .0
-            .record(&consent.to_string(), key.did().as_ref())
+            .record(&consent.to_string(), key.did().as_ref(), b"")
             .await?;
 
         let answer = fixture.registration(&container).handle().await;

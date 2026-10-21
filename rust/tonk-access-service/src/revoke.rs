@@ -121,10 +121,27 @@ pub async fn revoke<S: Store, I: RevocationIndex + ConditionalSync>(
     }
 
     let recorded = if already_recorded {
+        // A fact recorded before documents were kept gains its document
+        // from a replay. The container verified above, so it is evidence
+        // of exactly this fact.
+        let kept = index
+            .document(&verified.target_cid, &subject)
+            .await
+            .map_err(|error| RegistrationError::Internal {
+                message: error.to_string(),
+            })?;
+        if kept.is_none() {
+            index
+                .record(&verified.target_cid, &subject, container)
+                .await
+                .map_err(|error| RegistrationError::Internal {
+                    message: error.to_string(),
+                })?;
+        }
         false
     } else {
         index
-            .record(&verified.target_cid, &subject)
+            .record(&verified.target_cid, &subject, container)
             .await
             .map_err(|error| RegistrationError::Internal {
                 message: error.to_string(),
@@ -209,9 +226,42 @@ mod tests {
         // And it is the fact the chain walk will find on the next presign.
         assert!(
             index
-                .revoked_by_any(&receipt.revoked.to_string(), &BTreeSet::from([subject]))
+                .revoked_by_any(
+                    &receipt.revoked.to_string(),
+                    &BTreeSet::from([subject.clone()])
+                )
                 .await
                 .unwrap()
+        );
+        // With the signed revocation kept, so a refusal can carry it.
+        assert_eq!(
+            index
+                .document(&receipt.revoked.to_string(), &subject)
+                .await
+                .unwrap(),
+            Some(bytes)
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_the_document_a_replay_brings_for_a_bare_fact() {
+        // A revocation recorded before documents were kept is a fact with
+        // no evidence. Presenting the revocation again supplies it.
+        let (space, bytes) = revocation().await;
+        let subject = space.did().to_string();
+        let store = store_holding(&subject).await;
+        let index = MemoryRevocationIndex::default();
+        let target = tonk_identity::revocation::verify(&bytes)
+            .await
+            .expect("the artifact verifies")
+            .target_cid;
+        index.record(&target, &subject, b"").await.unwrap();
+
+        let receipt = revoke(&store, &index, &bytes).await.expect("replayed");
+        assert!(!receipt.recorded, "the fact itself was already there");
+        assert_eq!(
+            index.document(&target, &subject).await.unwrap(),
+            Some(bytes)
         );
     }
 
