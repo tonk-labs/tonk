@@ -190,9 +190,9 @@ async fn invitation(owner: &Signer, seed: [u8; 32], remote: &url::Url) -> anyhow
                 .await?,
         ));
     }
-    Ok(AgentInvite::new(seed, chains, &scopes, remote, now)
+    AgentInvite::new(seed, chains, &scopes, remote, now)
         .await?
-        .to_url("https://tonk.example/agent")?)
+        .to_url("https://tonk.example/agent")
 }
 
 #[tokio::test]
