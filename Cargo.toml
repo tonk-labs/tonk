@@ -194,24 +194,24 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/sapling-backports" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
 
 [profile.dev]
 opt-level = 1
