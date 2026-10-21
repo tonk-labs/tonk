@@ -1241,8 +1241,12 @@ async fn publish_agent_handoff(
     Ok(())
 }
 
+/// Publish an agent invitation's state. An invitation minted for a
+/// requesting agent answers the approval page instead, on the profile.
 #[cfg(feature = "connection-invites")]
+#[allow(clippy::too_many_arguments)]
 async fn publish_connection_invite(
+    recipient: Option<&Did>,
     tonk: &TonkState,
     repo: &str,
     subject: &Did,
@@ -1251,6 +1255,9 @@ async fn publish_connection_invite(
     status: String,
     link: String,
 ) -> Result<(), TonkWorkerError> {
+    if let Some(agent) = recipient {
+        return super::agent_access::publish_grant(tonk, subject, agent, mode, status, link).await;
+    }
     tonk.reactor
         .repository(repo)
         .branch(CONTENT_BRANCH)
@@ -1309,7 +1316,7 @@ async fn run_agent_handoff(
 ) -> Result<(), TonkWorkerError> {
     #[cfg(feature = "connection-invites")]
     {
-        return run_connection_invite_for(env, _fresh, repo).await;
+        return run_connection_invite_for(env, _fresh, repo, None).await;
     }
     #[cfg(not(feature = "connection-invites"))]
     agent_invitations_unavailable(env, repo).await
@@ -1394,15 +1401,19 @@ async fn run_connection_invite(
     fresh: bool,
 ) -> Result<(), TonkWorkerError> {
     let repo = env.origin().repo.clone();
-    run_connection_invite_for(env, fresh, &repo).await
+    run_connection_invite_for(env, fresh, &repo, None).await
 }
 
 #[cfg(feature = "connection-invites")]
-async fn run_connection_invite_for(
+pub(super) async fn run_connection_invite_for(
     env: &crate::router::CommandEnv,
     fresh: bool,
     repo: &str,
+    recipient: Option<&Did>,
 ) -> Result<(), TonkWorkerError> {
+    // A grant to a key the agent already holds carries no bearer, so
+    // issuing another is harmless and nothing about it is session state.
+    let fresh = fresh || recipient.is_some();
     let mut issued = CONNECTION_ISSUANCE.lock().await;
     issued.retain(|entry| entry.state.strong_count() > 0);
     let (subject, expected, sync_remote) = {
@@ -1418,6 +1429,7 @@ async fn run_connection_invite_for(
         if let Err(error) = require_real_space(&tonk, &subject).await {
             log!("agent invite target refused: {error}");
             return publish_connection_invite(
+                recipient,
                 &tonk,
                 repo,
                 &subject,
@@ -1433,6 +1445,7 @@ async fn run_connection_invite_for(
             Err(error) => {
                 log!("agent invite identity unavailable: {error}");
                 return publish_connection_invite(
+                    recipient,
                     &tonk,
                     repo,
                     &subject,
@@ -1455,6 +1468,7 @@ async fn run_connection_invite_for(
                 _ => ("account", "create an account or sign in to connect a tool"),
             };
             return publish_connection_invite(
+                recipient,
                 &tonk,
                 repo,
                 &subject,
@@ -1475,6 +1489,7 @@ async fn run_connection_invite_for(
                         Some(remote) => Some(remote),
                         None => {
                             return publish_connection_invite(
+                                recipient,
                                 &tonk,
                                 repo,
                                 &subject,
@@ -1489,6 +1504,7 @@ async fn run_connection_invite_for(
                 } else {
                     let (mode, status) = connection_remote_recovery(reason);
                     return publish_connection_invite(
+                        recipient,
                         &tonk,
                         repo,
                         &subject,
@@ -1504,6 +1520,7 @@ async fn run_connection_invite_for(
                 log!("agent invite remote unavailable: {error}");
                 let (mode, status) = connection_invite_recovery(&error);
                 return publish_connection_invite(
+                    recipient,
                     &tonk,
                     repo,
                     &subject,
@@ -1558,6 +1575,7 @@ async fn run_connection_invite_for(
             // The URL was intentionally transient. Losing it must never mint
             // another grant set as a side effect of rendering this panel.
             return publish_connection_invite(
+                recipient,
                 &tonk,
                 repo,
                 &subject,
@@ -1572,6 +1590,7 @@ async fn run_connection_invite_for(
             match super::agent_connections::has_issued_for_subject(&tonk, &subject).await {
                 Ok(false) => {}
                 Ok(true) => return publish_connection_invite(
+                    recipient,
                     &tonk,
                     repo,
                     &subject,
@@ -1585,6 +1604,7 @@ async fn run_connection_invite_for(
                 Err(error) => {
                     log!("agent invite history unavailable: {error}");
                     return publish_connection_invite(
+                        recipient,
                         &tonk,
                         repo,
                         &subject,
@@ -1597,14 +1617,17 @@ async fn run_connection_invite_for(
                 }
             }
         }
-        issued.retain(|entry| {
-            entry.subject != subject
-                || !entry
-                    .state
-                    .upgrade()
-                    .is_some_and(|state| std::sync::Arc::ptr_eq(&state, env.state()))
-        });
+        if recipient.is_none() {
+            issued.retain(|entry| {
+                entry.subject != subject
+                    || !entry
+                        .state
+                        .upgrade()
+                        .is_some_and(|state| std::sync::Arc::ptr_eq(&state, env.state()))
+            });
+        }
         publish_connection_invite(
+            recipient,
             &tonk,
             repo,
             &subject,
@@ -1624,6 +1647,7 @@ async fn run_connection_invite_for(
                 log!("agent invite account changed: {error}");
                 let (mode, status) = connection_invite_recovery(&error);
                 return publish_connection_invite(
+                    recipient,
                     &tonk,
                     repo,
                     &subject,
@@ -1637,6 +1661,7 @@ async fn run_connection_invite_for(
         };
         if current.bytes != expected.bytes {
             return publish_connection_invite(
+                recipient,
                 &tonk,
                 repo,
                 &subject,
@@ -1650,6 +1675,7 @@ async fn run_connection_invite_for(
         if let Err(error) = enable_sync_for_repository(&tonk, repo, &remote).await {
             log!("agent invite sync setup failed: {error}");
             return publish_connection_invite(
+                recipient,
                 &tonk,
                 repo,
                 &subject,
@@ -1665,8 +1691,13 @@ async fn run_connection_invite_for(
         &worker_origin().unwrap_or_else(|| "https://tonk.network".into()),
     )
     .map_err(|_| TonkWorkerError::Internal("invalid connection origin".into()))?;
-    let minted =
-        super::agent_connections::mint(env.state().clone(), repo.to_owned(), origin, None).await;
+    let minted = super::agent_connections::mint(
+        env.state().clone(),
+        repo.to_owned(),
+        origin,
+        recipient.cloned(),
+    )
+    .await;
     let minted = match minted {
         Ok(mut response) => {
             response.url = shortened_or_full(response.url).await;
@@ -1683,6 +1714,7 @@ async fn run_connection_invite_for(
                     log!("agent invite account changed: {error}");
                     let (mode, status) = connection_invite_recovery(&error);
                     return publish_connection_invite(
+                        recipient,
                         &tonk,
                         repo,
                         &subject,
@@ -1707,6 +1739,7 @@ async fn run_connection_invite_for(
                 || response.connection.subject != subject.to_string()
             {
                 return publish_connection_invite(
+                    recipient,
                     &tonk,
                     repo,
                     &subject,
@@ -1718,8 +1751,11 @@ async fn run_connection_invite_for(
                 .await;
             }
             let digest = *blake3::hash(response.url.as_bytes()).as_bytes();
-            publish_connection_receipt(&tonk, repo, &subject, &response.connection.id).await?;
+            if recipient.is_none() {
+                publish_connection_receipt(&tonk, repo, &subject, &response.connection.id).await?;
+            }
             publish_connection_invite(
+                recipient,
                 &tonk,
                 repo,
                 &subject,
@@ -1729,6 +1765,9 @@ async fn run_connection_invite_for(
                 response.url,
             )
             .await?;
+            if recipient.is_some() {
+                return Ok(());
+            }
             issued.push(ReadyConnectionInvite {
                 state: std::sync::Arc::downgrade(env.state()),
                 subject,
@@ -1741,6 +1780,7 @@ async fn run_connection_invite_for(
             log!("agent invitation creation failed: {error}");
             let (mode, status) = connection_invite_recovery(&error);
             publish_connection_invite(
+                recipient,
                 &tonk,
                 repo,
                 &subject,
@@ -13980,6 +14020,7 @@ mod connection_invite_overlay_tests {
             .await
             .unwrap();
         publish_connection_invite(
+            None,
             &tonk,
             &repo,
             &subject,
@@ -14305,6 +14346,7 @@ mod connection_invite_overlay_tests {
             let subject = repository.did();
             let root = super::super::identity::local_root(&tonk).await.unwrap();
             publish_connection_invite(
+                None,
                 &tonk,
                 &repo,
                 &subject,
@@ -14374,6 +14416,7 @@ mod connection_invite_overlay_tests {
         {
             let tonk = state.read().await;
             publish_connection_invite(
+                None,
                 &tonk,
                 &repo,
                 &subject,

@@ -1519,6 +1519,32 @@ pub mod command {
             pub struct Url(pub String);
         }
 
+        /// `tonk:open-agent-request` — read an agent's access request.
+        pub mod open_agent_request {
+            use dialog_query::Attribute;
+
+            /// The complete request URL, fragment included.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.open-agent-request")]
+            pub struct Url(pub String);
+        }
+
+        /// `tonk:approve-agent-access` — grant a space to a requesting agent.
+        pub mod approve_agent_access {
+            use super::super::super::Entity;
+            use dialog_query::Attribute;
+
+            /// The request URL, verified again when approved.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.approve-agent-access")]
+            pub struct Request(pub String);
+
+            /// The space to grant, as its subject DID.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.approve-agent-access")]
+            pub struct Space(pub Entity);
+        }
+
         /// `account/check-email` — is this address already registered?
         pub mod check_email {
             use dialog_query::Attribute;
@@ -2135,6 +2161,53 @@ pub mod share {
 /// On success the whole fact is retracted and the durable space record is
 /// asserted instead; a failure leaves `status: failed` (+ `reason`/`kind`)
 /// in the overlay, session-scoped and never replicated.
+/// An agent's access request as the approval page shows it, and what
+/// approving it produced per space. Overlay-only: the request expires
+/// within the hour, and a keyed link is only useful to the agent it names.
+pub mod agent_access {
+    use super::Attribute;
+
+    /// The agent's display name, as it signed it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-access")]
+    pub struct Name(pub String);
+
+    /// The key the agent asks to be granted access under.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-access")]
+    pub struct Agent(pub String);
+
+    /// The verification code the agent also shows its person.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-access")]
+    pub struct Code(pub String);
+
+    /// The verified request URL, carried by each approve control.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-access")]
+    pub struct Request(pub String);
+
+    /// Why a request could not be opened.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-access")]
+    pub struct Reason(pub String);
+
+    /// `ready`, or a pending or failure explanation, for one space.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-access")]
+    pub struct Status(pub String);
+
+    /// The recovery class for one space, as the agent-invite controls use.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-access")]
+    pub struct Mode(pub String);
+
+    /// The keyed grant link for one space when ready, otherwise empty.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.agent-access")]
+    pub struct Link(pub String);
+}
+
 pub mod join {
     use super::{Attribute, Entity};
 
