@@ -47,7 +47,7 @@ cat > "$work/manifest.json" <<EOF
   "server": {
     "type": "binary",
     "entry_point": "server/tonk-agent-peer",
-    "mcp_config": { "command": "\${__dirname}/server/tonk-agent-peer", "args": [], "env": {} }
+    "mcp_config": { "command": "\${__dirname}/server/tonk-agent-peer", "args": [], "env": { "TONK_PEER_HOST": "extension" } }
   },
   "tools": [
     { "name": "tonk_join", "description": "Join a Tonk space from a share link" },

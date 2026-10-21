@@ -9,9 +9,11 @@
 //!
 //! - [`evaluate`] — the evaluate chain (`syntax.evaluate`, `Evaluate`,
 //!   `Evaluated`, `EvaluatedCommit`).
+//! - [`notation`] — query matches rendered back as asserted notation.
 //!
 //! Rule induction is dialog's: installed `dialog.rule/*` rules fire
 //! at commit time inside `TransactionCommit::perform`, so this crate
 //! carries no fixpoint of its own.
 
 pub mod evaluate;
+pub mod notation;

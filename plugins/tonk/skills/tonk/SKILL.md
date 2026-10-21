@@ -55,8 +55,10 @@ extension's tools do not.
   **Install** in the screen Desktop just opened, then start a new chat and ask
   again. It updates itself the same way the plugin does.
 
-  Call the plugin's `tonk_display` or `tonk_show` for the data, but never say
-  a view is showing: from this plugin's copy it never renders.
+  In Claude Desktop, this plugin's `tonk_display` and `tonk_show` answer with
+  an error saying what to do instead (install the extension, use its copy, or
+  start a new chat). Do that, and use `tonk_query` for the data meanwhile.
+  Never say a view is showing.
 
   If the tool reports it can't open Desktop, give the manual steps instead:
   download
