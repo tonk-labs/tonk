@@ -179,7 +179,7 @@ struct AddressBookView: View {
         .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
       }
     }.font(.system(size: 13))
-      .sheet(item: $editing) { contact in ContactEditor(contact: contact, access: access) }
+      .sheet(item: $editing) { contact in ContactEditor(spaces: spaces, contact: contact, access: access) }
       .onChange(of: contacts.map(\.id), initial: true) { _, ids in
         if selected == nil || !ids.contains(selected!) { selected = ids.first }
       }
@@ -208,6 +208,11 @@ struct AddressBookView: View {
 }
 
 private struct ContactEditor: View {
+  let spaces: [TonkSpace]
+  @State private var inviteSpace = ""
+  @State private var sending = false
+  @State private var invitationSent = false
+  @State private var invitationError: String?
   @State var contact: DesktopContact
   @ObservedObject var access: AccessModel
   @StateObject private var lookup = ContactLookupModel()
@@ -230,14 +235,14 @@ private struct ContactEditor: View {
       if isNew {
         VStack(alignment: .leading, spacing: 8) {
           HStack {
-            TextField("Email or did:key", text: $lookup.input)
+            TextField("Email or did:key", text: $lookup.input).disabled(sending)
               .accessibilityLabel("Email or account key")
             if lookup.manualDid == nil {
               Button("Look Up") {
                 lookupTask?.cancel()
                 lookupTask = Task { await lookup.lookup() }
               }.disabled(
-                lookup.isLoading
+                sending || lookup.isLoading
                   || lookup.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
           }
@@ -284,7 +289,11 @@ private struct ContactEditor: View {
         labels = contact.labels.joined(separator: ", ")
         account = access.selfDid
       }
-      .onChange(of: lookup.input) { _, _ in lookupTask?.cancel() }
+      .onChange(of: lookup.input) { _, _ in
+        lookupTask?.cancel()
+        invitationSent = false
+        invitationError = nil
+      }
       .onChange(of: access.selfDid) { _, _ in
         lookupTask?.cancel()
         lookup.invalidate()
@@ -315,7 +324,36 @@ private struct ContactEditor: View {
     } else if let result = lookup.result {
       switch result {
       case .pending: Text("This email is registered but has not been confirmed yet.")
-      case .notFound: Text("No Tonk account was found for this email on this server.")
+      case .notFound:
+        VStack(alignment: .leading, spacing: 10) {
+          Text("No Tonk account was found for this email on this server.")
+          if invitationSent {
+            Text("Invitation sent. They can create an account, confirm their email, and join the space.")
+              .foregroundStyle(.secondary)
+          } else {
+            Picker("Share a space", selection: $inviteSpace) {
+              Text("Choose a space").tag("")
+              ForEach(spaces) { space in Text(space.title).tag(space.id) }
+            }.disabled(sending)
+            Text("They’ll receive an email invitation with access to the selected space after confirming this address.")
+              .font(.caption).foregroundStyle(.secondary)
+            Button(sending ? "Sending…" : "Send Invite") {
+              guard let space = spaces.first(where: { $0.id == inviteSpace }) else { return }
+              let address = lookup.input
+              sending = true
+              invitationError = nil
+              Task {
+                defer { sending = false }
+                do {
+                  try await access.sendEmailInvitation(email: address, space: space)
+                  invitationSent = true
+                } catch { invitationError = error.localizedDescription }
+              }
+            }.disabled(sending || inviteSpace.isEmpty || account == nil || account != access.selfDid)
+            if spaces.isEmpty { Text("Create or join a synced space before inviting someone.").font(.caption) }
+            if let invitationError { Text(invitationError).foregroundStyle(.red) }
+          }
+        }
       case .suspended: Text("The account for this email is currently suspended.")
       case .found: EmptyView()
       }

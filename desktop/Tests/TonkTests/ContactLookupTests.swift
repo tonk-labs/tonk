@@ -117,14 +117,60 @@ final class ContactLookupTests: XCTestCase {
     XCTAssertEqual(reopened.contacts.count, 2)
     XCTAssertEqual(reopened.contacts.first(where: { $0.id == contact.id }), contact)
   }
+  func testEmailInvitationRetrySurvivesRestartAndDoesNotCreateAContact() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runtime = ContactRuntime()
+    let space = try TonkSpace.decodeCatalog(Data(#"[{"subject":"did:key:zShared","name":"shared"}]"#.utf8))[0]
+    let access = AccessModel()
+    access.prepare(directory: directory, runtime: runtime)
+    await access.refreshAccount()
+    runtime.sendResult = ["state": "unknown", "message": "Delivery could not be confirmed."]
+    do {
+      try await access.sendEmailInvitation(email: " Carol@Example.com ", space: space)
+      XCTFail("An uncertain delivery must not show sent")
+    } catch {}
+    XCTAssertEqual(runtime.sends.count, 1)
+    XCTAssertEqual(runtime.sends[0]["email"] as? String, "carol@example.com")
+    let first = try XCTUnwrap(runtime.sends[0]["id"] as? String)
+    XCTAssertEqual(first.count, 64)
+    XCTAssertTrue(access.contacts.isEmpty)
+    let reopened = AccessModel()
+    reopened.prepare(directory: directory, runtime: runtime)
+    await reopened.refreshAccount()
+    runtime.sendResult = ["state": "sent"]
+    try await reopened.sendEmailInvitation(email: "carol@example.com", space: space)
+    XCTAssertEqual(runtime.sends[1]["id"] as? String, first)
+    XCTAssertNotEqual(runtime.sends[0]["request"] as? String, runtime.sends[1]["request"] as? String)
+    XCTAssertTrue(reopened.contacts.isEmpty)
+    runtime.root = "did:key:zOtherOwner"
+    await reopened.refreshAccount()
+    try await reopened.sendEmailInvitation(email: "carol@example.com", space: space)
+    XCTAssertNotEqual(runtime.sends[2]["id"] as? String, first)
+    XCTAssertEqual(runtime.sends[2]["account"] as? String, runtime.root)
+    try Data("damaged".utf8).write(to: directory.appendingPathComponent("email-invitations.json"))
+    do {
+      try await reopened.sendEmailInvitation(email: "carol@example.com", space: space)
+      XCTFail("Damaged retry state must fail before sending")
+    } catch {}
+    XCTAssertEqual(runtime.sends.count, 3)
+  }
+
 }
 
 @MainActor
 private final class ContactRuntime: SpaceAccessRuntime {
   var catalogBranch: String? = "main"
   var root = "did:key:zOwner"
+  var sends: [[String: Any]] = []
+  var sendResult: [String: Any] = ["state": "sent"]
   func createCLILink(_ space: TonkSpace) async throws -> String { "unused" }
   func accountScript(_ script: String, arguments: [String: Any]) async throws -> [String: Any] {
-    ["connections": [], "name": "Owner", "root": root]
+    if script == AccessModel.emailInvitationScript {
+      sends.append(arguments)
+      return sendResult
+    }
+    return ["connections": [], "name": "Owner", "root": root]
   }
 }
