@@ -28,6 +28,8 @@ pub(crate) struct NavigateListener {
 /// - `{ type: "navigate", href }` — assigns `window.location`.
 /// - `{ type: "navigate", href, replace: true }` — loads `href` afresh in
 ///   place of the current history entry.
+/// - `{ type: "navigate", href, replace: true, reload: false }` — re-routes
+///   to `href` in place of the current history entry, without a load.
 /// - `{ type: "sync" }` — dispatches `tonk:committed` on `window` so the
 ///   sync controller pushes immediately instead of waiting for the heartbeat.
 /// - `{ type: "profile-changed" }` — reloads the top-level document so it
@@ -48,8 +50,10 @@ pub(crate) fn install() -> Option<NavigateListener> {
 
 fn handle_worker_message(data: &JsValue) {
     if let Some(href) = navigate_href(data) {
-        if replaces(data) {
+        if replaces(data) && reloads(data) {
             replace_page(&href);
+        } else if replaces(data) {
+            replace_route(&href);
         } else {
             navigate_to(&href);
         }
@@ -85,6 +89,15 @@ fn replaces(data: &JsValue) -> bool {
         .ok()
         .and_then(|value| value.as_bool())
         .unwrap_or(false)
+}
+
+/// Whether a replacing navigate message asks for a load (the default) or
+/// only a route change (`reload: false`).
+fn reloads(data: &JsValue) -> bool {
+    js_sys::Reflect::get(data, &JsValue::from_str("reload"))
+        .ok()
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true)
 }
 
 /// Return `true` for a `{ type: "sync" }` message.
@@ -222,6 +235,38 @@ pub fn replace_page(href: &str) {
         return;
     }
     if let Some(win) = window() {
+        let _ = win.location().replace(href);
+    }
+}
+
+/// Re-route to `href` in place of the current history entry, without a load.
+///
+/// For a page whose views follow the change live and whose address must
+/// not stay reachable with Back: after a join from a ticket link, the page
+/// already shows the space, and only the address carrying the seed has to
+/// go. Like [`navigate_to`], it dispatches `popstate` so listeners
+/// re-route, and loads afresh only where history is unavailable.
+pub fn replace_route(href: &str) {
+    use wasm_bindgen::JsValue;
+    if crate::page_effect::forward("replaceRoute", href) {
+        return;
+    }
+    let Some(win) = window() else {
+        return;
+    };
+    let replaced = win
+        .history()
+        .ok()
+        .map(|h| {
+            h.replace_state_with_url(&JsValue::NULL, "", Some(href))
+                .is_ok()
+        })
+        .unwrap_or(false);
+    if replaced {
+        if let Ok(event) = web_sys::Event::new("popstate") {
+            let _ = win.dispatch_event(&event);
+        }
+    } else {
         let _ = win.location().replace(href);
     }
 }

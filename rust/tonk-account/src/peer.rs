@@ -8,11 +8,15 @@
 use dialog_capability::{Provider, Subject, did};
 use dialog_common::ConditionalSync;
 use dialog_credentials::{Credential, SignerCredential};
+use dialog_did_web::Discover;
+use dialog_effects::authority::{Identify, OperatorExt as _};
 use dialog_effects::credential::{self as credential_fx, CredentialError, prelude::*};
+use dialog_effects::peer::RemoveAddress;
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
 use dialog_peer::{
     Allowance, OpenCredential, Peer, PeerError, PeerSpace, SpaceVaultExt as _, StepFuture,
 };
+use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{
     ACCESS_BRANCH, AddAddressError, Branch, ConnectError, ConnectedBranch, ConnectedReplica,
     HeldCaches, PeersEnv, Repository, ResolveEnv, SiteAddress, Upstream, contact,
@@ -22,7 +26,9 @@ use dialog_storage::resource::Resource;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Principal as _;
+use std::collections::BTreeSet;
 use std::fmt::Display;
+use std::sync::Mutex;
 
 /// Moves a profile's state branch an earlier release wrote to the layout
 /// this release writes, before opening the profile writes into it.
@@ -643,29 +649,40 @@ pub fn service_name(address: &SiteAddress) -> Result<String, ConnectReplicaError
 /// `address`, looking the service up among the host's contacts by its
 /// [`service_name`].
 ///
-/// A service the host does not know at `address` yet is recorded first,
-/// under the DID it publishes and its name. A contact that already has
-/// the address is left alone: recording commits to the host's state
-/// even when nothing changes.
-pub async fn connect<Env: PeersEnv>(
+/// Where the service is reached is what its DID document says. The first
+/// connect to a service in this process discovers it, recording the
+/// endpoint and the socket the document names and taking back an address
+/// at that endpoint it no longer names. A service whose document cannot be
+/// read is recorded at its endpoint alone and reached over requests: no
+/// socket is dialed that the service did not announce.
+pub async fn connect<Env: ConnectEnv>(
     address: SiteAddress,
     subject: dialog_varsig::Did,
     env: &Env,
 ) -> Result<ConnectedReplica, ConnectReplicaError> {
     let name = service_name(&address)?;
+    let did = service_did(&address)?;
+    if first_in_process(env, &name).await {
+        // Best effort: the document is where the socket comes from, and a
+        // service is reached without one when it cannot be read.
+        let _ = contact(&did)
+            .discover()
+            .name(name.as_str())
+            .perform(env)
+            .await;
+    }
     if let Ok(replica) = contact(name.as_str())
         .connect()
         .repository(subject.clone())
         .open()
         .perform(env)
         .await
-        && replica.addresses().contains(&address)
+        && reaches(replica.addresses(), &address)
     {
         return Ok(replica);
     }
-    let did = service_did(&address)?;
     contact(&did)
-        .add_address(address)
+        .add_address(endpoint_of(address))
         .name(name.as_str())
         .perform(env)
         .await?;
@@ -675,6 +692,53 @@ pub async fn connect<Env: PeersEnv>(
         .open()
         .perform(env)
         .await?)
+}
+
+/// What [`connect`] needs of its environment: the host's contacts, and
+/// discovery, which reads where a service is reached and takes back an
+/// address its document no longer names.
+pub trait ConnectEnv: PeersEnv + Provider<Discover> + Provider<RemoveAddress> {}
+
+impl<T> ConnectEnv for T where T: PeersEnv + Provider<Discover> + Provider<RemoveAddress> {}
+
+/// The services discovered in this process, by the host that recorded them
+/// and the service's name: each host follows a service's document once per
+/// process, so a document that changed is followed after a reload.
+static DISCOVERED: Mutex<BTreeSet<(String, String)>> = Mutex::new(BTreeSet::new());
+
+/// Whether the host `env` acts for has not yet discovered the service
+/// `name` in this process, marking it discovered.
+async fn first_in_process<Env: Provider<Identify> + ConditionalSync>(
+    env: &Env,
+    name: &str,
+) -> bool {
+    let Ok(host) = Identify.perform(env).await else {
+        return true;
+    };
+    DISCOVERED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert((host.profile().to_string(), name.to_string()))
+}
+
+/// `address` at its endpoint alone, without a socket: what a host records
+/// for a service whose document it could not read.
+fn endpoint_of(address: SiteAddress) -> SiteAddress {
+    match address {
+        SiteAddress::Ucan(ucan) => SiteAddress::Ucan(UcanAddress::new(ucan.endpoint())),
+        address => address,
+    }
+}
+
+/// Whether a peer reached at `addresses` is reached at `address`: at the
+/// same endpoint, whether or not either names a socket.
+pub fn reaches(addresses: &[SiteAddress], address: &SiteAddress) -> bool {
+    let SiteAddress::Ucan(wanted) = address else {
+        return addresses.contains(address);
+    };
+    addresses.iter().any(|recorded| {
+        matches!(recorded, SiteAddress::Ucan(ucan) if ucan.endpoint() == wanted.endpoint())
+    })
 }
 
 /// Why [`connect`] could not reach a replica.
@@ -1034,6 +1098,115 @@ mod tests {
         Ok(())
     }
 
+    /// A peer reached at an address is reached at its endpoint, whether or
+    /// not the address recorded for it names the socket the service
+    /// announced.
+    #[dialog_common::test]
+    fn it_reaches_a_service_at_its_endpoint_whatever_its_socket() {
+        let endpoint = service("https://tonk.network/ucan/");
+        let announced = SiteAddress::Ucan(
+            UcanAddress::new("https://tonk.network/ucan/").with_socket("wss://tonk.network/ucan/"),
+        );
+        assert!(reaches(std::slice::from_ref(&announced), &endpoint));
+        assert!(reaches(std::slice::from_ref(&endpoint), &announced));
+        assert!(!reaches(
+            std::slice::from_ref(&announced),
+            &service("https://elsewhere.example/ucan/")
+        ));
+    }
+
+    /// Serve, until the test ends, the DID document of the service at a
+    /// loopback port: its access service, and its socket when `socket`.
+    /// Answers the service's endpoint.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn serve_document(socket: bool) -> anyhow::Result<String> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let id = format!("did:web:127.0.0.1%3A{port}");
+        let endpoint = format!("http://127.0.0.1:{port}/ucan/");
+        let mut services = vec![serde_json::json!({
+            "id": format!("{id}#access"),
+            "type": dialog_remote_ucan::ACCESS_SERVICE,
+            "serviceEndpoint": endpoint,
+        })];
+        if socket {
+            services.push(serde_json::json!({
+                "id": format!("{id}#socket"),
+                "type": dialog_remote_ucan::ACCESS_SOCKET,
+                "serviceEndpoint": format!("ws://127.0.0.1:{port}/ucan/"),
+            }));
+        }
+        let body = serde_json::to_vec(&serde_json::json!({
+            "id": id,
+            "verificationMethod": [],
+            "service": services,
+        }))?;
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut request = [0u8; 2048];
+                    let _ = stream.read(&mut request).await;
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes()).await;
+                    let _ = stream.write_all(&body).await;
+                });
+            }
+        });
+        Ok(endpoint)
+    }
+
+    /// A service is dialed where its document says, and only there: one
+    /// whose document announces a socket is recorded with it, and one
+    /// whose document names none is recorded at its endpoint alone, so no
+    /// socket it never offered is tried.
+    ///
+    /// Native only, for the documents it serves on loopback ports.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_dials_the_socket_only_where_the_service_announces_it() -> anyhow::Result<()> {
+        use dialog_storage::provider::storage::NativeSpace;
+
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+        let peer = open_peer(
+            Location::new(directory.clone(), "discovering"),
+            directory,
+            Storage::<NativeSpace>::default().owned_by(system.did()),
+            &credentials,
+            &system,
+            true,
+            &MigrateBranch,
+        )
+        .await?;
+        let subject = Ed25519Signer::generate().await?.did();
+
+        let live = serve_document(true).await?;
+        let replica = connect(service(&live), subject.clone(), &peer).await?;
+        assert_eq!(
+            replica.addresses(),
+            [SiteAddress::Ucan(
+                UcanAddress::new(live.as_str()).with_socket(live.replacen("http://", "ws://", 1))
+            )],
+            "the socket the document announces is dialed"
+        );
+
+        let quiet = serve_document(false).await?;
+        let replica = connect(service(&quiet), subject, &peer).await?;
+        assert_eq!(
+            replica.addresses(),
+            [service(&quiet)],
+            "a service whose document names no socket is not dialed at one"
+        );
+        Ok(())
+    }
+
     /// Every repository at a service is reached through one contact,
     /// looked up by the service's name and recorded under its `did:web`;
     /// connecting again records nothing new.
@@ -1060,8 +1233,10 @@ mod tests {
             &MigrateBranch,
         )
         .await?;
-        let ucan = service("https://tonk.network/ucan");
-        let sync = service("https://tonk.network/sync");
+        // Nothing listens on port 1, so the service's document cannot be
+        // read and it is recorded at its endpoint alone.
+        let ucan = service("http://127.0.0.1:1/ucan");
+        let sync = service("http://127.0.0.1:1/sync");
         let first = Ed25519Signer::generate().await?.did();
         let second = Ed25519Signer::generate().await?.did();
 
@@ -1076,7 +1251,7 @@ mod tests {
         connect(sync.clone(), second.clone(), &peer).await?;
 
         let by_name = peer
-            .contact("tonk.network")
+            .contact("127.0.0.1:1")
             .connect()
             .repository(second)
             .open()
@@ -1084,6 +1259,13 @@ mod tests {
             .await?;
         assert!(by_name.addresses().contains(&ucan));
         assert!(by_name.addresses().contains(&sync));
+        assert!(
+            by_name.addresses().iter().all(|address| matches!(
+                address,
+                SiteAddress::Ucan(ucan) if ucan.socket().is_none()
+            )),
+            "no socket is recorded that the service did not announce"
+        );
         let by_did = peer
             .contact(service_did(&ucan)?)
             .connect()

@@ -1922,6 +1922,11 @@ pub struct TonkServiceWorker {
     /// `online` event) restarts it.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     sync_loop: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Whether the loop that begins each space's push loop runs: they push
+    /// each commit, and pull each watched head, as it comes (see
+    /// [`crate::router::push_loops`]).
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    push_loop: std::cell::Cell<bool>,
 }
 
 #[wasm_bindgen]
@@ -2035,6 +2040,8 @@ impl TonkServiceWorker {
             sync_scheduler: SyncScheduler::default(),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             sync_loop: std::rc::Rc::new(std::cell::Cell::new(false)),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            push_loop: std::cell::Cell::new(false),
         })
     }
 
@@ -2380,6 +2387,16 @@ impl TonkServiceWorker {
     /// it. This replaces the page-side `POST /api/sync` heartbeat.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     fn ensure_sync_loop(&self) {
+        // The push loops sleep until a commit or a watched head wakes
+        // them, so they run for the worker's life, apart from the drain's
+        // loop.
+        if !self.sync_scheduler.stopped() && !self.push_loop.replace(true) {
+            let scheduler = self.sync_scheduler.clone();
+            wasm_bindgen_futures::spawn_local(crate::router::push_loops(
+                self.state.clone(),
+                std::rc::Rc::new(move || scheduler.stopped()),
+            ));
+        }
         // A worker being replaced starts no new work — its loop would keep
         // waking up and pinning it in `waiting`.
         if self.sync_scheduler.stopped() || self.sync_loop.get() {
@@ -2413,6 +2430,10 @@ impl TonkServiceWorker {
                     log!("sync loop parked: every open space is paused");
                     break;
                 }
+                // Open spaces whose upstream can be followed are watched,
+                // and leave the sweep below; one whose watch ended is
+                // watched again here.
+                crate::router::watch_open_repos(&state).await;
                 // Through the SAME gate as the per-fetch drain: a loop tick used
                 // to call `drain_sync` directly, so it could start a second
                 // drain on top of one already running (they only consulted

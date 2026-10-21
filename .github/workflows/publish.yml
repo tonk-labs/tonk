@@ -189,38 +189,94 @@ jobs:
             fi
             echo "$id"
           }
+          # The account's Secrets Store, which holds the secrets every
+          # preview reads at runtime. Only its id and the secrets' names are
+          # read here, never a value. A preview missing either secret could
+          # not sign or could not send its activation mail, so the deploy
+          # stops instead of shipping one.
+          resolve_store() {
+            api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/secrets_store"
+            # A request Cloudflare refuses says why, rather than reading as
+            # an empty answer.
+            store_get() {
+              body="$RUNNER_TEMP/secrets-store.json"
+              status="$(curl -sS -o "$body" -w '%{http_code}' \
+                -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$api$1")"
+              case "$status" in
+                200) cat "$body" ;;
+                401|403)
+                  # Name the token, by its id, so the one to change can be
+                  # found among the account's and its members' tokens. A user
+                  # token verifies at /user, an account token at its account.
+                  token="$({
+                    curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                      "https://api.cloudflare.com/client/v4/user/tokens/verify" \
+                      || curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                        "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify"
+                  } 2>/dev/null | jq -r '"\(.result.id) (\(.result.status))"' 2>/dev/null)"
+                  echo "::error::The Cloudflare API token ${token:-of unknown id} may not read the Secrets Store (HTTP $status: $(jq -c '.errors' "$body" 2>/dev/null)): give the token behind CLOUDFLARE_PREVIEW_API_TOKEN the Secrets Store permission on this account" >&2
+                  exit 1 ;;
+                *)
+                  echo "::error::Reading the Secrets Store ($1) failed with HTTP $status: $(jq -c '.errors' "$body" 2>/dev/null)" >&2
+                  exit 1 ;;
+              esac
+            }
+            stores="$(store_get /stores)" || exit 1
+            id="$(jq -r 'if (.result | length) == 1 then .result[0].id
+              else (.result[] | select(.name == "default_secrets_store") | .id) end' <<<"$stores" | head -n 1)"
+            if [ -z "$id" ] || [ "$id" = null ]; then
+              echo "::error::The account has no Secrets Store for the preview secrets (see the note in wrangler.toml)" >&2
+              exit 1
+            fi
+            secrets="$(store_get "/stores/$id/secrets?per_page=100")" || exit 1
+            names="$(jq -r '.result[].name' <<<"$secrets")"
+            for name in TONK_PREVIEW_SERVICE_SECRET_KEY TONK_PREVIEW_RESEND_API_KEY; do
+              if ! grep -Fxq "$name" <<<"$names"; then
+                echo "::error::The Secrets Store holds no $name; create it as wrangler.toml describes" >&2
+                exit 1
+              fi
+            done
+            echo "$id"
+          }
           control="tonk-access-control-pr-${{ github.event.pull_request.number }}"
           ingest="tonk-access-ingest-pr-${{ github.event.pull_request.number }}"
           revocations="tonk-access-revocations-pr-${{ github.event.pull_request.number }}"
           servability="tonk-access-servability-pr-${{ github.event.pull_request.number }}"
+          worker="tonk-access-service-pr-${{ github.event.pull_request.number }}"
           config="$PWD/wrangler.preview.toml"
           control_id="$(resolve "$control" "rust/tonk-access-service/migrations")"
           ingest_id="$(resolve "$ingest" "rust/tonk-access-service/migrations-ingest")"
           revocations_id="$(resolve_kv "$revocations")"
           servability_id="$(resolve_kv "$servability")"
+          store_id="$(resolve_store)"
           cp wrangler.toml "$config"
           sed -i \
+            -e "s/^name = \"tonk-access-service-preview\"$/name = \"$worker\"/" \
             -e "s/database_name = \"tonk-access-control-preview\"/database_name = \"$control\"/" \
             -e "s/database_id = \"REPLACED-PER-PULL-REQUEST\"/database_id = \"$control_id\"/" \
             -e "s/database_name = \"tonk-access-ingest-preview\"/database_name = \"$ingest\"/" \
             -e "s/database_id = \"INGEST-REPLACED-PER-PULL-REQUEST\"/database_id = \"$ingest_id\"/" \
             -e "s/id = \"REPLACED-PER-PULL-REQUEST\"/id = \"$revocations_id\"/" \
             -e "s/id = \"SERVABILITY-REPLACED-PER-PULL-REQUEST\"/id = \"$servability_id\"/" \
+            -e "s/store_id = \"SECRETS-STORE-REPLACED-PER-DEPLOY\"/store_id = \"$store_id\"/" \
             "$config"
-          if ! grep -Fq "database_name = \"$control\"" "$config" \
+          if ! grep -Fxq "name = \"$worker\"" "$config" \
+            || ! grep -Fq "database_name = \"$control\"" "$config" \
             || ! grep -Fq "database_id = \"$control_id\"" "$config" \
             || ! grep -Fq "database_name = \"$ingest\"" "$config" \
             || ! grep -Fq "database_id = \"$ingest_id\"" "$config" \
             || ! grep -Fq "id = \"$revocations_id\"" "$config" \
-            || ! grep -Fq "id = \"$servability_id\"" "$config"; then
-            echo "::error::Could not bind the access preview config to $control/$ingest/$revocations"
+            || ! grep -Fq "id = \"$servability_id\"" "$config" \
+            || grep -Fq "SECRETS-STORE-REPLACED-PER-DEPLOY" "$config"; then
+            echo "::error::Could not bind the access preview config to $worker/$control/$ingest/$revocations"
             exit 1
           fi
           echo "database=$control" >> "$GITHUB_OUTPUT"
           echo "ingest=$ingest" >> "$GITHUB_OUTPUT"
           echo "config=$config" >> "$GITHUB_OUTPUT"
+          echo "worker=$worker" >> "$GITHUB_OUTPUT"
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Apply preview access migrations
@@ -235,23 +291,27 @@ jobs:
               "${{ steps.access-database.outputs.ingest }}" --remote \
               --env preview -c "${{ steps.access-database.outputs.config }}"
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy access preview
         if: github.event_name == 'pull_request'
         id: deploy-preview
+        # A plain deploy of the pull request's own worker, as production is
+        # deployed: it applies the Durable Object migrations, which a version
+        # upload cannot, so the preview keeps sockets as production does.
         run: |
           set -o pipefail
-          preview_alias="pr-${{ github.event.pull_request.number }}"
+          worker="${{ steps.access-database.outputs.worker }}"
+          config="${{ steps.access-database.outputs.config }}"
           log="$RUNNER_TEMP/access-preview.log"
+          # The worker holds no secrets of its own: it reads the account's
+          # from the Secrets Store at runtime, so nothing here handles one.
           nix --accept-flake-config develop .#ci --command \
-            wrangler versions upload --env preview \
-              -c "${{ steps.access-database.outputs.config }}" \
-              --preview-alias "$preview_alias" 2>&1 | tee "$log"
-          url="$(grep -Eo "https://$preview_alias-tonk-access-service-preview\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
+            wrangler deploy --env preview -c "$config" 2>&1 | tee "$log"
+          url="$(grep -Eo "https://$worker\.[a-z0-9-]+\.workers\.dev" "$log" | head -n 1 || true)"
           if [ -z "$url" ]; then
-            echo "::error::wrangler printed no preview alias URL for the access worker"
+            echo "::error::wrangler printed no workers.dev URL for $worker"
             exit 1
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
@@ -261,7 +321,7 @@ jobs:
             echo WRANGLER_OUTPUT_EOF
           } >> "$GITHUB_OUTPUT"
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       # Migrations run first, because code that queries a column the
@@ -407,7 +467,9 @@ jobs:
       contents: read
       pull-requests: write
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      # A pull request's MCP preview deploys with the previews' own token, so
+      # previews never run on the token that deploys production.
+      CLOUDFLARE_API_TOKEN: ${{ github.event_name == 'pull_request' && secrets.CLOUDFLARE_PREVIEW_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       # Keep Docker on this runner; the Nix asset job deliberately removes it.
@@ -480,7 +542,7 @@ jobs:
       - uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - name: Delete preview databases
+      - name: Delete preview databases and worker
         run: |
           set -euo pipefail
           for database in \
@@ -494,6 +556,12 @@ jobs:
                 wrangler d1 delete "$database" --skip-confirmation
             fi
           done
+          # The pull request's own worker, and with it its Durable Object
+          # namespace. A worker that was never deployed is nothing to delete.
+          worker="tonk-access-service-pr-${{ github.event.pull_request.number }}"
+          nix --accept-flake-config develop .#ci --command \
+            wrangler delete "$worker" --force \
+            || echo "No preview worker $worker to delete"
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

@@ -103,14 +103,22 @@ tonk-invite = { workspace = true }
 tonk-account = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# The space's Durable Object is a class `#[durable_object]` exports
+# through wasm-bindgen, whose expansion names it.
+wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rusqlite = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"], optional = true }
+# The local server's socket, served over the HTTP connection it upgrades.
+tokio-tungstenite = { workspace = true, optional = true }
 
 [features]
 default = []
+# Hold each write on a socket as long as the production bucket would, so a
+# local test sees the frames an object takes meanwhile.
+test-latency = []
 # Enable test helpers (local access service server)
 helpers = [
   "dep:anyhow",
@@ -121,6 +129,7 @@ helpers = [
   "dep:reqwest",
   "dep:rusqlite",
   "dep:tokio",
+  "dep:tokio-tungstenite",
   "dialog-common/helpers",
   "dialog-remote-s3/helpers",
   "dialog-remote-ucan-s3/helpers",
