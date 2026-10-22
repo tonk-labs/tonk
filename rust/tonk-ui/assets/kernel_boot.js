@@ -12,23 +12,28 @@
 // - Keeps the space's store: each record the embedder writes, in IndexedDB.
 // - Asks the person's profile, over the port a page of this origin hands it,
 //   for a delegation for the space, which says which space this origin is.
-// - Installs into a space that holds no kernel the one this deployment
-//   ships (`/_host/kernel/{id}.wasm`), as the space's own blob and boot cell.
-//   From then on the kernel comes from the space's store, not from here.
-// - Boots the kernel the space pins and hands it every request but the
-//   shell's: a page load gets the shell, unless the shell asked for the
-//   address's content, and anything else is the kernel's to answer. A space
-//   nothing has been installed into answers every page with a 404.
+// - Installs into a space that holds no kernel the one it was made for, which
+//   the person's profile hands it, as the space's own blob and boot cell.
+//   From then on the kernel comes from the space's store, not from anywhere
+//   else. The kernel founds the space on it: its first commit records the
+//   kernel and the pin to it.
+// - Keeps the host's own files it serves, so a space that started once
+//   starts again offline.
+// - Boots the kernel the space pins and hands it every request of this
+//   origin but the host's own files. Each page it answers with carries the
+//   host's broker (`kernel_broker.js`), which carries the port up to the
+//   person's profile; a page load the kernel answers with no page gets one of
+//   the host's that says what the kernel answered. A space nothing has been
+//   installed into answers every page with a 404.
 
 importScripts("/_host/embedder.js");
 
 const PINNED = new URL(self.location.href).searchParams.get("kernel");
 // The contract between this worker and its shell, as for a release.
 const PROTOCOL = 2;
-const SHELL_PATH = "/space.html";
-const SHELL_MARK = '<meta name="tonk-shell" content="worker" />';
+const BROKER_PATH = "/kernel_broker.js";
 // What this origin serves from the deployment, never from the kernel.
-const HOST_FILES = new Set([SHELL_PATH, "/kernel_boot.js"]);
+const HOST_FILES = new Set(["/space.html", "/kernel_boot.js", BROKER_PATH]);
 const HOST_PREFIXES = ["/_host/", "/.well-known/"];
 
 const log = (...args) => console.log("[Space Kernel]", ...args);
@@ -230,11 +235,28 @@ async function takeUpSpace(embedder) {
     log("took up", answer.space, "until", new Date(answer.expires * 1000).toISOString());
 }
 
-// The kernel this deployment ships, checked against the id that names it.
+// The host's files this origin serves, from the network while it answers,
+// and from what this worker kept of them when it does not: a space that
+// started once starts again offline.
+const HOST_CACHE = "tonk-host";
+async function hostFile(request) {
+    try {
+        const response = await fetch(request);
+        if (response.ok) await (await caches.open(HOST_CACHE)).put(request, response.clone());
+        return response;
+    } catch (error) {
+        const kept = await caches.match(request, { cacheName: HOST_CACHE });
+        if (kept) return kept;
+        throw error;
+    }
+}
+
+// The kernel this space was made for: from the person's profile, which holds
+// the deployment's copy, so a space made on this device takes nothing from
+// anywhere else. Checked against the id that names it.
 async function shippedKernel(id) {
-    const response = await fetch(`/_host/kernel/${id}.wasm`);
-    if (!response.ok) throw new Error(`the deployment ships no kernel ${id}: ${response.status}`);
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const answer = await askHost({ kernel: id });
+    const bytes = new Uint8Array(answer.bytes);
     const named = wasm_bindgen.kernelId(bytes);
     if (named !== id) throw new Error(`the kernel at ${id} is ${named}`);
     return bytes;
@@ -243,7 +265,7 @@ async function shippedKernel(id) {
 async function start() {
     const started = performance.now();
     if (!PINNED) throw new Error("this worker pins no kernel");
-    await wasm_bindgen({ module_or_path: "/_host/embedder_bg.wasm" });
+    await wasm_bindgen({ module_or_path: await hostFile(new Request(new URL("/_host/embedder_bg.wasm", self.location.href))) });
     const seed = await sessionSeed();
     const { space } = await grant(seed);
     let records = await kept();
@@ -260,14 +282,29 @@ async function start() {
     const embedder = await wasm_bindgen.boot(space, seed, records);
     await keep(await embedder.drain());
     log("booted in", Math.round(performance.now() - started), "ms", embedder.timings);
-    // A kernel that has not taken up its space still answers, with what it
-    // holds: nothing of the space. The next start asks again.
-    await takeUpSpace(embedder).catch(error => log("the kernel did not take up its space:", error));
     return embedder;
 }
 
-let booting = start();
-booting.catch(error => log("the kernel did not boot:", error));
+// Boot the kernel, then have it take up its space. A page load waits on the
+// boot alone: after a space's first start, booting needs nothing of the
+// person's profile, and a delegation renewed alongside never holds a page up.
+// What the profile asks of the space waits on both. A kernel that has not
+// taken up its space still answers, with what it holds: nothing of the space.
+// The next start asks again.
+function run() {
+    booting = start();
+    booting.catch(error => log("the kernel did not boot:", error));
+    takenUp = booting.then(embedder =>
+        takeUpSpace(embedder)
+            .catch(error => log("the kernel did not take up its space:", error))
+            .then(() => embedder),
+    );
+    // Whoever waits on it hears a boot that failed; nothing else need.
+    takenUp.catch(() => {});
+}
+let booting;
+let takenUp;
+run();
 
 // A kernel that trapped answers nothing again: boot it anew, from what the
 // space's store kept. At most once in a while, so a kernel that traps as it
@@ -279,27 +316,73 @@ function restartIfStopped(error) {
     if (Date.now() - restarted < RESTART_EVERY_MS) return;
     restarted = Date.now();
     log("the kernel stopped; booting it again");
-    booting = start();
-    booting.catch(error => log("the kernel did not boot:", error));
+    run();
 }
 
 // ---- Requests -----------------------------------------------------------
 
-// Addresses whose next load is answered with their content, as a release
-// does: the shell that lands in a frame of this origin asks for it.
-const admitted = new Map();
-function takeAdmission(url) {
-    const until = admitted.get(url);
-    admitted.delete(url);
-    return until !== undefined && until > Date.now();
+// The broker, as the first thing in a page's head: before any script of the
+// page's own.
+const BROKER = `<script src="${BROKER_PATH}"></script>`;
+// How far into a page its head is looked for.
+const HEAD_WITHIN = 64 * 1024;
+
+// `page`, a stream of HTML, with the broker put in at the top of its head.
+// A page with no head in its start gets the broker after its doctype, or
+// first.
+function withBroker(page) {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    let seen = "";
+    let placed = false;
+    const place = controller => {
+        const head = /<head(\s[^>]*)?>/i.exec(seen);
+        const doctype = /^\s*<!doctype[^>]*>/i.exec(seen);
+        const at = head ? head.index + head[0].length : doctype ? doctype[0].length : 0;
+        controller.enqueue(encoder.encode(seen.slice(0, at) + BROKER + seen.slice(at)));
+        placed = true;
+        seen = "";
+    };
+    return page.pipeThrough(
+        new TransformStream({
+            transform(piece, controller) {
+                if (placed) return controller.enqueue(piece);
+                seen += decoder.decode(piece, { stream: true });
+                if (/<head(\s[^>]*)?>/i.test(seen) || seen.length > HEAD_WITHIN) place(controller);
+            },
+            flush(controller) {
+                if (placed) return;
+                seen += decoder.decode();
+                place(controller);
+            },
+        }),
+    );
 }
 
-async function serveShell() {
-    const response = await fetch(SHELL_PATH, { cache: "no-cache" });
-    const headers = new Headers(response.headers);
+// The host's page for a page load the kernel answered with something other
+// than a page: what it answered, with the broker, so the space is still
+// reached.
+function hostPage(status) {
+    const said =
+        status === 404 ? "Nothing is installed here yet."
+        : status >= 500 ? "This space could not answer."
+        : `This space answered ${status}.`;
+    return new Response(
+        `<!doctype html><html><head>${BROKER}<meta charset="utf-8"><title>${status}</title>` +
+        `<style>body{font:14px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;` +
+        `min-height:100vh;opacity:.7}</style></head><body><p>${said}</p></body></html>`,
+        { status, headers: { "content-type": "text/html; charset=utf-8" } },
+    );
+}
+
+// What the kernel answers a page load with, for a frame: its page with the
+// broker in it, or the host's page.
+function framed(reply) {
+    const type = reply.headers.get("content-type") ?? "";
+    if (!/^text\/html/i.test(type) || !reply.body) return hostPage(reply.status);
+    const headers = new Headers(reply.headers);
     headers.delete("content-length");
-    const shell = (await response.text()).replace("<head>", `<head>\n        ${SHELL_MARK}`);
-    return new Response(shell, { status: response.status, headers });
+    return new Response(withBroker(reply.body), { status: reply.status, headers });
 }
 
 async function serveKernel(event) {
@@ -309,10 +392,11 @@ async function serveKernel(event) {
     const reply = await embedder.handle(event.request.method, url.pathname + url.search, [...event.request.headers], body);
     drainSoon(embedder);
     const bodiless = reply.status === 204 || reply.status === 304 || event.request.method === "HEAD";
-    return new Response(bodiless ? null : bodyOf(embedder, reply), {
+    const response = new Response(bodiless ? null : bodyOf(embedder, reply), {
         status: reply.status,
         headers: reply.headers,
     });
+    return event.request.mode === "navigate" ? framed(response) : response;
 }
 
 // Answer a request passed down the port: its status, then its body as the
@@ -321,7 +405,7 @@ async function serveKernel(event) {
 const calls = new Map();
 async function answerCall(port, { call, request }) {
     try {
-        const embedder = await booting;
+        const embedder = await takenUp;
         const body = new Uint8Array(await new Response(request.body ?? null).arrayBuffer());
         const reply = await embedder.handle(request.method, request.path, request.headers ?? [], body);
         drainSoon(embedder);
@@ -356,10 +440,18 @@ self.addEventListener("message", event => {
     const type = event.data?.type;
     if (type === "protocol") event.ports[0]?.postMessage({ protocol: PROTOCOL });
     else if (type === "claim") event.waitUntil(self.clients.claim());
-    else if (type === "content") {
-        admitted.set(event.data.url, Date.now() + 5_000);
-        event.ports[0]?.postMessage({ admitted: true });
-    } else if (type === "port" && event.ports[0]) {
+    // The shell that installed this worker waits for the kernel to boot and
+    // take up its space before it goes to the space's address.
+    else if (type === "booted") {
+        const reply = event.ports[0];
+        event.waitUntil(
+            takenUp.then(
+                () => reply?.postMessage({ booted: true }),
+                error => reply?.postMessage({ error: String(error?.message ?? error) }),
+            ),
+        );
+    }
+    else if (type === "port" && event.ports[0]) {
         adopt(event.ports[0]);
         event.waitUntil(booting.catch(() => {}));
     }
@@ -368,15 +460,17 @@ self.addEventListener("message", event => {
 self.addEventListener("fetch", event => {
     const url = new URL(event.request.url);
     if (url.origin !== self.location.origin) return;
-    if (HOST_FILES.has(url.pathname) || HOST_PREFIXES.some(prefix => url.pathname.startsWith(prefix))) return;
-    if (event.request.mode === "navigate" && !takeAdmission(url.href)) {
-        event.respondWith(serveShell());
+    if (HOST_FILES.has(url.pathname) || HOST_PREFIXES.some(prefix => url.pathname.startsWith(prefix))) {
+        event.respondWith(hostFile(event.request));
         return;
     }
     event.respondWith(
         serveKernel(event).catch(error => {
             restartIfStopped(error);
-            return new Response(String(error?.message ?? error), { status: 502 });
+            log("could not answer", url.pathname, error);
+            return event.request.mode === "navigate"
+                ? hostPage(502)
+                : new Response(String(error?.message ?? error), { status: 502 });
         }),
     );
 });

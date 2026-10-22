@@ -66,15 +66,16 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     timings: {},
     handle: async (method, path) => {
       handled.push(`${method} ${path}`);
-      const [status, text] =
+      const [status, text, type = "text/plain"] =
         path === "/api/identify" ? [200, JSON.stringify({ did: "did:key:zKernel" })]
         : path === "/.kernel/adopt" ? [204, ""]
+        : path === "/page" ? [200, '<!doctype html><html><head><title>A page</title></head><body>hi</body></html>', "text/html"]
         : [404, "not found"];
       // The body as the kernel writes it: one piece, then its end.
       const pieces = text ? [new TextEncoder().encode(text)] : [];
       return {
         status,
-        headers: [["content-type", "text/plain"]],
+        headers: [["content-type", type]],
         body: { next: async () => pieces.shift(), cancel() {} },
       };
     },
@@ -92,8 +93,10 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
   if (holds) {
     store.stores.set("records", new Map([["blob", { kind: "blob", subject: SPACE, key: [1], kernel: holds }]]));
   }
+  let offline = false;
   const network = async (address) => {
-    const path = new URL(address, ORIGIN).pathname;
+    if (offline) throw new TypeError("Failed to fetch");
+    const path = new URL(typeof address === "string" ? address : address.url, ORIGIN).pathname;
     fetched.push(path);
     if (path === "/space.html") return new Response("<head></head>SHELL");
     const id = /^\/_host\/kernel\/(.+)\.wasm$/.exec(path)?.[1];
@@ -114,8 +117,18 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     fetch: network,
     performance,
     crypto,
-    URL, Request, Response, Headers, TextEncoder, TextDecoder, Uint8Array, Promise, ReadableStream,
+    URL, Request, Response, Headers, TextEncoder, TextDecoder, Uint8Array, Promise, ReadableStream, TransformStream,
     setTimeout, queueMicrotask,
+    // The host's files this worker keeps.
+    caches: (() => {
+      const kept = new Map();
+      const key = (request) => (typeof request === "string" ? request : request.url);
+      const cache = {
+        match: async (request) => kept.get(key(request))?.clone(),
+        put: async (request, response) => void kept.set(key(request), response),
+      };
+      return { open: async () => cache, match: async (request) => cache.match(request) };
+    })(),
     console: { log() {} },
   });
   vm.runInContext(SOURCE, context);
@@ -127,7 +140,9 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
       asked.push(message);
       const answer = message.delegate
         ? { id: message.id, space: SPACE, chain: new ArrayBuffer(1), expires: Date.now() / 1000 + 86400 }
-        : { id: message.id, settled: true };
+        : message.kernel
+          ? { id: message.id, bytes: new TextEncoder().encode(shipped[message.kernel] ?? "").buffer }
+          : { id: message.id, settled: true };
       queueMicrotask(() => port.onmessage({ data: answer }));
     },
   };
@@ -162,34 +177,63 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
   // The profile passes a request down the port, as it does one a page of
   // the app asks about this space.
   const passDown = (call, path) => port.onmessage({ data: { call, request: { method: "GET", path } } });
-  return { listeners, imported, fetched, booted, handled, asked, told, handPort, passDown, request, message };
+  const goOffline = () => void (offline = true);
+  // Ask, as the shell that installed the worker does, for the kernel to boot
+  // and take up its space.
+  const started = () =>
+    new Promise((resolve) =>
+      listeners.message({ data: { type: "booted" }, ports: [{ postMessage: resolve }], waitUntil() {} }),
+    );
+  return { listeners, imported, fetched, booted, handled, asked, told, handPort, passDown, request, message, goOffline, started };
 }
 
 test("the bootloader loads the host's embedder", () => {
   assert.deepEqual(space().imported, ["/_host/embedder.js"]);
 });
 
-test("a page load gets the shell, marked as the worker's", async () => {
+test("a page the kernel answers with carries the host's broker, first in its head", async () => {
   const site = space();
+  site.handPort();
+  const page = await (await site.request("/page", { mode: "navigate" })).text();
+  assert.equal(
+    page,
+    '<!doctype html><html><head><script src="/kernel_broker.js"></script><title>A page</title></head><body>hi</body></html>',
+  );
+  assert.deepEqual(site.handled.slice(-1), ["GET /page"]);
+});
+
+test("a page load the kernel answers with no page gets the host's, with the broker", async () => {
+  const site = space();
+  site.handPort();
   const response = await site.request("/", { mode: "navigate" });
-  const shell = await response.text();
-  assert.match(shell, /<meta name="tonk-shell" content="worker" \/>/);
-  assert.match(shell, /SHELL/);
-  assert.deepEqual(site.handled, [], "the kernel is not asked for a page the shell renders");
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
+  const page = await response.text();
+  assert.match(page, /<head><script src="\/kernel_broker.js"><\/script>/);
+  assert.match(page, /Nothing is installed here yet/);
+});
+
+test("a request that is not a page load is answered as the kernel answers it", async () => {
+  const site = space();
+  site.handPort();
+  const response = await site.request("/page");
+  assert.match(await response.text(), /^<!doctype html><html><head><title>/, "no broker outside a page load");
 });
 
 test("a space with no kernel of its own installs the one its worker names, and boots it", async () => {
   const site = space();
   site.handPort();
+  assert.equal((await site.started()).booted, true, "the shell is told the kernel has started");
   const response = await site.request("/api/anything");
   assert.equal(response.status, 404);
   assert.deepEqual(
     site.asked.map((asked) => Object.keys(asked).filter((key) => key !== "id")),
-    [["delegate"], ["seeded", "from"], ["delegate"]],
-    "it asks the profile which space it is, says it holds it, and asks a delegation for the kernel",
+    [["delegate"], ["seeded", "from"], ["kernel"], ["delegate"]],
+    "it asks the profile which space it is, says it holds it, takes its kernel, and asks a delegation for the kernel",
   );
   assert.equal(site.asked[0].delegate, "did:key:zSession");
-  assert.ok(site.fetched.includes(`/_host/kernel/${KERNEL}.wasm`), "the deployment's kernel is fetched");
+  assert.equal(site.asked[2].kernel, KERNEL);
+  assert.ok(!site.fetched.some((path) => path.startsWith("/_host/kernel/")), "nothing of the kernel is fetched");
   assert.deepEqual(site.booted, [{ subject: SPACE, records: 1 }]);
   assert.deepEqual(site.handled, ["GET /api/identify", "POST /.kernel/adopt", "GET /api/anything"]);
 });
@@ -211,22 +255,14 @@ test("a worker for another kernel than the space pins does not boot it", async (
   assert.deepEqual(site.booted, []);
 });
 
-test("a load the shell asked for is the kernel's to answer, once", async () => {
+test("the host's own files come from the network, and are kept for when it does not answer", async () => {
   const site = space();
-  site.handPort();
-  assert.equal(site.message({ type: "content", url: `${ORIGIN}/notes` })?.admitted, true);
-  const content = await site.request("/notes", { mode: "navigate" });
-  assert.equal(content.status, 404);
-  assert.deepEqual(site.handled.slice(-1), ["GET /notes"]);
-  const again = await site.request("/notes", { mode: "navigate" });
-  assert.match(await again.text(), /SHELL/, "the next load of it gets the shell again");
-});
-
-test("the host's own files go to the network", async () => {
-  const site = space();
-  for (const path of ["/space.html", "/kernel_boot.js", "/_host/embedder_bg.wasm", "/.well-known/tonk"]) {
-    assert.equal(await site.request(path), undefined, path);
-  }
+  const shell = await site.request("/space.html", { mode: "navigate" });
+  assert.match(await shell.text(), /SHELL/);
+  assert.deepEqual(site.handled, [], "the kernel is not asked for the host's files");
+  site.goOffline();
+  const kept = await site.request("/space.html", { mode: "navigate" });
+  assert.match(await kept.text(), /SHELL/, "offline, the kept copy answers");
 });
 
 test("the worker speaks the shell's protocol", () => {
@@ -248,7 +284,7 @@ test("a request the profile passes down is answered by the kernel", async () => 
 test("the kernel takes up its space with a delegation to its own profile", async () => {
   const site = space();
   site.handPort();
-  await site.request("/api/anything");
+  await site.started();
   const delegations = site.asked.filter((message) => message.delegate);
   assert.equal(delegations.at(-1).delegate, "did:key:zKernel", "the profile delegates to the kernel's profile");
   assert.deepEqual(site.handled.slice(0, 2), ["GET /api/identify", "POST /.kernel/adopt"]);
@@ -257,7 +293,7 @@ test("the kernel takes up its space with a delegation to its own profile", async
 test("a kernel asks for its delegation once as it boots", async () => {
   const site = space();
   site.handPort();
-  await site.request("/api/anything");
+  await site.started();
   // A delegation that lapses in a day needs no renewal yet.
   assert.equal(site.asked.filter((message) => message.delegate).length, 2);
 });
