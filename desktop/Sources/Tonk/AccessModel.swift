@@ -403,7 +403,28 @@ final class AccessModel: ObservableObject {
 
   /// Mints a link, keeps it for Copy, copies it and records it.
   @discardableResult
-  func make(_ kind: NewLink, in space: TonkSpace) async -> Bool {
+  func make(
+    _ kind: NewLink, in space: TonkSpace, surface: DesktopAnalytics.Surface = .hub
+  ) async -> Bool {
+    guard runtime != nil, !working.contains("new:" + space.id) else { return false }
+    let (journey, action): (DesktopAnalytics.Journey, DesktopAnalytics.Action) =
+      switch kind {
+      case .person: (.collaboration, .copyShareLink)
+      case .agent: (.handoff, .connectAgent)
+      case .publicRead: (.space, .publishSpace)
+      }
+    let attempt = Telemetry.shared.begin(journey, action, surface: surface)
+    let started = generation
+    let made = await mint(kind, in: space)
+    if made {
+      attempt.finish(.success, stage: kind == .publicRead ? .remoteCommit : .clipboard)
+    } else {
+      attempt.finish(generation == started ? .retryableFailure : .cancelled, stage: .worker)
+    }
+    return made
+  }
+
+  private func mint(_ kind: NewLink, in space: TonkSpace) async -> Bool {
     guard let runtime, !working.contains("new:" + space.id) else { return false }
     let started = generation
     working.insert("new:" + space.id)
@@ -456,61 +477,126 @@ final class AccessModel: ObservableObject {
   }
 
   @discardableResult
-  func copyDefaultLink(in space: TonkSpace) async -> Bool {
+  /// Copies the space's default link, making one first if it has none. One click is one
+  /// `copy_share_link` attempt; its receipt is the clipboard.
+  func copyDefaultLink(
+    in space: TonkSpace, surface: DesktopAnalytics.Surface = .hub
+  ) async -> Bool {
+    let attempt = Telemetry.shared.begin(.collaboration, .copyShareLink, surface: surface)
     if spaces[space.id] == nil { await refresh(space) }
     guard spaces[space.id] != nil, errors[space.id] == nil else {
       notice = "Refresh this space before copying its default link."
+      attempt.finish(.retryableFailure, stage: .worker, failureKind: .serviceUnavailable)
       return false
     }
     if let link = defaultLink(in: space) {
       guard let value = storedLink(link) else {
         notice =
           "This Mac does not have the default link. Reset it in Links to create a replacement."
+        attempt.finish(.blocked, stage: .validation, failureKind: .localState)
         return false
       }
       let copied = copy(value)
       notice = copied ? "Link copied" : "Couldn’t copy the link"
+      attempt.finish(
+        copied ? .success : .retryableFailure, stage: .clipboard,
+        failureKind: copied ? nil : .localState)
       return copied
     }
-    return await make(.person, in: space)
+    guard runtime != nil, !working.contains("new:" + space.id) else {
+      attempt.finish(.blocked, stage: .intent, failureKind: .conflict)
+      return false
+    }
+    let started = generation
+    let made = await mint(.person, in: space)
+    if made {
+      attempt.finish(.success, stage: .clipboard)
+    } else {
+      attempt.finish(generation == started ? .retryableFailure : .cancelled, stage: .worker)
+    }
+    return made
   }
 
-  func copyLink(_ link: AccessLink) {
+  func copyLink(_ link: AccessLink, surface: DesktopAnalytics.Surface = .hub) {
     guard let value = storedLink(link) else { return }
-    notice = copy(value) ? "Link copied" : "Couldn’t copy the link"
+    let attempt = Telemetry.shared.begin(.collaboration, .copyShareLink, surface: surface)
+    let copied = copy(value)
+    notice = copied ? "Link copied" : "Couldn’t copy the link"
+    attempt.finish(
+      copied ? .success : .retryableFailure, stage: .clipboard,
+      failureKind: copied ? nil : .localState)
   }
 
-  func revoke(_ link: AccessLink, space: TonkSpace) async {
-    guard let runtime, !working.contains(link.id) else { return }
+  func revoke(
+    _ link: AccessLink, space: TonkSpace, surface: DesktopAnalytics.Surface = .hub
+  ) async {
+    guard runtime != nil, !working.contains(link.id) else { return }
+    let attempt = Telemetry.shared.begin(
+      link.kind == .publicRead ? .space : .collaboration,
+      link.kind == .publicRead ? .unpublishSpace : .revokeLink, surface: surface)
+    let started = generation
+    let revoked = await withdraw(link, space: space)
+    if revoked {
+      attempt.finish(.success, stage: .remoteCommit)
+    } else {
+      attempt.finish(generation == started ? .retryableFailure : .cancelled, stage: .worker)
+    }
+  }
+
+  private func withdraw(_ link: AccessLink, space: TonkSpace) async -> Bool {
+    guard let runtime, !working.contains(link.id) else { return false }
     let started = generation
     working.insert(link.id)
     defer { if generation == started { working.remove(link.id) } }
     do {
       try await revoke(link, runtime: runtime, space: space)
-      guard generation == started else { return }
+      guard generation == started else { return false }
       record(
         link.kind == .publicRead ? .unpublished : .revoked, kind: link.kind, target: link.target,
         space: space)
       if link.kind != .publicRead { vault.remove(link.target) }
       notice = link.kind == .publicRead ? "The space is private" : "Link revoked"
       if link.kind == .agent { await refreshAccount() }
-      guard generation == started else { return }
+      guard generation == started else { return false }
       await refresh(space)
+      return true
     } catch {
-      guard generation == started else { return }
+      guard generation == started else { return false }
       notice = "Couldn’t revoke the link: " + Self.message(error)
+      return false
     }
   }
 
   /// Replace a plain link: the new link works before the old one stops.
-  func resetLink(_ link: AccessLink, space: TonkSpace) async {
-    guard let runtime, link.canReset, !working.contains(link.id) else { return }
+  /// Replace a plain link. Fully replaced is success; a new link copied while the old one
+  /// still works is degraded; nothing copied is a failure.
+  func resetLink(
+    _ link: AccessLink, space: TonkSpace, surface: DesktopAnalytics.Surface = .hub
+  ) async {
+    guard runtime != nil, link.canReset, !working.contains(link.id) else { return }
+    let attempt = Telemetry.shared.begin(.collaboration, .resetLink, surface: surface)
+    let started = generation
+    let outcome = await replace(link, space: space)
+    switch outcome {
+    case .replaced: attempt.finish(.success, stage: .remoteCommit)
+    case .oldStillActive: attempt.finish(.degradedSuccess, stage: .clipboard)
+    case .notCopied:
+      attempt.finish(.retryableFailure, stage: .clipboard, failureKind: .localState)
+    case .failed:
+      attempt.finish(generation == started ? .retryableFailure : .cancelled, stage: .worker)
+    }
+  }
+
+  private enum ResetOutcome { case replaced, oldStillActive, notCopied, failed }
+
+  private func replace(_ link: AccessLink, space: TonkSpace) async -> ResetOutcome {
+    guard let runtime, link.canReset, !working.contains(link.id) else { return .failed }
     let started = generation
     working.insert(link.id)
     defer { if generation == started { working.remove(link.id) } }
     do {
       let (url, target) = try await mintPersonLink(runtime: runtime, space: space)
-      guard generation == started else { return }
+      guard generation == started else { return .failed }
       let storageWarning = retain(url, target: target)
       guard copy(url) else {
         record(.made, kind: .person, target: target, space: space)
@@ -518,26 +604,30 @@ final class AccessModel: ObservableObject {
           "A replacement was made but couldn’t be copied; the old link is still active."
           + storageWarning
         await refresh(space)
-        return
+        return .notCopied
       }
       do {
         try await revoke(link, runtime: runtime, space: space)
-        guard generation == started else { return }
+        guard generation == started else { return .failed }
         vault.remove(link.target)
         journal.confirmRevocation(subject: space.subject, target: link.target)
         record(.reset, kind: .person, target: target, space: space)
         notice = "New link copied. The old link no longer works." + storageWarning
+        await refresh(space)
+        return .replaced
       } catch {
-        guard generation == started else { return }
+        guard generation == started else { return .failed }
         record(.made, kind: .person, target: target, space: space)
         notice =
           "New link copied, but the old link is still active: " + Self.message(error)
           + storageWarning
+        await refresh(space)
+        return .oldStillActive
       }
-      await refresh(space)
     } catch {
-      guard generation == started else { return }
+      guard generation == started else { return .failed }
       notice = "Couldn’t reset the link: " + Self.message(error)
+      return .failed
     }
   }
 

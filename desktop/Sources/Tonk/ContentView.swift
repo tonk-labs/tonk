@@ -384,7 +384,7 @@ struct ContentView: View {
         viewAddress
         if let space = model.openedSpace {
           // The share capsule is 32 points, the breadcrumb pill's height.
-          SpaceShareControl(space: space, access: access, compact: true)
+          SpaceShareControl(space: space, access: access, compact: true, surface: .workspace)
         }
       }
       if showHistory {
@@ -457,7 +457,9 @@ struct ContentView: View {
       viewSidebarToggle
       viewAddress.frame(maxWidth: 340)
       Spacer(minLength: 0)
-      if let space = model.openedSpace { SpaceShareControl(space: space, access: access) }
+      if let space = model.openedSpace {
+        SpaceShareControl(space: space, access: access, surface: .workspace)
+      }
       viewMoreMenu
     }.padding(.horizontal, 16).frame(height: 52)
       .background(.bar).background(Color(nsColor: .windowBackgroundColor))
@@ -551,7 +553,8 @@ struct ContentView: View {
     Task {
       do {
         try await model.configureProvider(
-          model.provider, connection: next, key: "", codexExecutable: model.saved.codexExecutable)
+          model.provider, connection: next, key: "", codexExecutable: model.saved.codexExecutable,
+          surface: .workspace)
       } catch { model.error = error.localizedDescription }
     }
   }
@@ -698,6 +701,7 @@ struct ContentView: View {
   /// Opening the same space view again brings its existing window forward.
   private func open(_ view: SpaceViewEntry, in space: TonkSpace) {
     openWindow(value: SpaceWindowRequest(subject: space.subject, url: view.url(in: space)))
+    Telemetry.shared.record(.workspace, .openView, surface: .hub)
   }
 
   private var sidebarToggle: some View {
@@ -784,6 +788,15 @@ struct ContentView: View {
     .onChange(of: runtime.accountConnected) { _, connected in
       // Nothing learned under one account may show under the next.
       if !connected { access.reset() }
+    }
+    // Analytics identity follows the signed-in profile: the same hashed id the web uses.
+    .task(id: "\(runtime.accountConnected)-\(runtime.accountEpoch)") {
+      guard runtime.accountConnected, Telemetry.shared.isEnabled else {
+        Telemetry.shared.identify(profileDID: nil)
+        return
+      }
+      let identity = try? await runtime.accountScript("return await api('/api/identify');")
+      Telemetry.shared.identify(profileDID: identity?["did"] as? String)
     }
     .task(id: runtime.catalogLoaded && runtime.accountConnected ? runtime.spaces.map(\.id) : nil) {
       guard runtime.catalogLoaded && runtime.accountConnected else { return }

@@ -107,6 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   weak var runtime: RuntimeModel?
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
+    Telemetry.shared.appOpened()
     // Resolve the compiled bundle icon explicitly: automatic AppKit lookup can
     // leave this SwiftPM-built app with a transparent Dock and switcher icon.
     if Bundle.main.object(forInfoDictionaryKey: "CFBundleIconName") != nil {
@@ -132,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     NSApp.activate(ignoringOtherApps: true)
   }
   func applicationWillTerminate(_ notification: Notification) {
+    Telemetry.shared.flushBeforeExit()
     runtime?.stopMCPBridge()
     // Saves and stops the hub's chat model and every space window's.
     archive?.shutdown()

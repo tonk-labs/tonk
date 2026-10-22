@@ -87,6 +87,24 @@ hashed locally and wins over a query token. Short-link redirects forward only
 public campaign/source tags added to the `@/...` URL; they do not accept
 overrides for the stored invite capability or space token.
 
+### Desktop app
+
+| Event | Properties |
+|---|---|
+| `app_opened` | transport context only |
+| `product_event` | The closed product lifecycle below, for the desktop interactions in the [coverage ledger](analytics-contract.md#coverage-ledger) |
+
+Every desktop event carries `environment=desktop`, `$lib=tonk-desktop`,
+`version`, `os`, and `arch`, plus an RFC 3339 UTC occurrence timestamp recorded
+when queued. The distinct id is the same profile hash the CLI and web use,
+resolved from the signed-in runtime's `/api/identify`; before that, and after
+sign-out, it is `tonk:anonymous`. Events are queued in memory and sent to
+`/batch` at most every ten seconds and once at quit, best effort; failures are
+dropped, never retried. Nothing is sent against a local runtime.
+
+The space views inside the app are the web app: they report web events as
+above, under their own host's `environment`.
+
 ### Account journey schema
 
 `account_event` has `schema_version=1` and only these properties:
@@ -194,6 +212,8 @@ infrastructure records deliberately have no stable join key to PostHog.
   effective state. The persisted choice lives at ``<platform data dir>/tonk/telemetry.json`` (``TONK_TELEMETRY_STATE`` overrides the directory).
 - Web: run `localStorage.setItem("tonk:telemetry", "off")` in the
   console and reload. (A settings toggle is a planned follow-up.)
+- Desktop: turn off "Share anonymous usage data" in Settings (Advanced),
+  or launch with `DO_NOT_TRACK=1` or `TONK_TELEMETRY=0`.
 - Builds without a `TONK_POSTHOG_KEY` baked in send nothing at all —
   this is the default for local builds, CI, and forks.
 
@@ -204,6 +224,11 @@ design) and optionally `TONK_POSTHOG_HOST` (default
 `https://eu.i.posthog.com`) in the environment of the release build.
 `TONK_POSTHOG_KEY`/`TONK_POSTHOG_HOST` are also read at runtime, and
 `TONK_POSTHOG_ENDPOINT` overrides the host for integration tests.
+
+Signed desktop builds bake the same key into the app's `Info.plist`
+(`TonkPostHogKey`, optionally `TonkPostHogHost`) through `build-app.sh`;
+the Desktop workflows set it, and a script test keeps it equal to the
+flake's. Local `build-app.sh` builds stay key-less.
 
 The nix packages (`tonk-cli`, `tonk-ui`, and therefore
 `tonk-cloudflare-artifacts`) bake the key in from the `posthogKey`

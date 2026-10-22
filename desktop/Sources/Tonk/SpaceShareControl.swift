@@ -5,6 +5,8 @@ struct SpaceShareControl: View {
   let space: TonkSpace
   @ObservedObject var access: AccessModel
   var compact = false
+  /// Where analytics files this control's actions: the main window or a space window.
+  var surface: DesktopAnalytics.Surface = .hub
   @State private var copied = false
   @State private var copying = false
   @State private var publishing = false
@@ -54,7 +56,7 @@ struct SpaceShareControl: View {
               symbol: "globe", enabled: access.storedLink(publication) != nil
             ) {
               showingOptions = false
-              access.copyLink(publication)
+              access.copyLink(publication, surface: surface)
             }
             ShareOption(
               title: "Publishing settings…", detail: "Copy, review or unpublish",
@@ -78,14 +80,16 @@ struct SpaceShareControl: View {
       }
     }
     .foregroundStyle(.white).fixedSize().accentCapsule()
-    .sheet(isPresented: $publishing) { PublishSpaceSheet(space: space, access: access) }
+    .sheet(isPresented: $publishing) {
+      PublishSpaceSheet(space: space, access: access, surface: surface)
+    }
   }
 
   private func copyDefault() {
     guard !copying else { return }
     copying = true
     Task {
-      copied = await access.copyDefaultLink(in: space)
+      copied = await access.copyDefaultLink(in: space, surface: surface)
       copying = false
       try? await Task.sleep(for: .milliseconds(1500))
       copied = false
@@ -145,6 +149,7 @@ private struct ShareLabelStyle: LabelStyle {
 struct PublishSpaceSheet: View {
   let space: TonkSpace
   @ObservedObject var access: AccessModel
+  var surface: DesktopAnalytics.Surface = .hub
   @Environment(\.dismiss) private var dismiss
   @State private var changing = false
   @State private var confirmUnpublish = false
@@ -177,7 +182,7 @@ struct PublishSpaceSheet: View {
           Text(url).font(.system(size: 12, design: .monospaced)).lineLimit(1).truncationMode(
             .middle)
           Spacer(minLength: 8)
-          Button("Copy") { access.copyLink(publication) }
+          Button("Copy") { access.copyLink(publication, surface: surface) }
         }.padding(12).background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 8))
       }
       if changing {
@@ -201,7 +206,7 @@ struct PublishSpaceSheet: View {
           Button("Publish and Copy") {
             changing = true
             Task {
-              await access.make(.publicRead, in: space)
+              await access.make(.publicRead, in: space, surface: surface)
               changing = false
             }
           }.buttonStyle(.borderedProminent)
@@ -213,7 +218,7 @@ struct PublishSpaceSheet: View {
           guard let publication else { return }
           changing = true
           Task {
-            await access.revoke(publication, space: space)
+            await access.revoke(publication, space: space, surface: surface)
             changing = false
           }
         }
