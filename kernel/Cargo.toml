@@ -12,16 +12,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db", branch = "feat/credential-generate" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db", branch = "feat/credential-generate" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db", branch = "feat/credential-generate" }
 dialog-credentials = { git = "https://github.com/dialog-db/dialog-db", branch = "feat/credential-generate" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db", branch = "feat/credential-generate" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db", branch = "feat/credential-generate" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db", branch = "feat/credential-generate" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db", branch = "feat/credential-generate" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db", branch = "feat/credential-generate" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db", branch = "feat/credential-generate" }
 dialog-varsig = { git = "https://github.com/dialog-db/dialog-db", branch = "feat/credential-generate" }
 wcmp = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "ebda220" }
 wcmp-wasm-core-wasmtime = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "ebda220" }

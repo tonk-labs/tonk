@@ -30,4 +30,5 @@ pub mod guest;
 pub mod layer;
 pub mod mount;
 pub mod signal;
+pub mod space;
 pub mod store;

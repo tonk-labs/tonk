@@ -6,7 +6,9 @@
 //! location. The name of the location is the DID of the subject and a number,
 //! so that two layers of one subject, such as those of two workers in the
 //! daemon, never meet. A [`Mount`] takes the layer out again when it drops;
-//! the space that Dialog DB opened keeps its own handle on it.
+//! the space that Dialog DB opened keeps its own handle on it. A location
+//! that names no mounted layer opens the host's layer for it (see
+//! [`crate::space`]).
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -67,6 +69,16 @@ impl Drop for Mount {
     }
 }
 
+/// The store mounted at `location`, if one is.
+pub(crate) fn mounted(location: &Location) -> Option<Store> {
+    match &location.directory {
+        Directory::At(directory) if directory == DIRECTORY => {
+            mounts().get(&location.name).map(|entry| entry.0.clone())
+        }
+        _ => None,
+    }
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Resource<Location> for Store {
@@ -77,13 +89,6 @@ impl Resource<Location> for Store {
     }
 
     async fn open(location: &Location) -> Result<Self, StorageError> {
-        let mounted = match &location.directory {
-            Directory::At(directory) if directory == DIRECTORY => {
-                mounts().get(&location.name).map(|entry| entry.0.clone())
-            }
-            _ => None,
-        };
-        mounted
-            .ok_or_else(|| StorageError::NotFound(format!("no layer is mounted at {location:?}")))
+        crate::space::store(location).await
     }
 }

@@ -128,6 +128,24 @@ async fn sign<T: 'static>(
     Ok(signature.to_bytes().to_vec())
 }
 
+/// Sign `tag` and then `payload` with the key of `credential`, as Dialog DB
+/// signs a head or a revision record.
+fn sign_tagged<T: 'static>(
+    accessor: &Accessor<T, Sapling>,
+    credential: &Resource<Credential>,
+    tag: &str,
+    payload: &[u8],
+) -> Vec<u8> {
+    use ed25519_dalek::Signer as _;
+    let seed = accessor.with(|mut access| access.get().held(credential).seed.clone());
+    let mut message = tag.as_bytes().to_vec();
+    message.extend_from_slice(payload);
+    ed25519_dalek::SigningKey::from_bytes(&seed)
+        .sign(&message)
+        .to_bytes()
+        .to_vec()
+}
+
 impl credentials::Host for KernelHost {}
 
 impl credentials::HostCredential for KernelHost {
@@ -160,6 +178,34 @@ impl<T: 'static> credentials::HostCredentialWithStore<T> for Sapling {
     ) -> Result<Vec<u8>, Error> {
         trace("sign_delegation");
         sign(accessor, &credential, payload, Kind::Delegation).await
+    }
+
+    async fn sign_head(
+        accessor: &Accessor<T, Self>,
+        credential: Resource<Credential>,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, Error> {
+        trace("credential.sign_head");
+        Ok(sign_tagged(
+            accessor,
+            &credential,
+            "dialog/head@1\n",
+            &payload,
+        ))
+    }
+
+    async fn sign_revision_record(
+        accessor: &Accessor<T, Self>,
+        credential: Resource<Credential>,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, Error> {
+        trace("credential.sign_revision_record");
+        Ok(sign_tagged(
+            accessor,
+            &credential,
+            "dialog/revision-record@1\n",
+            &payload,
+        ))
     }
 
     async fn reveal(

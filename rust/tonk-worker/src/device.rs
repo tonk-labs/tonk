@@ -229,7 +229,7 @@ impl Registry {
             .map_err(|error| {
                 TonkWorkerError::Internal(format!("failed to open the system key: {error}"))
             })?;
-        Ok(Storage::<DefaultSpace>::default().owned_by(system.did()))
+        Ok(Storage::<DefaultSpace>::new().owned_by(system.did()))
     }
 
     /// Open the profile `name` in this registry's directory over

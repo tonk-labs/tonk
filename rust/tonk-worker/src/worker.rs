@@ -351,8 +351,10 @@ pub type DefaultSpace = dialog_storage::provider::storage::WebSpace;
 #[cfg(not(target_arch = "wasm32"))]
 pub type DefaultSpace = dialog_storage::provider::storage::NativeSpace;
 
+/// Default storage type on WASI: the layers and credentials of the kernel's
+/// host.
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
-pub type DefaultSpace = dialog_storage::provider::storage::VolatileSpace;
+pub type DefaultSpace = tonk_kernel_world::space::KernelSpace;
 
 /// Concrete operator type for the default storage backend.
 pub type DefaultOperator = Peer<DefaultSpace, Session>;
@@ -491,6 +493,20 @@ impl TonkState {
         let storage = registry.storage().await?;
         let profile = registry.open_profile(&storage, "hosted").await?;
         boot_state(storage, "hosted".to_owned(), profile, registry).await
+    }
+
+    /// Open the worker runtime in a kernel on WASI: its storage and keys are
+    /// the layers and credentials its host gives it (`tonk-kernel-world`).
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn open_kernel(profile: &str) -> Result<Self, crate::TonkWorkerError> {
+        let registry = crate::device::Registry {
+            profile: profile.to_owned(),
+            directory: dialog_effects::storage::Directory::Profile,
+            standing: Default::default(),
+        };
+        let storage = registry.storage().await?;
+        let opened = registry.open_profile(&storage, profile).await?;
+        boot_state(storage, profile.to_owned(), opened, registry).await
     }
 
     /// Enter the one-way retiring state and release every query stream.

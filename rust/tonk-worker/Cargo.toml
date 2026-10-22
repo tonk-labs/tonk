@@ -144,6 +144,7 @@ tonk-library = { workspace = true }
 # In a component on WASI: the component's own async runtime, for work a
 # handler starts and does not wait on.
 [target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
+tonk-kernel-world = { workspace = true }
 wit-bindgen = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
