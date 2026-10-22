@@ -25,6 +25,11 @@ macro_rules! log {
         {
             println!($($arg)*);
         }
+        // A kernel on WASI: its host shows what it writes to standard error.
+        #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+        {
+            eprintln!($($arg)*);
+        }
     }};
 }
 
