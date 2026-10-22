@@ -615,7 +615,10 @@ impl Registry {
         &self,
         storage: &Storage<DefaultSpace>,
     ) -> Result<(String, DefaultProfile), TonkWorkerError> {
-        let suffix: [u8; 8] = rand::random();
+        let mut suffix = [0u8; 8];
+        getrandom::fill(&mut suffix).map_err(|error| {
+            TonkWorkerError::Internal(format!("no entropy for the profile's name: {error}"))
+        })?;
         let name = format!("{}-{}", self.profile, hex::encode(suffix));
 
         // `create`, not `open`: a name collision must surface rather

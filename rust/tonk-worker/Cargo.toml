@@ -60,7 +60,6 @@ http-body-util = { workspace = true }
 ipld-core = { workspace = true }
 js-sys = { workspace = true }
 lsp-types = { workspace = true }
-rand = { workspace = true }
 send_wrapper = { workspace = true }
 serde = { workspace = true }
 serde_ipld_dagcbor = { workspace = true }
@@ -138,7 +137,9 @@ reqwest = { workspace = true }
 # fetch from.
 tonk-library = { workspace = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# In a browser, randomness comes from its crypto. On WASI it comes from
+# `wasi:random`, which `getrandom` reaches with no feature.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom_0_3 = { workspace = true }
 

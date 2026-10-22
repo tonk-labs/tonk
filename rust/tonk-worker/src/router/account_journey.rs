@@ -16,6 +16,7 @@ use tonk_analytics::account::{
     AccountAction, AccountEvent, AccountOutcome, AccountState, FailureKind, Journey, Stage,
     Surface, Trigger,
 };
+use tonk_analytics::product::attempt_id;
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 use tonk_identity::custody::CustodyDenial;
 use tonk_schema::registration::kind;
@@ -103,7 +104,7 @@ impl Attempt {
         action: AccountAction,
         trigger: Trigger,
     ) -> Self {
-        let id = hex::encode(rand::random::<[u8; 16]>());
+        let id = attempt_id();
         let (journey, stage, surface, state) = classify(action);
         let began =
             AccountEvent::started(journey, action, stage, surface, trigger, state, id.clone());

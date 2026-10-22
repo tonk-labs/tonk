@@ -229,7 +229,10 @@ async fn forget_pending(state: &TonkState) {
 /// page to.
 async fn start(state: &TonkState, via: &str) -> Result<String, String> {
     let here = super::customer::service_origin().map_err(|error| error.to_string())?;
-    let request = hex::encode(rand::random::<[u8; 16]>());
+    let mut request = [0u8; 16];
+    getrandom::fill(&mut request)
+        .map_err(|error| format!("no entropy for the request: {error}"))?;
+    let request = hex::encode(request);
     let approval = approval_url(via, &here, state.profile.did().as_ref(), &request)?;
     let origin = Url::parse(&approval)
         .map(|approval| approval.origin().ascii_serialization())
