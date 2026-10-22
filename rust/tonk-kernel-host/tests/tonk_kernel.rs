@@ -2,14 +2,9 @@
 //! on the storage and credentials of its host.
 #![cfg(not(target_arch = "wasm32"))]
 
-use kernel_host::kernel::Kernel;
-use kernel_host::sapling::{Change, did_key};
+use tonk_kernel_host::kernel::Kernel;
+use tonk_kernel_host::sapling::{Change, did_key};
 use wcmp::Engine;
-
-const TONK_KERNEL: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../target/wasm32-wasip3/release/tonk_kernel.wasm"
-);
 
 fn engine() -> Engine {
     Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap()
@@ -35,8 +30,8 @@ async fn identify(engine: &Engine, bytes: &[u8], kept: Vec<Change>) -> (String, 
 #[tokio::test(flavor = "current_thread")]
 async fn it_answers_with_tonk_s_worker() {
     let engine = engine();
-    let bytes = std::fs::read(TONK_KERNEL).unwrap();
-    let mut kernel = Kernel::load(&engine, &bytes, [7; 32]).await.unwrap();
+    let bytes = tonk_components::TONK_KERNEL_BYTES;
+    let mut kernel = Kernel::load(&engine, bytes, [7; 32]).await.unwrap();
     kernel.init(&space(), &space()).await.unwrap();
 
     for path in ["/api/identify", "/api/profile"] {
@@ -53,18 +48,27 @@ async fn it_answers_with_tonk_s_worker() {
 #[tokio::test(flavor = "current_thread")]
 async fn it_keeps_its_keys_in_the_host() {
     let engine = engine();
-    let bytes = std::fs::read(TONK_KERNEL).unwrap();
+    let bytes = tonk_components::TONK_KERNEL_BYTES;
 
-    let (first, kept) = identify(&engine, &bytes, Vec::new()).await;
+    let (first, kept) = identify(&engine, bytes, Vec::new()).await;
     let keys = kept
         .iter()
         .filter(|change| matches!(change, Change::Key { seed: Some(_), .. }))
         .count();
     assert!(keys >= 1, "the host keeps the worker's keys: {kept:?}");
 
-    let (again, _) = identify(&engine, &bytes, kept).await;
+    let (again, _) = identify(&engine, bytes, kept).await;
     assert_eq!(
         first, again,
         "a kernel that starts again is the same profile"
+    );
+}
+
+/// The build names the kernel as a space's boot cell pins it.
+#[test]
+fn it_names_the_kernel_the_way_a_space_pins_it() {
+    assert_eq!(
+        tonk_kernel_host::boot::kernel_id(tonk_components::TONK_KERNEL_BYTES),
+        tonk_components::TONK_KERNEL_ID
     );
 }

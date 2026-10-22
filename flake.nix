@@ -208,6 +208,8 @@
           rustToolchain
           wasm-bindgen-cli
           wbg-pool
+          # What a Tonk kernel imports and exports, as a component.
+          pkgs.wasm-tools
         ];
 
         devShellEnvVars =
@@ -554,7 +556,7 @@
           # access service's HTTP-level tests are `#![cfg]`'d on.
           tests-native-debug = buildTestArchive {
             name = "native-debug";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-components --exclude tonk-kernel-host --features integration-tests";
           };
 
           # Built with `release-test`: release optimizations without LTO,
@@ -562,20 +564,20 @@
           tests-native-release = buildTestArchive {
             name = "native-release";
             profile = "release-test";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests --cargo-profile release-test";
-            depsExtraArgs = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-components --exclude tonk-kernel-host --features integration-tests --cargo-profile release-test";
+            depsExtraArgs = "--workspace --exclude tonk-ui --exclude tonk-core --exclude tonk-components --exclude tonk-kernel-host --features integration-tests";
           };
 
           tests-web-debug = buildTestArchive {
             name = "web-debug";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
+            args = "--workspace --exclude tonk-cli --exclude tonk-perf --exclude tonk-components --exclude tonk-kernel-host";
           };
 
           tests-web-release = buildTestArchive {
             name = "web-release";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --exclude tonk-perf --release";
+            args = "--workspace --exclude tonk-cli --exclude tonk-perf --exclude tonk-components --exclude tonk-kernel-host --release";
           };
 
           # The real-browser suite `test:e2e` runs. Its `integration-tests`

@@ -495,18 +495,16 @@ impl TonkState {
         boot_state(storage, "hosted".to_owned(), profile, registry).await
     }
 
-    /// Open the worker runtime in a kernel on WASI: its storage and keys are
-    /// the layers and credentials its host gives it (`tonk-kernel-world`).
+    /// Open the worker runtime in a kernel on WASI, as the browser's worker
+    /// opens it: the device's registry, and the profile this device signs as.
+    /// Its storage and keys are the layers and credentials the kernel's host
+    /// gives it (`tonk-kernel-world`).
     #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
-    pub async fn open_kernel(profile: &str) -> Result<Self, crate::TonkWorkerError> {
-        let registry = crate::device::Registry {
-            profile: profile.to_owned(),
-            directory: dialog_effects::storage::Directory::Profile,
-            standing: Default::default(),
-        };
+    pub async fn open_kernel() -> Result<Self, crate::TonkWorkerError> {
+        let registry = crate::device::Registry::device();
         let storage = registry.storage().await?;
-        let opened = registry.open_profile(&storage, profile).await?;
-        boot_state(storage, profile.to_owned(), opened, registry).await
+        let (name, profile) = registry.open_active(&storage).await?;
+        boot_state(storage, name, profile, registry).await
     }
 
     /// Enter the one-way retiring state and release every query stream.

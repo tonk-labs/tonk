@@ -1,0 +1,10 @@
+[package]
+name = "tonk-components"
+description = "The components the Tonk build makes for the world sapling:kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[build-dependencies]
+blake3 = { workspace = true }

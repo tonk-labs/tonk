@@ -13,11 +13,11 @@ command = "sh"
 command_arguments = ["scripts/hash-guest.sh"]
 
 # Spaces that run a kernel load the embedder and their first kernel from
-# `/_host/`, which `kernel/build-host.sh` builds.
+# `/_host/`, which this hook builds.
 [[hooks]]
 stage = "post_build"
 command = "sh"
-command_arguments = ["scripts/copy-kernel-host.sh"]
+command_arguments = ["scripts/build-kernel-host.sh"]
 
 [serve]
 port = 8080

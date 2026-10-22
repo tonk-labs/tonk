@@ -2,10 +2,15 @@
 //! `sapling:kernel`. Its storage and keys are the layers and credentials its
 //! host gives it (`tonk-kernel-world`), and it answers each request of its
 //! origin with the worker's own API router, over `wasi:http/handler`.
+//!
+//! Built for `wasm32-wasip3` by `tonk-components`; on every other target the
+//! crate is empty.
+
+#![cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 
 pub mod world {
     wit_bindgen::generate!({
-        path: "../../rust/tonk-kernel-world/wit",
+        path: "../tonk-kernel-world/wit",
         world: "sapling:kernel/kernel",
         with: {
             "sapling:kernel/types@0.1.0": tonk_kernel_world::world::sapling::kernel::types,
@@ -29,9 +34,6 @@ use tower::ServiceExt as _;
 use world::exports::sapling::kernel::{channel, lifecycle};
 use world::exports::wasi::http::handler;
 use world::wasi::http::types::{ErrorCode, Request, Response};
-
-/// The profile the worker keeps in the host's storage.
-const PROFILE: &str = "kernel";
 
 /// The worker's router, once `init` opened its state. A `static`, not a
 /// thread-local: on `wasm32-wasip3` each export call is a task of its own.
@@ -61,7 +63,7 @@ struct Kernel;
 impl lifecycle::Guest for Kernel {
     async fn init(_boot: lifecycle::Boot) -> Result<(), Error> {
         let started = world::wasi::clocks::monotonic_clock::now();
-        let state = TonkState::open_kernel(PROFILE).await.map_err(invalid)?;
+        let state = TonkState::open_kernel().await.map_err(invalid)?;
         let (router, _, _) = tonk_worker::api_router_with_state(state);
         *ROUTER.lock().unwrap_or_else(PoisonError::into_inner) = Some(Held(router));
         let took = world::wasi::clocks::monotonic_clock::now() - started;
