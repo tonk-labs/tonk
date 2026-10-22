@@ -103,7 +103,7 @@ sign-out, it is `tonk:anonymous`. Events are queued in memory and sent to
 dropped, never retried. Nothing is sent against a local runtime.
 
 The space views inside the app are the web app: they report web events as
-above, under their own host's `environment`.
+above, under their own host's `environment`, with `shell=desktop` (below).
 
 ### Account journey schema
 
@@ -164,6 +164,15 @@ derived from the hostname: `production` (tonk.network), `staging`
 (staging.tonk.xyz), or `dev` (anything else). The marketing site's
 own snippet registers `environment = "website"` in its repo, so all
 surfaces share one filterable dimension within the PostHog project.
+
+Every web event also carries a closed `shell` super property: `desktop` when
+the page runs inside the macOS desktop app, `browser` otherwise. The desktop
+app injects `window.__tonkShell = "desktop"` into its web views before page
+scripts run; any other value, or none, reports `browser`. No user agent string
+or raw flag is sent. `shell` leaves `environment` unchanged, so desktop space
+views on tonk.network still report `environment=production`; filter on
+`shell != 'desktop'` (treating a missing value as `browser`, since events before
+this property have none) to count browser use alone.
 
 Autocapture and session recording are disabled. PostHog runs
 cookieless (`persistence: "memory"`); no third-party script is loaded
