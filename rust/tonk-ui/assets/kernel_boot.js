@@ -33,6 +33,40 @@ const HOST_PREFIXES = ["/_host/", "/.well-known/"];
 
 const log = (...args) => console.log("[Space Kernel]", ...args);
 
+// What the kernel wrote since the last time, kept a moment after each write
+// so a burst is kept at once.
+let draining = null;
+function drainSoon(embedder) {
+    draining ??= new Promise(resolve => setTimeout(resolve, 50))
+        .then(() => embedder.drain())
+        .then(keep)
+        .catch(error => log("what the kernel wrote was not kept:", error))
+        .finally(() => {
+            draining = null;
+        });
+    return draining;
+}
+
+// The body of an answer of the kernel, as it writes it.
+function bodyOf(embedder, reply) {
+    return new ReadableStream({
+        async pull(controller) {
+            const piece = await reply.body.next();
+            drainSoon(embedder);
+            if (piece) controller.enqueue(piece);
+            else controller.close();
+        },
+        cancel() {
+            reply.body.cancel();
+        },
+    });
+}
+
+// A whole answer of the kernel, for an answer that ends.
+async function whole(embedder, reply) {
+    return new Uint8Array(await new Response(bodyOf(embedder, reply)).arrayBuffer());
+}
+
 // ---- The space's store --------------------------------------------------
 //
 // Each record the embedder drains, under a key naming what it writes, so a
@@ -111,6 +145,10 @@ function adopt(port) {
             answerCall(port, data);
             return;
         }
+        if (typeof data?.cancel === "number") {
+            cancelCall(data.cancel);
+            return;
+        }
         // The profile asks for a copy of the space to make another from. A
         // kernel space has no such copy to give yet.
         if (typeof data?.ask === "number") {
@@ -166,6 +204,32 @@ async function grant(seed) {
     return taken;
 }
 
+// Ask for a new delegation once the one the kernel holds has less than this
+// left.
+const RENEW_MARGIN_SECONDS = 60 * 60;
+
+// The kernel acts for the space as a profile of its own, which it makes on
+// its first start: the profile delegates the space to that, and the kernel
+// takes the delegation up. Asked again when the kernel's profile is another
+// or the one held is about to lapse.
+async function takeUpSpace(embedder) {
+    const held = await readMeta("adopted");
+    const identified = await embedder.handle("GET", "/api/identify", [], new Uint8Array());
+    const who = await whole(embedder, identified);
+    if (identified.status !== 200) throw new Error(`the kernel did not say who it is: ${identified.status}`);
+    const { did } = JSON.parse(new TextDecoder().decode(who));
+    if (held?.did === did && held.expires - Date.now() / 1000 > RENEW_MARGIN_SECONDS) return;
+    const answer = await askHost({ delegate: did });
+    const taken = await embedder.handle("POST", "/.kernel/adopt", [], new Uint8Array(answer.chain));
+    const said = await whole(embedder, taken);
+    await drainSoon(embedder);
+    if (taken.status !== 204) {
+        throw new Error(`the kernel did not take up its space: ${new TextDecoder().decode(said)}`);
+    }
+    await writeMeta("adopted", { did, expires: answer.expires });
+    log("took up", answer.space, "until", new Date(answer.expires * 1000).toISOString());
+}
+
 // The kernel this deployment ships, checked against the id that names it.
 async function shippedKernel(id) {
     const response = await fetch(`/_host/kernel/${id}.wasm`);
@@ -176,8 +240,8 @@ async function shippedKernel(id) {
     return bytes;
 }
 
-const started = performance.now();
-const booting = (async () => {
+async function start() {
+    const started = performance.now();
     if (!PINNED) throw new Error("this worker pins no kernel");
     await wasm_bindgen({ module_or_path: "/_host/embedder_bg.wasm" });
     const seed = await sessionSeed();
@@ -196,9 +260,28 @@ const booting = (async () => {
     const embedder = await wasm_bindgen.boot(space, seed, records);
     await keep(await embedder.drain());
     log("booted in", Math.round(performance.now() - started), "ms", embedder.timings);
+    // A kernel that has not taken up its space still answers, with what it
+    // holds: nothing of the space. The next start asks again.
+    await takeUpSpace(embedder).catch(error => log("the kernel did not take up its space:", error));
     return embedder;
-})();
+}
+
+let booting = start();
 booting.catch(error => log("the kernel did not boot:", error));
+
+// A kernel that trapped answers nothing again: boot it anew, from what the
+// space's store kept. At most once in a while, so a kernel that traps as it
+// starts does not loop.
+const RESTART_EVERY_MS = 10_000;
+let restarted = Date.now();
+function restartIfStopped(error) {
+    if (!/the kernel has stopped/.test(String(error?.message ?? error))) return;
+    if (Date.now() - restarted < RESTART_EVERY_MS) return;
+    restarted = Date.now();
+    log("the kernel stopped; booting it again");
+    booting = start();
+    booting.catch(error => log("the kernel did not boot:", error));
+}
 
 // ---- Requests -----------------------------------------------------------
 
@@ -223,26 +306,47 @@ async function serveKernel(event) {
     const embedder = await booting;
     const url = new URL(event.request.url);
     const body = new Uint8Array(await event.request.arrayBuffer());
-    const reply = await embedder.handle(event.request.method, url.pathname + url.search, body);
-    event.waitUntil(embedder.drain().then(keep));
-    return new Response(reply.body, { status: reply.status });
+    const reply = await embedder.handle(event.request.method, url.pathname + url.search, [...event.request.headers], body);
+    drainSoon(embedder);
+    const bodiless = reply.status === 204 || reply.status === 304 || event.request.method === "HEAD";
+    return new Response(bodiless ? null : bodyOf(embedder, reply), {
+        status: reply.status,
+        headers: reply.headers,
+    });
 }
 
-// Answer a request passed down the port: its status, then its body, then
-// that it has ended, as a release answers one.
+// Answer a request passed down the port: its status, then its body as the
+// kernel writes it, then that it has ended, as a release answers one. The
+// profile cancels a call whose answer no one reads any more.
+const calls = new Map();
 async function answerCall(port, { call, request }) {
     try {
         const embedder = await booting;
         const body = new Uint8Array(await new Response(request.body ?? null).arrayBuffer());
-        const reply = await embedder.handle(request.method, request.path, body);
-        keep(await embedder.drain());
-        port.postMessage({ call, head: { status: reply.status, headers: [] } });
-        const chunk = reply.body.buffer.slice(reply.body.byteOffset, reply.body.byteOffset + reply.body.byteLength);
-        port.postMessage({ call, chunk }, [chunk]);
+        const reply = await embedder.handle(request.method, request.path, request.headers ?? [], body);
+        drainSoon(embedder);
+        calls.set(call, reply.body);
+        port.postMessage({ call, head: { status: reply.status, headers: reply.headers } });
+        for (;;) {
+            const piece = await reply.body.next();
+            drainSoon(embedder);
+            if (!piece) break;
+            if (!calls.has(call)) return;
+            const chunk = piece.buffer.slice(piece.byteOffset, piece.byteOffset + piece.byteLength);
+            port.postMessage({ call, chunk }, [chunk]);
+        }
         port.postMessage({ call, end: true });
     } catch (error) {
+        restartIfStopped(error);
         port.postMessage({ call, error: String(error?.message ?? error) });
+    } finally {
+        calls.delete(call);
     }
+}
+
+function cancelCall(call) {
+    calls.get(call)?.cancel();
+    calls.delete(call);
 }
 
 self.addEventListener("install", () => self.skipWaiting());
@@ -270,6 +374,9 @@ self.addEventListener("fetch", event => {
         return;
     }
     event.respondWith(
-        serveKernel(event).catch(error => new Response(String(error?.message ?? error), { status: 502 })),
+        serveKernel(event).catch(error => {
+            restartIfStopped(error);
+            return new Response(String(error?.message ?? error), { status: 502 });
+        }),
     );
 });

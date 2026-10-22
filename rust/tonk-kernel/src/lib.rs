@@ -29,7 +29,7 @@ use std::sync::{Mutex, PoisonError};
 use axum::Router;
 use http_body_util::BodyExt as _;
 use tonk_kernel_world::world::sapling::kernel::types::Error;
-use tonk_worker::TonkState;
+use tonk_worker::{AppState, TonkState};
 use tower::ServiceExt as _;
 use world::exports::sapling::kernel::{channel, lifecycle};
 use world::exports::wasi::http::handler;
@@ -39,19 +39,30 @@ use world::wasi::http::types::{ErrorCode, Request, Response};
 /// thread-local: on `wasm32-wasip3` each export call is a task of its own.
 static ROUTER: Mutex<Option<Held>> = Mutex::new(None);
 
-/// The router holds Dialog DB's state, which is not `Send`.
-struct Held(Router);
+/// The router holds Dialog DB's state, which is not `Send`: the router, the
+/// state behind it, and the space the boot named.
+struct Held {
+    router: Router,
+    state: AppState,
+    space: Option<String>,
+}
+
+/// Where the bootloader hands the kernel the delegation for its space: the
+/// chain from the space to the profile `/api/identify` names. A chain is
+/// taken up only if the space signed it all the way down, so whoever posts
+/// it here cannot make the kernel act for another space.
+const ADOPT_PATH: &str = "/.kernel/adopt";
 
 // SAFETY: a component instance runs on a single thread; nothing here is
 // reached from another.
 unsafe impl Send for Held {}
 
-fn router() -> Option<Router> {
+fn held() -> Option<(Router, AppState, Option<String>)> {
     ROUTER
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .as_ref()
-        .map(|held| held.0.clone())
+        .map(|held| (held.router.clone(), held.state.clone(), held.space.clone()))
 }
 
 fn invalid(error: impl std::fmt::Display) -> Error {
@@ -61,11 +72,27 @@ fn invalid(error: impl std::fmt::Display) -> Error {
 struct Kernel;
 
 impl lifecycle::Guest for Kernel {
-    async fn init(_boot: lifecycle::Boot) -> Result<(), Error> {
+    async fn init(boot: lifecycle::Boot) -> Result<(), Error> {
         let started = world::wasi::clocks::monotonic_clock::now();
+        // The space this kernel serves: the subject of its `memory:space`.
+        let space = boot
+            .stack
+            .iter()
+            .find(|stacked| stacked.scopes.iter().any(|scope| scope == "memory:space"))
+            .map(|stacked| stacked.layer.subject());
         let state = TonkState::open_kernel().await.map_err(invalid)?;
-        let (router, _, _) = tonk_worker::api_router_with_state(state);
-        *ROUTER.lock().unwrap_or_else(PoisonError::into_inner) = Some(Held(router));
+        // A space taken up before: put back what a restart lost about it.
+        if let Some(space) = &space
+            && let Err(error) = state.resume_space(space).await
+        {
+            eprintln!("tonk-kernel: {space} was not resumed: {error}");
+        }
+        let (router, state, _) = tonk_worker::api_router_with_state(state);
+        *ROUTER.lock().unwrap_or_else(PoisonError::into_inner) = Some(Held {
+            router,
+            state,
+            space,
+        });
         let took = world::wasi::clocks::monotonic_clock::now() - started;
         eprintln!("tonk-kernel: opened the worker in {}us", took / 1000);
         Ok(())
@@ -105,14 +132,14 @@ async fn incoming(request: Request) -> Result<axum::http::Request<axum::body::Bo
 
 impl handler::Guest for Kernel {
     async fn handle(request: Request) -> Result<Response, ErrorCode> {
-        let Some(router) = router() else {
+        let Some((router, state, space)) = held() else {
             return Ok(http::respond(503, Some("text/plain"), b"booting".to_vec()));
         };
         let request = incoming(request).await?;
-        let answer = router
-            .oneshot(request)
-            .await
-            .map_err(|error| ErrorCode::InternalError(Some(error.to_string())))?;
+        if request.uri().path() == ADOPT_PATH {
+            return adopt(request, &state, space.as_deref()).await;
+        }
+        let Ok(answer) = router.oneshot(request).await;
         let (parts, mut body) = answer.into_parts();
         let headers = parts
             .headers
@@ -133,6 +160,42 @@ impl handler::Guest for Kernel {
             }
         });
         Ok(response)
+    }
+}
+
+/// Take up the delegation in the body of `request` for `space`.
+async fn adopt(
+    request: axum::http::Request<axum::body::Body>,
+    state: &AppState,
+    space: Option<&str>,
+) -> Result<Response, ErrorCode> {
+    if request.method() != axum::http::Method::POST {
+        return Ok(http::respond(
+            405,
+            Some("text/plain"),
+            b"POST a delegation".to_vec(),
+        ));
+    }
+    let Some(space) = space else {
+        return Ok(http::respond(
+            409,
+            Some("text/plain"),
+            b"this kernel serves no space".to_vec(),
+        ));
+    };
+    let chain = request
+        .into_body()
+        .collect()
+        .await
+        .map_err(|error| ErrorCode::InternalError(Some(error.to_string())))?
+        .to_bytes();
+    match state.read().await.adopt_space(space, &chain).await {
+        Ok(()) => Ok(http::respond(204, None, Vec::new())),
+        Err(error) => Ok(http::respond(
+            400,
+            Some("text/plain"),
+            error.to_string().into_bytes(),
+        )),
     }
 }
 

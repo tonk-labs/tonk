@@ -5905,6 +5905,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tonk-components",
+ "tonk-worker",
  "tracing",
  "wasm-bindgen",
  "wasm-bindgen-futures",

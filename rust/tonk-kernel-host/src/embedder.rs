@@ -5,20 +5,44 @@
 
 use std::rc::Rc;
 
+use futures::StreamExt as _;
+use futures::channel::mpsc;
 use futures::lock::Mutex;
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use wcmp::Engine;
 
 use crate::bindings::sapling::kernel::storage::Edition;
-use crate::kernel::Kernel;
+use crate::kernel::{Kernel, Served};
 use crate::sapling::{Change, did_key};
 use crate::{boot, platform};
 
 #[wasm_bindgen]
 pub struct Embedder {
-    kernel: Rc<Mutex<Kernel>>,
+    kernel: Served,
     timings: Vec<(String, f64)>,
+}
+
+/// The body of an answer of the kernel, piece by piece as the kernel writes
+/// it. `next` answers the next piece, or `undefined` once the body ended.
+#[wasm_bindgen]
+pub struct BodyReader {
+    pieces: Rc<Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>,
+}
+
+#[wasm_bindgen]
+impl BodyReader {
+    pub async fn next(&self) -> Option<Uint8Array> {
+        let piece = self.pieces.lock().await.next().await?;
+        Some(Uint8Array::from(piece.as_slice()))
+    }
+
+    /// Stop reading: the kernel is told no one wants the rest.
+    pub fn cancel(&self) {
+        if let Some(mut pieces) = self.pieces.try_lock() {
+            pieces.close();
+        }
+    }
 }
 
 /// The `did:key` of the session key made from `seed` (32 bytes).
@@ -79,10 +103,13 @@ pub async fn boot(subject: String, seed: Uint8Array, kept: Array) -> Result<Embe
             .iter()
             .map(|(stage, millis)| ((*stage).to_owned(), *millis)),
     );
-    Ok(Embedder {
-        kernel: Rc::new(Mutex::new(kernel)),
-        timings,
-    })
+    let (kernel, driver) = kernel.serve();
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(error) = driver.await {
+            platform::log("kernel", &format!("the kernel stopped: {error}"), true);
+        }
+    });
+    Ok(Embedder { kernel, timings })
 }
 
 fn seed_of(seed: &Uint8Array) -> Result<[u8; 32], JsError> {
@@ -98,9 +125,13 @@ fn changes_of(kept: &Array) -> Result<Vec<Change>, JsError> {
 #[wasm_bindgen]
 impl Embedder {
     /// Each write since the last drain, as records the bootloader keeps.
-    pub async fn drain(&self) -> Array {
-        let changes = self.kernel.lock().await.drain();
-        changes.iter().map(to_js).collect()
+    pub async fn drain(&self) -> Result<Array, JsError> {
+        let changes = self
+            .kernel
+            .drain()
+            .await
+            .map_err(|error| JsError::new(&error))?;
+        Ok(changes.iter().map(to_js).collect())
     }
 
     /// How long each stage of the boot took, in milliseconds.
@@ -113,24 +144,47 @@ impl Embedder {
         timings.into()
     }
 
-    /// Hand the guest kernel one request; answers `{ status, body }`, with
-    /// the body as bytes. One request at a time reaches the kernel's store.
-    pub fn handle(&self, method: String, path: String, body: Uint8Array) -> js_sys::Promise {
-        let kernel = Rc::clone(&self.kernel);
+    /// Hand the guest kernel one request, with `headers` as `[name, value]`
+    /// pairs; answers `{ status, headers, body }`
+    /// once it has its status, with the body a [`BodyReader`] the kernel
+    /// writes into as it goes. Requests reach the kernel at once, however
+    /// many are open.
+    pub fn handle(
+        &self,
+        method: String,
+        path: String,
+        headers: Array,
+        body: Uint8Array,
+    ) -> js_sys::Promise {
+        let kernel = self.kernel.clone();
         let body = body.to_vec();
+        let headers = headers
+            .iter()
+            .filter_map(|pair| {
+                let pair = Array::from(&pair);
+                Some((
+                    pair.get(0).as_string()?,
+                    pair.get(1).as_string()?.into_bytes(),
+                ))
+            })
+            .collect();
         wasm_bindgen_futures::future_to_promise(async move {
-            let mut kernel = kernel.lock().await;
-            let answer = kernel
-                .request(&method, &path, &body)
+            let head = kernel
+                .request(&method, &path, headers, &body)
                 .await
                 .map_err(|error| JsValue::from(JsError::new(&error)))?;
+            let headers = Array::new();
+            for (name, value) in head.headers {
+                let value = String::from_utf8_lossy(&value).into_owned();
+                headers.push(&Array::of2(&name.into(), &value.into()));
+            }
             let reply = Object::new();
-            Reflect::set(&reply, &"status".into(), &answer.status.into())?;
-            Reflect::set(
-                &reply,
-                &"body".into(),
-                &Uint8Array::from(answer.body.as_slice()).into(),
-            )?;
+            Reflect::set(&reply, &"status".into(), &head.status.into())?;
+            Reflect::set(&reply, &"headers".into(), &headers)?;
+            let reader = BodyReader {
+                pieces: Rc::new(Mutex::new(head.body)),
+            };
+            Reflect::set(&reply, &"body".into(), &reader.into())?;
             Ok(reply.into())
         })
     }

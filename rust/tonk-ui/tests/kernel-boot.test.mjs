@@ -66,7 +66,17 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     timings: {},
     handle: async (method, path) => {
       handled.push(`${method} ${path}`);
-      return { status: 404, body: new TextEncoder().encode("not found") };
+      const [status, text] =
+        path === "/api/identify" ? [200, JSON.stringify({ did: "did:key:zKernel" })]
+        : path === "/.kernel/adopt" ? [204, ""]
+        : [404, "not found"];
+      // The body as the kernel writes it: one piece, then its end.
+      const pieces = text ? [new TextEncoder().encode(text)] : [];
+      return {
+        status,
+        headers: [["content-type", "text/plain"]],
+        body: { next: async () => pieces.shift(), cancel() {} },
+      };
     },
   };
   const bindgen = Object.assign(async () => {}, {
@@ -104,7 +114,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     fetch: network,
     performance,
     crypto,
-    URL, Request, Response, Headers, TextEncoder, TextDecoder, Uint8Array, Promise,
+    URL, Request, Response, Headers, TextEncoder, TextDecoder, Uint8Array, Promise, ReadableStream,
     setTimeout, queueMicrotask,
     console: { log() {} },
   });
@@ -116,7 +126,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     postMessage: (message) => {
       asked.push(message);
       const answer = message.delegate
-        ? { id: message.id, space: SPACE, chain: new ArrayBuffer(1), expires: 0 }
+        ? { id: message.id, space: SPACE, chain: new ArrayBuffer(1), expires: Date.now() / 1000 + 86400 }
         : { id: message.id, settled: true };
       queueMicrotask(() => port.onmessage({ data: answer }));
     },
@@ -134,6 +144,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
         url: new URL(path, ORIGIN).href,
         method,
         mode,
+        headers: new Headers(),
         arrayBuffer: async () => new ArrayBuffer(0),
       },
       respondWith: (response) => void (responded = response),
@@ -174,13 +185,13 @@ test("a space with no kernel of its own installs the one its worker names, and b
   assert.equal(response.status, 404);
   assert.deepEqual(
     site.asked.map((asked) => Object.keys(asked).filter((key) => key !== "id")),
-    [["delegate"], ["seeded", "from"]],
-    "it asks the profile which space it is, and says it holds it",
+    [["delegate"], ["seeded", "from"], ["delegate"]],
+    "it asks the profile which space it is, says it holds it, and asks a delegation for the kernel",
   );
   assert.equal(site.asked[0].delegate, "did:key:zSession");
   assert.ok(site.fetched.includes(`/_host/kernel/${KERNEL}.wasm`), "the deployment's kernel is fetched");
   assert.deepEqual(site.booted, [{ subject: SPACE, records: 1 }]);
-  assert.deepEqual(site.handled, ["GET /api/anything"]);
+  assert.deepEqual(site.handled, ["GET /api/identify", "POST /.kernel/adopt", "GET /api/anything"]);
 });
 
 test("a space that holds its kernel boots it from its own store", async () => {
@@ -206,7 +217,7 @@ test("a load the shell asked for is the kernel's to answer, once", async () => {
   assert.equal(site.message({ type: "content", url: `${ORIGIN}/notes` })?.admitted, true);
   const content = await site.request("/notes", { mode: "navigate" });
   assert.equal(content.status, 404);
-  assert.deepEqual(site.handled, ["GET /notes"]);
+  assert.deepEqual(site.handled.slice(-1), ["GET /notes"]);
   const again = await site.request("/notes", { mode: "navigate" });
   assert.match(await again.text(), /SHELL/, "the next load of it gets the shell again");
 });
@@ -231,5 +242,22 @@ test("a request the profile passes down is answered by the kernel", async () => 
   assert.equal(answer[0].head.status, 404);
   assert.equal(new TextDecoder().decode(answer[1].chunk), "not found");
   assert.equal(answer[2].end, true);
-  assert.deepEqual(site.handled, ["GET /api/roster"]);
+  assert.deepEqual(site.handled.slice(-1), ["GET /api/roster"]);
+});
+
+test("the kernel takes up its space with a delegation to its own profile", async () => {
+  const site = space();
+  site.handPort();
+  await site.request("/api/anything");
+  const delegations = site.asked.filter((message) => message.delegate);
+  assert.equal(delegations.at(-1).delegate, "did:key:zKernel", "the profile delegates to the kernel's profile");
+  assert.deepEqual(site.handled.slice(0, 2), ["GET /api/identify", "POST /.kernel/adopt"]);
+});
+
+test("a kernel asks for its delegation once as it boots", async () => {
+  const site = space();
+  site.handPort();
+  await site.request("/api/anything");
+  // A delegation that lapses in a day needs no renewal yet.
+  assert.equal(site.asked.filter((message) => message.delegate).length, 2);
 });

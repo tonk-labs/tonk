@@ -854,6 +854,62 @@ impl Drop for Collects {
     }
 }
 
+/// A consumer that passes each piece of a body stream on as the guest
+/// writes it. The channel closes when the guest drops the stream's
+/// writable end: the body has ended.
+struct Passes(futures::channel::mpsc::UnboundedSender<Vec<u8>>);
+
+impl<T: 'static> StreamConsumer<T> for Passes {
+    type Item = u8;
+
+    fn poll_consume(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        store: &mut StoreContext<'_, T>,
+        mut source: Source<'_, u8>,
+        _finish: bool,
+    ) -> Poll<Result<StreamResult, Error>> {
+        let mut bytes = Vec::new();
+        let count = source.remaining();
+        source.read(store, &mut bytes, count)?;
+        if bytes.is_empty() {
+            return Poll::Ready(Ok(StreamResult::Completed));
+        }
+        // A reader that went away wants no more of the body.
+        match self.0.unbounded_send(bytes) {
+            Ok(()) => Poll::Ready(Ok(StreamResult::Completed)),
+            Err(_) => Poll::Ready(Ok(StreamResult::Dropped)),
+        }
+    }
+}
+
+/// Start reading `body` in `store`, and answer each piece of it as the
+/// guest writes it, for as long as the store is driven. A body the host
+/// holds is one piece.
+pub fn stream_body<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    body: Body,
+) -> Result<futures::channel::mpsc::UnboundedReceiver<Vec<u8>>, Error> {
+    let (pieces, read) = futures::channel::mpsc::unbounded();
+    match body {
+        Body::Empty => {}
+        Body::Bytes(bytes) => {
+            let _ = pieces.unbounded_send(bytes);
+        }
+        Body::Stream(stream) => {
+            let Val::Stream(stream) = stream else {
+                return Err(Error::Internal {
+                    message: "a body is a `stream<u8>`".to_string(),
+                });
+            };
+            stream
+                .try_into_stream_reader::<u8>()?
+                .pipe(store, Passes(pieces))?;
+        }
+    }
+    Ok(read)
+}
+
 /// Lock `shared`, whatever a panic elsewhere left in it.
 fn lock<T>(shared: &Mutex<T>) -> MutexGuard<'_, T> {
     shared

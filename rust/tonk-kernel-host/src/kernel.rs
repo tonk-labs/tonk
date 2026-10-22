@@ -1,6 +1,9 @@
 //! Load a guest kernel, boot it over one subject, and hand it requests, as a
 //! service worker would hand it each fetch of its space.
 
+use futures::channel::{mpsc, oneshot};
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt as _, StreamExt as _};
 use wcmp::{Accessor, Component, Engine, Func, Linker, ResourceDynamic, Store, Val};
 
 use crate::bindings::Host_;
@@ -34,7 +37,181 @@ impl Answer {
     }
 }
 
+/// The start of an answer of the guest kernel: its status and headers, and
+/// its body, piece by piece as the guest writes it.
+pub struct Head {
+    pub status: u16,
+    pub headers: Vec<(String, Vec<u8>)>,
+    pub body: mpsc::UnboundedReceiver<Vec<u8>>,
+}
+
+/// What a served kernel is asked to do.
+enum Job {
+    Request {
+        method: String,
+        path: String,
+        headers: Vec<(String, Vec<u8>)>,
+        body: Vec<u8>,
+        reply: oneshot::Sender<Result<Head, String>>,
+    },
+    Drain(oneshot::Sender<Vec<crate::sapling::Change>>),
+}
+
+/// A guest kernel that a driver runs (see [`Kernel::serve`]): requests reach
+/// it at once, each answered as the guest writes its answer, however many
+/// are open.
+#[derive(Clone)]
+pub struct Served {
+    jobs: mpsc::UnboundedSender<Job>,
+}
+
+impl Served {
+    /// Hand the guest kernel one request, and answer the start of its answer.
+    pub async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        headers: Vec<(String, Vec<u8>)>,
+        body: &[u8],
+    ) -> Result<Head, String> {
+        let (reply, answered) = oneshot::channel();
+        self.jobs
+            .unbounded_send(Job::Request {
+                method: method.to_owned(),
+                path: path.to_owned(),
+                headers,
+                body: body.to_vec(),
+                reply,
+            })
+            .map_err(|_| "the kernel has stopped".to_owned())?;
+        answered
+            .await
+            .map_err(|_| "the kernel has stopped".to_owned())?
+    }
+
+    /// Each write since the last drain, for the host to keep durably.
+    pub async fn drain(&self) -> Result<Vec<crate::sapling::Change>, String> {
+        let (reply, drained) = oneshot::channel();
+        self.jobs
+            .unbounded_send(Job::Drain(reply))
+            .map_err(|_| "the kernel has stopped".to_owned())?;
+        drained
+            .await
+            .map_err(|_| "the kernel has stopped".to_owned())
+    }
+}
+
+/// Start `request` in the guest kernel and answer the start of its answer,
+/// leaving its body to be written as long as the store is driven.
+async fn answer(
+    accessor: &Accessor<KernelHost>,
+    handle: &Func,
+    types: Types,
+    method: String,
+    path: String,
+    headers: Vec<(String, Vec<u8>)>,
+    body: Vec<u8>,
+) -> Result<Head, String> {
+    let request = accessor.with(|mut access| {
+        let rep = access.data_mut().http().insert_request(Request {
+            method,
+            scheme: Some("https".to_owned()),
+            authority: Some("space.localhost".to_owned()),
+            path_with_query: Some(path),
+            headers: Fields {
+                entries: headers,
+                immutable: true,
+            },
+            body: Body::Bytes(body),
+        });
+        ResourceDynamic::new_own(rep, types.request())
+            .try_into_resource_any(access.store())
+            .map_err(|error| error.to_string())
+    })?;
+    let returned = handle
+        .call_concurrent(accessor, &[Val::Resource(request)])
+        .await
+        .map_err(|error| platform::describe(&error))?;
+    let response = match returned.first() {
+        Some(Val::Result(Ok(Some(response)))) => match response.as_ref() {
+            Val::Resource(response) if response.owned() => *response,
+            other => return Err(format!("`handle` answered {other:?}")),
+        },
+        other => return Err(format!("`handle` answered {other:?}")),
+    };
+    accessor.with(|mut access| {
+        let store = access.store();
+        let rep = response
+            .try_into_resource_dynamic(store)
+            .map_err(|error| error.to_string())?
+            .rep();
+        let response = store
+            .data_mut()
+            .http()
+            .take_response(rep)
+            .ok_or("`handle` answered a response the host does not hold")?;
+        let body =
+            http_types::stream_body(store, response.body).map_err(|error| error.to_string())?;
+        Ok(Head {
+            status: response.status,
+            headers: response.headers.entries,
+            body,
+        })
+    })
+}
+
 impl Kernel {
+    /// Hand the guest kernel to a driver: answer what reaches it, and the
+    /// future that drives it, which runs until every [`Served`] is dropped.
+    /// The store is driven for as long as that future is polled, so a body
+    /// the guest is still writing, such as a subscription's, goes on flowing
+    /// while other requests are answered.
+    pub fn serve(self) -> (Served, impl Future<Output = Result<(), String>>) {
+        let (jobs, mut queued) = mpsc::unbounded::<Job>();
+        let Kernel {
+            mut store,
+            handle,
+            types,
+            ..
+        } = self;
+        let driver = async move {
+            store
+                .run_concurrent(async |accessor: &Accessor<KernelHost>| {
+                    let mut running = FuturesUnordered::new();
+                    loop {
+                        futures::select! {
+                            job = queued.next() => match job {
+                                None => break,
+                                Some(Job::Drain(reply)) => {
+                                    let changes = accessor.with(|mut access| {
+                                        core::mem::take(&mut access.data_mut().journal)
+                                    });
+                                    let _ = reply.send(changes);
+                                }
+                                Some(Job::Request { method, path, headers, body, reply }) => {
+                                    let handle = &handle;
+                                    running.push(
+                                        async move {
+                                            let head = answer(
+                                                accessor, handle, types, method, path, headers, body,
+                                            )
+                                            .await;
+                                            let _ = reply.send(head);
+                                        }
+                                        .boxed_local(),
+                                    );
+                                }
+                            },
+                            () = running.select_next_some() => {}
+                        }
+                    }
+                })
+                .await
+                .map_err(|error| platform::describe(&error))
+        };
+        (Served { jobs }, driver)
+    }
+
     /// Compile and instantiate the guest kernel in `bytes` on `engine`, for
     /// a session that signs with the key of `seed`.
     pub async fn load(engine: &Engine, bytes: &[u8], seed: [u8; 32]) -> Result<Kernel, String> {
