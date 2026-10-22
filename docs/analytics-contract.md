@@ -28,8 +28,9 @@ named product interaction itself completed at that boundary.
 | `failure_kind` | Closed diagnostic class; present only for non-success terminal results |
 | `duration_ms` | Terminal elapsed time, capped at ten minutes |
 
-Browser events also receive the in-memory `environment`, `version`, and
-reviewed launch-attribution super properties. Native events add
+Browser events also receive the in-memory `environment`, `shell`
+(`browser`, or `desktop` inside the macOS app), `version`, and reviewed
+launch-attribution super properties. Native events add
 `environment=cli` (or `environment=desktop` from the macOS app), version, OS,
 architecture, and library. Identity remains a
 profile-level hash; metrics must not label it a human or account. Native batch

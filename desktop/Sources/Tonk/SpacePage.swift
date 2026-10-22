@@ -20,6 +20,7 @@ final class SpacePage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDel
     // The native picker can cover/detach this view while still querying its worker.
     configuration.preferences.inactiveSchedulingPolicy = .none
     RuntimeModel.hideFab(in: configuration.userContentController)
+    RuntimeModel.identifyShell(in: configuration.userContentController)
     inspection.install(on: configuration.userContentController)
     webView = WKWebView(frame: .zero, configuration: configuration)
     super.init()

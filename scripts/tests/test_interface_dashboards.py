@@ -12,12 +12,17 @@ SPEC = json.loads((ROOT / 'docs/analytics/interface-dashboards.json').read_text(
 PROFILE = "match(distinct_id, '^tonk:[0-9a-f]{64}$')"
 # Each interface dashboard's scope, as its queries must state it.
 SCOPES = {
-    'Web app': ('Web: ', "properties.environment IN ('production','staging','dev')"),
+    'Web app': ('Web: ', "properties.environment IN ('production','staging','dev')"
+                         " AND coalesce(properties.shell, '') != 'desktop'"),
     'CLI': ('CLI: ', "properties.environment = 'cli'"),
     'Desktop app': ('Desktop: ', "properties.environment = 'desktop'"),
 }
 FORBIDDEN = ('$current_url', '$pathname', '$referrer', 'properties.route', 'properties.email',
              'properties.space_id', 'person.properties')
+# The overview's interface: web app views embedded in the desktop app count as desktop.
+INTERFACE = ("multiIf(properties.environment = 'cli', 'cli', properties.environment = 'desktop'"
+             " OR (properties.environment = 'production' AND coalesce(properties.shell, '') = 'desktop'),"
+             " 'desktop', properties.environment = 'production', 'web', '')")
 DISPLAYS = {'ActionsTable', 'ActionsLineGraph', 'ActionsStackedBar'}
 
 
@@ -52,6 +57,11 @@ class InterfaceDashboardsTest(unittest.TestCase):
         for insight in boards()['Interfaces overview']['insights']:
             self.assertNotIn("'staging'", insight['query'], insight['name'])
             self.assertNotIn("'dev'", insight['query'], insight['name'])
+
+    def test_the_overview_counts_embedded_web_views_as_desktop(self):
+        for insight in boards()['Interfaces overview']['insights']:
+            if 'multiIf(' in insight['query']:
+                self.assertIn(INTERFACE, insight['query'], insight['name'])
 
     def test_profile_counts_use_complete_profile_hashes(self):
         for board in SPEC['dashboards']:
