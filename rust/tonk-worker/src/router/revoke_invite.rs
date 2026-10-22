@@ -594,6 +594,38 @@ mod tests {
         pull(&member, &key)
             .await
             .expect("a member reads the space it joined");
+        // A local write before the revocation, rewritten after it: the
+        // member's device keeps working on its own replica even while the
+        // service refuses it.
+        let declare = |description: &str| {
+            format!(
+                "attribute!: &revocation-marker\n  the: xyz.tonk.test/revocation\n  as: text\n  description: {description}\n"
+            )
+        };
+        {
+            let member = member.read().await;
+            crate::router::evaluate::evaluate_body(
+                &member,
+                &key,
+                "main",
+                declare("before revocation"),
+                true,
+            )
+            .await
+            .expect("the member writes before the revocation");
+            member
+                .reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&member.operator)
+                .await
+                .expect("the member's branch opens")
+                .handle()
+                .push()
+                .perform(&member.operator)
+                .await
+                .expect("the member's write reaches the service");
+        }
 
         let Json(rows) = super::list(State(state.clone()), Path(key.clone()))
             .await
@@ -624,6 +656,18 @@ mod tests {
             !retains(&member, &target).await,
             "the refusal's revocation lets the member drop the revoked hop"
         );
+        {
+            let member = member.read().await;
+            crate::router::evaluate::evaluate_body(
+                &member,
+                &key,
+                "main",
+                declare("after revocation"),
+                true,
+            )
+            .await
+            .expect("a cut-off member still writes to its own replica");
+        }
 
         let second = mint().await;
         {
