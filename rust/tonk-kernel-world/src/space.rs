@@ -61,9 +61,18 @@ unsafe impl Send for Opened {}
 
 static OPENED: Mutex<BTreeMap<String, Opened>> = Mutex::new(BTreeMap::new());
 
-/// The name of the layer `location` opens: a DID of the method `local`, with
-/// each character a DID does not allow escaped.
+/// The name of the layer `location` opens. A space, which Tonk opens in the
+/// current directory under its subject's DID, opens the layer of that
+/// subject: the one its host boots it over, which holds its boot cell and its
+/// kernel. Anything else opens a layer named by a DID of the method `local`,
+/// with each character a DID does not allow escaped.
 pub fn layer_name(location: &Location) -> String {
+    if location.directory == Directory::Current
+        && location.name.starts_with("did:")
+        && !location.name.starts_with("did:local:")
+    {
+        return location.name.clone();
+    }
     let directory = match &location.directory {
         Directory::Profile => "profile".to_owned(),
         Directory::Current => "current".to_owned(),

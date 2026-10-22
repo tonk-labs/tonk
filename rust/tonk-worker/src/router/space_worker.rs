@@ -15,6 +15,8 @@
 //! The space worker stores it and publishes that revision ([`seed`]), so the
 //! replica holds the same history the host did, and syncs on from there.
 
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use dialog_artifacts::Asset;
 use dialog_capability::Subject;
 use dialog_common::Blake3Hash;
 use dialog_credentials::DidKeyResolver;
@@ -32,6 +34,8 @@ use ipld_core::ipld::Ipld;
 use std::collections::BTreeMap;
 use tonk_common::log;
 use tonk_invite::{HOME_ADDRESS, home_address_meta};
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use tonk_schema::SpaceKernel;
 use tonk_schema::prelude::DidExt as _;
 use url::Url;
 
@@ -280,6 +284,60 @@ pub(crate) async fn adopt(
     resume(tonk, space).await?;
     log!("space worker: adopted {space} for {account} (remote: {remote:?})");
     Ok(terms)
+}
+
+/// Give `space`, which this worker holds, its first commit, if it has none
+/// yet: the kernel it runs, as the asset `kernel`, which the space's store
+/// already holds, and the space's pin to it. Nothing is written over a `main`
+/// that has a revision. The space then holds what it needs to start wherever
+/// it syncs.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) async fn found(
+    tonk: &TonkState,
+    space: &Did,
+    kernel: Asset,
+) -> Result<(), TonkWorkerError> {
+    let key = space.repo_key();
+    // A space this worker has not taken up yet has nothing to found: it is
+    // founded as it is taken up.
+    if tonk
+        .profile
+        .space(key)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .is_err()
+    {
+        return Ok(());
+    }
+    let blank = tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("open '{key}': {e}")))?
+        .handle()
+        .revision()
+        .is_none();
+    if !blank {
+        return Ok(());
+    }
+    let asset = kernel
+        .entity()
+        .map_err(|e| TonkWorkerError::Internal(format!("the kernel's asset: {e}")))?;
+    tonk.reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(kernel)
+        .assert(SpaceKernel::new(space.this(), asset))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("the first commit of {space}: {e}")))?;
+    log!("space worker: founded {space} on its kernel");
+    Ok(())
 }
 
 /// Put back what a restart of this worker lost about `space`: the account

@@ -1027,6 +1027,21 @@ concept!: &tonk/repository
       the: xyz.tonk.repo/description
       as: text
 
+# The kernel a space runs. A space created on a kernel starts with one
+# commit on `main`: the kernel's wasm as an asset, and this pin to it. The
+# space then holds what it needs to start wherever it syncs, and a new kernel
+# is a new asset and a moved pin, in one commit.
+concept!: &tonk/space-kernel
+  this: tonk:space/kernel
+  description: The kernel a space runs, pinned on the space's own main.
+  with:
+    kernel:
+      description: >
+        The asset of the kernel's wasm, `asset:<hash>`, where the hash is
+        the BLAKE3 digest the kernel's content identifier names.
+      the: xyz.tonk.space/kernel
+      as: entity
+
 # Agent working context carried by the repository itself. The instance is keyed
 # by the same stable repository subject DID as `tonk/repository`, so it syncs
 # with the space rather than belonging to one filesystem checkout or replica.

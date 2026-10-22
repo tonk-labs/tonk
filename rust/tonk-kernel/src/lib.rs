@@ -24,10 +24,13 @@ pub mod world {
 
 mod http;
 
+use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
 
 use axum::Router;
 use http_body_util::BodyExt as _;
+use tonk_kernel_world::boot;
+use tonk_kernel_world::world::sapling::kernel::storage::Layer;
 use tonk_kernel_world::world::sapling::kernel::types::Error;
 use tonk_worker::{AppState, TonkState};
 use tower::ServiceExt as _;
@@ -44,7 +47,15 @@ static ROUTER: Mutex<Option<Held>> = Mutex::new(None);
 struct Held {
     router: Router,
     state: AppState,
-    space: Option<String>,
+    space: Option<Space>,
+}
+
+/// The space this kernel serves: its subject, and the layer the boot gave it,
+/// which holds the space's boot cell and the kernel's wasm.
+#[derive(Clone)]
+struct Space {
+    subject: String,
+    layer: Rc<Layer>,
 }
 
 /// Where the bootloader hands the kernel the delegation for its space: the
@@ -57,7 +68,7 @@ const ADOPT_PATH: &str = "/.kernel/adopt";
 // reached from another.
 unsafe impl Send for Held {}
 
-fn held() -> Option<(Router, AppState, Option<String>)> {
+fn held() -> Option<(Router, AppState, Option<Space>)> {
     ROUTER
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -77,15 +88,22 @@ impl lifecycle::Guest for Kernel {
         // The space this kernel serves: the subject of its `memory:space`.
         let space = boot
             .stack
-            .iter()
+            .into_iter()
             .find(|stacked| stacked.scopes.iter().any(|scope| scope == "memory:space"))
-            .map(|stacked| stacked.layer.subject());
+            .map(|stacked| Space {
+                subject: stacked.layer.subject(),
+                layer: Rc::new(stacked.layer),
+            });
         let state = TonkState::open_kernel().await.map_err(invalid)?;
-        // A space taken up before: put back what a restart lost about it.
-        if let Some(space) = &space
-            && let Err(error) = state.resume_space(space).await
-        {
-            eprintln!("tonk-kernel: {space} was not resumed: {error}");
+        // A space taken up before: put back what a restart lost about it,
+        // and give it its first commit if it went without.
+        if let Some(space) = &space {
+            if let Err(error) = state.resume_space(&space.subject).await {
+                eprintln!("tonk-kernel: {} was not resumed: {error}", space.subject);
+            }
+            if let Err(error) = found(&state, space).await {
+                eprintln!("tonk-kernel: {} was not founded: {error}", space.subject);
+            }
         }
         let (router, state, _) = tonk_worker::api_router_with_state(state);
         *ROUTER.lock().unwrap_or_else(PoisonError::into_inner) = Some(Held {
@@ -137,7 +155,7 @@ impl handler::Guest for Kernel {
         };
         let request = incoming(request).await?;
         if request.uri().path() == ADOPT_PATH {
-            return adopt(request, &state, space.as_deref()).await;
+            return adopt(request, &state, space.as_ref()).await;
         }
         let Ok(answer) = router.oneshot(request).await;
         let (parts, mut body) = answer.into_parts();
@@ -167,7 +185,7 @@ impl handler::Guest for Kernel {
 async fn adopt(
     request: axum::http::Request<axum::body::Body>,
     state: &AppState,
-    space: Option<&str>,
+    space: Option<&Space>,
 ) -> Result<Response, ErrorCode> {
     if request.method() != axum::http::Method::POST {
         return Ok(http::respond(
@@ -189,14 +207,44 @@ async fn adopt(
         .await
         .map_err(|error| ErrorCode::InternalError(Some(error.to_string())))?
         .to_bytes();
-    match state.read().await.adopt_space(space, &chain).await {
-        Ok(()) => Ok(http::respond(204, None, Vec::new())),
-        Err(error) => Ok(http::respond(
+    let state = state.read().await;
+    if let Err(error) = state.adopt_space(&space.subject, &chain).await {
+        return Ok(http::respond(
             400,
             Some("text/plain"),
             error.to_string().into_bytes(),
-        )),
+        ));
     }
+    match found(&state, space).await {
+        Ok(()) => Ok(http::respond(204, None, Vec::new())),
+        Err(error) => Ok(http::respond(500, Some("text/plain"), error.into_bytes())),
+    }
+}
+
+/// Give the space its first commit, if it has none: the kernel its boot cell
+/// pins, as an asset the space's layer already holds, and the pin to it. A
+/// space whose layer holds no boot cell pins nothing, and is left alone.
+async fn found(state: &TonkState, space: &Space) -> Result<(), String> {
+    let cell = space
+        .layer
+        .resolve(boot::NAMESPACE.to_owned(), boot::CELL.to_owned())
+        .await
+        .map_err(|error| format!("the boot cell: {error:?}"))?;
+    let Some(cell) = cell else {
+        return Ok(());
+    };
+    let id = boot::read_cell(&cell.content)?;
+    let hash = boot::digest(&id)?;
+    let size = space
+        .layer
+        .size(hash.to_vec())
+        .await
+        .map_err(|error| format!("the kernel {id}: {error:?}"))?
+        .ok_or_else(|| format!("the space does not hold the kernel {id} whole"))?;
+    state
+        .found_space(&space.subject, hash, size)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 world::export!(Kernel with_types_in world);

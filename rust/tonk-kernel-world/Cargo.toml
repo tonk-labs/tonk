@@ -6,11 +6,13 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Everything here is for a component on WASI; other targets build an empty
-# crate, so the workspace builds as before.
+[dependencies]
+# The boot cell's codec, which the host reads too.
+blake3 = { workspace = true }
+
+# Everything else is for a component on WASI.
 [target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
 async-trait = { workspace = true }
-blake3 = { workspace = true }
 dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true }

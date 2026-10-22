@@ -202,6 +202,14 @@ pub mod space {
     #[domain("xyz.tonk.space")]
     pub struct Subject(pub Entity);
 
+    /// The kernel the space runs: the asset of its wasm, `asset:<hash>`, on
+    /// the space's own `main`. A new kernel moves it, in the same commit
+    /// that records the new asset.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    #[pick(last)]
+    pub struct Kernel(pub Entity);
+
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.space")]
     pub struct Status(pub Entity);

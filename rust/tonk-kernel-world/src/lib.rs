@@ -12,10 +12,12 @@
 //! - [`guest::session_signer`] and [`credentials::signer`]: the session key and
 //!   a credential, as signers whose signatures come from the host.
 //!
-//! On every other target the crate is empty.
+//! On every other target the crate holds only [`boot`], the boot cell's
+//! codec, which the host reads too.
 
-#![cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub mod boot;
 
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod world {
     wit_bindgen::generate!({
         path: "wit",
@@ -24,11 +26,19 @@ pub mod world {
     });
 }
 
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod cache;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod credentials;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod guest;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod layer;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod mount;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod signal;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod space;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod store;

@@ -7,6 +7,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use crate::router::space_worker;
 use crate::{
     LspHub,
     axum::{RequestConversion, ResponseConversion},
@@ -18,6 +20,8 @@ use axum::{
     body::Body,
     http::{HeaderValue, header::HeaderName},
 };
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+use dialog_artifacts::Asset;
 use dialog_peer::{Peer, Session};
 use dialog_storage::provider::storage::Storage;
 #[cfg(target_arch = "wasm32")]
@@ -519,7 +523,26 @@ impl TonkState {
         let space: Did = space
             .parse()
             .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
-        crate::router::space_worker::adopt(self, &space, chain).await?;
+        space_worker::adopt(self, &space, chain).await?;
+        self.reactor.run_scheduled_polls(&self.operator).await;
+        Ok(())
+    }
+
+    /// Give `space`, which this worker holds, its first commit if it has
+    /// none: the kernel it runs, the asset `kernel` (its BLAKE3 `hash` and
+    /// `size`, which the space's store already holds), and the pin to it.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn found_space(
+        &self,
+        space: &str,
+        hash: [u8; 32],
+        size: u64,
+    ) -> Result<(), crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        let kernel = Asset::stored(hash.into(), size);
+        space_worker::found(self, &space, kernel).await?;
         self.reactor.run_scheduled_polls(&self.operator).await;
         Ok(())
     }
@@ -531,7 +554,7 @@ impl TonkState {
         let space: Did = space
             .parse()
             .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
-        crate::router::space_worker::resume(self, &space).await?;
+        space_worker::resume(self, &space).await?;
         self.reactor.run_scheduled_polls(&self.operator).await;
         Ok(())
     }
