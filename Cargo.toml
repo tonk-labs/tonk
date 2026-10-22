@@ -178,7 +178,7 @@ ulid = "1"
 unicode-width = "0.2"
 url = "2"
 urlencoding = "2"
-wasm-streams = "0.6"
+wasm-streams = "0.5"
 web-time = "1"
 wit-bindgen = { version = "0.61.1", features = ["async-spawn"] }
 webbrowser = "1.0"
