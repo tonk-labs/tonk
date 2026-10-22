@@ -48,7 +48,8 @@ closed_enum! {
         Import, Export, Blob, Push, Pull, Upgrade, Help, Identity, ConfigureSpace,
         Concept, View, Render, Remote, Migrate,
         // Desktop app interactions; see docs/analytics-contract.md.
-        PublishSpace, UnpublishSpace, RevokeLink, OpenView, StartChat, SendMessage, ChangeModel
+        PublishSpace, UnpublishSpace, RevokeLink, ResetLink, OpenView, StartChat, SendMessage,
+        ChangeModel
     }
 }
 
@@ -345,6 +346,7 @@ mod tests {
             ProductAction::PublishSpace,
             ProductAction::UnpublishSpace,
             ProductAction::RevokeLink,
+            ProductAction::ResetLink,
             ProductAction::OpenView,
             ProductAction::StartChat,
             ProductAction::SendMessage,
@@ -361,6 +363,7 @@ mod tests {
                 "publish_space",
                 "unpublish_space",
                 "revoke_link",
+                "reset_link",
                 "open_view",
                 "start_chat",
                 "send_message",

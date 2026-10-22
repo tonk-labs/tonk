@@ -6,7 +6,8 @@ import HarnessCore
 /// off in Settings or with `DO_NOT_TRACK` / `TONK_TELEMETRY=0`, or against a local runtime.
 @MainActor
 final class Telemetry {
-  static let shared = Telemetry()
+  /// Replaced only by tests, to observe what an interaction queues.
+  static var shared = Telemetry()
   /// The Settings choice; absent means on, as for the CLI and web.
   static let enabledKey = "tonkTelemetryEnabled"
 
@@ -50,6 +51,9 @@ final class Telemetry {
 
   /// Whether a batch is waiting on its timer; for tests.
   var hasScheduledFlush: Bool { flushTask != nil }
+
+  /// Events queued and not yet sent; for tests.
+  var pending: [DesktopAnalytics.Event] { queue }
 
   func setEnabled(_ enabled: Bool) {
     defaults.set(enabled, forKey: Self.enabledKey)

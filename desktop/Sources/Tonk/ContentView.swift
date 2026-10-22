@@ -384,7 +384,7 @@ struct ContentView: View {
         viewAddress
         if let space = model.openedSpace {
           // The share capsule is 32 points, the breadcrumb pill's height.
-          SpaceShareControl(space: space, access: access, compact: true)
+          SpaceShareControl(space: space, access: access, compact: true, surface: .workspace)
         }
       }
       if showHistory {
@@ -457,7 +457,9 @@ struct ContentView: View {
       viewSidebarToggle
       viewAddress.frame(maxWidth: 340)
       Spacer(minLength: 0)
-      if let space = model.openedSpace { SpaceShareControl(space: space, access: access) }
+      if let space = model.openedSpace {
+        SpaceShareControl(space: space, access: access, surface: .workspace)
+      }
       viewMoreMenu
     }.padding(.horizontal, 16).frame(height: 52)
       .background(.bar).background(Color(nsColor: .windowBackgroundColor))
@@ -551,7 +553,8 @@ struct ContentView: View {
     Task {
       do {
         try await model.configureProvider(
-          model.provider, connection: next, key: "", codexExecutable: model.saved.codexExecutable)
+          model.provider, connection: next, key: "", codexExecutable: model.saved.codexExecutable,
+          surface: .workspace)
       } catch { model.error = error.localizedDescription }
     }
   }

@@ -21,12 +21,13 @@ extension HarnessModel {
   /// `trigger` is `.automatic` when another device's model choice is adopted.
   func configureProvider(
     _ selected: ModelProvider, connection next: ModelConnection, key: String,
-    codexExecutable: String? = nil, trigger: DesktopAnalytics.Trigger = .user
+    codexExecutable: String? = nil, trigger: DesktopAnalytics.Trigger = .user,
+    surface: DesktopAnalytics.Surface = .settings
   )
     async throws
   {
     let attempt = Telemetry.shared.begin(
-      .workspace, .changeModel, surface: .settings, trigger: trigger)
+      .workspace, .changeModel, surface: surface, trigger: trigger)
     do {
       let changed = try await applyProvider(
         selected, connection: next, key: key, codexExecutable: codexExecutable)

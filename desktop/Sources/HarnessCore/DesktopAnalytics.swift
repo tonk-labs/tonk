@@ -64,6 +64,7 @@ extension DesktopAnalytics {
     case publishSpace = "publish_space"
     case unpublishSpace = "unpublish_space"
     case revokeLink = "revoke_link"
+    case resetLink = "reset_link"
     case openView = "open_view"
     case startChat = "start_chat"
     case sendMessage = "send_message"

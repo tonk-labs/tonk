@@ -65,6 +65,71 @@ final class AccessActionsTests: XCTestCase {
     XCTAssertTrue(access.notice?.contains("couldn’t be copied") == true)
   }
 
+  /// Swaps in a telemetry instance that only queues, so a test can read what one click records.
+  private func recording() throws -> Telemetry {
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: "AccessTelemetry-\(UUID().uuidString)"))
+    let telemetry = Telemetry(
+      environment: ["TONK_POSTHOG_KEY": "phc_test", "TONK_POSTHOG_ENDPOINT": "http://127.0.0.1:9"],
+      defaults: defaults)
+    try XCTSkipUnless(telemetry.isAvailable, "Telemetry is unavailable against a local runtime.")
+    let previous = Telemetry.shared
+    Telemetry.shared = telemetry
+    addTeardownBlock { @MainActor in Telemetry.shared = previous }
+    return telemetry
+  }
+
+  private func attempts(_ telemetry: Telemetry) -> [[String: JSONValue]] {
+    telemetry.pending.filter { $0.name == "product_event" }.map(\.properties)
+  }
+
+  func testCopyingAnExistingDefaultLinkIsOneCopyAttempt() async throws {
+    let telemetry = try recording()
+    let space = try space()
+    let store = LinkStoreStub()
+    store.values["retained"] = "synthetic retained link"
+    let access = AccessModel(vault: store, copyToPasteboard: { _ in true })
+    access.showFixture(
+      [
+        space.id: SpaceAccess(links: [
+          AccessLink(kind: .person, subject: space.id, target: "retained", usedBy: nil)
+        ])
+      ], agents: [], accountName: "Tester", journal: AccessJournal())
+    _ = await access.copyDefaultLink(in: space, surface: .workspace)
+    let events = attempts(telemetry)
+    XCTAssertEqual(events.map { $0["phase"] }, [.string("started"), .string("finished")])
+    XCTAssertEqual(Set(events.compactMap { $0["action"]?.string }), ["copy_share_link"])
+    XCTAssertEqual(events.last?["result"], .string("success"))
+    XCTAssertEqual(events.last?["stage"], .string("clipboard"))
+    XCTAssertEqual(events.last?["surface"], .string("workspace"))
+  }
+
+  func testMakingTheDefaultLinkOnCopyIsStillOneAttempt() async throws {
+    let telemetry = try recording()
+    let runtime = AccessRuntimeStub()
+    let access = AccessModel(vault: LinkStoreStub(), copyToPasteboard: { _ in true })
+    access.runtime = runtime
+    _ = await access.copyDefaultLink(in: try space())
+    let events = attempts(telemetry)
+    XCTAssertEqual(events.count, 2, "one started and one finished, not a nested mint attempt")
+    XCTAssertEqual(Set(events.compactMap { $0["attempt_id"]?.string }).count, 1)
+    XCTAssertEqual(events.last?["result"], .string("success"))
+  }
+
+  func testAMissingDefaultSecretIsABlockedCopy() async throws {
+    let telemetry = try recording()
+    let space = try space()
+    let access = AccessModel(vault: LinkStoreStub(), copyToPasteboard: { _ in true })
+    access.showFixture(
+      [
+        space.id: SpaceAccess(links: [
+          AccessLink(kind: .person, subject: space.id, target: "missing", usedBy: nil)
+        ])
+      ], agents: [], accountName: "Tester", journal: AccessJournal())
+    _ = await access.copyDefaultLink(in: space)
+    XCTAssertEqual(attempts(telemetry).last?["result"], .string("blocked"))
+    XCTAssertEqual(attempts(telemetry).last?["failure_kind"], .string("local_state"))
+  }
+
   func testAddressBookPersistsByAccountAndResetHidesIt() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
