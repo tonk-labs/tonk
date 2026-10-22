@@ -43,9 +43,9 @@ only, S a space only, B both.
 | Watching a local cell | B | `storage.layer.watch` |
 | Pulling from a peer | B | `network.open-remote` |
 | Who the space is, and the delegation for it | S | `session.chain`, `storage.open(subject, chain)`, renewed by the host |
-| Signing a UCAN: delegations, invites, revocations, presigns | P | **Not covered**, and excluded on purpose |
-| Holding keys and secrets: profile and operator keys, credentials, retained chains | P | **Not covered** |
-| Custody: X25519 agreement, HKDF, AES-GCM under a key that never leaves the host | P | **Not covered** |
+| Signing a UCAN: delegations, invites, revocations, presigns | P | **Not covered**: `credentials` (below) |
+| Holding keys and secrets: profile and operator keys, site secrets | P | **Not covered**: `credentials` (below) |
+| Custody: sealing and opening under a key that never leaves the host | P | **Not covered**: `credentials` (below) |
 | Passkey ceremonies (WebAuthn with PRF), which need a gesture in a page | P | **Not covered** |
 | Pushing to the space's remote (S3 through the access service), and its watch | B | **Not covered**: `network` pulls only |
 | Asking the account service (registration, email, customer, activation) | P | **Not covered**: there is no HTTP client |
@@ -59,36 +59,43 @@ only, S a space only, B both.
 Each proposal is in the world's own style. The web host is Tonk's embedder;
 the native host is Sapling's daemon.
 
-### `keys`: keys and secrets that never enter the guest
+### `credentials`: keys a kernel uses and never holds
 
-```wit
-interface keys {
-  use types.{did, error};
+Proposed to Sapling as PDD015 (dialog-db/sapling#5). Dialog DB already models
+keys and secrets as the credentials of a subject (`dialog-effects`
+`credential`): a key at an address, with `self` for the subject's own, and a
+secret for each site. A credential signs, reveals what was sealed to it, derives
+a key, and seals itself to another `did:key`, and its material never leaves
+where it is kept (`dialog-credentials` `secret`).
 
-  enum algorithm { ed25519, es256, x25519, hkdf, aes-gcm }
+A kernel reaches the credentials of a layer through the handle of that layer,
+under a reach its host binds, as for cells:
 
-  resource key {
-    did: func() -> option<did>;
-    sign: async func(tag: string, payload: list<u8>) -> result<list<u8>, error>;
-    agree: async func(peer: list<u8>) -> result<key, error>;
-    derive: async func(info: list<u8>, into: algorithm) -> result<key, error>;
-    seal: async func(plain: list<u8>, aad: list<u8>) -> result<list<u8>, error>;
-    open: async func(sealed: list<u8>, aad: list<u8>) -> result<list<u8>, error>;
-  }
+- A space's kernel reaches its own keys, such as its session key, and the
+  secret of the site it syncs with. It can never sign as the profile.
+- The profile's kernel also reaches the profile's, the account's and the
+  custody keys. A credential that names the persona acts only with consent.
 
-  generate: async func(algorithm: algorithm, name: string) -> result<key, error>;
-  load: async func(name: string) -> result<option<key>, error>;
-  forget: async func(name: string) -> result<_, error>;
-}
-```
+The kernel signs invocations and delegations through
+`dialog-credentials`' external key, whose signature comes from the host, so
+`dialog-capability` builds them as it does now. Sealing to a DID needs only the
+public key, so the kernel does it itself.
 
-- Web: a `CryptoKey` kept in the origin's IndexedDB, as Dialog keeps one now.
-- Native: the daemon's data directory or the OS keychain.
-- Open question: Sapling keeps UCAN signing out of the guest on purpose. Tonk's
-  profile mints delegations, invites and revocations, and the access service's
-  presigns. Either the profile's world gets `keys` with `sign`, and only the
-  profile's, or each of those becomes a command the host signs after consent
-  (PDD009, PDD011). This decides the trust model, so it comes first.
+Two additions to Dialog DB come with it: an external key that also reveals and
+derives through its host, and sealing a credential to a DID and adopting a
+sealed one.
+
+What it changes in Tonk: the account secret wrapped under a passkey's AES-GCM
+KEK, and the space seeds sealed to the account's own X25519 key
+(`tonk-identity` `envelope`, `sealed`, `webcrypto_kek`), become credentials
+sealed to a DID.
+
+**Migration.** The web host does it, lazily. The first time a kernel adopts or
+loads a credential that the host still holds in Tonk's old form, the host opens
+the old form itself, keeps the credential in the new one, and answers with the
+credential. The kernel never sees the old form, a native Sapling host carries
+none of it, and nothing needs a step of its own. This is Sapling's rule that the
+embedder carries each adapter (PDD008, "Versioning of the World").
 
 ### `network`: a remote a space writes to
 
@@ -147,18 +154,18 @@ interface clients {
 
 ```wit
 interface ceremony {
-  use keys.{key};
+  use credentials.{credential};
   use clients.{client};
 
   variant kind { register(list<u8>), assert(list<u8>) }
-  record outcome { credential: list<u8>, prf: list<key> }
+  record outcome { authenticator: list<u8>, custody: credential }
 
   request: async func(on: client, kind: kind) -> result<outcome, error>;
 }
 ```
 
-The host runs the ceremony in the page that holds the gesture, and imports
-what PRF yields as `keys` the guest cannot read. Today those bytes cross into
+The host runs the ceremony in the page that holds the gesture, and makes what
+PRF yields into a credential the guest cannot read. Today those bytes cross into
 the worker; this keeps them out of it.
 
 - Native: the platform authenticator, or a browser tab the daemon opens.
@@ -195,8 +202,8 @@ upgrade:
 
 ## Hardest first
 
-1. **Who signs a UCAN.** Everything the profile does with authority depends on
-   it.
+1. **Who signs a UCAN.** Proposed as `credentials` (PDD015); everything the
+   profile does with authority depends on Sapling agreeing to it.
 2. **Pushing to the remote.** `network` is pull-only, and Tonk's remote is a
    writable hub.
 3. **Passkey custody.** The gesture is in the top page of another origin, PRF
