@@ -14,6 +14,7 @@ world core {
   import types;
   import storage;
   import session;
+  import credentials;
 
   import wasi:clocks/monotonic-clock@0.3.0;
   import wasi:clocks/system-clock@0.3.0;

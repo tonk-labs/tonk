@@ -43,6 +43,8 @@ const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, "0"
 const keyOf = record =>
     record.kind === "block" ? `block|${record.subject}|${record.catalog}|${hex(record.key)}`
     : record.kind === "blob" ? `blob|${record.subject}|${hex(record.key)}`
+    : record.kind === "key" ? `key|${record.subject}|${record.address}`
+    : record.kind === "secret" ? `secret|${record.subject}|${record.site}`
     : `cell|${record.subject}|${record.namespace}|${record.cell}`;
 
 const database = new Promise((resolve, reject) => {

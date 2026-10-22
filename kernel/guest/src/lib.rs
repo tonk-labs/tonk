@@ -9,6 +9,9 @@
 //!   asserted on `main`. Answers who issued the new head and whom it names as
 //!   its authority.
 //! - `POST /api/select`: `{"the"}`, answers the matching facts as JSON.
+//! - `POST /api/credentials/check`: generates a credential of the space, signs
+//!   a UCAN invocation with it through the host, verifies it, and opens a
+//!   secret sealed to it. Answers what each step found.
 
 pub mod world {
     wit_bindgen::generate!({
@@ -19,6 +22,7 @@ pub mod world {
 }
 
 mod cache;
+mod credentials;
 mod guest;
 mod http;
 mod layer;
@@ -42,6 +46,9 @@ use world::wasi::http::types::{ErrorCode, Method, Request, Response};
 /// thread-local: on `wasm32-wasip3` each export call is a task of its own,
 /// with thread-locals of its own.
 static REPOSITORY: Mutex<Held> = Mutex::new(Held(None));
+
+/// The DID of the space, once `init` opened it.
+static SPACE: Mutex<Option<String>> = Mutex::new(None);
 
 /// Dialog DB's peer is not `Send`; a component runs on one thread, so a
 /// `static` may hold it.
@@ -75,6 +82,7 @@ impl lifecycle::Guest for Kernel {
             .ok_or_else(|| invalid("the boot binds no layer under memory:space"))?;
         let layer = guest::HandleLayer::new(space.layer).map_err(invalid)?;
         let subject = layer::Layer::subject(&layer);
+        *SPACE.lock().unwrap_or_else(PoisonError::into_inner) = Some(subject.to_string());
         let signer = guest::session_signer().map_err(invalid)?;
         // A worker that holds a space for a persona other than the space
         // writes as that persona.
@@ -156,6 +164,58 @@ async fn transact(body: &[u8]) -> Result<Json, String> {
     }))
 }
 
+async fn check_credentials() -> Result<Json, String> {
+    use dialog_credentials::Ed25519Verifier;
+    use dialog_credentials::secret::Context;
+    use dialog_ucan_core::InvocationBuilder;
+    use world::sapling::kernel::{credentials as host, session, storage};
+
+    const CHECK: Context = Context::new("tonk/kernel/check/v1");
+    let space = SPACE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .ok_or("the kernel has not booted")?;
+    let layer = storage::open(space.clone(), session::chain())
+        .await
+        .map_err(|error| format!("{error:?}"))?;
+    let credential = host::generate(&layer, "check".to_owned())
+        .await
+        .map_err(|error| format!("{error:?}"))?;
+    let did = credential.did();
+    let verifier: Ed25519Verifier = did.parse().map_err(|_| "not an Ed25519 did:key")?;
+
+    let sealed = verifier
+        .secret(CHECK)
+        .conceal(b"a vault key")
+        .await
+        .map_err(|error| error.to_string())?;
+    let revealed = credential
+        .reveal(CHECK.as_str().to_owned(), sealed.to_bytes())
+        .await
+        .map_err(|error| format!("{error:?}"))?;
+
+    let signer = credentials::signer(credential).map_err(|error| error.to_string())?;
+    let subject: dialog_varsig::Did = space.parse().map_err(|_| "the space is not a DID")?;
+    let invocation = InvocationBuilder::new()
+        .issuer(signer)
+        .audience(&subject)
+        .subject(&subject)
+        .command(vec!["storage".to_owned(), "get".to_owned()])
+        .proofs(Vec::new())
+        .try_build()
+        .await
+        .map_err(|error| error.to_string())?;
+    let verified = invocation
+        .verify_with::<std::convert::Infallible>(&dialog_credentials::Verifier::from(verifier))
+        .await;
+    Ok(json!({
+        "did": did,
+        "invocation": verified.is_ok(),
+        "revealed": revealed == b"a vault key",
+    }))
+}
+
 async fn select(body: &[u8]) -> Result<Json, String> {
     let repository = repository().ok_or("the kernel has not booted")?;
     let query: Json = serde_json::from_slice(body).map_err(|error| error.to_string())?;
@@ -194,6 +254,7 @@ impl handler::Guest for Kernel {
             }
             (Method::Post, "/api/transact") => transact(&http::read_body(request).await?).await,
             (Method::Post, "/api/select") => select(&http::read_body(request).await?).await,
+            (Method::Post, "/api/credentials/check") => check_credentials().await,
             _ => return Ok(http::respond(404, None, b"not found".to_vec())),
         };
         Ok(match answer {

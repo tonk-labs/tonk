@@ -2174,10 +2174,14 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bs58",
+ "dialog-credentials",
+ "dialog-varsig",
  "ed25519-dalek",
  "futures",
  "getrandom 0.2.17",
+ "ipld-core",
  "js-sys",
+ "serde_ipld_dagcbor",
  "serde_json",
  "tokio",
  "tracing",
@@ -2188,6 +2192,7 @@ dependencies = [
  "wcmp-wasm-core-wasmtime",
  "wcmp-wasm-core-web",
  "web-sys",
+ "zeroize",
 ]
 
 [[package]]
@@ -3653,8 +3658,11 @@ dependencies = [
  "dialog-query",
  "dialog-repository",
  "dialog-storage",
+ "dialog-ucan-core",
  "dialog-varsig",
  "futures-util",
+ "ipld-core",
+ "serde_ipld_dagcbor",
  "serde_json",
  "signature",
  "wit-bindgen 0.61.1",

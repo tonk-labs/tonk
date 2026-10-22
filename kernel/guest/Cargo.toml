@@ -11,6 +11,8 @@ crate-type = ["cdylib"]
 [dependencies]
 async-trait = "0.1"
 blake3 = "1"
+ipld-core = "0.4"
+serde_ipld_dagcbor = "0.6"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 serde_json = "1"
 signature = "2.2"
@@ -24,4 +26,5 @@ dialog-peer.workspace = true
 dialog-query.workspace = true
 dialog-repository.workspace = true
 dialog-storage.workspace = true
+dialog-ucan-core.workspace = true
 dialog-varsig.workspace = true

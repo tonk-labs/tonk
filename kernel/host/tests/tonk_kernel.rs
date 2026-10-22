@@ -79,6 +79,8 @@ async fn it_reads_what_an_earlier_kernel_committed() {
                     }
                 }
                 kernel_host::sapling::Change::Blob { .. } => "blob",
+                kernel_host::sapling::Change::Key { .. } => "key",
+                kernel_host::sapling::Change::Secret { .. } => "secret",
             })
             .collect();
         println!(
@@ -121,4 +123,34 @@ async fn it_writes_as_the_persona_it_holds_the_space_for() {
             "the session key issues it, not the persona: {body}"
         );
     }
+}
+
+/// A kernel generates a credential of its space, opens a secret sealed to it,
+/// and signs a UCAN invocation through the host that verifies against the
+/// credential's DID. The key is kept, so a later worker holds it too.
+#[tokio::test(flavor = "current_thread")]
+async fn it_signs_and_opens_with_a_credential_it_never_holds() {
+    let engine = Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap();
+    let bytes = std::fs::read(TONK_KERNEL).unwrap();
+    let space = kernel_host::sapling::did_key(&ed25519_dalek::SigningKey::from_bytes(&[3; 32]));
+    let mut kernel = Kernel::load(&engine, &bytes, [7; 32]).await.unwrap();
+    kernel.init(&space, &space).await.unwrap();
+
+    let answer = kernel
+        .request("POST", "/api/credentials/check", b"")
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&answer.body).unwrap();
+
+    assert_eq!(answer.status, 200, "{body}");
+    assert_eq!(body["revealed"], true, "{body}");
+    assert_eq!(body["invocation"], true, "{body}");
+    let kept = kernel.drain();
+    assert!(
+        kept.iter().any(|change| matches!(
+            change,
+            kernel_host::sapling::Change::Key { address, seed: Some(_), .. } if address == "check"
+        )),
+        "the key is kept: {kept:?}"
+    );
 }

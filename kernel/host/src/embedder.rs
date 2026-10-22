@@ -178,6 +178,22 @@ fn from_js(record: &JsValue) -> Result<Change, JsError> {
                 }),
             },
         },
+        "key" => Change::Key {
+            subject,
+            address: text(record, "address")?,
+            seed: match field(record, "seed")?.is_undefined() {
+                true => None,
+                false => Some(bytes(record, "seed")?),
+            },
+        },
+        "secret" => Change::Secret {
+            subject,
+            site: text(record, "site")?,
+            secret: match field(record, "secret")?.is_undefined() {
+                true => None,
+                false => Some(bytes(record, "secret")?),
+            },
+        },
         other => return Err(JsError::new(&format!("a kept record of the kind {other}"))),
     })
 }
@@ -225,6 +241,30 @@ fn to_js(change: &Change) -> JsValue {
             if let Some(edition) = edition {
                 set("content", blob(&edition.content));
                 set("version", blob(&edition.version));
+            }
+        }
+        Change::Key {
+            subject,
+            address,
+            seed,
+        } => {
+            set("kind", "key".into());
+            set("subject", subject.into());
+            set("address", address.into());
+            if let Some(seed) = seed {
+                set("seed", blob(seed));
+            }
+        }
+        Change::Secret {
+            subject,
+            site,
+            secret,
+        } => {
+            set("kind", "secret".into());
+            set("subject", subject.into());
+            set("site", site.into());
+            if let Some(secret) = secret {
+                set("secret", blob(secret));
             }
         }
     }

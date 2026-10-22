@@ -21,6 +21,7 @@ dialog-peer = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923d
 dialog-query = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
 dialog-repository = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
 dialog-storage = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
 dialog-varsig = { git = "https://github.com/dialog-db/dialog-db", rev = "74939923dd7b6fca586b2face9d1f8167a426712" }
 wcmp = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "ebda220" }
 wcmp-wasm-core-wasmtime = { git = "https://github.com/dialog-db/wasm-component-model-polyfill", rev = "ebda220" }

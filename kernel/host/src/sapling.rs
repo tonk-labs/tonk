@@ -11,8 +11,10 @@ use ed25519_dalek::{Signer, SigningKey};
 use wcmp::{
     Accessor, HasData, Resource, Source, StoreContext, StreamConsumer, StreamReader, StreamResult,
 };
+use zeroize::Zeroizing;
 
 use crate::bindings::sapling::kernel::{application, network, session, storage, types};
+use crate::credentials::Held;
 use crate::http_types::{HttpHost, HttpTable};
 use storage::{BlobRead, ByteRange, Edition, Encoding, Layer};
 use types::Error;
@@ -23,6 +25,10 @@ pub struct Subject {
     blocks: HashMap<(String, Vec<u8>), Vec<u8>>,
     cells: HashMap<(String, String), Edition>,
     blobs: HashMap<Vec<u8>, Vec<u8>>,
+    /// The seed of each key of the subject, by its address.
+    pub(crate) keys: HashMap<String, Zeroizing<[u8; 32]>>,
+    /// The secret of each site the subject reaches.
+    pub(crate) secrets: HashMap<String, Vec<u8>>,
 }
 
 /// The host data of a store that runs a guest kernel.
@@ -32,14 +38,17 @@ pub struct KernelHost {
     layers: Vec<String>,
     subjects: HashMap<String, Subject>,
     key: SigningKey,
+    /// The credential each `credential` handle names, by its representation.
+    pub(crate) credentials: Vec<Held>,
     /// The catch-ups the guest kernel sent with `application.send`.
     pub sent: Vec<Vec<u8>>,
     /// Each write since the last drain, for the host to keep durably.
     pub journal: Vec<Change>,
 }
 
-/// One write to a subject, as a host keeps it durably.
-#[derive(Clone, Debug)]
+/// One write to a subject, as a host keeps it durably. Its `Debug` leaves out
+/// the seed of a key and the bytes of a secret.
+#[derive(Clone)]
 pub enum Change {
     Block {
         subject: String,
@@ -58,6 +67,73 @@ pub enum Change {
         key: Vec<u8>,
         bytes: Vec<u8>,
     },
+    /// The key of a subject at an address: its seed, or none once forgotten.
+    Key {
+        subject: String,
+        address: String,
+        seed: Option<Vec<u8>>,
+    },
+    /// The secret of a site, or none once retracted.
+    Secret {
+        subject: String,
+        site: String,
+        secret: Option<Vec<u8>>,
+    },
+}
+
+impl core::fmt::Debug for Change {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Change::Block {
+                subject,
+                catalog,
+                key,
+                ..
+            } => f
+                .debug_struct("Block")
+                .field("subject", subject)
+                .field("catalog", catalog)
+                .field("key", key)
+                .finish_non_exhaustive(),
+            Change::Cell {
+                subject,
+                namespace,
+                cell,
+                edition,
+            } => f
+                .debug_struct("Cell")
+                .field("subject", subject)
+                .field("namespace", namespace)
+                .field("cell", cell)
+                .field("edition", edition)
+                .finish(),
+            Change::Blob { subject, key, .. } => f
+                .debug_struct("Blob")
+                .field("subject", subject)
+                .field("key", key)
+                .finish_non_exhaustive(),
+            Change::Key {
+                subject,
+                address,
+                seed,
+            } => f
+                .debug_struct("Key")
+                .field("subject", subject)
+                .field("address", address)
+                .field("forgotten", &seed.is_none())
+                .finish_non_exhaustive(),
+            Change::Secret {
+                subject,
+                site,
+                secret,
+            } => f
+                .debug_struct("Secret")
+                .field("subject", subject)
+                .field("site", site)
+                .field("retracted", &secret.is_none())
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 impl KernelHost {
@@ -66,6 +142,7 @@ impl KernelHost {
             http: HttpTable::default(),
             layers: Vec::new(),
             subjects: HashMap::new(),
+            credentials: Vec::new(),
             key: SigningKey::from_bytes(&seed),
             sent: Vec::new(),
             journal: Vec::new(),
@@ -111,11 +188,33 @@ impl KernelHost {
                         .blobs
                         .insert(key, bytes);
                 }
+                Change::Key {
+                    subject,
+                    address,
+                    seed,
+                } => {
+                    let keys = &mut self.subjects.entry(subject).or_default().keys;
+                    match seed.and_then(|seed| <[u8; 32]>::try_from(seed).ok()) {
+                        Some(seed) => keys.insert(address, Zeroizing::new(seed)),
+                        None => keys.remove(&address),
+                    };
+                }
+                Change::Secret {
+                    subject,
+                    site,
+                    secret,
+                } => {
+                    let secrets = &mut self.subjects.entry(subject).or_default().secrets;
+                    match secret {
+                        Some(secret) => secrets.insert(site, secret),
+                        None => secrets.remove(&site),
+                    };
+                }
             }
         }
     }
 
-    fn subject_name(&self, layer: &Resource<Layer>) -> String {
+    pub(crate) fn subject_name(&self, layer: &Resource<Layer>) -> String {
         self.layers[layer.rep() as usize].clone()
     }
 
@@ -126,7 +225,7 @@ impl KernelHost {
         Resource::new_own((self.layers.len() - 1) as u32)
     }
 
-    fn subject(&mut self, layer: &Resource<Layer>) -> &mut Subject {
+    pub(crate) fn subject(&mut self, layer: &Resource<Layer>) -> &mut Subject {
         let name = self.layers[layer.rep() as usize].clone();
         self.subjects.entry(name).or_default()
     }
