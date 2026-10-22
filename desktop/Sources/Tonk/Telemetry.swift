@@ -48,11 +48,16 @@ final class Telemetry {
     isAvailable && (defaults.object(forKey: Self.enabledKey) as? Bool ?? true)
   }
 
+  /// Whether a batch is waiting on its timer; for tests.
+  var hasScheduledFlush: Bool { flushTask != nil }
+
   func setEnabled(_ enabled: Bool) {
     defaults.set(enabled, forKey: Self.enabledKey)
     if !enabled {
       queue.removeAll()
       flushTask?.cancel()
+      // A cancelled timer left here would stop the next one being scheduled.
+      flushTask = nil
     }
   }
 

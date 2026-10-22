@@ -232,14 +232,27 @@ final class HarnessModel: ObservableObject {
     } catch { self.error = error.localizedDescription }
   }
 
-  /// The analytics receipt is the provider accepting the message, not the reply finishing.
+  /// The analytics receipt: for Codex, the provider accepting the turn, which this awaits.
+  /// Claude and API turns only schedule here and report no separate acceptance, so their
+  /// receipt is how the scheduled turn ends, observed without delaying this return.
   func send(_ text: String, showsUserMessage: Bool = true) async {
     guard canSend, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     let attempt = Telemetry.shared.begin(
       .workspace, .sendMessage, surface: .workspace,
       trigger: showsUserMessage ? .user : .automatic)
     await deliver(text, showsUserMessage: showsUserMessage)
-    attempt.finish(error == nil ? .success : .retryableFailure, stage: .worker)
+    guard provider != .chatGPT, let turn = apiTask else {
+      attempt.finish(error == nil ? .success : .retryableFailure, stage: .worker)
+      return
+    }
+    Task {
+      await turn.value
+      switch saved.conversation.lastTurnStatus {
+      case "completed": attempt.finish(.success)
+      case "interrupted": attempt.finish(.cancelled, stage: .worker, failureKind: .cancelled)
+      default: attempt.finish(.retryableFailure, stage: .worker)
+      }
+    }
   }
 
   private func deliver(_ text: String, showsUserMessage: Bool) async {

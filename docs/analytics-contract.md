@@ -80,7 +80,7 @@ ingestion remain separate release gates.
 | DESK-04 | Revoke a link (desktop) | revocation response | source |
 | DESK-05 | Open a view window (desktop) | window requested | source |
 | DESK-06 | Start a chat (desktop) | new conversation created | source |
-| DESK-07 | Send a chat message (desktop) | the agent provider accepts the message; the reply is not awaited | source |
+| DESK-07 | Send a chat message (desktop) | Codex accepts the turn; Claude and API providers, which report no separate acceptance, finish the turn (completed, interrupted, or failed) | source |
 | DESK-08 | Change the chat model (desktop) | provider settings saved; `noop` when nothing changed, `automatic` when adopting another device's choice | source |
 | DESK-09 | Desktop wire names | Swift client and `ProductAction` agree | tested |
 
