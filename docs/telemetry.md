@@ -194,6 +194,11 @@ pathnames, referrers, arbitrary UTM fields, click IDs, and SDK-generated initial
 URL fields from event and person-property blocks. Reviewed launch attribution
 is registered separately through the closed launch schema.
 
+## Dashboards
+
+Each interface (web, CLI, desktop) has its own PostHog dashboard, with one
+overview comparing them; see [interface dashboards](analytics/interfaces.md).
+
 ## Operational logs
 
 The access Worker writes failed account requests to Cloudflare Workers Logs,

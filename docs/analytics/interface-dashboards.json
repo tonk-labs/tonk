@@ -1,0 +1,216 @@
+{
+  "schema_version": 1,
+  "project_id": 70116,
+  "dashboards": [
+    {
+      "dashboard": {
+        "name": "Interfaces overview",
+        "description": "CLI, desktop, and production web side by side. Profiles are complete profile hashes, not people or accounts. Space views inside the desktop app run the web app, so their activity also counts as web.",
+        "pinned": true,
+        "tags": [
+          "product",
+          "analytics-v1",
+          "privacy-reviewed",
+          "interfaces"
+        ]
+      },
+      "insights": [
+        {
+          "name": "Interfaces: daily active profiles",
+          "display": "ActionsLineGraph",
+          "description": "Distinct complete profile hashes with any event, per day and interface, over 30 days.",
+          "query": "SELECT toDate(timestamp) AS day, multiIf(properties.environment = 'cli', 'cli', properties.environment = 'desktop', 'desktop', properties.environment = 'production', 'web', '') AS interface, uniq(distinct_id) AS profiles FROM events WHERE timestamp >= now() - INTERVAL 30 DAY AND match(distinct_id, '^tonk:[0-9a-f]{64}$') AND interface != '' GROUP BY day, interface ORDER BY day, interface"
+        },
+        {
+          "name": "Interfaces: active profiles and volume",
+          "display": "ActionsTable",
+          "description": "Per interface: profiles active in the last 7 and 30 days, product attempts, and events.",
+          "query": "SELECT multiIf(properties.environment = 'cli', 'cli', properties.environment = 'desktop', 'desktop', properties.environment = 'production', 'web', '') AS interface, uniqIf(distinct_id, match(distinct_id, '^tonk:[0-9a-f]{64}$')) AS profiles_30d, uniqIf(distinct_id, match(distinct_id, '^tonk:[0-9a-f]{64}$') AND timestamp >= now() - INTERVAL 7 DAY) AS profiles_7d, uniqIf(properties.attempt_id, event = 'product_event' AND properties.phase = 'started') AS attempts, count() AS events FROM events WHERE timestamp >= now() - INTERVAL 30 DAY AND interface != '' GROUP BY interface ORDER BY profiles_30d DESC"
+        },
+        {
+          "name": "Interfaces: profiles by interface combination",
+          "display": "ActionsTable",
+          "description": "How many profiles used each combination of interfaces in the last 30 days.",
+          "query": "SELECT interfaces, count() AS profiles FROM (SELECT distinct_id, arrayStringConcat(arraySort(groupUniqArray(interface)), ' + ') AS interfaces FROM (SELECT distinct_id, multiIf(properties.environment = 'cli', 'cli', properties.environment = 'desktop', 'desktop', properties.environment = 'production', 'web', '') AS interface FROM events WHERE timestamp >= now() - INTERVAL 30 DAY AND match(distinct_id, '^tonk:[0-9a-f]{64}$')) WHERE interface != '' GROUP BY distinct_id) GROUP BY interfaces ORDER BY profiles DESC"
+        },
+        {
+          "name": "Interfaces: product outcomes",
+          "display": "ActionsTable",
+          "description": "Product attempts per interface with success, hard-failure, and abandonment rates (attempts older than 10 minutes).",
+          "query": "SELECT interface, count() AS starts, countIf(terminal_result != '') AS finished, countIf(terminal_result IN ('success','degraded_success','noop')) AS succeeded, countIf(terminal_result IN ('retryable_failure','terminal_failure','unknown_commit')) AS hard_failures, countIf(terminal_result = '') AS missing_terminal, if(starts = 0, 0, succeeded / starts) AS success_rate, if(starts = 0, 0, hard_failures / starts) AS hard_failure_rate, if(starts = 0, 0, missing_terminal / starts) AS abandonment_rate FROM (SELECT properties.attempt_id AS attempt_id, anyIf(multiIf(properties.environment = 'cli', 'cli', properties.environment = 'desktop', 'desktop', properties.environment = 'production', 'web', ''), properties.phase = 'started') AS interface, argMaxIf(properties.result, timestamp, properties.phase = 'finished') AS terminal_result FROM events WHERE event = 'product_event' AND properties.environment IN ('production','cli','desktop') AND timestamp >= now() - INTERVAL 30 DAY AND timestamp < now() - INTERVAL 10 MINUTE GROUP BY attempt_id HAVING countIf(properties.phase = 'started') > 0) GROUP BY interface ORDER BY starts DESC"
+        },
+        {
+          "name": "Interfaces: top actions",
+          "display": "ActionsTable",
+          "description": "Product attempts and outcome rates per interface and action.",
+          "query": "SELECT interface, action, count() AS starts, countIf(terminal_result != '') AS finished, countIf(terminal_result IN ('success','degraded_success','noop')) AS succeeded, countIf(terminal_result IN ('retryable_failure','terminal_failure','unknown_commit')) AS hard_failures, countIf(terminal_result = '') AS missing_terminal, if(starts = 0, 0, succeeded / starts) AS success_rate, if(starts = 0, 0, hard_failures / starts) AS hard_failure_rate, if(starts = 0, 0, missing_terminal / starts) AS abandonment_rate FROM (SELECT properties.attempt_id AS attempt_id, anyIf(multiIf(properties.environment = 'cli', 'cli', properties.environment = 'desktop', 'desktop', properties.environment = 'production', 'web', ''), properties.phase = 'started') AS interface, anyIf(properties.action, properties.phase = 'started') AS action, argMaxIf(properties.result, timestamp, properties.phase = 'finished') AS terminal_result FROM events WHERE event = 'product_event' AND properties.environment IN ('production','cli','desktop') AND timestamp >= now() - INTERVAL 30 DAY AND timestamp < now() - INTERVAL 10 MINUTE GROUP BY attempt_id HAVING countIf(properties.phase = 'started') > 0) GROUP BY interface, action ORDER BY starts DESC"
+        },
+        {
+          "name": "Interfaces: failures by kind",
+          "display": "ActionsTable",
+          "description": "Failed product attempts per interface and closed failure kind over 30 days.",
+          "query": "SELECT multiIf(properties.environment = 'cli', 'cli', properties.environment = 'desktop', 'desktop', properties.environment = 'production', 'web', '') AS interface, properties.failure_kind AS failure_kind, uniq(properties.attempt_id) AS failures, uniqIf(distinct_id, match(distinct_id, '^tonk:[0-9a-f]{64}$')) AS impacted_profiles FROM events WHERE event = 'product_event' AND properties.phase = 'finished' AND properties.result IN ('blocked','retryable_failure','terminal_failure','unknown_commit') AND timestamp >= now() - INTERVAL 30 DAY AND interface != '' GROUP BY interface, failure_kind ORDER BY failures DESC"
+        },
+        {
+          "name": "Interfaces: release adoption",
+          "display": "ActionsTable",
+          "description": "Profiles per interface and version in the last 7 days.",
+          "query": "SELECT multiIf(properties.environment = 'cli', 'cli', properties.environment = 'desktop', 'desktop', properties.environment = 'production', 'web', '') AS interface, properties.version AS version, uniq(distinct_id) AS profiles, count() AS events FROM events WHERE timestamp >= now() - INTERVAL 7 DAY AND match(distinct_id, '^tonk:[0-9a-f]{64}$') AND interface != '' GROUP BY interface, version ORDER BY interface, profiles DESC"
+        }
+      ]
+    },
+    {
+      "dashboard": {
+        "name": "Web app",
+        "description": "The browser app by environment (production, staging, dev). Includes space views opened inside the desktop app. Profiles are complete profile hashes, not people or accounts.",
+        "pinned": true,
+        "tags": [
+          "product",
+          "analytics-v1",
+          "privacy-reviewed",
+          "interfaces"
+        ]
+      },
+      "insights": [
+        {
+          "name": "Web: daily active profiles",
+          "display": "ActionsLineGraph",
+          "description": "Distinct complete profile hashes with any web event, per day and environment.",
+          "query": "SELECT toDate(timestamp) AS day, properties.environment AS environment, uniq(distinct_id) AS profiles FROM events WHERE properties.environment IN ('production','staging','dev') AND timestamp >= now() - INTERVAL 30 DAY AND match(distinct_id, '^tonk:[0-9a-f]{64}$') GROUP BY day, environment ORDER BY day, environment"
+        },
+        {
+          "name": "Web: product outcomes",
+          "display": "ActionsTable",
+          "description": "Product attempts with success, hard-failure, and abandonment rates by environment, surface, and action.",
+          "query": "SELECT environment, surface, action, count() AS starts, countIf(terminal_result != '') AS finished, countIf(terminal_result IN ('success','degraded_success','noop')) AS succeeded, countIf(terminal_result IN ('retryable_failure','terminal_failure','unknown_commit')) AS hard_failures, countIf(terminal_result = '') AS missing_terminal, if(starts = 0, 0, succeeded / starts) AS success_rate, if(starts = 0, 0, hard_failures / starts) AS hard_failure_rate, if(starts = 0, 0, missing_terminal / starts) AS abandonment_rate FROM (SELECT properties.attempt_id AS attempt_id, anyIf(properties.environment, properties.phase = 'started') AS environment, anyIf(properties.surface, properties.phase = 'started') AS surface, anyIf(properties.action, properties.phase = 'started') AS action, argMaxIf(properties.result, timestamp, properties.phase = 'finished') AS terminal_result FROM events WHERE event = 'product_event' AND properties.environment IN ('production','staging','dev') AND timestamp >= now() - INTERVAL 30 DAY AND timestamp < now() - INTERVAL 10 MINUTE GROUP BY attempt_id HAVING countIf(properties.phase = 'started') > 0) GROUP BY environment, surface, action ORDER BY starts DESC"
+        },
+        {
+          "name": "Web: failures by stage and release",
+          "description": "Closed failure classes by version, action, stage, and failure kind over 30 days.",
+          "display": "ActionsTable",
+          "query": "SELECT properties.version AS version, properties.action AS action, properties.stage AS stage, properties.failure_kind AS failure_kind, uniq(properties.attempt_id) AS failures, uniqIf(distinct_id, match(distinct_id, '^tonk:[0-9a-f]{64}$')) AS impacted_profiles FROM events WHERE event = 'product_event' AND properties.environment IN ('production','staging','dev') AND properties.phase = 'finished' AND properties.result IN ('blocked','retryable_failure','terminal_failure','unknown_commit') AND timestamp >= now() - INTERVAL 30 DAY GROUP BY version, action, stage, failure_kind ORDER BY failures DESC"
+        },
+        {
+          "name": "Web: terminal latency",
+          "display": "ActionsTable",
+          "description": "Median and p95 elapsed time by environment, surface, action, and result.",
+          "query": "SELECT properties.environment AS environment, properties.surface AS surface, properties.action AS action, properties.result AS result, uniq(properties.attempt_id) AS outcomes, quantile(0.5)(toFloat(properties.duration_ms)) AS p50_ms, quantile(0.95)(toFloat(properties.duration_ms)) AS p95_ms FROM events WHERE event = 'product_event' AND properties.environment IN ('production','staging','dev') AND properties.phase = 'finished' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY environment, surface, action, result ORDER BY outcomes DESC"
+        },
+        {
+          "name": "Web: startup readiness",
+          "display": "ActionsTable",
+          "description": "Product-ready attempts and terminal results by environment, version, and last stage.",
+          "query": "SELECT properties.environment AS environment, properties.version AS version, properties.phase AS phase, properties.stage AS stage, properties.result AS result, uniq(properties.attempt_id) AS attempts, quantileIf(0.95)(toFloat(properties.duration_ms), properties.phase = 'finished') AS p95_ms FROM events WHERE event = 'product_event' AND properties.environment IN ('production','staging','dev') AND properties.action = 'product_ready' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY environment, version, phase, stage, result ORDER BY attempts DESC"
+        },
+        {
+          "name": "Web: account journeys",
+          "display": "ActionsTable",
+          "description": "Finished account operations by environment, journey, action, and result.",
+          "query": "SELECT properties.environment AS environment, properties.journey AS journey, properties.action AS action, properties.result AS result, uniq(properties.attempt_id) AS attempts FROM events WHERE event = 'account_event' AND properties.environment IN ('production','staging','dev') AND properties.phase = 'finished' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY environment, journey, action, result ORDER BY attempts DESC"
+        }
+      ]
+    },
+    {
+      "dashboard": {
+        "name": "CLI",
+        "description": "The tonk command-line tool. Profiles are complete profile hashes, not people or accounts.",
+        "pinned": true,
+        "tags": [
+          "product",
+          "analytics-v1",
+          "privacy-reviewed",
+          "interfaces"
+        ]
+      },
+      "insights": [
+        {
+          "name": "CLI: daily active profiles",
+          "display": "ActionsLineGraph",
+          "description": "Distinct complete profile hashes running a command, and command runs, per day.",
+          "query": "SELECT toDate(timestamp) AS day, uniqIf(distinct_id, match(distinct_id, '^tonk:[0-9a-f]{64}$')) AS profiles, count() AS runs FROM events WHERE event = 'cli_command_run' AND properties.environment = 'cli' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY day ORDER BY day"
+        },
+        {
+          "name": "CLI: command health",
+          "display": "ActionsTable",
+          "description": "Command volume and coarse exits by version over 30 days.",
+          "query": "SELECT properties.version AS version, properties.command AS command, properties.subcommand AS subcommand, properties.exit AS exit, count() AS runs, uniqIf(distinct_id, match(distinct_id, '^tonk:[0-9a-f]{64}$')) AS profiles, quantile(0.95)(toFloat(properties.duration_ms)) AS p95_ms FROM events WHERE event = 'cli_command_run' AND properties.environment = 'cli' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY version, command, subcommand, exit ORDER BY runs DESC"
+        },
+        {
+          "name": "CLI: product outcomes",
+          "display": "ActionsTable",
+          "description": "Product attempts by journey and action with success, hard-failure, and abandonment rates.",
+          "query": "SELECT journey, action, count() AS starts, countIf(terminal_result != '') AS finished, countIf(terminal_result IN ('success','degraded_success','noop')) AS succeeded, countIf(terminal_result IN ('retryable_failure','terminal_failure','unknown_commit')) AS hard_failures, countIf(terminal_result = '') AS missing_terminal, if(starts = 0, 0, succeeded / starts) AS success_rate, if(starts = 0, 0, hard_failures / starts) AS hard_failure_rate, if(starts = 0, 0, missing_terminal / starts) AS abandonment_rate FROM (SELECT properties.attempt_id AS attempt_id, anyIf(properties.journey, properties.phase = 'started') AS journey, anyIf(properties.action, properties.phase = 'started') AS action, argMaxIf(properties.result, timestamp, properties.phase = 'finished') AS terminal_result FROM events WHERE event = 'product_event' AND properties.environment = 'cli' AND timestamp >= now() - INTERVAL 30 DAY AND timestamp < now() - INTERVAL 10 MINUTE GROUP BY attempt_id HAVING countIf(properties.phase = 'started') > 0) GROUP BY journey, action ORDER BY starts DESC"
+        },
+        {
+          "name": "CLI: failures by stage and release",
+          "description": "Closed failure classes by version, action, stage, and failure kind over 30 days.",
+          "display": "ActionsTable",
+          "query": "SELECT properties.version AS version, properties.action AS action, properties.stage AS stage, properties.failure_kind AS failure_kind, uniq(properties.attempt_id) AS failures, uniqIf(distinct_id, match(distinct_id, '^tonk:[0-9a-f]{64}$')) AS impacted_profiles FROM events WHERE event = 'product_event' AND properties.environment = 'cli' AND properties.phase = 'finished' AND properties.result IN ('blocked','retryable_failure','terminal_failure','unknown_commit') AND timestamp >= now() - INTERVAL 30 DAY GROUP BY version, action, stage, failure_kind ORDER BY failures DESC"
+        },
+        {
+          "name": "CLI: platforms and releases",
+          "display": "ActionsTable",
+          "description": "Profiles by operating system, architecture, and version in the last 7 days.",
+          "query": "SELECT properties.os AS os, properties.arch AS arch, properties.version AS version, uniqIf(distinct_id, match(distinct_id, '^tonk:[0-9a-f]{64}$')) AS profiles, count() AS runs FROM events WHERE event = 'cli_command_run' AND properties.environment = 'cli' AND timestamp >= now() - INTERVAL 7 DAY GROUP BY os, arch, version ORDER BY profiles DESC"
+        },
+        {
+          "name": "CLI: account commands",
+          "display": "ActionsTable",
+          "description": "Finished account operations from the CLI by journey, action, and result.",
+          "query": "SELECT properties.journey AS journey, properties.action AS action, properties.result AS result, uniq(properties.attempt_id) AS attempts FROM events WHERE event = 'account_event' AND properties.environment = 'cli' AND properties.phase = 'finished' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY journey, action, result ORDER BY attempts DESC"
+        }
+      ]
+    },
+    {
+      "dashboard": {
+        "name": "Desktop app",
+        "description": "The native macOS app's own windows, chat, sharing, and settings. Its space views run the web app and report on the Web app dashboard. Profiles are complete profile hashes, not people or accounts.",
+        "pinned": true,
+        "tags": [
+          "product",
+          "analytics-v1",
+          "privacy-reviewed",
+          "interfaces"
+        ]
+      },
+      "insights": [
+        {
+          "name": "Desktop: daily launches and active profiles",
+          "display": "ActionsLineGraph",
+          "description": "App launches and distinct complete profile hashes with any desktop event, per day.",
+          "query": "SELECT toDate(timestamp) AS day, countIf(event = 'app_opened') AS launches, uniqIf(distinct_id, match(distinct_id, '^tonk:[0-9a-f]{64}$')) AS profiles FROM events WHERE properties.environment = 'desktop' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY day ORDER BY day"
+        },
+        {
+          "name": "Desktop: release adoption",
+          "display": "ActionsTable",
+          "description": "Launches and profiles per version in the last 7 days.",
+          "query": "SELECT properties.version AS version, countIf(event = 'app_opened') AS launches, uniqIf(distinct_id, match(distinct_id, '^tonk:[0-9a-f]{64}$')) AS profiles FROM events WHERE properties.environment = 'desktop' AND timestamp >= now() - INTERVAL 7 DAY GROUP BY version ORDER BY profiles DESC"
+        },
+        {
+          "name": "Desktop: product outcomes",
+          "display": "ActionsTable",
+          "description": "Attempts by surface (hub, workspace, settings) and action, with success, hard-failure, and abandonment rates.",
+          "query": "SELECT surface, action, count() AS starts, countIf(terminal_result != '') AS finished, countIf(terminal_result IN ('success','degraded_success','noop')) AS succeeded, countIf(terminal_result IN ('retryable_failure','terminal_failure','unknown_commit')) AS hard_failures, countIf(terminal_result = '') AS missing_terminal, if(starts = 0, 0, succeeded / starts) AS success_rate, if(starts = 0, 0, hard_failures / starts) AS hard_failure_rate, if(starts = 0, 0, missing_terminal / starts) AS abandonment_rate FROM (SELECT properties.attempt_id AS attempt_id, anyIf(properties.surface, properties.phase = 'started') AS surface, anyIf(properties.action, properties.phase = 'started') AS action, argMaxIf(properties.result, timestamp, properties.phase = 'finished') AS terminal_result FROM events WHERE event = 'product_event' AND properties.environment = 'desktop' AND timestamp >= now() - INTERVAL 30 DAY AND timestamp < now() - INTERVAL 10 MINUTE GROUP BY attempt_id HAVING countIf(properties.phase = 'started') > 0) GROUP BY surface, action ORDER BY starts DESC"
+        },
+        {
+          "name": "Desktop: sharing",
+          "display": "ActionsTable",
+          "description": "Copy link, agent links, publishing, reset, and revoke outcomes with latency.",
+          "query": "SELECT properties.surface AS surface, properties.action AS action, properties.result AS result, uniq(properties.attempt_id) AS outcomes, quantile(0.5)(toFloat(properties.duration_ms)) AS p50_ms, quantile(0.95)(toFloat(properties.duration_ms)) AS p95_ms FROM events WHERE event = 'product_event' AND properties.environment = 'desktop' AND properties.action IN ('copy_share_link','connect_agent','publish_space','unpublish_space','reset_link','revoke_link') AND properties.phase = 'finished' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY surface, action, result ORDER BY outcomes DESC"
+        },
+        {
+          "name": "Desktop: chat and views",
+          "display": "ActionsTable",
+          "description": "Starting chats, sending messages, model changes, and opening views, by trigger and result, with latency.",
+          "query": "SELECT properties.trigger AS trigger, properties.surface AS surface, properties.action AS action, properties.result AS result, uniq(properties.attempt_id) AS outcomes, quantile(0.5)(toFloat(properties.duration_ms)) AS p50_ms, quantile(0.95)(toFloat(properties.duration_ms)) AS p95_ms FROM events WHERE event = 'product_event' AND properties.environment = 'desktop' AND properties.action IN ('start_chat','send_message','change_model','open_view') AND properties.phase = 'finished' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY trigger, surface, action, result ORDER BY outcomes DESC"
+        },
+        {
+          "name": "Desktop: failures by stage and release",
+          "description": "Closed failure classes by version, action, stage, and failure kind over 30 days.",
+          "display": "ActionsTable",
+          "query": "SELECT properties.version AS version, properties.action AS action, properties.stage AS stage, properties.failure_kind AS failure_kind, uniq(properties.attempt_id) AS failures, uniqIf(distinct_id, match(distinct_id, '^tonk:[0-9a-f]{64}$')) AS impacted_profiles FROM events WHERE event = 'product_event' AND properties.environment = 'desktop' AND properties.phase = 'finished' AND properties.result IN ('blocked','retryable_failure','terminal_failure','unknown_commit') AND timestamp >= now() - INTERVAL 30 DAY GROUP BY version, action, stage, failure_kind ORDER BY failures DESC"
+        }
+      ]
+    }
+  ]
+}
