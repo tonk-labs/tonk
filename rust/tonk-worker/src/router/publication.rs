@@ -237,8 +237,14 @@ pub(crate) async fn unpublish(tonk: &TonkState, repo: &str) -> Result<(), TonkWo
         let target = leaf_cid(&path)?;
         if !revoked.insert(target) {
             // Revoked at the service but still retained here: the local
-            // retraction failed, and proving again would find it forever.
-            break;
+            // retraction failed, so proving again finds this grant and
+            // never reaches any other still live. The records stay, since
+            // the space may not be private yet, and unpublishing again
+            // retries.
+            return Err(TonkWorkerError::Internal(format!(
+                "unpublish: the revoked grant {target} could not be retracted locally, \
+                 so other public grants may still be live"
+            )));
         }
         // A refusal keeps the records: a reader who already claimed still
         // holds a live grant, so the space has not gone private. Unpublish
