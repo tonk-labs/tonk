@@ -9,7 +9,6 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::RepositoryExt as _;
 use dialog_ucan::{Parameters, Scope, UcanDelegation};
@@ -18,10 +17,9 @@ use dialog_ucan_core::command::Command;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_varsig::Did;
 use ipld_core::cid::Cid;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::customer::RevokeReceipt;
 use tonk_common::log;
+use tonk_macros::handler;
 use tonk_schema::{Invitation, InvitationExecution};
 use tonk_worker_api::{InvitationKind, InvitationSummary};
 
@@ -187,7 +185,7 @@ async fn resolve_target(
 }
 
 /// Revoke only an invitation path recorded in the named repository.
-#[wasm_compat]
+#[handler]
 pub async fn revoke(
     State(state): State<AppState>,
     Path((repo, target_cid)): Path<(String, String)>,
@@ -578,7 +576,7 @@ pub(super) async fn retract_leaf(
 /// way [`revoke`] resolves the target it is handed. Deriving both from one
 /// walk is what keeps a listed CID revocable, rather than being a stale
 /// mint-time snapshot the live facts no longer agree with.
-#[wasm_compat]
+#[handler]
 pub async fn list(
     State(state): State<AppState>,
     Path(repo): Path<String>,

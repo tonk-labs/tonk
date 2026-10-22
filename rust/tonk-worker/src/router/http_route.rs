@@ -14,12 +14,10 @@
 use ::axum::extract::{Path, State};
 use ::axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use ::axum::response::{IntoResponse, Response};
-use axum_wasm_macros::wasm_compat;
 use ipld_core::ipld::Ipld;
 use serde::Deserialize;
 use serde_json::json;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
+use tonk_macros::handler;
 
 use super::session::{Matched, match_route};
 use crate::reactor::Query;
@@ -60,7 +58,7 @@ fn header_query(route: &str) -> Result<Query, TonkWorkerError> {
 
 /// Handler. Matches the path against the branch's routes and answers with
 /// the matched route's content.
-#[wasm_compat]
+#[handler]
 pub async fn respond(
     State(state): State<AppState>,
     Path(path): Path<HttpRoutePath>,

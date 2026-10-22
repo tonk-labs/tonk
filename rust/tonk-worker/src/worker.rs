@@ -348,8 +348,11 @@ async fn passthrough(_request: Request, _is_navigation: bool) -> Result<JsValue,
 pub type DefaultSpace = dialog_storage::provider::storage::WebSpace;
 
 /// Default storage type — filesystem on native.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub type DefaultSpace = dialog_storage::provider::storage::NativeSpace;
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub type DefaultSpace = dialog_storage::provider::storage::VolatileSpace;
 
 /// Concrete operator type for the default storage backend.
 pub type DefaultOperator = Peer<DefaultSpace, Session>;

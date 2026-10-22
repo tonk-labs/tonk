@@ -25,6 +25,7 @@ web-integration-tests = []
 helpers = ["dep:tower"]
 
 [dependencies]
+tonk-macros = { workspace = true }
 sha2_0_10 = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["json", "macros", "query"] }
@@ -33,7 +34,6 @@ base64 = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
-axum-wasm-macros = { workspace = true }
 bs58 = { workspace = true }
 console_error_panic_hook = { workspace = true }
 dialog-capability = { workspace = true }
@@ -132,13 +132,20 @@ web-time = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest = { workspace = true }
-# The files library documents include, compiled in: a native worker seeds
-# the library from compiled-in copies, with no served `/library/` to
-# fetch from.
+
+# The files library documents include, compiled in: a native worker, and a
+# kernel on WASI, seed the library from compiled-in copies, with no served
+# `/library/` to fetch from.
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 tonk-library = { workspace = true }
 
 # In a browser, randomness comes from its crypto. On WASI it comes from
 # `wasi:random`, which `getrandom` reaches with no feature.
+# In a component on WASI: the component's own async runtime, for work a
+# handler starts and does not wait on.
+[target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
+wit-bindgen = { workspace = true }
+
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom_0_3 = { workspace = true }

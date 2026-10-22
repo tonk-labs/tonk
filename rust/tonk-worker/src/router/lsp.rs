@@ -36,18 +36,13 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use axum_wasm_macros::wasm_compat;
 use futures_util::StreamExt as _;
 use http_body_util::BodyExt as _;
 use tokio::sync::{Mutex, broadcast};
-// `wasm_compat` expands to code that uses `oneshot` by bare path
-// on the wasm cfg; on native it isn't referenced. Import it
-// unconditionally so both cfgs see the symbol.
-#[allow(unused_imports)]
-use tokio::sync::oneshot;
 use tokio_stream::wrappers::BroadcastStream;
 use tonk_common::log;
 use tonk_language_server::Server;
+use tonk_macros::handler;
 
 use crate::router::AppState;
 use crate::router::lsp_env::LspEnvProvider;
@@ -193,7 +188,7 @@ pub fn lsp_router(state: AppState) -> (axum::Router, Arc<LspHub>) {
 /// body as a JSON-RPC message, dispatches it against the live
 /// environment opened from the worker state, and returns the
 /// reply (empty body for notifications).
-#[wasm_compat]
+#[handler]
 async fn handle_post(
     Extension(hub): Extension<Arc<LspHub>>,
     State(state): State<AppState>,
@@ -228,7 +223,7 @@ async fn handle_post(
 ///
 /// SSE framing: `data: <json>\n\n`. The client side parses these
 /// and hands the JSON to its message dispatcher.
-#[wasm_compat]
+#[handler]
 async fn handle_events(
     Extension(hub): Extension<Arc<LspHub>>,
     State(state): State<AppState>,

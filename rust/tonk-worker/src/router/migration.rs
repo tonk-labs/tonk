@@ -22,11 +22,9 @@ use std::collections::HashSet;
 
 use ::axum::extract::State;
 use ::axum::response::Redirect;
-use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_macros::handler;
 use tonk_schema::domain::replica::Profile as ProfileEntity;
 use tonk_schema::{LegacyReplica, Replica, SpaceKind, SpaceStatus, prelude::DidExt as _};
 
@@ -51,7 +49,7 @@ struct MigrationReport {
 }
 
 /// Handler. Runs the migration then redirects to the Hub (`/`).
-#[wasm_compat]
+#[handler]
 pub async fn repo_vs_profile(State(state): State<AppState>) -> Result<Redirect, TonkWorkerError> {
     run_migration(state).await?;
     Ok(Redirect::to("/"))
@@ -61,7 +59,7 @@ pub async fn repo_vs_profile(State(state): State<AppState>) -> Result<Redirect, 
 /// [`LegacyReplica`] (which has no `kind` and so matches records
 /// written before the field existed), skip those that already
 /// carry a `kind`, and stamp the rest with [`SpaceKind`].
-#[wasm_compat]
+#[handler]
 async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerError> {
     log!("GET /api/migrate/repo-vs-profile");
 

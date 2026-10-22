@@ -15,12 +15,10 @@ use std::ops::Deref;
 use std::sync::{Arc, atomic::Ordering};
 
 use axum::{Extension, Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::Entity;
 use dialog_varsig::Did;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_macros::handler;
 use tonk_schema::prelude::DidExt as _;
 use tonk_worker_api::{ActivateProfileRequest, ProfileRosterEntry, ProfilesResponse};
 
@@ -219,7 +217,7 @@ async fn refreshed_response(tonk: &TonkState) -> Result<ProfilesResponse, TonkWo
 }
 
 /// `GET /api/profiles`.
-#[wasm_compat]
+#[handler]
 pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<ProfilesResponse>, TonkWorkerError> {
@@ -228,7 +226,7 @@ pub async fn list(
 }
 
 /// `POST /api/profiles/activate`.
-#[wasm_compat]
+#[handler]
 pub async fn activate(
     State(state): State<AppState>,
     source: Option<Extension<super::ClientId>>,
@@ -387,7 +385,7 @@ impl dialog_capability::Provider<tonk_schema::command::SwitchProfile>
 /// Promote a fresh profile as the landing pad for Add Account. The account
 /// ceremony may keep it for a new account or route to another roster profile
 /// after discovering an existing account root.
-#[wasm_compat]
+#[handler]
 pub async fn add(
     State(state): State<AppState>,
     source: Option<Extension<super::ClientId>>,

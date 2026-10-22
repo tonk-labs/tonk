@@ -17,7 +17,6 @@ use ::axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_credentials::{Credential, Ed25519Signer};
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
@@ -27,10 +26,9 @@ use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
+use tonk_macros::handler;
 use tonk_schema::claim::SourceClaim;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
@@ -244,7 +242,7 @@ pub struct RepositoryInfo {
 ///   and wires up upstream tracking when specified.
 /// - Returns `201 Created` with a [`RepositoryInfo`] body whose `name`
 ///   is the new routing key.
-#[wasm_compat]
+#[handler]
 pub async fn put_repository(
     State(state): State<AppState>,
     Path(display_name): Path<String>,
@@ -8217,7 +8215,7 @@ pub(crate) async fn reconcile_profile_library_from(
 /// Development-only asset update boundary used by hot swap. The supplied
 /// document becomes the worker's acquired input before it is reconciled, so a
 /// later account sweep cannot restore bytes cached before the edit.
-#[wasm_compat]
+#[handler]
 pub(super) async fn update_profile_library(
     State(state): State<AppState>,
     body: Bytes,
@@ -8299,7 +8297,7 @@ async fn reconcile_prepared_profile_library(
             &encode_seed_version(minted),
         )
     };
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(target_arch = "wasm32")]
     let plan = || -> futures_util::future::LocalBoxFuture<'_, _> {
         Box::pin(async {
             current_profile_library_retractions(tonk, &complete_provenance)
@@ -8307,7 +8305,7 @@ async fn reconcile_prepared_profile_library(
                 .map_err(|error| TonkWorkerError::Internal(error.to_string()))
         })
     };
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let plan = || -> futures_util::future::BoxFuture<'_, _> {
         Box::pin(async {
             current_profile_library_retractions(tonk, &complete_provenance)
@@ -8348,7 +8346,7 @@ async fn reconcile_prepared_profile_library(
 ///
 /// Handler for `GET /api/repository/{repo}`. 404s when the
 /// repository can't be loaded.
-#[wasm_compat]
+#[handler]
 pub async fn get_repository(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -8429,7 +8427,7 @@ pub async fn get_repository(
 /// `.refetch()` just the profile-as-repository view after
 /// branch-level operations without re-fetching the full profile
 /// payload (with its replica list).
-#[wasm_compat]
+#[handler]
 pub async fn get_profile_repository(
     State(state): State<AppState>,
 ) -> Result<Json<RepositoryInfo>, TonkWorkerError> {
@@ -9291,7 +9289,7 @@ where
 /// instead of unpicking it from the create path, and a freshly
 /// created repo stays local until something explicitly gives it a
 /// remote.
-#[wasm_compat]
+#[handler]
 pub async fn attach_remote(
     State(state): State<AppState>,
     Path(name): Path<String>,

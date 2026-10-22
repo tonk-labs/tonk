@@ -1,12 +1,10 @@
 //! Persist and validate the provider-neutral local passkey root.
 
 use axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
+use tonk_macros::handler;
 use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
 
 use super::AppState;
@@ -189,7 +187,7 @@ fn status(root: LocalRoot) -> RootStatus {
 }
 
 /// `GET /api/identity/root`.
-#[wasm_compat]
+#[handler]
 pub async fn get(State(state): State<AppState>) -> Result<Json<RootStatus>, TonkWorkerError> {
     let state = state.read().await;
     match load_record(&state).await? {
@@ -437,7 +435,7 @@ fn parse_encryption_key(did: &str) -> Result<dialog_varsig::Did, TonkWorkerError
 }
 
 /// `POST /api/identity/root`.
-#[wasm_compat]
+#[handler]
 pub async fn save(
     State(state): State<AppState>,
     Json(request): Json<SaveRootRequest>,

@@ -575,7 +575,7 @@ async fn replace_retained_membership(
 /// device establish the identity association; a role or petname alone does
 /// not. Retained grants remain readable after the onboarding key is retired.
 /// This changes descriptive roster facts only, never delegations.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(super) async fn reconcile_founder_membership(
     tonk: &TonkState,
     space: &Did,

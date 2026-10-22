@@ -3,11 +3,9 @@
 
 use crate::worker::DefaultProfile;
 use axum::{Extension, Json, extract::State};
-use axum_wasm_macros::wasm_compat;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::AccountProviderRecord;
 use tonk_common::log;
+use tonk_macros::handler;
 use tonk_worker_api::{
     AccountDisplayNameRequest, AccountDisplayNameResponse, AccountLinkRequest, AccountStatus,
 };
@@ -341,14 +339,14 @@ async fn status(state: &crate::worker::TonkState) -> Result<AccountStatus, TonkW
 }
 
 /// Return local-root and provider attachment state.
-#[wasm_compat]
+#[handler]
 pub async fn get(State(state): State<AppState>) -> Result<Json<AccountStatus>, TonkWorkerError> {
     let state = state.read().await;
     Ok(Json(status(&state).await?))
 }
 
 /// Commit a display name through the linked-account authority when present.
-#[wasm_compat]
+#[handler]
 pub async fn set_display_name(
     State(state): State<AppState>,
     Json(request): Json<AccountDisplayNameRequest>,
@@ -443,7 +441,7 @@ pub(crate) async fn publish_link(state: &crate::worker::TonkState) {
 
 /// Attach provider services and finish bounded backup/restore before reporting
 /// the account as linked.
-#[wasm_compat]
+#[handler]
 pub async fn link(
     State(state): State<AppState>,
     Json(request): Json<AccountLinkRequest>,
@@ -544,7 +542,7 @@ pub(crate) async fn disconnect(
 
 /// Disconnect this account, then leave its retained spaces behind by
 /// promoting another signed-in profile or a rootless local workspace.
-#[wasm_compat]
+#[handler]
 pub async fn unlink(
     State(state): State<AppState>,
     source: Option<Extension<super::ClientId>>,

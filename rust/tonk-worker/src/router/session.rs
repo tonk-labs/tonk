@@ -18,10 +18,8 @@
 use ::axum::Json;
 use ::axum::extract::{Request, State};
 use ::axum::http::HeaderMap;
-use axum_wasm_macros::wasm_compat;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
+use tonk_macros::handler;
 
 use super::{AppState, ClientId};
 use crate::TonkWorkerError;
@@ -198,7 +196,7 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
 /// it is GC-able (the SW can reconcile against live clients) and needs no minted
 /// uuid. Idempotent — re-calling on navigation supersedes the cardinality-one
 /// fields in place.
-#[wasm_compat]
+#[handler]
 pub async fn register_site(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -242,7 +240,7 @@ pub struct SiteRequest {
 /// against that branch's route table. Unlike [`register_site`], the branch comes
 /// from the request URL (like `/query` and `/transact`), not from parsing the
 /// document path — so the SW does no document-path routing here.
-#[wasm_compat]
+#[handler]
 pub async fn register_site_on_repo(
     State(state): State<AppState>,
     ::axum::extract::Path(path): ::axum::extract::Path<crate::router::transact::TransactPath>,
@@ -289,7 +287,7 @@ pub async fn register_site_on_repo(
 /// [`register_site_on_repo`] for the profile's own repository, which that
 /// route hands a request naming it: the site is stamped as the profile's,
 /// under the profile's name.
-#[wasm_compat]
+#[handler]
 async fn register_site_on_profile(
     State(state): State<AppState>,
     ::axum::extract::Path(path): ::axum::extract::Path<

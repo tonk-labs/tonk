@@ -8,7 +8,6 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_capability::{
     Subject,
     access::{Access, Prove},
@@ -21,12 +20,11 @@ use dialog_ucan::{Ucan, UcanDelegation};
 use dialog_ucan_core::{DelegationBuilder, DelegationChain, time::Timestamp};
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_invite::connection::{
     AgentInvite, DEFAULT_GRANT_TTL_SECONDS, SpaceGrantBundle, candidate_build_scopes, grant_set_id,
     require_grant_deadline,
 };
+use tonk_macros::handler;
 use tonk_schema::{AgentGrantGroup, AgentGrantRevocation, agent_connection as fields};
 use tonk_worker_api::{
     AgentConnectionInviteResponse, AgentConnectionSummary, AgentConnectionTarget,
@@ -686,7 +684,7 @@ fn reported_installations(
         .collect()
 }
 
-#[wasm_compat]
+#[handler]
 pub async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AgentConnectionSummary>>, TonkWorkerError> {
@@ -746,7 +744,7 @@ async fn publish_target(
     Ok(receipt)
 }
 
-#[wasm_compat]
+#[handler]
 pub async fn revoke(
     State(state): State<AppState>,
     Path(id): Path<String>,

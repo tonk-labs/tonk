@@ -284,7 +284,15 @@ async fn fetch(url: &Url) -> Result<Vec<u8>, String> {
 
 /// Fetch `url` the way a seed is fetched: no credentials, no redirects, at
 /// most [`MAX_BYTES`].
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+/// A kernel on WASI has no HTTP client: the capability that would carry
+/// this through the host is not designed yet (`plan/kernel-capabilities.md`,
+/// `services`).
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+async fn fetch(url: &Url) -> Result<Vec<u8>, String> {
+    Err(format!("this host gives the kernel no way to fetch {url}"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 async fn fetch(url: &Url) -> Result<Vec<u8>, String> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())

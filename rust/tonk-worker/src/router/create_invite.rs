@@ -20,17 +20,15 @@ use ::axum::{
     body::Bytes,
     extract::{Path, State},
 };
-use axum_wasm_macros::wasm_compat;
 use dialog_capability::Subject;
 use dialog_credentials::{Ed25519Signer, key::KeyExport};
 use dialog_effects::Use;
 use dialog_repository::{SiteAddress, Upstream};
 use dialog_ucan::UcanDelegation;
 use dialog_varsig::Principal;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_invite::{Invite, InviteAudience, Ticket, home_address_meta, shortcut::ShortcutRequest};
+use tonk_macros::handler;
 use tonk_schema::{Invitation, InvitationExecution};
 use url::Url;
 
@@ -85,7 +83,7 @@ pub(crate) async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), To
 }
 
 /// Mint an invite URL for `repo`.
-#[wasm_compat]
+#[handler]
 pub async fn create_invite(
     State(state): State<AppState>,
     Path(repo_name): Path<String>,
@@ -712,7 +710,17 @@ async fn probe_shortcut(request: &ShortcutRequest, hash: &str) -> Result<(), Ton
 /// Probe the stored shortcut without following the redirect: a
 /// conforming service answers 3xx with a `Location` that resolves back
 /// to the stored target. HEAD — the landing URL is the whole answer.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+/// A kernel on WASI has no HTTP client: the capability that would carry
+/// this through the host is not designed yet (`plan/kernel-capabilities.md`,
+/// `services`).
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+async fn probe_shortcut(_request: &ShortcutRequest, _hash: &str) -> Result<(), TonkWorkerError> {
+    Err(TonkWorkerError::Internal(
+        "this host gives the kernel no way to probe a shortcut".to_owned(),
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 async fn probe_shortcut(request: &ShortcutRequest, hash: &str) -> Result<(), TonkWorkerError> {
     let probe = request
         .probe_url(hash)
@@ -786,7 +794,17 @@ async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWork
 }
 
 /// PUT a shortcut target, returning the hash the service responds with.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+/// A kernel on WASI has no HTTP client: the capability that would carry
+/// this through the host is not designed yet (`plan/kernel-capabilities.md`,
+/// `services`).
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+async fn put_shortcut(endpoint: &str, _target: String) -> Result<String, TonkWorkerError> {
+    Err(TonkWorkerError::Internal(format!(
+        "this host gives the kernel no way to reach {endpoint}"
+    )))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 async fn put_shortcut(endpoint: &str, target: String) -> Result<String, TonkWorkerError> {
     let response = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(SHORTCUT_TIMEOUT_MS.into()))
