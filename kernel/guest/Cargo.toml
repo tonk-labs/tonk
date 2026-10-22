@@ -28,3 +28,4 @@ dialog-repository.workspace = true
 dialog-storage.workspace = true
 dialog-ucan-core.workspace = true
 dialog-varsig.workspace = true
+tonk-kernel-world = { path = "../../rust/tonk-kernel-world" }

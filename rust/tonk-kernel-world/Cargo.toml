@@ -1,0 +1,25 @@
+[package]
+name = "tonk-kernel-world"
+description = "Dialog DB over the world sapling:kernel: a layer's stores, the session and credentials as signers, for a Tonk kernel on WASI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Everything here is for a component on WASI; other targets build an empty
+# crate, so the workspace builds as before.
+[target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+dialog-artifacts = { workspace = true }
+dialog-capability = { workspace = true }
+dialog-common = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-effects = { workspace = true }
+dialog-storage = { workspace = true }
+dialog-varsig = { workspace = true }
+futures-util = { workspace = true }
+ipld-core = { workspace = true }
+serde_ipld_dagcbor = { workspace = true }
+signature = "2.2"
+wit-bindgen = { workspace = true, features = ["inter-task-wakeup"] }

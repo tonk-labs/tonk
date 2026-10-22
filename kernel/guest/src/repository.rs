@@ -14,9 +14,9 @@ use dialog_storage::provider::{Space, Volatile};
 use dialog_varsig::Did;
 use futures_util::StreamExt as _;
 
-use crate::layer::{LayerError, SharedLayer};
-use crate::mount::Mount;
-use crate::store::{Store, Witness};
+use tonk_kernel_world::layer::{LayerError, SharedLayer};
+use tonk_kernel_world::mount::Mount;
+use tonk_kernel_world::store::{Store, Witness};
 
 /// The space of Dialog DB over a layer: the archive, the memory, and the blobs
 /// in the layer, and the credentials and certificates in memory.

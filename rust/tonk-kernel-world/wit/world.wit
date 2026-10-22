@@ -57,3 +57,13 @@ world kernel {
   include commands;
   import network;
 }
+
+/// What the adapters of `tonk-kernel-world` reach: the storage of a layer,
+/// the session, and the credentials of a layer. A guest kernel that uses them
+/// imports the same interfaces through its own world.
+world imports {
+  import types;
+  import storage;
+  import session;
+  import credentials;
+}

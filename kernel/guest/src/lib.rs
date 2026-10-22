@@ -15,21 +15,20 @@
 
 pub mod world {
     wit_bindgen::generate!({
-        path: "wit",
+        path: "../../rust/tonk-kernel-world/wit",
         world: "sapling:kernel/kernel",
+        with: {
+            "sapling:kernel/types@0.1.0": tonk_kernel_world::world::sapling::kernel::types,
+            "sapling:kernel/storage@0.1.0": tonk_kernel_world::world::sapling::kernel::storage,
+            "sapling:kernel/session@0.1.0": tonk_kernel_world::world::sapling::kernel::session,
+            "sapling:kernel/credentials@0.1.0": tonk_kernel_world::world::sapling::kernel::credentials,
+        },
         generate_all,
     });
 }
 
-mod cache;
-mod credentials;
-mod guest;
 mod http;
-mod layer;
-mod mount;
 mod repository;
-mod signal;
-mod store;
 
 use std::sync::{Mutex, PoisonError};
 
@@ -37,9 +36,9 @@ use dialog_artifacts::{Artifact, ArtifactSelector, Instruction, Value};
 use serde_json::{Value as Json, json};
 
 use repository::Repository;
+use tonk_kernel_world::world::sapling::kernel::types::Error;
 use world::exports::sapling::kernel::{channel, lifecycle};
 use world::exports::wasi::http::handler;
-use world::sapling::kernel::types::Error;
 use world::wasi::http::types::{ErrorCode, Method, Request, Response};
 
 /// The space's repository, once `init` opened it. A `static`, not a
@@ -80,10 +79,10 @@ impl lifecycle::Guest for Kernel {
             .into_iter()
             .find(|stacked| stacked.scopes.iter().any(|scope| scope == "memory:space"))
             .ok_or_else(|| invalid("the boot binds no layer under memory:space"))?;
-        let layer = guest::HandleLayer::new(space.layer).map_err(invalid)?;
-        let subject = layer::Layer::subject(&layer);
+        let layer = tonk_kernel_world::guest::HandleLayer::new(space.layer).map_err(invalid)?;
+        let subject = tonk_kernel_world::layer::Layer::subject(&layer);
         *SPACE.lock().unwrap_or_else(PoisonError::into_inner) = Some(subject.to_string());
-        let signer = guest::session_signer().map_err(invalid)?;
+        let signer = tonk_kernel_world::guest::session_signer().map_err(invalid)?;
         // A worker that holds a space for a persona other than the space
         // writes as that persona.
         let profile = boot
@@ -91,7 +90,7 @@ impl lifecycle::Guest for Kernel {
             .filter(|persona| *persona != subject.to_string())
             .map(|persona| persona.parse().map_err(invalid))
             .transpose()?;
-        let opened = Repository::open(layer::share(layer), signer, profile)
+        let opened = Repository::open(tonk_kernel_world::layer::share(layer), signer, profile)
             .await
             .map_err(invalid)?;
         REPOSITORY.lock().unwrap_or_else(PoisonError::into_inner).0 = Some(opened);
@@ -168,7 +167,7 @@ async fn check_credentials() -> Result<Json, String> {
     use dialog_credentials::Ed25519Verifier;
     use dialog_credentials::secret::Context;
     use dialog_ucan_core::InvocationBuilder;
-    use world::sapling::kernel::{credentials as host, session, storage};
+    use tonk_kernel_world::world::sapling::kernel::{credentials as host, session, storage};
 
     const CHECK: Context = Context::new("tonk/kernel/check/v1");
     let space = SPACE
@@ -195,7 +194,8 @@ async fn check_credentials() -> Result<Json, String> {
         .await
         .map_err(|error| format!("{error:?}"))?;
 
-    let signer = credentials::signer(credential).map_err(|error| error.to_string())?;
+    let signer =
+        tonk_kernel_world::credentials::signer(credential).map_err(|error| error.to_string())?;
     let subject: dialog_varsig::Did = space.parse().map_err(|_| "the space is not a DID")?;
     let invocation = InvocationBuilder::new()
         .issuer(signer)
