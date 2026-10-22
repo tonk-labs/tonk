@@ -96,3 +96,25 @@ views are what makes `/` render.
    that is handed the space gets the kernel blob with it and boots it.
 5. **Upgrade.** A new kernel is a new blob and a moved pin, one commit; the
    bootloader switches without dropping open responses.
+
+## Status (2026-10-22)
+
+Milestones 1 and 2 hold in Chrome on dev:web. A space created from the Hub
+installs the deployment's kernel, boots it once, and takes up its space: the
+bootloader asks the profile to delegate the space to the kernel's own profile
+and hands the kernel the chain (`POST /.kernel/adopt`). The kernel answers the
+profile's calls and its own pages, with `/` a 404. The embedder drives the
+kernel for its lifetime, so requests run concurrently and bodies stream: an
+open subscription no longer holds up other requests.
+
+Open:
+
+- The app's `/space/{id}` route covers the space's frame with "nothing to
+  download" until the space holds `tonk:repository`, which only the standard
+  library declares. A blank kernel space never does. The route needs to know
+  a space runs a kernel, or the space has to be given its identity.
+- The profile does not run on a kernel yet.
+- A kernel's delegation lasts 12 hours and is renewed only when the kernel
+  boots again.
+- Safari cannot be tested on dev:web: it does not resolve `*.localhost`
+  subdomains, so the profile's and the spaces' origins do not load.
