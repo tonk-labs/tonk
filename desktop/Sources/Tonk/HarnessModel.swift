@@ -232,7 +232,17 @@ final class HarnessModel: ObservableObject {
     } catch { self.error = error.localizedDescription }
   }
 
+  /// The analytics receipt is the provider accepting the message, not the reply finishing.
   func send(_ text: String, showsUserMessage: Bool = true) async {
+    guard canSend, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    let attempt = Telemetry.shared.begin(
+      .workspace, .sendMessage, surface: .workspace,
+      trigger: showsUserMessage ? .user : .automatic)
+    await deliver(text, showsUserMessage: showsUserMessage)
+    attempt.finish(error == nil ? .success : .retryableFailure, stage: .worker)
+  }
+
+  private func deliver(_ text: String, showsUserMessage: Bool) async {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard canSend, !trimmed.isEmpty else { return }
     if provider == .claude {

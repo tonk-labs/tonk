@@ -698,6 +698,7 @@ struct ContentView: View {
   /// Opening the same space view again brings its existing window forward.
   private func open(_ view: SpaceViewEntry, in space: TonkSpace) {
     openWindow(value: SpaceWindowRequest(subject: space.subject, url: view.url(in: space)))
+    Telemetry.shared.record(.workspace, .openView, surface: .hub)
   }
 
   private var sidebarToggle: some View {
@@ -784,6 +785,15 @@ struct ContentView: View {
     .onChange(of: runtime.accountConnected) { _, connected in
       // Nothing learned under one account may show under the next.
       if !connected { access.reset() }
+    }
+    // Analytics identity follows the signed-in profile: the same hashed id the web uses.
+    .task(id: "\(runtime.accountConnected)-\(runtime.accountEpoch)") {
+      guard runtime.accountConnected, Telemetry.shared.isEnabled else {
+        Telemetry.shared.identify(profileDID: nil)
+        return
+      }
+      let identity = try? await runtime.accountScript("return await api('/api/identify');")
+      Telemetry.shared.identify(profileDID: identity?["did"] as? String)
     }
     .task(id: runtime.catalogLoaded && runtime.accountConnected ? runtime.spaces.map(\.id) : nil) {
       guard runtime.catalogLoaded && runtime.accountConnected else { return }

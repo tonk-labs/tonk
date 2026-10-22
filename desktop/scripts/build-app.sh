@@ -39,6 +39,13 @@ cp Resources/Info.plist "$app/Contents/Info.plist"
 for table in Resources/*.lproj; do
     ditto "$table" "$app/Contents/Resources/$(basename "$table")"
 done
+# Only builds given a PostHog project key send analytics (docs/telemetry.md).
+if [[ -n "${TONK_POSTHOG_KEY:-}" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :TonkPostHogKey string $TONK_POSTHOG_KEY" "$app/Contents/Info.plist"
+fi
+if [[ -n "${TONK_POSTHOG_HOST:-}" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :TonkPostHogHost string $TONK_POSTHOG_HOST" "$app/Contents/Info.plist"
+fi
 xcrun actool "$PWD/Resources/Tonk.icon" \
     --compile "$app/Contents/Resources" \
     --platform macosx --minimum-deployment-target 15.0 \

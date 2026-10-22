@@ -404,6 +404,25 @@ final class AccessModel: ObservableObject {
   /// Mints a link, keeps it for Copy, copies it and records it.
   @discardableResult
   func make(_ kind: NewLink, in space: TonkSpace) async -> Bool {
+    guard runtime != nil, !working.contains("new:" + space.id) else { return false }
+    let (journey, action): (DesktopAnalytics.Journey, DesktopAnalytics.Action) =
+      switch kind {
+      case .person: (.collaboration, .copyShareLink)
+      case .agent: (.handoff, .connectAgent)
+      case .publicRead: (.space, .publishSpace)
+      }
+    let attempt = Telemetry.shared.begin(journey, action, surface: .hub)
+    let started = generation
+    let made = await mint(kind, in: space)
+    if made {
+      attempt.finish(.success, stage: kind == .publicRead ? .remoteCommit : .clipboard)
+    } else {
+      attempt.finish(generation == started ? .retryableFailure : .cancelled, stage: .worker)
+    }
+    return made
+  }
+
+  private func mint(_ kind: NewLink, in space: TonkSpace) async -> Bool {
     guard let runtime, !working.contains("new:" + space.id) else { return false }
     let started = generation
     working.insert("new:" + space.id)
@@ -481,24 +500,40 @@ final class AccessModel: ObservableObject {
   }
 
   func revoke(_ link: AccessLink, space: TonkSpace) async {
-    guard let runtime, !working.contains(link.id) else { return }
+    guard runtime != nil, !working.contains(link.id) else { return }
+    let attempt = Telemetry.shared.begin(
+      link.kind == .publicRead ? .space : .collaboration,
+      link.kind == .publicRead ? .unpublishSpace : .revokeLink, surface: .hub)
+    let started = generation
+    let revoked = await withdraw(link, space: space)
+    if revoked {
+      attempt.finish(.success, stage: .remoteCommit)
+    } else {
+      attempt.finish(generation == started ? .retryableFailure : .cancelled, stage: .worker)
+    }
+  }
+
+  private func withdraw(_ link: AccessLink, space: TonkSpace) async -> Bool {
+    guard let runtime, !working.contains(link.id) else { return false }
     let started = generation
     working.insert(link.id)
     defer { if generation == started { working.remove(link.id) } }
     do {
       try await revoke(link, runtime: runtime, space: space)
-      guard generation == started else { return }
+      guard generation == started else { return false }
       record(
         link.kind == .publicRead ? .unpublished : .revoked, kind: link.kind, target: link.target,
         space: space)
       if link.kind != .publicRead { vault.remove(link.target) }
       notice = link.kind == .publicRead ? "The space is private" : "Link revoked"
       if link.kind == .agent { await refreshAccount() }
-      guard generation == started else { return }
+      guard generation == started else { return false }
       await refresh(space)
+      return true
     } catch {
-      guard generation == started else { return }
+      guard generation == started else { return false }
       notice = "Couldn’t revoke the link: " + Self.message(error)
+      return false
     }
   }
 

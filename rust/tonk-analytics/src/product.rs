@@ -46,7 +46,9 @@ closed_enum! {
         RenameSpace, RemoveSpace, UpdateSeed, ForgetInvitation,
         ActivateSheet, CreateSheet, CloseSheet, Edit, Evaluate, Query, Inspect,
         Import, Export, Blob, Push, Pull, Upgrade, Help, Identity, ConfigureSpace,
-        Concept, View, Render, Remote, Migrate
+        Concept, View, Render, Remote, Migrate,
+        // Desktop app interactions; see docs/analytics-contract.md.
+        PublishSpace, UnpublishSpace, RevokeLink, OpenView, StartChat, SendMessage, ChangeModel
     }
 }
 
@@ -330,6 +332,40 @@ mod tests {
         assert_eq!(
             ProductEvent::from_properties(&invalid),
             Err(ValidationError::InvalidProperties)
+        );
+    }
+
+    /// The macOS app sends these names from Swift (desktop/Sources/HarnessCore/
+    /// DesktopAnalytics.swift); a rename here must change there too.
+    #[test]
+    fn desktop_action_names_match_the_native_client() {
+        let names: Vec<Value> = [
+            ProductAction::CopyShareLink,
+            ProductAction::ConnectAgent,
+            ProductAction::PublishSpace,
+            ProductAction::UnpublishSpace,
+            ProductAction::RevokeLink,
+            ProductAction::OpenView,
+            ProductAction::StartChat,
+            ProductAction::SendMessage,
+            ProductAction::ChangeModel,
+        ]
+        .iter()
+        .map(|action| serde_json::to_value(action).unwrap())
+        .collect();
+        assert_eq!(
+            names,
+            [
+                "copy_share_link",
+                "connect_agent",
+                "publish_space",
+                "unpublish_space",
+                "revoke_link",
+                "open_view",
+                "start_chat",
+                "send_message",
+                "change_model",
+            ]
         );
     }
 

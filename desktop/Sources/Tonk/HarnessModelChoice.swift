@@ -49,7 +49,8 @@ extension HarnessModel {
           saved.connections?[choice.provider.rawValue] ?? ModelConnection(provider: choice.provider)
         next.model = choice.model
         try await configureProvider(
-          choice.provider, connection: next, key: "", codexExecutable: saved.codexExecutable)
+          choice.provider, connection: next, key: "", codexExecutable: saved.codexExecutable,
+          trigger: .automatic)
         markModelChoiceSynced(choice)
       case .ignore:
         break

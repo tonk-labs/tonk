@@ -18,12 +18,30 @@ extension HarnessModel {
   }
   var credentials: ModelCredentials { ModelCredentials(scope: root.lastPathComponent) }
 
+  /// `trigger` is `.automatic` when another device's model choice is adopted.
   func configureProvider(
     _ selected: ModelProvider, connection next: ModelConnection, key: String,
-    codexExecutable: String? = nil
+    codexExecutable: String? = nil, trigger: DesktopAnalytics.Trigger = .user
   )
     async throws
   {
+    let attempt = Telemetry.shared.begin(
+      .workspace, .changeModel, surface: .settings, trigger: trigger)
+    do {
+      let changed = try await applyProvider(
+        selected, connection: next, key: key, codexExecutable: codexExecutable)
+      attempt.finish(changed ? .success : .noop, stage: .localCommit)
+    } catch {
+      attempt.finish(.terminalFailure, stage: .validation, failureKind: .unknown)
+      throw error
+    }
+  }
+
+  /// Returns whether the provider or model actually changed.
+  private func applyProvider(
+    _ selected: ModelProvider, connection next: ModelConnection, key: String,
+    codexExecutable: String?
+  ) async throws -> Bool {
     guard storageAvailable, !connecting, !busy, !creatingSpace, !loginPending else {
       throw HarnessError.message("Finish the current operation before changing providers.")
     }
@@ -69,6 +87,7 @@ extension HarnessModel {
     } else if selected != .chatGPT {
       try connectAPI()
     }
+    return changed
   }
 
   func connectAPI() throws {
