@@ -21,7 +21,7 @@ struct TonkApp: App {
   var body: some Scene {
     Window(RuntimeLocation.deployment.title, id: "main") {
       ContentView(model: model, runtime: runtime, access: access)
-        .frame(minWidth: 850, minHeight: 580)
+        .frame(minWidth: 700, minHeight: 500)
         .background(WindowAppearance())
         .modifier(OpenActivityFixture())
         .task {
@@ -48,7 +48,7 @@ struct TonkApp: App {
           }
         }
     }
-    .defaultSize(width: 1180, height: 780)
+    .defaultSize(width: 800, height: 600)
     .windowToolbarStyle(.unified)
     .commands {
       WindowCommands()
@@ -62,7 +62,11 @@ struct TonkApp: App {
           .background(WindowAppearance())
       }
     }
-    .defaultSize(width: 1180, height: 780)
+    .defaultSize(
+      width: ActivityFixture.compactWindow ? 700 : 1200,
+      height: ActivityFixture.compactWindow ? 500 : 800
+    )
+    .windowStyle(.hiddenTitleBar)
     .windowToolbarStyle(.unified)
     // A restored window would open before the account and its spaces load.
     .restorationBehavior(.disabled)
@@ -77,6 +81,9 @@ private struct OpenActivityFixture: ViewModifier {
     content.task {
       guard ActivityFixture.requested, let space = ActivityFixture.space else { return }
       openWindow(value: SpaceWindowRequest(subject: space.subject, url: nil))
+      if ProcessInfo.processInfo.arguments.contains("--multiple-windows-fixture") {
+        openWindow(value: SpaceWindowRequest(subject: space.subject, url: space.url))
+      }
     }
   }
 }

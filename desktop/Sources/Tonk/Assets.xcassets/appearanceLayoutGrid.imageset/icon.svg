@@ -1,0 +1,8 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="icon/layout-grid">
+<path id="Vector" d="M2.66667 2H6C6.36819 2 6.66667 2.29848 6.66667 2.66667V6C6.66667 6.36819 6.36819 6.66667 6 6.66667H2.66667C2.29848 6.66667 2 6.36819 2 6V2.66667C2 2.29848 2.29848 2 2.66667 2Z" stroke-width="1.06667" stroke-linecap="round" stroke-linejoin="round" stroke="#34C759"/>
+<path id="Vector_2" d="M10 2H13.3333C13.7015 2 14 2.29848 14 2.66667V6C14 6.36819 13.7015 6.66667 13.3333 6.66667H10C9.63181 6.66667 9.33333 6.36819 9.33333 6V2.66667C9.33333 2.29848 9.63181 2 10 2Z" stroke-width="1.06667" stroke-linecap="round" stroke-linejoin="round" stroke="#34C759"/>
+<path id="Vector_3" d="M10 9.33333H13.3333C13.7015 9.33333 14 9.63181 14 10V13.3333C14 13.7015 13.7015 14 13.3333 14H10C9.63181 14 9.33333 13.7015 9.33333 13.3333V10C9.33333 9.63181 9.63181 9.33333 10 9.33333Z" stroke-width="1.06667" stroke-linecap="round" stroke-linejoin="round" stroke="#34C759"/>
+<path id="Vector_4" d="M2.66667 9.33333H6C6.36819 9.33333 6.66667 9.63181 6.66667 10V13.3333C6.66667 13.7015 6.36819 14 6 14H2.66667C2.29848 14 2 13.7015 2 13.3333V10C2 9.63181 2.29848 9.33333 2.66667 9.33333Z" stroke-width="1.06667" stroke-linecap="round" stroke-linejoin="round" stroke="#34C759"/>
+</g>
+</svg>

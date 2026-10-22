@@ -1,0 +1,665 @@
+const imgIconCheck = "https://www.figma.com/api/mcp/asset/c239f232-bd0e-41fe-a2ee-aaf65b20b1b8.svg";
+const imgIconGlobe = "https://www.figma.com/api/mcp/asset/bd0f17a3-48e6-47bb-9476-dec13b6794ec.svg";
+const imgIconLink = "https://www.figma.com/api/mcp/asset/e58d7ca3-6ca0-4cb9-be59-4c6ff6c81186.svg";
+const imgIconLink1 = "https://www.figma.com/api/mcp/asset/fdb25aed-186e-46ca-a7b5-6f705f7d6f51.svg";
+const imgIconChevronDown = "https://www.figma.com/api/mcp/asset/61ebe354-f32e-4b20-8e29-eff2a221d2e8.svg";
+const imgStateSynced = "https://www.figma.com/api/mcp/asset/49e4fe5c-9d6e-4ae9-814d-b615d3336729.svg";
+const imgIconBook = "https://www.figma.com/api/mcp/asset/0d016b3c-f56f-4de7-a2aa-834e73b1767f.svg";
+const imgIconKanban = "https://www.figma.com/api/mcp/asset/ca6b76b6-ce75-43ea-8827-e8beb13f5af7.svg";
+const imgIconBookUser = "https://www.figma.com/api/mcp/asset/8fbe9fee-e581-450f-bbfe-3c00eccd8cdc.svg";
+const imgIconPlug = "https://www.figma.com/api/mcp/asset/73d04441-1b89-47fc-9007-bbb21576d0cc.svg";
+const imgIconPanelLeft = "https://www.figma.com/api/mcp/asset/08dea6b4-e1a1-4553-ad57-d51e02f35915.svg";
+const imgTrafficLights = "https://www.figma.com/api/mcp/asset/3c06d8de-ac27-43af-81b8-a650f4e7b013.svg";
+const imgIconSearch = "https://www.figma.com/api/mcp/asset/c78b7696-e4d3-4dba-8fb9-0c56512b310d.svg";
+const imgIconUsers = "https://www.figma.com/api/mcp/asset/4dfec695-1f4b-46ee-9369-4e26ce0bfec3.svg";
+const imgIconLeaf = "https://www.figma.com/api/mcp/asset/e09f4789-88d8-43a5-894b-5cefeee4a3dd.svg";
+const imgIconSettings = "https://www.figma.com/api/mcp/asset/4f8b68f8-0d27-407d-8fd6-3a1aabcf7692.svg";
+const imgIconAppWindow = "https://www.figma.com/api/mcp/asset/1323d0b1-fdf5-4f0d-8fd3-0c8ea00a8a75.svg";
+const imgIconArrowUpRight = "https://www.figma.com/api/mcp/asset/47aaf3cc-3433-4833-87c8-d7b98cecb946.svg";
+const imgIconLayoutGrid = "https://www.figma.com/api/mcp/asset/90a896a0-a30a-4323-a2bf-0edb2353d1c2.svg";
+const imgIconUsers1 = "https://www.figma.com/api/mcp/asset/880eac5d-d761-4f7a-9717-e4599bb29afa.svg";
+const imgIconBook1 = "https://www.figma.com/api/mcp/asset/5e42aa33-4b0c-4fdd-8867-e340e5ed4441.svg";
+const imgIconListChecks = "https://www.figma.com/api/mcp/asset/1a148f53-fcb5-472a-904a-7d72491efe1c.svg";
+const imgIconFolder = "https://www.figma.com/api/mcp/asset/e1854256-87fb-46ba-8681-a6e2a0e6b7d8.svg";
+const imgIconFileText = "https://www.figma.com/api/mcp/asset/be474f21-6582-497f-a493-b1ac959c53d6.svg";
+const imgIconStar = "https://www.figma.com/api/mcp/asset/53ece1fe-b020-4b43-9838-4370eaea4781.svg";
+const imgIconHeart = "https://www.figma.com/api/mcp/asset/70306185-e7c0-4ca3-a5be-9c54ac1195e8.svg";
+const imgIconLeaf1 = "https://www.figma.com/api/mcp/asset/42245a81-9d5d-4aa4-85cd-e0c49c11dc92.svg";
+const imgIconZap = "https://www.figma.com/api/mcp/asset/f55af90e-6ee0-434b-a311-9b45eb9c1ca1.svg";
+const imgIconFlag = "https://www.figma.com/api/mcp/asset/a08fe3fe-6409-44e4-8aa0-7b55e230b041.svg";
+const imgIconCalendar = "https://www.figma.com/api/mcp/asset/ce6f3a24-5297-432a-8f01-ea13da16660a.svg";
+const imgIconHouse = "https://www.figma.com/api/mcp/asset/9d2b0e9b-6cec-4cd7-b54c-4d1642699a81.svg";
+const imgIconBriefcase = "https://www.figma.com/api/mcp/asset/45d77685-61fd-4d49-a5ce-03cda96c562c.svg";
+const imgIconGraduationCap = "https://www.figma.com/api/mcp/asset/812cf6fb-b980-46df-a9f5-56c17b26119b.svg";
+const imgIconPalette = "https://www.figma.com/api/mcp/asset/9d538fd6-c6aa-4d3d-afb1-580a496b5b39.svg";
+const imgIconMusic = "https://www.figma.com/api/mcp/asset/1f662e71-5e4c-46cc-a44b-ad69e21ef425.svg";
+const imgIconGamepad = "https://www.figma.com/api/mcp/asset/254a73b7-00ab-42c0-bc8d-baa45792ee12.svg";
+const img8E8E93 = "https://www.figma.com/api/mcp/asset/b325d07a-925d-4233-a1ec-28172be6da0e.svg";
+const imgFf3B30 = "https://www.figma.com/api/mcp/asset/dcf37840-1eae-4711-b480-ce354e84b8de.svg";
+const imgFf9500 = "https://www.figma.com/api/mcp/asset/a5bd85c8-5fe2-465b-af77-6accba4a07f2.svg";
+const imgFfcc00 = "https://www.figma.com/api/mcp/asset/f97d812e-186f-4f7e-895e-c507001ab7a1.svg";
+const img34C759 = "https://www.figma.com/api/mcp/asset/2615265c-8153-4ef8-abc5-3c7b4c1fbac9.svg";
+const img30B0C7 = "https://www.figma.com/api/mcp/asset/a5704f7e-de92-45f6-970a-851df94d0049.svg";
+const img007Aff = "https://www.figma.com/api/mcp/asset/889bb099-dae6-4b46-8b69-0423b6682d27.svg";
+const img5856D6 = "https://www.figma.com/api/mcp/asset/1d698ac8-7c2b-446a-8f04-98514bfe4b81.svg";
+const imgAf52De = "https://www.figma.com/api/mcp/asset/5e1c7a8d-87c5-489a-bbce-b23580435886.svg";
+const imgFf2D55 = "https://www.figma.com/api/mcp/asset/8f4e5a67-569f-4901-951d-c26baad3a538.svg";
+const imgA2845E = "https://www.figma.com/api/mcp/asset/1cb6678a-1c9c-4bfc-9f13-6434b5534704.svg";
+const img98989D = "https://www.figma.com/api/mcp/asset/16413493-0939-495d-a7d8-a48644daa801.svg";
+const imgArrow = "https://www.figma.com/api/mcp/asset/10f78c27-dce1-44e0-b0e9-2686a277e6dc.svg";
+
+type ButtonProps = {
+  className?: string;
+  check?: boolean;
+  label?: string;
+  size?: "Small";
+  style?: "Default";
+};
+
+function Button({ className, check = false, label = "Button", size = "Small", style = "Default" }: ButtonProps) {
+  return (
+    <div className={className || "bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)]"} data-node-id="4:6">
+      {check && (
+        <div className="relative shrink-0 size-[12px]" data-node-id="4:7" data-name="icon/check">
+          <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconCheck} />
+        </div>
+      )}
+      <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text,#1d1d1f)] whitespace-nowrap" data-node-id="4:9" style={{ fontVariationSettings: '"wdth" 100' }}>
+        {label}
+      </p>
+    </div>
+  );
+}
+
+function IconGlobe({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="36:1059" data-name="icon/globe">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconGlobe} />
+    </div>
+  );
+}
+
+function IconLink({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:44" data-name="icon/link">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconLink} />
+    </div>
+  );
+}
+
+type SplitButtonProps = {
+  className?: string;
+  label?: string;
+  state?: "Default";
+};
+
+function SplitButton({ className, label = "Copy link", state = "Default" }: SplitButtonProps) {
+  return (
+    <div className={className || "bg-[var(--dt-accent,#3478f6)] content-stretch flex h-[28px] items-center overflow-clip relative rounded-[14px]"} data-node-id="53:5">
+      <div className="content-stretch flex gap-[6px] h-full items-center overflow-clip pl-[11px] pr-[10px] relative shrink-0" data-node-id="53:6" data-name="Copy">
+        <div className="relative shrink-0 size-[14px]" data-node-id="53:7" data-name="icon/link">
+          <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconLink1} />
+        </div>
+        <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-on-accent,white)] tracking-[-0.08px] whitespace-nowrap" data-node-id="53:10" style={{ fontVariationSettings: '"wdth" 100' }}>
+          {label}
+        </p>
+      </div>
+      <div className="content-stretch flex h-full items-center justify-center overflow-clip relative shrink-0 w-[26px]" data-node-id="53:12" data-name="Menu">
+        <div className="relative shrink-0 size-[12px]" data-node-id="53:13" data-name="icon/chevron-down">
+          <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconChevronDown} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type SyncCircleProps = {
+  className?: string;
+  state?: "Synced";
+};
+
+function SyncCircle({ className, state = "Synced" }: SyncCircleProps) {
+  return (
+    <div className={className || "relative size-[10px]"} data-node-id="60:961">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgStateSynced} />
+    </div>
+  );
+}
+
+function IconBook({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:76" data-name="icon/book">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBook} />
+    </div>
+  );
+}
+
+function IconKanban({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:68" data-name="icon/kanban">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconKanban} />
+    </div>
+  );
+}
+
+function IconBookUser({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="36:1048" data-name="icon/book-user">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBookUser} />
+    </div>
+  );
+}
+
+function IconPlug({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="60:960" data-name="icon/plug">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconPlug} />
+    </div>
+  );
+}
+
+function IconPanelLeft({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="70:1146" data-name="icon/panel-left">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconPanelLeft} />
+    </div>
+  );
+}
+
+function TrafficLights({ className }: { className?: string }) {
+  return (
+    <div className={className || "h-[12px] relative w-[52px]"} data-node-id="4:57" data-name="Traffic lights">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgTrafficLights} />
+    </div>
+  );
+}
+
+export default function Component11IconAndColour() {
+  return (
+    <div className="bg-[var(--dt-ground,white)] content-stretch flex items-start overflow-clip relative rounded-[20px] shadow-[0px_8px_20px_0px_rgba(0,0,0,0.12),0px_30px_70px_0px_rgba(0,0,0,0.28),0px_0px_0px_0.5px_rgba(0,0,0,0.28)] size-full" data-node-id="83:1692" data-name="11 · Icon and colour">
+      <div className="content-stretch flex flex-col h-full items-start pl-[8px] py-[8px] relative shrink-0 w-[192px]" data-node-id="83:1693" data-name="Sidebar · 800×600">
+        <div className="bg-[var(--dt-side,#f8f8f8)] content-stretch flex flex-[1_0_0] flex-col items-start min-h-px overflow-clip relative rounded-[16px] shadow-[0px_2px_10px_0px_rgba(0,0,0,0.06),0px_0px_0px_0.5px_rgba(0,0,0,0.1)] w-full" data-node-id="I83:1693;70:1147" data-name="Panel">
+          <div className="content-stretch flex h-[46px] items-center overflow-clip pl-[12px] pr-[8px] relative shrink-0 w-full" data-node-id="I83:1693;60:992" data-name="Title bar">
+            <TrafficLights className="h-[12px] relative shrink-0 w-[52px]" />
+            <div className="flex-[1_0_0] h-px min-w-px relative" data-node-id="I83:1693;70:1148" data-name="Spacer" />
+            <div className="bg-[var(--dt-ground,white)] content-stretch flex items-center justify-center overflow-clip relative rounded-[999px] shadow-[0px_1px_3px_0px_rgba(0,0,0,0.06),0px_0px_0px_0.5px_rgba(0,0,0,0.1)] shrink-0 size-[28px]" data-node-id="I83:1693;70:1149" data-name="Sidebar toggle">
+              <IconPanelLeft className="relative shrink-0 size-[15px]" />
+            </div>
+          </div>
+          <div className="content-stretch flex items-start overflow-clip pb-[8px] px-[10px] relative shrink-0 w-full" data-node-id="I83:1693;70:1153" data-name="Search">
+            <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex flex-[1_0_0] gap-[6px] h-[28px] items-center min-w-px px-[9px] relative rounded-[999px]" data-node-id="I83:1693;70:1154" data-name="Search spaces">
+              <div className="relative shrink-0 size-[14px]" data-node-id="I83:1693;70:1154;36:1135" data-name="icon/search">
+                <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconSearch} />
+              </div>
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text-3,#969696)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I83:1693;70:1154;36:1138" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Search spaces
+              </p>
+            </div>
+          </div>
+          <div className="content-stretch flex flex-col gap-[2px] items-start overflow-clip px-[10px] relative shrink-0 w-full" data-node-id="I83:1693;60:997" data-name="Navigation">
+            <div className="content-stretch flex gap-[8px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I83:1693;60:998" data-name="All links">
+              <IconLink className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I83:1693;60:998;4:23" style={{ fontVariationSettings: '"wdth" 100' }}>
+                All links
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[8px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I83:1693;60:1006" data-name="Connections">
+              <IconPlug className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I83:1693;60:1006;4:23" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Connections
+              </p>
+              <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] whitespace-nowrap" data-node-id="I83:1693;60:1006;4:24" style={{ fontVariationSettings: '"wdth" 100' }}>
+                4
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[8px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I83:1693;60:1016" data-name="Address book">
+              <IconBookUser className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I83:1693;60:1016;4:23" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Address book
+              </p>
+              <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] whitespace-nowrap" data-node-id="I83:1693;60:1016;4:24" style={{ fontVariationSettings: '"wdth" 100' }}>
+                12
+              </p>
+            </div>
+          </div>
+          <div className="content-stretch flex items-start overflow-clip pb-[4px] pl-[18px] pr-[8px] pt-[14px] relative shrink-0 w-full" data-node-id="I83:1693;60:1025" data-name="Section head">
+            <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[14px] relative shrink-0 text-[11px] text-[color:var(--dt-text-3,#969696)] tracking-[0.06px] whitespace-nowrap" data-node-id="I83:1693;60:1026" style={{ fontVariationSettings: '"wdth" 100' }}>
+              Spaces
+            </p>
+          </div>
+          <div className="content-stretch flex flex-col gap-[2px] items-start overflow-clip px-[10px] relative shrink-0 w-full" data-node-id="I83:1693;60:1027" data-name="Spaces">
+            <div className="bg-[var(--dt-selection,#2863d9)] content-stretch flex gap-[7px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I83:1693;60:1028" data-name="tonk-team">
+              <div className="relative shrink-0 size-[16px]" data-node-id="I83:1693;60:1028;60:984" data-name="icon/users">
+                <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconUsers} />
+              </div>
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Semibold'] font-[590] leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-on-accent,white)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I83:1693;60:1028;60:989" style={{ fontVariationSettings: '"wdth" 100' }}>
+                tonk-team
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[7px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I83:1693;60:1041" data-name="kanoodel">
+              <IconKanban className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I83:1693;60:1041;60:980" style={{ fontVariationSettings: '"wdth" 100' }}>
+                kanoodel
+              </p>
+            </div>
+            <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[7px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I83:1693;60:1054" data-name="tea-inventory">
+              <div className="relative shrink-0 size-[16px]" data-node-id="I83:1693;60:1054;60:975" data-name="icon/users">
+                <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconLeaf} />
+              </div>
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I83:1693;60:1054;60:980" style={{ fontVariationSettings: '"wdth" 100' }}>
+                tea-inventory
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[7px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I83:1693;60:1067" data-name="little-writer">
+              <IconBook className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I83:1693;60:1067;60:980" style={{ fontVariationSettings: '"wdth" 100' }}>
+                little-writer
+              </p>
+            </div>
+          </div>
+          <div className="flex-[1_0_0] min-h-px relative w-full" data-node-id="I83:1693;60:1079" data-name="Spacer" />
+          <div className="border-[var(--dt-line,#e4e6e5)] border-solid border-t content-stretch flex flex-col items-start overflow-clip pb-[10px] pt-[8px] px-[10px] relative shrink-0 w-full" data-node-id="I83:1693;60:1080" data-name="Footer">
+            <div className="content-stretch flex gap-[9px] items-center overflow-clip px-[8px] py-[6px] relative rounded-[8px] shrink-0 w-full" data-node-id="I83:1693;60:1081" data-name="Account">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center overflow-clip relative rounded-[11px] shrink-0 size-[22px]" data-node-id="I83:1693;60:1082" data-name="Avatar">
+                <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="I83:1693;60:1083" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  EW
+                </p>
+              </div>
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I83:1693;60:1084" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Eileen Wagner
+              </p>
+              <div className="relative shrink-0 size-[16px]" data-node-id="I83:1693;60:1085" data-name="icon/settings">
+                <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconSettings} />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="bg-[var(--dt-ground,white)] content-stretch flex flex-[1_0_0] flex-col h-full items-start min-w-px overflow-clip relative" data-node-id="83:1694" data-name="Main">
+        <div className="content-stretch flex gap-[9px] h-[52px] items-center overflow-clip pl-[20px] pr-[14px] relative shrink-0 w-full" data-node-id="83:1695" data-name="Toolbar">
+          <SyncCircle className="relative shrink-0 size-[12px]" />
+          <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[20px] relative shrink-0 text-[15px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.2px] whitespace-nowrap" data-node-id="83:1697" style={{ fontVariationSettings: '"wdth" 100' }}>
+            tonk-team
+          </p>
+          <div className="flex-[1_0_0] h-px min-w-px relative" data-node-id="83:1698" data-name="Spacer" />
+          <SplitButton className="bg-[var(--dt-accent,#3478f6)] content-stretch flex h-[28px] items-center overflow-clip relative rounded-[14px] shrink-0" />
+        </div>
+        <div className="content-stretch flex flex-[1_0_0] flex-col gap-[24px] items-start min-h-px overflow-x-clip overflow-y-auto pb-[20px] pt-[16px] px-[20px] relative w-full" data-node-id="83:1700" data-name="Content">
+          <div className="bg-[var(--dt-group,#f7f7f7)] content-stretch flex flex-col items-start overflow-clip relative rounded-[10px] shrink-0 w-full" data-node-id="83:1701" data-name="About">
+            <div className="content-stretch flex gap-[12px] items-center overflow-clip px-[14px] py-[10px] relative shrink-0 w-full" data-node-id="83:1702" data-name="People">
+              <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text-2,#6e6e73)] tracking-[-0.08px] w-[124px]" data-node-id="83:1703" style={{ fontVariationSettings: '"wdth" 100' }}>
+                People
+              </p>
+              <div className="content-stretch flex flex-[1_0_0] gap-[10px] items-center min-w-px overflow-clip relative" data-node-id="83:1704" data-name="Value">
+                <div className="content-stretch flex items-start overflow-clip relative shrink-0" data-node-id="83:1705" data-name="Avatars">
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] border-[1.5px] border-[var(--dt-ground,white)] border-solid content-stretch flex items-center justify-center mr-[-5px] overflow-clip relative rounded-[11px] shrink-0 size-[22px]" data-node-id="83:1706" data-name="K">
+                    <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="83:1707" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      K
+                    </p>
+                  </div>
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] border-[1.5px] border-[var(--dt-ground,white)] border-solid content-stretch flex items-center justify-center mr-[-5px] overflow-clip relative rounded-[11px] shrink-0 size-[22px]" data-node-id="83:1708" data-name="E">
+                    <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="83:1709" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      E
+                    </p>
+                  </div>
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] border-[1.5px] border-[var(--dt-ground,white)] border-solid content-stretch flex items-center justify-center mr-[-5px] overflow-clip relative rounded-[11px] shrink-0 size-[22px]" data-node-id="83:1710" data-name="J">
+                    <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="83:1711" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      J
+                    </p>
+                  </div>
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] border-[1.5px] border-[var(--dt-ground,white)] border-solid content-stretch flex items-center justify-center mr-[-5px] overflow-clip relative rounded-[11px] shrink-0 size-[22px]" data-node-id="83:1712" data-name="M">
+                    <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="83:1713" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      M
+                    </p>
+                  </div>
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] border-[1.5px] border-[var(--dt-ground,white)] border-solid content-stretch flex items-center justify-center mr-[-5px] overflow-clip relative rounded-[11px] shrink-0 size-[22px]" data-node-id="83:1714" data-name="T">
+                    <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="83:1715" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      T
+                    </p>
+                  </div>
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] border-[1.5px] border-[var(--dt-ground,white)] border-solid content-stretch flex items-center justify-center overflow-clip relative rounded-[11px] shrink-0 size-[22px]" data-node-id="83:1716" data-name="L">
+                    <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="83:1717" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      L
+                    </p>
+                  </div>
+                </div>
+                <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="83:1718" style={{ fontVariationSettings: '"wdth" 100' }}>{`Kai's space · 6 people, 3 agents`}</p>
+              </div>
+            </div>
+            <div className="[word-break:break-word] border-[var(--dt-row,#e6e6e6)] border-solid border-t content-stretch flex font-['SF_Pro:Regular'] font-normal gap-[12px] items-center leading-[18px] overflow-clip px-[14px] py-[10px] relative shrink-0 text-[13px] tracking-[-0.08px] w-full" data-node-id="83:1719" data-name="Sub-spaces">
+              <p className="relative shrink-0 text-[color:var(--dt-text-2,#6e6e73)] w-[124px]" data-node-id="83:1720" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Sub-spaces
+              </p>
+              <p className="flex-[1_0_0] min-w-px relative text-[color:var(--dt-text,#1d1d1f)]" data-node-id="83:1721" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Cycle 14 · Design notes
+              </p>
+            </div>
+          </div>
+          <div className="content-stretch flex flex-col gap-[8px] items-start overflow-clip relative shrink-0 w-full" data-node-id="83:1722" data-name="Views">
+            <div className="content-stretch flex items-start overflow-clip px-[2px] relative shrink-0 w-full" data-node-id="83:1723" data-name="Heading">
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Semibold'] font-[590] leading-[18px] min-w-px relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px]" data-node-id="83:1724" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Views
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[8px] items-start overflow-clip relative shrink-0 w-full" data-node-id="83:1725" data-name="Cards">
+              <div className="bg-[var(--dt-group,#f7f7f7)] content-stretch flex flex-[1_0_0] flex-col gap-[2px] items-start min-w-px overflow-clip p-[12px] relative rounded-[10px]" data-node-id="83:1726" data-name="Board">
+                <div className="content-stretch flex items-start overflow-clip pb-[8px] relative shrink-0 w-full" data-node-id="83:1727" data-name="Top">
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1728" data-name="Tile">
+                    <div className="relative shrink-0 size-[16px]" data-node-id="83:1729" data-name="icon/app-window">
+                      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconAppWindow} />
+                    </div>
+                  </div>
+                  <div className="flex-[1_0_0] h-px min-w-px relative" data-node-id="83:1730" data-name="Spacer" />
+                  <div className="relative shrink-0 size-[14px]" data-node-id="83:1731" data-name="icon/arrow-up-right">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconArrowUpRight} />
+                  </div>
+                </div>
+                <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] w-full" data-node-id="83:1732" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  Board
+                </p>
+                <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text-2,#6e6e73)] w-full" data-node-id="83:1733" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  Main view
+                </p>
+              </div>
+              <div className="bg-[var(--dt-group,#f7f7f7)] content-stretch flex flex-[1_0_0] flex-col gap-[2px] items-start min-w-px overflow-clip p-[12px] relative rounded-[10px]" data-node-id="83:1734" data-name="Cycle 14">
+                <div className="content-stretch flex items-start overflow-clip pb-[8px] relative shrink-0 w-full" data-node-id="83:1735" data-name="Top">
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1736" data-name="Tile">
+                    <div className="relative shrink-0 size-[16px]" data-node-id="83:1737" data-name="icon/app-window">
+                      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconAppWindow} />
+                    </div>
+                  </div>
+                  <div className="flex-[1_0_0] h-px min-w-px relative" data-node-id="83:1738" data-name="Spacer" />
+                  <div className="relative shrink-0 size-[14px]" data-node-id="83:1739" data-name="icon/arrow-up-right">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconArrowUpRight} />
+                  </div>
+                </div>
+                <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] w-full" data-node-id="83:1740" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  Cycle 14
+                </p>
+                <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text-2,#6e6e73)] w-full" data-node-id="83:1741" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  Sub-space view
+                </p>
+              </div>
+              <div className="bg-[var(--dt-group,#f7f7f7)] content-stretch flex flex-[1_0_0] flex-col gap-[2px] items-start min-w-px overflow-clip p-[12px] relative rounded-[10px]" data-node-id="83:1742" data-name="Design notes">
+                <div className="content-stretch flex items-start overflow-clip pb-[8px] relative shrink-0 w-full" data-node-id="83:1743" data-name="Top">
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1744" data-name="Tile">
+                    <div className="relative shrink-0 size-[16px]" data-node-id="83:1745" data-name="icon/app-window">
+                      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconAppWindow} />
+                    </div>
+                  </div>
+                  <div className="flex-[1_0_0] h-px min-w-px relative" data-node-id="83:1746" data-name="Spacer" />
+                  <div className="relative shrink-0 size-[14px]" data-node-id="83:1747" data-name="icon/arrow-up-right">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconArrowUpRight} />
+                  </div>
+                </div>
+                <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] w-full" data-node-id="83:1748" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  Design notes
+                </p>
+                <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text-2,#6e6e73)] w-full" data-node-id="83:1749" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  Sub-space view
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="content-stretch flex flex-col gap-[8px] items-start overflow-clip relative shrink-0 w-full" data-node-id="83:1750" data-name="Links">
+            <div className="content-stretch flex items-start overflow-clip px-[2px] relative shrink-0 w-full" data-node-id="83:1751" data-name="Heading">
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Semibold'] font-[590] leading-[18px] min-w-px relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px]" data-node-id="83:1752" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Links
+              </p>
+            </div>
+            <div className="bg-[var(--dt-group,#f7f7f7)] content-stretch flex flex-col items-start overflow-clip relative rounded-[10px] shrink-0 w-full" data-node-id="83:1753" data-name="Link list">
+              <div className="content-stretch flex gap-[12px] items-center min-h-[44px] px-[14px] py-[10px] relative shrink-0 w-full" data-node-id="83:1754" data-name="Default link">
+                <IconLink className="relative shrink-0 size-[14px]" />
+                <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I83:1754;4:65" data-name="Text">
+                  <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I83:1754;4:66" data-name="Title row">
+                    <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I83:1754;4:67" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Default link
+                    </p>
+                  </div>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-2,#6e6e73)] w-[min-content]" data-node-id="I83:1754;4:70" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Anyone with the link · Read and write · Never expires
+                  </p>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] w-[min-content]" data-node-id="I83:1754;4:71" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    What Copy link copies · used by Mira and Lu
+                  </p>
+                </div>
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I83:1754;4:72" data-name="Actions">
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" data-node-id="I83:1754;4:73" data-name="Revoke">
+                    <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text,#1d1d1f)] whitespace-nowrap" data-node-id="I83:1754;4:73;4:9" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Reset…
+                    </p>
+                  </div>
+                  <Button className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" label="Copy" />
+                </div>
+              </div>
+              <div className="border-[var(--dt-row,#e6e6e6)] border-solid border-t content-stretch flex gap-[12px] items-center min-h-[44px] px-[14px] py-[10px] relative shrink-0 w-full" data-node-id="83:1755" data-name="Public link">
+                <IconGlobe className="relative shrink-0 size-[14px]" />
+                <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I83:1755;4:65" data-name="Text">
+                  <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I83:1755;4:66" data-name="Title row">
+                    <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I83:1755;4:67" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Public link
+                    </p>
+                  </div>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-2,#6e6e73)] w-[min-content]" data-node-id="I83:1755;4:70" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Anyone with the link · Read-only · Never expires
+                  </p>
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] w-[min-content]" data-node-id="I83:1755;4:71" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Published Oct 12 · opened 14 times
+                  </p>
+                </div>
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I83:1755;4:72" data-name="Actions">
+                  <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" data-node-id="I83:1755;4:73" data-name="Revoke">
+                    <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text,#1d1d1f)] whitespace-nowrap" data-node-id="I83:1755;4:73;4:9" style={{ fontVariationSettings: '"wdth" 100' }}>
+                      Settings…
+                    </p>
+                  </div>
+                  <Button className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" label="Copy" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="absolute bg-[var(--dt-ground,white)] content-stretch flex flex-col gap-[8px] items-start left-[192px] overflow-clip px-[14px] py-[12px] rounded-[14px] shadow-[0px_10px_32px_0px_rgba(0,0,0,0.16),0px_0px_0px_0.5px_rgba(0,0,0,0.14)] top-[214px]" data-node-id="83:1831" data-name="Icon and colour">
+        <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="83:1832" style={{ fontVariationSettings: '"wdth" 100' }}>
+          Icon
+        </p>
+        <div className="content-start flex flex-wrap gap-[4px] items-start overflow-clip relative shrink-0 w-[188px]" data-node-id="83:1833" data-name="Icons">
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1834" data-name="layout-grid">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1835" data-name="icon/layout-grid">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconLayoutGrid} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1840" data-name="users">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1841" data-name="icon/users">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconUsers1} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1846" data-name="book">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1847" data-name="icon/book">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBook1} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1850" data-name="list-checks">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1851" data-name="icon/list-checks">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconListChecks} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1857" data-name="folder">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1858" data-name="icon/folder">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconFolder} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1860" data-name="file-text">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1861" data-name="icon/file-text">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconFileText} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1867" data-name="star">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1868" data-name="icon/star">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconStar} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1870" data-name="heart">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1871" data-name="icon/heart">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconHeart} />
+            </div>
+          </div>
+          <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1873" data-name="leaf">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1874" data-name="icon/leaf">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconLeaf1} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1877" data-name="zap">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1878" data-name="icon/zap">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconZap} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1880" data-name="flag">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1881" data-name="icon/flag">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconFlag} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1884" data-name="calendar">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1885" data-name="icon/calendar">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconCalendar} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1890" data-name="house">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1891" data-name="icon/house">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconHouse} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1894" data-name="briefcase">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1895" data-name="icon/briefcase">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBriefcase} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1898" data-name="graduation-cap">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1899" data-name="icon/graduation-cap">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconGraduationCap} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1903" data-name="palette">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1904" data-name="icon/palette">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconPalette} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1910" data-name="music">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1911" data-name="icon/music">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconMusic} />
+            </div>
+          </div>
+          <div className="content-stretch flex items-center justify-center overflow-clip relative rounded-[7px] shrink-0 size-[28px]" data-node-id="83:1915" data-name="gamepad">
+            <div className="relative shrink-0 size-[16px]" data-node-id="83:1916" data-name="icon/gamepad">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconGamepad} />
+            </div>
+          </div>
+        </div>
+        <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="83:1922" style={{ fontVariationSettings: '"wdth" 100' }}>
+          Colour
+        </p>
+        <div className="content-start flex flex-wrap gap-[4px] items-start overflow-clip relative shrink-0 w-[188px]" data-node-id="83:1923" data-name="Colours">
+          <div className="relative shrink-0 size-[28px]" data-node-id="83:1924" data-name="#8e8e93">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={img8E8E93} />
+          </div>
+          <div className="relative shrink-0 size-[28px]" data-node-id="83:1926" data-name="#ff3b30">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgFf3B30} />
+          </div>
+          <div className="relative shrink-0 size-[28px]" data-node-id="83:1928" data-name="#ff9500">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgFf9500} />
+          </div>
+          <div className="relative shrink-0 size-[28px]" data-node-id="83:1930" data-name="#ffcc00">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgFfcc00} />
+          </div>
+          <div className="relative shrink-0 size-[28px]" data-node-id="83:1932" data-name="#34c759">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={img34C759} />
+          </div>
+          <div className="relative shrink-0 size-[28px]" data-node-id="83:1935" data-name="#30b0c7">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={img30B0C7} />
+          </div>
+          <div className="relative shrink-0 size-[28px]" data-node-id="83:1937" data-name="#007aff">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={img007Aff} />
+          </div>
+          <div className="relative shrink-0 size-[28px]" data-node-id="83:1939" data-name="#5856d6">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={img5856D6} />
+          </div>
+          <div className="relative shrink-0 size-[28px]" data-node-id="83:1941" data-name="#af52de">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgAf52De} />
+          </div>
+          <div className="relative shrink-0 size-[28px]" data-node-id="83:1943" data-name="#ff2d55">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgFf2D55} />
+          </div>
+          <div className="relative shrink-0 size-[28px]" data-node-id="83:1945" data-name="#a2845e">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgA2845E} />
+          </div>
+          <div className="relative shrink-0 size-[28px]" data-node-id="83:1947" data-name="#98989d">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={img98989D} />
+          </div>
+        </div>
+        <div className="content-stretch flex items-start justify-end overflow-clip pt-[4px] relative shrink-0 w-full" data-node-id="83:1949" data-name="Footer">
+          <Button className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" label="Reset" />
+        </div>
+      </div>
+      <div className="absolute h-[18px] left-[184px] top-[275px] w-[9px]" data-node-id="83:1955" data-name="Arrow">
+        <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgArrow} />
+      </div>
+    </div>
+  );
+}
+
+SUPER CRITICAL: The generated React+Tailwind code MUST be converted to match the target project's technology stack and styling system.
+1. Analyze the target codebase to identify: technology stack, styling approach, component patterns, and design tokens
+2. Convert React syntax to the target framework/library
+3. Transform all Tailwind classes to the target styling system while preserving exact visual design
+4. Follow the project's existing patterns and conventions
+DO NOT install any Tailwind as a dependency unless the user instructs you to do so.
+
+
+Node ids have been added to the code as data attributes, e.g. `data-node-id="1:2"`.
+
+These styles are contained in the design: Body: Font(family: "SF Pro", style: Regular, size: 13, weight: 400, lineHeight: 18, letterSpacing: -0.07999999821186066), Small: Font(family: "SF Pro", style: Regular, size: 12, weight: 400, lineHeight: 16, letterSpacing: 0), Caption: Font(family: "SF Pro", style: Semibold, size: 11, weight: 590, lineHeight: 14, letterSpacing: 0.05999999865889549), Body/Semibold: Font(family: "SF Pro", style: Semibold, size: 13, weight: 590, lineHeight: 18, letterSpacing: -0.07999999821186066), Tag: Font(family: "SF Pro", style: Semibold, size: 10.5, weight: 590, lineHeight: 13, letterSpacing: 0.05999999865889549), Title: Font(family: "SF Pro", style: Semibold, size: 15, weight: 590, lineHeight: 20, letterSpacing: -0.20000000298023224), Body/Medium: Font(family: "SF Pro", style: Medium, size: 13, weight: 510, lineHeight: 18, letterSpacing: -0.07999999821186066), Small/Medium: Font(family: "SF Pro", style: Medium, size: 12, weight: 510, lineHeight: 16, letterSpacing: 0), Popover: Effect(type: DROP_SHADOW, color: #00000024, offset: (0, 0), radius: 0, spread: 0.5); Effect(type: DROP_SHADOW, color: #00000029, offset: (0, 10), radius: 32, spread: 0), Window: Effect(type: DROP_SHADOW, color: #00000047, offset: (0, 0), radius: 0, spread: 0.5); Effect(type: DROP_SHADOW, color: #00000047, offset: (0, 30), radius: 70, spread: 0); Effect(type: DROP_SHADOW, color: #0000001F, offset: (0, 8), radius: 20, spread: 0).
+
+Component descriptions: The following components have usage descriptions or documentation links defined in Figma. These descriptions provide important context about the intended usage, best practices, and any constraints for each component. Follow these guidelines when implementing or using these components.
+
+## Sidebar · 800×600
+**Node ID:** 60:991
+
+Sidebar at 800×600, macOS Tahoe style: an inset rounded panel with the traffic lights, a sidebar toggle and Search spaces, then All links, Connections (active, live) and Address book (static), then Spaces, then the account. Selection is solid accent blue with white text. No sync here: each space page shows its own sync circle.
+
+## Text field
+**Node ID:** 36:1144
+
+Single-line text field, 28px. The value is tertiary (placeholder) by default; recolour it text/primary once filled.
+
+## Nav item
+**Node ID:** 4:31
+
+Sidebar row, 28px. Current = ink wash + semibold ink label. Icon is an instance swap; re-tint it ink when swapping on Current.
+
+## Space item
+**Node ID:** 60:990
+
+A space in the sidebar: icon and name. Re-tint the icon ink on Current after swapping. (Sync lives on the space page, in front of the space name.)
+
+## Sync circle
+**Node ID:** 60:971
+
+A space's sync state, the FABB's circle. It sits in front of the space name on the space page. Synced = filled, Paused = half-filled, Offline = ring, Alert = blinks on an ink wash (2.4s). Hover or click opens the sync status; hold 0.5s pauses or resumes (offline ignores the hold).
+
+## Split button
+**Node ID:** 53:34
+
+The space page’s share control. The main half copies the default link (anyone with it can read and write; it never expires) and confirms with Copied for 1.5s. The arrow opens the same shape downward (Expanded): Invite and Publish, each opening a dialog with its settings. The open shape is one flat colour: no pressed or hover shading.
+
+## Link row
+**Node ID:** 4:61
+
+One link in a list: who can use it, what it allows, who used it, Revoke and Copy. Rows stack inside a 10px-radius group with 1px line/row dividers.
+
+## Button
+**Node ID:** 4:18
+
+Push button. Default and Primary (ink), Regular 28px and Small 24px. Turn on Check for the "Copied" confirmation.
+
+The generated code contains image and SVG URL constants, e.g. const image = 'https://www.figma.com/api/mcp/asset/550e8400-e29b-41d4-a716-446655440000.png'. These URLs are temporary download sources and expire after 7 days. Download each asset into the project with curl -L, then replace its URL in the generated code with a reference to the downloaded asset. Never use the temporary URLs as runtime image sources.

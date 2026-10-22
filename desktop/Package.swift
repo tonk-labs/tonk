@@ -14,7 +14,8 @@ let package = Package(
       name: "Tonk",
       dependencies: [
         "HarnessCore", .product(name: "Textual", package: "textual"),
-      ]),
+      ],
+      resources: [.process("Assets.xcassets")]),
     .testTarget(name: "HarnessCoreTests", dependencies: ["HarnessCore"]),
     .testTarget(name: "TonkTests", dependencies: ["Tonk"]),
   ]

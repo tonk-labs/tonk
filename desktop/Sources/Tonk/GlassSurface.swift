@@ -27,7 +27,7 @@ extension View {
 struct NativeControlStyle: ViewModifier {
   var prominent = false
   var circular = false
-  private let primaryTint = Color(red: 0.16, green: 0.46, blue: 0.86)
+  private let primaryTint = Color.accentColor
 
   @ViewBuilder
   func body(content: Content) -> some View {

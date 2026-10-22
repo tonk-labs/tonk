@@ -34,6 +34,32 @@ extension RuntimeModel {
     return {accepted: true, reload: result?.reload === true};
     """
 
+  static let addPasskeyScript = """
+    if (typeof window.tonkIdentity?.addPasskey !== 'function')
+      throw new Error('Adding a passkey here is unavailable. Use the browser option.');
+    const root = await api('/api/identity/root');
+    if (!root.rootDid) throw new Error('Sign in before adding a passkey.');
+    // Asserts the passkey that holds the account, then creates the new one for the
+    // same relying party the browser uses, so it signs in there too.
+    await window.tonkIdentity.addPasskey({request: {
+      kind: 'add-passkey', accountDid: root.rootDid, endpoint: runtimeOrigin + '/ucan/'
+    }});
+    return {added: true};
+    """
+
+  /// Creates a passkey in this app's own WebAuthn ceremony. Needs the passkey entitlement;
+  /// builds without it hand off to the browser instead.
+  func addPasskey() async throws {
+    guard supportsDirectPasskey else {
+      throw CallbackError("Adding a passkey needs the browser in this build.")
+    }
+    NSApp.activate(ignoringOtherApps: true)
+    let result = try await accountScript(Self.addPasskeyScript)
+    guard result["added"] as? Bool == true else {
+      throw CallbackError("The passkey was not added.")
+    }
+  }
+
   func signInWithPasskey() async {
     guard supportsDirectPasskey, !signInPending else { return }
     signInPending = true
@@ -85,9 +111,12 @@ extension RuntimeModel {
           return
         }
       }
-      throw CallbackError("Your passkey was accepted, but account setup is still pending. Reload to check its progress.")
+      throw CallbackError(
+        "Your passkey was accepted, but account setup is still pending. Reload to check its progress."
+      )
     } catch {
-      let message = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String
+      let message =
+        (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String
         ?? error.localizedDescription
       accountMessage = "Couldn’t connect Tonk: \(message)"
     }
