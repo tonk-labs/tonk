@@ -79,7 +79,7 @@ mod publication;
 pub(crate) mod space_directory;
 pub(crate) mod space_reach;
 /// A space's own worker: the delegation it holds, and the space it mounts.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) mod space_worker;
 pub use join::{JoinRequest, JoinResponse};
 mod local_space_link;

@@ -169,7 +169,7 @@ pub(crate) async fn acts_for(
 }
 
 /// Record the account this worker, a space's own, acts for.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn act_for(
     state: &crate::worker::TonkState,
     account: &dialog_varsig::Did,

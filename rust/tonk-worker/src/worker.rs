@@ -20,7 +20,7 @@ use axum::{
 };
 use dialog_peer::{Peer, Session};
 use dialog_storage::provider::storage::Storage;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 use dialog_varsig::Did;
 use js_sys::Promise;
 use send_wrapper::SendWrapper;
@@ -505,6 +505,35 @@ impl TonkState {
         let storage = registry.storage().await?;
         let (name, profile) = registry.open_active(&storage).await?;
         boot_state(storage, name, profile, registry).await
+    }
+
+    /// Take up a delegation for `space`, as a space's own worker does: the
+    /// chain from the space to this worker's profile, as the person's profile
+    /// signed it.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn adopt_space(
+        &self,
+        space: &str,
+        chain: &[u8],
+    ) -> Result<(), crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        crate::router::space_worker::adopt(self, &space, chain).await?;
+        self.reactor.run_scheduled_polls(&self.operator).await;
+        Ok(())
+    }
+
+    /// Put back what a restart lost about `space`, a space this worker took
+    /// up before.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn resume_space(&self, space: &str) -> Result<(), crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        crate::router::space_worker::resume(self, &space).await?;
+        self.reactor.run_scheduled_polls(&self.operator).await;
+        Ok(())
     }
 
     /// Enter the one-way retiring state and release every query stream.
