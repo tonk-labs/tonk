@@ -268,7 +268,12 @@
                     var served = container.controller;
                     container.addEventListener("controllerchange", function () {
                         if (!container.controller || container.controller === served) return;
+                        // The same script started again (DevTools' "update
+                        // on reload" does that on every load) is the same
+                        // build: reloading for it would only start it again.
+                        var same = served && served.scriptURL === container.controller.scriptURL;
                         served = container.controller;
+                        if (same) return;
                         say("taking up a new version");
                         location.reload();
                     });
