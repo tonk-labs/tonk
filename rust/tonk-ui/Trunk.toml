@@ -80,6 +80,12 @@ watch = [
     "../tonk-prose/assets",
     "../tonk-table/assets",
     "../tonk-tree/src",
+    # The kernel a space runs, and the embedder that runs it: built by the
+    # post-build hook into `_host/`.
+    "../tonk-kernel",
+    "../tonk-kernel-world",
+    "../tonk-kernel-host",
+    "../tonk-components",
 ]
 
 # Proxies for /ucan/ and /@ are appended by the dev:web command, which

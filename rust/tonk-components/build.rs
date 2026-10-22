@@ -59,6 +59,10 @@ fn main() {
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_BUILD_TARGET")
         .env_remove("CARGO_BUILD_RUSTFLAGS")
+        // A component is built, not linted, whatever the outer command:
+        // under `cargo clippy` the outer build runs rustc through clippy.
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("CLIPPY_ARGS")
         .env("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s")
         .env("CARGO_PROFILE_RELEASE_LTO", "true")
         .env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1")
