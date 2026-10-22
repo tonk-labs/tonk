@@ -72,6 +72,19 @@ class InterfaceDashboardsTest(unittest.TestCase):
                 for group in re.findall(r'GROUP BY (.*?)(?: ORDER BY| HAVING|\)|$)', query):
                     self.assertNotIn(' AS ', group, insight['name'])
 
+    def test_outcome_cohorts_read_terminal_events_through_now(self):
+        # The ten-minute maturity rule applies to the start, never to the terminal receipt.
+        for board in SPEC['dashboards']:
+            for insight in board['insights']:
+                query = insight['query']
+                if 'INTERVAL 10 MINUTE' in query:
+                    self.assertIn("minIf(timestamp, properties.phase = 'started') < now() - INTERVAL 10 MINUTE", query, insight['name'])
+                    self.assertNotIn('timestamp < now() - INTERVAL 10 MINUTE', query, insight['name'])
+
+    def test_every_web_tile_keeps_environments_apart(self):
+        for insight in boards()['Web app']['insights']:
+            self.assertRegex(insight['query'], r'GROUP BY [^)]*\benvironment\b', insight['name'])
+
     def test_named_actions_exist_in_the_product_vocabulary(self):
         known = product_actions()
         for board in SPEC['dashboards']:
