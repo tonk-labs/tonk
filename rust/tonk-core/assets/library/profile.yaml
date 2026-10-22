@@ -1002,7 +1002,7 @@ view!:
     # and the space still has not opened, the wall says so and offers the
     # way home instead of waiting on nothing.
     downloading: |
-      <div class="space-unknown">
+      <div class="space-unknown" data-presence={presence}>
         <tab-title text="{name} — Tonk"></tab-title>
         <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
         <space-arrival class="space-unknown-wall" space={this}>
@@ -3956,9 +3956,14 @@ view!:
            engine picks as the repeat node (the outermost subject-referencing
            element), so `<tonk-site>` became the repeat node and `<tonk-fab>`
            was dropped from the output entirely. `:has()` reaches the sibling
-           display without adding an element. */
-        tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-site,
-        tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-fab { display: none; }
+           display without adding an element.
+
+           A space held on this device that declares no repository, one that
+           runs a kernel with nothing installed into it yet, is not arriving:
+           it is here, and shows itself. */
+        tonk-view:has(> tonk-display[data-state="no-model"]):not(:has([data-presence="case:replicated"])) > tonk-site,
+        tonk-view:has(> tonk-display[data-state="no-model"]):not(:has([data-presence="case:replicated"])) > tonk-fab { display: none; }
+        .space-unknown:has([data-presence="case:replicated"]) { display: none; }
         /* The panel that adds an account, where the bar was: the account
            task seats it at the bar's anchor. */
         .registration-over-space { --anchor-top:16px; --anchor-left:0px; --anchor-width:calc(100vw - 16px); }
