@@ -136,7 +136,6 @@
                 // worker must answer with the same number; bump both together
                 // when the contract changes.
                 var PROTOCOL = 2;
-                var RECOVERY_KEY = "tonk-space-worker-recovery";
 
                 // Whether `worker` answers the protocol check in time. A worker
                 // from an older build does not answer at all.
@@ -154,73 +153,48 @@
                     });
                 }
 
-                // A worker the browser cannot update keeps control of this
-                // origin for good. That happens when its registration can no
-                // longer load the current script: one registered as a classic
-                // script cannot become a module. Unregister it and load again,
-                // so the next load registers a worker that works. At most once
-                // a minute, so a worker that still fails cannot loop the frame.
-                async function recover() {
-                    try {
-                        var last = Number(sessionStorage.getItem(RECOVERY_KEY) || 0);
-                        if (Date.now() - last < 60000) return false;
-                        sessionStorage.setItem(RECOVERY_KEY, String(Date.now()));
-                    } catch (error) {
-                        return false;
-                    }
-                    var registration = await navigator.serviceWorker.getRegistration();
-                    if (!registration) return false;
-                    await registration.unregister();
-                    location.reload();
-                    return true;
-                }
-
-                // Registers only when nothing controls the frame yet: once the
-                // worker serves this shell, its `worker-src` refuses a second
-                // `register()`, and the browser checks for updates on its own.
+                // Have the profile's worker answer this origin, this
+                // document included, and wait until one does. A worker that
+                // takes over later, a new build, takes this document as it
+                // is: it asks for a port of its own (`need-port`), and nothing
+                // here loads again.
                 async function control() {
                     var container = navigator.serviceWorker;
+                    if (container.controller && (await speaks(container.controller))) return;
+                    // A worker the browser cannot update keeps control of
+                    // this origin for good: one registered as a classic script
+                    // cannot become a module. It is withdrawn, and the current
+                    // script takes its place.
                     if (container.controller) {
-                        if (await speaks(container.controller)) return;
-                        if (await recover()) return new Promise(function () {});
-                        throw new Error("the site's worker is out of date and could not be replaced");
+                        say("replacing its worker");
+                        var stuck = await container.getRegistration();
+                        if (stuck) await stuck.unregister();
+                    } else {
+                        say("installing its worker");
                     }
-                    say("installing its worker");
+                    var taken = new Promise(function (resolve) {
+                        container.addEventListener("controllerchange", function check() {
+                            if (!container.controller) return;
+                            container.removeEventListener("controllerchange", check);
+                            resolve();
+                        });
+                    });
                     await container.register("/boot.js", {
                         scope: "/",
                         updateViaCache: "none",
                     });
-                    if (container.controller) return;
+                    if (container.controller && (await speaks(container.controller))) return;
                     say("waiting for its worker");
-                    var claimed = new Promise(function (resolve) {
-                        container.addEventListener("controllerchange", resolve, { once: true });
-                    });
                     // A worker takes the documents open when it starts. One
                     // that loads just after is left with a worker that is
                     // running and does not answer it: ask that worker to
                     // take this document too.
                     container.ready.then(function (registration) {
-                        if (!container.controller && registration.active) {
+                        if (registration.active && registration.active !== container.controller) {
                             registration.active.postMessage({ type: "claim" });
                         }
                     });
-                    await claimed;
-                }
-
-                // What this document runs was served by the worker it loaded
-                // under, and is built to speak to that one. A worker that
-                // takes over is another build's: load again, so the site is
-                // brought up by the worker that now answers it. Each
-                // replacement replaces the document once.
-                function follow() {
-                    var container = navigator.serviceWorker;
-                    var served = container.controller;
-                    container.addEventListener("controllerchange", function () {
-                        if (!container.controller || container.controller === served) return;
-                        served = container.controller;
-                        say("taking up a new version");
-                        location.reload();
-                    });
+                    await taken;
                 }
 
                 // Whether the site's worker served this document. Only then
@@ -427,7 +401,6 @@
                         sessionStorage.removeItem("tonk-space-shell-reload");
                     } catch (error) {}
                     if (location.pathname === SHELL) history.replaceState(null, "", "/");
-                    follow();
                     broker();
                     say("loading");
                     var base = document.createElement("base");
