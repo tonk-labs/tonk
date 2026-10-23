@@ -220,6 +220,16 @@ and in the command palette as "make space public" / "make space private".
 > space already present, as a page that opened its own new space does,
 > changes nothing.
 
+A link opens on the host that minted it. A recipient who keeps their account
+on another host (a link from tonk.network, an account on tonk.foundation)
+carries the whole link to their own host's `/join`, in the fragment:
+`https://tonk.foundation/join#https://tonk.network/space/{did}#{seed}`. The
+`/join` page hands its location to the join as before; the join unwraps the
+carried link and redeems it as that link, so the ticket is claimed from the
+host that minted it and the space's remote is that host. Neither server sees
+the carried link, because it rides in the fragment. A carried link that does
+not redeem shows the failure wall, never the bare `/join` return home.
+
 This is the presentation decision for `COLLAB-01`, `COLLAB-03`, `COLLAB-06`,
 `COLLAB-07`, `WEB-16`, `WEB-17`, and `WEB-18`.
 
