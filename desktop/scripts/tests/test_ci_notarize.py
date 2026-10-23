@@ -49,6 +49,7 @@ class NotarizationTests(unittest.TestCase):
                 command.chmod(0o755)
             env = dict(os.environ, PATH=str(binary)+os.pathsep+os.environ['PATH'],
                        TEST_ROOT=str(root), RUNNER_TEMP=str(runner), FAILURE=failure,
+                       TONK_DESKTOP_CHANNEL='stable',
                        APP_STORE_CONNECT_KEY_P8='secret fixture',
                        APP_STORE_CONNECT_KEY_ID='fixture', APP_STORE_CONNECT_ISSUER_ID='fixture')
             result = subprocess.run(['bash', str(scripts/SCRIPT.name)], env=env,

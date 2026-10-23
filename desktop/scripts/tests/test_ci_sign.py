@@ -81,8 +81,11 @@ class SigningLifecycleTests(unittest.TestCase):
                            'TONK_PROVISIONING_PROFILE_BASE64': 'cHJvZmlsZQ==',
                            'SIGN_TEST_ROOT': str(root), 'SIGN_TEST_ID': IDENTITY,
                            'SIGN_TEST_FAILURE': failure or ''}
+            # Pin the channel and profiles: CI runs these tests inside a nightly job.
+            for name in ['TONK_NIGHTLY_PROVISIONING_PROFILE_BASE64', 'TONK_PROVISIONING_PROFILE']:
+                environment.pop(name, None)
+            environment['TONK_DESKTOP_CHANNEL'] = channel or 'stable'
             if channel:
-                environment['TONK_DESKTOP_CHANNEL'] = channel
                 del environment['TONK_PROVISIONING_PROFILE_BASE64']
                 if nightly_profile:
                     environment['TONK_NIGHTLY_PROVISIONING_PROFILE_BASE64'] = 'cHJvZmlsZQ=='
