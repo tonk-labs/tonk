@@ -5,10 +5,6 @@ export DEVELOPER_DIR=${TONK_XCODE_DEVELOPER_DIR:-/Applications/Xcode.app/Content
 unset SDKROOT
 cd "$(dirname "$0")/.."
 source scripts/channel.sh
-if [[ "$desktop_channel" != stable && -n "${TONK_PROVISIONING_PROFILE:-}" ]]; then
-    echo "The passkey provisioning profile is for xyz.tonk; build $desktop_channel without it." >&2
-    exit 1
-fi
 node ../mcp/scripts/sync-desktop.mjs
 # A stable signer lets WebKit's Keychain access survive executable changes.
 # Ad-hoc signing uses the binary hash as its identity and prompts after rebuilds.
@@ -66,7 +62,8 @@ done
 sign_args=()
 if [[ -n "${TONK_PROVISIONING_PROFILE:-}" ]]; then
     security cms -D -i "$TONK_PROVISIONING_PROFILE" > .build/tonk-passkey-profile.plist
-    python3 scripts/passkey-entitlements.py .build/tonk-passkey-profile.plist .build/tonk-passkey-entitlements.plist
+    TONK_DESKTOP_CHANNEL=$desktop_channel python3 scripts/passkey-entitlements.py \
+        .build/tonk-passkey-profile.plist .build/tonk-passkey-entitlements.plist
     cp "$TONK_PROVISIONING_PROFILE" "$app/Contents/embedded.provisionprofile"
     /usr/libexec/PlistBuddy -c 'Add :TonkDirectPasskeyEnabled bool true' "$app/Contents/Info.plist"
     sign_args=(--entitlements .build/tonk-passkey-entitlements.plist)

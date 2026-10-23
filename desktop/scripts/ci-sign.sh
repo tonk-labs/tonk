@@ -4,10 +4,17 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 [[ "${RUNNER_OS:-}" == macOS ]] || { echo 'Signing requires a macOS CI runner.' >&2; exit 1; }
 source desktop/scripts/channel.sh
-# Only stable carries the xyz.tonk passkey profile; nightly signs without entitlements.
-passkeys=$([[ "$desktop_channel" == stable ]] && echo 1 || echo 0)
+# Each channel has its own passkey profile. Stable requires one; nightly signs
+# without passkey entitlements until its profile secret is configured.
 required_inputs=(MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD RUNNER_TEMP)
-[[ "$passkeys" == 1 ]] && required_inputs+=(TONK_PROVISIONING_PROFILE_BASE64)
+if [[ "$desktop_channel" == stable ]]; then
+  profile_input=TONK_PROVISIONING_PROFILE_BASE64
+  required_inputs+=("$profile_input")
+else
+  profile_input=TONK_NIGHTLY_PROVISIONING_PROFILE_BASE64
+fi
+passkeys=$([[ -n "${!profile_input:-}" ]] && echo 1 || echo 0)
+[[ "$passkeys" == 1 ]] || echo "No $profile_input: signing $desktop_channel without direct passkeys."
 for required in "${required_inputs[@]}"; do
   [[ -n "${!required:-}" ]] || { echo "Missing signing input: $required" >&2; exit 1; }
 done
@@ -40,10 +47,10 @@ done < <(security find-identity -v -p codesigning "$keychain" | sed -nE 's/.* ([
 [[ ${#identities[@]} -eq 1 ]] || { echo 'Certificate archive must contain exactly one valid signing identity.' >&2; exit 1; }
 export TONK_SIGN_IDENTITY=${identities[0]}
 if [[ "$passkeys" == 1 ]]; then
-  printf '%s' "$TONK_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$signing_dir/profile.provisionprofile"
+  printf '%s' "${!profile_input}" | base64 --decode > "$signing_dir/profile.provisionprofile"
   export TONK_PROVISIONING_PROFILE="$signing_dir/profile.provisionprofile"
   security cms -D -i "$TONK_PROVISIONING_PROFILE" > "$signing_dir/profile.plist"
-  python3 desktop/scripts/passkey-entitlements.py "$signing_dir/profile.plist" "$signing_dir/expected.plist" "$TONK_SIGN_IDENTITY"
+  TONK_DESKTOP_CHANNEL=$desktop_channel python3 desktop/scripts/passkey-entitlements.py "$signing_dir/profile.plist" "$signing_dir/expected.plist" "$TONK_SIGN_IDENTITY"
 else
   unset TONK_PROVISIONING_PROFILE
 fi
@@ -72,7 +79,7 @@ if passkeys:
     assert all(signed.get(key) == value for key, value in expected.items()), 'Signed entitlements differ'
     assert (app / 'Contents/embedded.provisionprofile').read_bytes() == (root / 'profile.provisionprofile').read_bytes(), 'Embedded profile differs'
     assert info.get('TonkDirectPasskeyEnabled') is True, 'Direct passkeys are disabled'
-    print('Verified Tonk signing identity, embedded profile, associated domains and direct-passkey flag.')
+    print(f'Verified Tonk signing identity, {channel} embedded profile, associated domains and direct-passkey flag.')
 else:
     assert not (app / 'Contents/embedded.provisionprofile').exists(), 'Unexpected embedded profile'
     assert 'TonkDirectPasskeyEnabled' not in info, 'Direct passkeys need the stable profile'

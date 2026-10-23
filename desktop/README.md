@@ -102,6 +102,7 @@ Repository secrets:
 - `MACOS_CERTIFICATE_P12`: the existing base64-encoded Tonk signing identity and private key archive used for CLI releases.
 - `MACOS_CERTIFICATE_PASSWORD`: its archive password.
 - `TONK_PROVISIONING_PROFILE_BASE64`: base64-encoded Apple profile for `8WVKS2F24C.xyz.tonk`, authorizing that exact certificate and Associated Domains.
+- `TONK_NIGHTLY_PROVISIONING_PROFILE_BASE64`: the same for `8WVKS2F24C.xyz.tonk.nightly` with `webcredentials:tonk.foundation`. Optional: without it, nightly is signed without direct passkeys.
 
 The signing script imports the identity into a temporary runner keychain and
 restores/deletes it on exit. It requires a matching unexpired profile, embeds
@@ -111,8 +112,8 @@ Missing credentials or a mismatched profile fail the signing stage.
 
 The optional manual artifact is signed and provisioned. Automatic releases use
 `desktop-dev.yml`: every main push builds the nightly channel through the shared
-`desktop-release.yml` build. Nightly is signed without the passkey profile, which
-covers only `xyz.tonk`. Version tags do not publish Desktop until the stable
+`desktop-release.yml` build. Nightly uses its own passkey profile when
+`TONK_NIGHTLY_PROVISIONING_PROFILE_BASE64` is set. Version tags do not publish Desktop until the stable
 channel ships.
 These release builds use Swift release configuration, hardened runtime, a secure
 signing timestamp, required Apple notarization, and a stapled ticket. Publication
@@ -122,8 +123,10 @@ not overwrite the current main build.
 Release notarization also requires `APP_STORE_CONNECT_KEY_P8`,
 `APP_STORE_CONNECT_KEY_ID`, and `APP_STORE_CONNECT_ISSUER_ID`, shared with CLI CI.
 
-Direct passkeys are enabled only in the stable app on `https://tonk.network`; that domain
-must serve an AASA `webcredentials` entry for `8WVKS2F24C.xyz.tonk`. CI does not
+Direct passkeys are enabled only on each channel's own remote. `tonk.network`
+must serve an AASA `webcredentials` entry for `8WVKS2F24C.xyz.tonk`, and
+`tonk.foundation` one for `8WVKS2F24C.xyz.tonk.nightly`
+(`desktop/experiments/wk-passkey/association-worker.mjs` serves both). CI does not
 perform a real passkey ceremony or prove recovery of an existing account.
 
 ## Activity layout fixture
