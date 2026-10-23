@@ -1,6 +1,6 @@
 //! A space of Dialog DB on the kernel's world: its archive, memory and blobs
-//! in a layer of the host, and its keys and site secrets in the credentials
-//! of that layer (PDD015).
+//! in a layer of the host, and its keys and site secrets in that layer's
+//! cells, under the session's credential.
 //!
 //! Dialog DB opens each part of a space from a [`Location`] alone. A location
 //! that names a mounted layer (see [`crate::mount`]) opens that layer; any
@@ -8,10 +8,13 @@
 //! method `local`, and every part of the space shares it. The host keeps a
 //! layer per name.
 //!
-//! A space's credential store keeps no key it is handed: a key is made in the
-//! host ([`credential::Generate`]), and a signer loaded from it signs through
-//! the host. What a space keeps of a key it does not hold is its public
-//! identity, in a cell of the layer.
+//! A space's credential store keeps no key: a key is made in the host
+//! ([`credential::Generate`]) and entrusted to the session's credential, and
+//! its custody is what the store keeps, in a cell. Loading the key recovers
+//! it from the custody, as a handle, so its seed never reaches the guest
+//! kernel. A site's secret is concealed to the session's credential and kept
+//! in a cell the same way. What a space keeps of a key it does not hold is
+//! its public identity, in a cell too.
 //!
 //! Not yet: certificates (retained delegation chains) are kept in memory, so a
 //! worker that starts again proves from none until it retains them again.
@@ -36,9 +39,10 @@ use dialog_varsig::Principal as _;
 use crate::credentials;
 use crate::guest::HandleLayer;
 use crate::layer::{LayerError, SharedLayer, share};
+use crate::session;
 use crate::store::{Store, Witness};
-use crate::world::sapling::kernel::credentials as host;
-use crate::world::sapling::kernel::{session, storage};
+use crate::world::sapling::kernel::credential::{self as host, Custodian};
+use crate::world::sapling::kernel::storage;
 
 /// A space of Dialog DB on a layer of the kernel's host.
 pub type KernelSpace = Space<Store, Store, Credentials, Volatile, Store>;
@@ -46,14 +50,16 @@ pub type KernelSpace = Space<Store, Store, Credentials, Volatile, Store>;
 /// The namespace of the cells that keep the public identity of a key a space
 /// does not hold.
 const IDENTITIES: &str = "credential";
+/// The namespace of the cells that keep each key's custody, by its address.
+const CUSTODIES: &str = "custody";
+/// The namespace of the cells that keep each site's secret, by the site.
+const SECRETS: &str = "secret";
+/// The context a site's secret is concealed in, as Dialog DB conceals one.
+const SITE_SECRET: &[u8] = b"dialog.secret/message";
 
-/// A layer opened for a location: the store over it, and a handle of its own
-/// for the calls of `credentials`, which take a handle of the world.
+/// The store over a layer opened for a location.
 #[derive(Clone)]
-struct Opened {
-    store: Store,
-    handle: Rc<storage::Layer>,
-}
+struct Opened(Store);
 
 // SAFETY: a component on WASI has no threads, so what an entry holds is never
 // reached from another thread.
@@ -109,15 +115,9 @@ async fn opened(location: &Location) -> Result<Opened, StorageError> {
     let layer = storage::open(name.clone(), session::chain())
         .await
         .map_err(refused)?;
-    let handle = storage::open(name.clone(), session::chain())
-        .await
-        .map_err(refused)?;
     let layer =
         HandleLayer::new(layer).map_err(|error| StorageError::Storage(error.to_string()))?;
-    let opened = Opened {
-        store: Store::new(share(layer), Witness::default()),
-        handle: Rc::new(handle),
-    };
+    let opened = Opened(Store::new(share(layer), Witness::default()));
     OPENED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -130,15 +130,14 @@ pub(crate) async fn store(location: &Location) -> Result<Store, StorageError> {
     if let Some(store) = crate::mount::mounted(location) {
         return Ok(store);
     }
-    Ok(opened(location).await?.store)
+    Ok(opened(location).await?.0)
 }
 
-/// The credentials of a layer: its keys, made and kept by the host, and its
-/// site secrets.
+/// The credentials of a layer: the custody of each of its keys, and its site
+/// secrets, in its cells.
 #[derive(Clone)]
 pub struct Credentials {
     cells: SharedLayer,
-    handle: Rc<storage::Layer>,
 }
 
 #[async_trait(?Send)]
@@ -148,8 +147,7 @@ impl Resource<Location> for Credentials {
     async fn open(location: &Location) -> Result<Self, StorageError> {
         let opened = opened(location).await?;
         Ok(Self {
-            cells: Arc::clone(opened.store.layer()),
-            handle: opened.handle,
+            cells: Arc::clone(opened.0.layer()),
         })
     }
 }
@@ -158,66 +156,83 @@ fn failed(error: impl std::fmt::Debug) -> CredentialError {
     CredentialError::Storage(format!("{error:?}"))
 }
 
-fn cell(address: &str) -> String {
-    format!("key/{address}")
-}
-
 impl Credentials {
-    /// The key the host holds at `address`, as a signer.
-    async fn held(&self, address: &str) -> Result<Option<Credential>, CredentialError> {
-        let Some(credential) = host::load(&self.handle, address.to_owned())
+    async fn read(&self, namespace: &str, cell: &str) -> Result<Option<Vec<u8>>, CredentialError> {
+        Ok(self
+            .cells
+            .resolve(namespace, cell)
             .await
             .map_err(failed)?
-        else {
-            return Ok(None);
-        };
-        let signer = credentials::signer(credential).map_err(failed)?;
-        Ok(Some(Credential::Signer(signer)))
+            .map(|edition| edition.content))
     }
 
-    /// The public identity kept at `address`, of a key the host does not hold.
-    async fn identity(&self, address: &str) -> Result<Option<Credential>, CredentialError> {
-        let Some(edition) = self
-            .cells
-            .resolve(IDENTITIES, &cell(address))
-            .await
-            .map_err(failed)?
-        else {
-            return Ok(None);
-        };
-        let did = String::from_utf8(edition.content).map_err(failed)?;
-        let verifier: Verifier = did
-            .parse()
-            .map_err(|_| CredentialError::Corrupted(format!("{did} is not a verifier")))?;
-        Ok(Some(Credential::Verifier(verifier.into())))
-    }
-
-    async fn keep_identity(&self, address: &str, did: String) -> Result<(), CredentialError> {
-        let current = self
-            .cells
-            .resolve(IDENTITIES, &cell(address))
-            .await
-            .map_err(failed)?;
+    async fn write(
+        &self,
+        namespace: &str,
+        cell: &str,
+        content: Vec<u8>,
+    ) -> Result<(), CredentialError> {
+        let current = self.cells.resolve(namespace, cell).await.map_err(failed)?;
         self.cells
             .publish(
-                IDENTITIES,
-                &cell(address),
-                did.into_bytes(),
+                namespace,
+                cell,
+                content,
                 current.map(|edition| edition.version),
             )
             .await
             .map(|_| ())
             .map_err(failed)
     }
+
+    async fn erase(&self, namespace: &str, cell: &str) -> Result<(), CredentialError> {
+        let Some(edition) = self.cells.resolve(namespace, cell).await.map_err(failed)? else {
+            return Ok(());
+        };
+        match self.cells.retract(namespace, cell, edition.version).await {
+            Ok(()) | Err(LayerError::Conflict) => Ok(()),
+            Err(error) => Err(failed(error)),
+        }
+    }
+
+    /// The key whose custody is kept at `address`, recovered by the session's
+    /// credential, as a signer.
+    async fn held(&self, address: &str) -> Result<Option<Credential>, CredentialError> {
+        let Some(custody) = self.read(CUSTODIES, address).await? else {
+            return Ok(None);
+        };
+        let credential = session::credential()
+            .recover(custody)
+            .await
+            .map_err(failed)?;
+        let signer = credentials::signer(Rc::new(credential)).map_err(failed)?;
+        Ok(Some(Credential::Signer(signer)))
+    }
+
+    /// The public identity kept at `address`, of a key the space does not hold.
+    async fn identity(&self, address: &str) -> Result<Option<Credential>, CredentialError> {
+        let Some(did) = self.read(IDENTITIES, address).await? else {
+            return Ok(None);
+        };
+        let did = String::from_utf8(did).map_err(failed)?;
+        let verifier: Verifier = did
+            .parse()
+            .map_err(|_| CredentialError::Corrupted(format!("{did} is not a verifier")))?;
+        Ok(Some(Credential::Verifier(verifier.into())))
+    }
 }
 
 #[async_trait(?Send)]
 impl Provider<Generate> for Credentials {
     async fn execute(&self, input: Capability<Generate>) -> Result<Credential, CredentialError> {
-        let credential = host::generate(&self.handle, input.address().to_owned())
+        let credential = host::generate().await.map_err(failed)?;
+        let custodian = session::credential();
+        let custody = credential
+            .entrust(Custodian::Credential(&custodian))
             .await
             .map_err(failed)?;
-        let signer = credentials::signer(credential).map_err(failed)?;
+        self.write(CUSTODIES, input.address(), custody).await?;
+        let signer = credentials::signer(Rc::new(credential)).map_err(failed)?;
         Ok(Credential::Signer(signer))
     }
 }
@@ -244,11 +259,11 @@ impl Provider<Save<Credential>> for Credentials {
         let address = input.address();
         match input.credential() {
             Credential::Verifier(verifier) => {
-                self.keep_identity(address, verifier.did().to_string())
+                self.write(IDENTITIES, address, verifier.did().to_string().into_bytes())
                     .await
             }
-            // A key the host holds at this address is already kept; any other
-            // was made outside the host, and a kernel keeps none.
+            // A key whose custody is kept at this address is already kept;
+            // any other was made outside the host, and a kernel keeps none.
             Credential::Signer(signer) => match self.held(address).await? {
                 Some(held) if held.did() == signer.did() => Ok(()),
                 _ => Err(CredentialError::Withheld(format!(
@@ -263,25 +278,8 @@ impl Provider<Save<Credential>> for Credentials {
 impl Provider<Retract<Credential>> for Credentials {
     async fn execute(&self, input: Capability<Retract<Credential>>) -> Result<(), CredentialError> {
         let address = input.address();
-        host::forget(&self.handle, address.to_owned())
-            .await
-            .map_err(failed)?;
-        if let Some(edition) = self
-            .cells
-            .resolve(IDENTITIES, &cell(address))
-            .await
-            .map_err(failed)?
-        {
-            match self
-                .cells
-                .retract(IDENTITIES, &cell(address), edition.version)
-                .await
-            {
-                Ok(()) | Err(LayerError::Conflict) => {}
-                Err(error) => return Err(failed(error)),
-            }
-        }
-        Ok(())
+        self.erase(CUSTODIES, address).await?;
+        self.erase(IDENTITIES, address).await
     }
 }
 
@@ -289,32 +287,34 @@ impl Provider<Retract<Credential>> for Credentials {
 impl Provider<Load<Secret>> for Credentials {
     async fn execute(&self, input: Capability<Load<Secret>>) -> Result<Secret, CredentialError> {
         let site = input.address().to_string();
-        host::load_secret(&self.handle, site.clone())
+        let Some(secret) = self.read(SECRETS, &site).await? else {
+            return Err(CredentialError::NotFound(site));
+        };
+        session::credential()
+            .reveal(SITE_SECRET.to_vec(), secret)
             .await
-            .map_err(failed)?
             .map(Secret::from)
-            .ok_or(CredentialError::NotFound(site))
+            .map_err(failed)
     }
 }
 
 #[async_trait(?Send)]
 impl Provider<Save<Secret>> for Credentials {
     async fn execute(&self, input: Capability<Save<Secret>>) -> Result<(), CredentialError> {
-        host::save_secret(
-            &self.handle,
-            input.address().to_string(),
+        let secret = host::conceal(
+            session::credential().did(),
+            SITE_SECRET.to_vec(),
             input.secret().as_bytes().to_vec(),
         )
         .await
-        .map_err(failed)
+        .map_err(failed)?;
+        self.write(SECRETS, input.address().as_ref(), secret).await
     }
 }
 
 #[async_trait(?Send)]
 impl Provider<Retract<Secret>> for Credentials {
     async fn execute(&self, input: Capability<Retract<Secret>>) -> Result<(), CredentialError> {
-        host::retract_secret(&self.handle, input.address().to_string())
-            .await
-            .map_err(failed)
+        self.erase(SECRETS, input.address().as_ref()).await
     }
 }

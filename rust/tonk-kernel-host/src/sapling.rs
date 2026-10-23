@@ -1,20 +1,19 @@
 //! The interfaces of `sapling:kernel` that are Sapling's own, served from
-//! memory: each subject's blocks, cells, and blobs, the session key, and the
-//! catch-ups a guest kernel sends. What a browser host would back with
+//! memory: each subject's blocks, cells, and blobs, and the catch-ups a guest
+//! kernel sends. The keys are `credentials`'. What a browser host would back with
 //! IndexedDB or OPFS, and with the profile's keys.
 
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::collections::HashMap;
 
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::SigningKey;
 use wcmp::{
     Accessor, HasData, Resource, Source, StoreContext, StreamConsumer, StreamReader, StreamResult,
 };
-use zeroize::Zeroizing;
 
-use crate::bindings::sapling::kernel::{application, network, session, storage, types};
-use crate::credentials::Held;
+use crate::bindings::sapling::kernel::{application, network, storage, types};
+use crate::credentials::{Key, Standing};
 use crate::http_types::{HttpHost, HttpTable};
 use storage::{BlobRead, ByteRange, Edition, Encoding, Layer};
 use types::Error;
@@ -25,21 +24,21 @@ pub struct Subject {
     blocks: HashMap<(String, Vec<u8>), Vec<u8>>,
     cells: HashMap<(String, String), Edition>,
     blobs: HashMap<Vec<u8>, Vec<u8>>,
-    /// The seed of each key of the subject, by its address.
-    pub(crate) keys: HashMap<String, Zeroizing<[u8; 32]>>,
-    /// The secret of each site the subject reaches.
-    pub(crate) secrets: HashMap<String, Vec<u8>>,
 }
 
 /// The host data of a store that runs a guest kernel.
+#[derive(Default)]
 pub struct KernelHost {
     pub http: HttpTable,
     /// The subject of each layer handle, by its representation.
     layers: Vec<String>,
     subjects: HashMap<String, Subject>,
-    key: SigningKey,
-    /// The credential each `credential` handle names, by its representation.
-    pub(crate) credentials: Vec<Held>,
+    /// The key each `credential` handle names, by its representation.
+    pub(crate) keys: Vec<Key>,
+    /// The key each `authority` handle names, by its representation.
+    pub(crate) authorities: Vec<Key>,
+    /// The standing each `session` handle names, by its representation.
+    pub(crate) sessions: Vec<Standing>,
     /// The catch-ups the guest kernel sent with `application.send`.
     pub sent: Vec<Vec<u8>>,
     /// Each write since the last drain, for the host to keep durably.
@@ -47,7 +46,7 @@ pub struct KernelHost {
 }
 
 /// One write to a subject, as a host keeps it durably. Its `Debug` leaves out
-/// the seed of a key and the bytes of a secret.
+/// the bytes of a block or a blob.
 #[derive(Clone)]
 pub enum Change {
     Block {
@@ -66,18 +65,6 @@ pub enum Change {
         subject: String,
         key: Vec<u8>,
         bytes: Vec<u8>,
-    },
-    /// The key of a subject at an address: its seed, or none once forgotten.
-    Key {
-        subject: String,
-        address: String,
-        seed: Option<Vec<u8>>,
-    },
-    /// The secret of a site, or none once retracted.
-    Secret {
-        subject: String,
-        site: String,
-        secret: Option<Vec<u8>>,
     },
 }
 
@@ -112,43 +99,11 @@ impl core::fmt::Debug for Change {
                 .field("subject", subject)
                 .field("key", key)
                 .finish_non_exhaustive(),
-            Change::Key {
-                subject,
-                address,
-                seed,
-            } => f
-                .debug_struct("Key")
-                .field("subject", subject)
-                .field("address", address)
-                .field("forgotten", &seed.is_none())
-                .finish_non_exhaustive(),
-            Change::Secret {
-                subject,
-                site,
-                secret,
-            } => f
-                .debug_struct("Secret")
-                .field("subject", subject)
-                .field("site", site)
-                .field("retracted", &secret.is_none())
-                .finish_non_exhaustive(),
         }
     }
 }
 
 impl KernelHost {
-    pub fn new(seed: [u8; 32]) -> Self {
-        KernelHost {
-            http: HttpTable::default(),
-            layers: Vec::new(),
-            subjects: HashMap::new(),
-            credentials: Vec::new(),
-            key: SigningKey::from_bytes(&seed),
-            sent: Vec::new(),
-            journal: Vec::new(),
-        }
-    }
-
     /// Put back what an earlier store wrote, before the guest kernel boots.
     pub fn restore(&mut self, changes: impl IntoIterator<Item = Change>) {
         for change in changes {
@@ -188,28 +143,6 @@ impl KernelHost {
                         .blobs
                         .insert(key, bytes);
                 }
-                Change::Key {
-                    subject,
-                    address,
-                    seed,
-                } => {
-                    let keys = &mut self.subjects.entry(subject).or_default().keys;
-                    match seed.and_then(|seed| <[u8; 32]>::try_from(seed).ok()) {
-                        Some(seed) => keys.insert(address, Zeroizing::new(seed)),
-                        None => keys.remove(&address),
-                    };
-                }
-                Change::Secret {
-                    subject,
-                    site,
-                    secret,
-                } => {
-                    let secrets = &mut self.subjects.entry(subject).or_default().secrets;
-                    match secret {
-                        Some(secret) => secrets.insert(site, secret),
-                        None => secrets.remove(&site),
-                    };
-                }
             }
         }
     }
@@ -228,12 +161,6 @@ impl KernelHost {
     pub(crate) fn subject(&mut self, layer: &Resource<Layer>) -> &mut Subject {
         let name = self.layers[layer.rep() as usize].clone();
         self.subjects.entry(name).or_default()
-    }
-
-    fn sign(&self, tag: &str, payload: &[u8]) -> Vec<u8> {
-        let mut message = tag.as_bytes().to_vec();
-        message.extend_from_slice(payload);
-        self.key.sign(&message).to_bytes().to_vec()
     }
 }
 
@@ -548,31 +475,6 @@ impl Drop for Collect {
         if let Some(done) = self.done.take() {
             let _ = done.send(core::mem::take(&mut self.bytes));
         }
-    }
-}
-
-impl session::Host for KernelHost {
-    fn key(&mut self) -> String {
-        did_key(&self.key)
-    }
-
-    fn chain(&mut self) -> Vec<u8> {
-        Vec::new()
-    }
-}
-
-impl<T: 'static> session::HostWithStore<T> for Sapling {
-    async fn sign_head(accessor: &Accessor<T, Self>, payload: Vec<u8>) -> Result<Vec<u8>, Error> {
-        trace("sign_head");
-        Ok(accessor.with(|mut access| access.get().sign("dialog/head@1\n", &payload)))
-    }
-
-    async fn sign_revision_record(
-        accessor: &Accessor<T, Self>,
-        payload: Vec<u8>,
-    ) -> Result<Vec<u8>, Error> {
-        trace("sign_revision_record");
-        Ok(accessor.with(|mut access| access.get().sign("dialog/revision-record@1\n", &payload)))
     }
 }
 

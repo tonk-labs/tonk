@@ -1,7 +1,8 @@
 //! The Tonk kernel: Tonk's worker, as a component of the world
-//! `sapling:kernel`. Its storage and keys are the layers and credentials its
-//! host gives it (`tonk-kernel-world`), and it answers each request of its
-//! origin with the worker's own API router, over `wasi:http/handler`.
+//! `sapling:kernel`. Its storage is the layers its host gives it, and its keys
+//! are the session's and the ones it entrusts to it (`tonk-kernel-world`). It
+//! answers each request of its origin with the worker's own API router, over
+//! `wasi:http/handler`.
 //!
 //! Built for `wasm32-wasip3` by `tonk-components`; on every other target the
 //! crate is empty.
@@ -15,8 +16,8 @@ pub mod world {
         with: {
             "sapling:kernel/types@0.1.0": tonk_kernel_world::world::sapling::kernel::types,
             "sapling:kernel/storage@0.1.0": tonk_kernel_world::world::sapling::kernel::storage,
+            "sapling:kernel/credential@0.1.0": tonk_kernel_world::world::sapling::kernel::credential,
             "sapling:kernel/session@0.1.0": tonk_kernel_world::world::sapling::kernel::session,
-            "sapling:kernel/credentials@0.1.0": tonk_kernel_world::world::sapling::kernel::credentials,
         },
         generate_all,
     });
@@ -85,6 +86,7 @@ struct Kernel;
 impl lifecycle::Guest for Kernel {
     async fn init(boot: lifecycle::Boot) -> Result<(), Error> {
         let started = world::wasi::clocks::monotonic_clock::now();
+        tonk_kernel_world::session::take_up(boot.session);
         // The space this kernel serves: the subject of its `memory:space`.
         let space = boot
             .stack

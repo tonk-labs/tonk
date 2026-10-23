@@ -82,8 +82,6 @@ const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, "0"
 const keyOf = record =>
     record.kind === "block" ? `block|${record.subject}|${record.catalog}|${hex(record.key)}`
     : record.kind === "blob" ? `blob|${record.subject}|${hex(record.key)}`
-    : record.kind === "key" ? `key|${record.subject}|${record.address}`
-    : record.kind === "secret" ? `secret|${record.subject}|${record.site}`
     : `cell|${record.subject}|${record.namespace}|${record.cell}`;
 
 const database = new Promise((resolve, reject) => {
@@ -116,16 +114,22 @@ async function keep(records) {
 const readMeta = key => transact("meta", "readonly", store => store.get(key));
 const writeMeta = (key, value) => transact("meta", "readwrite", store => store.put(value, key));
 
-// The key this origin signs with: made on its first start, and never sent
-// anywhere. The profile delegates the space to it.
-async function sessionSeed() {
-    let seed = await readMeta("session");
+// A key of this origin's own, made on its first start and never sent
+// anywhere.
+async function ownSeed(name) {
+    let seed = await readMeta(name);
     if (!seed) {
         seed = crypto.getRandomValues(new Uint8Array(32));
-        await writeMeta("session", seed);
+        await writeMeta(name, seed);
     }
     return seed;
 }
+
+// The key this origin signs with. The profile delegates the space to it.
+const sessionSeed = () => ownSeed("session");
+// Not yet: the person's authority, which a passkey opens. This origin keeps
+// a key in its place, so the kernel has an authority to entrust keys to.
+const authoritySeed = () => ownSeed("authority");
 
 // ---- The port up --------------------------------------------------------
 //
@@ -267,7 +271,7 @@ async function start() {
     if (!PINNED) throw new Error("this worker pins no kernel");
     await wasm_bindgen({ module_or_path: await hostFile(new Request(new URL("/_host/embedder_bg.wasm", self.location.href))) });
     const seed = await sessionSeed();
-    const { space } = await grant(seed);
+    const { space, chain } = await grant(seed);
     let records = await kept();
     // A space with no kernel of its own yet is one being created: install the
     // one its worker was registered for.
@@ -279,7 +283,7 @@ async function start() {
     }
     const pinned = wasm_bindgen.pinned(space, records);
     if (pinned !== PINNED) throw new Error(`the space pins ${pinned}, not ${PINNED}`);
-    const embedder = await wasm_bindgen.boot(space, seed, records);
+    const embedder = await wasm_bindgen.boot(space, seed, await authoritySeed(), [chain], records);
     await keep(await embedder.drain());
     log("booted in", Math.round(performance.now() - started), "ms", embedder.timings);
     return embedder;

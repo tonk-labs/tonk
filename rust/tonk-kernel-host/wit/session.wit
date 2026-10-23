@@ -1,24 +1,18 @@
 package sapling:kernel@0.1.0;
 
-/// The session key of a worker, which the embedder makes at boot and which
-/// never leaves the worker process. See PDD007, "Session".
-///
-/// The guest kernel signs only what Dialog DB signs: a head, and a revision
-/// record. Each call takes the payload of one kind without its domain tag, and
-/// the embedder signs the tag of that kind and then the payload. So each
-/// signature of the session key is over bytes that start with a domain tag of
-/// Dialog DB, and the guest kernel cannot sign a UCAN, or any other bytes. A
-/// new kind is a new call.
 interface session {
-  use types.{did, ucan, error};
+  use types.{ucan};
+  use credential.{credential, authority};
 
-  /// The DID of the session key of this worker.
-  key: func() -> did;
-  /// The current chain to the session key. The daemon renews it.
-  chain: func() -> ucan;
-  /// Sign a head of a branch: the tag `dialog/head@1\n`, and then `payload`.
-  sign-head: async func(payload: list<u8>) -> result<list<u8>, error>;
-  /// Sign a revision record: the tag `dialog/revision-record@1\n`, and then
-  /// `payload`.
-  sign-revision-record: async func(payload: list<u8>) -> result<list<u8>, error>;
+  /// The standing of a worker: the key it acts under, the authority it acts
+  /// for, and the delegations between them. The embedder makes it and hands
+  /// it to the guest kernel at boot.
+  resource session {
+    /// The key this worker acts under.
+    credential: func() -> credential;
+    /// The authority this worker acts for.
+    authority: func() -> authority;
+    /// The delegations to `credential` this worker acts under.
+    proofs: func() -> list<ucan>;
+  }
 }

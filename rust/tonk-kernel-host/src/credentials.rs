@@ -1,84 +1,121 @@
-//! The credentials of a layer (PDD015): its keys at their addresses, and its
-//! secrets for sites. A guest kernel holds a credential as a resource that
-//! names one; the seed stays here. Each call acts with the seed through Dialog
-//! DB's own credentials, so what a guest kernel seals with Dialog DB this host
-//! reveals, and the reverse.
+//! The keys a guest kernel reaches through handles: `credential` and
+//! `session`. Every key's seed stays here. A guest kernel signs what it can
+//! name as a payload, conceals its own messages to a DID, and entrusts a key
+//! to a custodian whose key is here too, so no seed reaches it.
 //!
-//! Not yet bound: the reach of a handle over its credentials (a handle reaches
-//! every key and secret of its subject), and consent for a credential that
-//! names a persona.
+//! Not yet bound: an authority's key is held here as a credential's is, where
+//! a browser would open it only with a passkey.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
 use dialog_credentials::Ed25519Signer;
+use dialog_credentials::Ed25519Verifier;
 use dialog_credentials::ed25519::Extractable;
 use dialog_credentials::key::{ExtractableKey, KeyExport};
 use dialog_credentials::secret::{Context, SealedSecret, SecretExtractableDerive};
-use dialog_varsig::signature::Signer as _;
-use ipld_core::ipld::Ipld;
+use ed25519_dalek::Signer as _;
+use tonk_kernel_world::payload::{self, Payload};
 use wcmp::{Accessor, Resource};
 use zeroize::Zeroizing;
 
-use crate::bindings::sapling::kernel::credentials::{self, Credential};
-use crate::bindings::sapling::kernel::storage::Layer;
+use crate::bindings::sapling::kernel::credential::{
+    self, Authority, Credential, Custodian, Payload as Signed,
+};
+use crate::bindings::sapling::kernel::session::{self, Session};
 use crate::bindings::sapling::kernel::types::Error;
-use crate::sapling::{Change, KernelHost, Sapling, did_key, trace};
+use crate::sapling::{KernelHost, Sapling, did_key, trace};
 
-/// What a `credential` handle names: the key of a subject, by its seed.
-pub struct Held {
-    subject: String,
+/// The context every key is entrusted in. A guest kernel cannot conceal a
+/// message in it, nor reveal one, so it opens a custody only by `recover`.
+const CUSTODY: &str = "sapling.kernel/custody";
+
+/// A key a handle names: its seed, and whether the guest kernel knew the
+/// seed, which makes it no custodian.
+#[derive(Clone)]
+pub struct Key {
     seed: Zeroizing<[u8; 32]>,
+    imported: bool,
 }
 
-/// The kind of UCAN a payload is, read from inside the bytes its signature
-/// covers: the key of its payload map, such as `ucan/inv@1.0.0-rc.1`.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Kind {
-    Invocation,
-    Delegation,
+impl Key {
+    fn generated(seed: Zeroizing<[u8; 32]>) -> Self {
+        Self {
+            seed,
+            imported: false,
+        }
+    }
+
+    fn did(&self) -> String {
+        did_key(&ed25519_dalek::SigningKey::from_bytes(&self.seed))
+    }
 }
 
-impl Kind {
-    /// The kind of the UCAN payload `bytes`, if it is one.
-    pub fn of(bytes: &[u8]) -> Option<Kind> {
-        let Ok(Ipld::Map(map)) = serde_ipld_dagcbor::from_slice::<Ipld>(bytes) else {
-            return None;
-        };
-        let mut kinds = map.keys().filter_map(|key| match key.split_once('@') {
-            Some(("ucan/inv", _)) => Some(Kind::Invocation),
-            Some(("ucan/dlg", _)) => Some(Kind::Delegation),
-            _ => None,
-        });
-        match (kinds.next(), kinds.next()) {
-            (Some(kind), None) if map.len() == 2 && map.contains_key("h") => Some(kind),
-            _ => None,
+/// What a session handle names: the key it acts under, the authority it acts
+/// for, and the delegations between them.
+pub struct Standing {
+    pub credential: Key,
+    pub authority: Key,
+    pub proofs: Vec<Vec<u8>>,
+}
+
+impl Standing {
+    /// The standing of a worker that acts under the key of `seed`, for the
+    /// authority of `authority`, with `proofs`.
+    pub fn new(seed: [u8; 32], authority: [u8; 32], proofs: Vec<Vec<u8>>) -> Self {
+        Self {
+            credential: Key::generated(Zeroizing::new(seed)),
+            authority: Key::generated(Zeroizing::new(authority)),
+            proofs,
         }
     }
 }
 
 impl KernelHost {
-    fn hold(&mut self, subject: String, seed: Zeroizing<[u8; 32]>) -> Resource<Credential> {
-        self.credentials.push(Held { subject, seed });
-        Resource::new_own((self.credentials.len() - 1) as u32)
+    fn hold(&mut self, key: Key) -> Resource<Credential> {
+        self.keys.push(key);
+        Resource::new_own((self.keys.len() - 1) as u32)
     }
 
-    fn held(&self, credential: &Resource<Credential>) -> &Held {
-        &self.credentials[credential.rep() as usize]
+    fn key(&self, credential: &Resource<Credential>) -> Key {
+        self.keys[credential.rep() as usize].clone()
     }
 
-    fn keep_key(&mut self, subject: &str, address: &str, seed: Option<&Zeroizing<[u8; 32]>>) {
-        self.journal.push(Change::Key {
-            subject: subject.to_owned(),
-            address: address.to_owned(),
-            seed: seed.map(|seed| seed.to_vec()),
-        });
+    fn hold_authority(&mut self, key: Key) -> Resource<Authority> {
+        self.authorities.push(key);
+        Resource::new_own((self.authorities.len() - 1) as u32)
+    }
+
+    fn authority(&self, authority: &Resource<Authority>) -> Key {
+        self.authorities[authority.rep() as usize].clone()
+    }
+
+    /// A handle on `standing`, for the boot.
+    pub fn session(&mut self, standing: Standing) -> Resource<Session> {
+        self.sessions.push(standing);
+        Resource::new_own((self.sessions.len() - 1) as u32)
+    }
+
+    fn standing(&self, session: &Resource<Session>) -> &Standing {
+        &self.sessions[session.rep() as usize]
     }
 }
 
-/// A context Dialog DB can take: its labels are `'static`, and a guest kernel
-/// names a context by text. Each label is kept once.
-fn context(label: &str) -> Context {
+/// A context Dialog DB can take: its labels are `'static` text, and a guest
+/// kernel names a context by its bytes. Each label is kept once. The custody
+/// context is refused.
+fn context(label: &[u8]) -> Result<Context, Error> {
+    let label =
+        std::str::from_utf8(label).map_err(|_| Error::Invalid("a context is UTF-8".into()))?;
+    if label == CUSTODY {
+        return Err(Error::Denied(
+            "a guest kernel names no custody context".into(),
+        ));
+    }
+    Ok(custody_free(label))
+}
+
+fn custody_free(label: &str) -> Context {
     static LABELS: OnceLock<Mutex<BTreeMap<String, &'static str>>> = OnceLock::new();
     let mut labels = LABELS.get_or_init(Default::default).lock().expect("labels");
     let label = *labels
@@ -91,6 +128,40 @@ async fn signer(seed: &[u8; 32]) -> Result<Ed25519Signer<Extractable>, Error> {
     <Ed25519Signer<Extractable> as ExtractableKey>::import(seed)
         .await
         .map_err(|error| Error::Invalid(error.to_string()))
+}
+
+fn recipient(did: &str) -> Result<Ed25519Verifier, Error> {
+    did.parse()
+        .map_err(|_| Error::Invalid(format!("{did} is not an Ed25519 did:key")))
+}
+
+async fn conceal(to: &str, context: Context, message: &[u8]) -> Result<Vec<u8>, Error> {
+    Ok(recipient(to)?
+        .secret(context)
+        .conceal(message)
+        .await
+        .map_err(|error| Error::Invalid(error.to_string()))?
+        .to_bytes())
+}
+
+async fn reveal(key: &Key, context: Context, secret: &[u8]) -> Result<Vec<u8>, Error> {
+    let sealed =
+        SealedSecret::from_bytes(secret).map_err(|error| Error::Invalid(error.to_string()))?;
+    signer(&key.seed)
+        .await?
+        .secret(context)
+        .reveal(&sealed)
+        .await
+        .map_err(|_| Error::Denied("it is not concealed to this key, in this context".into()))
+}
+
+/// The key `custody` holds, entrusted to `custodian`.
+async fn recover(custodian: &Key, custody: &[u8]) -> Result<Key, Error> {
+    let seed = Zeroizing::new(reveal(custodian, custody_free(CUSTODY), custody).await?);
+    let seed = <[u8; 32]>::try_from(seed.as_slice())
+        .map(Zeroizing::new)
+        .map_err(|_| Error::Invalid("a custody holds a 32-byte seed".into()))?;
+    Ok(Key::generated(seed))
 }
 
 async fn seed_of(signer: &Ed25519Signer<Extractable>) -> Result<Zeroizing<[u8; 32]>, Error> {
@@ -110,48 +181,98 @@ fn fresh_seed() -> Result<Zeroizing<[u8; 32]>, Error> {
     Ok(seed)
 }
 
-async fn sign<T: 'static>(
-    accessor: &Accessor<T, Sapling>,
-    credential: &Resource<Credential>,
-    payload: Vec<u8>,
-    kind: Kind,
-) -> Result<Vec<u8>, Error> {
-    if Kind::of(&payload).as_ref() != Some(&kind) {
-        return Err(Error::Denied(format!("the payload is not a UCAN {kind:?}")));
+/// `signed`, as the payload the guest kernel names.
+fn payload_of(signed: Signed) -> Result<Payload, Error> {
+    let hash = |bytes: Vec<u8>| {
+        <[u8; 32]>::try_from(bytes).map_err(|_| Error::Invalid("a hash is 32 bytes".into()))
+    };
+    Ok(match signed {
+        Signed::Invocation(invocation) => Payload::Invocation(payload::Invocation {
+            audience: invocation.audience,
+            subject: invocation.subject,
+            command: invocation.command,
+            arguments: invocation.arguments,
+            proofs: invocation.proofs,
+            cause: invocation.cause,
+            issued_at: invocation.issued_at,
+            expiration: invocation.expiration,
+            meta: invocation.meta,
+            nonce: invocation.nonce,
+        }),
+        Signed::Delegation(delegation) => Payload::Delegation(payload::Delegation {
+            audience: delegation.audience,
+            subject: delegation.subject,
+            command: delegation.command,
+            policy: delegation.policy,
+            expiration: delegation.expiration,
+            not_before: delegation.not_before,
+            meta: delegation.meta,
+            nonce: delegation.nonce,
+        }),
+        Signed::Head(head) => Payload::Head(payload::Head {
+            branch: head.branch,
+            tree: hash(head.tree)?,
+            edition: head.edition,
+            context: head
+                .context
+                .map(|context| {
+                    context
+                        .into_iter()
+                        .map(|watermark| {
+                            Ok(payload::Watermark {
+                                origin: hash(watermark.origin)?,
+                                edition: watermark.edition,
+                                count: watermark.count,
+                            })
+                        })
+                        .collect::<Result<_, Error>>()
+                })
+                .transpose()?,
+        }),
+        Signed::RevisionRecord(record) => {
+            Payload::RevisionRecord(payload::RevisionRecord { body: record.body })
+        }
+    })
+}
+
+impl credential::Host for KernelHost {}
+
+impl<T: 'static> credential::HostWithStore<T> for Sapling {
+    async fn generate(accessor: &Accessor<T, Self>) -> Result<Resource<Credential>, Error> {
+        trace("credential.generate");
+        let key = Key::generated(fresh_seed()?);
+        Ok(accessor.with(|mut access| access.get().hold(key)))
     }
-    let seed = accessor.with(|mut access| access.get().held(credential).seed.clone());
-    let signature = signer(&seed)
-        .await?
-        .sign(&payload)
-        .await
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(signature.to_bytes().to_vec())
+
+    async fn import(
+        accessor: &Accessor<T, Self>,
+        seed: Vec<u8>,
+    ) -> Result<Resource<Credential>, Error> {
+        trace("credential.import");
+        let seed = <[u8; 32]>::try_from(seed.as_slice())
+            .map(Zeroizing::new)
+            .map_err(|_| Error::Invalid("a seed is 32 bytes".into()))?;
+        let key = Key {
+            seed,
+            imported: true,
+        };
+        Ok(accessor.with(|mut access| access.get().hold(key)))
+    }
+
+    async fn conceal(
+        _accessor: &Accessor<T, Self>,
+        to: String,
+        label: Vec<u8>,
+        message: Vec<u8>,
+    ) -> Result<Vec<u8>, Error> {
+        trace("credential.conceal");
+        conceal(&to, context(&label)?, &message).await
+    }
 }
 
-/// Sign `tag` and then `payload` with the key of `credential`, as Dialog DB
-/// signs a head or a revision record.
-fn sign_tagged<T: 'static>(
-    accessor: &Accessor<T, Sapling>,
-    credential: &Resource<Credential>,
-    tag: &str,
-    payload: &[u8],
-) -> Vec<u8> {
-    use ed25519_dalek::Signer as _;
-    let seed = accessor.with(|mut access| access.get().held(credential).seed.clone());
-    let mut message = tag.as_bytes().to_vec();
-    message.extend_from_slice(payload);
-    ed25519_dalek::SigningKey::from_bytes(&seed)
-        .sign(&message)
-        .to_bytes()
-        .to_vec()
-}
-
-impl credentials::Host for KernelHost {}
-
-impl credentials::HostCredential for KernelHost {
+impl credential::HostCredential for KernelHost {
     fn did(&mut self, credential: Resource<Credential>) -> String {
-        let seed = &self.held(&credential).seed;
-        did_key(&ed25519_dalek::SigningKey::from_bytes(seed))
+        self.key(&credential).did()
     }
 
     fn drop(&mut self, _credential: Resource<Credential>) -> wcmp::Result<()> {
@@ -159,267 +280,144 @@ impl credentials::HostCredential for KernelHost {
     }
 }
 
-impl<T: 'static> credentials::HostCredentialWithStore<T> for Sapling {
-    async fn sign_invocation(
+impl<T: 'static> credential::HostCredentialWithStore<T> for Sapling {
+    async fn sign(
         accessor: &Accessor<T, Self>,
         credential: Resource<Credential>,
-        payload: Vec<u8>,
-        _consent: Option<Vec<u8>>,
+        signed: Signed,
     ) -> Result<Vec<u8>, Error> {
-        trace("sign_invocation");
-        sign(accessor, &credential, payload, Kind::Invocation).await
-    }
-
-    async fn sign_delegation(
-        accessor: &Accessor<T, Self>,
-        credential: Resource<Credential>,
-        payload: Vec<u8>,
-        _consent: Option<Vec<u8>>,
-    ) -> Result<Vec<u8>, Error> {
-        trace("sign_delegation");
-        sign(accessor, &credential, payload, Kind::Delegation).await
-    }
-
-    async fn sign_head(
-        accessor: &Accessor<T, Self>,
-        credential: Resource<Credential>,
-        payload: Vec<u8>,
-    ) -> Result<Vec<u8>, Error> {
-        trace("credential.sign_head");
-        Ok(sign_tagged(
-            accessor,
-            &credential,
-            "dialog/head@1\n",
-            &payload,
-        ))
-    }
-
-    async fn sign_revision_record(
-        accessor: &Accessor<T, Self>,
-        credential: Resource<Credential>,
-        payload: Vec<u8>,
-    ) -> Result<Vec<u8>, Error> {
-        trace("credential.sign_revision_record");
-        Ok(sign_tagged(
-            accessor,
-            &credential,
-            "dialog/revision-record@1\n",
-            &payload,
-        ))
+        trace("credential.sign");
+        let key = accessor.with(|mut access| access.get().key(&credential));
+        let bytes = payload::write(&payload_of(signed)?, &key.did()).map_err(Error::Invalid)?;
+        Ok(ed25519_dalek::SigningKey::from_bytes(&key.seed)
+            .sign(&bytes)
+            .to_bytes()
+            .to_vec())
     }
 
     async fn reveal(
         accessor: &Accessor<T, Self>,
         credential: Resource<Credential>,
-        label: String,
-        sealed: Vec<u8>,
+        label: Vec<u8>,
+        secret: Vec<u8>,
     ) -> Result<Vec<u8>, Error> {
-        trace("reveal");
-        let seed = accessor.with(|mut access| access.get().held(&credential).seed.clone());
-        let sealed =
-            SealedSecret::from_bytes(&sealed).map_err(|error| Error::Invalid(error.to_string()))?;
-        signer(&seed)
-            .await?
-            .secret(context(&label))
-            .reveal(&sealed)
-            .await
-            .map_err(|_| Error::Denied("the secret was not sealed to this credential".into()))
+        trace("credential.reveal");
+        let key = accessor.with(|mut access| access.get().key(&credential));
+        reveal(&key, context(&label)?, &secret).await
+    }
+
+    async fn entrust(
+        accessor: &Accessor<T, Self>,
+        credential: Resource<Credential>,
+        custodian: Custodian,
+    ) -> Result<Vec<u8>, Error> {
+        trace("credential.entrust");
+        let (key, custodian) = accessor.with(|mut access| {
+            let host = access.get();
+            let custodian = match &custodian {
+                Custodian::Credential(held) => host.key(held),
+                Custodian::Authority(authority) => host.authority(authority),
+            };
+            (host.key(&credential), custodian)
+        });
+        if custodian.imported {
+            return Err(Error::Denied(
+                "a key whose seed the guest kernel knows is no custodian".into(),
+            ));
+        }
+        conceal(&custodian.did(), custody_free(CUSTODY), key.seed.as_slice()).await
+    }
+
+    async fn recover(
+        accessor: &Accessor<T, Self>,
+        credential: Resource<Credential>,
+        custody: Vec<u8>,
+    ) -> Result<Resource<Credential>, Error> {
+        trace("credential.recover");
+        let custodian = accessor.with(|mut access| access.get().key(&credential));
+        let key = recover(&custodian, &custody).await?;
+        Ok(accessor.with(|mut access| access.get().hold(key)))
     }
 
     async fn derive(
         accessor: &Accessor<T, Self>,
         credential: Resource<Credential>,
-        label: String,
+        label: Vec<u8>,
         derivation: Vec<u8>,
-        _consent: Option<Vec<u8>>,
     ) -> Result<Resource<Credential>, Error> {
-        trace("derive");
-        let (subject, seed) = accessor.with(|mut access| {
-            let held = access.get().held(&credential);
-            (held.subject.clone(), held.seed.clone())
-        });
-        let signer = signer(&seed).await?;
-        let derived = SecretExtractableDerive::derive(&signer.secret(context(&label)), &derivation)
+        trace("credential.derive");
+        let context = context(&label)?;
+        let key = accessor.with(|mut access| access.get().key(&credential));
+        let signer = signer(&key.seed).await?;
+        let derived = SecretExtractableDerive::derive(&signer.secret(context), &derivation)
             .await
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        let seed = seed_of(&derived).await?;
-        Ok(accessor.with(|mut access| access.get().hold(subject, seed)))
-    }
-
-    async fn seal(
-        accessor: &Accessor<T, Self>,
-        credential: Resource<Credential>,
-        to: String,
-        label: String,
-        _consent: Option<Vec<u8>>,
-    ) -> Result<Vec<u8>, Error> {
-        trace("seal");
-        let seed = accessor.with(|mut access| access.get().held(&credential).seed.clone());
-        let recipient: dialog_credentials::Ed25519Verifier = to
-            .parse()
-            .map_err(|_| Error::Invalid(format!("{to} is not an Ed25519 did:key")))?;
-        let sealed = recipient
-            .secret(context(&label))
-            .conceal(seed.as_slice())
-            .await
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        Ok(sealed.to_bytes())
+        let key = Key::generated(seed_of(&derived).await?);
+        Ok(accessor.with(|mut access| access.get().hold(key)))
     }
 }
 
-impl<T: 'static> credentials::HostWithStore<T> for Sapling {
-    async fn load(
-        accessor: &Accessor<T, Self>,
-        at: Resource<Layer>,
-        address: String,
-    ) -> Result<Option<Resource<Credential>>, Error> {
-        trace("credentials.load");
-        Ok(accessor.with(|mut access| {
-            let host = access.get();
-            let subject = host.subject_name(&at);
-            let seed = host.subject(&at).keys.get(&address).cloned()?;
-            Some(host.hold(subject, seed))
-        }))
-    }
-
-    async fn generate(
-        accessor: &Accessor<T, Self>,
-        at: Resource<Layer>,
-        address: String,
-    ) -> Result<Resource<Credential>, Error> {
-        trace("credentials.generate");
-        let seed = fresh_seed()?;
-        Ok(accessor.with(|mut access| {
-            let host = access.get();
-            let subject = host.subject_name(&at);
-            host.keep_key(&subject, &address, Some(&seed));
-            host.subject(&at).keys.insert(address, seed.clone());
-            host.hold(subject, seed)
-        }))
-    }
-
-    async fn adopt(
-        accessor: &Accessor<T, Self>,
-        at: Resource<Layer>,
-        address: String,
-        sealed: Vec<u8>,
-        by: Resource<Credential>,
-        label: String,
-    ) -> Result<Resource<Credential>, Error> {
-        trace("credentials.adopt");
-        let opener = accessor.with(|mut access| access.get().held(&by).seed.clone());
-        let sealed =
-            SealedSecret::from_bytes(&sealed).map_err(|error| Error::Invalid(error.to_string()))?;
-        let revealed = Zeroizing::new(
-            signer(&opener)
-                .await?
-                .secret(context(&label))
-                .reveal(&sealed)
-                .await
-                .map_err(|_| Error::Denied("the credential was not sealed to `by`".into()))?,
-        );
-        let seed = <[u8; 32]>::try_from(revealed.as_slice())
-            .map(Zeroizing::new)
-            .map_err(|_| Error::Invalid("a sealed credential holds a 32-byte seed".into()))?;
-        Ok(accessor.with(|mut access| {
-            let host = access.get();
-            let subject = host.subject_name(&at);
-            host.keep_key(&subject, &address, Some(&seed));
-            host.subject(&at).keys.insert(address, seed.clone());
-            host.hold(subject, seed)
-        }))
-    }
-
-    async fn forget(
-        accessor: &Accessor<T, Self>,
-        at: Resource<Layer>,
-        address: String,
-    ) -> Result<(), Error> {
-        trace("credentials.forget");
-        accessor.with(|mut access| {
-            let host = access.get();
-            let subject = host.subject_name(&at);
-            host.keep_key(&subject, &address, None);
-            host.subject(&at).keys.remove(&address);
-        });
+impl credential::HostAuthority for KernelHost {
+    fn drop(&mut self, _authority: Resource<Authority>) -> wcmp::Result<()> {
         Ok(())
     }
+}
 
-    async fn load_secret(
+impl<T: 'static> credential::HostAuthorityWithStore<T> for Sapling {
+    async fn did(
         accessor: &Accessor<T, Self>,
-        at: Resource<Layer>,
-        site: String,
-    ) -> Result<Option<Vec<u8>>, Error> {
-        trace("credentials.load_secret");
-        Ok(accessor.with(|mut access| access.get().subject(&at).secrets.get(&site).cloned()))
+        authority: Resource<Authority>,
+    ) -> Result<String, Error> {
+        Ok(accessor.with(|mut access| access.get().authority(&authority).did()))
     }
 
-    async fn save_secret(
+    async fn confide(
         accessor: &Accessor<T, Self>,
-        at: Resource<Layer>,
-        site: String,
+        authority: Resource<Authority>,
+        label: Vec<u8>,
         secret: Vec<u8>,
-    ) -> Result<(), Error> {
-        trace("credentials.save_secret");
-        accessor.with(|mut access| {
+        to: Resource<Authority>,
+    ) -> Result<Vec<u8>, Error> {
+        trace("authority.confide");
+        let context = context(&label)?;
+        let (from, to) = accessor.with(|mut access| {
             let host = access.get();
-            let subject = host.subject_name(&at);
-            host.journal.push(Change::Secret {
-                subject,
-                site: site.clone(),
-                secret: Some(secret.clone()),
-            });
-            host.subject(&at).secrets.insert(site, secret);
+            (host.authority(&authority), host.authority(&to))
         });
-        Ok(())
+        let message = Zeroizing::new(reveal(&from, context, &secret).await?);
+        conceal(&to.did(), context, &message).await
     }
 
-    async fn retract_secret(
+    async fn recover(
         accessor: &Accessor<T, Self>,
-        at: Resource<Layer>,
-        site: String,
-    ) -> Result<(), Error> {
-        trace("credentials.retract_secret");
-        accessor.with(|mut access| {
-            let host = access.get();
-            let subject = host.subject_name(&at);
-            host.journal.push(Change::Secret {
-                subject,
-                site: site.clone(),
-                secret: None,
-            });
-            host.subject(&at).secrets.remove(&site);
-        });
-        Ok(())
+        authority: Resource<Authority>,
+        custody: Vec<u8>,
+    ) -> Result<Resource<Credential>, Error> {
+        trace("authority.recover");
+        let custodian = accessor.with(|mut access| access.get().authority(&authority));
+        let key = recover(&custodian, &custody).await?;
+        Ok(accessor.with(|mut access| access.get().hold(key)))
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl session::Host for KernelHost {}
 
-    fn payload(kind: &str) -> Vec<u8> {
-        let mut map = BTreeMap::new();
-        map.insert("h".to_owned(), Ipld::Bytes(vec![0x34, 0xed, 0x01]));
-        map.insert(kind.to_owned(), Ipld::Map(BTreeMap::new()));
-        serde_ipld_dagcbor::to_vec(&Ipld::Map(map)).unwrap()
+impl session::HostSession for KernelHost {
+    fn credential(&mut self, session: Resource<Session>) -> Resource<Credential> {
+        let key = self.standing(&session).credential.clone();
+        self.hold(key)
     }
 
-    #[test]
-    fn it_reads_the_kind_inside_a_ucan_payload() {
-        assert_eq!(
-            Kind::of(&payload("ucan/inv@1.0.0-rc.1")),
-            Some(Kind::Invocation)
-        );
-        assert_eq!(
-            Kind::of(&payload("ucan/dlg@1.0.0-rc.1")),
-            Some(Kind::Delegation)
-        );
+    fn authority(&mut self, session: Resource<Session>) -> Resource<Authority> {
+        let key = self.standing(&session).authority.clone();
+        self.hold_authority(key)
     }
 
-    #[test]
-    fn it_names_no_kind_for_bytes_that_are_not_a_ucan_payload() {
-        assert_eq!(Kind::of(b"dialog/head@1\nsomething"), None);
-        assert_eq!(Kind::of(&payload("dialog/head@1")), None);
+    fn proofs(&mut self, session: Resource<Session>) -> Vec<Vec<u8>> {
+        self.standing(&session).proofs.clone()
+    }
+
+    fn drop(&mut self, _session: Resource<Session>) -> wcmp::Result<()> {
+        Ok(())
     }
 }

@@ -5,8 +5,8 @@ package sapling:kernel@0.1.0;
 world host {
   import types;
   import storage;
+  import credential;
   import session;
-  import credentials;
   import application;
   import network;
   export lifecycle;

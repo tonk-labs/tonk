@@ -13,6 +13,7 @@ use wasm_bindgen::prelude::*;
 use wcmp::Engine;
 
 use crate::bindings::sapling::kernel::storage::Edition;
+use crate::credentials::Standing;
 use crate::kernel::{Kernel, Served};
 use crate::sapling::{Change, did_key};
 use crate::{boot, platform};
@@ -76,11 +77,25 @@ pub fn pinned(subject: String, kept: Array) -> Result<Option<String>, JsError> {
     Ok(pinned.map(|(id, _)| id))
 }
 
-/// Boot the kernel the space `subject` pins, over the records `kept`, for a
-/// session that signs with the key of `seed`.
+/// Boot the kernel the space `subject` pins, over the records `kept`, with a
+/// session that acts under the key of `seed`, for the authority of
+/// `authority`, by the delegations `proofs`.
 #[wasm_bindgen]
-pub async fn boot(subject: String, seed: Uint8Array, kept: Array) -> Result<Embedder, JsError> {
-    let seed = seed_of(&seed)?;
+pub async fn boot(
+    subject: String,
+    seed: Uint8Array,
+    authority: Uint8Array,
+    proofs: Array,
+    kept: Array,
+) -> Result<Embedder, JsError> {
+    let standing = Standing::new(
+        seed_of(&seed)?,
+        seed_of(&authority)?,
+        proofs
+            .iter()
+            .map(|proof| Uint8Array::new(&proof).to_vec())
+            .collect(),
+    );
     let started = platform::now_millis();
     let changes = changes_of(&kept)?;
     let (_, bytes) = boot::pinned(&subject, &changes)
@@ -89,12 +104,11 @@ pub async fn boot(subject: String, seed: Uint8Array, kept: Array) -> Result<Embe
     let mut timings = vec![("restore".to_owned(), platform::now_millis() - started)];
     let engine = Engine::with_backend(wcmp_wasm_core_web::Web::new())
         .map_err(|error| JsError::new(&error.to_string()))?;
-    let mut kernel = Kernel::load_restoring(&engine, &bytes, seed, changes)
+    let mut kernel = Kernel::load_restoring(&engine, &bytes, changes)
         .await
         .map_err(|error| JsError::new(&error))?;
-    let persona = did_key(&ed25519_dalek::SigningKey::from_bytes(&seed));
     kernel
-        .init(&persona, &subject)
+        .init(&subject, standing)
         .await
         .map_err(|error| JsError::new(&error))?;
     timings.extend(
@@ -115,11 +129,16 @@ pub async fn boot(subject: String, seed: Uint8Array, kept: Array) -> Result<Embe
 fn seed_of(seed: &Uint8Array) -> Result<[u8; 32], JsError> {
     seed.to_vec()
         .try_into()
-        .map_err(|_| JsError::new("a session key is 32 bytes"))
+        .map_err(|_| JsError::new("a seed is 32 bytes"))
 }
 
+/// The changes among `kept`. A host before custodies kept keys and site
+/// secrets as records of their own; a kernel keeps them in its cells now.
 fn changes_of(kept: &Array) -> Result<Vec<Change>, JsError> {
-    kept.iter().map(|record| from_js(&record)).collect()
+    kept.iter()
+        .filter(|record| !matches!(text(record, "kind").as_deref(), Ok("key" | "secret")))
+        .map(|record| from_js(&record))
+        .collect()
 }
 
 #[wasm_bindgen]
@@ -232,22 +251,6 @@ fn from_js(record: &JsValue) -> Result<Change, JsError> {
                 }),
             },
         },
-        "key" => Change::Key {
-            subject,
-            address: text(record, "address")?,
-            seed: match field(record, "seed")?.is_undefined() {
-                true => None,
-                false => Some(bytes(record, "seed")?),
-            },
-        },
-        "secret" => Change::Secret {
-            subject,
-            site: text(record, "site")?,
-            secret: match field(record, "secret")?.is_undefined() {
-                true => None,
-                false => Some(bytes(record, "secret")?),
-            },
-        },
         other => return Err(JsError::new(&format!("a kept record of the kind {other}"))),
     })
 }
@@ -295,30 +298,6 @@ fn to_js(change: &Change) -> JsValue {
             if let Some(edition) = edition {
                 set("content", blob(&edition.content));
                 set("version", blob(&edition.version));
-            }
-        }
-        Change::Key {
-            subject,
-            address,
-            seed,
-        } => {
-            set("kind", "key".into());
-            set("subject", subject.into());
-            set("address", address.into());
-            if let Some(seed) = seed {
-                set("seed", blob(seed));
-            }
-        }
-        Change::Secret {
-            subject,
-            site,
-            secret,
-        } => {
-            set("kind", "secret".into());
-            set("subject", subject.into());
-            set("site", site.into());
-            if let Some(secret) = secret {
-                set("secret", blob(secret));
             }
         }
     }

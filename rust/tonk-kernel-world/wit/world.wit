@@ -13,8 +13,8 @@ package sapling:kernel@0.1.0;
 world core {
   import types;
   import storage;
+  import credential;
   import session;
-  import credentials;
 
   import wasi:clocks/monotonic-clock@0.3.0;
   import wasi:clocks/system-clock@0.3.0;
@@ -59,11 +59,11 @@ world kernel {
 }
 
 /// What the adapters of `tonk-kernel-world` reach: the storage of a layer,
-/// the session, and the credentials of a layer. A guest kernel that uses them
+/// the keys the embedder holds, and the session. A guest kernel that uses them
 /// imports the same interfaces through its own world.
 world imports {
   import types;
   import storage;
+  import credential;
   import session;
-  import credentials;
 }

@@ -5,6 +5,7 @@ package sapling:kernel@0.1.0;
 interface lifecycle {
   use types.{did, version, error};
   use storage.{layer};
+  use session.{session};
 
   /// What a worker can do with a layer of its stack.
   enum access { read, read-write }
@@ -23,8 +24,8 @@ interface lifecycle {
   /// What a worker gets at boot. The boot names no domain: the guest kernel
   /// serves what its stack holds.
   record boot {
-    /// The persona that the worker acts for, if it acts for one.
-    persona: option<did>,
+    /// The standing this worker acts under.
+    session: session,
     /// The durable layers of the stack, the bottom first. The subject, if the
     /// stack has one, is the layer of `memory:space`.
     stack: list<stacked>,

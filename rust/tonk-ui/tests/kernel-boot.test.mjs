@@ -85,8 +85,8 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     kernelId: (bytes) => new TextDecoder().decode(bytes).replace("WASM", KERNEL),
     install: (subject, bytes) => [{ kind: "blob", subject, key: [1], bytes, kernel: KERNEL }],
     pinned: (subject, records) => records.find((record) => record.subject === subject)?.kernel,
-    boot: async (subject, seed, records) => {
-      booted.push({ subject, records: records.length });
+    boot: async (subject, seed, authority, proofs, records) => {
+      booted.push({ subject, proofs: proofs.length, records: records.length });
       return embedder;
     },
   });
@@ -234,7 +234,7 @@ test("a space with no kernel of its own installs the one its worker names, and b
   assert.equal(site.asked[0].delegate, "did:key:zSession");
   assert.equal(site.asked[2].kernel, KERNEL);
   assert.ok(!site.fetched.some((path) => path.startsWith("/_host/kernel/")), "nothing of the kernel is fetched");
-  assert.deepEqual(site.booted, [{ subject: SPACE, records: 1 }]);
+  assert.deepEqual(site.booted, [{ subject: SPACE, proofs: 1, records: 1 }]);
   assert.deepEqual(site.handled, ["GET /api/identify", "POST /.kernel/adopt", "GET /api/anything"]);
 });
 
@@ -243,7 +243,7 @@ test("a space that holds its kernel boots it from its own store", async () => {
   site.handPort();
   await site.request("/api/anything");
   assert.ok(!site.fetched.some((path) => path.startsWith("/_host/kernel/")), "nothing is fetched to boot");
-  assert.deepEqual(site.booted, [{ subject: SPACE, records: 1 }]);
+  assert.deepEqual(site.booted, [{ subject: SPACE, proofs: 1, records: 1 }]);
 });
 
 test("a worker for another kernel than the space pins does not boot it", async () => {

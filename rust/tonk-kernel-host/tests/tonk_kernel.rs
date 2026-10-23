@@ -3,6 +3,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use futures::StreamExt as _;
+use tonk_kernel_host::credentials::Standing;
 use tonk_kernel_host::kernel::Kernel;
 use tonk_kernel_host::sapling::{Change, did_key};
 use wcmp::Engine;
@@ -15,12 +16,16 @@ fn space() -> String {
     did_key(&ed25519_dalek::SigningKey::from_bytes(&[3; 32]))
 }
 
+/// The standing every kernel here boots with: the same key and authority, so
+/// a kernel that starts again is the same worker.
+fn standing() -> Standing {
+    Standing::new([7; 32], [8; 32], Vec::new())
+}
+
 /// Boot a kernel over what an earlier one kept, and answer who it is.
 async fn identify(engine: &Engine, bytes: &[u8], kept: Vec<Change>) -> (String, Vec<Change>) {
-    let mut kernel = Kernel::load_restoring(engine, bytes, [7; 32], kept)
-        .await
-        .unwrap();
-    kernel.init(&space(), &space()).await.unwrap();
+    let mut kernel = Kernel::load_restoring(engine, bytes, kept).await.unwrap();
+    kernel.init(&space(), standing()).await.unwrap();
     let answer = kernel.request("GET", "/api/identify", b"").await.unwrap();
     assert_eq!(answer.status, 200, "{}", answer.text());
     (answer.text(), kernel.drain())
@@ -32,8 +37,8 @@ async fn identify(engine: &Engine, bytes: &[u8], kept: Vec<Change>) -> (String, 
 async fn it_answers_with_tonk_s_worker() {
     let engine = engine();
     let bytes = tonk_components::TONK_KERNEL_BYTES;
-    let mut kernel = Kernel::load(&engine, bytes, [7; 32]).await.unwrap();
-    kernel.init(&space(), &space()).await.unwrap();
+    let mut kernel = Kernel::load(&engine, bytes).await.unwrap();
+    kernel.init(&space(), standing()).await.unwrap();
 
     for path in ["/api/identify", "/api/profile"] {
         let answer = kernel.request("GET", path, b"").await.unwrap();
@@ -43,20 +48,23 @@ async fn it_answers_with_tonk_s_worker() {
     println!("timings: {:?}", kernel.timings);
 }
 
-/// The worker's keys are made and kept by the host: the kernel's writes carry
-/// each key's seed to the host's store, and a kernel that starts again over
-/// them is the same profile.
+/// The worker's keys are made by the host and entrusted to the session's
+/// credential: the kernel keeps each custody in a cell, and a kernel that
+/// starts again over them recovers the same keys, so it is the same profile.
 #[tokio::test(flavor = "current_thread")]
-async fn it_keeps_its_keys_in_the_host() {
+async fn it_keeps_its_keys_as_custodies() {
     let engine = engine();
     let bytes = tonk_components::TONK_KERNEL_BYTES;
 
     let (first, kept) = identify(&engine, bytes, Vec::new()).await;
-    let keys = kept
+    let custodies = kept
         .iter()
-        .filter(|change| matches!(change, Change::Key { seed: Some(_), .. }))
+        .filter(|change| matches!(change, Change::Cell { namespace, edition: Some(_), .. } if namespace == "custody"))
         .count();
-    assert!(keys >= 1, "the host keeps the worker's keys: {kept:?}");
+    assert!(
+        custodies >= 1,
+        "the kernel keeps each key's custody: {kept:?}"
+    );
 
     let (again, _) = identify(&engine, bytes, kept).await;
     assert_eq!(
@@ -72,8 +80,8 @@ async fn it_keeps_its_keys_in_the_host() {
 async fn it_answers_while_a_subscription_is_open() {
     let engine = engine();
     let bytes = tonk_components::TONK_KERNEL_BYTES;
-    let mut kernel = Kernel::load(&engine, bytes, [7; 32]).await.unwrap();
-    kernel.init(&space(), &space()).await.unwrap();
+    let mut kernel = Kernel::load(&engine, bytes).await.unwrap();
+    kernel.init(&space(), standing()).await.unwrap();
     let (served, driver) = kernel.serve();
 
     let asked = async {

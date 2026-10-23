@@ -8,6 +8,7 @@ use wcmp::{Accessor, Component, Engine, Func, Linker, ResourceDynamic, Store, Va
 
 use crate::bindings::Host_;
 use crate::bindings::exports::sapling::kernel::lifecycle::{Access, Boot, Stacked};
+use crate::credentials::Standing;
 use crate::http_types::{self, Body, Fields, HttpHost, Request, Types};
 use crate::sapling::{KernelHost, Sapling};
 use crate::{platform, wasi, wasi_bindings};
@@ -212,10 +213,9 @@ impl Kernel {
         (Served { jobs }, driver)
     }
 
-    /// Compile and instantiate the guest kernel in `bytes` on `engine`, for
-    /// a session that signs with the key of `seed`.
-    pub async fn load(engine: &Engine, bytes: &[u8], seed: [u8; 32]) -> Result<Kernel, String> {
-        Kernel::load_restoring(engine, bytes, seed, Vec::new()).await
+    /// Compile and instantiate the guest kernel in `bytes` on `engine`.
+    pub async fn load(engine: &Engine, bytes: &[u8]) -> Result<Kernel, String> {
+        Kernel::load_restoring(engine, bytes, Vec::new()).await
     }
 
     /// [`Kernel::load`], with the store holding `changes` an earlier store
@@ -223,7 +223,6 @@ impl Kernel {
     pub async fn load_restoring(
         engine: &Engine,
         bytes: &[u8],
-        seed: [u8; 32],
         changes: Vec<crate::sapling::Change>,
     ) -> Result<Kernel, String> {
         let mut timings = Vec::new();
@@ -245,7 +244,7 @@ impl Kernel {
         Host_::add_to_linker::<_, Sapling>(&mut linker, |host| host)
             .map_err(|error| error.to_string())?;
 
-        let mut host = KernelHost::new(seed);
+        let mut host = KernelHost::default();
         host.restore(changes);
         host.http.set_types(Some(types));
         let mut store = Store::new(engine, host).map_err(|error| error.to_string())?;
@@ -270,12 +269,13 @@ impl Kernel {
     }
 
     /// Boot the guest kernel over one subject, as the layer of
-    /// `memory:space`, for `persona`.
-    pub async fn init(&mut self, persona: &str, subject: &str) -> Result<(), String> {
+    /// `memory:space`, with `standing` as its session.
+    pub async fn init(&mut self, subject: &str, standing: Standing) -> Result<(), String> {
         let started = platform::now_millis();
         let layer = self.store.data_mut().layer(subject);
+        let session = self.store.data_mut().session(standing);
         let boot = Boot {
-            persona: Some(persona.to_owned()),
+            session,
             stack: vec![Stacked {
                 layer,
                 scopes: vec!["memory:space".to_owned()],

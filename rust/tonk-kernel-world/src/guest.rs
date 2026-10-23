@@ -1,6 +1,5 @@
 //! The guest side, in a guest kernel built for the world: a [`Layer`] over a
-//! handle of `storage.layer`, and a signer over `session.sign-head` and
-//! `session.sign-revision-record`. See PDD007, "Storage" and "Session".
+//! handle of `storage.layer`. See PDD007, "Storage".
 //!
 //! Each layer reads a block through the cache of blocks of the guest kernel
 //! (see `cache`), so a read of the same block again makes no call of the world.
@@ -8,13 +7,6 @@
 //! one call: each get waits for one turn of the tasks of the guest kernel, and
 //! the gets that came in that turn go as one `get-many`. See PDD007, "The
 //! Cost of a Read".
-//!
-//! The signer holds the public key of the session key alone. Each signature is
-//! a call of `session`, which the embedder answers from its own memory, so no
-//! signing key is ever in the linear memory of the guest kernel. Dialog DB asks
-//! the signer for a payload that starts with its domain tag. The signer reads
-//! the kind from the tag, and gives the import the rest: the embedder puts the
-//! tag back before it signs. It refuses a payload with no tag that it knows.
 
 use std::cell::RefCell;
 use std::future::Future;
@@ -23,20 +15,12 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 
-use crate::world::sapling::kernel::session;
 use crate::world::sapling::kernel::storage;
 use crate::world::sapling::kernel::types::{
     ByteRange, Encoding as WireEncoding, Error as WorldError,
 };
 use crate::world::wit_stream;
 use async_trait::async_trait;
-use dialog_artifacts::history::RECORD_SIGNING_DOMAIN;
-use dialog_capability::identity::HEAD_SIGNING_DOMAIN;
-use dialog_credentials::ed25519::external::{ExternalSign, ExternalSigning, SigningKey};
-use dialog_credentials::{
-    Ed25519Signer, Ed25519SigningKey, Ed25519Verifier, Ed25519VerifyingKey, Signer,
-    SignerCredential,
-};
 use dialog_varsig::Did;
 use wit_bindgen::StreamResult;
 
@@ -526,57 +510,4 @@ async fn read_all(mut stream: wit_bindgen::StreamReader<u8>) -> Vec<u8> {
         }
     }
     bytes
-}
-
-/// The signer of the session key of the worker: `session.sign-head` and
-/// `session.sign-revision-record`.
-struct SessionSign;
-
-impl ExternalSign for SessionSign {
-    fn sign(&self, payload: &[u8]) -> ExternalSigning {
-        let head = payload
-            .strip_prefix(HEAD_SIGNING_DOMAIN)
-            .map(<[u8]>::to_vec);
-        let record = payload
-            .strip_prefix(RECORD_SIGNING_DOMAIN)
-            .map(<[u8]>::to_vec);
-        Box::pin(async move {
-            let signed = match (head, record) {
-                (Some(head), _) => session::sign_head(head).await,
-                (None, Some(record)) => session::sign_revision_record(record).await,
-                (None, None) => {
-                    return Err(signature::Error::from_source(LayerError::Denied(
-                        "the session key signs a head or a revision record, and the payload \
-                         starts with the tag of neither"
-                            .into(),
-                    )));
-                }
-            };
-            let signature =
-                signed.map_err(|error| signature::Error::from_source(layer_error(error)))?;
-            <[u8; 64]>::try_from(signature).map_err(|_| signature::Error::new())
-        })
-    }
-}
-
-/// The session key of the worker, as a signer of Dialog DB, which signs a
-/// head or a revision record through `session`.
-///
-/// # Errors
-///
-/// If the DID of the session key is not an Ed25519 `did:key`.
-pub fn session_signer() -> Result<SignerCredential, LayerError> {
-    let not_ed25519 = || LayerError::Invalid("the session key is not an Ed25519 did:key".into());
-    let did: Ed25519Verifier = session::key().parse().map_err(|_| not_ed25519())?;
-    #[allow(
-        irrefutable_let_patterns,
-        reason = "a build for WASI has native keys alone"
-    )]
-    let Ed25519VerifyingKey::Native(verifying_key) = did.0 else {
-        return Err(not_ed25519());
-    };
-    let key = SigningKey::new(verifying_key, SessionSign);
-    Ok(SignerCredential::from(Signer::from(Ed25519Signer::from(
-        Ed25519SigningKey::from(key),
-    ))))
 }

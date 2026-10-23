@@ -1,19 +1,22 @@
 //! Dialog DB over the world `sapling:kernel`, for a Tonk kernel on WASI.
 //!
 //! A kernel holds no storage and no key of its own: its host gives it the
-//! layers of its stack, signs heads and revision records with its session,
-//! and keeps the credentials of each layer (PDD015). These are the providers
-//! and signers that let Dialog DB, and Tonk's worker over it, run on them:
+//! layers of its stack and a session, and holds every key. These are the
+//! providers and signers that let Dialog DB, and Tonk's worker over it, run on
+//! them:
 //!
 //! - [`layer`]: a layer, as the world serves it, and [`guest::HandleLayer`]
 //!   over a handle of the world.
 //! - [`store`]: the archive, the memory and the blobs of a space, over a
 //!   layer. [`mount`] opens one from a location.
-//! - [`guest::session_signer`] and [`credentials::signer`]: the session key and
-//!   a credential, as signers whose signatures come from the host.
+//! - [`session`]: the session the boot hands over.
+//! - [`credentials::signer`]: a credential, as a signer whose signatures come
+//!   from the host.
+//! - [`space`]: a space's credential store, as custodies and secrets in its
+//!   cells.
 //!
-//! On every other target the crate holds only [`boot`], the boot cell's
-//! codec, which the host reads too.
+//! On every other target the crate holds only [`boot`] and [`payload`], what
+//! the host reads too.
 
 pub mod boot;
 pub mod payload;
@@ -37,6 +40,8 @@ pub mod guest;
 pub mod layer;
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod mount;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub mod session;
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod signal;
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
