@@ -201,6 +201,17 @@ impl Fixture {
 }
 
 #[dialog_common::test]
+async fn it_dates_invocations_from_the_fixture_clock() {
+    // A second boundary passing between fixture setup and a request leaves
+    // the service's `now` one second behind the wall clock.
+    let mut f = Fixture::new().await;
+    f.now -= 1;
+    f.prepare(&"e".repeat(64), "carol@example.com")
+        .await
+        .unwrap();
+}
+
+#[dialog_common::test]
 async fn confirmed_recipient_claims_once_across_restart_and_concurrent_retries() {
     let mut f = Fixture::new().await;
     let id = "a".repeat(64);
@@ -270,7 +281,7 @@ async fn cancellation_expiry_and_revoked_sender_device_refuse() {
             .live(&f.store.invitation(&expired).await.unwrap().unwrap()),
         Err(InvitationError::Gone)
     ));
-    f.now = Timestamp::now().to_unix();
+    f.now -= LIFETIME;
     let device = Ed25519Signer::generate().await.unwrap();
     let identity = DelegationBuilder::new()
         .issuer(Signer::from(f.sender.clone()))
