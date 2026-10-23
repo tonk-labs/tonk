@@ -115,7 +115,7 @@ final class SpaceAccessTests: XCTestCase {
     XCTAssertEqual(access.peopleSummary, "Your space · 2 people")
   }
 
-  func testPeopleSummaryCountsAgentMembersAsAgents() {
+  func testPeopleSummaryCountsAgentMembersAsAccessGrants() {
     let access = SpaceAccess(
       members: [
         SpaceMember(did: "did:key:zKai", name: "Kai", role: "tonk:founder", invitation: nil),
@@ -127,7 +127,7 @@ final class SpaceAccessTests: XCTestCase {
       selfDid: "did:key:zKai")
     XCTAssertTrue(access.members[1].isAgent)
     XCTAssertFalse(access.members[0].isAgent)
-    XCTAssertEqual(access.peopleSummary, "Your space · 1 person, 2 agents")
+    XCTAssertEqual(access.peopleSummary, "Your space · 1 person, 2 access grants")
   }
 
   func testRelativeTimes() {
