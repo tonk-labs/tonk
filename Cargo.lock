@@ -5930,11 +5930,14 @@ dependencies = [
  "dialog-credentials",
  "dialog-effects",
  "dialog-storage",
+ "dialog-ucan-core",
  "dialog-varsig",
+ "ed25519-dalek 2.2.0",
  "futures-util",
  "ipld-core",
  "serde_ipld_dagcbor",
  "signature 2.2.0",
+ "tokio",
  "wit-bindgen 0.61.1",
 ]
 

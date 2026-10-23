@@ -16,6 +16,7 @@
 //! codec, which the host reads too.
 
 pub mod boot;
+pub mod payload;
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod world {
