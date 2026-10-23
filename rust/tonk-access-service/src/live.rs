@@ -128,6 +128,10 @@ impl DurableObject for Live {
                     .await?;
                 Response::empty()
             }
+            (Method::Post, "/revoked") => {
+                self.state.storage().put(REVOKED, now()).await?;
+                Response::empty()
+            }
             _ => Response::error("Not found", 404),
         }
     }
@@ -348,6 +352,7 @@ impl Live {
             state: &state,
         };
         let at = access.now();
+        let unchecked_for = self.unchecked_for(at).await;
         let deliveries = self.state.get_websockets().into_iter().map(|ws| {
             let access = &access;
             async move {
@@ -357,7 +362,7 @@ impl Live {
                 };
                 let before = self.held(&socket.id).await?;
                 let mut session = Session::restore(before.clone());
-                let replies = session.deliver(access, change, RECHECK, at).await;
+                let replies = session.deliver(access, change, unchecked_for, at).await;
                 if replies.is_empty() {
                     return Ok((0, 0));
                 }
@@ -394,6 +399,24 @@ impl Live {
             }
         );
         Ok(())
+    }
+
+    /// How long a watch may have stood unchecked when a change is
+    /// delivered to it at `at`: none for a recheck interval after one of
+    /// the space's grants was revoked, so a watch the revocation ended is
+    /// told nothing more, and [`RECHECK`] otherwise. By the time the
+    /// interval has passed, every watch checked before the revocation is
+    /// due again anyway. A record that cannot be read rechecks.
+    async fn unchecked_for(&self, at: u64) -> Duration {
+        match self.state.storage().get::<u64>(REVOKED).await {
+            Ok(None) => RECHECK,
+            Ok(Some(revoked)) if revoked.saturating_add(RECHECK.as_secs()) <= at => RECHECK,
+            Ok(Some(_)) => Duration::ZERO,
+            Err(error) => {
+                console_error!("when a grant was last revoked could not be read: {error}");
+                Duration::ZERO
+            }
+        }
     }
 
     /// The watches socket `id` began, each kept under its own key.
@@ -589,6 +612,32 @@ pub async fn changed(env: Env, subject: String, space: String, cell: String) {
     }
 }
 
+/// Report to `subject`'s object that a grant over it was revoked, so its
+/// watches are each checked again before they are next told anything.
+/// Best effort: a watch the report does not reach is checked again when
+/// its [`RECHECK`] interval runs out.
+pub async fn revoked(env: Env, subject: String) {
+    let Ok(spaces) = env.durable_object(BINDING) else {
+        return;
+    };
+    let report = async {
+        let mut init = worker::RequestInit::new();
+        init.with_method(Method::Post);
+        let url = format!(
+            "https://live.invalid/revoked?sub={}",
+            url::form_urlencoded::byte_serialize(subject.as_bytes()).collect::<String>()
+        );
+        spaces
+            .id_from_name(&subject)?
+            .get_stub()?
+            .fetch_with_request(Request::new_with_init(&url, &init)?)
+            .await
+    };
+    if let Err(error) = report.await {
+        console_error!("a revocation was not reported to its space's watches: {error}");
+    }
+}
+
 /// The answer a refused frame gets: what a refused request's body says.
 fn refused(id: Option<u64>, invocation: Option<String>, refusal: &Refusal) -> Reply {
     Reply::Answer {
@@ -619,6 +668,10 @@ fn watches(id: &str) -> String {
 fn watch_key(id: &str, invocation: &str) -> String {
     format!("{}{invocation}", watches(id))
 }
+
+/// Where the object keeps when a grant over its space was last revoked,
+/// in Unix seconds.
+const REVOKED: &str = "revoked";
 
 /// Where the record of accepted invocations is kept, by invocation.
 const PRESENTED: &str = "presented/";
