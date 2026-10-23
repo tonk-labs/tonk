@@ -27,7 +27,11 @@ fi
 minimum_macos=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' Resources/Info.plist)
 sdk_version=$(xcrun --sdk macosx --show-sdk-version)
 configuration=${TONK_BUILD_CONFIGURATION:-debug}
-swift build -c "$configuration" -Xlinker -platform_version -Xlinker macos \
+# The native build system's Bundle.module looks for resource bundles beside the
+# app's Contents folder and then at this machine's build path, so a shipped app
+# crashes when it first loads a resource. Swift Build looks in Contents/Resources.
+swift build -c "$configuration" --build-system swiftbuild \
+    -Xlinker -platform_version -Xlinker macos \
     -Xlinker "$minimum_macos" -Xlinker "$sdk_version"
 app="$PWD/.build/$desktop_app_name.app"
 # Recreate the generated bundle so renamed executables cannot survive a rebuild.
@@ -57,6 +61,11 @@ xcrun actool "$PWD/Resources/Tonk.icon" \
     --output-partial-info-plist "$PWD/.build/tonk-icon-info.plist"
 /usr/libexec/PlistBuddy -c "Merge '$PWD/.build/tonk-icon-info.plist'" "$app/Contents/Info.plist"
 for bundle in ".build/$configuration/Tonk_Tonk.bundle" ".build/$configuration/textual_Textual.bundle" ".build/$configuration/swiftui-math_SwiftUIMath.bundle"; do
+    # A flat folder means the native build system made it; the app cannot load it.
+    if [[ ! -f "$bundle/Contents/Info.plist" ]]; then
+        echo "$bundle is not a loadable resource bundle; build with Swift Build." >&2
+        exit 1
+    fi
     ditto "$bundle" "$app/Contents/Resources/$(basename "$bundle")"
 done
 sign_args=()
