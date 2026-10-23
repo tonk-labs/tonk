@@ -90,13 +90,22 @@ public struct EmailContactLookup: Sendable {
       else { throw EmailContactError.unavailable }
       let local = Self.encode(String(parts[0]))
       let domain = String(parts[1])
-      components.percentEncodedPath = "/customer/\(domain)/\(local)/did.json"
+      // The DID percent-encodes the local part, but the service reads path
+      // segments without decoding them, so the URL carries it as typed.
+      components.percentEncodedPath = "/customer/\(domain)/\(Self.pathSegment(String(parts[0])))/did.json"
       guard let url = components.url else { throw EmailContactError.invalidEmail }
       let authority = host + (components.port.map { ":\($0)" } ?? "")
       self.email = email
       self.did =
         "did:web:\(authority.replacingOccurrences(of: ":", with: "%3A")):customer:\(domain):\(local)"
       self.url = url
+    }
+
+    /// A path-legal local part: `jack+tag` stays `jack+tag`, not `jack%2Btag`.
+    static func pathSegment(_ value: String) -> String {
+      var allowed = CharacterSet.urlPathAllowed
+      allowed.remove(charactersIn: "/%")
+      return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     // Same byte-wise idchar encoding as tonk-access-service::lookup::encode_local.
