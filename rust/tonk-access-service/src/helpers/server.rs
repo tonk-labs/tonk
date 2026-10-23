@@ -873,20 +873,23 @@ async fn handle_request(
     // Revocation writes to the index rather than reading it, so it is
     // answered before the presign path, mirroring the worker.
     if crate::revoke::is_revocation(&body_bytes) {
-        let response = match crate::revoke::revoke(
+        let response = match crate::revoke::record(
             &registration.store,
             &registration.revocations,
             &body_bytes,
         )
         .await
         {
-            Ok(receipt) => Response::builder()
-                .status(StatusCode::OK)
-                .header(CONTENT_TYPE, "application/json")
-                .body(Full::new(Bytes::from(
-                    serde_json::to_vec(&receipt).expect("revoke receipt serializes"),
-                )))
-                .unwrap(),
+            Ok(crate::revoke::Revoked { receipt, space }) => {
+                registration.live.revoked(&space);
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Full::new(Bytes::from(
+                        serde_json::to_vec(&receipt).expect("revoke receipt serializes"),
+                    )))
+                    .unwrap()
+            }
             Err(error) => Response::builder()
                 .status(error.status())
                 .header(CONTENT_TYPE, "application/json")
