@@ -2666,6 +2666,8 @@ pub(crate) mod tests {
         wait_for_service_worker(&driver).await?;
 
         goto(&driver, env.tonk_web.join("join")?.as_str()).await?;
+        // The page renders in the sealed guest frame.
+        enter_guest(&driver).await?;
         let input = element(&driver, "join-paste input[name=link]").await?;
 
         input.send_keys("not a link").await?;
@@ -2689,14 +2691,16 @@ pub(crate) mod tests {
             .click()
             .await?;
         element(&driver, ".edge-wall--closed").await?;
+        element(&driver, "join-paste input[name=link]").await?;
 
+        // The address bar is the top page's, outside the guest.
+        driver.enter_default_frame().await?;
         let here = driver.current_url().await?;
         assert_eq!(here.path(), "/join", "a paste joins in place");
         assert!(
             !here.as_str().contains(&seed),
             "the pasted seed never enters the address bar: {here}"
         );
-        element(&driver, "join-paste input[name=link]").await?;
 
         driver.quit().await?;
         Ok(())
