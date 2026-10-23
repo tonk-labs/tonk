@@ -103,7 +103,7 @@ pub async fn create_invite(
             .map_err(|e| TonkWorkerError::Router(format!("Invalid request body: {e}")))?
     };
 
-    mint_invite(state, repo_name, origin, request, None).await
+    mint_invite(state, repo_name, origin, request, None, None).await
 }
 
 /// Mint an agent handoff for the current browser account, never the space owner.
@@ -118,16 +118,18 @@ pub(crate) async fn create_agent_handoff(
         recipient_root: Some(account.root_did.clone()),
         ..Default::default()
     };
-    let Json(response) = mint_invite(state, repo_name, origin, request, Some(&account)).await?;
+    let Json(response) =
+        mint_invite(state, repo_name, origin, request, Some(&account), None).await?;
     Ok((response, account))
 }
 
-async fn mint_invite(
+pub(super) async fn mint_invite(
     state: AppState,
     repo_name: String,
     origin: RequestOrigin,
     request: CreateInviteRequest,
     expected: Option<&super::identity::LocalRoot>,
+    delivery: Option<&str>,
 ) -> Result<Json<CreateInviteResponse>, TonkWorkerError> {
     let shorten_explicitly = request.base_url.is_some();
     let base_url = match request.base_url.clone() {
@@ -215,6 +217,15 @@ async fn mint_invite(
     // the original space owner at the beginning of a reshared proof chain.
     let account = super::identity::local_root(&tonk).await?;
     meta.extend(tonk_invite::inviter_meta(&account.root_did));
+    if let Some(id) = delivery {
+        if !tonk_invite::delivery::valid_id(id) || !matches!(audience, InviteAudience::Scoped) {
+            return Err(TonkWorkerError::Router("invalid email invitation".into()));
+        }
+        meta.insert(
+            tonk_invite::delivery::DELIVERY_ID.into(),
+            ipld_core::ipld::Ipld::String(id.into()),
+        );
+    }
     if let Some(name) =
         super::repository::repository_display_name(&tonk, &repository, &repo_name).await
     {
@@ -891,6 +902,7 @@ mod tests {
                 ..Default::default()
             },
             Some(&previous),
+            None,
         )
         .await;
         assert!(matches!(result, Err(crate::TonkWorkerError::Conflict(_))));

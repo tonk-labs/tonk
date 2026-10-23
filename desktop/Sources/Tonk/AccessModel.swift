@@ -69,6 +69,71 @@ final class AccessModel: ObservableObject {
     savedContacts = updated
   }
 
+  /// Persist the delivery ID before dispatch so an uncertain send can be retried after restart.
+  private struct EmailInvitationJob: Codable {
+    let id: String
+    let createdAt: Date
+  }
+
+  func sendEmailInvitation(email: String, space: TonkSpace) async throws {
+    guard let root = selfDid, let runtime, let branch = runtime.catalogBranch,
+      let contactsURL else { throw HarnessError.message("Sign in before sending an invitation.") }
+    let started = generation
+    let address = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let file = contactsURL.deletingLastPathComponent().appendingPathComponent("email-invitations.json")
+    var jobs: [String: EmailInvitationJob] = [:]
+    if FileManager.default.fileExists(atPath: file.path) {
+      // A damaged retry record must never silently mint another invitation.
+      jobs = try JSONDecoder().decode([String: EmailInvitationJob].self, from: Data(contentsOf: file))
+    }
+    let key = [root, space.subject, address].joined(separator: "|")
+    let job: EmailInvitationJob
+    if let existing = jobs[key], Date().timeIntervalSince(existing.createdAt) < 7 * 86400 {
+      job = existing
+    } else {
+      job = EmailInvitationJob(
+        id: (UUID().uuidString + UUID().uuidString).replacingOccurrences(of: "-", with: "").lowercased(),
+        createdAt: Date())
+      jobs[key] = job
+      try JSONEncoder().encode(jobs).write(to: file, options: .atomic)
+    }
+    let result = try await runtime.accountScript(
+      Self.emailInvitationScript,
+      arguments: ["branch": branch, "account": root, "space": space.subject,
+                  "email": address, "id": job.id, "request": "urn:uuid:" + UUID().uuidString])
+    guard generation == started, selfDid == root else {
+      throw HarnessError.message("The selected account changed. Check the original account before retrying.")
+    }
+    guard result["state"] as? String == "sent" else {
+      throw HarnessError.message(result["message"] as? String
+        ?? "Delivery could not be confirmed. Retry the same invitation.")
+    }
+  }
+
+  static let emailInvitationScript = """
+    const field = (the, as) => ({the, as, cardinality: 'one'});
+    const domain = 'xyz.tonk.send-email-invitation';
+    const base = '/api/repository/profile:tonk/branch/' + encodeURIComponent(branch);
+    await api(base + '/transact', {claims: [{op: 'assert', application: {
+      predicate: {kind: 'transient', concept: {with: {
+        id: field(domain + '/id', 'Text'), email: field(domain + '/email', 'Text'),
+        space: field(domain + '/space', 'Entity'), account: field(domain + '/account', 'Entity')
+      }}}, parameters: {this: request, id, email, space, account}
+    }}]});
+    for (let attempt = 0; attempt < 45; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const rows = await api(base + '/query', {
+        predicate: {with: {
+          state: field('xyz.tonk.email-invitation-status/state', 'Text'),
+          message: field('xyz.tonk.email-invitation-status/message', 'Text')
+        }}, terms: {this: request, state: {'?': {name: 'state'}}, message: {'?': {name: 'message'}}}
+      });
+      const answer = rows.find(row => row.fields?.state && row.fields.state !== 'pending');
+      if (answer) return answer.fields;
+    }
+    return {state: 'unknown', message: 'Delivery could not be confirmed. Retry the same invitation.'};
+    """
+
   func updateDisplayName(_ name: String) async throws {
     guard let runtime else { throw HarnessError.message("Sign in before changing your name.") }
     let started = generation

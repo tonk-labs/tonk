@@ -508,3 +508,116 @@ fn changed_rows(result: &worker::d1::D1Result) -> usize {
         .and_then(|meta| meta.changes)
         .unwrap_or_default()
 }
+
+#[async_trait(?Send)]
+impl super::invitation::InvitationStore for D1Store {
+    async fn reserve_invitation(
+        &self,
+        row: &super::invitation::PendingInvitation,
+    ) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(super::invitation::RESERVE)
+            .bind(&[
+                JsValue::from(row.id.as_str()),
+                JsValue::from(row.sender.as_str()),
+                JsValue::from(row.email.as_str()),
+                JsValue::from(row.space.as_str()),
+                JsValue::from_f64(row.created_at as f64),
+                JsValue::from_f64(row.expires_at as f64),
+            ])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
+    }
+    async fn invitation(
+        &self,
+        id: &str,
+    ) -> Result<Option<super::invitation::PendingInvitation>, StoreError> {
+        self.0
+            .prepare(super::invitation::SELECT)
+            .bind(&[JsValue::from(id)])
+            .map_err(map_err)?
+            .first(None)
+            .await
+            .map_err(map_err)
+    }
+    async fn publish_invitation(
+        &self,
+        id: &str,
+        original: &str,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(super::invitation::PUBLISH)
+            .bind(&[
+                JsValue::from(id),
+                JsValue::from(original),
+                JsValue::from_f64(now as f64),
+            ])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
+    }
+    async fn lease_invitation(&self, id: &str, now: u64) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(super::invitation::LEASE)
+            .bind(&[JsValue::from(id), JsValue::from_f64(now as f64)])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
+    }
+    async fn invitation_sent(&self, id: &str, now: u64) -> Result<(), StoreError> {
+        let result = self
+            .0
+            .prepare(super::invitation::SENT)
+            .bind(&[JsValue::from(id), JsValue::from_f64(now as f64)])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        let _ = result;
+        Ok(())
+    }
+    async fn complete_invitation(
+        &self,
+        id: &str,
+        recipient: &str,
+        completed: &str,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(super::invitation::COMPLETE)
+            .bind(&[
+                JsValue::from(id),
+                JsValue::from(recipient),
+                JsValue::from(completed),
+                JsValue::from_f64(now as f64),
+            ])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
+    }
+    async fn cancel_invitation(&self, id: &str, sender: &str) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(super::invitation::CANCEL)
+            .bind(&[JsValue::from(id), JsValue::from(sender)])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
+    }
+}
