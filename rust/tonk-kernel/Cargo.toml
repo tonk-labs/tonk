@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 [target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
 axum = { workspace = true }
 http-body-util = { workspace = true }
+tonk-common = { workspace = true }
 tonk-kernel-world = { workspace = true }
 tonk-worker = { workspace = true }
 tower = { workspace = true, features = ["util"] }

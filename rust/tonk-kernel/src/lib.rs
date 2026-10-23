@@ -114,7 +114,7 @@ impl lifecycle::Guest for Kernel {
             space,
         });
         let took = world::wasi::clocks::monotonic_clock::now() - started;
-        eprintln!("tonk-kernel: opened the worker in {}us", took / 1000);
+        tonk_common::log!("tonk-kernel: opened the worker in {}us", took / 1000);
         Ok(())
     }
 

@@ -297,7 +297,13 @@ async function start() {
 // The next start asks again.
 function run() {
     booting = start();
-    booting.catch(error => log("the kernel did not boot:", error));
+    booting.catch(error => {
+        log("the kernel did not boot:", error);
+        // The embedder's script, which this worker imported as it installed,
+        // and its wasm, fetched as it starts, are of two builds: a newer
+        // worker imports the script of the newer one.
+        if (error instanceof WebAssembly.LinkError) self.registration?.update();
+    });
     takenUp = booting.then(embedder =>
         takeUpSpace(embedder)
             .catch(error => log("the kernel did not take up its space:", error))

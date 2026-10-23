@@ -25,10 +25,11 @@ macro_rules! log {
         {
             println!($($arg)*);
         }
-        // A kernel on WASI: its host shows what it writes to standard error.
+        // A kernel on WASI: its host shows what it writes to standard out
+        // as a log, and keeps standard error for what went wrong.
         #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
         {
-            eprintln!($($arg)*);
+            println!($($arg)*);
         }
     }};
 }
