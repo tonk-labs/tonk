@@ -9,10 +9,13 @@
 //
 // The page's own code runs in this document too. The port is not for it:
 // this script hears the port before anything else can, and keeps it from
-// everything after.
+// everything after. It takes its own script out of the page as it runs, so
+// the page sees only what the kernel answered with.
 (function () {
     "use strict";
     var sw = navigator.serviceWorker;
+    var script = document.currentScript;
+    if (script) script.remove();
 
     // Opened on its own, not framed by the app: there is no one to ask for a
     // port, and the app is where a space is shown.

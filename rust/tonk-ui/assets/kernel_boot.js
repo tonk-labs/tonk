@@ -21,7 +21,7 @@
 //   starts again offline.
 // - Boots the kernel the space pins and hands it every request of this
 //   origin but the host's own files. Each page it answers with carries the
-//   host's broker (`kernel_broker.js`), which carries the port up to the
+//   host's relay (`kernel/relay.js`), which carries the port up to the
 //   person's profile; a page load the kernel answers with no page gets one of
 //   the host's that says what the kernel answered. A space nothing has been
 //   installed into answers every page with a 404.
@@ -31,9 +31,9 @@ importScripts("/_host/embedder.js");
 const PINNED = new URL(self.location.href).searchParams.get("kernel");
 // The contract between this worker and its shell, as for a release.
 const PROTOCOL = 2;
-const BROKER_PATH = "/kernel_broker.js";
+const RELAY_PATH = "/kernel/relay.js";
 // What this origin serves from the deployment, never from the kernel.
-const HOST_FILES = new Set(["/space.html", "/kernel_boot.js", BROKER_PATH]);
+const HOST_FILES = new Set(["/space.html", "/kernel_boot.js", RELAY_PATH]);
 const HOST_PREFIXES = ["/_host/", "/.well-known/"];
 
 const log = (...args) => console.log("[Space Kernel]", ...args);
@@ -331,25 +331,38 @@ function restartIfStopped(error) {
 
 // ---- Requests -----------------------------------------------------------
 
-// The broker, as the first thing in a page's head: before any script of the
-// page's own.
-const BROKER = `<script src="${BROKER_PATH}"></script>`;
-// How far into a page its head is looked for.
-const HEAD_WITHIN = 64 * 1024;
+// The relay, as the first thing in a page: a classic script, so the parser
+// runs it before anything after it. It takes its own script out of the page
+// as it runs.
+const RELAY = `<script src="${RELAY_PATH}"></script>`;
+// What may come before the relay without leaving the page in quirks mode:
+// whitespace, comments and the doctype.
+const PROLOGUE = /^(?:\s+|<!--[\s\S]*?-->|<!doctype[^>]*>)*/i;
+// How far into a page its prologue is waited for.
+const PROLOGUE_WITHIN = 64 * 1024;
 
-// `page`, a stream of HTML, with the broker put in at the top of its head.
-// A page with no head in its start gets the broker after its doctype, or
-// first.
-function withBroker(page) {
+// Where the relay goes in `text`, the start of a page: right after its
+// prologue, or `null` while a piece of the prologue may still be arriving.
+function relayAt(text, whole) {
+    const at = PROLOGUE.exec(text)[0].length;
+    const rest = text.slice(at);
+    if (whole || text.length > PROLOGUE_WITHIN) return at;
+    if (rest === "" || "<!doctype".startsWith(rest.slice(0, 9).toLowerCase()) || "<!--".startsWith(rest.slice(0, 4))) {
+        return null;
+    }
+    if (/^<!(doctype|--)/i.test(rest)) return null;
+    return at;
+}
+
+// `page`, a stream of HTML, with the relay put in before anything of the
+// page's own.
+function withRelay(page) {
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     let seen = "";
     let placed = false;
-    const place = controller => {
-        const head = /<head(\s[^>]*)?>/i.exec(seen);
-        const doctype = /^\s*<!doctype[^>]*>/i.exec(seen);
-        const at = head ? head.index + head[0].length : doctype ? doctype[0].length : 0;
-        controller.enqueue(encoder.encode(seen.slice(0, at) + BROKER + seen.slice(at)));
+    const place = (controller, at) => {
+        controller.enqueue(encoder.encode(seen.slice(0, at) + RELAY + seen.slice(at)));
         placed = true;
         seen = "";
     };
@@ -358,19 +371,20 @@ function withBroker(page) {
             transform(piece, controller) {
                 if (placed) return controller.enqueue(piece);
                 seen += decoder.decode(piece, { stream: true });
-                if (/<head(\s[^>]*)?>/i.test(seen) || seen.length > HEAD_WITHIN) place(controller);
+                const at = relayAt(seen, false);
+                if (at !== null) place(controller, at);
             },
             flush(controller) {
                 if (placed) return;
                 seen += decoder.decode();
-                place(controller);
+                place(controller, relayAt(seen, true));
             },
         }),
     );
 }
 
 // The host's page for a page load the kernel answered with something other
-// than a page: what it answered, with the broker, so the space is still
+// than a page: what it answered, with the relay, so the space is still
 // reached.
 function hostPage(status) {
     const said =
@@ -378,7 +392,7 @@ function hostPage(status) {
         : status >= 500 ? "This space could not answer."
         : `This space answered ${status}.`;
     return new Response(
-        `<!doctype html><html><head>${BROKER}<meta charset="utf-8"><title>${status}</title>` +
+        `<!doctype html><html><head>${RELAY}<meta charset="utf-8"><title>${status}</title>` +
         `<style>body{font:14px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;` +
         `min-height:100vh;opacity:.7}</style></head><body><p>${said}</p></body></html>`,
         { status, headers: { "content-type": "text/html; charset=utf-8" } },
@@ -386,13 +400,13 @@ function hostPage(status) {
 }
 
 // What the kernel answers a page load with, for a frame: its page with the
-// broker in it, or the host's page.
+// relay in it, or the host's page.
 function framed(reply) {
     const type = reply.headers.get("content-type") ?? "";
     if (!/^text\/html/i.test(type) || !reply.body) return hostPage(reply.status);
     const headers = new Headers(reply.headers);
     headers.delete("content-length");
-    return new Response(withBroker(reply.body), { status: reply.status, headers });
+    return new Response(withRelay(reply.body), { status: reply.status, headers });
 }
 
 async function serveKernel(event) {

@@ -70,9 +70,13 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
         path === "/api/identify" ? [200, JSON.stringify({ did: "did:key:zKernel" })]
         : path === "/.kernel/adopt" ? [204, ""]
         : path === "/page" ? [200, '<!doctype html><html><head><title>A page</title></head><body>hi</body></html>', "text/html"]
+        : path === "/early" ? [200, '<!-- made by hand -->\n<!DOCTYPE html><script>first()</script><html><head></head></html>', "text/html"]
         : [404, "not found"];
-      // The body as the kernel writes it: one piece, then its end.
-      const pieces = text ? [new TextEncoder().encode(text)] : [];
+      // The body as the kernel writes it: in pieces of a few bytes, so a
+      // page's start arrives split, then its end.
+      const bytes = new TextEncoder().encode(text);
+      const pieces = [];
+      for (let at = 0; at < bytes.length; at += 3) pieces.push(bytes.slice(at, at + 3));
       return {
         status,
         headers: [["content-type", type]],
@@ -191,25 +195,35 @@ test("the bootloader loads the host's embedder", () => {
   assert.deepEqual(space().imported, ["/_host/embedder.js"]);
 });
 
-test("a page the kernel answers with carries the host's broker, first in its head", async () => {
+test("a page the kernel answers with carries the host's relay, right after its doctype", async () => {
   const site = space();
   site.handPort();
   const page = await (await site.request("/page", { mode: "navigate" })).text();
   assert.equal(
     page,
-    '<!doctype html><html><head><script src="/kernel_broker.js"></script><title>A page</title></head><body>hi</body></html>',
+    '<!doctype html><script src="/kernel/relay.js"></script><html><head><title>A page</title></head><body>hi</body></html>',
   );
   assert.deepEqual(site.handled.slice(-1), ["GET /page"]);
 });
 
-test("a page load the kernel answers with no page gets the host's, with the broker", async () => {
+test("the relay runs before a script a page puts ahead of its head", async () => {
+  const site = space();
+  site.handPort();
+  const page = await (await site.request("/early", { mode: "navigate" })).text();
+  assert.equal(
+    page,
+    '<!-- made by hand -->\n<!DOCTYPE html><script src="/kernel/relay.js"></script><script>first()</script><html><head></head></html>',
+  );
+});
+
+test("a page load the kernel answers with no page gets the host's, with the relay", async () => {
   const site = space();
   site.handPort();
   const response = await site.request("/", { mode: "navigate" });
   assert.equal(response.status, 404);
   assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
   const page = await response.text();
-  assert.match(page, /<head><script src="\/kernel_broker.js"><\/script>/);
+  assert.match(page, /^<!doctype html><html><head><script src="\/kernel\/relay.js"><\/script>/);
   assert.match(page, /Nothing is installed here yet/);
 });
 
@@ -217,7 +231,7 @@ test("a request that is not a page load is answered as the kernel answers it", a
   const site = space();
   site.handPort();
   const response = await site.request("/page");
-  assert.match(await response.text(), /^<!doctype html><html><head><title>/, "no broker outside a page load");
+  assert.match(await response.text(), /^<!doctype html><html><head><title>/, "no relay outside a page load");
 });
 
 test("a space with no kernel of its own installs the one its worker names, and boots it", async () => {
@@ -276,8 +290,9 @@ test("a request the profile passes down is answered by the kernel", async () => 
   for (let i = 0; i < 50 && !site.asked.some((message) => message.end); i++) await new Promise((r) => setTimeout(r, 5));
   const answer = site.asked.filter((message) => message.call === 7);
   assert.equal(answer[0].head.status, 404);
-  assert.equal(new TextDecoder().decode(answer[1].chunk), "not found");
-  assert.equal(answer[2].end, true);
+  const body = answer.filter((message) => message.chunk).map((message) => new TextDecoder().decode(message.chunk));
+  assert.equal(body.join(""), "not found");
+  assert.equal(answer.at(-1).end, true);
   assert.deepEqual(site.handled.slice(-1), ["GET /api/roster"]);
 });
 
