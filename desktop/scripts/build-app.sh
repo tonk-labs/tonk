@@ -33,12 +33,14 @@ configuration=${TONK_BUILD_CONFIGURATION:-debug}
 swift build -c "$configuration" --build-system swiftbuild \
     -Xlinker -platform_version -Xlinker macos \
     -Xlinker "$minimum_macos" -Xlinker "$sdk_version"
+# Swift Build's products folder varies by toolchain; ask instead of assuming .build/<config>.
+products=$(swift build -c "$configuration" --build-system swiftbuild --show-bin-path)
 app="$PWD/.build/$desktop_app_name.app"
 # Recreate the generated bundle so renamed executables cannot survive a rebuild.
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 mkdir -p "$app/Contents/Resources"
-cp ".build/$configuration/Tonk" "$app/Contents/MacOS/Tonk"
+cp "$products/Tonk" "$app/Contents/MacOS/Tonk"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $desktop_bundle_id" \
     -c "Set :CFBundleName $desktop_app_name" -c "Set :CFBundleDisplayName $desktop_app_name" \
@@ -60,7 +62,7 @@ xcrun actool "$PWD/Resources/Tonk.icon" \
     --app-icon Tonk \
     --output-partial-info-plist "$PWD/.build/tonk-icon-info.plist"
 /usr/libexec/PlistBuddy -c "Merge '$PWD/.build/tonk-icon-info.plist'" "$app/Contents/Info.plist"
-for bundle in ".build/$configuration/Tonk_Tonk.bundle" ".build/$configuration/textual_Textual.bundle" ".build/$configuration/swiftui-math_SwiftUIMath.bundle"; do
+for bundle in "$products/Tonk_Tonk.bundle" "$products/textual_Textual.bundle" "$products/swiftui-math_SwiftUIMath.bundle"; do
     # A flat folder means the native build system made it; the app cannot load it.
     if [[ ! -f "$bundle/Contents/Info.plist" ]]; then
         echo "$bundle is not a loadable resource bundle; build with Swift Build." >&2
