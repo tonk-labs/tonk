@@ -188,9 +188,9 @@ web-time = "1"
 wit-bindgen = { version = "0.61.1", features = ["async-spawn"] }
 # The Wasm Component Model Polyfill, on which a host runs a Tonk kernel in a
 # browser and natively.
-wcmp = "0.1.1"
-wcmp-wasm-core-wasmtime = "0.1.1"
-wcmp-wasm-core-web = "0.1.1"
+wcmp = { git = "https://github.com/dialog-db/wasm-component-model-polyfill.git", branch = "explore/context-slot-globals" }
+wcmp-wasm-core-wasmtime = { git = "https://github.com/dialog-db/wasm-component-model-polyfill.git", branch = "explore/context-slot-globals" }
+wcmp-wasm-core-web = { git = "https://github.com/dialog-db/wasm-component-model-polyfill.git", branch = "explore/context-slot-globals" }
 webbrowser = "1.0"
 worker = "0.8.5"
 worker-macros = "0.8.5"
