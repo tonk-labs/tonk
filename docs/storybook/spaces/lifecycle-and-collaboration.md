@@ -38,6 +38,60 @@ This import is separate from `tonk space link NAME`: join creates a local
 replica from invitation authority, while space link attaches an existing local
 space to an account and hosted service.
 
+### Desktop contact lookup (preparation for `COLLAB-02`)
+
+In the redesigned Desktop Address Book, **Add Contact** accepts a name and
+an email or account key. **Look Up** sends the email to the selected Tonk
+server. A confirmed account shows its DID for review; **Save** records that DID,
+email, server, lookup time, and local labels in the existing address book on
+this Mac. Searching contacts also matches the saved email. Entering a DID
+manually remains available without a network request.
+
+Unconfirmed registration, no account found, and suspended accounts have distinct
+messages and cannot be saved from the email. A network failure, rate limit,
+redirect, or inconsistent account document offers no key and permits retry.
+Changing the input invalidates the old result; closing the sheet or changing
+accounts discards an outstanding lookup. Editing an existing contact keeps its
+key fixed while allowing name/label changes. Old contacts without email metadata
+continue to load.
+
+This is a directory assertion from the lookup date, not a continuing guarantee
+of email ownership. Saving a contact does not grant space access. For a missing
+account, choose a space and explicitly **Send Invite**. Pending, suspended and
+unavailable lookup results do not offer sending. Existing labels, including
+“Verified”, remain personal annotations.
+
+Focused native tests cover HTTP results, response binding, stale reads, legacy
+persistence and account separation. Production lookup and a full signed-in
+Desktop invitation journey are not claimed by those tests. Implementation and
+execution evidence: [contact lookup plan](../../../plans/2026-10-21-desktop-contact-email-lookup.md).
+
+### Email invitation and account creation (`COLLAB-02`)
+
+**Send Invite** binds the selected account, email and space to a durable delivery
+ID before dispatch. The service checks the sender's account and space authority,
+stores the original signed grant, and sends a seven-day `/email-invite#…` locator.
+A timeout is shown as unconfirmed delivery; retrying after reopening the desktop
+reuses the same ID and original grant. The mail transport uses a stable
+idempotency key with bounded attempts and cooldown. Sending creates no contact
+with a placeholder key.
+
+The emailed page offers **Create Account or Sign In**, using the existing passkey
+and email-confirmation ceremony. Signup returns to the exact local invitation
+route, including after profile reload. **Join Space** requires the account whose
+confirmed email matches the invitation; a forwarded locator and an unconfirmed
+account cannot gain access. A successful claim pins its recipient; repeating it
+returns the same completion and imports through the normal join path. Service
+completion preserves the original inviter and space owner.
+
+The native HTTP/worker regression exercises sending, captured delivery, duplicate
+send, actual enrollment and email confirmation, wrong-account refusal, repeat
+join, and Alice/Bob/Carol provenance. Four service tests cover restart, races,
+revoked devices, expiry, cancellation, quotas and a lost transport acknowledgement.
+Desktop tests cover durable retry IDs and account separation. Browser execution,
+production email delivery and cross-device recovery have separate evidence in the
+[email invitation plan](../../../plans/2026-10-21-email-invite-onboarding.md).
+
 ### Invitation sender (`COLLAB-01`, `COLLAB-02`)
 
 When Alice invites Bob and Bob mints a new invitation for Carol, Carol's
@@ -58,7 +112,8 @@ Carol's invitation back into Alice's replica. See the
 [worker spike](../../../plans/2026-10-20-identity-discovery-spike.md) and
 [CLI verification](../../../plans/2026-10-20-cli-invitation-sender-attribution.md).
 These checks do not verify browser rendering, real email delivery, interrupted
-claims or cross-device recovery. No contact picker or address book is added.
+claims or cross-device recovery. Desktop contact lookup and email onboarding
+are covered separately above.
 
 ### Duplicate a space (`SPACE-14`)
 

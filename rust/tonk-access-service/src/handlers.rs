@@ -10,3 +10,5 @@ pub mod registration;
 pub mod revoke;
 pub mod shortcut;
 pub mod ucan;
+
+pub mod invitation;

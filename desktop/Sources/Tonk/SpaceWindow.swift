@@ -60,6 +60,7 @@ struct SpaceWindow: View {
 /// The space's page, with its loading and error states.
 struct SpaceWorkspace: View {
   @ObservedObject var page: SpacePage
+  var viewTitle: String? = nil
 
   var body: some View {
     ZStack {
@@ -77,13 +78,16 @@ struct SpaceWorkspace: View {
       }
     }
     .background(.background)
-    .overlay(alignment: .top) {
+    .overlay {
       if page.loading {
-        HStack(spacing: 8) {
+        VStack(spacing: 10) {
           ProgressView().controlSize(.small)
-          Text("Loading space…").font(.callout)
-        }.padding(.horizontal, 16).padding(.vertical, 10).controlSurface()
-          .padding(16).allowsHitTesting(false)
+          Text("Opening \(viewTitle ?? page.space?.title ?? "space")…")
+            .font(.system(size: 13))
+          Text("Getting the latest from \(page.space?.title ?? "your space")")
+            .font(.system(size: 12)).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+          .background(Color(nsColor: .windowBackgroundColor)).allowsHitTesting(false)
       }
     }
   }

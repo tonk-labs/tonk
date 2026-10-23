@@ -7,6 +7,7 @@ import WebKit
 /// inspected on its own.
 @MainActor
 final class SpacePage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
+  @Published private(set) var location: URL?
   @Published private(set) var space: TonkSpace?
   @Published private(set) var loading = false
   @Published private(set) var error: String?
@@ -19,6 +20,7 @@ final class SpacePage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDel
     // The native picker can cover/detach this view while still querying its worker.
     configuration.preferences.inactiveSchedulingPolicy = .none
     RuntimeModel.hideFab(in: configuration.userContentController)
+    RuntimeModel.identifyShell(in: configuration.userContentController)
     inspection.install(on: configuration.userContentController)
     webView = WKWebView(frame: .zero, configuration: configuration)
     super.init()
@@ -33,6 +35,7 @@ final class SpacePage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDel
     self.space = space
     error = nil
     let target = url.flatMap { space.contains($0) ? $0 : nil } ?? space.url
+    location = target
     webView.load(URLRequest(url: target))
   }
 
@@ -45,6 +48,7 @@ final class SpacePage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDel
   /// Leaves the page blank once its window has closed.
   func close() {
     space = nil
+    location = nil
     loading = false
     error = nil
     webView.loadHTMLString("", baseURL: nil)
@@ -57,11 +61,12 @@ final class SpacePage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDel
   }
 
   /// Fixture and test pages show static content with no space behind them.
-  func showFixture(_ space: TonkSpace, html: String) {
+  func showFixture(_ space: TonkSpace, html: String, loading: Bool = false) {
     self.space = space
-    loading = false
+    self.loading = loading
+    location = nil
     error = nil
-    webView.loadHTMLString(html, baseURL: nil)
+    if !loading { webView.loadHTMLString(html, baseURL: nil) }
   }
 
   func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -72,6 +77,7 @@ final class SpacePage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDel
 
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
     loading = false
+    location = webView.url
   }
 
   func webView(

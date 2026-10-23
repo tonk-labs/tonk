@@ -35,13 +35,24 @@ mkdir -p "$app/Contents/MacOS"
 mkdir -p "$app/Contents/Resources"
 cp ".build/$configuration/Tonk" "$app/Contents/MacOS/Tonk"
 cp Resources/Info.plist "$app/Contents/Info.plist"
+# SwiftUI resolves Text keys in the main bundle, so the string tables live there.
+for table in Resources/*.lproj; do
+    ditto "$table" "$app/Contents/Resources/$(basename "$table")"
+done
+# Only builds given a PostHog project key send analytics (docs/telemetry.md).
+if [[ -n "${TONK_POSTHOG_KEY:-}" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :TonkPostHogKey string $TONK_POSTHOG_KEY" "$app/Contents/Info.plist"
+fi
+if [[ -n "${TONK_POSTHOG_HOST:-}" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :TonkPostHogHost string $TONK_POSTHOG_HOST" "$app/Contents/Info.plist"
+fi
 xcrun actool "$PWD/Resources/Tonk.icon" \
     --compile "$app/Contents/Resources" \
     --platform macosx --minimum-deployment-target 15.0 \
     --app-icon Tonk \
     --output-partial-info-plist "$PWD/.build/tonk-icon-info.plist"
 /usr/libexec/PlistBuddy -c "Merge '$PWD/.build/tonk-icon-info.plist'" "$app/Contents/Info.plist"
-for bundle in ".build/$configuration/textual_Textual.bundle" ".build/$configuration/swiftui-math_SwiftUIMath.bundle"; do
+for bundle in ".build/$configuration/Tonk_Tonk.bundle" ".build/$configuration/textual_Textual.bundle" ".build/$configuration/swiftui-math_SwiftUIMath.bundle"; do
     ditto "$bundle" "$app/Contents/Resources/$(basename "$bundle")"
 done
 sign_args=()

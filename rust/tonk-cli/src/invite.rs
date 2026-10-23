@@ -1030,7 +1030,7 @@ pub async fn preflight(invite_url: &str) -> Result<InvitePreflight, InviteError>
 /// request. Callers must obtain the URL from [`resolve_url`].
 pub(crate) async fn preflight_resolved(invite_url: String) -> Result<InvitePreflight, InviteError> {
     let invite = parse_invite_url(&invite_url).await?;
-    let invitation = Invitation::from_chain(&invite.chain)
+    let invitation = Invitation::from_chain(invite.invitation_chain())
         .expect("Invite invariant: chain has a specific subject");
     Ok(InvitePreflight {
         url: invite_url,

@@ -28,9 +28,11 @@ named product interaction itself completed at that boundary.
 | `failure_kind` | Closed diagnostic class; present only for non-success terminal results |
 | `duration_ms` | Terminal elapsed time, capped at ten minutes |
 
-Browser events also receive the in-memory `environment`, `version`, and
-reviewed launch-attribution super properties. Native events add
-`environment=cli`, version, OS, architecture, and library. Identity remains a
+Browser events also receive the in-memory `environment`, `shell`
+(`browser`, or `desktop` inside the macOS app), `version`, and reviewed
+launch-attribution super properties. Native events add
+`environment=cli` (or `environment=desktop` from the macOS app), version, OS,
+architecture, and library. Identity remains a
 profile-level hash; metrics must not label it a human or account. Native batch
 items record their RFC 3339 UTC occurrence time when queued, so end-of-command
 flushing does not collapse lifecycle ordering.
@@ -73,6 +75,19 @@ ingestion remain separate release gates.
 | CLI-01 | Every parsed non-account CLI command family | command exit, paired with existing command summary | source, tested |
 | PRIV-01 | SDK enrichment sanitizer | exact outbound sanitizer drops route/campaign sentinels | tested |
 | RELAY-01 | Guest analytics transport | each frame forwards; top page validates once | source |
+| DESK-01 | Copy a link (desktop): Copy link, a link row's Copy, or the public link | the link reaches the clipboard; a default link made on the way is part of the same attempt | source |
+| DESK-02 | Make an agent link (desktop) | link minted and copied | source |
+| DESK-03 | Publish / unpublish a space (desktop) | the space's main branch shows (or no longer shows) the public invitation | source |
+| DESK-04 | Revoke a link (desktop) | revocation response | source |
+| DESK-04b | Reset a link (desktop) | the new link is copied and the old one revoked; `degraded_success` when the old link is still active | source |
+| DESK-05 | Open a view window (desktop) | window requested | source |
+| DESK-06 | Start a chat (desktop) | new conversation created | source |
+| DESK-07 | Send a chat message (desktop) | Codex accepts the turn; Claude and API providers, which report no separate acceptance, finish the turn (completed, interrupted, or failed) | source |
+| DESK-08 | Change the chat model (desktop), from Settings or the chat's model menu | provider settings saved; `noop` when nothing changed, `automatic` when adopting another device's choice | source |
+| DESK-09 | Desktop wire names | Swift client and `ProductAction` agree | tested |
+
+Desktop events use `surface=hub` for the main window, `workspace` for a space
+window (its sidebar, collapsed controls, and chat), and `settings` for Settings.
 
 Existing typed `account_event` producers remain canonical for registration,
 login, activation, custody, and native account commands. Existing

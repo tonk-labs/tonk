@@ -1,5 +1,9 @@
 # Implementation plans
 
+- [Email invitation through account creation](2026-10-21-email-invite-onboarding.md): missing-account Add Contact action, durable delivery, confirmed-recipient claim and signup return.
+
+- [Desktop Add Contact email lookup](2026-10-21-desktop-contact-email-lookup.md): native directory lookup on the desktop redesign, retaining the existing local address book.
+
 ## Identity discovery research
 
 [2026-10-20 investigation](2026-10-20-identity-discovery-research.md):

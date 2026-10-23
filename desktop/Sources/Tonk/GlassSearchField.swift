@@ -4,6 +4,7 @@ import SwiftUI
 struct GlassSearchField: View {
   let title: String
   @Binding var text: String
+  var focusRequest = 0
   @FocusState private var focused: Bool
 
   var body: some View {
@@ -30,6 +31,7 @@ struct GlassSearchField: View {
       Capsule().strokeBorder(focused ? Color.accentColor : .clear, lineWidth: 2)
         .allowsHitTesting(false)
     }
+    .onChange(of: focusRequest) { _, _ in focused = true }
     .focusedSceneValue(\.focusSearch, { focused = true })
   }
 }
