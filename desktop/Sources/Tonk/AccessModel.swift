@@ -27,10 +27,121 @@ final class AccessModel: ObservableObject {
   @Published private(set) var agentConnections: [AgentConnection] = []
   @Published private(set) var accountName: String?
   @Published private(set) var selfDid: String?
+  @Published private(set) var accountEmail: String?
+  @Published private(set) var accountPasskeys: [AccountPasskey] = []
+  @Published private(set) var accountDetailsLoaded = false
+  @Published private(set) var accountDetailsError: String?
+  @Published private(set) var passkeyCreatedOn: String?
+  @Published private(set) var passkeyCreatedAt: Date?
   @Published private(set) var journal = AccessJournal()
   /// Link operations in flight, keyed by link id or `new:<subject>`.
   @Published private(set) var working: Set<String> = []
   @Published var notice: String?
+
+  @Published private(set) var savedContacts: [String: [DesktopContact]] = [:]
+  private var contactsURL: URL?
+
+  var contacts: [DesktopContact] {
+    var byID = Dictionary(
+      (savedContacts[selfDid ?? ""] ?? []).map { ($0.id, $0) },
+      uniquingKeysWith: { first, _ in first })
+    for state in spaces.values {
+      for member in state.members where byID[member.did] == nil {
+        byID[member.did] = DesktopContact(id: member.did, name: member.displayName, labels: [])
+      }
+    }
+    return byID.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+  }
+
+  func saveContact(_ contact: DesktopContact) throws {
+    guard let root = selfDid, let contactsURL else {
+      throw HarnessError.message("Sign in before saving a contact.")
+    }
+    guard contact.emailIdentity == nil || contact.emailIdentity?.rootDid == contact.id else {
+      throw HarnessError.message("The email lookup does not match this contact's key.")
+    }
+    var updated = savedContacts
+    var list = updated[root] ?? []
+    list.removeAll { $0.id == contact.id }
+    list.append(contact)
+    updated[root] = list
+    try JSONEncoder().encode(updated).write(to: contactsURL, options: .atomic)
+    savedContacts = updated
+  }
+
+  /// Persist the delivery ID before dispatch so an uncertain send can be retried after restart.
+  private struct EmailInvitationJob: Codable {
+    let id: String
+    let createdAt: Date
+  }
+
+  func sendEmailInvitation(email: String, space: TonkSpace) async throws {
+    guard let root = selfDid, let runtime, let branch = runtime.catalogBranch,
+      let contactsURL else { throw HarnessError.message("Sign in before sending an invitation.") }
+    let started = generation
+    let address = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let file = contactsURL.deletingLastPathComponent().appendingPathComponent("email-invitations.json")
+    var jobs: [String: EmailInvitationJob] = [:]
+    if FileManager.default.fileExists(atPath: file.path) {
+      // A damaged retry record must never silently mint another invitation.
+      jobs = try JSONDecoder().decode([String: EmailInvitationJob].self, from: Data(contentsOf: file))
+    }
+    let key = [root, space.subject, address].joined(separator: "|")
+    let job: EmailInvitationJob
+    if let existing = jobs[key], Date().timeIntervalSince(existing.createdAt) < 7 * 86400 {
+      job = existing
+    } else {
+      job = EmailInvitationJob(
+        id: (UUID().uuidString + UUID().uuidString).replacingOccurrences(of: "-", with: "").lowercased(),
+        createdAt: Date())
+      jobs[key] = job
+      try JSONEncoder().encode(jobs).write(to: file, options: .atomic)
+    }
+    let result = try await runtime.accountScript(
+      Self.emailInvitationScript,
+      arguments: ["branch": branch, "account": root, "space": space.subject,
+                  "email": address, "id": job.id, "request": "urn:uuid:" + UUID().uuidString])
+    guard generation == started, selfDid == root else {
+      throw HarnessError.message("The selected account changed. Check the original account before retrying.")
+    }
+    guard result["state"] as? String == "sent" else {
+      throw HarnessError.message(result["message"] as? String
+        ?? "Delivery could not be confirmed. Retry the same invitation.")
+    }
+  }
+
+  static let emailInvitationScript = """
+    const field = (the, as) => ({the, as, cardinality: 'one'});
+    const domain = 'xyz.tonk.send-email-invitation';
+    const base = '/api/repository/profile:tonk/branch/' + encodeURIComponent(branch);
+    await api(base + '/transact', {claims: [{op: 'assert', application: {
+      predicate: {kind: 'transient', concept: {with: {
+        id: field(domain + '/id', 'Text'), email: field(domain + '/email', 'Text'),
+        space: field(domain + '/space', 'Entity'), account: field(domain + '/account', 'Entity')
+      }}}, parameters: {this: request, id, email, space, account}
+    }}]});
+    for (let attempt = 0; attempt < 45; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const rows = await api(base + '/query', {
+        predicate: {with: {
+          state: field('xyz.tonk.email-invitation-status/state', 'Text'),
+          message: field('xyz.tonk.email-invitation-status/message', 'Text')
+        }}, terms: {this: request, state: {'?': {name: 'state'}}, message: {'?': {name: 'message'}}}
+      });
+      const answer = rows.find(row => row.fields?.state && row.fields.state !== 'pending');
+      if (answer) return answer.fields;
+    }
+    return {state: 'unknown', message: 'Delivery could not be confirmed. Retry the same invitation.'};
+    """
+
+  func updateDisplayName(_ name: String) async throws {
+    guard let runtime else { throw HarnessError.message("Sign in before changing your name.") }
+    let started = generation
+    let result = try await runtime.accountScript(
+      "return await api('/api/account/display-name', {name});", arguments: ["name": name])
+    guard generation == started else { return }
+    accountName = result["name"] as? String ?? name
+  }
 
   weak var runtime: (any SpaceAccessRuntime)?
   private var journalURL: URL?
@@ -58,17 +169,25 @@ final class AccessModel: ObservableObject {
   /// For layout fixtures only: show prepared access without a runtime.
   func showFixture(
     _ fixture: [String: SpaceAccess], agents: [AgentConnection], accountName: String,
-    journal: AccessJournal
+    journal: AccessJournal, email: String? = nil, passkeys: [AccountPasskey] = []
   ) {
     spaces = fixture
     catalog = fixture.keys.sorted()
     agentConnections = agents
     self.accountName = accountName
+    self.accountEmail = email
+    self.accountPasskeys = passkeys
+    self.accountDetailsLoaded = email != nil || !passkeys.isEmpty
     self.journal = journal
   }
 
   func prepare(directory: URL, runtime: any SpaceAccessRuntime) {
     self.runtime = runtime
+    contactsURL = directory.appendingPathComponent("address-book.json")
+    if let contactsURL, let data = try? Data(contentsOf: contactsURL) {
+      savedContacts =
+        (try? JSONDecoder().decode([String: [DesktopContact]].self, from: data)) ?? [:]
+    }
     journalURL = directory.appendingPathComponent("access-journal.json")
     if let journalURL { journal = AccessJournal.load(from: journalURL) }
   }
@@ -83,6 +202,12 @@ final class AccessModel: ObservableObject {
     agentConnections = []
     accountName = nil
     selfDid = nil
+    passkeyCreatedOn = nil
+    passkeyCreatedAt = nil
+    accountEmail = nil
+    accountPasskeys = []
+    accountDetailsLoaded = false
+    accountDetailsError = nil
     accountLoaded = false
     loading = []
     working = []
@@ -106,7 +231,8 @@ final class AccessModel: ObservableObject {
     errors = errors.filter { keep.contains($0.key) || $0.key == "account" }
   }
 
-  var agentLinks: [AccessLink] { allLinks.filter(\.forAgents) }
+  /// Live grants something has connected through; unused links stay in All links.
+  var connections: [AgentConnection] { agentConnections.filter { $0.isLive && $0.hasConnected } }
 
   func madeAt(_ link: AccessLink) -> Date? { journal.madeAt(target: link.target) }
 
@@ -126,6 +252,20 @@ final class AccessModel: ObservableObject {
       agentConnections = try JSONDecoder().decode([AgentConnection].self, from: data)
       accountName = (result["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
       selfDid = (result["root"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+      let passkey = result["passkey"] as? [String: Any]
+      passkeyCreatedOn = passkey?["createdOn"] as? String
+      passkeyCreatedAt = (passkey?["createdAt"] as? Double).map(Date.init(timeIntervalSince1970:))
+      accountEmail = result["email"] as? String
+      accountDetailsLoaded = result["accountDetailsLoaded"] as? Bool ?? false
+      accountDetailsError = result["accountDetailsError"] as? String
+      accountPasskeys = (result["passkeys"] as? [[String: Any]] ?? []).compactMap { row in
+        guard let id = row["id"] as? String, let label = row["createdOn"] as? String else {
+          return nil
+        }
+        return AccountPasskey(
+          id: id, createdOn: label,
+          createdAt: (row["createdAt"] as? Double).map(Date.init(timeIntervalSince1970:)))
+      }
       accountLoaded = true
       errors["account"] = nil
     } catch {
@@ -140,7 +280,13 @@ final class AccessModel: ObservableObject {
     if (!response.ok) throw new Error('Agent connections could not be loaded (HTTP ' + response.status + ').');
     const connections = await response.json();
     if (!Array.isArray(connections)) throw new Error('Invalid agent connections response.');
-    return {name: profile.display_name || profile.displayName || '', root: root.rootDid || '',
+    let details = {};
+    if (root.rootDid) {
+      try {
+        details = {...await (async () => { \(AccountDisplayFacts.script) })(), accountDetailsLoaded: true};
+      } catch { details = {accountDetailsError: 'Account details could not be loaded. Try refreshing.'}; }
+    }
+    return {...details, name: profile.display_name || profile.displayName || '', root: root.rootDid || '', passkey: root.passkey || null,
             connections: Array.isArray(connections) ? connections : []};
     """
 
@@ -325,17 +471,39 @@ final class AccessModel: ObservableObject {
 
   /// Mints a link, keeps it for Copy, copies it and records it.
   @discardableResult
-  func make(_ kind: NewLink, in space: TonkSpace) async -> Bool {
+  func make(
+    _ kind: NewLink, in space: TonkSpace, surface: DesktopAnalytics.Surface = .hub
+  ) async -> Bool {
+    guard runtime != nil, !working.contains("new:" + space.id) else { return false }
+    let (journey, action): (DesktopAnalytics.Journey, DesktopAnalytics.Action) =
+      switch kind {
+      case .person: (.collaboration, .copyShareLink)
+      case .agent: (.handoff, .connectAgent)
+      case .publicRead: (.space, .publishSpace)
+      }
+    let attempt = Telemetry.shared.begin(journey, action, surface: surface)
+    let started = generation
+    let made = await mint(kind, in: space)
+    if made {
+      attempt.finish(.success, stage: kind == .publicRead ? .remoteCommit : .clipboard)
+    } else {
+      attempt.finish(generation == started ? .retryableFailure : .cancelled, stage: .worker)
+    }
+    return made
+  }
+
+  private func mint(_ kind: NewLink, in space: TonkSpace) async -> Bool {
     guard let runtime, !working.contains("new:" + space.id) else { return false }
     let started = generation
     working.insert("new:" + space.id)
     defer { if generation == started { working.remove("new:" + space.id) } }
     do {
+      var copied = false
       switch kind {
       case .person:
         let (url, target) = try await mintPersonLink(runtime: runtime, space: space)
         guard generation == started else { return false }
-        finishMint(url: url, target: target, kind: .person, space: space)
+        copied = finishMint(url: url, target: target, kind: .person, space: space)
       case .agent:
         let before = Set(agentConnections.map(\.id))
         let link = try await runtime.createCLILink(space)
@@ -345,7 +513,7 @@ final class AccessModel: ObservableObject {
         let fresh = agentConnections.filter {
           $0.subject == space.subject && !before.contains($0.id)
         }
-        finishMint(
+        copied = finishMint(
           url: link, target: fresh.count == 1 ? fresh[0].id : nil, kind: .agent, space: space)
       case .publicRead:
         try await setPublic(true, space: space, runtime: runtime)
@@ -361,7 +529,7 @@ final class AccessModel: ObservableObject {
         return true
       }
       await refresh(space)
-      return true
+      return copied
     } catch {
       guard generation == started else { return false }
       notice = "Couldn’t make the link: " + Self.message(error)
@@ -369,42 +537,134 @@ final class AccessModel: ObservableObject {
     }
   }
 
-  func copyLink(_ link: AccessLink) {
-    guard let value = storedLink(link) else { return }
-    notice = copy(value) ? "Link copied" : "Couldn’t copy the link"
+  /// Reuse an existing open grant; never mint another merely because this Mac
+  /// cannot recover its secret. That case requires the explicit Reset action.
+  func defaultLink(in space: TonkSpace) -> AccessLink? {
+    let links = links(for: space.id).filter { $0.kind == .person && $0.status == "active" }
+    return links.first(where: { storedLink($0) != nil }) ?? links.first
   }
 
-  func revoke(_ link: AccessLink, space: TonkSpace) async {
-    guard let runtime, !working.contains(link.id) else { return }
+  @discardableResult
+  /// Copies the space's default link, making one first if it has none. One click is one
+  /// `copy_share_link` attempt; its receipt is the clipboard.
+  func copyDefaultLink(
+    in space: TonkSpace, surface: DesktopAnalytics.Surface = .hub
+  ) async -> Bool {
+    let attempt = Telemetry.shared.begin(.collaboration, .copyShareLink, surface: surface)
+    if spaces[space.id] == nil { await refresh(space) }
+    guard spaces[space.id] != nil, errors[space.id] == nil else {
+      notice = "Refresh this space before copying its default link."
+      attempt.finish(.retryableFailure, stage: .worker, failureKind: .serviceUnavailable)
+      return false
+    }
+    if let link = defaultLink(in: space) {
+      guard let value = storedLink(link) else {
+        notice =
+          "This Mac does not have the default link. Reset it in Links to create a replacement."
+        attempt.finish(.blocked, stage: .validation, failureKind: .localState)
+        return false
+      }
+      let copied = copy(value)
+      notice = copied ? "Link copied" : "Couldn’t copy the link"
+      attempt.finish(
+        copied ? .success : .retryableFailure, stage: .clipboard,
+        failureKind: copied ? nil : .localState)
+      return copied
+    }
+    guard runtime != nil, !working.contains("new:" + space.id) else {
+      attempt.finish(.blocked, stage: .intent, failureKind: .conflict)
+      return false
+    }
+    let started = generation
+    let made = await mint(.person, in: space)
+    if made {
+      attempt.finish(.success, stage: .clipboard)
+    } else {
+      attempt.finish(generation == started ? .retryableFailure : .cancelled, stage: .worker)
+    }
+    return made
+  }
+
+  func copyLink(_ link: AccessLink, surface: DesktopAnalytics.Surface = .hub) {
+    guard let value = storedLink(link) else { return }
+    let attempt = Telemetry.shared.begin(.collaboration, .copyShareLink, surface: surface)
+    let copied = copy(value)
+    notice = copied ? "Link copied" : "Couldn’t copy the link"
+    attempt.finish(
+      copied ? .success : .retryableFailure, stage: .clipboard,
+      failureKind: copied ? nil : .localState)
+  }
+
+  func revoke(
+    _ link: AccessLink, space: TonkSpace, surface: DesktopAnalytics.Surface = .hub
+  ) async {
+    guard runtime != nil, !working.contains(link.id) else { return }
+    let attempt = Telemetry.shared.begin(
+      link.kind == .publicRead ? .space : .collaboration,
+      link.kind == .publicRead ? .unpublishSpace : .revokeLink, surface: surface)
+    let started = generation
+    let revoked = await withdraw(link, space: space)
+    if revoked {
+      attempt.finish(.success, stage: .remoteCommit)
+    } else {
+      attempt.finish(generation == started ? .retryableFailure : .cancelled, stage: .worker)
+    }
+  }
+
+  private func withdraw(_ link: AccessLink, space: TonkSpace) async -> Bool {
+    guard let runtime, !working.contains(link.id) else { return false }
     let started = generation
     working.insert(link.id)
     defer { if generation == started { working.remove(link.id) } }
     do {
       try await revoke(link, runtime: runtime, space: space)
-      guard generation == started else { return }
+      guard generation == started else { return false }
       record(
         link.kind == .publicRead ? .unpublished : .revoked, kind: link.kind, target: link.target,
         space: space)
       if link.kind != .publicRead { vault.remove(link.target) }
       notice = link.kind == .publicRead ? "The space is private" : "Link revoked"
       if link.kind == .agent { await refreshAccount() }
-      guard generation == started else { return }
+      guard generation == started else { return false }
       await refresh(space)
+      return true
     } catch {
-      guard generation == started else { return }
+      guard generation == started else { return false }
       notice = "Couldn’t revoke the link: " + Self.message(error)
+      return false
     }
   }
 
   /// Replace a plain link: the new link works before the old one stops.
-  func resetLink(_ link: AccessLink, space: TonkSpace) async {
-    guard let runtime, link.canReset, !working.contains(link.id) else { return }
+  /// Replace a plain link. Fully replaced is success; a new link copied while the old one
+  /// still works is degraded; nothing copied is a failure.
+  func resetLink(
+    _ link: AccessLink, space: TonkSpace, surface: DesktopAnalytics.Surface = .hub
+  ) async {
+    guard runtime != nil, link.canReset, !working.contains(link.id) else { return }
+    let attempt = Telemetry.shared.begin(.collaboration, .resetLink, surface: surface)
+    let started = generation
+    let outcome = await replace(link, space: space)
+    switch outcome {
+    case .replaced: attempt.finish(.success, stage: .remoteCommit)
+    case .oldStillActive: attempt.finish(.degradedSuccess, stage: .clipboard)
+    case .notCopied:
+      attempt.finish(.retryableFailure, stage: .clipboard, failureKind: .localState)
+    case .failed:
+      attempt.finish(generation == started ? .retryableFailure : .cancelled, stage: .worker)
+    }
+  }
+
+  private enum ResetOutcome { case replaced, oldStillActive, notCopied, failed }
+
+  private func replace(_ link: AccessLink, space: TonkSpace) async -> ResetOutcome {
+    guard let runtime, link.canReset, !working.contains(link.id) else { return .failed }
     let started = generation
     working.insert(link.id)
     defer { if generation == started { working.remove(link.id) } }
     do {
       let (url, target) = try await mintPersonLink(runtime: runtime, space: space)
-      guard generation == started else { return }
+      guard generation == started else { return .failed }
       let storageWarning = retain(url, target: target)
       guard copy(url) else {
         record(.made, kind: .person, target: target, space: space)
@@ -412,26 +672,30 @@ final class AccessModel: ObservableObject {
           "A replacement was made but couldn’t be copied; the old link is still active."
           + storageWarning
         await refresh(space)
-        return
+        return .notCopied
       }
       do {
         try await revoke(link, runtime: runtime, space: space)
-        guard generation == started else { return }
+        guard generation == started else { return .failed }
         vault.remove(link.target)
         journal.confirmRevocation(subject: space.subject, target: link.target)
         record(.reset, kind: .person, target: target, space: space)
         notice = "New link copied. The old link no longer works." + storageWarning
+        await refresh(space)
+        return .replaced
       } catch {
-        guard generation == started else { return }
+        guard generation == started else { return .failed }
         record(.made, kind: .person, target: target, space: space)
         notice =
           "New link copied, but the old link is still active: " + Self.message(error)
           + storageWarning
+        await refresh(space)
+        return .oldStillActive
       }
-      await refresh(space)
     } catch {
-      guard generation == started else { return }
+      guard generation == started else { return .failed }
       notice = "Couldn’t reset the link: " + Self.message(error)
+      return .failed
     }
   }
 
@@ -458,12 +722,16 @@ final class AccessModel: ObservableObject {
     return (url.absoluteString, targets.count == 1 ? targets[0] : nil)
   }
 
-  private func finishMint(url: String, target: String?, kind: AccessLinkKind, space: TonkSpace) {
+  private func finishMint(url: String, target: String?, kind: AccessLinkKind, space: TonkSpace)
+    -> Bool
+  {
     let storageWarning = retain(url, target: target)
     record(.made, kind: kind, target: target, space: space)
+    let copied = copy(url)
     notice =
-      (copy(url) ? "Link copied." : "The link was made, but couldn’t be copied.")
+      (copied ? "Link copied." : "The link was made, but couldn’t be copied.")
       + storageWarning
+    return copied
   }
 
   private func retain(_ url: String, target: String?) -> String {

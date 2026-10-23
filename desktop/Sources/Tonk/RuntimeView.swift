@@ -57,6 +57,7 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     // The native picker can cover/detach this view while still querying its worker.
     configuration.preferences.inactiveSchedulingPolicy = .none
     Self.hideFab(in: configuration.userContentController)
+    Self.identifyShell(in: configuration.userContentController)
     websiteDataStore = configuration.websiteDataStore
     webView = WKWebView(frame: .zero, configuration: configuration)
     super.init()
@@ -72,6 +73,15 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     controller.addUserScript(
       WKUserScript(
         source: "window.__tonkHideFab = true;",
+        injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+  }
+
+  /// Tells the web app's analytics it runs inside the desktop app, so its events
+  /// carry `shell=desktop`. Only this closed value is ever reported.
+  static func identifyShell(in controller: WKUserContentController) {
+    controller.addUserScript(
+      WKUserScript(
+        source: "window.__tonkShell = \"desktop\";",
         injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
   }
 

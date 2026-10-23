@@ -3183,7 +3183,11 @@ fn finish_account_navigation(host: &Element) {
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 fn account_completion_destination(saved: Option<&str>) -> &str {
     saved
-        .filter(|value| value.starts_with("/space/") || is_link_destination(value))
+        .filter(|value| {
+            value.starts_with("/space/")
+                || is_link_destination(value)
+                || crate::email_invite::destination(value)
+        })
         .unwrap_or("/")
 }
 
@@ -3222,7 +3226,8 @@ fn current_link_path() -> Option<String> {
         location.search().ok()?,
         location.hash().ok()?
     );
-    is_link_destination(&candidate).then_some(candidate)
+    (is_link_destination(&candidate) || crate::email_invite::destination(&candidate))
+        .then_some(candidate)
 }
 
 /// Return to the surface the ceremony replaced.

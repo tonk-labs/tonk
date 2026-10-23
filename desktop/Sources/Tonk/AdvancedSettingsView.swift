@@ -33,6 +33,7 @@ struct AdvancedSettingsView: View {
         )
         .font(.caption).foregroundStyle(.secondary)
       }
+      UsageDataToggle()
       if let error { Text(error).foregroundStyle(.red) }
       if saved {
         Text("Remote saved. Quit and reopen Tonk to apply it.").foregroundStyle(.secondary)
@@ -55,6 +56,24 @@ struct AdvancedSettingsView: View {
     .onChange(of: custom) { _, _ in
       saved = false
       error = nil
+    }
+  }
+}
+
+/// Turns desktop analytics on or off. Shown only in builds that can send any.
+struct UsageDataToggle: View {
+  @State private var enabled = Telemetry.shared.isEnabled
+
+  var body: some View {
+    if Telemetry.shared.isAvailable {
+      VStack(alignment: .leading, spacing: 6) {
+        Toggle("Share anonymous usage data", isOn: $enabled)
+          .onChange(of: enabled) { _, value in Telemetry.shared.setEnabled(value) }
+        Text(
+          "Counts which features are used and whether they work. Never sends names, messages, links, or anything in your spaces."
+        )
+        .font(.callout).foregroundStyle(.secondary)
+      }
     }
   }
 }

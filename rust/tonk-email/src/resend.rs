@@ -35,7 +35,7 @@ impl Resend {
 
     /// Send a plain-text message.
     pub async fn send(&self, to: &str, subject: &str, text: &str) -> Result<(), EmailError> {
-        self.send_message(to, subject, Some(text), None).await
+        self.send_message(to, subject, Some(text), None, None).await
     }
 
     /// Send an HTML message with a plain-text fallback.
@@ -46,7 +46,22 @@ impl Resend {
         text: &str,
         html: &str,
     ) -> Result<(), EmailError> {
-        self.send_message(to, subject, Some(text), Some(html)).await
+        self.send_message(to, subject, Some(text), Some(html), None)
+            .await
+    }
+
+    /// Send with a stable provider idempotency key. Callers must bound retries to
+    /// the provider's 24-hour retention window.
+    pub async fn send_html_idempotent(
+        &self,
+        to: &str,
+        subject: &str,
+        text: &str,
+        html: &str,
+        key: &str,
+    ) -> Result<(), EmailError> {
+        self.send_message(to, subject, Some(text), Some(html), Some(key))
+            .await
     }
 
     async fn send_message(
@@ -55,6 +70,7 @@ impl Resend {
         subject: &str,
         text: Option<&str>,
         html: Option<&str>,
+        idempotency_key: Option<&str>,
     ) -> Result<(), EmailError> {
         let body = SendRequest {
             from: &self.from,
@@ -74,6 +90,11 @@ impl Resend {
             .set("Content-Type", "application/json")
             .map_err(|err| EmailError::Send(err.to_string()))?;
 
+        if let Some(key) = idempotency_key {
+            headers
+                .set("Idempotency-Key", key)
+                .map_err(|err| EmailError::Send(err.to_string()))?;
+        }
         let mut init = RequestInit::new();
         init.with_method(Method::Post)
             .with_headers(headers)
