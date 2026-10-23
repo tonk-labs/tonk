@@ -274,7 +274,7 @@ async fn cancellation_expiry_and_revoked_sender_device_refuse() {
         .unwrap();
     f.revocations
         .0
-        .record(&identity.to_cid().to_string(), f.sender.did().as_str())
+        .record(&identity.to_cid().to_string(), f.sender.did().as_str(), b"")
         .await
         .unwrap();
     let proof = DelegationChain::new(identity);

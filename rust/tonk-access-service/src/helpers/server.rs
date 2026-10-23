@@ -61,6 +61,9 @@ pub struct AccessServer {
     pub service_did: String,
     /// The hex seed the service identity and the permit key derive from.
     pub service_seed: String,
+    /// The revocation index `/ucan/revoke` writes and the authorizer
+    /// reads.
+    revocations: Arc<crate::revocation::index::MemoryRevocationIndex>,
     shutdown_tx: tokio::sync::oneshot::Sender<()>,
     server_handle: tokio::task::JoinHandle<()>,
 }
@@ -233,7 +236,7 @@ impl AccessServer {
             // dev proxy is not this server's own address.
             origin: public_origin.unwrap_or_else(|| endpoint.clone()),
             purger,
-            revocations,
+            revocations: revocations.clone(),
             authorizer: authorizer.clone(),
             permit_key,
             endpoint: endpoint.clone(),
@@ -282,6 +285,7 @@ impl AccessServer {
             emails,
             service_did,
             service_seed,
+            revocations,
             shutdown_tx,
             server_handle,
         })
@@ -1724,6 +1728,9 @@ pub struct AccessServiceSettings {
     /// every synced block — and the delegations retained in account
     /// repositories with them.
     pub state_dir: Option<std::path::PathBuf>,
+    /// Record revocations without their signed documents, as the service
+    /// did before it kept them, so refusals carry no evidence.
+    pub drop_revocation_documents: bool,
 }
 
 impl Default for AccessServiceSettings {
@@ -1735,6 +1742,7 @@ impl Default for AccessServiceSettings {
             deployment: None,
             public_origin: None,
             state_dir: None,
+            drop_revocation_documents: false,
         }
     }
 }
@@ -1989,6 +1997,9 @@ pub async fn access_service(
         settings.state_dir.as_deref(),
     )
     .await?;
+    if settings.drop_revocation_documents {
+        access_server.revocations.forget_documents();
+    }
 
     let address = AccessServiceAddress {
         access_service_url: access_server.endpoint.clone(),
