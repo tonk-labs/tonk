@@ -816,7 +816,9 @@ async fn prepare_parsed_join(
     // (the chain has a specific subject).
     let invitation = Invitation::from_chain(invite.invitation_chain())
         .expect("Invite invariant: chain has a specific subject");
-    let inviter = tonk_schema::inviting_account(&invite.chain);
+    // The sender's chain, not the completed one: an email claim's last hop
+    // is the service's, and the inviter is whoever sent the invitation.
+    let inviter = tonk_schema::inviting_account(invite.invitation_chain());
 
     let open = matches!(&invite.audience, InviteAudience::Open { .. });
     let invitation_execution =
