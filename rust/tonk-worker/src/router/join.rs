@@ -560,6 +560,11 @@ pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutco
     if let Some(public) = Ticket::public_for_url(url)
         .map_err(|error| JoinFailure::malformed(format!("space address did not parse: {error}")))?
     {
+        // A DID with a document of its own names a space there, rather
+        // than being one.
+        if public.subject().method() == "web" {
+            return open_named_space(tonk, public.subject()).await;
+        }
         return open_space(tonk, public).await;
     }
     // Per-phase wall clock, logged on success: the perform phase is the
@@ -576,6 +581,34 @@ pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutco
         prepared_at.elapsed().as_millis()
     );
     Ok(outcome)
+}
+
+/// Open the space a DID's document names, `/space/did:web:{host}`, from
+/// the peers the document says hold it (see [`tonk_invite::did_space`]).
+///
+/// Each peer is tried in the document's order, as the space's bare address
+/// would be tried against its own host, until one serves it: a peer that
+/// cannot be reached gives way to the next, and any other answer (the
+/// space is private, its ticket is malformed) is the space's own and ends
+/// the attempt.
+async fn open_named_space(tonk: &TonkState, did: &Did) -> Result<JoinOutcome, JoinFailure> {
+    let services = dialog_did_web::Discover::new(did.clone())
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| JoinFailure::unavailable(format!("{did} did not resolve: {error}")))?;
+    let tickets = tonk_invite::did_space::tickets(did, &services)
+        .map_err(|error| JoinFailure::malformed(error.to_string()))?;
+    let mut unreachable = None;
+    for ticket in tickets {
+        match open_space(tonk, ticket).await {
+            Err(failure) if failure.kind() == JoinFailureKind::Unavailable => {
+                unreachable = Some(failure);
+            }
+            outcome => return outcome,
+        }
+    }
+    Err(unreachable
+        .unwrap_or_else(|| JoinFailure::unavailable(format!("{did} names no reachable peer"))))
 }
 
 /// Open a space this device holds no replica of from its bare address,
@@ -1998,6 +2031,12 @@ fn opens_in_place(url: &str) -> bool {
     matches!(Ticket::parse_url(url), Ok(Some(_))) || is_bare_space_address(url)
 }
 
+/// Whether `url` is a space's bare address naming it by a DID other than
+/// `subject`, the space it opened: a DID whose document names the space.
+fn names_another_space(url: &str, subject: &Did) -> bool {
+    matches!(Ticket::public_for_url(url), Ok(Some(public)) if public.subject() != subject)
+}
+
 /// Drop this join's own overlay facts, and only those (scoped clear).
 ///
 /// The branch overlay is SHARED: the tab's `tonk:site` facts (path,
@@ -2118,7 +2157,12 @@ async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
             // installed it (`adopt_waiting_views`): the page stays where it
             // is. A ticket link's address carries its seed, so it gives
             // way to the space's own in the history, without a load.
-            if opens_in_place(page) && !outcome.renewed {
+            // A space named by a DID is the space's page only by name: its
+            // views waited for the DID, which no replica answers to, so the
+            // space's own address loads in its place.
+            if names_another_space(page, &outcome.subject) {
+                crate::router::navigate::notify_replace(env.client(), &href);
+            } else if opens_in_place(page) && !outcome.renewed {
                 if matches!(Ticket::parse_url(page), Ok(Some(_))) {
                     crate::router::navigate::notify_replace_route(env.client(), &href);
                 }
@@ -2334,6 +2378,30 @@ mod invite_presence_tests {
         assert!(!opens_in_place(&format!(
             "https://tonk.space/space/{space}/inspector"
         )));
+    }
+
+    /// A space named by a DID opens on its own address in place of the
+    /// DID's; one opened from its own address, raw or encoded, stays put.
+    #[dialog_common::test]
+    fn it_leaves_a_did_naming_the_space_for_the_spaces_own_address() {
+        use super::names_another_space;
+        let space: dialog_varsig::Did = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+            .parse()
+            .unwrap();
+        let encoded = space.as_str().replace(':', "%3A");
+
+        assert!(names_another_space(
+            "https://tonk.space/space/did:web:example.com/",
+            &space
+        ));
+        for address in [
+            format!("https://tonk.space/space/{space}"),
+            format!("https://tonk.space/space/{space}/"),
+            format!("https://tonk.space/space/{encoded}"),
+            "https://tonk.space/join".to_owned(),
+        ] {
+            assert!(!names_another_space(&address, &space), "{address}");
+        }
     }
 }
 

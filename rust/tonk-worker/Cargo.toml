@@ -48,6 +48,7 @@ dialog-reactor = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-csv = { workspace = true }
 dialog-effects = { workspace = true }
+dialog-did-web = { workspace = true }
 dialog-peer = { workspace = true }
 dialog-query = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }

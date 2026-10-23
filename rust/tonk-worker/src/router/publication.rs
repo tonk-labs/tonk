@@ -869,6 +869,135 @@ mod tests {
         drop(service);
     }
 
+    /// A DID whose document names a published space and the peers holding
+    /// it opens that space from its address, `/space/did:web:…/`: a peer
+    /// that cannot be reached gives way to the next, the space lands under
+    /// its own DID, and the next visit finds it here.
+    #[dialog_common::test]
+    async fn it_opens_a_published_space_from_the_did_naming_it() {
+        let (tonk, service, root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let recipient =
+            tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([8u8; 32]))
+                .secret()
+                .did();
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await
+                .expect("the device grant mints");
+        crate::router::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "named-space-test".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().expect("the grant serializes")),
+                passkey: None,
+                encryption_key: Some(recipient.to_string()),
+            },
+        )
+        .await
+        .expect("the root persists");
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let key = super::super::repository::create_space_inner(&state, "Named", None)
+            .await
+            .expect("the space creates");
+        super::super::repository::enable_sync_inner(&state, &key, &remote)
+            .await
+            .expect("the remote attaches");
+        let space: dialog_varsig::Did = key.parse().expect("the key is the space's DID");
+        {
+            let tonk = state.read().await;
+            publish(&tonk, &key).await.expect("the founder publishes");
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .expect("content branch opens")
+                .handle()
+                .push()
+                .perform(&tonk.operator)
+                .await
+                .expect("published content reaches the service");
+        }
+
+        // The DID's document, served on loopback as a domain would serve
+        // it: the space, a peer nothing listens at, then the peer holding
+        // the space.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the document host binds");
+        let port = listener
+            .local_addr()
+            .expect("the bound address reads")
+            .port();
+        let did = format!("did:web:127.0.0.1%3A{port}:named");
+        let document = serde_json::json!({
+            "id": did,
+            "service": [
+                {
+                    "id": format!("{did}#space"),
+                    "type": tonk_invite::did_space::REPOSITORY_SERVICE,
+                    "serviceEndpoint": key,
+                },
+                {
+                    "id": format!("{did}#gone"),
+                    "type": tonk_invite::did_space::PEER_SERVICE,
+                    "serviceEndpoint": "http://127.0.0.1:1/ucan/",
+                },
+                {
+                    "id": format!("{did}#peer"),
+                    "type": tonk_invite::did_space::PEER_SERVICE,
+                    "serviceEndpoint": remote,
+                },
+            ],
+        });
+        let host = axum::Router::new().route(
+            "/named/did.json",
+            axum::routing::get(move || {
+                let document = document.clone();
+                async move { axum::Json(document) }
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, host).await });
+
+        let address = format!("https://tonk.foundation/space/{did}/");
+        let reader = crate::router::command::tests::native::test_state().await;
+        {
+            let reader = reader.read().await;
+            let opened = crate::router::join::join_invite(&reader, &address)
+                .await
+                .expect("a visitor opens the space the DID names");
+            assert_eq!(opened.subject, space, "the space opens under its own DID");
+            assert_eq!(opened.key, key);
+            assert!(!opened.renewed, "the first open installs a replica");
+            assert!(
+                crate::router::join::find_replica_for_subject(&reader, &space)
+                    .await
+                    .expect("replica lookup"),
+                "the space is in the visitor's profile"
+            );
+            let again = crate::router::join::join_invite(&reader, &address)
+                .await
+                .expect("a second open succeeds");
+            assert!(again.renewed, "the second open finds it here");
+        }
+        server.abort();
+
+        let account_key = {
+            let tonk = state.read().await;
+            crate::router::account_state::require_ready_account_state(&tonk)
+                .await
+                .expect("the linked account is ready")
+                .key
+                .clone()
+        };
+        let tonk = std::sync::Arc::try_unwrap(state)
+            .unwrap_or_else(|_| panic!("the state has no other holders"))
+            .into_inner();
+        crate::router::account_state::tests::discard(tonk, &account_key);
+        drop(service);
+    }
+
     /// An unpublish that fails after taking the ticket back leaves the
     /// publication recorded with nothing a visitor can claim. Publishing
     /// again has to notice and publish afresh rather than answer the old

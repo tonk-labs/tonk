@@ -46,6 +46,17 @@
 //! claims it from the access service at the link's origin; see
 //! [`ticket`].
 //!
+//! ## Spaces named by a DID
+//!
+//! ```text
+//! <origin>/space/did:web:<host>
+//! ```
+//!
+//! A space's address with a `did:web` in place of the space's own DID:
+//! the DID's document names the space's repository and the peers holding
+//! it, and the space opens from them with its public ticket; see
+//! [`did_space`].
+//!
 //! ## Join addresses
 //!
 //! ```text
@@ -65,6 +76,7 @@
 mod attribution;
 pub mod connection;
 pub mod delivery;
+pub mod did_space;
 pub mod join_address;
 pub mod local_space_link;
 pub mod public;

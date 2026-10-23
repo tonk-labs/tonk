@@ -238,14 +238,25 @@ fn claim_endpoint(url: &Url) -> Result<Url> {
 
 /// The space a `/space/{did}` address opens. The DID may arrive
 /// percent-encoded (`did%3Akey%3A…`), as an address bar, a chat client or
-/// `encodeURIComponent` leaves it; it names the same space.
+/// `encodeURIComponent` leaves it, or with a trailing slash, as the space's
+/// root page is written (`/space/{did}/`); it names the same space.
+///
+/// A DID written with its colons is taken as written: a `did:web` keeps
+/// its own percent-encoding (`did:web:localhost%3A8090`, a port), which
+/// decoding would turn into a path segment.
 fn space_subject(url: &Url) -> Option<Did> {
     let mut segments = url.path_segments()?;
-    let (Some(SPACE_PATH), Some(subject), None) =
+    let (Some(SPACE_PATH), Some(subject), None | Some("")) =
         (segments.next(), segments.next(), segments.next())
     else {
         return None;
     };
+    if segments.next().is_some() {
+        return None;
+    }
+    if subject.contains(':') {
+        return subject.parse().ok();
+    }
     urlencoding::decode(subject).ok()?.parse().ok()
 }
 
@@ -428,8 +439,20 @@ mod tests {
             Ticket::parse_url(&encoded_link).unwrap().unwrap().subject(),
             &subject
         );
+        // The space's root page, written with a trailing slash, is the
+        // same address.
+        let rooted = Ticket::public_for_url(&format!("https://tonk.example/space/{subject}/"))
+            .unwrap()
+            .expect("a space's root page");
+        assert_eq!(rooted.subject(), &subject);
+        // A did:web keeps its own encoding: its port is not a path.
+        let named = Ticket::public_for_url("https://tonk.example/space/did:web:localhost%3A8090/")
+            .unwrap()
+            .expect("a space named by a DID");
+        assert_eq!(named.subject().as_str(), "did:web:localhost%3A8090");
         for elsewhere in [
             format!("https://tonk.example/space/{subject}/inspector"),
+            format!("https://tonk.example/space/{subject}//"),
             "https://tonk.example/join".to_owned(),
         ] {
             assert!(Ticket::public_for_url(&elsewhere).unwrap().is_none());
