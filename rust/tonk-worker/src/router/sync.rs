@@ -775,18 +775,11 @@ pub async fn pull(
         }));
     }
 
-    // Every branch pulls the same way: adopt the head, materialize
-    // nothing. `.download()` here walked every block the revision
-    // references, and history records live in the same tree as the
-    // data, so an account pull dragged the branch's whole lineage down
-    // before anything could render.
-    //
-    // What the account actually needs local is the handful of blocks
-    // the next boot's authorization walk reads, and those arrive by
-    // being READ: `NetworkedIndex` hydrates a read-miss from the remote
-    // and writes it into the local archive on the way through. So the
-    // account claims its capability chains by proving them instead,
-    // started detached below.
+    // A pull adopts the head and materializes nothing, except in the
+    // profile's own repository, where the reactor downloads the
+    // operational regions before the head moves: that branch holds the
+    // delegations that authorize every on-demand read, and a head adopted
+    // by reference names blocks only a proof through them could fetch.
     let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
     let pulled = tonk_state
         .reactor
