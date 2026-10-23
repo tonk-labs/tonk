@@ -41,6 +41,24 @@ final class RuntimeLocationTests: XCTestCase {
       RuntimeLocation.resolve(arguments: ["--local-runtime"], defaults: defaults), .local)
   }
 
+  func testChannelDecidesTheDefaultRemote() throws {
+    let name = "RuntimeLocationTests-" + UUID().uuidString
+    let defaults = UserDefaults(suiteName: name)!
+    defer { defaults.removePersistentDomain(forName: name) }
+    XCTAssertEqual(RuntimeLocation.Channel.current, .stable)
+    XCTAssertEqual(
+      RuntimeLocation.resolve(arguments: [], defaults: defaults, channel: .stable), .production)
+    let nightly = RuntimeLocation.resolve(arguments: [], defaults: defaults, channel: .nightly)
+    XCTAssertEqual(nightly, try RuntimeLocation.remote("tonk.foundation"))
+    XCTAssertEqual(nightly.home.absoluteString, "https://tonk.foundation")
+    defaults.set("tonk.network", forKey: RuntimeLocation.preferenceKey)
+    XCTAssertEqual(
+      RuntimeLocation.resolve(arguments: [], defaults: defaults, channel: .nightly), .production)
+    defaults.set("http://invalid.example", forKey: RuntimeLocation.preferenceKey)
+    XCTAssertEqual(
+      RuntimeLocation.resolve(arguments: [], defaults: defaults, channel: .nightly), nightly)
+  }
+
   func testRemoteDataAndAuthorizationAreIsolated() throws {
     let deployments: [RuntimeLocation.Deployment] = [
       .production, .local,

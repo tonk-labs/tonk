@@ -5,7 +5,8 @@ import WebKit
 @MainActor
 extension RuntimeModel {
   var supportsDirectPasskey: Bool {
-    RuntimeLocation.deployment == .production
+    // The signed associated domain is the channel's own remote, so passkeys work only there.
+    RuntimeLocation.isChannelHome
       && Bundle.main.object(forInfoDictionaryKey: "TonkDirectPasskeyEnabled") as? Bool == true
   }
 

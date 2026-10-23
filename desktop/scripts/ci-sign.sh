@@ -3,7 +3,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 [[ "${RUNNER_OS:-}" == macOS ]] || { echo 'Signing requires a macOS CI runner.' >&2; exit 1; }
-for required in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD TONK_PROVISIONING_PROFILE_BASE64 RUNNER_TEMP; do
+source desktop/scripts/channel.sh
+# Each channel has its own passkey profile. Stable requires one; nightly signs
+# without passkey entitlements until its profile secret is configured.
+required_inputs=(MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD RUNNER_TEMP)
+if [[ "$desktop_channel" == stable ]]; then
+  profile_input=TONK_PROVISIONING_PROFILE_BASE64
+  required_inputs+=("$profile_input")
+else
+  profile_input=TONK_NIGHTLY_PROVISIONING_PROFILE_BASE64
+fi
+passkeys=$([[ -n "${!profile_input:-}" ]] && echo 1 || echo 0)
+[[ "$passkeys" == 1 ]] || echo "No $profile_input: signing $desktop_channel without direct passkeys."
+for required in "${required_inputs[@]}"; do
   [[ -n "${!required:-}" ]] || { echo "Missing signing input: $required" >&2; exit 1; }
 done
 umask 077
@@ -22,7 +34,6 @@ cleanup() {
 }
 trap cleanup EXIT
 printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$signing_dir/identity.p12"
-printf '%s' "$TONK_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$signing_dir/profile.provisionprofile"
 security create-keychain -p "$password" "$keychain"
 security set-keychain-settings -lut 3600 "$keychain"
 security unlock-keychain -p "$password" "$keychain"
@@ -35,30 +46,44 @@ while IFS= read -r identity; do
 done < <(security find-identity -v -p codesigning "$keychain" | sed -nE 's/.* ([[:xdigit:]]{40}) ".*/\1/p')
 [[ ${#identities[@]} -eq 1 ]] || { echo 'Certificate archive must contain exactly one valid signing identity.' >&2; exit 1; }
 export TONK_SIGN_IDENTITY=${identities[0]}
-export TONK_PROVISIONING_PROFILE="$signing_dir/profile.provisionprofile"
-security cms -D -i "$TONK_PROVISIONING_PROFILE" > "$signing_dir/profile.plist"
-python3 desktop/scripts/passkey-entitlements.py "$signing_dir/profile.plist" "$signing_dir/expected.plist" "$TONK_SIGN_IDENTITY"
+if [[ "$passkeys" == 1 ]]; then
+  printf '%s' "${!profile_input}" | base64 --decode > "$signing_dir/profile.provisionprofile"
+  export TONK_PROVISIONING_PROFILE="$signing_dir/profile.provisionprofile"
+  security cms -D -i "$TONK_PROVISIONING_PROFILE" > "$signing_dir/profile.plist"
+  TONK_DESKTOP_CHANNEL=$desktop_channel python3 desktop/scripts/passkey-entitlements.py "$signing_dir/profile.plist" "$signing_dir/expected.plist" "$TONK_SIGN_IDENTITY"
+else
+  unset TONK_PROVISIONING_PROFILE
+fi
 # Import before entering Nix; the shared build uses the host Keychain and Xcode.
 nix --accept-flake-config develop .#ci -c build:desktop
-app=desktop/.build/Tonk.app
+app="desktop/.build/$desktop_app_name.app"
 codesign --verify --strict "$app"
 signed_team=$(codesign -dv "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p')
 [[ "$signed_team" == 8WVKS2F24C ]] || { echo 'Signed app is not from Tonk Labs.' >&2; exit 1; }
-codesign -d --entitlements :- "$app" > "$signing_dir/signed.plist" 2>/dev/null
 codesign -d --extract-certificates="$signing_dir/cert" "$app" 2>/dev/null
-python3 - "$signing_dir" "$app" "$TONK_SIGN_IDENTITY" <<'PY'
+if [[ "$passkeys" == 1 ]]; then
+  codesign -d --entitlements :- "$app" > "$signing_dir/signed.plist" 2>/dev/null
+fi
+python3 - "$signing_dir" "$app" "$TONK_SIGN_IDENTITY" "$desktop_bundle_id" "$desktop_channel" "$passkeys" <<'PY'
 import hashlib, plistlib, sys
 from pathlib import Path
 root, app = map(Path, sys.argv[1:3])
-expected = plistlib.loads((root / 'expected.plist').read_bytes())
-signed = plistlib.loads((root / 'signed.plist').read_bytes())
-assert all(signed.get(key) == value for key, value in expected.items()), 'Signed entitlements differ'
-assert hashlib.sha1((root / 'cert0').read_bytes()).hexdigest().upper() == sys.argv[3].upper(), 'Unexpected signing certificate'
-assert (app / 'Contents/embedded.provisionprofile').read_bytes() == (root / 'profile.provisionprofile').read_bytes(), 'Embedded profile differs'
+identity, bundle_id, channel, passkeys = sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6] == '1'
+assert hashlib.sha1((root / 'cert0').read_bytes()).hexdigest().upper() == identity.upper(), 'Unexpected signing certificate'
 info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
-assert info.get('CFBundleIdentifier') == 'xyz.tonk', 'Unexpected app identifier'
-assert info.get('TonkDirectPasskeyEnabled') is True, 'Direct passkeys are disabled'
-print('Verified Tonk signing identity, embedded profile, associated domains and direct-passkey flag.')
+assert info.get('CFBundleIdentifier') == bundle_id, 'Unexpected app identifier'
+assert info.get('TonkChannel') == channel, 'Unexpected app channel'
+if passkeys:
+    expected = plistlib.loads((root / 'expected.plist').read_bytes())
+    signed = plistlib.loads((root / 'signed.plist').read_bytes())
+    assert all(signed.get(key) == value for key, value in expected.items()), 'Signed entitlements differ'
+    assert (app / 'Contents/embedded.provisionprofile').read_bytes() == (root / 'profile.provisionprofile').read_bytes(), 'Embedded profile differs'
+    assert info.get('TonkDirectPasskeyEnabled') is True, 'Direct passkeys are disabled'
+    print(f'Verified Tonk signing identity, {channel} embedded profile, associated domains and direct-passkey flag.')
+else:
+    assert not (app / 'Contents/embedded.provisionprofile').exists(), 'Unexpected embedded profile'
+    assert 'TonkDirectPasskeyEnabled' not in info, 'Direct passkeys need the stable profile'
+    print(f'Verified Tonk signing identity and {channel} app identity.')
 PY
 mkdir -p desktop/artifacts
 ditto -c -k --sequesterRsrc --keepParent "$app" desktop/artifacts/Tonk-macos-arm64.zip

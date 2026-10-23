@@ -1,4 +1,4 @@
-name: Desktop dev
+name: Desktop nightly
 on:
   push:
     branches: [main]
@@ -7,6 +7,8 @@ permissions:
 jobs:
   build:
     uses: ./.github/workflows/desktop-release.yml
+    with:
+      channel: nightly
     secrets: inherit
   publish-dev:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -40,10 +42,10 @@ jobs:
           else
             gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA"
           fi
-          notes="Latest successful Desktop dev build from main: $GITHUB_SHA. macOS 15+, Apple Silicon. Download Tonk-macos-arm64.zip, unzip, and move Tonk.app to Applications. Signed and notarized."
+          notes="Latest successful Tonk Nightly build from main: $GITHUB_SHA. Uses tonk.foundation by default. macOS 15+, Apple Silicon. Download Tonk-macos-arm64.zip, unzip, and move Tonk Nightly.app to Applications. Signed and notarized."
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release edit "$tag" --title 'Tonk Desktop (dev)' --notes "$notes" --prerelease --latest=false
+            gh release edit "$tag" --title 'Tonk Desktop Nightly' --notes "$notes" --prerelease --latest=false
           else
-            gh release create "$tag" --verify-tag --title 'Tonk Desktop (dev)' --notes "$notes" --prerelease --latest=false
+            gh release create "$tag" --verify-tag --title 'Tonk Desktop Nightly' --notes "$notes" --prerelease --latest=false
           fi
           gh release upload "$tag" artifacts/Tonk-* --clobber

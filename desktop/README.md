@@ -10,21 +10,20 @@
 
 ## Download Tonk Desktop
 
-For macOS 15+ on Apple Silicon. Unzip the download and move **Tonk.app** to
-**Applications**.
+For macOS 15+ on Apple Silicon. Unzip the download and move **Tonk Nightly.app**
+to **Applications**.
 
 | Channel | Download | Published from |
 | --- | --- | --- |
-| Stable | [Download for Mac](https://github.com/tonk-labs/tonk/releases/latest/download/Tonk-macos-arm64.zip) | Final `vX.Y.Z` tags |
-| Staging / RC | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-staging/Tonk-macos-arm64.zip) | Prerelease `vX.Y.Z-rc.N` tags |
-| Dev / main | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-desktop-dev/Tonk-macos-arm64.zip) | Latest successfully published `main` build |
+| Nightly | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-desktop-dev/Tonk-macos-arm64.zip) | Latest successfully published `main` build |
 
-All channels are Developer ID signed and notarized. Each release includes
-`Tonk-macos-arm64.sha256` and `Tonk-desktop-manifest.json` with the exact version
-and source commit. Links become available after the first successful release
-for each channel. Downloads are manual; all channels use the same app identity
-and local data, so installing another channel replaces the installed app.
-These are build channels; all currently use the production Tonk service.
+Nightly is its own app, **Tonk Nightly** (`xyz.tonk.nightly`), and uses
+`tonk.foundation` by default. The stable app, **Tonk** (`xyz.tonk`), uses
+`tonk.network`; it is not published until Desktop ships to production. The two
+have separate identities and local data, so they can be installed side by side.
+Builds are Developer ID signed and notarized, and include
+`Tonk-macos-arm64.sha256` and `Tonk-desktop-manifest.json` with the exact
+version, channel and source commit. Downloads are manual.
 
 ## Build
 
@@ -43,6 +42,9 @@ dev:desktop
 bash desktop/scripts/build-app.sh
 open desktop/.build/Tonk.app
 ```
+
+Builds are stable by default. Set `TONK_DESKTOP_CHANNEL=nightly` to build
+`desktop/.build/Tonk Nightly.app`, which defaults to `tonk.foundation`.
 
 The root flake and lockfile cover the whole monorepo. Run `menu` for commands,
 including `build:desktop`, `dev:desktop:open`, `test:desktop`, and
@@ -100,6 +102,7 @@ Repository secrets:
 - `MACOS_CERTIFICATE_P12`: the existing base64-encoded Tonk signing identity and private key archive used for CLI releases.
 - `MACOS_CERTIFICATE_PASSWORD`: its archive password.
 - `TONK_PROVISIONING_PROFILE_BASE64`: base64-encoded Apple profile for `8WVKS2F24C.xyz.tonk`, authorizing that exact certificate and Associated Domains.
+- `TONK_NIGHTLY_PROVISIONING_PROFILE_BASE64`: the same for `8WVKS2F24C.xyz.tonk.nightly` with `webcredentials:tonk.foundation`. Optional: without it, nightly is signed without direct passkeys.
 
 The signing script imports the identity into a temporary runner keychain and
 restores/deletes it on exit. It requires a matching unexpired profile, embeds
@@ -108,8 +111,10 @@ certificate, associated-domain entitlements, embedded profile and app flag.
 Missing credentials or a mismatched profile fail the signing stage.
 
 The optional manual artifact is signed and provisioned. Automatic releases use
-`desktop-dev.yml`: every main push builds a dev release; `release.yml`
-calls the shared `desktop-release.yml` build for version tags and publishes Desktop alongside the CLI.
+`desktop-dev.yml`: every main push builds the nightly channel through the shared
+`desktop-release.yml` build. Nightly uses its own passkey profile when
+`TONK_NIGHTLY_PROVISIONING_PROFILE_BASE64` is set. Version tags do not publish Desktop until the stable
+channel ships.
 These release builds use Swift release configuration, hardened runtime, a secure
 signing timestamp, required Apple notarization, and a stapled ticket. Publication
 fails if signing, notarization or verification fails. Superseded dev builds do
@@ -118,8 +123,10 @@ not overwrite the current main build.
 Release notarization also requires `APP_STORE_CONNECT_KEY_P8`,
 `APP_STORE_CONNECT_KEY_ID`, and `APP_STORE_CONNECT_ISSUER_ID`, shared with CLI CI.
 
- Direct passkeys are enabled for `https://tonk.network`; that domain
-must serve an AASA `webcredentials` entry for `8WVKS2F24C.xyz.tonk`. CI does not
+Direct passkeys are enabled only on each channel's own remote. `tonk.network`
+must serve an AASA `webcredentials` entry for `8WVKS2F24C.xyz.tonk`, and
+`tonk.foundation` one for `8WVKS2F24C.xyz.tonk.nightly`
+(`desktop/experiments/wk-passkey/association-worker.mjs` serves both). CI does not
 perform a real passkey ceremony or prove recovery of an existing account.
 
 ## Activity layout fixture
