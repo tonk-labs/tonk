@@ -159,13 +159,15 @@ fn failure_stage(message: &str) -> Option<Stage> {
     .map(|(_, stage)| stage)
 }
 
-/// The stage to show after a refused claim, given the account's stage now.
+/// The stage to show after a refused claim, given whether the account's
+/// email is now read as confirmed.
 ///
 /// A 409 also answers an invitation that changed or was already claimed;
-/// for a confirmed account that is the only reading left.
-fn settled(refused: Stage, now: Stage) -> Stage {
-    match (refused, now) {
-        (Stage::Unconfirmed, Stage::Ready) => Stage::Gone,
+/// for a verified `Active` account that is the only reading left. An
+/// unread status proves nothing, so the refusal stays retryable.
+fn settled(refused: Stage, confirmed: bool) -> Stage {
+    match (refused, confirmed) {
+        (Stage::Unconfirmed, true) => Stage::Gone,
         (refused, _) => refused,
     }
 }
@@ -386,8 +388,8 @@ impl CustomElement for EmailInvite {
                         match failure_stage(&message) {
                             Some(stage) => {
                                 status(&host, "");
-                                let (now, email) = account().await;
-                                show(&host, settled(stage, now), email.as_deref());
+                                let (_, email, confirmed) = account().await;
+                                show(&host, settled(stage, confirmed), email.as_deref());
                             }
                             None => status(&host, readable(&message)),
                         }
@@ -439,15 +441,16 @@ fn status(host: &HtmlElement, message: &str) {
 
 /// Re-read the account and show the stage it implies, unless it is unchanged.
 async fn refresh(host: &HtmlElement) {
-    let (stage, email) = account().await;
+    let (stage, email, _) = account().await;
     let current = host.get_attribute("data-stage").unwrap_or_default();
     if current != format!("{stage:?}").to_lowercase() || current == "checking" {
         show(host, stage, email.as_deref());
     }
 }
 
-/// The account's stage before claiming, and its email when known.
-async fn account() -> (Stage, Option<String>) {
+/// The account's stage before claiming, its email when known, and whether
+/// the service verifiably reads it as confirmed.
+async fn account() -> (Stage, Option<String>, bool) {
     resolve_profile().await;
     let signed_in = matches!(
         crate::api::root_status().await,
@@ -464,7 +467,12 @@ async fn account() -> (Stage, Option<String>) {
     let email = customer
         .as_ref()
         .and_then(|state| state.get("email").and_then(Value::as_str));
-    (account_stage(signed_in, status), email.map(str::to_owned))
+    let confirmed = status == Some(Some("Active"));
+    (
+        account_stage(signed_in, status),
+        email.map(str::to_owned),
+        confirmed,
+    )
 }
 
 /// Ask for another activation email, as the account ceremony does.
@@ -637,15 +645,18 @@ mod tests {
 
     #[test]
     fn a_conflict_for_a_confirmed_account_means_the_invitation_is_gone() {
-        assert_eq!(settled(Stage::Unconfirmed, Stage::Ready), Stage::Gone);
-        assert_eq!(
-            settled(Stage::Unconfirmed, Stage::Unconfirmed),
-            Stage::Unconfirmed
-        );
-        assert_eq!(
-            settled(Stage::WrongAccount, Stage::Ready),
-            Stage::WrongAccount
-        );
+        assert_eq!(settled(Stage::Unconfirmed, true), Stage::Gone);
+        assert_eq!(settled(Stage::Unconfirmed, false), Stage::Unconfirmed);
+        assert_eq!(settled(Stage::WrongAccount, true), Stage::WrongAccount);
+    }
+
+    #[test]
+    fn an_unread_confirmation_status_keeps_a_refusal_retryable() {
+        // The status read failed, so the page offered Join; a 409 then
+        // must not be taken as proof the invitation is gone.
+        assert_eq!(account_stage(true, None), Stage::Ready);
+        assert_eq!(settled(Stage::Unconfirmed, false), Stage::Unconfirmed);
+        assert_eq!(view(Stage::Unconfirmed).action, Some(Action::Recheck));
     }
 
     #[test]
