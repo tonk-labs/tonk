@@ -24,6 +24,15 @@ final class ContactLookupModel: ObservableObject {
     return value.hasPrefix("did:key:") && value.count > 8
       && !value.contains(where: { $0.isWhitespace }) ? value : nil
   }
+  /// A complete-looking address, so typing can look it up without a button.
+  var isCompleteEmail: Bool {
+    let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    let parts = value.split(separator: "@", omittingEmptySubsequences: false)
+    guard parts.count == 2, !parts[0].isEmpty, !value.contains(where: { $0.isWhitespace })
+    else { return false }
+    let labels = parts[1].split(separator: ".", omittingEmptySubsequences: false)
+    return labels.count >= 2 && labels.allSatisfy { !$0.isEmpty } && labels.last!.count >= 2
+  }
   var identity: EmailContactIdentity? {
     if case .found(let identity) = result { return identity }
     return nil

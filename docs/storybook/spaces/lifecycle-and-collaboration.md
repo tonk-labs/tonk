@@ -92,6 +92,28 @@ Desktop tests cover durable retry IDs and account separation. Browser execution,
 production email delivery and cross-device recovery have separate evidence in the
 [email invitation plan](../../../plans/2026-10-21-email-invite-onboarding.md).
 
+### Invite an existing contact (`COLLAB-02`)
+
+In the Desktop Address Book, a contact's detail and its context menu offer
+**Invite to a space…** for anyone other than the signed-in account. The sheet
+lists my spaces the contact has not already joined. **Copy invite link** mints a
+link only that contact's account can claim. The grant names the chosen space and
+the contact's account key, which is the root DID that an email lookup saves and
+that a roster lists. The link is kept on this Mac, copied, and recorded in
+Activity. It then appears in the space's Links as “Link for <name>” with Copy
+and Revoke. There is no Reset, because no other account can use the link. The
+app refuses a worker response that is open, or that is addressed to anyone
+else. Sending this link by email is not offered yet: the email invitation above
+is only for addresses with no account.
+
+Opening the link signed in as the contact claims it through the ordinary
+`/join` path. Any other account is refused with “This invite was issued to a
+different identity.” A contact saved from a manually entered device key, rather
+than an account key, gets a link nobody can claim. Desktop model tests cover
+minting, retention, journal, telemetry and wrong-audience rejection. Worker
+tests cover the targeted claim and the refusal. A signed-in claim of a link
+minted from Desktop has not been run end to end.
+
 ### Invitation sender (`COLLAB-01`, `COLLAB-02`)
 
 When Alice invites Bob and Bob mints a new invitation for Carol, Carol's

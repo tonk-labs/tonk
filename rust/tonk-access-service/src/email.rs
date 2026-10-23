@@ -73,14 +73,51 @@ impl Resend {
     }
 }
 
+/// The copy that fills the shared branded email layout.
 #[cfg(any(target_arch = "wasm32", test))]
-fn activation_email_html(link: &str) -> String {
-    let link = link
+struct BrandedEmail<'a> {
+    /// Document title, shown by clients that surface it.
+    title: &'a str,
+    /// Hidden inbox preview line.
+    preheader: &'a str,
+    /// Lowercase card heading.
+    heading: &'a str,
+    /// Lowercase label of the card's one button.
+    action: &'a str,
+    /// Destination of the action button, escaped here.
+    link: &'a str,
+    /// The message in the card body.
+    body: &'a str,
+    /// Muted closing line under the card.
+    footnote: &'a str,
+}
+
+/// Escape `value` for an HTML attribute or text node.
+#[cfg(any(target_arch = "wasm32", test))]
+fn escape_html(value: &str) -> String {
+    value
         .replace('&', "&amp;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
         .replace('<', "&lt;")
-        .replace('>', "&gt;");
+        .replace('>', "&gt;")
+}
+
+/// The email-client-safe Tonk layout: tables and inline styles only, the
+/// hosted wordmark, then the account task card (heading, message, and one
+/// button as its footer). Clients without `border-radius` square it off.
+#[cfg(any(target_arch = "wasm32", test))]
+fn branded_email_html(email: BrandedEmail<'_>) -> String {
+    let BrandedEmail {
+        title,
+        preheader,
+        heading,
+        action,
+        link,
+        body,
+        footnote,
+    } = email;
+    let link = escape_html(link);
 
     format!(
         r#"<!doctype html>
@@ -88,38 +125,45 @@ fn activation_email_html(link: &str) -> String {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Activate your tonk account</title>
+    <title>{title}</title>
   </head>
   <body style="margin:0;background:#e8e6e4;color:#38182a;font-family:'Arial Narrow','Helvetica Neue',Arial,sans-serif;-webkit-font-smoothing:antialiased;">
-    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Confirm your email address to activate your account.</div>
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">{preheader}</div>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;background:#e8e6e4;">
       <tr>
         <td align="center" style="padding:48px 16px 64px;">
-          <table role="presentation" width="432" cellpadding="0" cellspacing="0" style="width:100%;max-width:432px;border-collapse:separate;border-spacing:0;">
+          <table role="presentation" width="360" cellpadding="0" cellspacing="0" style="width:100%;max-width:360px;border-collapse:separate;border-spacing:0;">
             <tr>
-              <td align="center" style="padding:0 0 40px;">
+              <td align="center" style="padding:0 0 48px;">
                 <img src="https://tonk.network/images/tonk-wordmark.svg" width="132" height="44" alt="tonk" style="display:block;width:132px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none;color:#38182a;font-size:20px;font-weight:800;line-height:44px;text-align:center;">
               </td>
             </tr>
             <tr>
-              <td style="padding:15px 16px 10px;background:#f7f6f5;border:1px solid #38182a;font-size:13px;font-weight:700;line-height:1;letter-spacing:.02em;text-transform:lowercase;">activate your account</td>
-            </tr>
-            <tr>
-              <td style="padding-top:7px;">
-                <a href="{link}" style="display:block;box-sizing:border-box;min-height:44px;padding:15px 24px 13px;background:#38182a;color:#f7f6f5;font-size:13px;font-weight:700;line-height:16px;letter-spacing:.02em;text-align:right;text-decoration:none;text-transform:lowercase;">verify email</a>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding-top:7px;">
-                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;background:#f7f6f5;">
+              <td style="background:#efecee;border:1.5px solid #4f3546;border-radius:25px;overflow:hidden;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
                   <tr>
-                    <td style="padding:14px 16px 15px;font-family:'Helvetica Neue',Arial,sans-serif;font-size:13px;line-height:1.5;color:#38182a;">Confirm your email address to activate your account. This allows Tonk to sync your data across browsers and devices, meaning other people and tools can connect to it.</td>
+                    <td style="padding:15px 18px 14px;">
+                      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
+                        <tr>
+                          <td width="18" valign="middle" style="width:18px;"><div style="width:18px;height:18px;border-radius:50%;background:#38182a;font-size:0;line-height:0;">&nbsp;</div></td>
+                          <td align="right" valign="middle" style="padding-left:16px;font-family:'IBM Plex Sans Condensed','Arial Narrow',Arial,sans-serif;font-size:17px;font-weight:700;line-height:1.1;color:#38182a;text-align:right;text-transform:lowercase;">{heading}</td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding:12px 18px 24px;font-family:'IBM Plex Sans Condensed','Arial Narrow',Arial,sans-serif;font-size:18px;line-height:1.5;color:#38182a;">{body}</td>
+                  </tr>
+                  <tr>
+                    <td style="background:#38182a;border-radius:0 0 24px 24px;">
+                      <a href="{link}" style="display:block;box-sizing:border-box;min-height:48px;padding:15px 18px 14px;background:#38182a;border-radius:0 0 24px 24px;color:#f7f6f5;font-family:'IBM Plex Sans Condensed','Arial Narrow',Arial,sans-serif;font-size:17px;font-weight:700;line-height:1.1;text-align:right;text-decoration:none;text-transform:lowercase;">{action}</a>
+                    </td>
                   </tr>
                 </table>
               </td>
             </tr>
             <tr>
-              <td style="padding:18px 16px 0;font-family:'Helvetica Neue',Arial,sans-serif;font-size:12px;line-height:1.5;color:#5b4953;">If you did not request this, you can safely ignore this email.</td>
+              <td style="padding:18px 18px 0;font-family:'Helvetica Neue',Arial,sans-serif;font-size:13px;line-height:1.5;color:#5b4953;">{footnote}</td>
             </tr>
           </table>
         </td>
@@ -127,6 +171,51 @@ fn activation_email_html(link: &str) -> String {
     </table>
   </body>
 </html>"#
+    )
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn activation_email_html(link: &str) -> String {
+    branded_email_html(BrandedEmail {
+        title: "Activate your tonk account",
+        preheader: "Confirm your email address to activate your account.",
+        heading: "activate your account",
+        action: "verify email",
+        link,
+        body: "Confirm your email address to activate your account. This allows Tonk to sync your data across browsers and devices, meaning other people and tools can connect to it.",
+        footnote: "If you did not request this, you can safely ignore this email.",
+    })
+}
+
+/// Subject line of the space invitation email.
+#[cfg(any(target_arch = "wasm32", test))]
+const INVITATION_SUBJECT: &str = "You’re invited to a Tonk space";
+
+/// The invitation message, shared by the HTML and plain-text parts.
+#[cfg(any(target_arch = "wasm32", test))]
+const INVITATION_BODY: &str = "Someone invited this email address to a shared space on Tonk. Open the invitation, then create an account or sign in with this email address. Once you’ve confirmed it, you can join the space.";
+
+/// The invitation's closing line, shared by the HTML and plain-text parts.
+#[cfg(any(target_arch = "wasm32", test))]
+const INVITATION_FOOTNOTE: &str = "This invitation expires in seven days and only works for this email address. If you weren’t expecting it, you can ignore this email.";
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn invitation_email_html(link: &str) -> String {
+    branded_email_html(BrandedEmail {
+        title: INVITATION_SUBJECT,
+        preheader: "Create an account with this email address, confirm it, then join the space.",
+        heading: "you’re invited to a space",
+        action: "open invitation",
+        link,
+        body: INVITATION_BODY,
+        footnote: INVITATION_FOOTNOTE,
+    })
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn invitation_email_text(link: &str) -> String {
+    format!(
+        "You’re invited to a space on Tonk\n\n{INVITATION_BODY}\n\nOpen the invitation:\n{link}\n\n{INVITATION_FOOTNOTE}"
     )
 }
 
@@ -157,18 +246,12 @@ impl crate::invitation::InvitationEmailSender for Resend {
         link: &str,
         id: &str,
     ) -> Result<(), crate::invitation::InvitationError> {
-        let text = format!(
-            "You have been invited to a shared space on Tonk. Create an account using this email address, confirm it, then join the space. If you already created an account with this email, sign in to continue. This invitation expires in seven days.\n\n{link}\n\nIf you were not expecting this invitation, you can ignore it."
-        );
-        let html = format!(
-            "<h1>You’re invited to a Tonk space</h1><p>Create an account using this email address, confirm it, then join the space. Already have an account with this email? Sign in to continue.</p><p><a href=\"{link}\">Open invitation</a></p><p>This invitation expires in seven days. If you were not expecting it, you can ignore this email.</p>"
-        );
         self.0
             .send_html_idempotent(
                 email,
-                "You’re invited to a Tonk space",
-                &text,
-                &html,
+                INVITATION_SUBJECT,
+                &invitation_email_text(link),
+                &invitation_email_html(link),
                 &format!("tonk-email-invitation-{id}"),
             )
             .await
@@ -197,7 +280,7 @@ impl crate::invitation::InvitationEmailSender for CapturedEmail {
 
 #[cfg(test)]
 mod tests {
-    use super::activation_email_html;
+    use super::{activation_email_html, invitation_email_html, invitation_email_text};
 
     #[test]
     fn activation_email_uses_a_styled_verification_button() {
@@ -224,5 +307,41 @@ mod tests {
             r#"href="https://tonk.network/activate?one=1&amp;two=&quot;quoted&quot;&amp;three=&lt;value&gt;""#
         ));
         assert!(!html.contains(r#"href="https://tonk.network/activate?one=1&two="#));
+    }
+
+    #[test]
+    fn invitation_email_uses_the_branded_layout_with_one_button() {
+        let link = format!("https://tonk.network/email-invite#{}", "a".repeat(64));
+        let html = invitation_email_html(&link);
+
+        assert!(html.contains("background:#e8e6e4"));
+        assert!(html.contains(
+            r#"<img src="https://tonk.network/images/tonk-wordmark.svg" width="132" height="44" alt="tonk""#
+        ));
+        assert!(html.contains(">you’re invited to a space</td>"));
+        assert!(html.contains(&format!(r#"href="{link}" style="display:block"#)));
+        assert!(html.contains(">open invitation</a>"));
+        assert_eq!(html.matches("<a ").count(), 1);
+        assert!(html.contains("expires in seven days"));
+    }
+
+    #[test]
+    fn invitation_email_escapes_the_link_for_an_html_attribute() {
+        let html = invitation_email_html("https://tonk.network/email-invite?a=1&b=\"<x>\"#id");
+
+        assert!(html.contains(
+            r#"href="https://tonk.network/email-invite?a=1&amp;b=&quot;&lt;x&gt;&quot;#id""#
+        ));
+    }
+
+    #[test]
+    fn invitation_email_has_a_plain_text_alternative_with_the_same_copy() {
+        let link = format!("https://tonk.network/email-invite#{}", "a".repeat(64));
+        let text = invitation_email_text(&link);
+
+        assert!(text.contains(&format!("\n{link}\n")));
+        assert!(text.contains("create an account or sign in with this email address"));
+        assert!(text.contains("expires in seven days"));
+        assert!(!text.contains('<'));
     }
 }
