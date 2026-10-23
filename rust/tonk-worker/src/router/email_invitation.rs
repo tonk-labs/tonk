@@ -63,15 +63,19 @@ async fn call(
     let response = super::http::post_cbor(&super::customer::ucan_endpoint(origin)?, &bytes)
         .await
         .map_err(|error| {
+            // Sending and cancelling are the sender's; claiming is the recipient's.
+            let sender = op != "claim";
             let message = match error {
                 super::http::HttpError::Upstream(failure) => match failure.status {
-                    403 => "Sign in with the account that received this invitation.",
-                    409 => {
-                        "Confirm your email, then try again. If sending, look up the address again."
+                    403 if sender => {
+                        "This space can't be shared by email from this account right now. Check that it is syncing, then try again."
                     }
-                    410 => {
-                        "This invitation has expired or was cancelled. Ask for another invitation."
+                    403 => tonk_worker_api::email_invitation::WRONG_ACCOUNT,
+                    409 if sender => {
+                        "This address already has a Tonk account, or the invitation changed. Look up the address again."
                     }
+                    409 => tonk_worker_api::email_invitation::UNCONFIRMED,
+                    410 => tonk_worker_api::email_invitation::GONE,
                     429 => {
                         "Delivery is limited. Wait a minute before retrying the same invitation."
                     }

@@ -204,7 +204,7 @@ async fn confirmed_recipient_claims_once_across_restart_and_concurrent_retries()
     assert_eq!(f.email.0.lock().unwrap().len(), 1);
     assert!(matches!(
         f.claim(&id, &f.mallory).await,
-        Err(InvitationError::Forbidden)
+        Err(InvitationError::Forbidden(Refusal::EmailMismatch))
     ));
     f.enroll(&f.carol, "carol@example.com", false).await;
     assert!(matches!(
@@ -228,7 +228,7 @@ async fn confirmed_recipient_claims_once_across_restart_and_concurrent_retries()
     assert_eq!(invite.subject(), &f.space.did());
     assert!(matches!(
         f.claim(&id, &f.mallory).await,
-        Err(InvitationError::Forbidden)
+        Err(InvitationError::Forbidden(Refusal::OtherRecipient))
     ));
     assert!(matches!(
         f.prepare(&id, "other@example.com").await,
@@ -274,7 +274,7 @@ async fn cancellation_expiry_and_revoked_sender_device_refuse() {
         .unwrap();
     f.revocations
         .0
-        .record(&identity.to_cid().to_string(), f.sender.did().as_str())
+        .record(&identity.to_cid().to_string(), f.sender.did().as_str(), b"")
         .await
         .unwrap();
     let proof = DelegationChain::new(identity);
@@ -291,7 +291,7 @@ async fn cancellation_expiry_and_revoked_sender_device_refuse() {
             ]
         )
         .await,
-        Err(InvitationError::Forbidden)
+        Err(InvitationError::Forbidden(Refusal::Authority))
     ));
 }
 

@@ -10276,6 +10276,23 @@ pub(crate) mod tests {
             .await?,
         );
 
+        // Revoking commits on the owner's branch, and the owner pushes
+        // it. The guest's watch, begun before the revocation, must not be
+        // told of that head: a guest that adopts a head it may no longer
+        // read cannot commit on top of it. Pushed and waited on here
+        // rather than left to the owner's background push, which the
+        // guest's write below used to race.
+        successful_body(
+            "owner pushes its revocation",
+            &post_json(
+                &owner,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
         // Now the same sequence must NOT reach the owner. Asserted on
         // CONTENT, not on a status code: the guest's worker may report a
         // successful push for an upload the access service refused, so

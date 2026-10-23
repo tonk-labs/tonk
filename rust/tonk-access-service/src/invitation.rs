@@ -28,9 +28,10 @@ pub enum InvitationError {
     /// Malformed request.
     #[error("The invitation request is invalid.")]
     Invalid,
-    /// Invalid/revoked account authority or mismatched recipient.
+    /// Invalid/revoked account authority or mismatched recipient. The
+    /// refusal names the failed check for the service log only.
     #[error("This account cannot use this invitation.")]
-    Forbidden,
+    Forbidden(Refusal),
     /// No live pending invitation remains.
     #[error("This invitation is missing, expired, or cancelled.")]
     Gone,
@@ -52,11 +53,72 @@ impl InvitationError {
     pub fn status(&self) -> u16 {
         match self {
             Self::Invalid => 400,
-            Self::Forbidden => 403,
+            Self::Forbidden(_) => 403,
             Self::Gone => 410,
             Self::Unconfirmed | Self::Conflict => 409,
             Self::Limited => 429,
             Self::Unavailable => 503,
+        }
+    }
+}
+
+/// Which check refused an invitation request. Logged by the service so a
+/// refusal can be diagnosed; never rendered to either participant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// The caller's invocation failed verification: signature, time bounds,
+    /// or a revoked proof.
+    Authority,
+    /// The invocation was addressed to another service.
+    Audience,
+    /// The invocation had no expiry or one outside the five-minute window.
+    Expiry,
+    /// The caller is not a customer of this service.
+    UnknownCaller,
+    /// The space has no subscription on this service.
+    NotHosted,
+    /// Someone other than the original sender acted on the invitation.
+    NotSender,
+    /// The signed grant names another space.
+    Space,
+    /// The signed grant is not delegated to this invitation's delivery key.
+    DeliveryKey,
+    /// The signed grant does not attribute the invitation to the caller.
+    Inviter,
+    /// The signed grant carries another invitation's delivery id.
+    DeliveryId,
+    /// The signed grant points its home address at another deployment.
+    HomeAddress,
+    /// The signed grant does not let the delivery key use the space: a
+    /// revoked, expired, or insufficient proof.
+    Grant,
+    /// The invitation was already claimed by another account.
+    OtherRecipient,
+    /// The caller's confirmed email is not the invited address.
+    EmailMismatch,
+    /// Re-delegating the grant to the claimant failed.
+    Claim,
+}
+
+impl Refusal {
+    /// Stable snake_case name for logs.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Authority => "authority",
+            Self::Audience => "audience",
+            Self::Expiry => "expiry",
+            Self::UnknownCaller => "unknown_caller",
+            Self::NotHosted => "not_hosted",
+            Self::NotSender => "not_sender",
+            Self::Space => "space",
+            Self::DeliveryKey => "delivery_key",
+            Self::Inviter => "inviter",
+            Self::DeliveryId => "delivery_id",
+            Self::HomeAddress => "home_address",
+            Self::Grant => "grant",
+            Self::OtherRecipient => "other_recipient",
+            Self::EmailMismatch => "email_mismatch",
+            Self::Claim => "claim",
         }
     }
 }
@@ -102,13 +164,17 @@ impl<S: Store + InvitationStore, E: InvitationEmailSender, R: RevocationChecker 
             return Err(Invalid);
         }
         let call = InvocationChain::<AnySignature>::try_from(body).map_err(|_| Invalid)?;
-        self.verify(&call).await?;
+        self.verify(&call, Refusal::Authority).await?;
         if call.invocation.audience() != &self.service.did() {
-            return Err(Forbidden);
+            return Err(Forbidden(Refusal::Audience));
         }
-        let expiry = call.invocation.expiration().ok_or(Forbidden)?.to_unix();
+        let expiry = call
+            .invocation
+            .expiration()
+            .ok_or(Forbidden(Refusal::Expiry))?
+            .to_unix();
         if expiry <= self.now || expiry > self.now + 300 {
-            return Err(Forbidden);
+            return Err(Forbidden(Refusal::Expiry));
         }
         let args = call.invocation.arguments();
         let text = |name: &str| match args.get(name) {
@@ -125,7 +191,7 @@ impl<S: Store + InvitationStore, E: InvitationEmailSender, R: RevocationChecker 
             .customer(caller.as_str())
             .await
             .map_err(|_| Unavailable)?
-            .ok_or(Forbidden)?;
+            .ok_or(Forbidden(Refusal::UnknownCaller))?;
         if customer.status != CustomerStatus::Active {
             return Err(Unconfirmed);
         }
@@ -174,7 +240,7 @@ impl<S: Store + InvitationStore, E: InvitationEmailSender, R: RevocationChecker 
                 .map_err(|_| Unavailable)?
                 .consumer
             {
-                return Err(Forbidden);
+                return Err(Forbidden(Refusal::NotHosted));
             }
             let row = PendingInvitation {
                 id: id.into(),
@@ -213,25 +279,28 @@ impl<S: Store + InvitationStore, E: InvitationEmailSender, R: RevocationChecker 
         match command.as_slice() {
             ["email-invitation", "send"] => {
                 if args.len() != 2 || row.sender != caller.as_str() {
-                    return Err(Forbidden);
+                    return Err(Forbidden(Refusal::NotSender));
                 }
                 let original = text("original")?;
                 let chain = decode(original)?;
-                if chain.subject().map(Did::as_str) != Some(row.space.as_str())
-                    || chain.audience() != &self.key(id).await?.did()
-                    || tonk_invite::inviter(&chain).map_err(|_| Invalid)?.as_ref() != Some(caller)
-                {
-                    return Err(Forbidden);
+                if chain.subject().map(Did::as_str) != Some(row.space.as_str()) {
+                    return Err(Forbidden(Refusal::Space));
+                }
+                if chain.audience() != &self.key(id).await?.did() {
+                    return Err(Forbidden(Refusal::DeliveryKey));
+                }
+                if tonk_invite::inviter(&chain).map_err(|_| Invalid)?.as_ref() != Some(caller) {
+                    return Err(Forbidden(Refusal::Inviter));
                 }
                 let leaf = chain.proofs().last().ok_or(Invalid)?;
                 if leaf.meta().get(DELIVERY_ID) != Some(&Ipld::String(id.into())) {
-                    return Err(Forbidden);
+                    return Err(Forbidden(Refusal::DeliveryId));
                 }
                 let remote = tonk_invite::home_address(&chain)
                     .map_err(|_| Invalid)?
                     .ok_or(Invalid)?;
                 if remote.origin().ascii_serialization() != self.origin {
-                    return Err(Forbidden);
+                    return Err(Forbidden(Refusal::HomeAddress));
                 }
                 self.verify_grant(&chain, id).await?;
                 if row.original.is_none() {
@@ -274,12 +343,12 @@ impl<S: Store + InvitationStore, E: InvitationEmailSender, R: RevocationChecker 
                 }
                 if let Some(recipient) = &row.recipient {
                     if recipient != caller.as_str() {
-                        return Err(Forbidden);
+                        return Err(Forbidden(Refusal::OtherRecipient));
                     }
                     return self.delivery(row, caller).await;
                 }
                 if customer.email != row.email {
-                    return Err(Forbidden);
+                    return Err(Forbidden(Refusal::EmailMismatch));
                 }
                 let original = decode(row.original.as_deref().ok_or(Gone)?)?;
                 self.verify_grant(&original, id).await?;
@@ -287,7 +356,11 @@ impl<S: Store + InvitationStore, E: InvitationEmailSender, R: RevocationChecker 
                 let invite = Invite::new(original, InviteAudience::Open { seed }, None)
                     .await
                     .map_err(|_| Invalid)?;
-                let completed = invite.claim(caller).await.map_err(|_| Forbidden)?.chain;
+                let completed = invite
+                    .claim(caller)
+                    .await
+                    .map_err(|_| Forbidden(Refusal::Claim))?
+                    .chain;
                 let completed =
                     bs58::encode(completed.to_bytes().map_err(|_| Unavailable)?).into_string();
                 self.store
@@ -307,7 +380,7 @@ impl<S: Store + InvitationStore, E: InvitationEmailSender, R: RevocationChecker 
             }
             ["email-invitation", "cancel"] => {
                 if args.len() != 1 || row.sender != caller.as_str() {
-                    return Err(Forbidden);
+                    return Err(Forbidden(Refusal::NotSender));
                 }
                 if !self
                     .store
@@ -367,7 +440,11 @@ impl<S: Store + InvitationStore, E: InvitationEmailSender, R: RevocationChecker 
             .map_err(|_| InvitationError::Unavailable)
     }
 
-    async fn verify(&self, chain: &InvocationChain<AnySignature>) -> Result<(), InvitationError> {
+    async fn verify(
+        &self,
+        chain: &InvocationChain<AnySignature>,
+        refusal: Refusal,
+    ) -> Result<(), InvitationError> {
         chain
             .verify(&VerificationContext::new(&Environment::new(
                 chain.proof_store(),
@@ -375,7 +452,7 @@ impl<S: Store + InvitationStore, E: InvitationEmailSender, R: RevocationChecker 
                 self.revocations,
             )))
             .await
-            .map_err(|_| InvitationError::Forbidden)?;
+            .map_err(|_| InvitationError::Forbidden(refusal))?;
         Ok(())
     }
 
@@ -392,8 +469,11 @@ impl<S: Store + InvitationStore, E: InvitationEmailSender, R: RevocationChecker 
             .try_build()
             .await
             .map_err(|_| InvitationError::Invalid)?;
-        self.verify(&InvocationChain::new(invocation, chain.export().collect()))
-            .await
+        self.verify(
+            &InvocationChain::new(invocation, chain.export().collect()),
+            Refusal::Grant,
+        )
+        .await
     }
 }
 

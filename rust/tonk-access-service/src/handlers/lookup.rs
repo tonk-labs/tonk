@@ -87,9 +87,9 @@ pub async fn handle(req: Request, ctx: RouteContext<()>) -> worker::Result<Respo
         }
     }
 
-    // Segments are read raw. `did:web` resolution already percent-decoded
-    // them, and the router hands them over untouched, so a `+` in a local
-    // part stays a `+` rather than becoming a space.
+    // The router hands segments over undecoded, as a `did:web` resolver
+    // sent them; `address_from_segments` percent-decodes them strictly,
+    // so `tag%2Balice` and a raw `tag+alice` both find the same row.
     let (Some(domain), Some(local)) = (ctx.param("domain"), ctx.param("local")) else {
         return not_found();
     };

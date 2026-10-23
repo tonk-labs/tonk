@@ -43,5 +43,7 @@ async fn handle_inner(
             message: format!("revocation index: {err}"),
         }
     })?);
-    crate::revoke::revoke(&store, &index, body).await
+    let revoked = crate::revoke::record(&store, &index, body).await?;
+    crate::live::revoked(env.clone(), revoked.space.to_string()).await;
+    Ok(revoked.receipt)
 }
