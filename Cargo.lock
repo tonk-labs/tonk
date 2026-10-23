@@ -7140,8 +7140,9 @@ dependencies = [
 
 [[package]]
 name = "wcmp"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=ebda220#ebda220589cfcaf17f77391a7017bbe33678d3d3"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f75fc621d0e302069ce71fd04b29b5cde290deceb5e799e10ce8a0f582efa9a8"
 dependencies = [
  "anyhow",
  "js-sys",
@@ -7159,8 +7160,9 @@ dependencies = [
 
 [[package]]
 name = "wcmp-bindgen"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=ebda220#ebda220589cfcaf17f77391a7017bbe33678d3d3"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63f490e57939b86c70e19707aed2b8ea3f224823ef58dc1faaecae40ec64dd09"
 dependencies = [
  "anyhow",
  "heck",
@@ -7172,8 +7174,9 @@ dependencies = [
 
 [[package]]
 name = "wcmp-macros"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=ebda220#ebda220589cfcaf17f77391a7017bbe33678d3d3"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d04a46adbb5065d36401b85173a5ca3186dce42e8ce5d791490b0d32f09cb62c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7183,8 +7186,9 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=ebda220#ebda220589cfcaf17f77391a7017bbe33678d3d3"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bee5d27a079aba9827c6c916f1dffcd4d28d71f9b6f2a448e6d6c4621d15347"
 dependencies = [
  "anyhow",
  "thiserror 2.0.18",
@@ -7194,8 +7198,9 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core-wasmtime"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=ebda220#ebda220589cfcaf17f77391a7017bbe33678d3d3"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e059657cc0bbcb84fe703ea7d1928e67eac404abf017c6362a80ecc496f28fcc"
 dependencies = [
  "anyhow",
  "tracing",
@@ -7205,8 +7210,9 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core-web"
-version = "0.1.0"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill?rev=ebda220#ebda220589cfcaf17f77391a7017bbe33678d3d3"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80724f17e09af7d9b3e8293388216da4d054b21136b0b3ef247dde83ca713d41"
 dependencies = [
  "anyhow",
  "js-sys",
