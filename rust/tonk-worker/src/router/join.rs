@@ -793,7 +793,7 @@ async fn prepare_parsed_join(
     // Derived from the chain as parsed — a claim pushes a redelegation
     // and changes the leaf. Guaranteed `Some` by the `Invite` invariant
     // (the chain has a specific subject).
-    let invitation = Invitation::from_chain(&invite.chain)
+    let invitation = Invitation::from_chain(invite.invitation_chain())
         .expect("Invite invariant: chain has a specific subject");
 
     let open = matches!(&invite.audience, InviteAudience::Open { .. });
@@ -918,9 +918,28 @@ async fn perform_join(
             JoinFailure::claim_failed(format!("failed to open the content branch: {error}"))
         })?;
 
+    // A renewal stops proving through the earlier invite chains it
+    // supersedes before the pull, so the pull exercises the new chain:
+    // the proof walk's candidate order is not fixed, and a revoked earlier
+    // chain it tried first would fail the renewal it was meant to repair.
+    let superseded = if prepared.existing && !prepared.is_self_claim() {
+        retract_superseded_hops(tonk, &prepared).await
+    } else {
+        Vec::new()
+    };
+
     if prepared.needs_remote_authorization() {
-        pull_upstream(&branch, &tonk.operator).await?;
-        validate_content(&branch, &tonk.operator, &prepared.subject).await?;
+        let authorized = async {
+            pull_upstream(&branch, &tonk.operator).await?;
+            validate_content(&branch, &tonk.operator, &prepared.subject).await
+        }
+        .await;
+        if let Err(failure) = authorized {
+            // The remote did not accept the new chain, so it supersedes
+            // nothing: the member keeps proving the way it did before.
+            restore_hops(tonk, superseded).await;
+            return Err(failure);
+        }
     }
 
     // The claim below commits into the content branch directly, not
@@ -1058,6 +1077,202 @@ async fn perform_join(
         subject: prepared.subject,
         renewed: prepared.existing,
     })
+}
+
+/// Stop proving through the earlier invite chains a renewal replaces, and
+/// return the hops it retracted so a refused renewal can restore them.
+///
+/// A member whose invite link was revoked claims a fresh one to get back
+/// in, but still retains the revoked chain beside the new one. A refusal
+/// can only make a device drop a revoked hop when it carries the signed
+/// revocation, and revocations recorded before the access service kept
+/// those documents carry none. So the renewal drops the earlier chain
+/// itself rather than wait for a refusal that cannot prove it.
+///
+/// Only a hop that admits this member to this space is a candidate (its
+/// audience is one of the accounts this device acts for, its subject the
+/// space), and only the hop
+/// itself is retracted: the chain above it is the inviter's, shared with
+/// everything else that proves through the inviter. Retracting the hop
+/// that lands on the account is enough, because a proof walk from the
+/// device can no longer reach the revoked hop above it.
+///
+/// A candidate survives when dropping it could cost the member authority
+/// the new chain does not give back:
+///
+/// - it is part of the new chain;
+/// - the space itself issued it (the founder's root grant);
+/// - the chain through it is wider than the new chain, as an admin's `/`
+///   chain is: the chain's effective command is its narrowest, and an
+///   invite's claim hop is itself `/`, so the hop's own command alone
+///   cannot tell an invite from an admin grant;
+/// - nothing above it is retained here, so its reach is unknown.
+///
+/// A still-valid parallel invite chain at the same reach is dropped too.
+/// It cannot be told apart from one revoked without a document, and the
+/// new chain grants the same authority. A new chain that expires
+/// supersedes nothing: it would trade lasting access for bounded access.
+///
+/// Best-effort: a hop that is not retracted is the pre-existing state,
+/// which the proof walk may still resolve past.
+async fn retract_superseded_hops(
+    tonk: &TonkState,
+    prepared: &PreparedJoin,
+) -> Vec<DelegationChain> {
+    if prepared.chain.expiration().is_some() {
+        return Vec::new();
+    }
+    let Some(reach) = effective_command(prepared.chain.proofs().map(|hop| hop.command())) else {
+        return Vec::new();
+    };
+    // Read and retract through the operator's own access branch: the
+    // proof walk caches chains against that handle's head, so a
+    // retraction committed through any other handle leaves the cached
+    // chain through the revoked hop in place for the pull.
+    let branch = tonk.operator.state();
+    if let Err(error) = branch.refresh(&tonk.operator).await {
+        log!("join: earlier invite chains kept, the access branch did not refresh: {error}");
+        return Vec::new();
+    }
+    // The accounts this device acts for: the one the new chain lands on,
+    // and every account that granted this device. An earlier claim may
+    // have landed on another of them (the onboarding account, before the
+    // device was accredited to a passkey root), and the device still
+    // proves through it.
+    let mut accounts = vec![prepared.member.clone()];
+    match branch
+        .delegations()
+        .issued_to(prepared.device_grant.audience().clone())
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(grants) => {
+            for UcanDelegation(grant) in grants {
+                if !accounts.contains(grant.issuer()) {
+                    accounts.push(grant.issuer().clone());
+                }
+            }
+        }
+        Err(error) => {
+            log!("join: only the current account's invite chains considered: {error}");
+        }
+    }
+    let mut held = Vec::new();
+    for account in accounts {
+        match branch
+            .delegations()
+            .issued_to(account)
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(grants) => held.extend(grants),
+            Err(error) => {
+                log!("join: earlier invite chains kept, an account's grants did not read: {error}");
+                return Vec::new();
+            }
+        }
+    }
+
+    let subject = dialog_ucan_core::subject::Subject::Specific(prepared.subject.clone());
+    let mut superseded = Vec::new();
+    for UcanDelegation(hop) in held {
+        let (Some(cid), Some(certificate)) = (hop.proof_cids().first(), hop.proofs().next()) else {
+            continue;
+        };
+        if prepared.chain.proof_cids().contains(cid)
+            || *certificate.subject() != subject
+            || *certificate.issuer() == prepared.subject
+        {
+            continue;
+        }
+        // The widest grant into the hop's issuer bounds what the hop can
+        // carry; with none retained, its reach is unknown and it stays.
+        let above = branch
+            .delegations()
+            .issued_to(certificate.issuer().clone())
+            .perform(&tonk.operator)
+            .await
+            .unwrap_or_default();
+        let Some(widest) = above
+            .iter()
+            .filter_map(|UcanDelegation(parent)| parent.proofs().next())
+            .filter(|parent| *parent.subject() == subject)
+            .map(|parent| parent.command())
+            .min_by_key(|command| command.segments().len())
+        else {
+            continue;
+        };
+        if effective_command([widest, certificate.command()]) != Some(reach) {
+            continue;
+        }
+        match retract_hop(tonk, &hop).await {
+            Ok(()) => superseded.push(hop),
+            Err(error) => log!("join: an earlier invite hop was not retracted: {error}"),
+        }
+    }
+    if !superseded.is_empty() {
+        log!(
+            "join: renewal of {} retracted {} earlier invite hop(s)",
+            prepared.subject,
+            superseded.len()
+        );
+    }
+    superseded
+}
+
+/// Retract one hop from the operator's access branch, refreshing and
+/// retrying when another writer moved the head first, as the access
+/// branch's own retain does.
+async fn retract_hop(tonk: &TonkState, hop: &DelegationChain) -> Result<(), String> {
+    const RETRY_LIMIT: usize = 3;
+
+    let branch = tonk.operator.state();
+    let mut attempt = 0;
+    loop {
+        branch
+            .refresh(&tonk.operator)
+            .await
+            .map_err(|error| format!("refresh before retract: {error}"))?;
+        match branch
+            .delegations()
+            .retract(UcanDelegation(hop.clone()))
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(dialog_repository::CommitError::Publish(
+                dialog_repository::PublishError::VersionMismatch { .. },
+            )) if attempt < RETRY_LIMIT => attempt += 1,
+            Err(error) => return Err(format!("retract: {error}")),
+        }
+    }
+}
+
+/// The narrowest command along a chain: what the chain actually grants,
+/// since each hop can only attenuate the one above it.
+fn effective_command<'a>(
+    commands: impl IntoIterator<Item = &'a dialog_ucan_core::command::Command>,
+) -> Option<&'a dialog_ucan_core::command::Command> {
+    commands
+        .into_iter()
+        .max_by_key(|command| command.segments().len())
+}
+
+/// Retain again the hops a refused renewal retracted. Best-effort, like
+/// the retraction: a hop that is not restored was superseded by a chain
+/// the remote refused, and the next claim of a link retains a fresh one.
+async fn restore_hops(tonk: &TonkState, hops: Vec<DelegationChain>) {
+    for hop in hops {
+        if let Err(error) = tonk
+            .profile
+            .access()
+            .save(UcanDelegation(hop))
+            .perform(&tonk.operator)
+            .await
+        {
+            log!("join: an earlier invite hop was not restored: {error}");
+        }
+    }
 }
 
 /// Retain the claimed chain into the space's content branch, so the hop
@@ -3611,5 +3826,230 @@ name!:
         super::validate_content(&content, &tonk.operator, &repository.did())
             .await
             .expect("content carrying a declared space model is joinable");
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod renewal_tests {
+    use axum::extract::{Path, State};
+    use axum::{Extension, Json};
+    use dialog_repository::RepositoryExt as _;
+    use dialog_ucan::UcanCertificate;
+    use dialog_ucan_core::DelegationChain;
+    use dialog_varsig::Did;
+    use ipld_core::cid::Cid;
+
+    use crate::router::AppState;
+
+    /// Pull the member's replica of `key` from the service, the way a sync
+    /// tick does.
+    async fn pull(member: &AppState, key: &str) -> Result<(), String> {
+        let member = member.read().await;
+        let branch = member
+            .profile
+            .space(key)
+            .load()
+            .perform(&member.operator)
+            .await
+            .expect("the member's replica loads")
+            .branch("main")
+            .open()
+            .perform(&member.operator)
+            .await
+            .expect("the member's branch opens");
+        branch
+            .pull()
+            .perform(&member.operator)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    /// The certificates the member's device proves `key` with now.
+    async fn proof(member: &AppState, key: &str) -> Vec<UcanCertificate> {
+        let member = member.read().await;
+        let subject: Did = key.parse().expect("the key is the subject");
+        member
+            .profile
+            .access()
+            .prove(dialog_capability::Subject::from(subject).attenuate(dialog_effects::Use))
+            .audience(&member.operator)
+            .perform(&member.operator)
+            .await
+            .expect("the member proves the space")
+            .proofs
+    }
+
+    fn cid(certificate: &UcanCertificate) -> Cid {
+        DelegationChain::new(certificate.0.clone()).proof_cids()[0]
+    }
+
+    /// Whether the member's device still retains the certificate `target`.
+    async fn retains(member: &AppState, target: Cid) -> bool {
+        let member = member.read().await;
+        member
+            .operator
+            .state()
+            .delegations()
+            .retained(target)
+            .perform(&member.operator)
+            .await
+            .expect("the retained certificates read")
+            .is_some()
+    }
+
+    /// A member whose link was revoked before the access service kept the
+    /// signed revocation is let back in by a fresh link, reliably. Such a
+    /// refusal carries no document, so nothing drops the revoked chain on
+    /// refusal; the renewal itself has to, or the member's device keeps
+    /// it beside the new chain and every proof that happens to try it
+    /// first is refused.
+    #[dialog_common::test]
+    async fn it_drops_a_chain_revoked_without_a_document_when_the_member_claims_a_new_link() {
+        let (tonk, service, root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await
+                .expect("the device grant mints");
+        crate::router::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "renewal-test".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().expect("the grant serializes")),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .expect("the root persists");
+        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let key = super::super::repository::create_space_inner(&state, "Renewed", None)
+            .await
+            .expect("the space creates");
+        super::super::repository::enable_sync_inner(&state, &key, &remote)
+            .await
+            .expect("the remote attaches");
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .expect("content branch opens")
+                .handle()
+                .push()
+                .perform(&tonk.operator)
+                .await
+                .expect("the content reaches the service");
+        }
+
+        let origin = crate::axum::RequestOrigin::parse("https://local.example/")
+            .unwrap_or_else(|_| panic!("the origin parses"));
+        let mint = || async {
+            let Json(response) = super::super::create_invite::create_invite(
+                State(state.clone()),
+                Path(key.clone()),
+                Extension(origin.clone()),
+                axum::body::Bytes::new(),
+            )
+            .await
+            .expect("the founder mints an invite");
+            response.url().to_string()
+        };
+
+        let member = crate::router::command::tests::native::test_state().await;
+        let first = mint().await;
+        {
+            let member = member.read().await;
+            let joined = super::join_invite(&member, &first)
+                .await
+                .expect("the member joins");
+            assert!(!joined.renewed, "the first join installs a replica");
+        }
+        pull(&member, &key)
+            .await
+            .expect("a member reads the space it joined");
+        let Json(rows) = super::super::revoke_invite::list(State(state.clone()), Path(key.clone()))
+            .await
+            .expect("the invitations list");
+        assert_eq!(rows.len(), 1, "one invitation is live: {rows:?}");
+        let target: Cid = rows[0].target_cid.parse().expect("the target is a CID");
+        // The member proves through the invite hop the founder will revoke,
+        // and the hop its claim added below it, from the invite's
+        // principal to the member's account.
+        let held = proof(&member, &key).await;
+        let invite = held
+            .iter()
+            .find(|certificate| cid(certificate) == target)
+            .expect("the member proves through the invite hop it claimed");
+        let claim = cid(held
+            .iter()
+            .find(|certificate| certificate.0.issuer() == invite.0.audience())
+            .expect("the member's claim hop sits below the invite hop"));
+        // This access service records a revocation without its signed
+        // document, as every one did before it kept them: the refusal
+        // names the hop but cannot prove it was revoked.
+        let Json(receipt) = super::super::revoke_invite::revoke(
+            State(state.clone()),
+            Path((key.clone(), target.to_string())),
+        )
+        .await
+        .expect("the founder revokes the link");
+        assert!(
+            receipt.recorded,
+            "the access service records the revocation"
+        );
+        assert!(
+            pull(&member, &key).await.is_err(),
+            "revoking the link cuts off the member who joined through it"
+        );
+        assert!(
+            retains(&member, claim).await,
+            "a refusal without the revocation document drops nothing"
+        );
+
+        let second = mint().await;
+        {
+            let member = member.read().await;
+            let rejoined = super::join_invite(&member, &second)
+                .await
+                .expect("the member claims the new link");
+            assert!(rejoined.renewed, "the replica is still here");
+        }
+        // Which retained chain a proof tries first is not fixed, so
+        // reading again alone could pass by luck. What makes it reliable
+        // is that the hop admitting the member through the revoked link is
+        // gone, so no proof can reach the revoked hop above it.
+        assert!(
+            !retains(&member, claim).await,
+            "the renewal retracts the hop the revoked link admitted the member through"
+        );
+        assert!(
+            !proof(&member, &key)
+                .await
+                .iter()
+                .map(cid)
+                .any(|hop| hop == target),
+            "the member no longer proves through the revoked hop"
+        );
+        pull(&member, &key)
+            .await
+            .expect("a member let back in reads the space again");
+
+        let account_key = {
+            let tonk = state.read().await;
+            crate::router::account_state::require_ready_account_state(&tonk)
+                .await
+                .expect("the linked account is ready")
+                .key
+                .clone()
+        };
+        let tonk = std::sync::Arc::try_unwrap(state)
+            .unwrap_or_else(|_| panic!("the state has no other holders"))
+            .into_inner();
+        crate::router::account_state::tests::discard(tonk, &account_key);
+        drop(service);
     }
 }

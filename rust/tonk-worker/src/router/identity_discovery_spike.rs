@@ -7,6 +7,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use dialog_capability::Subject;
+use dialog_common::helpers::Provisionable;
 use dialog_credentials::Ed25519Signer;
 use dialog_effects::Use;
 use dialog_query::{Output as _, Query, Term};
@@ -390,5 +391,400 @@ async fn email_lookup_to_targeted_join_and_reshare_attribution() {
             .any(|member| member.did == mallory_root.did().to_string())
     );
     eprintln!("discovery spike: Carol sees Bob as inviter; Alice remains founder");
+    service.stop().await.unwrap();
+}
+
+/// Exercise the exact transient/overlay wire contract used by desktop and browser.
+async fn email_command(
+    app: &Router,
+    state: &AppState,
+    action: &str,
+    id: &str,
+    account: &Did,
+    space: Option<&Did>,
+) -> Value {
+    let request_id = format!("request:email-test-{}", rand::random::<u64>());
+    let branch = state.read().await.active_branch.clone();
+    let domain = format!("xyz.tonk.{action}-email-invitation");
+    let field = |name: &str, kind: &str| json!({"the":format!("{domain}/{name}"),"as":kind,"cardinality":"one"});
+    let mut fields = json!({"id":field("id","Text"),"account":field("account","Entity")});
+    let mut parameters = json!({"this":request_id,"id":id,"account":account});
+    if let Some(space) = space {
+        fields["email"] = field("email", "Text");
+        fields["space"] = field("space", "Entity");
+        parameters["email"] = json!("carol@example.com");
+        parameters["space"] = json!(space);
+    }
+    let (status, _) = request(app,"POST",&format!("/api/repository/profile:tonk/branch/{branch}/transact"),
+        json!({"claims":[{"op":"assert","application":{"predicate":{"kind":"transient","concept":{"with":fields}},"parameters":parameters}}]})).await;
+    assert!(status.is_success(), "command transaction: {status}");
+    for _ in 0..900 {
+        let (status, rows) = request(app,"POST",&format!("/api/repository/profile:tonk/branch/{branch}/query"), json!({
+            "predicate":{"with":{
+                "state":{"the":"xyz.tonk.email-invitation-status/state","as":"Text","cardinality":"one"},
+                "message":{"the":"xyz.tonk.email-invitation-status/message","as":"Text","cardinality":"one"}
+            }},"terms":{"this":request_id,"state":{"?":{"name":"state"}},"message":{"?":{"name":"message"}}}
+        })).await;
+        assert!(status.is_success(), "outcome query: {status}");
+        if let Some(answer) = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| &r["fields"])
+            .find(|r| r["state"] != "pending")
+        {
+            return answer.clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("email command did not produce a terminal overlay outcome")
+}
+
+#[dialog_common::test]
+async fn email_delivery_signup_to_shared_space() {
+    let service =
+        AccessServiceAddress::start(tonk_access_service::helpers::AccessServiceSettings {
+            deployment: Some(tonk_worker_api::DeploymentConfig::default()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let alice_root = Ed25519Signer::generate().await.unwrap();
+    service
+        .address
+        .activate_customer(&alice_root, "alice@example.com")
+        .await
+        .unwrap();
+    let remote = format!(
+        "{}/ucan/",
+        service.address.access_service_url.trim_end_matches('/')
+    );
+    let alice = super::account_state::tests::device_on(&alice_root, &remote, None).await;
+    alice
+        .profile
+        .secrets()
+        .site(
+            crate::credential::branch_site(
+                tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
+                &alice.active_branch,
+            )
+            .as_str(),
+        )
+        .save(alice_root.did().as_str().as_bytes().to_vec())
+        .perform(&alice.profile)
+        .await
+        .unwrap();
+    let bob_root = Ed25519Signer::generate().await.unwrap();
+    let carol_root = Ed25519Signer::generate().await.unwrap();
+    let mallory_root = Ed25519Signer::generate().await.unwrap();
+    let email = "bob+discovery@example.com";
+
+    assert_eq!(
+        confirmed_root(&service.address, "missing@example.com").await,
+        Err(reqwest::StatusCode::NOT_FOUND),
+    );
+    service
+        .address
+        .enroll_customer(&bob_root, email)
+        .await
+        .unwrap();
+    assert_eq!(
+        confirmed_root(&service.address, email).await,
+        Err(reqwest::StatusCode::ACCEPTED),
+        "an unconfirmed registration is not a verified recipient"
+    );
+    service.address.confirm_email(email).await.unwrap();
+    let bob_did = confirmed_root(&service.address, email).await.unwrap();
+    assert_eq!(bob_did, bob_root.did());
+    let refusal = service
+        .address
+        .enroll_customer(&mallory_root, " BOB+DISCOVERY@EXAMPLE.COM ")
+        .await
+        .expect_err("another account cannot take Bob's confirmed address");
+    assert!(refusal.to_string().contains("409"));
+    assert!(refusal.to_string().contains("AddressTaken"));
+    assert_eq!(
+        confirmed_root(&service.address, email).await.unwrap(),
+        bob_did,
+    );
+    eprintln!("discovery spike: confirmed email resolves; another account cannot take it");
+    service
+        .address
+        .activate_customer(&mallory_root, "mallory@example.com")
+        .await
+        .unwrap();
+
+    let (alice_app, _alice_state, _alice_hub) = api_router_with_state(alice);
+    let (bob_app, bob_state, _bob_hub) = api_router_with_state(
+        super::account_state::tests::device_on(&bob_root, &remote, None).await,
+    );
+    let (carol_app, carol_state, _carol_hub) = api_router_with_state(
+        super::account_state::tests::device_on(&carol_root, &remote, None).await,
+    );
+    let (mallory_app, mallory_state, _mallory_hub) = api_router_with_state(
+        super::account_state::tests::device_on(&mallory_root, &remote, None).await,
+    );
+    let (status, body) = request(
+        &alice_app,
+        "PUT",
+        "/api/repository/discovery-spike",
+        json!({ "branch": { "main": {} } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "space creation failed: {body}");
+    let info: RepositoryInfo = serde_json::from_value(body).unwrap();
+    let space = info.name;
+    let space_did = info.subject;
+    // Provision only the test space through the fixture shortcut. The account
+    // email enrollment and confirmation above use the actual service ceremony.
+    service
+        .address
+        .provision_subject(space_did.as_str())
+        .await
+        .unwrap();
+    let config = tonk_worker_api::RepositoryConfiguration::default()
+        .remote(
+            "origin",
+            tonk_worker_api::RemoteConfiguration::ucan(&remote),
+        )
+        .branch(
+            "main",
+            tonk_worker_api::BranchConfiguration::default().upstream("origin", "main"),
+        );
+    let (status, body) = request(
+        &alice_app,
+        "POST",
+        &format!("/api/repository/{space}/remote"),
+        serde_json::to_value(config).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "attach remote failed: {body}");
+
+    let invitation = mint(&alice_app, &space, &bob_did).await;
+    sync(&alice_app, &space, "push").await;
+    let parsed = Invite::parse_url(&invitation).await.unwrap();
+    assert!(matches!(parsed.audience, InviteAudience::Scoped));
+    assert_eq!(parsed.chain.audience(), &bob_did);
+    assert_eq!(
+        Invitation::from_chain(&parsed.chain)
+            .unwrap()
+            .inviter
+            .0
+            .to_string(),
+        alice_root.did().to_string(),
+    );
+
+    let before = profile_revision(&mallory_state).await;
+    assert!(!has_authority(&mallory_state, &space_did).await);
+    let (status, body) = request(
+        &mallory_app,
+        "POST",
+        "/api/profile/join",
+        json!({ "url": invitation }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "wrong account response: {body}"
+    );
+    assert!(body.to_string().contains("different identity"));
+    assert_eq!(profile_revision(&mallory_state).await, before);
+    assert!(!has_authority(&mallory_state, &space_did).await);
+    eprintln!("discovery spike: wrong account rejected without profile or authority changes");
+
+    let (status, body) = request(
+        &bob_app,
+        "POST",
+        "/api/profile/join",
+        json!({ "url": invitation }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "intended recipient join failed: {body}"
+    );
+    assert!(has_authority(&bob_state, &space_did).await);
+    eprintln!("discovery spike: intended recipient joined the seeded space");
+
+    let id = "e1".repeat(32);
+    assert_eq!(
+        confirmed_root(&service.address, "carol@example.com").await,
+        Err(reqwest::StatusCode::NOT_FOUND)
+    );
+    let sent = email_command(
+        &bob_app,
+        &bob_state,
+        "send",
+        &id,
+        &bob_did,
+        Some(&space_did),
+    )
+    .await;
+    assert_eq!(sent["state"], "sent", "send result: {sent}");
+    let retry = email_command(
+        &bob_app,
+        &bob_state,
+        "send",
+        &id,
+        &bob_did,
+        Some(&space_did),
+    )
+    .await;
+    assert_eq!(retry["state"], "sent");
+    let inbox: Vec<(String, String)> = reqwest::get(format!(
+        "{}/_test/emails",
+        service.address.access_service_url.trim_end_matches('/')
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let links: Vec<_> = inbox
+        .iter()
+        .filter(|(to, link)| to == "carol@example.com" && link.contains("/email-invite#"))
+        .collect();
+    assert_eq!(links.len(), 1, "retry sends only one email");
+    let locator = url::Url::parse(&links[0].1).unwrap();
+    assert_eq!(locator.fragment(), Some(id.as_str()));
+    assert!(locator.query().is_none());
+    assert!(!links[0].1.contains("carol"));
+    let wrong = email_command(
+        &mallory_app,
+        &mallory_state,
+        "claim",
+        &id,
+        &mallory_root.did(),
+        None,
+    )
+    .await;
+    assert_eq!(wrong["state"], "failed");
+    assert!(!has_authority(&mallory_state, &space_did).await);
+    service
+        .address
+        .enroll_customer(&carol_root, "carol@example.com")
+        .await
+        .unwrap();
+    let pending = email_command(
+        &carol_app,
+        &carol_state,
+        "claim",
+        &id,
+        &carol_root.did(),
+        None,
+    )
+    .await;
+    assert_eq!(pending["state"], "failed");
+    assert!(!has_authority(&carol_state, &space_did).await);
+    service
+        .address
+        .confirm_email("carol@example.com")
+        .await
+        .unwrap();
+    assert!(
+        service
+            .address
+            .enroll_customer(&mallory_root, "carol@example.com")
+            .await
+            .is_err()
+    );
+    sync(&bob_app, &space, "push").await;
+    let joined = email_command(
+        &carol_app,
+        &carol_state,
+        "claim",
+        &id,
+        &carol_root.did(),
+        None,
+    )
+    .await;
+    assert_eq!(joined["state"], "joined", "claim result: {joined}");
+    let again = email_command(
+        &carol_app,
+        &carol_state,
+        "claim",
+        &id,
+        &carol_root.did(),
+        None,
+    )
+    .await;
+    assert_eq!(again["state"], "joined", "repeated claim result: {again}");
+    let carol_did = carol_root.did();
+    assert!(has_authority(&carol_state, &space_did).await);
+    let (status, body) = request(
+        &carol_app,
+        "GET",
+        &format!("/api/repository/{space}"),
+        json!(null),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let info: RepositoryInfo = serde_json::from_value(body).unwrap();
+    let member = info
+        .members
+        .iter()
+        .find(|member| member.did == carol_did.to_string())
+        .unwrap();
+    assert_eq!(member.invited_by.as_deref(), Some(bob_did.as_str()));
+    let bob_member = info
+        .members
+        .iter()
+        .find(|member| member.did == bob_did.as_str())
+        .unwrap();
+    assert_eq!(
+        bob_member.invited_by.as_deref(),
+        Some(alice_root.did().as_str())
+    );
+    let alice_member = info
+        .members
+        .iter()
+        .find(|member| member.did == alice_root.did().as_str())
+        .unwrap();
+    assert_eq!(alice_member.invited_by, None);
+    // Read the same replicated content Carol joined: the sender fix must not
+    // rewrite the separate original-owner role.
+    {
+        let tonk = carol_state.read().await;
+        let repository = tonk
+            .profile
+            .space(&space)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let content = repository
+            .branch("main")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let roles: Vec<MemberRole> = content
+            .query()
+            .select(Query::<MemberRole> {
+                this: Term::var("this"),
+                role: Term::var("role"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        let alice_membership = Membership::new(alice_root.did(), space_did.clone());
+        let bob_membership = Membership::new(bob_did.clone(), space_did.clone());
+        assert!(roles.contains(&MemberRole::founder(alice_membership.this.clone())));
+        assert!(roles.contains(&MemberRole::member(bob_membership.this.clone())));
+        assert!(!roles.contains(&MemberRole::founder(bob_membership.this)));
+    }
+    assert!(
+        !info
+            .members
+            .iter()
+            .any(|member| member.did == mallory_root.did().to_string())
+    );
+    eprintln!("discovery spike: Carol sees Bob as inviter; Alice remains founder");
+    eprintln!(
+        "discovery spike: production email delivery, signup, confirmation, wrong account refusal, retry and Bob attribution passed"
+    );
     service.stop().await.unwrap();
 }

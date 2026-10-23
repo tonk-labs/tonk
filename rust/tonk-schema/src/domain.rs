@@ -2369,3 +2369,52 @@ pub mod agent_handoff {
     #[domain("xyz.tonk.agent-handoff")]
     pub struct Account(pub Entity);
 }
+
+/// Email invitation command and outcome vocabulary.
+pub mod send_email_invitation {
+    use super::Entity;
+    use dialog_query::Attribute;
+    /// Id of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.send-email-invitation")]
+    pub struct Id(pub String);
+    /// Email of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.send-email-invitation")]
+    pub struct Email(pub String);
+    /// Space of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.send-email-invitation")]
+    pub struct Space(pub Entity);
+    /// Account of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.send-email-invitation")]
+    pub struct Account(pub Entity);
+}
+
+/// Email invitation command and outcome vocabulary.
+pub mod claim_email_invitation {
+    use super::Entity;
+    use dialog_query::Attribute;
+    /// Id of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.claim-email-invitation")]
+    pub struct Id(pub String);
+    /// Account of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.claim-email-invitation")]
+    pub struct Account(pub Entity);
+}
+
+/// Email invitation command and outcome vocabulary.
+pub mod email_invitation_status {
+    use dialog_query::Attribute;
+    /// State of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.email-invitation-status")]
+    pub struct State(pub String);
+    /// Message of this email invitation operation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.email-invitation-status")]
+    pub struct Message(pub String);
+}

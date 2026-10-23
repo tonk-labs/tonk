@@ -894,6 +894,35 @@ async fn handle_request(
         };
         return Ok(cors_response(response));
     }
+    if crate::invitation::is_invitation(&body_bytes) {
+        let revocations =
+            crate::revocation::checker::IndexedRevocations(registration.revocations.clone());
+        let invitation = crate::invitation::InvitationService {
+            store: &registration.store,
+            email: registration.emails.as_ref(),
+            service: &registration.service,
+            service_seed: &registration.service_seed,
+            origin: &registration.origin,
+            now: unix_now(),
+            revocations: &revocations,
+        };
+        let (status, value) = match invitation.handle(&body_bytes).await {
+            Ok(value) => (200, value),
+            Err(error) => (
+                error.status(),
+                serde_json::json!({"error":error.to_string()}),
+            ),
+        };
+        return Ok(cors_response(
+            Response::builder()
+                .status(status)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&value).expect("invitation JSON"),
+                )))
+                .unwrap(),
+        ));
+    }
     if registration_command(&body_bytes).is_some() {
         let env = Registration {
             store: &registration.store,

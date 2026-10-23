@@ -54,6 +54,7 @@
 
 mod attribution;
 pub mod connection;
+pub mod delivery;
 pub mod local_space_link;
 pub mod public;
 pub mod shortcut;
@@ -223,6 +224,8 @@ pub enum InviteAudience {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Invite {
+    /// Original grant for a validated delivery envelope; never accepted independently.
+    original: Option<DelegationChain>,
     /// Delegation chain granting access to the repo named by [`Invite::subject`].
     pub chain: DelegationChain,
     /// Whether the invite is open to any redeemer or scoped to one DID.
@@ -281,6 +284,7 @@ impl Invite {
             );
         }
         Ok(Self {
+            original: None,
             // The chain's own signed name, when the grant records one —
             // the invitation's historical fact, read before any loose
             // carrier gets a say.
@@ -313,6 +317,11 @@ impl Invite {
         self
     }
 
+    /// The signed invitation used for roster provenance, before service completion.
+    pub fn invitation_chain(&self) -> &DelegationChain {
+        self.original.as_ref().unwrap_or(&self.chain)
+    }
+
     /// Repo subject DID. Guaranteed specific by construction.
     pub fn subject(&self) -> &Did {
         self.chain
@@ -342,13 +351,26 @@ impl Invite {
     pub async fn parse_url(url: &str) -> Result<Self> {
         let parsed = Url::parse(url).context("invite URL is not a valid URL")?;
 
+        let mut original: Option<String> = None;
+        let mut delivery_id: Option<String> = None;
         let mut access: Option<String> = None;
         let mut remote_url: Option<Url> = None;
         let mut revocation_url: Option<Url> = None;
         let mut space_name: Option<String> = None;
         for (key, value) in parsed.query_pairs() {
             match key.as_ref() {
-                "access" => access = Some(value.into_owned()),
+                "original" => {
+                    anyhow::ensure!(original.is_none(), "duplicate original");
+                    original = Some(value.into_owned());
+                }
+                "delivery" => {
+                    anyhow::ensure!(delivery_id.is_none(), "duplicate delivery");
+                    delivery_id = Some(value.into_owned());
+                }
+                "access" => {
+                    anyhow::ensure!(access.is_none(), "duplicate access");
+                    access = Some(value.into_owned());
+                }
                 "remote" => {
                     let r = Url::parse(&value)
                         .context("invite `remote` parameter is not a valid URL")?;
@@ -377,6 +399,21 @@ impl Invite {
                 chain_bytes.len()
             )
         })?;
+
+        if original.is_some() || delivery_id.is_some() {
+            anyhow::ensure!(
+                parsed.fragment().is_none(),
+                "delivery cannot carry bearer authority"
+            );
+            let id = delivery_id.context("delivery identifier missing")?;
+            return delivery::DeliveryEnvelope {
+                invitation: id.clone(),
+                original: original.context("original invitation missing")?,
+                completed: access,
+            }
+            .into_invite(chain.audience(), &id)
+            .await;
+        }
 
         // The chain's own signed address wins over the loose parameter,
         // which stays as the carrier for chains minted before the meta
@@ -444,6 +481,17 @@ impl Invite {
         {
             let mut pairs = url.query_pairs_mut();
             pairs.append_pair("access", &access);
+            if let Some(original) = &self.original {
+                let leaf = original.proofs().last().context("missing original grant")?;
+                let Some(Ipld::String(id)) = leaf.meta().get(delivery::DELIVERY_ID) else {
+                    anyhow::bail!("original delivery identifier missing");
+                };
+                pairs.append_pair(
+                    "original",
+                    &bs58::encode(original.to_bytes()?).into_string(),
+                );
+                pairs.append_pair("delivery", id);
+            }
             if let Some(remote) = loose_remote {
                 pairs.append_pair("remote", remote.as_str());
             }

@@ -1237,3 +1237,66 @@ pub struct AgentHandoffState {
     /// Required account; device placeholder until a signed-in account resolves.
     pub account: crate::domain::agent_handoff::Account,
 }
+
+/// SendEmailInvitation through the profile command channel.
+#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SendEmailInvitation {
+    /// Request entity; outcomes reuse this entity.
+    pub this: Entity,
+    /// id for this operation.
+    pub id: crate::domain::send_email_invitation::Id,
+    /// email for this operation.
+    pub email: crate::domain::send_email_invitation::Email,
+    /// space for this operation.
+    pub space: crate::domain::send_email_invitation::Space,
+    /// account for this operation.
+    pub account: crate::domain::send_email_invitation::Account,
+}
+impl Command for SendEmailInvitation {
+    type Input = Self;
+    type Output = ();
+}
+
+/// ClaimEmailInvitation through the profile command channel.
+#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ClaimEmailInvitation {
+    /// Request entity; outcomes reuse this entity.
+    pub this: Entity,
+    /// id for this operation.
+    pub id: crate::domain::claim_email_invitation::Id,
+    /// account for this operation.
+    pub account: crate::domain::claim_email_invitation::Account,
+}
+impl Command for ClaimEmailInvitation {
+    type Input = Self;
+    type Output = ();
+}
+
+/// EmailInvitationStatus through the profile command channel.
+#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EmailInvitationStatus {
+    /// Request entity; outcomes reuse this entity.
+    pub this: Entity,
+    /// state for this operation.
+    pub state: crate::domain::email_invitation_status::State,
+    /// message for this operation.
+    pub message: crate::domain::email_invitation_status::Message,
+}
+
+impl std::fmt::Debug for SendEmailInvitation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SendEmailInvitation { .. }")
+    }
+}
+
+impl std::fmt::Debug for ClaimEmailInvitation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ClaimEmailInvitation { .. }")
+    }
+}
+
+impl std::fmt::Debug for EmailInvitationStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EmailInvitationStatus { .. }")
+    }
+}

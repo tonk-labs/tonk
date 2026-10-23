@@ -38,6 +38,8 @@ jobs:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           TONK_PROVISIONING_PROFILE_BASE64: ${{ secrets.TONK_PROVISIONING_PROFILE_BASE64 }}
+          # Public client key, kept equal to posthogKey in flake.nix (checked by test_posthog_key.py).
+          TONK_POSTHOG_KEY: phc_dPEh0Tb5GFMZtykYV6Yg8VEHqJeAutrL7frEMYKmRuW
         run: bash desktop/scripts/ci-sign.sh
       - name: Notarize and staple
         env:

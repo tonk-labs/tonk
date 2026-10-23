@@ -8,10 +8,12 @@ enum ActivityFixture {
   static let space = try? JSONDecoder().decode(
     TonkSpace.self,
     from: Data(#"{"subject":"did:key:zFixture","name":"Activity layout fixture"}"#.utf8))
-
   static var requested: Bool { ProcessInfo.processInfo.arguments.contains("--activity-fixture") }
 
-  /// Fills a space window with the fixture chat and a static page.
+  static var compactWindow: Bool {
+    requested && ProcessInfo.processInfo.arguments.contains("--compact-window-fixture")
+  }
+
   static func prepare(model: HarnessModel, page: SpacePage) {
     let args = ProcessInfo.processInfo.arguments
     guard RuntimeLocation.deployment == .local, args.contains("--data-dir"),
@@ -38,9 +40,18 @@ enum ActivityFixture {
     model.saved.conversation.appendToolActivity(
       "Evaluation could not be confirmed. Do not repeat it; query the space first.",
       messageID: "second")
+    if let index = args.firstIndex(of: "--appearance"), args.indices.contains(index + 1) {
+      NSApp.appearance = NSAppearance(named: args[index + 1] == "dark" ? .darkAqua : .aqua)
+    }
     model.openedSpace = space
     model.showingChat = true
-    page.showFixture(space, html: "<p>Layout fixture only. No live worker or model.</p>")
+    // Keep the fixture's static page separate from the production navigation policy.
+    page.webView.navigationDelegate = nil
+    page.showFixture(
+      space,
+      html:
+        "<style>body{font:13px system-ui;padding:24px;color:#777}</style><p>Layout fixture only. No live worker or model.</p>",
+      loading: args.contains("--loading-fixture"))
   }
 }
 
@@ -134,7 +145,17 @@ extension ActivityFixture {
       AccessEvent(
         date: now.addingTimeInterval(-5), subject: team, action: .made, kind: .agent,
         target: "cycle"))
-    access.showFixture(fixture, agents: agents, accountName: "Eileen Wagner", journal: journal)
+    access.showFixture(
+      fixture, agents: agents, accountName: "Eileen Wagner", journal: journal,
+      email: "eileen@example.test",
+      passkeys: [
+        AccountPasskey(
+          id: "fixture-one", createdOn: "iCloud Keychain on this Mac",
+          createdAt: now.addingTimeInterval(-18 * 86_400)),
+        AccountPasskey(
+          id: "fixture-two", createdOn: "Firefox on macOS",
+          createdAt: now.addingTimeInterval(-39 * 86_400)),
+      ])
     runtime.spaces = spaces
     runtime.catalogLoaded = true
     runtime.accountConnected = true
@@ -192,6 +213,8 @@ extension ActivityFixture {
       args.indices.contains(index + 1)
     else { return nil }
     switch args[index + 1] {
+    case "address-book": return .addressBook
+    case "account": return .account
     case "all": return .allLinks
     case "agents": return .agentLinks
     case let name: return spaces.first(where: { $0.title == name }).map { .space($0.id) }

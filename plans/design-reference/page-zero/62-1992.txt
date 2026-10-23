@@ -1,0 +1,703 @@
+const imgRemove = "https://www.figma.com/api/mcp/asset/c483f7be-b273-4313-bbb5-94cd8e696c2f.svg";
+const imgRemove1 = "https://www.figma.com/api/mcp/asset/0305d9e2-c5bc-4189-a098-1ae5fd42b89f.svg";
+const imgIconPlus = "https://www.figma.com/api/mcp/asset/cf578247-8328-49a3-8e6e-a546dbb72f51.svg";
+const imgIconChevsUd = "https://www.figma.com/api/mcp/asset/d771a4a0-7406-4cf6-810a-4320ff2418f6.svg";
+const imgOnOn = "https://www.figma.com/api/mcp/asset/4642b9f9-e187-4aac-8648-187ce1bc2333.svg";
+const imgIconCheck = "https://www.figma.com/api/mcp/asset/e5f95ffc-1f7b-4648-b471-0cc85f4b5754.svg";
+const imgIconCheck1 = "https://www.figma.com/api/mcp/asset/a20f20e1-c2b9-4db8-8fdf-f6538ab0a65e.svg";
+const imgIconBot = "https://www.figma.com/api/mcp/asset/8395a0ba-9896-45b9-9780-4ee4a76034c8.svg";
+const imgIconBook = "https://www.figma.com/api/mcp/asset/3309f53a-28d1-40e4-8611-a203ef15d63a.svg";
+const imgIconLeaf = "https://www.figma.com/api/mcp/asset/5a19d78c-479d-433a-b646-dd1b1c5b6c19.svg";
+const imgIconKanban = "https://www.figma.com/api/mcp/asset/91cbb26b-b7c5-472d-bf6c-ec9ca35924f8.svg";
+const imgIconUsers = "https://www.figma.com/api/mcp/asset/b8b967b7-ec68-4c6b-8748-e4582fd8d6e4.svg";
+const imgIconPlug = "https://www.figma.com/api/mcp/asset/76cc0c87-3691-464d-8c44-b5160f1d1376.svg";
+const imgIconLink = "https://www.figma.com/api/mcp/asset/e25660bd-3bf4-4714-9bed-1054a2a6f353.svg";
+const imgIconPanelLeft = "https://www.figma.com/api/mcp/asset/3549f3d7-7264-4cda-ae09-8506e00557e0.svg";
+const imgTrafficLights = "https://www.figma.com/api/mcp/asset/9ec029be-bd58-4bcb-8a1d-065e4a042b68.svg";
+const imgIconSearch = "https://www.figma.com/api/mcp/asset/96eb2e6a-402d-4c83-b5a6-050ccd19e7b6.svg";
+const imgIconBookUser = "https://www.figma.com/api/mcp/asset/7d0567f4-3320-453b-93be-e3a4f1ce07f0.svg";
+const imgIconSettings = "https://www.figma.com/api/mcp/asset/8f470cf7-f82a-4c3f-a3e8-c7bed1e6f0d5.svg";
+const imgIconSearch1 = "https://www.figma.com/api/mcp/asset/e2f87259-39f2-4148-b3df-685361f43728.svg";
+const imgCopyKey = "https://www.figma.com/api/mcp/asset/d631ee90-a8a6-45f9-87d5-5c89b2bcd7f5.svg";
+const imgCopyKey1 = "https://www.figma.com/api/mcp/asset/8912ba8c-12c0-4b8c-a931-7236876cc9fe.svg";
+
+type LabelPillProps = {
+  className?: string;
+  label?: string;
+  tone?: "Neutral" | "Ink" | "Add";
+};
+
+function LabelPill({ className, label = "Label", tone = "Neutral" }: LabelPillProps) {
+  const isAdd = tone === "Add";
+  const isInk = tone === "Ink";
+  const isNeutral = tone === "Neutral";
+  return (
+    <div className={className || `content-stretch flex gap-[4px] h-[24px] items-center relative rounded-[999px] ${isAdd ? "border border-[var(--dt-control,#d9d9dc)] border-dashed pl-[7px] pr-[9px]" : isInk ? "bg-[var(--dt-accent-wash-strong,rgba(52,120,246,0.14))] pl-[9px] pr-[6px]" : "bg-[var(--dt-fill,rgba(0,0,0,0.08))] pl-[9px] pr-[6px]"}`} id={isAdd ? "node-40_1561" : isInk ? "node-40_1556" : "node-40_1551"}>
+      {isNeutral && (
+        <>
+          <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text,#1d1d1f)] whitespace-nowrap" data-node-id="40:1552" style={{ fontVariationSettings: '"wdth" 100' }}>
+            {label}
+          </p>
+          <div className="relative shrink-0 size-[11px]" data-node-id="40:1553" data-name="Remove">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgRemove} />
+          </div>
+        </>
+      )}
+      {isInk && (
+        <>
+          <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-accent,#3478f6)] whitespace-nowrap" data-node-id="40:1557" style={{ fontVariationSettings: '"wdth" 100' }}>
+            {label}
+          </p>
+          <div className="relative shrink-0 size-[11px]" data-node-id="40:1558" data-name="Remove">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgRemove1} />
+          </div>
+        </>
+      )}
+      {isAdd && (
+        <>
+          <div className="relative shrink-0 size-[12px]" data-node-id="40:1562" data-name="icon/plus">
+            <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconPlus} />
+          </div>
+          <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text-2,#6e6e73)] whitespace-nowrap" data-node-id="40:1565" style={{ fontVariationSettings: '"wdth" 100' }}>
+            {label}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function IconChevsUd({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:83" data-name="icon/chevs-ud">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconChevsUd} />
+    </div>
+  );
+}
+
+type SelectProps = {
+  className?: string;
+  value?: string;
+};
+
+function Select({ className, value = "Choose…" }: SelectProps) {
+  return (
+    <div className={className || "bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[8px] h-[28px] items-center pl-[9px] pr-[8px] relative rounded-[999px] w-[300px]"} data-node-id="4:47" data-name="Select">
+      <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="4:48" style={{ fontVariationSettings: '"wdth" 100' }}>
+        {value}
+      </p>
+      <IconChevsUd className="relative shrink-0 size-[12px]" />
+    </div>
+  );
+}
+
+type SwitchProps = {
+  className?: string;
+  on?: "On";
+};
+
+function Switch({ className, on = "On" }: SwitchProps) {
+  return (
+    <div className={className || "h-[18px] relative w-[32px]"} data-node-id="4:44">
+      <div className="absolute inset-[0_0_-5.56%_0]">
+        <img alt="" className="block max-w-none size-full" src={imgOnOn} />
+      </div>
+    </div>
+  );
+}
+
+type ButtonProps = {
+  className?: string;
+  check?: boolean;
+  label?: string;
+  size?: "Regular" | "Small";
+  style?: "Default";
+};
+
+function Button({ className, check = false, label = "Button", size = "Regular", style = "Default" }: ButtonProps) {
+  const isDefaultAndRegular = style === "Default" && size === "Regular";
+  const isDefaultAndSmall = style === "Default" && size === "Small";
+  return (
+    <div className={className || `bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] ${isDefaultAndSmall ? "gap-[4px] h-[24px] px-[9px]" : "gap-[6px] h-[28px] px-[12px]"}`} id={isDefaultAndSmall ? "node-4_6" : "node-4_2"}>
+      {isDefaultAndRegular && check && (
+        <div className="relative shrink-0 size-[14px]" data-node-id="4:3" data-name="icon/check">
+          <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconCheck} />
+        </div>
+      )}
+      {isDefaultAndRegular && (
+        <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="4:5" style={{ fontVariationSettings: '"wdth" 100' }}>
+          {label}
+        </p>
+      )}
+      {isDefaultAndSmall && check && (
+        <div className="relative shrink-0 size-[12px]" data-node-id="4:7" data-name="icon/check">
+          <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconCheck1} />
+        </div>
+      )}
+      {isDefaultAndSmall && (
+        <p className="[word-break:break-word] font-['SF_Pro:Medium'] font-[510] leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text,#1d1d1f)] whitespace-nowrap" data-node-id="4:9" style={{ fontVariationSettings: '"wdth" 100' }}>
+          {label}
+        </p>
+      )}
+    </div>
+  );
+}
+
+type AvatarProps = {
+  className?: string;
+  initials?: string;
+  kind?: "Person" | "Agent";
+};
+
+function Avatar({ className, initials = "K", kind = "Person" }: AvatarProps) {
+  const isAgent = kind === "Agent";
+  return (
+    <div className={className || `bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative size-[24px] ${isAgent ? "rounded-[6px]" : "rounded-[12px]"}`} id={isAgent ? "node-36_1082" : "node-36_1080"}>
+      {kind === "Person" && (
+        <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="36:1081" style={{ fontVariationSettings: '"wdth" 100' }}>
+          {initials}
+        </p>
+      )}
+      {isAgent && (
+        <div className="relative shrink-0 size-[14px]" data-node-id="36:1083" data-name="icon/bot">
+          <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBot} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IconBook({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:76" data-name="icon/book">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBook} />
+    </div>
+  );
+}
+
+function IconLeaf({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:72" data-name="icon/leaf">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconLeaf} />
+    </div>
+  );
+}
+
+function IconKanban({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:68" data-name="icon/kanban">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconKanban} />
+    </div>
+  );
+}
+
+function IconUsers({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:62" data-name="icon/users">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconUsers} />
+    </div>
+  );
+}
+
+function IconPlug({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="60:960" data-name="icon/plug">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconPlug} />
+    </div>
+  );
+}
+
+function IconLink({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="3:44" data-name="icon/link">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconLink} />
+    </div>
+  );
+}
+
+function IconPanelLeft({ className }: { className?: string }) {
+  return (
+    <div className={className || "relative size-[16px]"} data-node-id="70:1146" data-name="icon/panel-left">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconPanelLeft} />
+    </div>
+  );
+}
+
+function TrafficLights({ className }: { className?: string }) {
+  return (
+    <div className={className || "h-[12px] relative w-[52px]"} data-node-id="4:57" data-name="Traffic lights">
+      <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgTrafficLights} />
+    </div>
+  );
+}
+
+export default function Component6AddressBook() {
+  return (
+    <div className="bg-[var(--dt-ground,white)] content-stretch flex items-start overflow-clip relative rounded-[20px] shadow-[0px_8px_20px_0px_rgba(0,0,0,0.12),0px_30px_70px_0px_rgba(0,0,0,0.28),0px_0px_0px_0.5px_rgba(0,0,0,0.28)] size-full" data-node-id="62:1992" data-name="6 · Address book">
+      <div className="content-stretch flex flex-col h-full items-start pl-[8px] py-[8px] relative shrink-0 w-[192px]" data-node-id="62:1993" data-name="Sidebar · 800×600">
+        <div className="bg-[var(--dt-side,#f8f8f8)] content-stretch flex flex-[1_0_0] flex-col items-start min-h-px overflow-clip relative rounded-[16px] shadow-[0px_2px_10px_0px_rgba(0,0,0,0.06),0px_0px_0px_0.5px_rgba(0,0,0,0.1)] w-full" data-node-id="I62:1993;70:1147" data-name="Panel">
+          <div className="content-stretch flex h-[46px] items-center overflow-clip pl-[12px] pr-[8px] relative shrink-0 w-full" data-node-id="I62:1993;60:992" data-name="Title bar">
+            <TrafficLights className="h-[12px] relative shrink-0 w-[52px]" />
+            <div className="flex-[1_0_0] h-px min-w-px relative" data-node-id="I62:1993;70:1148" data-name="Spacer" />
+            <div className="bg-[var(--dt-ground,white)] content-stretch flex items-center justify-center overflow-clip relative rounded-[999px] shadow-[0px_1px_3px_0px_rgba(0,0,0,0.06),0px_0px_0px_0.5px_rgba(0,0,0,0.1)] shrink-0 size-[28px]" data-node-id="I62:1993;70:1149" data-name="Sidebar toggle">
+              <IconPanelLeft className="relative shrink-0 size-[15px]" />
+            </div>
+          </div>
+          <div className="content-stretch flex items-start overflow-clip pb-[8px] px-[10px] relative shrink-0 w-full" data-node-id="I62:1993;70:1153" data-name="Search">
+            <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex flex-[1_0_0] gap-[6px] h-[28px] items-center min-w-px px-[9px] relative rounded-[999px]" data-node-id="I62:1993;70:1154" data-name="Search spaces">
+              <div className="relative shrink-0 size-[14px]" data-node-id="I62:1993;70:1154;36:1135" data-name="icon/search">
+                <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconSearch} />
+              </div>
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text-3,#969696)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:1993;70:1154;36:1138" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Search spaces
+              </p>
+            </div>
+          </div>
+          <div className="content-stretch flex flex-col gap-[2px] items-start overflow-clip px-[10px] relative shrink-0 w-full" data-node-id="I62:1993;60:997" data-name="Navigation">
+            <div className="content-stretch flex gap-[8px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I62:1993;60:998" data-name="All links">
+              <IconLink className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:1993;60:998;4:23" style={{ fontVariationSettings: '"wdth" 100' }}>
+                All links
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[8px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I62:1993;60:1006" data-name="Connections">
+              <IconPlug className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:1993;60:1006;4:23" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Connections
+              </p>
+              <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] whitespace-nowrap" data-node-id="I62:1993;60:1006;4:24" style={{ fontVariationSettings: '"wdth" 100' }}>
+                4
+              </p>
+            </div>
+            <div className="bg-[var(--dt-selection,#2863d9)] content-stretch flex gap-[8px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I62:1993;60:1016" data-name="Address book">
+              <div className="relative shrink-0 size-[16px]" data-node-id="I62:1993;60:1016;4:26" data-name="icon/link">
+                <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBookUser} />
+              </div>
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Semibold'] font-[590] leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-on-accent,white)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:1993;60:1016;4:29" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Address book
+              </p>
+              <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-on-accent,white)] whitespace-nowrap" data-node-id="I62:1993;60:1016;4:30" style={{ fontVariationSettings: '"wdth" 100' }}>
+                12
+              </p>
+            </div>
+          </div>
+          <div className="content-stretch flex items-start overflow-clip pb-[4px] pl-[18px] pr-[8px] pt-[14px] relative shrink-0 w-full" data-node-id="I62:1993;60:1025" data-name="Section head">
+            <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[14px] relative shrink-0 text-[11px] text-[color:var(--dt-text-3,#969696)] tracking-[0.06px] whitespace-nowrap" data-node-id="I62:1993;60:1026" style={{ fontVariationSettings: '"wdth" 100' }}>
+              Spaces
+            </p>
+          </div>
+          <div className="content-stretch flex flex-col gap-[2px] items-start overflow-clip px-[10px] relative shrink-0 w-full" data-node-id="I62:1993;60:1027" data-name="Spaces">
+            <div className="content-stretch flex gap-[7px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I62:1993;60:1028" data-name="tonk-team">
+              <IconUsers className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:1993;60:1028;60:980" style={{ fontVariationSettings: '"wdth" 100' }}>
+                tonk-team
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[7px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I62:1993;60:1041" data-name="kanoodel">
+              <IconKanban className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:1993;60:1041;60:980" style={{ fontVariationSettings: '"wdth" 100' }}>
+                kanoodel
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[7px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I62:1993;60:1054" data-name="tea-inventory">
+              <IconLeaf className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:1993;60:1054;60:980" style={{ fontVariationSettings: '"wdth" 100' }}>
+                tea-inventory
+              </p>
+            </div>
+            <div className="content-stretch flex gap-[7px] h-[28px] items-center px-[8px] relative rounded-[8px] shrink-0 w-full" data-node-id="I62:1993;60:1067" data-name="little-writer">
+              <IconBook className="relative shrink-0 size-[16px]" />
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:1993;60:1067;60:980" style={{ fontVariationSettings: '"wdth" 100' }}>
+                little-writer
+              </p>
+            </div>
+          </div>
+          <div className="flex-[1_0_0] min-h-px relative w-full" data-node-id="I62:1993;60:1079" data-name="Spacer" />
+          <div className="border-[var(--dt-line,#e4e6e5)] border-solid border-t content-stretch flex flex-col items-start overflow-clip pb-[10px] pt-[8px] px-[10px] relative shrink-0 w-full" data-node-id="I62:1993;60:1080" data-name="Footer">
+            <div className="content-stretch flex gap-[9px] items-center overflow-clip px-[8px] py-[6px] relative rounded-[8px] shrink-0 w-full" data-node-id="I62:1993;60:1081" data-name="Account">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center overflow-clip relative rounded-[11px] shrink-0 size-[22px]" data-node-id="I62:1993;60:1082" data-name="Avatar">
+                <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="I62:1993;60:1083" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  EW
+                </p>
+              </div>
+              <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px overflow-hidden relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] text-ellipsis tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:1993;60:1084" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Eileen Wagner
+              </p>
+              <div className="relative shrink-0 size-[16px]" data-node-id="I62:1993;60:1085" data-name="icon/settings">
+                <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconSettings} />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="bg-[var(--dt-ground,white)] content-stretch flex flex-[1_0_0] flex-col h-full items-start min-w-px overflow-clip relative" data-node-id="62:2072" data-name="Main">
+        <div className="content-stretch flex gap-[8px] h-[52px] items-center overflow-clip pl-[20px] pr-[14px] relative shrink-0 w-full" data-node-id="62:2073" data-name="Toolbar">
+          <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[20px] relative shrink-0 text-[15px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.2px] whitespace-nowrap" data-node-id="62:2074" style={{ fontVariationSettings: '"wdth" 100' }}>
+            Address book
+          </p>
+          <div className="flex-[1_0_0] h-px min-w-px relative" data-node-id="62:2075" data-name="Spacer" />
+          <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[6px] h-[28px] items-center overflow-clip pl-[10px] pr-[12px] relative rounded-[999px] shrink-0 w-[170px]" data-node-id="62:2076" data-name="Search">
+            <div className="relative shrink-0 size-[14px]" data-node-id="62:2077" data-name="icon/search">
+              <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconSearch1} />
+            </div>
+            <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text-3,#969696)] tracking-[-0.08px] whitespace-nowrap" data-node-id="62:2080" style={{ fontVariationSettings: '"wdth" 100' }}>
+              Name or key
+            </p>
+          </div>
+          <Button className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[6px] h-[28px] items-center justify-center px-[12px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" label="Add…" />
+        </div>
+        <div className="content-stretch flex flex-[1_0_0] items-start min-h-px overflow-clip relative w-full" data-node-id="62:2085" data-name="Split">
+          <div className="border-[var(--dt-line,#e4e6e5)] border-r border-solid content-stretch flex flex-col gap-[2px] h-full items-start overflow-x-clip overflow-y-auto p-[8px] relative shrink-0 w-[236px]" data-node-id="62:2086" data-name="List">
+            <div className="content-stretch flex gap-[10px] items-center px-[10px] py-[6px] relative rounded-[7px] shrink-0 w-full" data-node-id="62:2087" data-name="Ana">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative rounded-[12px] shrink-0 size-[24px]" data-node-id="I62:2087;36:1096" data-name="Avatar">
+                <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="I62:2087;36:1096;36:1081" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  A
+                </p>
+              </div>
+              <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I62:2087;36:1098" data-name="Text">
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I62:2087;36:1099" data-name="Name row">
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:2087;36:1100" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Ana
+                  </p>
+                </div>
+                <div className="content-stretch flex gap-[4px] items-center overflow-clip relative shrink-0" data-node-id="I62:2087;36:1107" data-name="Key row">
+                  <p className="[word-break:break-word] font-['JetBrains_Mono:Regular'] font-normal leading-[16px] relative shrink-0 text-[11.5px] text-[color:var(--dt-text-2,#6e6e73)] whitespace-nowrap" data-node-id="I62:2087;36:1108">
+                    did:key:z6Mk…a2n
+                  </p>
+                  <div className="relative shrink-0 size-[12px]" data-node-id="I62:2087;36:1109" data-name="Copy key">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgCopyKey} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="content-stretch flex gap-[10px] items-center px-[10px] py-[6px] relative rounded-[7px] shrink-0 w-full" data-node-id="62:2110" data-name="Eileen's Claude Code">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative rounded-[6px] shrink-0 size-[24px]" data-node-id="I62:2110;36:1096" data-name="Avatar">
+                <div className="relative shrink-0 size-[14px]" data-node-id="I62:2110;36:1096;36:1083" data-name="icon/bot">
+                  <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBot} />
+                </div>
+              </div>
+              <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I62:2110;36:1098" data-name="Text">
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I62:2110;36:1099" data-name="Name row">
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:2110;36:1100" style={{ fontVariationSettings: '"wdth" 100' }}>{`Eileen's Claude Code`}</p>
+                </div>
+                <div className="content-stretch flex gap-[4px] items-center overflow-clip relative shrink-0" data-node-id="I62:2110;36:1107" data-name="Key row">
+                  <p className="[word-break:break-word] font-['JetBrains_Mono:Regular'] font-normal leading-[16px] relative shrink-0 text-[11.5px] text-[color:var(--dt-text-2,#6e6e73)] whitespace-nowrap" data-node-id="I62:2110;36:1108">
+                    did:key:z6Mk…cc1
+                  </p>
+                  <div className="relative shrink-0 size-[12px]" data-node-id="I62:2110;36:1109" data-name="Copy key">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgCopyKey} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="content-stretch flex gap-[10px] items-center px-[10px] py-[6px] relative rounded-[7px] shrink-0 w-full" data-node-id="62:2139" data-name="Eileen's Codex">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative rounded-[6px] shrink-0 size-[24px]" data-node-id="I62:2139;36:1096" data-name="Avatar">
+                <div className="relative shrink-0 size-[14px]" data-node-id="I62:2139;36:1096;36:1083" data-name="icon/bot">
+                  <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBot} />
+                </div>
+              </div>
+              <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I62:2139;36:1098" data-name="Text">
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I62:2139;36:1099" data-name="Name row">
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:2139;36:1100" style={{ fontVariationSettings: '"wdth" 100' }}>{`Eileen's Codex`}</p>
+                </div>
+                <div className="content-stretch flex gap-[4px] items-center overflow-clip relative shrink-0" data-node-id="I62:2139;36:1107" data-name="Key row">
+                  <p className="[word-break:break-word] font-['JetBrains_Mono:Regular'] font-normal leading-[16px] relative shrink-0 text-[11.5px] text-[color:var(--dt-text-2,#6e6e73)] whitespace-nowrap" data-node-id="I62:2139;36:1108">
+                    did:key:z6Mk…c0d
+                  </p>
+                  <div className="relative shrink-0 size-[12px]" data-node-id="I62:2139;36:1109" data-name="Copy key">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgCopyKey} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="content-stretch flex gap-[10px] items-center px-[10px] py-[6px] relative rounded-[7px] shrink-0 w-full" data-node-id="62:2168" data-name="Jonas">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative rounded-[12px] shrink-0 size-[24px]" data-node-id="I62:2168;36:1096" data-name="Avatar">
+                <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="I62:2168;36:1096;36:1081" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  J
+                </p>
+              </div>
+              <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I62:2168;36:1098" data-name="Text">
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I62:2168;36:1099" data-name="Name row">
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:2168;36:1100" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Jonas
+                  </p>
+                </div>
+                <div className="content-stretch flex gap-[4px] items-center overflow-clip relative shrink-0" data-node-id="I62:2168;36:1107" data-name="Key row">
+                  <p className="[word-break:break-word] font-['JetBrains_Mono:Regular'] font-normal leading-[16px] relative shrink-0 text-[11.5px] text-[color:var(--dt-text-2,#6e6e73)] whitespace-nowrap" data-node-id="I62:2168;36:1108">
+                    did:key:z6Mk…j0n
+                  </p>
+                  <div className="relative shrink-0 size-[12px]" data-node-id="I62:2168;36:1109" data-name="Copy key">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgCopyKey} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="content-stretch flex gap-[10px] items-center px-[10px] py-[6px] relative rounded-[7px] shrink-0 w-full" data-node-id="62:2190" data-name="Jonas's Cursor">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative rounded-[6px] shrink-0 size-[24px]" data-node-id="I62:2190;36:1096" data-name="Avatar">
+                <div className="relative shrink-0 size-[14px]" data-node-id="I62:2190;36:1096;36:1083" data-name="icon/bot">
+                  <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBot} />
+                </div>
+              </div>
+              <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I62:2190;36:1098" data-name="Text">
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I62:2190;36:1099" data-name="Name row">
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:2190;36:1100" style={{ fontVariationSettings: '"wdth" 100' }}>{`Jonas's Cursor`}</p>
+                </div>
+                <div className="content-stretch flex gap-[4px] items-center overflow-clip relative shrink-0" data-node-id="I62:2190;36:1107" data-name="Key row">
+                  <p className="[word-break:break-word] font-['JetBrains_Mono:Regular'] font-normal leading-[16px] relative shrink-0 text-[11.5px] text-[color:var(--dt-text-2,#6e6e73)] whitespace-nowrap" data-node-id="I62:2190;36:1108">
+                    did:key:z6Mk…jc9
+                  </p>
+                  <div className="relative shrink-0 size-[12px]" data-node-id="I62:2190;36:1109" data-name="Copy key">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgCopyKey} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="content-stretch flex gap-[10px] items-center px-[10px] py-[6px] relative rounded-[7px] shrink-0 w-full" data-node-id="62:2219" data-name="Kai">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative rounded-[12px] shrink-0 size-[24px]" data-node-id="I62:2219;36:1096" data-name="Avatar">
+                <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="I62:2219;36:1096;36:1081" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  K
+                </p>
+              </div>
+              <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I62:2219;36:1098" data-name="Text">
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I62:2219;36:1099" data-name="Name row">
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:2219;36:1100" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Kai
+                  </p>
+                </div>
+                <div className="content-stretch flex gap-[4px] items-center overflow-clip relative shrink-0" data-node-id="I62:2219;36:1107" data-name="Key row">
+                  <p className="[word-break:break-word] font-['JetBrains_Mono:Regular'] font-normal leading-[16px] relative shrink-0 text-[11.5px] text-[color:var(--dt-text-2,#6e6e73)] whitespace-nowrap" data-node-id="I62:2219;36:1108">
+                    did:key:z6Mk…k4i
+                  </p>
+                  <div className="relative shrink-0 size-[12px]" data-node-id="I62:2219;36:1109" data-name="Copy key">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgCopyKey} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="bg-[var(--dt-selection,#2863d9)] content-stretch flex gap-[10px] items-center px-[10px] py-[6px] relative rounded-[7px] shrink-0 w-full" data-node-id="62:2241" data-name="Kai's Claude Code">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative rounded-[6px] shrink-0 size-[24px]" data-node-id="I62:2241;36:1096" data-name="Avatar">
+                <div className="relative shrink-0 size-[14px]" data-node-id="I62:2241;36:1096;36:1083" data-name="icon/bot">
+                  <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBot} />
+                </div>
+              </div>
+              <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I62:2241;36:1098" data-name="Text">
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I62:2241;36:1099" data-name="Name row">
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-on-accent,white)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:2241;36:1100" style={{ fontVariationSettings: '"wdth" 100' }}>{`Kai's Claude Code`}</p>
+                </div>
+                <div className="content-stretch flex gap-[4px] items-center overflow-clip relative shrink-0" data-node-id="I62:2241;36:1107" data-name="Key row">
+                  <p className="[word-break:break-word] font-['JetBrains_Mono:Regular'] font-normal leading-[16px] relative shrink-0 text-[11.5px] text-[color:var(--dt-on-accent,white)] whitespace-nowrap" data-node-id="I62:2241;36:1108">
+                    did:key:z6Mk…kc2
+                  </p>
+                  <div className="relative shrink-0 size-[12px]" data-node-id="I62:2241;36:1109" data-name="Copy key">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgCopyKey1} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="content-stretch flex gap-[10px] items-center px-[10px] py-[6px] relative rounded-[7px] shrink-0 w-full" data-node-id="62:2270" data-name="Lu">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative rounded-[12px] shrink-0 size-[24px]" data-node-id="I62:2270;36:1096" data-name="Avatar">
+                <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="I62:2270;36:1096;36:1081" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  L
+                </p>
+              </div>
+              <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I62:2270;36:1098" data-name="Text">
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I62:2270;36:1099" data-name="Name row">
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:2270;36:1100" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Lu
+                  </p>
+                </div>
+                <div className="content-stretch flex gap-[4px] items-center overflow-clip relative shrink-0" data-node-id="I62:2270;36:1107" data-name="Key row">
+                  <p className="[word-break:break-word] font-['JetBrains_Mono:Regular'] font-normal leading-[16px] relative shrink-0 text-[11.5px] text-[color:var(--dt-text-2,#6e6e73)] whitespace-nowrap" data-node-id="I62:2270;36:1108">
+                    did:key:z6Mk…l5u
+                  </p>
+                  <div className="relative shrink-0 size-[12px]" data-node-id="I62:2270;36:1109" data-name="Copy key">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgCopyKey} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="content-stretch flex gap-[10px] items-center px-[10px] py-[6px] relative rounded-[7px] shrink-0 w-full" data-node-id="62:2292" data-name="Mira">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative rounded-[12px] shrink-0 size-[24px]" data-node-id="I62:2292;36:1096" data-name="Avatar">
+                <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="I62:2292;36:1096;36:1081" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  M
+                </p>
+              </div>
+              <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I62:2292;36:1098" data-name="Text">
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I62:2292;36:1099" data-name="Name row">
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:2292;36:1100" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Mira
+                  </p>
+                </div>
+                <div className="content-stretch flex gap-[4px] items-center overflow-clip relative shrink-0" data-node-id="I62:2292;36:1107" data-name="Key row">
+                  <p className="[word-break:break-word] font-['JetBrains_Mono:Regular'] font-normal leading-[16px] relative shrink-0 text-[11.5px] text-[color:var(--dt-text-2,#6e6e73)] whitespace-nowrap" data-node-id="I62:2292;36:1108">
+                    did:key:z6Mk…m1r
+                  </p>
+                  <div className="relative shrink-0 size-[12px]" data-node-id="I62:2292;36:1109" data-name="Copy key">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgCopyKey} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="content-stretch flex gap-[10px] items-center px-[10px] py-[6px] relative rounded-[7px] shrink-0 w-full" data-node-id="62:2314" data-name="Mira's Codex">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative rounded-[6px] shrink-0 size-[24px]" data-node-id="I62:2314;36:1096" data-name="Avatar">
+                <div className="relative shrink-0 size-[14px]" data-node-id="I62:2314;36:1096;36:1083" data-name="icon/bot">
+                  <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgIconBot} />
+                </div>
+              </div>
+              <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I62:2314;36:1098" data-name="Text">
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I62:2314;36:1099" data-name="Name row">
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:2314;36:1100" style={{ fontVariationSettings: '"wdth" 100' }}>{`Mira's Codex`}</p>
+                </div>
+                <div className="content-stretch flex gap-[4px] items-center overflow-clip relative shrink-0" data-node-id="I62:2314;36:1107" data-name="Key row">
+                  <p className="[word-break:break-word] font-['JetBrains_Mono:Regular'] font-normal leading-[16px] relative shrink-0 text-[11.5px] text-[color:var(--dt-text-2,#6e6e73)] whitespace-nowrap" data-node-id="I62:2314;36:1108">
+                    did:key:z6Mk…mx3
+                  </p>
+                  <div className="relative shrink-0 size-[12px]" data-node-id="I62:2314;36:1109" data-name="Copy key">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgCopyKey} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="content-stretch flex gap-[10px] items-center px-[10px] py-[6px] relative rounded-[7px] shrink-0 w-full" data-node-id="62:2343" data-name="Theo">
+              <div className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative rounded-[12px] shrink-0 size-[24px]" data-node-id="I62:2343;36:1096" data-name="Avatar">
+                <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[13px] relative shrink-0 text-[10.5px] text-[color:var(--dt-text,#1d1d1f)] tracking-[0.06px] whitespace-nowrap" data-node-id="I62:2343;36:1096;36:1081" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  T
+                </p>
+              </div>
+              <div className="content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="I62:2343;36:1098" data-name="Text">
+                <div className="content-stretch flex gap-[6px] items-center overflow-clip relative shrink-0" data-node-id="I62:2343;36:1099" data-name="Name row">
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="I62:2343;36:1100" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Theo
+                  </p>
+                </div>
+                <div className="content-stretch flex gap-[4px] items-center overflow-clip relative shrink-0" data-node-id="I62:2343;36:1107" data-name="Key row">
+                  <p className="[word-break:break-word] font-['JetBrains_Mono:Regular'] font-normal leading-[16px] relative shrink-0 text-[11.5px] text-[color:var(--dt-text-2,#6e6e73)] whitespace-nowrap" data-node-id="I62:2343;36:1108">
+                    did:key:z6Mk…t8e
+                  </p>
+                  <div className="relative shrink-0 size-[12px]" data-node-id="I62:2343;36:1109" data-name="Copy key">
+                    <img alt="" className="absolute block inset-0 max-w-none size-full" src={imgCopyKey} />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="content-stretch flex flex-[1_0_0] flex-col gap-[18px] h-full items-start min-w-px overflow-x-clip overflow-y-auto pb-[20px] pt-[18px] px-[20px] relative" data-node-id="62:2365" data-name="Details">
+            <div className="content-stretch flex gap-[12px] items-center overflow-clip relative shrink-0 w-full" data-node-id="62:2366" data-name="Head">
+              <Avatar className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex items-center justify-center relative rounded-[10px] shrink-0 size-[40px]" kind="Agent" />
+              <div className="[word-break:break-word] content-stretch flex flex-[1_0_0] flex-col gap-px items-start min-w-px overflow-clip relative" data-node-id="62:2375" data-name="Name">
+                <p className="font-['SF_Pro:Semibold'] font-[590] leading-[20px] relative shrink-0 text-[15px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.2px] w-full" data-node-id="62:2376" style={{ fontVariationSettings: '"wdth" 100' }}>{`Kai's Claude Code`}</p>
+                <p className="font-['SF_Pro:Regular'] font-normal leading-[16px] relative shrink-0 text-[12px] text-[color:var(--dt-text-2,#6e6e73)] w-full" data-node-id="62:2377" style={{ fontVariationSettings: '"wdth" 100' }}>
+                  Agent · runs for Kai · in tonk-team and kanoodel
+                </p>
+              </div>
+            </div>
+            <div className="content-stretch flex flex-col gap-[6px] items-start overflow-clip relative shrink-0 w-full" data-node-id="62:2378" data-name="did:key">
+              <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[14px] relative shrink-0 text-[11px] text-[color:var(--dt-text-3,#969696)] tracking-[0.06px] whitespace-nowrap" data-node-id="62:2379" style={{ fontVariationSettings: '"wdth" 100' }}>
+                did:key
+              </p>
+              <div className="bg-[var(--dt-group,#f7f7f7)] content-stretch flex gap-[8px] items-start overflow-clip pl-[10px] pr-[6px] py-[7px] relative rounded-[8px] shrink-0 w-full" data-node-id="62:2380" data-name="Key">
+                <p className="[word-break:break-word] flex-[1_0_0] font-['JetBrains_Mono:Regular'] font-normal leading-[18px] min-w-px relative text-[11.5px] text-[color:var(--dt-text,#1d1d1f)]" data-node-id="62:2381">
+                  did:key:z6MkrKc2vJ8tWqY4nHbGd7sE3xPfL9aZmU1oRiTe6hNkc2
+                </p>
+                <Button className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center justify-center px-[9px] relative rounded-[999px] shadow-[0px_0.5px_1px_0px_rgba(0,0,0,0.06)] shrink-0" label="Copy" size="Small" />
+              </div>
+            </div>
+            <div className="content-stretch flex flex-col gap-[6px] items-start overflow-clip relative shrink-0 w-full" data-node-id="62:2386" data-name="Kind">
+              <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[14px] relative shrink-0 text-[11px] text-[color:var(--dt-text-3,#969696)] tracking-[0.06px] whitespace-nowrap" data-node-id="62:2387" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Kind
+              </p>
+              <div className="bg-[var(--dt-group,#f7f7f7)] content-stretch flex flex-col items-start overflow-clip relative rounded-[10px] shrink-0 w-full" data-node-id="62:2388" data-name="Agent">
+                <div className="content-stretch flex gap-[10px] items-center overflow-clip px-[12px] py-[9px] relative shrink-0 w-full" data-node-id="62:2389" data-name="Is agent">
+                  <p className="[word-break:break-word] flex-[1_0_0] font-['SF_Pro:Regular'] font-normal leading-[18px] min-w-px relative text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px]" data-node-id="62:2390" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    This is an agent
+                  </p>
+                  <Switch className="h-[18px] relative shrink-0 w-[32px]" />
+                </div>
+                <div className="border-[var(--dt-row,#e6e6e6)] border-solid border-t content-stretch flex gap-[10px] items-center overflow-clip px-[12px] py-[8px] relative shrink-0 w-full" data-node-id="62:2393" data-name="Runs for">
+                  <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[18px] relative shrink-0 text-[13px] text-[color:var(--dt-text,#1d1d1f)] tracking-[-0.08px] whitespace-nowrap" data-node-id="62:2394" style={{ fontVariationSettings: '"wdth" 100' }}>
+                    Runs for
+                  </p>
+                  <Select className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex flex-[1_0_0] gap-[8px] h-[28px] items-center min-w-px pl-[9px] pr-[8px] relative rounded-[999px]" value="Kai" />
+                </div>
+              </div>
+            </div>
+            <div className="content-stretch flex flex-col gap-[6px] items-start overflow-clip relative shrink-0 w-full" data-node-id="62:2400" data-name="Labels">
+              <p className="[word-break:break-word] font-['SF_Pro:Semibold'] font-[590] leading-[14px] relative shrink-0 text-[11px] text-[color:var(--dt-text-3,#969696)] tracking-[0.06px] whitespace-nowrap" data-node-id="62:2401" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Labels
+              </p>
+              <div className="content-start flex flex-wrap gap-[6px] items-start overflow-clip relative shrink-0 w-full" data-node-id="62:2402" data-name="Pills">
+                <LabelPill className="bg-[var(--dt-accent-wash-strong,rgba(52,120,246,0.14))] content-stretch flex gap-[4px] h-[24px] items-center pl-[9px] pr-[6px] relative rounded-[999px] shrink-0" label="Agent" tone="Ink" />
+                <LabelPill className="bg-[var(--dt-fill,rgba(0,0,0,0.08))] content-stretch flex gap-[4px] h-[24px] items-center pl-[9px] pr-[6px] relative rounded-[999px] shrink-0" label="Team" />
+                <LabelPill className="border border-[var(--dt-control,#d9d9dc)] border-dashed content-stretch flex gap-[4px] h-[24px] items-center pl-[7px] pr-[9px] relative rounded-[999px] shrink-0" label="Add label" tone="Add" />
+              </div>
+              <p className="[word-break:break-word] font-['SF_Pro:Regular'] font-normal leading-[16px] min-w-full relative shrink-0 text-[12px] text-[color:var(--dt-text-3,#969696)] w-[min-content]" data-node-id="62:2418" style={{ fontVariationSettings: '"wdth" 100' }}>
+                Suggested: Mine · Work · Family · Verified
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+SUPER CRITICAL: The generated React+Tailwind code MUST be converted to match the target project's technology stack and styling system.
+1. Analyze the target codebase to identify: technology stack, styling approach, component patterns, and design tokens
+2. Convert React syntax to the target framework/library
+3. Transform all Tailwind classes to the target styling system while preserving exact visual design
+4. Follow the project's existing patterns and conventions
+DO NOT install any Tailwind as a dependency unless the user instructs you to do so.
+
+
+Node ids have been added to the code as data attributes, e.g. `data-node-id="1:2"`.
+
+These styles are contained in the design: Body: Font(family: "SF Pro", style: Regular, size: 13, weight: 400, lineHeight: 18, letterSpacing: -0.07999999821186066), Small: Font(family: "SF Pro", style: Regular, size: 12, weight: 400, lineHeight: 16, letterSpacing: 0), Body/Semibold: Font(family: "SF Pro", style: Semibold, size: 13, weight: 590, lineHeight: 18, letterSpacing: -0.07999999821186066), Caption: Font(family: "SF Pro", style: Semibold, size: 11, weight: 590, lineHeight: 14, letterSpacing: 0.05999999865889549), Tag: Font(family: "SF Pro", style: Semibold, size: 10.5, weight: 590, lineHeight: 13, letterSpacing: 0.05999999865889549), Title: Font(family: "SF Pro", style: Semibold, size: 15, weight: 590, lineHeight: 20, letterSpacing: -0.20000000298023224), Body/Medium: Font(family: "SF Pro", style: Medium, size: 13, weight: 510, lineHeight: 18, letterSpacing: -0.07999999821186066), Small/Medium: Font(family: "SF Pro", style: Medium, size: 12, weight: 510, lineHeight: 16, letterSpacing: 0), Switch knob: Effect(type: DROP_SHADOW, color: #00000040, offset: (0, 1), radius: 2, spread: 0), Window: Effect(type: DROP_SHADOW, color: #00000047, offset: (0, 0), radius: 0, spread: 0.5); Effect(type: DROP_SHADOW, color: #00000047, offset: (0, 30), radius: 70, spread: 0); Effect(type: DROP_SHADOW, color: #0000001F, offset: (0, 8), radius: 20, spread: 0).
+
+Component descriptions: The following components have usage descriptions or documentation links defined in Figma. These descriptions provide important context about the intended usage, best practices, and any constraints for each component. Follow these guidelines when implementing or using these components.
+
+## Sidebar · 800×600
+**Node ID:** 60:991
+
+Sidebar at 800×600, macOS Tahoe style: an inset rounded panel with the traffic lights, a sidebar toggle and Search spaces, then All links, Connections (active, live) and Address book (static), then Spaces, then the account. Selection is solid accent blue with white text. No sync here: each space page shows its own sync circle.
+
+## Text field
+**Node ID:** 36:1144
+
+Single-line text field, 28px. The value is tertiary (placeholder) by default; recolour it text/primary once filled.
+
+## Nav item
+**Node ID:** 4:31
+
+Sidebar row, 28px. Current = ink wash + semibold ink label. Icon is an instance swap; re-tint it ink when swapping on Current.
+
+## Space item
+**Node ID:** 60:990
+
+A space in the sidebar: icon and name. Re-tint the icon ink on Current after swapping. (Sync lives on the space page, in front of the space name.)
+
+## Button
+**Node ID:** 4:18
+
+Push button. Default and Primary (ink), Regular 28px and Small 24px. Turn on Check for the "Copied" confirmation.
+
+## Account row
+**Node ID:** 36:1095
+
+One account in the address book: who (avatar), name, labels (up to three, exposed), the did:key with a copy affordance, and where you share spaces.
+
+## Avatar
+**Node ID:** 36:1094
+
+Who a key belongs to: a person (initials, round), an agent (bot, square) or a key with no name yet.
+
+## Select
+**Node ID:** 4:47
+
+Pop-up button (select), 28px. Instances usually FILL their form row.
+
+## Label pill
+**Node ID:** 40:1566
+
+An editable label on an account: Neutral, Ink (Agent) with a remove ×, or the dashed Add label pill.
+
+The generated code contains image and SVG URL constants, e.g. const image = 'https://www.figma.com/api/mcp/asset/550e8400-e29b-41d4-a716-446655440000.png'. These URLs are temporary download sources and expire after 7 days. Download each asset into the project with curl -L, then replace its URL in the generated code with a reference to the downloaded asset. Never use the temporary URLs as runtime image sources.

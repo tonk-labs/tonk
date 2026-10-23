@@ -53,6 +53,7 @@ pub mod describe;
 pub mod email;
 mod error;
 mod handlers;
+pub mod invitation;
 #[cfg(target_arch = "wasm32")]
 pub mod live;
 pub mod lookup;

@@ -222,6 +222,8 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::EnrollCustomer>()
         .command::<tonk_schema::command::ResendActivation>()
         .command::<tonk_schema::command::DeleteAccount>()
+        .command::<tonk_schema::command::SendEmailInvitation>()
+        .command::<tonk_schema::command::ClaimEmailInvitation>()
         .command::<super::ceremony::AuthorizeDeviceRequest>()
         // Signing in through another deployment is new, so neither half
         // has a legacy shape to migrate.

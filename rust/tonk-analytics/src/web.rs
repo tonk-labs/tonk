@@ -40,6 +40,16 @@ export function ph_sanitize(payload) {
     }
     return payload;
 }
+// The macOS desktop app injects `window.__tonkShell = "desktop"` into its
+// web views before page scripts run. Anything else is a plain browser; the
+// value is closed, so no user agent string or raw flag reaches PostHog.
+export function ph_shell() {
+    try {
+        return window.__tonkShell === "desktop" ? "desktop" : "browser";
+    } catch (e) {
+        return "browser";
+    }
+}
 export function ph_init(key, host, version) {
     try {
         if (!key || !window.posthog) return false;
@@ -76,8 +86,11 @@ export function ph_init(key, host, version) {
             host === "tonk.network" ? "production"
             : host === "staging.tonk.xyz" ? "staging"
             : "dev";
+        // `shell` separates the desktop app's embedded web views from a
+        // browser without changing what `environment` means.
         window.posthog.register({
             environment: environment,
+            shell: ph_shell(),
             version: version,
             metrics_version: 2,
             identity_state: "unresolved"
@@ -293,6 +306,63 @@ mod tests {
             .expect("JSON string");
         assert!(!outbound.contains(sentinel), "SDK field leaked: {outbound}");
         assert!(outbound.contains("/space/reviewed-hash"));
+    }
+
+    #[wasm_bindgen(inline_js = r#"
+let shellRegistration = {};
+export function install_shell_posthog_fixture(flag) {
+    shellRegistration = {};
+    if (flag === undefined) {
+        delete window.__tonkShell;
+    } else {
+        window.__tonkShell = flag;
+    }
+    window.posthog = {
+        init: () => {},
+        register: (properties) => { shellRegistration = { ...shellRegistration, ...properties }; },
+    };
+}
+export function read_shell_registration() {
+    delete window.__tonkShell;
+    return JSON.stringify(shellRegistration);
+}
+"#)]
+    extern "C" {
+        fn install_shell_posthog_fixture(flag: JsValue);
+        fn read_shell_registration() -> String;
+    }
+
+    fn registered_shell(flag: JsValue) -> serde_json::Value {
+        install_shell_posthog_fixture(flag);
+        assert!(ph_init("key", "https://posthog.invalid", "0.0.0"));
+        let registration: serde_json::Value =
+            serde_json::from_str(&read_shell_registration()).unwrap();
+        registration["shell"].clone()
+    }
+
+    #[dialog_common::test]
+    async fn it_registers_the_desktop_shell_only_for_the_desktop_flag() {
+        assert_eq!(registered_shell(JsValue::from_str("desktop")), "desktop");
+        assert_eq!(registered_shell(JsValue::UNDEFINED), "browser");
+        // Only the exact closed value counts; anything else stays a browser
+        // and never reaches PostHog verbatim.
+        for other in [
+            JsValue::TRUE,
+            JsValue::from_str("Desktop"),
+            JsValue::from_str("Mozilla/5.0 private-ua"),
+        ] {
+            assert_eq!(registered_shell(other), "browser");
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_environment_beside_shell() {
+        install_shell_posthog_fixture(JsValue::from_str("desktop"));
+        assert!(ph_init("key", "https://posthog.invalid", "0.0.0"));
+        let registration: serde_json::Value =
+            serde_json::from_str(&read_shell_registration()).unwrap();
+        assert_eq!(registration["environment"], "dev");
+        assert_eq!(registration["shell"], "desktop");
     }
 
     #[wasm_bindgen(inline_js = r#"
