@@ -60,6 +60,7 @@ extension DesktopAnalytics {
   /// Desktop-owned operations; each name also exists in `ProductAction`.
   public enum Action: String, Sendable, CaseIterable {
     case copyShareLink = "copy_share_link"
+    case inviteContact = "invite_contact"
     case connectAgent = "connect_agent"
     case publishSpace = "publish_space"
     case unpublishSpace = "unpublish_space"

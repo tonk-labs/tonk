@@ -10,7 +10,8 @@ final class EmailContactLookupTests: XCTestCase {
     let query = try EmailContactLookup.Query("  Tag+ALICE@Example.COM ", directory: directory)
     XCTAssertEqual(query.email, "tag+alice@example.com")
     XCTAssertEqual(
-      query.url.absoluteString, "https://tonk.example/customer/example.com/tag%2Balice/did.json")
+      // The service reads path segments raw, so `+` must reach it as `+`.
+      query.url.absoluteString, "https://tonk.example/customer/example.com/tag+alice/did.json")
     XCTAssertEqual(query.did, "did:web:tonk.example:customer:example.com:tag%2Balice")
     for (input, encoded) in [("a%b", "a%25b"), ("josé", "jos%C3%A9"), ("a?b#c", "a%3Fb%23c")] {
       let query = try EmailContactLookup.Query(input + "@example.com", directory: directory)
@@ -129,8 +130,9 @@ final class EmailContactLookupTests: XCTestCase {
             self.send_response(status); self.send_header('Content-Type', 'application/json'); self.end_headers()
             if status != 200: return
             if local == 'malformed': self.wfile.write(b'{}'); return
-            assert local == 'tag%2Balice', self.path
-            did = 'did:web:127.0.0.1%3A' + str(self.server.server_port) + ':customer:example.com:' + local
+            # Like the access service: the segment arrives raw, the DID encodes it.
+            assert local == 'tag+alice', self.path
+            did = 'did:web:127.0.0.1%3A' + str(self.server.server_port) + ':customer:example.com:tag%2Balice'
             key = 'z6MkvWgxPPHxXNuNfnay6cHeKpEmBEZ5NoTxJofZbKAgA6e2'
             self.wfile.write(json.dumps({'id':did, 'status':'Active', 'alsoKnownAs':['did:key:' + key], 'verificationMethod':[{'id':did+'#'+key, 'type':'Multikey', 'controller':did, 'publicKeyMultibase':key}]}).encode())
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
