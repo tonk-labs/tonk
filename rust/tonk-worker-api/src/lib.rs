@@ -19,6 +19,7 @@ mod analytics;
 mod claim;
 mod conclusion;
 mod deployment;
+pub mod email_invitation;
 mod evaluate;
 mod identify;
 mod identity;
