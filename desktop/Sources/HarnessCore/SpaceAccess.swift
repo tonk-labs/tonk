@@ -272,7 +272,7 @@ public struct SpaceAccess: Equatable, Sendable {
   /// Builds link rows from the invite and agent listings plus the roster.
   public static func links(
     subject: String, invites: [InviteSummary], agents: [AgentConnection],
-    members: [SpaceMember], isPublic: Bool
+    members: [SpaceMember], isPublic: Bool, names: [String: String] = [:]
   ) -> [AccessLink] {
     var rows: [AccessLink] = []
     if isPublic {
@@ -287,8 +287,9 @@ public struct SpaceAccess: Equatable, Sendable {
         rows.append(
           AccessLink(kind: .person, subject: subject, target: invite.targetCid, usedBy: usedBy))
       case "scoped":
+        // The roster names someone who joined; a saved contact names someone invited.
         let recipient = invite.recipientRoot.flatMap { root in
-          members.first(where: { $0.did == root })?.displayName
+          members.first(where: { $0.did == root })?.displayName ?? names[root]
         }
         let fallback = invite.recipientRoot.map { "account " + $0.suffix(6) } ?? "one account"
         rows.append(

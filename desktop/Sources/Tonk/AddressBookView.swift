@@ -15,6 +15,7 @@ struct AddressBookView: View {
   @State private var search = ""
   @State private var selected: String?
   @State private var editing: DesktopContact?
+  @State private var inviting: DesktopContact?
   @State private var saveError: String?
   @State private var addingLabel = false
   @State private var newLabel = ""
@@ -61,7 +62,12 @@ struct AddressBookView: View {
               }
             }
           }.padding(.vertical, 4).tag(contact.id).listRowSeparator(.hidden)
-            .contextMenu { Button("Edit Contact…") { editing = contact } }
+            .contextMenu {
+              Button("Edit Contact…") { editing = contact }
+              if contact.id != access.selfDid {
+                Button("Invite to a space…") { inviting = contact }.disabled(spaces.isEmpty)
+              }
+            }
         }
         // The sidebar style insets the selection as a rounded rectangle, as in frame 11.
         .listStyle(.sidebar).scrollContentBackground(.hidden)
@@ -165,6 +171,10 @@ struct AddressBookView: View {
                   ? "Saved on this Mac. No shared spaces are currently listed."
                   : "Seen in " + shared.map(\.title).joined(separator: " · ")
               )
+              if contact.id != access.selfDid {
+                Button("Invite to a space…") { inviting = contact }.disabled(spaces.isEmpty)
+                  .help("Make a link only this contact’s account can use")
+              }
             }
           }.frame(maxWidth: 680, alignment: .leading).padding(.horizontal, 20).padding(
             .vertical, 18
@@ -180,6 +190,9 @@ struct AddressBookView: View {
       }
     }.font(.system(size: 13))
       .sheet(item: $editing) { contact in ContactEditor(spaces: spaces, contact: contact, access: access) }
+      .sheet(item: $inviting) { contact in
+        ContactInviteSheet(contact: contact, spaces: spaces, access: access)
+      }
       .onChange(of: contacts.map(\.id), initial: true) { _, ids in
         if selected == nil || !ids.contains(selected!) { selected = ids.first }
       }
@@ -360,6 +373,73 @@ private struct ContactEditor: View {
     } else if let error = lookup.error {
       Text(error).foregroundStyle(.red)
     }
+  }
+}
+
+/// Picks one of my spaces and copies a link only this contact's account can
+/// claim. The link then appears in that space's Links as "Link for <name>".
+private struct ContactInviteSheet: View {
+  let contact: DesktopContact
+  let spaces: [TonkSpace]
+  @ObservedObject var access: AccessModel
+  @State private var spaceID = ""
+  @State private var inviting = false
+  @State private var copiedTo: String?
+  @State private var error: String?
+  @Environment(\.dismiss) private var dismiss
+  /// Spaces the contact has not already joined, as far as the rosters show.
+  private var candidates: [TonkSpace] {
+    spaces.filter { space in
+      access.spaces[space.id]?.members.contains { $0.did == contact.id } != true
+    }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      Text("Invite \(contact.name)").font(.headline)
+      if candidates.isEmpty {
+        Text("\(contact.name) is already in all of your listed spaces.")
+          .foregroundStyle(.secondary)
+      } else {
+        Picker("Space", selection: $spaceID) {
+          Text("Choose a space").tag("")
+          ForEach(candidates) { space in Text(space.title).tag(space.id) }
+        }.disabled(inviting)
+      }
+      Text(
+        "Only \(contact.name)’s Tonk account can use this link. It gives read and write access to the whole space."
+      )
+      .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+      if let copiedTo {
+        Text(
+          "Link copied. Send it to \(contact.name); you can copy or revoke it later in \(copiedTo)’s links."
+        )
+        .fixedSize(horizontal: false, vertical: true)
+      }
+      if let error {
+        Text(error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+      }
+      HStack {
+        Spacer()
+        Button(copiedTo == nil ? "Cancel" : "Done") { dismiss() }.keyboardShortcut(.cancelAction)
+        if copiedTo == nil {
+          Button(inviting ? "Making link…" : "Copy invite link") {
+            guard let space = candidates.first(where: { $0.id == spaceID }) else { return }
+            inviting = true
+            error = nil
+            Task {
+              defer { inviting = false }
+              if await access.inviteContact(contact, to: space) {
+                copiedTo = space.title
+              } else {
+                error = access.notice ?? "Couldn’t make the link."
+              }
+            }
+          }.keyboardShortcut(.defaultAction).disabled(inviting || spaceID.isEmpty)
+        }
+      }
+    }.padding(22).frame(width: 400)
+      .onChange(of: access.selfDid) { _, _ in dismiss() }
   }
 }
 
