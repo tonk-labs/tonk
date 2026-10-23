@@ -26,9 +26,14 @@ if name == 'security':
     elif args[0] == 'import' and os.environ.get('SIGN_TEST_FAILURE') == 'import': sys.exit(1)
 elif name == 'nix':
     if os.environ.get('SIGN_TEST_FAILURE') == 'build': sys.exit(1)
-    app = root/'desktop/.build/Tonk.app/Contents'; app.mkdir(parents=True)
-    (app/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'xyz.tonk','TonkDirectPasskeyEnabled':True}))
-    (app/'embedded.provisionprofile').write_bytes(pathlib.Path(os.environ['TONK_PROVISIONING_PROFILE']).read_bytes())
+    if os.environ.get('TONK_DESKTOP_CHANNEL') == 'nightly':
+        app = root/'desktop/.build/Tonk Nightly.app/Contents'; app.mkdir(parents=True)
+        assert 'TONK_PROVISIONING_PROFILE' not in os.environ
+        (app/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'xyz.tonk.nightly','TonkChannel':'nightly'}))
+    else:
+        app = root/'desktop/.build/Tonk.app/Contents'; app.mkdir(parents=True)
+        (app/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'xyz.tonk','TonkChannel':'stable','TonkDirectPasskeyEnabled':True}))
+        (app/'embedded.provisionprofile').write_bytes(pathlib.Path(os.environ['TONK_PROVISIONING_PROFILE']).read_bytes())
 elif name == 'codesign':
     if '-dv' in args: print('TeamIdentifier=8WVKS2F24C', file=sys.stderr)
     if '--entitlements' in args:
@@ -43,12 +48,12 @@ elif name == 'ditto': pathlib.Path(args[-1]).write_bytes(b'fixture archive')
 
 
 class SigningLifecycleTests(unittest.TestCase):
-    def exercise(self, failure=None):
+    def exercise(self, failure=None, channel=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             scripts = root/'desktop/scripts'
             scripts.mkdir(parents=True)
-            for name in ['ci-sign.sh', 'passkey-entitlements.py']:
+            for name in ['ci-sign.sh', 'channel.sh', 'passkey-entitlements.py']:
                 shutil.copy(SCRIPTS/name, scripts/name)
             profile = {
                 'ExpirationDate': datetime.datetime(2044, 1, 1),
@@ -74,6 +79,9 @@ class SigningLifecycleTests(unittest.TestCase):
                            'TONK_PROVISIONING_PROFILE_BASE64': 'cHJvZmlsZQ==',
                            'SIGN_TEST_ROOT': str(root), 'SIGN_TEST_ID': IDENTITY,
                            'SIGN_TEST_FAILURE': failure or ''}
+            if channel:
+                environment['TONK_DESKTOP_CHANNEL'] = channel
+                del environment['TONK_PROVISIONING_PROFILE_BASE64']
             result = subprocess.run(['bash', str(scripts/'ci-sign.sh')], env=environment,
                                     capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode == 0, failure is None, result.stderr)
@@ -88,6 +96,9 @@ class SigningLifecycleTests(unittest.TestCase):
 
     def test_success_and_cleanup(self):
         self.exercise()
+
+    def test_nightly_signs_without_the_passkey_profile(self):
+        self.exercise(channel='nightly')
 
     def test_failure_cleanup_and_no_uploadable_archive(self):
         for failure in ['import', 'certificate', 'build', 'entitlements']:

@@ -1,12 +1,19 @@
 name: Desktop release
 on:
   workflow_call:
+    inputs:
+      channel:
+        description: 'stable (xyz.tonk on tonk.network) or nightly (xyz.tonk.nightly on tonk.foundation)'
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
   build:
     runs-on: macos-26
     timeout-minutes: 120
+    env:
+      TONK_DESKTOP_CHANNEL: ${{ inputs.channel }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,6 +63,7 @@ jobs:
               'version': os.environ['TONK_DESKTOP_VERSION'],
               'commit': os.environ['GITHUB_SHA'],
               'ref': os.environ['GITHUB_REF'],
+              'channel': os.environ['TONK_DESKTOP_CHANNEL'],
           }, indent=2) + '\n')
           PY
       - uses: actions/upload-artifact@v4

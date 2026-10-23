@@ -51,21 +51,20 @@ Check out the [Dialog DB repository](https://github.com/dialog-db/dialog-db) to 
 
 ## Download Tonk Desktop
 
-For macOS 15+ on Apple Silicon. Unzip the download and move **Tonk.app** to
-**Applications**.
+For macOS 15+ on Apple Silicon. Unzip the download and move **Tonk Nightly.app**
+to **Applications**.
 
 | Channel | Download | Published from |
 | --- | --- | --- |
-| Stable | [Download for Mac](https://github.com/tonk-labs/tonk/releases/latest/download/Tonk-macos-arm64.zip) | Final `vX.Y.Z` tags |
-| Staging / RC | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-staging/Tonk-macos-arm64.zip) | Prerelease `vX.Y.Z-rc.N` tags |
-| Dev / main | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-desktop-dev/Tonk-macos-arm64.zip) | Latest successfully published `main` build |
+| Nightly | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-desktop-dev/Tonk-macos-arm64.zip) | Latest successfully published `main` build |
 
-All channels are Developer ID signed and notarized. Each release includes
-`Tonk-macos-arm64.sha256` and `Tonk-desktop-manifest.json` with the exact version
-and source commit. Links become available after the first successful release
-for each channel. Downloads are manual; all channels use the same app identity
-and local data, so installing another channel replaces the installed app.
-These are build channels; all currently use the production Tonk service.
+Nightly is its own app, **Tonk Nightly** (`xyz.tonk.nightly`), and uses
+`tonk.foundation` by default. The stable app, **Tonk** (`xyz.tonk`), uses
+`tonk.network`; it is not published until Desktop ships to production. The two
+have separate identities and local data, so they can be installed side by side.
+Builds are Developer ID signed and notarized, and include
+`Tonk-macos-arm64.sha256` and `Tonk-desktop-manifest.json` with the exact
+version, channel and source commit. Downloads are manual.
 
 ## The `tonk` CLI
 

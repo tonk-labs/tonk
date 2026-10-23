@@ -4,6 +4,11 @@ set -euo pipefail
 export DEVELOPER_DIR=${TONK_XCODE_DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 unset SDKROOT
 cd "$(dirname "$0")/.."
+source scripts/channel.sh
+if [[ "$desktop_channel" != stable && -n "${TONK_PROVISIONING_PROFILE:-}" ]]; then
+    echo "The passkey provisioning profile is for xyz.tonk; build $desktop_channel without it." >&2
+    exit 1
+fi
 node ../mcp/scripts/sync-desktop.mjs
 # A stable signer lets WebKit's Keychain access survive executable changes.
 # Ad-hoc signing uses the binary hash as its identity and prompts after rebuilds.
@@ -28,13 +33,16 @@ sdk_version=$(xcrun --sdk macosx --show-sdk-version)
 configuration=${TONK_BUILD_CONFIGURATION:-debug}
 swift build -c "$configuration" -Xlinker -platform_version -Xlinker macos \
     -Xlinker "$minimum_macos" -Xlinker "$sdk_version"
-app="$PWD/.build/Tonk.app"
+app="$PWD/.build/$desktop_app_name.app"
 # Recreate the generated bundle so renamed executables cannot survive a rebuild.
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 mkdir -p "$app/Contents/Resources"
 cp ".build/$configuration/Tonk" "$app/Contents/MacOS/Tonk"
 cp Resources/Info.plist "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $desktop_bundle_id" \
+    -c "Set :CFBundleName $desktop_app_name" -c "Set :CFBundleDisplayName $desktop_app_name" \
+    -c "Add :TonkChannel string $desktop_channel" "$app/Contents/Info.plist"
 # SwiftUI resolves Text keys in the main bundle, so the string tables live there.
 for table in Resources/*.lproj; do
     ditto "$table" "$app/Contents/Resources/$(basename "$table")"

@@ -32,6 +32,7 @@ class NotarizationTests(unittest.TestCase):
             scripts = root/'desktop/scripts'
             scripts.mkdir(parents=True)
             shutil.copy(SCRIPT, scripts/SCRIPT.name)
+            shutil.copy(SCRIPT.parent/'channel.sh', scripts/'channel.sh')
             artifacts = root/'desktop/artifacts'
             artifacts.mkdir()
             archive = artifacts/'Tonk-macos-arm64.zip'
