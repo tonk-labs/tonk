@@ -327,7 +327,10 @@ final class AccessModel: ObservableObject {
         members: members,
         links: SpaceAccess.links(
           subject: space.subject, invites: invites, agents: agentConnections, members: members,
-          isPublic: isPublic),
+          isPublic: isPublic,
+          names: Dictionary(
+            (savedContacts[selfDid ?? ""] ?? []).map { ($0.id, $0.name) },
+            uniquingKeysWith: { first, _ in first })),
         agents: agentConnections.filter { $0.subject == space.subject },
         views: Self.views(home: result["home"], directories: result["directories"]),
         isPublic: isPublic, selfDid: selfDid)
@@ -595,6 +598,47 @@ final class AccessModel: ObservableObject {
       failureKind: copied ? nil : .localState)
   }
 
+  /// Mints a link only `contact`'s account can claim, keeps it for Copy, copies
+  /// it and records it. The contact's key must be an account root: that is what
+  /// an email lookup saves and what a roster lists, and a claim checks it.
+  @discardableResult
+  func inviteContact(
+    _ contact: DesktopContact, to space: TonkSpace, surface: DesktopAnalytics.Surface = .hub
+  ) async -> Bool {
+    guard let runtime, !working.contains("new:" + space.id) else { return false }
+    let attempt = Telemetry.shared.begin(.collaboration, .inviteContact, surface: surface)
+    guard contact.id.hasPrefix("did:key:"), contact.id != selfDid else {
+      notice = "Choose someone else’s account to invite."
+      attempt.finish(.blocked, stage: .validation, failureKind: .invalidInput)
+      return false
+    }
+    let started = generation
+    working.insert("new:" + space.id)
+    defer { if generation == started { working.remove("new:" + space.id) } }
+    do {
+      let (url, target) = try await mintPersonLink(
+        runtime: runtime, space: space, recipient: contact.id)
+      guard generation == started else {
+        attempt.finish(.cancelled, stage: .worker)
+        return false
+      }
+      let copied = finishMint(url: url, target: target, kind: .scoped, space: space)
+      await refresh(space)
+      attempt.finish(
+        copied ? .success : .retryableFailure, stage: .clipboard,
+        failureKind: copied ? nil : .localState)
+      return copied
+    } catch {
+      guard generation == started else {
+        attempt.finish(.cancelled, stage: .worker)
+        return false
+      }
+      notice = "Couldn’t make the link: " + Self.message(error)
+      attempt.finish(.retryableFailure, stage: .worker)
+      return false
+    }
+  }
+
   func revoke(
     _ link: AccessLink, space: TonkSpace, surface: DesktopAnalytics.Surface = .hub
   ) async {
@@ -699,25 +743,30 @@ final class AccessModel: ObservableObject {
     }
   }
 
-  private func mintPersonLink(runtime: any SpaceAccessRuntime, space: TonkSpace) async throws
-    -> (String, String?)
-  {
+  /// Mints an open link, or with `recipient` (an account root DID) a link only
+  /// that account can claim. The grant always names this space as its subject.
+  private func mintPersonLink(
+    runtime: any SpaceAccessRuntime, space: TonkSpace, recipient: String? = nil
+  ) async throws -> (String, String?) {
+    var arguments: [String: Any] = ["subject": space.subject]
+    if let recipient { arguments["recipient"] = recipient }
     let result = try await runtime.accountScript(
       """
       const base = '/api/repository/' + encodeURIComponent(subject);
       const before = new Set((await api(base + '/invites')).map(row => row.targetCid));
-      const minted = await api(base + '/invite', {});
+      const minted = await api(base + '/invite',
+        typeof recipient === 'string' ? {recipientRoot: recipient} : {});
       const after = await api(base + '/invites');
-      return {kind: minted.kind, url: minted.url,
+      return {kind: minted.kind, url: minted.url, recipientRoot: minted.recipientRoot,
               targets: after.map(row => row.targetCid).filter(cid => !before.has(cid))};
-      """, arguments: ["subject": space.subject])
+      """, arguments: arguments)
     // Ticket links live on the host serving the space, the public address's origin.
     var origins = [RuntimeLocation.home]
     if let address = spaces[space.id]?.publicAddress, let host = URL(string: address) {
       origins.append(host)
     }
     let url = try RuntimeModel.validateShareLink(
-      result, subject: space.subject, origins: origins)
+      result, subject: space.subject, origins: origins, recipient: recipient)
     let targets = result["targets"] as? [String] ?? []
     return (url.absoluteString, targets.count == 1 ? targets[0] : nil)
   }

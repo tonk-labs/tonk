@@ -196,7 +196,7 @@
           "name": "Desktop: sharing",
           "display": "ActionsTable",
           "description": "Copy link, agent links, publishing, reset, and revoke outcomes with latency.",
-          "query": "SELECT properties.surface AS surface, properties.action AS action, properties.result AS result, uniq(properties.attempt_id) AS outcomes, quantile(0.5)(toFloat(properties.duration_ms)) AS p50_ms, quantile(0.95)(toFloat(properties.duration_ms)) AS p95_ms FROM events WHERE event = 'product_event' AND properties.environment = 'desktop' AND properties.action IN ('copy_share_link','connect_agent','publish_space','unpublish_space','reset_link','revoke_link') AND properties.phase = 'finished' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY surface, action, result ORDER BY outcomes DESC"
+          "query": "SELECT properties.surface AS surface, properties.action AS action, properties.result AS result, uniq(properties.attempt_id) AS outcomes, quantile(0.5)(toFloat(properties.duration_ms)) AS p50_ms, quantile(0.95)(toFloat(properties.duration_ms)) AS p95_ms FROM events WHERE event = 'product_event' AND properties.environment = 'desktop' AND properties.action IN ('copy_share_link','invite_contact','connect_agent','publish_space','unpublish_space','reset_link','revoke_link') AND properties.phase = 'finished' AND timestamp >= now() - INTERVAL 30 DAY GROUP BY surface, action, result ORDER BY outcomes DESC"
         },
         {
           "name": "Desktop: chat and views",
