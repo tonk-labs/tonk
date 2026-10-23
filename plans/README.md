@@ -19,6 +19,11 @@ adds the same signed sender attribution, with seven CLI checks passing and the
 worker spike rerun successfully. Legacy links retain their attribution. Estimates,
 evidence, trust boundaries and proposed verification gates are in the research note.
 
+[Signup invitation follow-up](2026-10-21-email-invitation-signup-spike.md):
+prove delivery to a subsequently confirmed account while the inviter is offline,
+retaining the original sender separately from the delivery service. Product
+work will extend the existing Address Book in desktop redesign #1134.
+
 ## Release gates
 
 | Plan | Priority | Status | Execution order |
