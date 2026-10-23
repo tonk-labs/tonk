@@ -57,6 +57,9 @@ final class AccessModel: ObservableObject {
     guard let root = selfDid, let contactsURL else {
       throw HarnessError.message("Sign in before saving a contact.")
     }
+    guard contact.emailIdentity == nil || contact.emailIdentity?.rootDid == contact.id else {
+      throw HarnessError.message("The email lookup does not match this contact's key.")
+    }
     var updated = savedContacts
     var list = updated[root] ?? []
     list.removeAll { $0.id == contact.id }
