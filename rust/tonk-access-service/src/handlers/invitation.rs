@@ -30,10 +30,15 @@ pub async fn handle(body: &[u8], req: &Request, env: &Env) -> worker::Result<Res
     let answer = inner(body, req, env).await;
     match answer {
         Ok(value) => Response::from_json(&value),
-        Err(error) => Ok(
-            Response::from_json(&serde_json::json!({"error":error.to_string()}))?
-                .with_status(error.status()),
-        ),
+        Err(error) => {
+            if let InvitationError::Forbidden(refusal) = &error {
+                worker::console_warn!("email invitation refused: {}", refusal.name());
+            }
+            Ok(
+                Response::from_json(&serde_json::json!({"error":error.to_string()}))?
+                    .with_status(error.status()),
+            )
+        }
     }
 }
 
