@@ -57,6 +57,14 @@ impl Fixture {
             .unwrap();
         fixture
     }
+    /// An invocation expiry five minutes past the fixture's clock. The
+    /// service bounds expiry by its own `now`, the fixture's, so one read off
+    /// the wall clock is refused once a second has ticked since the fixture
+    /// was made.
+    fn expiration(&self) -> Timestamp {
+        Timestamp::new(std::time::UNIX_EPOCH + std::time::Duration::from_secs(self.now + 300))
+            .unwrap()
+    }
     fn service(
         &self,
     ) -> InvitationService<'_, SqliteStore, CapturedEmail, IndexedRevocations<MemoryRevocationIndex>>
@@ -106,7 +114,7 @@ impl Fixture {
             .audience(&self.service.did())
             .subject(root)
             .command(vec!["email-invitation".into(), operation.into()])
-            .expiration(Timestamp::five_minutes_from_now())
+            .expiration(self.expiration())
             .arguments(
                 args.into_iter()
                     .map(|(key, value)| (key.into(), Promised::String(value)))
@@ -377,7 +385,7 @@ async fn lost_transport_acknowledgement_retries_the_same_delivery_once() {
         .audience(&f.service.did())
         .subject(&f.sender.did())
         .command(vec!["email-invitation".into(), "send".into()])
-        .expiration(Timestamp::five_minutes_from_now())
+        .expiration(f.expiration())
         .proofs(vec![])
         .arguments(std::collections::BTreeMap::from([
             ("invitation".into(), Promised::String(id.clone())),
