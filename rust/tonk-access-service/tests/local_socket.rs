@@ -21,7 +21,8 @@ use dialog_effects::memory::{Edition, MemoryError, Publish, Resolve, Watch};
 use dialog_remote_ucan::socket::{PING, PONG, Reply, Request, SUBPROTOCOL};
 use dialog_remote_ucan::{UcanAddress, UcanAuthorization, UcanSite};
 use dialog_ucan::Scope;
-use dialog_ucan_core::Container;
+use dialog_ucan_core::subject::Subject as UcanSubject;
+use dialog_ucan_core::{Container, DelegationBuilder, DelegationChain};
 use dialog_varsig::Principal as _;
 use futures_util::{SinkExt as _, StreamExt as _};
 use tokio_tungstenite::tungstenite::Message;
@@ -35,12 +36,26 @@ where
     Fx: Effect + Clone,
     Capability<Fx>: Ability,
 {
+    issued_under(signer, None, capability).await
+}
+
+/// The invocation `signer` mints for `capability`, proving its authority
+/// with `chain` when it is not its own.
+async fn issued_under<Fx>(
+    signer: &Ed25519Signer,
+    chain: Option<DelegationChain>,
+    capability: &Capability<Fx>,
+) -> UcanAuthorization
+where
+    Fx: Effect + Clone,
+    Capability<Fx>: Ability,
+{
     let at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_secs())
         .unwrap_or_default();
     let minting = dialog_ucan::UcanAuthorization {
-        chain: None,
+        chain,
         signer: Signer::from(signer.clone()),
         scope: Scope::invoke(capability),
         duration: TimeRange {
@@ -79,7 +94,22 @@ where
     Capability<Fx>: Ability,
     UcanSite: Provider<ForkInvocation<UcanSite, Fx>>,
 {
-    let authorization = issued(signer, &capability).await;
+    perform_under(address, signer, None, capability).await
+}
+
+/// `capability`, invoked by `signer` at `address` under `chain`.
+async fn perform_under<Fx>(
+    address: UcanAddress,
+    signer: &Ed25519Signer,
+    chain: Option<DelegationChain>,
+    capability: Capability<Fx>,
+) -> Fx::Output
+where
+    Fx: Effect + Clone,
+    Capability<Fx>: Ability,
+    UcanSite: Provider<ForkInvocation<UcanSite, Fx>>,
+{
+    let authorization = issued_under(signer, chain, &capability).await;
     UcanSite::default()
         .execute(ForkInvocation::new(capability, address, authorization))
         .await
@@ -133,6 +163,81 @@ async fn it_tells_a_watch_of_each_write_to_its_cell(
             version,
         })),
         "a write over a socket reaches the watch"
+    );
+    Ok(())
+}
+
+/// A watch begun under a grant is told nothing written after the grant
+/// is revoked: the next write to its cell ends it, with the revocation as
+/// the reason, rather than reaching it.
+///
+/// The service checks a watch's authority again only after it has stood
+/// unchecked a while, so without the revocation forcing that check a
+/// holder revoked just after its watch began went on being told of every
+/// write for that long. A replica told of a head adopts it, and one that
+/// adopts a head it may no longer read cannot then commit on top of it.
+#[dialog_common::test]
+async fn it_ends_a_watch_whose_grant_was_revoked(env: AccessServiceAddress) -> anyhow::Result<()> {
+    let (space, subject) = served(&env).await?;
+    let guest = Ed25519Signer::generate().await?;
+    let grant = DelegationBuilder::new()
+        .issuer(Signer::from(space.clone()))
+        .audience(&guest.did())
+        .subject(UcanSubject::Specific(space.did()))
+        .command(vec![])
+        .try_build()
+        .await?;
+    let chain = DelegationChain::new(grant.clone());
+    let cell = CellScope::new(subject, "branch/main", "revision");
+    let mut editions =
+        perform_under::<Watch>(with_socket(&env), &guest, Some(chain.clone()), cell.watch())
+            .await?;
+    assert_eq!(editions.next().await?, Some(None), "the cell begins empty");
+
+    // The positive control: the grant's watch is told of a write.
+    let version = perform::<Publish>(
+        endpoint(&env),
+        &space,
+        cell.publish(b"before revocation".to_vec(), None),
+    )
+    .await?;
+    assert_eq!(
+        editions.next().await?,
+        Some(Some(Edition {
+            content: b"before revocation".to_vec(),
+            version: version.clone(),
+        })),
+        "the guest's watch is told of a write before revocation"
+    );
+
+    let revocation =
+        tonk_identity::revocation::mint_root_revocation(space.clone(), &chain, &grant.to_cid())
+            .await?;
+    let recorded = reqwest::Client::new()
+        .post(env.ucan_endpoint())
+        .header("Content-Type", "application/cbor")
+        .body(revocation)
+        .send()
+        .await?;
+    assert!(
+        recorded.status().is_success(),
+        "the revocation must be accepted, got {}",
+        recorded.status()
+    );
+
+    perform::<Publish>(
+        endpoint(&env),
+        &space,
+        cell.publish(b"after revocation".to_vec(), Some(version)),
+    )
+    .await?;
+    let told = editions.next().await;
+    assert!(
+        matches!(
+            told,
+            Err(MemoryError::Authorization(AuthorizeError::Revoked { .. }))
+        ),
+        "a revoked grant's watch must end on the next write, not be told of it, got {told:?}"
     );
     Ok(())
 }

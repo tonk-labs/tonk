@@ -9,6 +9,7 @@
 //! fact is idempotent. Recording a new fact additionally requires current
 //! invocation authority whose proofs have not themselves been revoked.
 
+use dialog_capability::Did;
 use dialog_common::ConditionalSync;
 use dialog_credentials::DidKeyResolver;
 use dialog_ucan_core::{ContainerError, Environment, InvocationChain, VerificationContext};
@@ -51,6 +52,27 @@ fn internal(error: StoreError) -> RegistrationError {
     }
 }
 
+/// A revocation [`record`] accepted.
+pub struct Revoked {
+    /// What the service answers with.
+    pub receipt: RevokeReceipt,
+    /// The space whose grant was withdrawn, whose watches must now be
+    /// checked again before they are told anything.
+    pub space: Did,
+}
+
+/// Verify a revocation and record it, answering with its receipt. See
+/// [`record`].
+pub async fn revoke<S: Store, I: RevocationIndex + ConditionalSync>(
+    store: &S,
+    index: &I,
+    container: &[u8],
+) -> Result<RevokeReceipt, RegistrationError> {
+    record(store, index, container)
+        .await
+        .map(|revoked| revoked.receipt)
+}
+
 /// Verify a revocation and record it.
 ///
 /// The consumer-row check is deliberately not the provisioning gate.
@@ -60,11 +82,11 @@ fn internal(error: StoreError) -> RegistrationError {
 /// answers a compromised key, which is exactly when a bill may also be
 /// unpaid. A subject we never registered, or one whose data we already
 /// purged, is refused — otherwise the index is an open write surface.
-pub async fn revoke<S: Store, I: RevocationIndex + ConditionalSync>(
+pub async fn record<S: Store, I: RevocationIndex + ConditionalSync>(
     store: &S,
     index: &I,
     container: &[u8],
-) -> Result<RevokeReceipt, RegistrationError> {
+) -> Result<Revoked, RegistrationError> {
     let verified = verify(container).await.map_err(|error| match error {
         VerifyError::Malformed(message) => RegistrationError::Invalid { message },
         VerifyError::Unauthorized(message) => RegistrationError::Unauthorized { message },
@@ -131,15 +153,18 @@ pub async fn revoke<S: Store, I: RevocationIndex + ConditionalSync>(
             })?
     };
 
-    Ok(RevokeReceipt {
-        revoked: verified
-            .target_cid
-            .parse()
-            .map_err(|error| RegistrationError::Internal {
-                message: format!("verified target CID does not re-parse: {error}"),
-            })?,
-        subject: verified.subject,
-        recorded,
+    Ok(Revoked {
+        receipt: RevokeReceipt {
+            revoked: verified
+                .target_cid
+                .parse()
+                .map_err(|error| RegistrationError::Internal {
+                    message: format!("verified target CID does not re-parse: {error}"),
+                })?,
+            subject: verified.subject,
+            recorded,
+        },
+        space: verified.revoked_subject,
     })
 }
 
