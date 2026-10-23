@@ -2094,6 +2094,24 @@ pub(crate) mod tests {
         linked_account_state(passkey, true).await
     }
 
+    /// [`ready_account_state`] against an access service started with
+    /// `settings`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn ready_account_state_with(
+        passkey: Option<tonk_worker_api::PasskeyMetadata>,
+        settings: tonk_access_service::helpers::AccessServiceSettings,
+    ) -> (
+        TonkState,
+        dialog_common::helpers::Service<
+            tonk_access_service::helpers::AccessServiceAddress,
+            tonk_access_service::helpers::AccessServer,
+        >,
+        Ed25519Signer,
+        String,
+    ) {
+        linked_account_state_with(passkey, true, settings).await
+    }
+
     /// A linked account against a real access service. `activated`
     /// decides how far the customer got: `true` is the state every
     /// steady-state test wants — the emailed link opened, the trusted
@@ -2113,12 +2131,27 @@ pub(crate) mod tests {
         Ed25519Signer,
         String,
     ) {
+        linked_account_state_with(passkey, activated, Default::default()).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn linked_account_state_with(
+        passkey: Option<tonk_worker_api::PasskeyMetadata>,
+        activated: bool,
+        settings: tonk_access_service::helpers::AccessServiceSettings,
+    ) -> (
+        TonkState,
+        dialog_common::helpers::Service<
+            tonk_access_service::helpers::AccessServiceAddress,
+            tonk_access_service::helpers::AccessServer,
+        >,
+        Ed25519Signer,
+        String,
+    ) {
         use dialog_varsig::Principal as _;
         use tonk_access_service::helpers::AccessServiceAddress;
 
-        let service = AccessServiceAddress::start(Default::default())
-            .await
-            .unwrap();
+        let service = AccessServiceAddress::start(settings).await.unwrap();
         let root = Ed25519Signer::generate().await.unwrap();
         // Hydration syncs the account space, which the access service
         // serves only once its customer has confirmed the emailed

@@ -192,7 +192,20 @@ impl<I: RevocationIndex + dialog_common::ConditionalSync> RevocationIndex for st
 /// An in-memory index, for tests and the native server.
 #[cfg(any(test, feature = "helpers"))]
 #[derive(Default)]
-pub struct MemoryRevocationIndex(std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>);
+pub struct MemoryRevocationIndex {
+    entries: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
+    bare: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(any(test, feature = "helpers"))]
+impl MemoryRevocationIndex {
+    /// Record facts without their documents from now on, the way the
+    /// service did before it kept them, so a test can stand up a holder
+    /// whose refusals carry no evidence.
+    pub fn forget_documents(&self) {
+        self.bare.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 #[cfg(any(test, feature = "helpers"))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -204,8 +217,13 @@ impl RevocationIndex for MemoryRevocationIndex {
         subject: &str,
         document: &[u8],
     ) -> Result<bool, IndexError> {
+        let document = if self.bare.load(std::sync::atomic::Ordering::SeqCst) {
+            &[][..]
+        } else {
+            document
+        };
         let mut keys = self
-            .0
+            .entries
             .lock()
             .map_err(|_| IndexError("revocation index lock poisoned".to_string()))?;
         Ok(keys
@@ -215,7 +233,7 @@ impl RevocationIndex for MemoryRevocationIndex {
 
     async fn document(&self, target: &str, subject: &str) -> Result<Option<Vec<u8>>, IndexError> {
         let keys = self
-            .0
+            .entries
             .lock()
             .map_err(|_| IndexError("revocation index lock poisoned".to_string()))?;
         Ok(keys
@@ -226,7 +244,7 @@ impl RevocationIndex for MemoryRevocationIndex {
 
     async fn subjects(&self, target: &str) -> Result<BTreeSet<String>, IndexError> {
         let keys = self
-            .0
+            .entries
             .lock()
             .map_err(|_| IndexError("revocation index lock poisoned".to_string()))?;
         let prefix = target_prefix(target);

@@ -3906,8 +3906,17 @@ mod renewal_tests {
     /// first is refused.
     #[dialog_common::test]
     async fn it_drops_a_chain_revoked_without_a_document_when_the_member_claims_a_new_link() {
+        // A service that records revocations bare, as every one did
+        // before it kept the signed document.
         let (tonk, service, root, remote) =
-            crate::router::account_state::tests::ready_account_state(None).await;
+            crate::router::account_state::tests::ready_account_state_with(
+                None,
+                tonk_access_service::helpers::AccessServiceSettings {
+                    drop_revocation_documents: true,
+                    ..Default::default()
+                },
+            )
+            .await;
         let grant =
             tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
                 .await
