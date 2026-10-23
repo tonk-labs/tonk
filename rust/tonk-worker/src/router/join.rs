@@ -551,7 +551,7 @@ pub(crate) struct JoinOutcome {
 /// unreferenced content-addressed blocks, an unused candidate chain —
 /// is invisible, resumable, and reclaimed by pruning.
 pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutcome, JoinFailure> {
-    // Another host's link carried to this one (`/join#{link}`) joins as
+    // Another host's link carried to this one (`/join/{link}`) joins as
     // that link: claimed from its own host, recorded in this profile.
     let carried = tonk_invite::join_address::carried(url);
     let url = carried.as_deref().unwrap_or(url);
@@ -1624,7 +1624,7 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
         // verbatim, and without resolution it carries no `access=` and
         // would silently read as a bare visit. Mirrors the CLI's claim.
         //
-        // A link from another host arrives carried, as `/join#{link}`
+        // A link from another host arrives carried, as `/join/{link}`
         // (see `tonk_invite::join_address`): it is the link that joins,
         // while the page it runs on is still this host's `/join`.
         let page = command.url.0;
@@ -1643,15 +1643,20 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
         } else {
             link.clone()
         };
-        // There is no paste-link page: invite links open directly in the
-        // browser. Return bare /join visits home before requesting custody.
-        // A space's own page mounts the join too, where this device holds
-        // no replica of it: a ticket link opens where it points, and the
-        // bare address opens the space for whoever can read it. A carried
-        // link is an attempt whatever it holds, so one that is no invite
-        // fails with its reason rather than passing for an empty visit.
-        if carried.is_none() && !carries_invite(&link) && !is_bare_space_address(&link) {
-            if !is_space_address(&link) {
+        // A bare /join is the page a link is pasted into, and a space's own
+        // page says the space is private: both stay where they are, without
+        // requesting custody. A space's page mounts the join where this
+        // device holds no replica of it: a ticket link opens where it
+        // points, and the bare address opens the space for whoever can read
+        // it. Anything under `/join/` is an attempt whatever it holds, so
+        // one that is no link fails with its reason rather than passing for
+        // an empty visit.
+        let attempt = carried.is_some()
+            || carries_link_path(&page)
+            || carries_invite(&link)
+            || is_bare_space_address(&link);
+        if !attempt {
+            if !is_space_address(&link) && !is_paste_page(&link) {
                 crate::router::navigate::notify_navigate(self.client(), "/");
             }
             return;
@@ -1742,6 +1747,22 @@ fn carries_invite(url: &str) -> bool {
     }) || matches!(Ticket::parse_url(url), Ok(Some(_)))
 }
 
+/// Whether a URL is the bare `/join` page, where a link is pasted.
+fn is_paste_page(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| matches!(parsed.path(), "/join" | "/join/"))
+}
+
+/// Whether a URL has anything after `/join/`: an attempt to carry a link,
+/// even one that does not read as a link (see `tonk_invite::join_address`).
+fn carries_link_path(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| {
+        parsed
+            .path()
+            .strip_prefix("/join/")
+            .is_some_and(|rest| !rest.is_empty())
+    })
+}
+
 /// Whether a URL is a space's own page, `/space/...`: where a join is
 /// mounted to pick up a ticket link, and where finding none is no
 /// reason to leave.
@@ -1796,7 +1817,7 @@ fn retains_overlay_entity(
 /// state (status retracted on success, `failed` on error).
 ///
 /// The two differ only when the page carries another host's link
-/// (`/join#{link}`): the link is what joins, and the page is where the
+/// (`/join/{link}`): the link is what joins, and the page is where the
 /// recipient is, which decides whether success navigates.
 async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
     use std::sync::Arc;
@@ -2020,6 +2041,28 @@ mod invite_presence_tests {
             "https://tonk.space/join?remote=https%3A%2F%2Fs"
         ));
         assert!(!carries_invite("not a url"));
+    }
+
+    /// A bare `/join` is the paste page, which stays put; anything under
+    /// `/join/` is an attempt to carry a link, even one that is no link.
+    #[test]
+    fn it_separates_the_paste_page_from_a_carried_link() {
+        use super::{carries_link_path, is_paste_page};
+
+        assert!(is_paste_page("https://tonk.space/join"));
+        assert!(is_paste_page("https://tonk.space/join/"));
+        assert!(is_paste_page("https://tonk.space/join#not-a-link"));
+        assert!(!is_paste_page("https://tonk.space/join/x"));
+        assert!(!is_paste_page("https://tonk.space/"));
+
+        assert!(carries_link_path(
+            "https://tonk.space/join/https://tonk.network/space/did:key:z6Mk#seed"
+        ));
+        assert!(carries_link_path("https://tonk.space/join/not-a-link"));
+        assert!(!carries_link_path("https://tonk.space/join/"));
+        assert!(!carries_link_path(
+            "https://tonk.space/join?access=abc#seed"
+        ));
     }
 
     /// A ticket link is the space's address with a key seed for its
@@ -2334,7 +2377,7 @@ mod invite_name_tests {
         );
     }
 
-    /// An invite carried to this host's `/join` (`/join#{link}`) is
+    /// An invite carried to this host's `/join` (`/join/{link}`) is
     /// joined through the page's own command, not sent home as a bare
     /// `/join` visit.
     #[dialog_common::test]

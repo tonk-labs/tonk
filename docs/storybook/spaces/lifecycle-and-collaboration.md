@@ -222,13 +222,19 @@ and in the command palette as "make space public" / "make space private".
 
 A link opens on the host that minted it. A recipient who keeps their account
 on another host (a link from tonk.network, an account on tonk.foundation)
-carries the whole link to their own host's `/join`, in the fragment:
-`https://tonk.foundation/join#https://tonk.network/space/{did}#{seed}`. The
-`/join` page hands its location to the join as before; the join unwraps the
-carried link and redeems it as that link, so the ticket is claimed from the
-host that minted it and the space's remote is that host. Neither server sees
-the carried link, because it rides in the fragment. A carried link that does
-not redeem shows the failure wall, never the bare `/join` return home.
+joins it there in one of two ways:
+
+- Paste it into that host's bare `/join` page, which no longer returns home:
+  it shows a field for a share link from any host.
+- Carry it in the address, as `/seed/<url>` carries a definitions URL:
+  `https://tonk.foundation/join/https://tonk.network/space/{did}#{seed}`. The
+  link's seed stays the address's fragment, so no server sees it.
+
+Both run the ordinary join on the carried link, so the ticket is claimed from
+the host that minted it and the space's remote is that host. A pasted link
+never enters the address bar or the history. A carried address that does not
+redeem shows the failure wall; on the paste page the field stays beneath it
+for another link.
 
 This is the presentation decision for `COLLAB-01`, `COLLAB-03`, `COLLAB-06`,
 `COLLAB-07`, `WEB-16`, `WEB-17`, and `WEB-18`.

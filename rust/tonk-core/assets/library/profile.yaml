@@ -2991,9 +2991,26 @@ route!: &route/settings/link
 # model="tonk:join/status">` directory. That directory's chrome carries the
 # `<page-mount on:join=tonk:join>` trigger, which reads the page location
 # (the SW can't see the `#fragment` seed) and fires `tonk:join`.
+#
+# A bare `/join` is where a link from another host is pasted: its
+# `<join-paste>` form fires `tonk:join` itself, with this host's
+# `/join/<link>` address, so the join runs here against the link's own
+# host and the seed never reaches the address bar.
 route!: &route/join
   this: id:tonk:route/join
   path: "/join"
+  concept: tonk:join/route
+
+# `/join/<link>` carries another host's link to this one, the way
+# `/seed/<url>` carries a definitions URL:
+# `/join/https://tonk.network/space/<did>#<seed>`. The link's query and
+# seed ride as the address's own, so the seed is still a fragment. The page
+# is the same `/join`; the worker unwraps the link from the location the
+# trigger reads (see `tonk_invite::join_address`). A `{*url}` span may not
+# capture nothing, so the bare form above is its own route.
+route!: &route/join-link
+  this: id:tonk:route/join-link
+  path: "/join/{*url}"
   concept: tonk:join/route
 
 concept!: &join/route
@@ -3026,7 +3043,7 @@ view!:
           <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
         </tonk-fab>
         <tab-title text="Tonk"></tab-title>
-        <main class="join-view">
+        <main class="join-view" data-path="{path}">
           <style>
             .join-view {
               --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
@@ -3065,8 +3082,17 @@ view!:
               text-decoration:none; text-transform:lowercase; cursor:pointer; }
             .ebtn.solid { color:var(--edge-on); background:var(--edge-ink); }
             .ebtn:active { scale:.96; }
-            .join-view:has(.join-status-slot[data-state="ready"]):not(:has(.edge-wall--closed))
+            .join-view:not([data-path="/join"]):has(.join-status-slot[data-state="ready"]):not(:has(.edge-wall--closed))
               .edge-mast { display:none; }
+            /* The paste form is the bare /join page's; a carried link's
+               page shows only the join's own surfaces. */
+            .join-paste { display:none; }
+            .join-view[data-path="/join"] .join-paste { display:block; margin-top:28px; }
+            .join-paste-input { width:100%; min-height:44px; box-sizing:border-box;
+              padding:10px 14px; border:0; border-radius:0; color:var(--edge-ink);
+              background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring);
+              font:400 13px/1.4 'IBM Plex Mono',ui-monospace,monospace; }
+            .join-paste-input:focus-visible { outline:2px solid var(--edge-ink); outline-offset:1px; }
             /* Match the destination-neutral boot shell: only the shared pulse
                is visible, centred over the whole route. Keep the status text
                in the live region for assistive technology. */
@@ -3091,13 +3117,26 @@ view!:
           </style>
           <a class="edge-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
           <page-mount on:join=tonk:join></page-mount>
-          <!-- Invite URLs are opened directly in the browser. Bare /join
-               visits return home through the join handler. -->
+          <!-- Invite URLs open directly in the browser, on this host or
+               carried to it as /join/<link>. A bare /join visit stays here
+               to take a pasted link. -->
           <tonk-display class="join-status-slot" model="tonk:join/status">
             <span slot="empty"></span>
             <span slot="loading"></span>
             <span slot="no-entity"></span>
           </tonk-display>
+          <join-paste class="join-paste" on:join=tonk:join>
+            <form class="edge-wall" data-join-paste-form aria-labelledby="join-paste-title" novalidate>
+              <h1 class="edge-statement" id="join-paste-title">join a space from a link</h1>
+              <label class="edge-narrator" for="join-paste-link">paste a share link from any tonk host. the space joins your account here.</label>
+              <input class="join-paste-input" id="join-paste-link" name="link" type="url" inputmode="url" required autocomplete="off" spellcheck="false" placeholder="https://tonk.network/space/…">
+              <p class="edge-narrator" data-join-paste-error role="alert" hidden></p>
+              <div class="edge-run">
+                <a class="ebtn" href="/">go to home</a>
+                <button class="ebtn solid" type="submit">join</button>
+              </div>
+            </form>
+          </join-paste>
         </main>
       </div>
 
@@ -4549,6 +4588,47 @@ element!: &page-mount
       (self) => {
         self.__bound?.disconnect();
         self.__bound = null;
+      }
+
+# The bare /join page's paste form. A link pasted here joins on this host:
+# it fires the same `mount` event `<page-mount>` does, with this host's
+# `/join/<link>` address as `detail.href`, so the view binds it to
+# `tonk:join` exactly as it binds the page's own location. The address bar
+# does not change, so the pasted seed never enters the history; a join
+# that succeeds navigates to the space, and one that fails shows the
+# join's failure above the form, which stays to take another link.
+element!: &join-paste
+  description: Joins a pasted share link by firing a `mount` event carrying it as `/join/<link>`.
+  method:
+    join: |
+      (self, form) => {
+        const input = form.querySelector('input[name="link"]');
+        const error = form.querySelector('[data-join-paste-error]');
+        let link = null;
+        try { link = new URL(input.value.trim()); } catch { link = null; }
+        if (!link || !['https:', 'http:'].includes(link.protocol)) {
+          error.textContent = 'that is not a link. paste the whole share link, starting with https://';
+          error.hidden = false;
+          input.focus();
+          return;
+        }
+        error.hidden = true;
+        const origin = window.tonk?.context?.origin ?? window.location.origin;
+        self.dispatchEvent(new CustomEvent('mount', {
+          bubbles: true,
+          detail: { href: `${origin}/join/${link.href}` },
+        }));
+      }
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('submit', (event) => {
+          const form = event.target?.closest?.('[data-join-paste-form]');
+          if (!form || !self.contains(form)) return;
+          event.preventDefault();
+          self.join(form);
+        });
       }
 
 # An inline-editable line of text, driven like a native input: its

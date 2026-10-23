@@ -2561,14 +2561,47 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A bare `/join` stays put and takes a pasted link from any host. The
+    /// paste joins in place: a link that is not one is refused on the
+    /// page, and one that does not redeem shows the join's failure, with
+    /// the seed never entering the address bar.
     #[dialog_common::test]
-    async fn it_returns_bare_join_visits_home(env: TestEnvironment) -> Result<()> {
+    async fn it_joins_a_link_pasted_on_a_bare_join_visit(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         wait_for_service_worker(&driver).await?;
 
         goto(&driver, env.tonk_web.join("join")?.as_str()).await?;
-        await_url_path(&driver, "/").await?;
-        enter_hub(&driver).await?;
+        let input = element(&driver, "join-paste input[name=link]").await?;
+
+        input.send_keys("not a link").await?;
+        element(&driver, "join-paste button[type=submit]")
+            .await?
+            .click()
+            .await?;
+        wait_for_text_containing(&driver, "[data-join-paste-error]", "not a link").await?;
+
+        // A ticket link on a host that does not exist: the claim cannot
+        // reach it, so the join fails where it was pasted.
+        let seed = bs58::encode([6u8; 32]).into_string();
+        let link = format!(
+            "https://sync.invalid.test/space/did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#{seed}"
+        );
+        let input = element(&driver, "join-paste input[name=link]").await?;
+        input.clear().await?;
+        input.send_keys(&link).await?;
+        element(&driver, "join-paste button[type=submit]")
+            .await?
+            .click()
+            .await?;
+        element(&driver, ".edge-wall--closed").await?;
+
+        let here = driver.current_url().await?;
+        assert_eq!(here.path(), "/join", "a paste joins in place");
+        assert!(
+            !here.as_str().contains(&seed),
+            "the pasted seed never enters the address bar: {here}"
+        );
+        element(&driver, "join-paste input[name=link]").await?;
 
         driver.quit().await?;
         Ok(())
