@@ -11,6 +11,7 @@
 mod account_remote;
 mod connections;
 mod deployment_config;
+mod email_invitation_signup;
 mod lookup;
 mod object;
 mod purger;
