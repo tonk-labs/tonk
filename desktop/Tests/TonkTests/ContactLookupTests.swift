@@ -157,6 +157,20 @@ final class ContactLookupTests: XCTestCase {
     XCTAssertEqual(runtime.sends.count, 3)
   }
 
+  func testOnlyACompleteEmailIsLookedUpWhileTyping() {
+    let model = ContactLookupModel { _ in .notFound }
+    for partial in ["", "jack", "jack@", "jack@tonk", "jack@tonk.", "jack@tonk.x", "@tonk.xyz",
+      "jack @tonk.xyz", "a@b@tonk.xyz", "did:key:z6Mk"]
+    {
+      model.input = partial
+      XCTAssertFalse(model.isCompleteEmail, partial)
+    }
+    for complete in ["jack@tonk.xyz", " jack+bla@tonk.xyz ", "a@mail.example.co"] {
+      model.input = complete
+      XCTAssertTrue(model.isCompleteEmail, complete)
+    }
+  }
+
 }
 
 @MainActor
@@ -172,20 +186,6 @@ private final class ContactRuntime: SpaceAccessRuntime {
       return sendResult
     }
     return ["connections": [], "name": "Owner", "root": root]
-  }
-
-  func testOnlyACompleteEmailIsLookedUpWhileTyping() {
-    let model = ContactLookupModel { _ in .notFound }
-    for partial in ["", "jack", "jack@", "jack@tonk", "jack@tonk.", "jack@tonk.x", "@tonk.xyz",
-      "jack @tonk.xyz", "a@b@tonk.xyz", "did:key:z6Mk"]
-    {
-      model.input = partial
-      XCTAssertFalse(model.isCompleteEmail, partial)
-    }
-    for complete in ["jack@tonk.xyz", " jack+bla@tonk.xyz ", "a@mail.example.co"] {
-      model.input = complete
-      XCTAssertTrue(model.isCompleteEmail, complete)
-    }
   }
 
 }
