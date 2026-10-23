@@ -103,6 +103,8 @@ public enum RuntimeLocation {
   public static let deployment = resolve(
     arguments: ProcessInfo.processInfo.arguments, defaults: .standard)
   public static var home: URL { deployment.home }
+  /// Whether this launch uses the remote its channel ships for, rather than an override.
+  public static var isChannelHome: Bool { deployment == Channel.current.defaultRemote }
   public static func isEmbedded(_ url: URL, deployment: Deployment = deployment) -> Bool {
     url.scheme == deployment.home.scheme && url.host == deployment.host
       && (url.port ?? (url.scheme == "https" ? 443 : 80))

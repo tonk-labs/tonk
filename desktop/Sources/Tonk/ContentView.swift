@@ -155,10 +155,10 @@ struct ContentView: View {
         isSpace
           ? (viewTitle ?? model.openedSpace?.title ?? "Space")
           : (runtime.showsSpacePicker
-            ? pageTitle : (RuntimeLocation.deployment == .production ? "" : "Tonk"))
+            ? pageTitle : (RuntimeLocation.isChannelHome ? "" : "Tonk"))
       )
       .navigationSubtitle(
-        isSpace || RuntimeLocation.deployment == .production
+        isSpace || RuntimeLocation.isChannelHome
           ? "" : RuntimeLocation.home.absoluteString
       )
       .toolbar { windowToolbar }
