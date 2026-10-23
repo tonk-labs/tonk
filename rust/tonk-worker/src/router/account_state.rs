@@ -2559,6 +2559,140 @@ pub(crate) mod tests {
     /// "Revision references blob …, which is not present". Every pull
     /// after that failed the same way, so nothing the account changed
     /// elsewhere reached the device again.
+    /// A pull asked to download what it adopts never leaves the profile's
+    /// access branch on a head whose blocks the device lacks, even when it
+    /// stops between the two, as a service worker the browser terminates
+    /// does.
+    ///
+    /// The account rides the profile's `main`, and another device moved
+    /// it. With nothing of its own to merge, this device's pull adopts the
+    /// other device's tree by its root and reads none of it. Had the head
+    /// moved before the download, the branch the proof walk reads would
+    /// name nodes the device never held, every proof that would fetch them
+    /// would need them first, and the profile would not open again.
+    /// tonk.foundation's worker failed that way: "Failed to open profile:
+    /// ... Authorization could not be evaluated: candidate scan failed".
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_downloads_the_account_before_its_head_moves() {
+        pull_the_account_and_stop_when_its_head_moves(true).await;
+    }
+
+    /// Any pull of the profile's own repository downloads what it adopts,
+    /// whoever asks for it: a caller that pulls the account branch as it
+    /// would a space's leaves the profile openable too.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_downloads_the_account_whoever_pulls_it() {
+        pull_the_account_and_stop_when_its_head_moves(false).await;
+    }
+
+    /// The account moves on another device, twice, and this device pulls
+    /// it through its reactor, with or without asking for the download,
+    /// stopping each pull the moment the head moves. The profile must
+    /// open from storage afterwards.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn pull_the_account_and_stop_when_its_head_moves(download: bool) {
+        use dialog_artifacts::{Artifact, Instruction, Value};
+        use std::future::{Future as _, poll_fn};
+        use std::task::Poll;
+
+        let (home, _service, root, remote) = ready_account_state(None).await;
+        assert_eq!(ensure_account_state(&home).await, AccountStateStatus::Ready);
+        let device = device_on(&root, &remote, None).await;
+        for state in [&device, &home, &device] {
+            let (status, swept) = ensure_account_state_swept(state).await;
+            assert_eq!(status, AccountStateStatus::Ready);
+            swept.unwrap();
+        }
+        assert_eq!(
+            device.active_branch,
+            crate::router::repository::PROFILE_BRANCH,
+            "the account rides the profile's main"
+        );
+
+        for round in 0..2u128 {
+            // The other device writes to the account and publishes it.
+            home.reactor
+                .profile_repository()
+                .branch(&home.active_branch)
+                .acquire(&home.operator)
+                .await
+                .unwrap()
+                .handle()
+                .transaction()
+                .integrate(
+                    std::iter::once(Instruction::Assert(
+                        Artifact {
+                            the: "test/round".parse().expect("a valid attribute"),
+                            of: format!("test:round-{round}")
+                                .parse()
+                                .expect("a valid entity"),
+                            is: Value::UnsignedInt(round),
+                            cause: None,
+                        },
+                        dialog_artifacts::Pick::All,
+                    ))
+                    .collect(),
+                )
+                .commit()
+                .publish()
+                .perform(&home.operator)
+                .await
+                .unwrap();
+            let (_, swept) = ensure_account_state_swept(&home).await;
+            swept.unwrap();
+
+            // This device pulls the account with its download, and stops
+            // the moment its head moves.
+            let main = device
+                .reactor
+                .profile_repository()
+                .branch(&device.active_branch)
+                .acquire(&device.operator)
+                .await
+                .unwrap();
+            let before = main.handle().revision();
+            let pull = device
+                .reactor
+                .profile_repository()
+                .branch(&device.active_branch)
+                .pull();
+            let pull = if download {
+                pull.download().operational()
+            } else {
+                pull
+            };
+            let mut pulling = Box::pin(pull.perform(&device.operator));
+            loop {
+                let polled = poll_fn(|context| Poll::Ready(pulling.as_mut().poll(context))).await;
+                if let Poll::Ready(pulled) = polled {
+                    pulled
+                        .unwrap_or_else(|error| panic!("round {round}: the pull failed: {error}"));
+                    break;
+                }
+                if main.handle().revision() != before {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            drop(pulling);
+            assert_ne!(
+                main.handle().revision(),
+                before,
+                "round {round}: the device takes the account's head"
+            );
+        }
+
+        // The device restarts: its profile opens from storage again.
+        let name = device.profile_name.clone();
+        let directory = device.registry.directory.clone();
+        drop(device);
+        if let Err(error) = crate::device::open_profile_at(&name, directory).await {
+            panic!("the profile does not open after a restart: {error}");
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_pulls_the_account_after_signing_out_and_back_in() {
