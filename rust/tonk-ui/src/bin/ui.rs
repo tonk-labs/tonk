@@ -128,6 +128,7 @@ async fn main() {
     });
     tonk_portal::on_task(tonk_ui::fabb_task::handle);
     tonk_ui::activate::register();
+    tonk_ui::email_invite::register();
 
     // Dev-only hot reload client. `debug_assertions` is on under `trunk serve`
     // (debug profile) and off for release, so this never loads in production.
@@ -149,7 +150,7 @@ async fn main() {
     if web_sys::window().is_some_and(|window| {
         matches!(
             window.location().pathname().as_deref(),
-            Ok("/activate" | "/activate/")
+            Ok("/activate" | "/activate/" | "/email-invite")
         )
     }) {
         tonk_ui::analytics::finish_startup(
@@ -227,11 +228,18 @@ fn render_root(shell: &web_sys::Element) {
     // The activation email lands here on any device, signed in or not,
     // so the page bypasses sealed guests. Everything else, the account's
     // settings included, renders inside the routed site.
-    if activate_route {
-        if current.as_ref().map(web_sys::Element::tag_name).as_deref() != Some("TONK-ACTIVATE") {
+    if activate_route || path == "/email-invite" {
+        let tag = if activate_route {
+            "tonk-activate"
+        } else {
+            "tonk-email-invite"
+        };
+        if current.as_ref().map(web_sys::Element::tag_name).as_deref()
+            != Some(tag.to_uppercase().as_str())
+        {
             shell.set_inner_html("");
             if let Some(document) = shell.owner_document()
-                && let Ok(activate) = document.create_element("tonk-activate")
+                && let Ok(activate) = document.create_element(tag)
             {
                 let _ = shell.append_child(&activate);
             }

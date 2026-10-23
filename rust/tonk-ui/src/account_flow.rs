@@ -1398,6 +1398,101 @@ pub(crate) mod tests {
         }
     }
 
+    /// COLLAB-02: the actual emailed locator survives the passkey and activation
+    /// ceremony, then joins through the same command as the native sender.
+    #[dialog_common::test]
+    async fn it_joins_an_emailed_space_after_creating_and_confirming_an_account(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let sender = driver_with_prf(&env).await?;
+        sign_up(&sender, &env, "email-sender@example.com").await?;
+        let key = create_space_awaiting_remote(&sender, "Email invitation", true).await?;
+        sender.enter_default_frame().await?;
+        let pushed = post_json(
+            &sender,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("push invitation space", &pushed);
+        let root = get_json(&sender, "/api/identity/root").await?;
+        let root = successful_body("sending account", &root)["rootDid"].clone();
+        let info = get_json(&sender, &format!("/api/repository/{key}")).await?;
+        let subject = successful_body("shared space", &info)["subject"].clone();
+        let branch = active_branch(&sender).await?;
+        let id = "f2".repeat(32);
+        let request = "request:browser-email-send";
+        let field = |name: &str, kind: &str| serde_json::json!({"the":format!("xyz.tonk.send-email-invitation/{name}"),"as":kind,"cardinality":"one"});
+        let dispatched = post_json(&sender, &format!("/api/repository/profile:tonk/branch/{branch}/transact"), serde_json::json!({"claims":[{"op":"assert","application":{
+            "predicate":{"kind":"transient","concept":{"with":{
+                "id":field("id","Text"),"email":field("email","Text"),"space":field("space","Entity"),"account":field("account","Entity")
+            }}},"parameters":{"this":request,"id":id,"email":"email-recipient@example.com","space":subject,"account":root}
+        }}]})).await?;
+        successful_body("send email invitation", &dispatched);
+        let rows = await_subscription(&sender, &format!("/api/repository/profile:tonk/branch/{branch}/query"), serde_json::json!({
+            "predicate":{"with":{
+                "state":{"the":"xyz.tonk.email-invitation-status/state","as":"Text","cardinality":"one"},
+                "message":{"the":"xyz.tonk.email-invitation-status/message","as":"Text","cardinality":"one"}
+            }},"terms":{"this":request,"state":{"?":{"name":"state"}},"message":{"?":{"name":"message"}}}
+        }), "return (frame.conclusions || frame.asserted || []).some(row => row.fields?.state && row.fields.state !== 'pending');", 60000).await?;
+        let outcomes = rows["conclusions"]
+            .as_array()
+            .or_else(|| rows["asserted"].as_array())
+            .context("email outcome event has no rows")?;
+        anyhow::ensure!(
+            outcomes.iter().any(|row| row["fields"]["state"] == "sent"),
+            "email send outcome: {rows}"
+        );
+        let inbox: Vec<(String, String)> = reqwest::get(env.access_service.join("_test/emails")?)
+            .await?
+            .json()
+            .await?;
+        let locator = inbox
+            .iter()
+            .find(|(to, link)| {
+                to == "email-recipient@example.com" && link.contains("/email-invite#")
+            })
+            .context("invitation email missing")?
+            .1
+            .clone();
+        sender.quit().await?;
+        let recipient = driver_with_prf(&env).await?;
+        goto(&recipient, &locator).await?;
+        wait_for_displayed(&recipient, "#email-invite-account")
+            .await?
+            .click()
+            .await?;
+        run_cluster_ceremony(&recipient, "email-recipient@example.com").await?;
+        activate_in_another_tab(&recipient, &env, "email-recipient@example.com").await?;
+        wait_for_absent(&recipient, "#tonk-register").await?;
+        assert_eq!(recipient.current_url().await?.path(), "/email-invite");
+        assert_eq!(recipient.current_url().await?.fragment(), Some(id.as_str()));
+        // A page reload after signup must retain the locator and find the account.
+        recipient.refresh().await?;
+        wait_for_displayed(&recipient, "#email-invite-join")
+            .await?
+            .click()
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        while !recipient.current_url().await?.path().starts_with("/space/") {
+            if tokio::time::Instant::now() >= deadline {
+                let message = element(&recipient, "#email-invite-status")
+                    .await?
+                    .text()
+                    .await?;
+                return Err(anyhow!("email invitation did not join: {message}"));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let joined = get_json(&recipient, &format!("/api/repository/{key}")).await?;
+        assert_eq!(
+            successful_body("joined emailed space", &joined)["subject"],
+            subject
+        );
+        recipient.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_finishes_signup_in_the_original_tab(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;

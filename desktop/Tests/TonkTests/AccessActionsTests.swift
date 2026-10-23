@@ -130,6 +130,84 @@ final class AccessActionsTests: XCTestCase {
     XCTAssertEqual(attempts(telemetry).last?["failure_kind"], .string("local_state"))
   }
 
+  func testInvitingAContactKeepsCopiesAndRecordsALinkOnlyTheirAccountCanClaim() async throws {
+    let runtime = AccessRuntimeStub()
+    let store = LinkStoreStub()
+    var copies: [String] = []
+    let access = AccessModel(
+      vault: store,
+      copyToPasteboard: {
+        copies.append($0)
+        return true
+      })
+    access.runtime = runtime
+    let contact = DesktopContact(id: "did:key:zAda", name: "Ada", labels: [])
+    let invited = await access.inviteContact(contact, to: try space())
+    XCTAssertTrue(invited)
+    XCTAssertEqual(runtime.recipients, ["did:key:zAda"])
+    XCTAssertEqual(copies, ["https://tonk.network/join?access=synthetic-chain"])
+    XCTAssertEqual(store.values["scoped"], copies.first)
+    XCTAssertEqual(access.journal.events.last?.kind, .scoped)
+    XCTAssertEqual(access.journal.events.last?.action, .made)
+    XCTAssertEqual(access.journal.events.last?.target, "scoped")
+    XCTAssertGreaterThan(runtime.spaceReads, 0, "the space refreshes so Links shows the new row")
+  }
+
+  func testInvitingRejectsALinkTheWorkerAddressedToAnotherAccount() async throws {
+    let runtime = AccessRuntimeStub()
+    runtime.scopedEcho = "did:key:zSomeoneElse"
+    let store = LinkStoreStub()
+    let access = AccessModel(
+      vault: store,
+      copyToPasteboard: { _ in
+        XCTFail("A link for another account must not be copied")
+        return false
+      })
+    access.runtime = runtime
+    let invited = await access.inviteContact(
+      DesktopContact(id: "did:key:zAda", name: "Ada", labels: []), to: try space())
+    XCTAssertFalse(invited)
+    XCTAssertTrue(store.values.isEmpty)
+    XCTAssertTrue(access.journal.events.isEmpty)
+    XCTAssertTrue(access.notice?.contains("unsupported invitation link") == true)
+  }
+
+  func testInvitingYourOwnAccountMintsNothing() async throws {
+    let runtime = AccessRuntimeStub()
+    let access = AccessModel(vault: LinkStoreStub(), copyToPasteboard: { _ in true })
+    access.runtime = runtime
+    await access.refreshAccount()
+    let invited = await access.inviteContact(
+      DesktopContact(id: "did:key:zVerifier", name: "Me", labels: []), to: try space())
+    XCTAssertFalse(invited)
+    XCTAssertTrue(runtime.recipients.isEmpty)
+  }
+
+  func testInvitingAContactIsOneInviteContactAttemptOnTheHub() async throws {
+    let telemetry = try recording()
+    let runtime = AccessRuntimeStub()
+    let access = AccessModel(vault: LinkStoreStub(), copyToPasteboard: { _ in true })
+    access.runtime = runtime
+    _ = await access.inviteContact(
+      DesktopContact(id: "did:key:zAda", name: "Ada", labels: []), to: try space())
+    let events = attempts(telemetry)
+    XCTAssertEqual(events.map { $0["phase"] }, [.string("started"), .string("finished")])
+    XCTAssertEqual(Set(events.compactMap { $0["action"]?.string }), ["invite_contact"])
+    XCTAssertEqual(events.last?["journey"], .string("collaboration"))
+    XCTAssertEqual(events.last?["result"], .string("success"))
+    XCTAssertEqual(events.last?["stage"], .string("clipboard"))
+    XCTAssertEqual(events.last?["surface"], .string("hub"))
+  }
+
+  func testALinkForAnInvitedContactIsNamedFromTheAddressBook() {
+    let links = SpaceAccess.links(
+      subject: "did:key:zTest",
+      invites: [InviteSummary(targetCid: "scoped", kind: "scoped", recipientRoot: "did:key:zAda")],
+      agents: [], members: [], isPublic: false, names: ["did:key:zAda": "Ada"])
+    XCTAssertEqual(links.map(\.title), ["Link for Ada"])
+    XCTAssertEqual(links.first?.canReset, false)
+  }
+
   func testAddressBookPersistsByAccountAndResetHidesIt() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -403,6 +481,9 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
   var spaceWarnings: [String] = []
   var invites: [[String: Any]] = []
   var spaceReads = 0
+  var recipients: [String] = []
+  /// The audience the worker reports for a scoped mint; `nil` echoes the request.
+  var scopedEcho: String?
   func createCLILink(_ space: TonkSpace) async throws -> String {
     if permissionDenied { throw HarnessError.message("Permission denied") }
     return "unused"
@@ -422,6 +503,13 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
     }
     if script.contains("const minted") {
       await mintRead?()
+      if let recipient = arguments["recipient"] as? String {
+        recipients.append(recipient)
+        return [
+          "kind": "scoped", "url": "https://tonk.network/join?access=synthetic-chain",
+          "recipientRoot": scopedEcho ?? recipient, "targets": ["scoped"],
+        ]
+      }
       return [
         "kind": "open", "url": "https://tonk.network/space/did:key:zTest#synthetic-test",
         "targets": ["replacement"],

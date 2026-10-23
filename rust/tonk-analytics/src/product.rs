@@ -49,7 +49,7 @@ closed_enum! {
         Concept, View, Render, Remote, Migrate,
         // Desktop app interactions; see docs/analytics-contract.md.
         PublishSpace, UnpublishSpace, RevokeLink, ResetLink, OpenView, StartChat, SendMessage,
-        ChangeModel
+        ChangeModel, InviteContact
     }
 }
 
@@ -351,6 +351,7 @@ mod tests {
             ProductAction::StartChat,
             ProductAction::SendMessage,
             ProductAction::ChangeModel,
+            ProductAction::InviteContact,
         ]
         .iter()
         .map(|action| serde_json::to_value(action).unwrap())
@@ -368,6 +369,7 @@ mod tests {
                 "start_chat",
                 "send_message",
                 "change_model",
+                "invite_contact",
             ]
         );
     }

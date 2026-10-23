@@ -57,6 +57,9 @@ final class AccessModel: ObservableObject {
     guard let root = selfDid, let contactsURL else {
       throw HarnessError.message("Sign in before saving a contact.")
     }
+    guard contact.emailIdentity == nil || contact.emailIdentity?.rootDid == contact.id else {
+      throw HarnessError.message("The email lookup does not match this contact's key.")
+    }
     var updated = savedContacts
     var list = updated[root] ?? []
     list.removeAll { $0.id == contact.id }
@@ -65,6 +68,71 @@ final class AccessModel: ObservableObject {
     try JSONEncoder().encode(updated).write(to: contactsURL, options: .atomic)
     savedContacts = updated
   }
+
+  /// Persist the delivery ID before dispatch so an uncertain send can be retried after restart.
+  private struct EmailInvitationJob: Codable {
+    let id: String
+    let createdAt: Date
+  }
+
+  func sendEmailInvitation(email: String, space: TonkSpace) async throws {
+    guard let root = selfDid, let runtime, let branch = runtime.catalogBranch,
+      let contactsURL else { throw HarnessError.message("Sign in before sending an invitation.") }
+    let started = generation
+    let address = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let file = contactsURL.deletingLastPathComponent().appendingPathComponent("email-invitations.json")
+    var jobs: [String: EmailInvitationJob] = [:]
+    if FileManager.default.fileExists(atPath: file.path) {
+      // A damaged retry record must never silently mint another invitation.
+      jobs = try JSONDecoder().decode([String: EmailInvitationJob].self, from: Data(contentsOf: file))
+    }
+    let key = [root, space.subject, address].joined(separator: "|")
+    let job: EmailInvitationJob
+    if let existing = jobs[key], Date().timeIntervalSince(existing.createdAt) < 7 * 86400 {
+      job = existing
+    } else {
+      job = EmailInvitationJob(
+        id: (UUID().uuidString + UUID().uuidString).replacingOccurrences(of: "-", with: "").lowercased(),
+        createdAt: Date())
+      jobs[key] = job
+      try JSONEncoder().encode(jobs).write(to: file, options: .atomic)
+    }
+    let result = try await runtime.accountScript(
+      Self.emailInvitationScript,
+      arguments: ["branch": branch, "account": root, "space": space.subject,
+                  "email": address, "id": job.id, "request": "urn:uuid:" + UUID().uuidString])
+    guard generation == started, selfDid == root else {
+      throw HarnessError.message("The selected account changed. Check the original account before retrying.")
+    }
+    guard result["state"] as? String == "sent" else {
+      throw HarnessError.message(result["message"] as? String
+        ?? "Delivery could not be confirmed. Retry the same invitation.")
+    }
+  }
+
+  static let emailInvitationScript = """
+    const field = (the, as) => ({the, as, cardinality: 'one'});
+    const domain = 'xyz.tonk.send-email-invitation';
+    const base = '/api/repository/profile:tonk/branch/' + encodeURIComponent(branch);
+    await api(base + '/transact', {claims: [{op: 'assert', application: {
+      predicate: {kind: 'transient', concept: {with: {
+        id: field(domain + '/id', 'Text'), email: field(domain + '/email', 'Text'),
+        space: field(domain + '/space', 'Entity'), account: field(domain + '/account', 'Entity')
+      }}}, parameters: {this: request, id, email, space, account}
+    }}]});
+    for (let attempt = 0; attempt < 45; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const rows = await api(base + '/query', {
+        predicate: {with: {
+          state: field('xyz.tonk.email-invitation-status/state', 'Text'),
+          message: field('xyz.tonk.email-invitation-status/message', 'Text')
+        }}, terms: {this: request, state: {'?': {name: 'state'}}, message: {'?': {name: 'message'}}}
+      });
+      const answer = rows.find(row => row.fields?.state && row.fields.state !== 'pending');
+      if (answer) return answer.fields;
+    }
+    return {state: 'unknown', message: 'Delivery could not be confirmed. Retry the same invitation.'};
+    """
 
   func updateDisplayName(_ name: String) async throws {
     guard let runtime else { throw HarnessError.message("Sign in before changing your name.") }
@@ -259,7 +327,10 @@ final class AccessModel: ObservableObject {
         members: members,
         links: SpaceAccess.links(
           subject: space.subject, invites: invites, agents: agentConnections, members: members,
-          isPublic: isPublic),
+          isPublic: isPublic,
+          names: Dictionary(
+            (savedContacts[selfDid ?? ""] ?? []).map { ($0.id, $0.name) },
+            uniquingKeysWith: { first, _ in first })),
         agents: agentConnections.filter { $0.subject == space.subject },
         views: Self.views(home: result["home"], directories: result["directories"]),
         isPublic: isPublic, selfDid: selfDid)
@@ -527,6 +598,47 @@ final class AccessModel: ObservableObject {
       failureKind: copied ? nil : .localState)
   }
 
+  /// Mints a link only `contact`'s account can claim, keeps it for Copy, copies
+  /// it and records it. The contact's key must be an account root: that is what
+  /// an email lookup saves and what a roster lists, and a claim checks it.
+  @discardableResult
+  func inviteContact(
+    _ contact: DesktopContact, to space: TonkSpace, surface: DesktopAnalytics.Surface = .hub
+  ) async -> Bool {
+    guard let runtime, !working.contains("new:" + space.id) else { return false }
+    let attempt = Telemetry.shared.begin(.collaboration, .inviteContact, surface: surface)
+    guard contact.id.hasPrefix("did:key:"), contact.id != selfDid else {
+      notice = "Choose someone else’s account to invite."
+      attempt.finish(.blocked, stage: .validation, failureKind: .invalidInput)
+      return false
+    }
+    let started = generation
+    working.insert("new:" + space.id)
+    defer { if generation == started { working.remove("new:" + space.id) } }
+    do {
+      let (url, target) = try await mintPersonLink(
+        runtime: runtime, space: space, recipient: contact.id)
+      guard generation == started else {
+        attempt.finish(.cancelled, stage: .worker)
+        return false
+      }
+      let copied = finishMint(url: url, target: target, kind: .scoped, space: space)
+      await refresh(space)
+      attempt.finish(
+        copied ? .success : .retryableFailure, stage: .clipboard,
+        failureKind: copied ? nil : .localState)
+      return copied
+    } catch {
+      guard generation == started else {
+        attempt.finish(.cancelled, stage: .worker)
+        return false
+      }
+      notice = "Couldn’t make the link: " + Self.message(error)
+      attempt.finish(.retryableFailure, stage: .worker)
+      return false
+    }
+  }
+
   func revoke(
     _ link: AccessLink, space: TonkSpace, surface: DesktopAnalytics.Surface = .hub
   ) async {
@@ -631,25 +743,30 @@ final class AccessModel: ObservableObject {
     }
   }
 
-  private func mintPersonLink(runtime: any SpaceAccessRuntime, space: TonkSpace) async throws
-    -> (String, String?)
-  {
+  /// Mints an open link, or with `recipient` (an account root DID) a link only
+  /// that account can claim. The grant always names this space as its subject.
+  private func mintPersonLink(
+    runtime: any SpaceAccessRuntime, space: TonkSpace, recipient: String? = nil
+  ) async throws -> (String, String?) {
+    var arguments: [String: Any] = ["subject": space.subject]
+    if let recipient { arguments["recipient"] = recipient }
     let result = try await runtime.accountScript(
       """
       const base = '/api/repository/' + encodeURIComponent(subject);
       const before = new Set((await api(base + '/invites')).map(row => row.targetCid));
-      const minted = await api(base + '/invite', {});
+      const minted = await api(base + '/invite',
+        typeof recipient === 'string' ? {recipientRoot: recipient} : {});
       const after = await api(base + '/invites');
-      return {kind: minted.kind, url: minted.url,
+      return {kind: minted.kind, url: minted.url, recipientRoot: minted.recipientRoot,
               targets: after.map(row => row.targetCid).filter(cid => !before.has(cid))};
-      """, arguments: ["subject": space.subject])
+      """, arguments: arguments)
     // Ticket links live on the host serving the space, the public address's origin.
     var origins = [RuntimeLocation.home]
     if let address = spaces[space.id]?.publicAddress, let host = URL(string: address) {
       origins.append(host)
     }
     let url = try RuntimeModel.validateShareLink(
-      result, subject: space.subject, origins: origins)
+      result, subject: space.subject, origins: origins, recipient: recipient)
     let targets = result["targets"] as? [String] ?? []
     return (url.absoluteString, targets.count == 1 ? targets[0] : nil)
   }
