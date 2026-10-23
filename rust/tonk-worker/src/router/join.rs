@@ -551,10 +551,10 @@ pub(crate) struct JoinOutcome {
 /// unreferenced content-addressed blocks, an unused candidate chain —
 /// is invisible, resumable, and reclaimed by pruning.
 pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutcome, JoinFailure> {
-    // Per-phase wall clock, logged on success: the perform phase is the
-    // network-bound one (pull + validation + roster reads against the
-    // remote), so a slow join in the field can be attributed to the
-    // network or to local work without reproducing it.
+    // Another host's link carried to this one (`/join/{link}`) joins as
+    // that link: claimed from its own host, recorded in this profile.
+    let carried = tonk_invite::join_address::carried(url);
+    let url = carried.as_deref().unwrap_or(url);
     // A space's bare address names no invite: it opens the space for
     // whoever can read it.
     if let Some(public) = Ticket::public_for_url(url)
@@ -562,6 +562,10 @@ pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutco
     {
         return open_space(tonk, public).await;
     }
+    // Per-phase wall clock, logged on success: the perform phase is the
+    // network-bound one (pull + validation + roster reads against the
+    // remote), so a slow join in the field can be attributed to the
+    // network or to local work without reproducing it.
     let started = web_time::Instant::now();
     let prepared = prepare_join(tonk, url).await?;
     let prepared_at = web_time::Instant::now();
@@ -1834,25 +1838,45 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
         // view mounts — but a PASTED short link reaches the worker
         // verbatim, and without resolution it carries no `access=` and
         // would silently read as a bare visit. Mirrors the CLI's claim.
-        let mut command = command;
-        if tonk_invite::shortcut::is_shortcut(&command.url.0) {
-            match resolve_shortcut(&command.url.0).await {
-                Ok(resolved) => command.url.0 = resolved,
+        //
+        // A link from another host arrives carried, as `/join/{link}`
+        // (see `tonk_invite::join_address`): it is the link that joins,
+        // while the page it runs on is still this host's `/join`.
+        let page = command.url.0;
+        let carried = tonk_invite::join_address::carried(&page);
+        let mut link = carried.clone().unwrap_or_else(|| page.clone());
+        if tonk_invite::shortcut::is_shortcut(&link) {
+            match resolve_shortcut(&link).await {
+                Ok(resolved) => link = resolved,
                 Err(error) => log!("join: short link did not resolve: {error}"),
             }
         }
-        // There is no paste-link page: invite links open directly in the
-        // browser. Return bare /join visits home before requesting custody.
-        // A space's own page mounts the join too, where this device holds
-        // no replica of it: a ticket link opens where it points, and the
-        // bare address opens the space for whoever can read it.
-        if !carries_invite(&command.url.0) && !is_bare_space_address(&command.url.0) {
-            if !is_space_address(&command.url.0) {
+        // The page decides where a join lands; without a carried link it is
+        // the link itself, resolved.
+        let page = if carried.is_some() {
+            page
+        } else {
+            link.clone()
+        };
+        // A bare /join is the page a link is pasted into, and a space's own
+        // page says the space is private: both stay where they are, without
+        // requesting custody. A space's page mounts the join where this
+        // device holds no replica of it: a ticket link opens where it
+        // points, and the bare address opens the space for whoever can read
+        // it. Anything under `/join/` is an attempt whatever it holds, so
+        // one that is no link fails with its reason rather than passing for
+        // an empty visit.
+        let attempt = carried.is_some()
+            || carries_link_path(&page)
+            || carries_invite(&link)
+            || is_bare_space_address(&link);
+        if !attempt {
+            if !is_space_address(&link) && !is_paste_page(&link) {
                 crate::router::navigate::notify_navigate(self.client(), "/");
             }
             return;
         }
-        run_join(self, command).await;
+        run_join(self, &page, link).await;
     }
 }
 
@@ -1938,6 +1962,22 @@ fn carries_invite(url: &str) -> bool {
     }) || matches!(Ticket::parse_url(url), Ok(Some(_)))
 }
 
+/// Whether a URL is the bare `/join` page, where a link is pasted.
+fn is_paste_page(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| matches!(parsed.path(), "/join" | "/join/"))
+}
+
+/// Whether a URL has anything after `/join/`: an attempt to carry a link,
+/// even one that does not read as a link (see `tonk_invite::join_address`).
+fn carries_link_path(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| {
+        parsed
+            .path()
+            .strip_prefix("/join/")
+            .is_some_and(|rest| !rest.is_empty())
+    })
+}
+
 /// Whether a URL is a space's own page, `/space/...`: where a join is
 /// mounted to pick up a ticket link, and where finding none is no
 /// reason to leave.
@@ -1987,10 +2027,14 @@ fn retains_overlay_entity(
     overlaid != status
 }
 
-/// Run the join operation from the command's full URL and drive the
-/// overlay-only join status. Always leaves the overlay in a terminal state
-/// (status retracted on success, `failed` on error).
-async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command::Join) {
+/// Run the join operation for `link` from the page at `page`, and drive
+/// the overlay-only join status. Always leaves the overlay in a terminal
+/// state (status retracted on success, `failed` on error).
+///
+/// The two differ only when the page carries another host's link
+/// (`/join/{link}`): the link is what joins, and the page is where the
+/// recipient is, which decides whether success navigates.
+async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
     use std::sync::Arc;
     use tonk_schema::command::{JoinFailure as JoinFailureFact, JoinStatus};
     use tonk_schema::domain::join::{Kind, Reason, Status};
@@ -2035,14 +2079,13 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
     tonk.reactor.schedule_poll(Arc::clone(&session.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
-    // Use the exact page URL carried by `<page-mount>`. In particular, do not
+    // Use the exact link carried by `<page-mount>`. In particular, do not
     // round-trip the query through `URLSearchParams`: targeted invites may
     // contain empty or repeated fields whose byte-for-byte form matters.
-    let url = command.url.0;
-
+    //
     // The same operation the HTTP join runs, so the content behind the
     // redirect is proven before the redirect fires.
-    match join_invite(&tonk, &url).await {
+    match join_invite(&tonk, &link).await {
         Ok(outcome) => {
             // Success means the replica is installed, verified, and
             // indexed — its `tonk/space` model is already present, so the
@@ -2075,8 +2118,8 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
             // installed it (`adopt_waiting_views`): the page stays where it
             // is. A ticket link's address carries its seed, so it gives
             // way to the space's own in the history, without a load.
-            if opens_in_place(&url) && !outcome.renewed {
-                if matches!(Ticket::parse_url(&url), Ok(Some(_))) {
+            if opens_in_place(page) && !outcome.renewed {
+                if matches!(Ticket::parse_url(page), Ok(Some(_))) {
                     crate::router::navigate::notify_replace_route(env.client(), &href);
                 }
             } else {
@@ -2091,7 +2134,7 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
         // A visit to a space's address carried no link that could have
         // expired, so it shows no failure: the page it is on already
         // says the space is private and how to get in.
-        Err(failure) if is_bare_space_address(&url) => {
+        Err(failure) if is_bare_space_address(page) => {
             clear_join_overlay(&session, &status_entity);
             tonk.reactor.schedule_poll(Arc::clone(&session.state));
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
@@ -2213,6 +2256,28 @@ mod invite_presence_tests {
             "https://tonk.space/join?remote=https%3A%2F%2Fs"
         ));
         assert!(!carries_invite("not a url"));
+    }
+
+    /// A bare `/join` is the paste page, which stays put; anything under
+    /// `/join/` is an attempt to carry a link, even one that is no link.
+    #[test]
+    fn it_separates_the_paste_page_from_a_carried_link() {
+        use super::{carries_link_path, is_paste_page};
+
+        assert!(is_paste_page("https://tonk.space/join"));
+        assert!(is_paste_page("https://tonk.space/join/"));
+        assert!(is_paste_page("https://tonk.space/join#not-a-link"));
+        assert!(!is_paste_page("https://tonk.space/join/x"));
+        assert!(!is_paste_page("https://tonk.space/"));
+
+        assert!(carries_link_path(
+            "https://tonk.space/join/https://tonk.network/space/did:key:z6Mk#seed"
+        ));
+        assert!(carries_link_path("https://tonk.space/join/not-a-link"));
+        assert!(!carries_link_path("https://tonk.space/join/"));
+        assert!(!carries_link_path(
+            "https://tonk.space/join?access=abc#seed"
+        ));
     }
 
     /// A ticket link is the space's address with a key seed for its
@@ -2524,6 +2589,135 @@ mod invite_name_tests {
             vec!["Shortcut Space".to_string()],
             "a pasted short link resolves to the long form and joins, \
              seeding the invite's signed name"
+        );
+    }
+
+    /// An invite carried to this host's `/join` (`/join/{link}`) is
+    /// joined through the page's own command, not sent home as a bare
+    /// `/join` visit.
+    #[dialog_common::test]
+    async fn it_joins_a_link_carried_to_join() {
+        use dialog_artifacts::Statement as _;
+        use dialog_query::the;
+
+        let state = crate::router::command::tests::native::test_state().await;
+        let (link, key) = named_invite_url(0xD1, 0xD2, "Carried Space").await;
+        let page = tonk_invite::join_address::carrying(
+            &url::Url::parse("https://tonk.foundation/").unwrap(),
+            &link,
+        )
+        .unwrap();
+
+        let mut changes = dialog_artifacts::Changes::new();
+        the!("xyz.tonk.command.join/url")
+            .of("cmd:join".parse::<dialog_artifacts::Entity>().unwrap())
+            .is(page)
+            .assert(&mut changes);
+        crate::router::command::dispatch(
+            &state,
+            crate::router::command::CommandOrigin::default(),
+            changes,
+        )
+        .await;
+
+        assert_eq!(
+            directory_name(&state, &key).await,
+            vec!["Carried Space".to_string()],
+            "the carried invite joins as the invite it is"
+        );
+    }
+
+    /// A ticket link minted on the host serving a space, carried to
+    /// another host's `/join`, is claimed from the host that minted it,
+    /// and the space lands in the recipient's profile with that host as
+    /// its remote. The recipient holds no account at the serving host.
+    #[dialog_common::test]
+    async fn it_joins_another_hosts_ticket_link_carried_to_join() {
+        use axum::extract::{Extension, Path, State};
+
+        let (owner, _service, _root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let owner: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(owner));
+        let key = super::super::repository::create_space_inner(&owner, "Elsewhere", None)
+            .await
+            .expect("the space creates");
+        super::super::repository::enable_sync_inner(&owner, &key, &remote)
+            .await
+            .expect("the remote attaches");
+        let subject: Did = key.parse().expect("the key is the space's DID");
+
+        let serving = url::Url::parse(&remote).expect("the fixture remote is a URL");
+        let Json(minted) = super::super::create_invite::create_invite(
+            State(owner.clone()),
+            Path(key.clone()),
+            Extension(crate::axum::RequestOrigin::parse(serving.as_str()).unwrap()),
+            axum::body::Bytes::new(),
+        )
+        .await
+        .expect("the owner mints an open invite");
+        let tonk_worker_api::CreateInviteResponse::Open { url: link } = minted else {
+            panic!("an invite with no recipient is open");
+        };
+        assert!(
+            matches!(Ticket::parse_url(link.as_str()), Ok(Some(_))),
+            "the serving host keeps the grant as a ticket"
+        );
+
+        // The recipient pulls what the owner pushed, as the host's sync
+        // loop would have published it.
+        {
+            let tonk = owner.read().await;
+            tonk.reactor
+                .repository(&key)
+                .branch(DEFAULT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("content branch opens")
+                .handle()
+                .push()
+                .perform(&tonk.operator)
+                .await
+                .expect("content reaches the service");
+        }
+
+        let elsewhere = url::Url::parse("https://tonk.foundation/").unwrap();
+        let address = tonk_invite::join_address::carrying(&elsewhere, link.as_str())
+            .expect("the link is carried");
+        let recipient = crate::router::command::tests::native::test_state().await;
+        let recipient = recipient.read().await;
+        let joined = join_invite(&recipient, &address)
+            .await
+            .expect("the carried ticket link joins");
+        assert_eq!(joined.subject, subject);
+        assert!(!joined.renewed, "the first join installs a replica");
+        assert!(
+            find_replica_for_subject(&recipient, &subject)
+                .await
+                .expect("replica lookup"),
+            "the space is in the recipient's profile"
+        );
+
+        let repository = recipient
+            .profile
+            .space(key.as_str())
+            .load()
+            .perform(&recipient.operator)
+            .await
+            .expect("the joined replica loads");
+        let info = build_repository_info(&recipient, &key, &repository).await;
+        let address = info
+            .remote
+            .get(DEFAULT_REMOTE)
+            .map(|configured| serde_json::to_string(&configured.address).unwrap())
+            .expect("the joined space has a remote");
+        let host = serving.host_str().unwrap();
+        assert!(
+            address.contains(&format!("{host}:{}", serving.port().unwrap())),
+            "the remote is the host that minted the link: {address}"
+        );
+        assert!(
+            !address.contains("tonk.foundation"),
+            "not the host it was carried to: {address}"
         );
     }
 
