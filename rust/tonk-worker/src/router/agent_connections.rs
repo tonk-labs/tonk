@@ -27,7 +27,10 @@ use tonk_invite::connection::{
     AgentInvite, DEFAULT_GRANT_TTL_SECONDS, SpaceGrantBundle, candidate_build_scopes, grant_set_id,
     require_grant_deadline,
 };
-use tonk_schema::{AgentGrantGroup, AgentGrantRevocation, agent_connection as fields};
+use tonk_schema::{
+    AgentGrantGroup, AgentGrantRevocation, InvitedBy, MemberKind, MemberName, MemberRole,
+    Membership, agent_connection as fields, petname,
+};
 use tonk_worker_api::{
     AgentConnectionInviteResponse, AgentConnectionSummary, AgentConnectionTarget,
     AgentReportedInstallation,
@@ -368,11 +371,74 @@ pub(crate) async fn mint(
         .perform(&tonk.operator)
         .await
         .map_err(failure)?;
+    // The grant is issued whether or not the roster row lands; a space
+    // that lists one agent too few is better than a link that fails.
+    if let Err(error) = record_agent_member(&tonk, &repo, &subject, &recipient).await {
+        tonk_common::log!("agent invitation: the roster row was not recorded: {error}");
+    }
     let url = invite
         .to_url(origin.url().join("agent/").map_err(failure)?.as_str())
         .map_err(failure)?;
     let connection = summarize(&tonk, &group).await?;
     Ok(AgentConnectionInviteResponse { url, connection })
+}
+
+/// The branch the space's roster lives on, as for every other member.
+const CONTENT_BRANCH: &str = "main";
+
+/// Put the agent an invitation was issued to on the space's roster: a
+/// membership keyed on the key it acts as, marked an agent, named, and
+/// stamped as invited by the account that issued the link. The issuer
+/// writes it, so the row is the sponsor's word, not the agent's.
+pub(super) async fn record_agent_member(
+    tonk: &TonkState,
+    repo: &str,
+    subject: &Did,
+    recipient: &Did,
+) -> Result<(), TonkWorkerError> {
+    let inviter = super::account::member_did(tonk).await?;
+    let membership = Membership::new(recipient.clone(), subject.clone());
+    let entity = membership.this().clone();
+    tonk.reactor
+        .repository(repo)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(membership)
+        .assert(MemberRole::member(entity.clone()))
+        .assert(MemberName::new(entity.clone(), petname(recipient)))
+        .assert(MemberKind::agent(entity.clone()))
+        .assert(InvitedBy::new(entity, &inviter))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    tonk.sync_queue.mark_dirty(repo, super::sync::now_millis());
+    Ok(())
+}
+
+/// Take a revoked invitation's agent off the space's roster.
+pub(super) async fn forget_agent_member(
+    tonk: &TonkState,
+    repo: &str,
+    subject: &Did,
+    recipient: &Did,
+) -> Result<(), TonkWorkerError> {
+    let repository = tonk
+        .profile
+        .space(repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    let branch = repository
+        .branch(CONTENT_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    super::members::retract_member_rows(tonk, repo, &branch, subject, recipient).await;
+    tonk.sync_queue.mark_dirty(repo, super::sync::now_millis());
+    Ok(())
 }
 
 /// A lost transient bearer requires an explicit new invitation, even after
@@ -709,6 +775,15 @@ pub async fn revoke(
         async move { publish_target(tonk, group, &chain, &cid).await }
     })
     .await?;
+    // Once every grant is withdrawn the agent is no longer a member.
+    if result.status == "revoked" {
+        let recipient: Did = group.recipient.parse().map_err(failure)?;
+        if let Err(error) =
+            forget_agent_member(&tonk, &group.repo, &repository.did(), &recipient).await
+        {
+            tonk_common::log!("agent revocation: the roster row was not retracted: {error}");
+        }
+    }
     Ok(Json(result))
 }
 
@@ -782,6 +857,89 @@ where
 mod tests {
     use super::*;
     use dialog_credentials::Ed25519Signer;
+
+    /// The agent an invitation was issued to joins the roster as an agent,
+    /// invited by the account that issued it, and leaves it once revoked.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_puts_an_invited_agent_on_the_roster_and_takes_it_off_when_revoked() {
+        use crate::router::tests::{
+            content_invited_by, content_member_kinds, content_member_roles, content_memberships,
+            put_repo,
+        };
+        use tonk_schema::prelude::DidExt as _;
+
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::helpers::state::test_state().await);
+        let key = put_repo(&app, "agent-roster").await;
+        let agent = Ed25519Signer::import(&[63; 32]).await.unwrap().did();
+        let (subject, sponsor) = {
+            let tonk = state.read().await;
+            let subject = tonk
+                .profile
+                .space(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .unwrap()
+                .did();
+            record_agent_member(&tonk, &key, &subject, &agent)
+                .await
+                .unwrap();
+            (
+                subject,
+                super::super::account::member_did(&tonk).await.unwrap(),
+            )
+        };
+        let membership = Membership::new(agent.clone(), subject.clone());
+        let entity = membership.this().clone();
+
+        assert!(
+            content_memberships(&state, &key)
+                .await
+                .iter()
+                .any(|m| *m.this() == entity)
+        );
+        let kinds = content_member_kinds(&state, &key).await;
+        assert!(kinds.iter().any(|k| k.this == entity && k.is_agent()));
+        let inviters = content_invited_by(&state, &key).await;
+        let stamp = inviters
+            .iter()
+            .find(|i| i.this == entity)
+            .expect("the agent is stamped with who invited it");
+        assert_eq!(stamp.inviter.0, sponsor.this());
+        assert!(
+            content_member_roles(&state, &key)
+                .await
+                .iter()
+                .any(|r| r.this == entity && r.role.0.to_string() == MemberRole::MEMBER)
+        );
+
+        {
+            let tonk = state.read().await;
+            forget_agent_member(&tonk, &key, &subject, &agent)
+                .await
+                .unwrap();
+        }
+        assert!(
+            !content_memberships(&state, &key)
+                .await
+                .iter()
+                .any(|m| *m.this() == entity)
+        );
+        assert!(
+            !content_member_kinds(&state, &key)
+                .await
+                .iter()
+                .any(|k| k.this == entity)
+        );
+        assert!(
+            !content_invited_by(&state, &key)
+                .await
+                .iter()
+                .any(|i| i.this == entity)
+        );
+    }
 
     async fn fixture(seconds: u64) -> (Signer, Vec<DelegationChain>, Vec<Scope>, Timestamp) {
         let owner = Ed25519Signer::import(&[51; 32]).await.unwrap();
