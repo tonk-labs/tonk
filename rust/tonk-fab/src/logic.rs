@@ -1517,22 +1517,27 @@ mod space_name {
 /// element does.
 ///
 /// All three are required fields: a member missing a synced name or role is
-/// invisible. The invitation reference is optional so founders and older
-/// memberships remain visible without provenance.
+/// invisible. The invitation reference, the inviting account and the kind are
+/// optional, so founders, people and older memberships remain visible without
+/// them.
 pub fn member_roster_query_body() -> String {
     json!({
         "predicate": { "with": {
             "member": { "the": "xyz.tonk.membership/member", "as": "Entity", "cardinality": "one" },
             "role":   { "the": "xyz.tonk.membership/role",   "as": "Entity", "cardinality": "one" },
             "name":   { "the": "xyz.tonk.membership/name",   "as": "Text", "cardinality": "one" },
-            "invitation": { "the": "xyz.tonk.membership/invitation", "as": "Entity", "cardinality": "one", "optional": true }
+            "invitation": { "the": "xyz.tonk.membership/invitation", "as": "Entity", "cardinality": "one", "optional": true },
+            "inviter": { "the": "xyz.tonk.membership/inviter", "as": "Entity", "cardinality": "one", "optional": true },
+            "kind": { "the": "xyz.tonk.membership/kind", "as": "Entity", "cardinality": "one", "optional": true }
         } },
         "terms": {
             "this":   { "?": { "name": "this" } },
             "member": { "?": { "name": "member" } },
             "role":   { "?": { "name": "role" } },
             "name":   { "?": { "name": "name" } },
-            "invitation": { "?": { "name": "invitation" } }
+            "invitation": { "?": { "name": "invitation" } },
+            "inviter": { "?": { "name": "inviter" } },
+            "kind": { "?": { "name": "kind" } }
         }
     })
     .to_string()
@@ -1798,6 +1803,18 @@ mod member_roster {
         assert!(body.contains("xyz.tonk.membership/role"));
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["predicate"]["with"]["invitation"]["optional"], true);
+        // Who invited the member and what kind it is are optional too: a
+        // person carries no kind, older members no recorded inviter.
+        assert_eq!(
+            parsed["predicate"]["with"]["inviter"]["the"],
+            "xyz.tonk.membership/inviter"
+        );
+        assert_eq!(parsed["predicate"]["with"]["inviter"]["optional"], true);
+        assert_eq!(
+            parsed["predicate"]["with"]["kind"]["the"],
+            "xyz.tonk.membership/kind"
+        );
+        assert_eq!(parsed["predicate"]["with"]["kind"]["optional"], true);
         // Directory mode: `this` is an unbound variable, so every member row
         // comes back. A bound `this` would return one. `serde_json::Value`'s
         // `Display` is the COMPACT formatter (no spaces around `:`/`,`), so
