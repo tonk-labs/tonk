@@ -25,6 +25,9 @@ pub const DEFAULT_GRANT_TTL_SECONDS: u64 = 90 * 24 * 60 * 60;
 pub const MAX_ENVELOPE_LENGTH: usize = 1024 * 1024;
 const LEGACY_PREFIX: &str = "tonk-agent-v1=";
 const PREFIX: &str = "tonk-agent-v2=";
+/// Fragment of a link whose grants are addressed to a key the agent already
+/// holds: it names that key, and carries no secret.
+const KEYED_PREFIX: &str = "tonk-agent-for=";
 const GRANTS_PARAMETER: &str = "agent";
 
 // HTTPS is required except for explicit loopback development endpoints. Syntax
@@ -266,30 +269,7 @@ impl AgentInvite {
     /// Keeping the grants out of the fragment lets the ordinary shortcut service
     /// store them while the private seed remains client-side across its redirect.
     pub fn to_url(&self, base: &str) -> Result<String> {
-        let mut url = Url::parse(base).context("connection_invalid_url")?;
-        validate_endpoint(&url)?;
-        let chains = self
-            .grants
-            .chains
-            .iter()
-            .map(|chain| chain.to_bytes().map(Ipld::Bytes))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let data = Ipld::Map(BTreeMap::from([
-            ("version".into(), Ipld::Integer(2)),
-            ("grants".into(), Ipld::List(chains)),
-        ]));
-        let bytes = serde_ipld_dagcbor::to_vec(&data)?;
-        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-        encoder
-            .write_all(&bytes)
-            .context("connection_invalid_envelope")?;
-        let grants =
-            bs58::encode(encoder.finish().context("connection_invalid_envelope")?).into_string();
-        ensure!(
-            grants.len() <= MAX_ENVELOPE_LENGTH,
-            "connection_envelope_too_large"
-        );
-        url.query_pairs_mut().append_pair(GRANTS_PARAMETER, &grants);
+        let mut url = grants_url(base, self.grants.chains())?;
         let fragment = format!("{PREFIX}{}", bs58::encode(self.seed).into_string());
         url.set_fragment(Some(&fragment));
         Ok(url.into())
@@ -366,25 +346,7 @@ impl AgentInvite {
         let seed: [u8; 32] = seed
             .try_into()
             .map_err(|_| anyhow::anyhow!("connection_invalid_key"))?;
-        let mut grants = url
-            .query_pairs()
-            .filter(|(key, _)| key == GRANTS_PARAMETER)
-            .map(|(_, value)| value.into_owned());
-        let encoded_grants = grants.next().context("connection_invalid_envelope")?;
-        ensure!(
-            grants.next().is_none() && encoded_grants.len() <= MAX_ENVELOPE_LENGTH,
-            "connection_invalid_envelope"
-        );
-        let bytes = bs58::decode(encoded_grants)
-            .into_vec()
-            .context("connection_invalid_envelope")?;
-        let mut envelope = Self::decode_v2_envelope(&bytes)?;
-        ensure!(
-            envelope.remove("version") == Some(Ipld::Integer(2)),
-            "connection_unsupported_version"
-        );
-        let chains = Self::decode_grants(&mut envelope)?;
-        Ok((seed, chains))
+        Ok((seed, decode_query_grants(&url)?))
     }
 
     fn decode_v2_envelope(bytes: &[u8]) -> Result<BTreeMap<String, Ipld>> {
@@ -450,6 +412,181 @@ impl AgentInvite {
                 DelegationChain::try_from(bytes.as_slice()).context("connection_invalid_chain")
             })
             .collect::<Result<Vec<_>>>()
+    }
+}
+
+/// `base` carrying `chains` as the versioned, compressed grants envelope in
+/// its query, where the shortcut service may store it.
+fn grants_url(base: &str, chains: &[DelegationChain]) -> Result<Url> {
+    let mut url = Url::parse(base).context("connection_invalid_url")?;
+    validate_endpoint(&url)?;
+    let chains = chains
+        .iter()
+        .map(|chain| chain.to_bytes().map(Ipld::Bytes))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let data = Ipld::Map(BTreeMap::from([
+        ("version".into(), Ipld::Integer(2)),
+        ("grants".into(), Ipld::List(chains)),
+    ]));
+    let bytes = serde_ipld_dagcbor::to_vec(&data)?;
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(&bytes)
+        .context("connection_invalid_envelope")?;
+    let grants =
+        bs58::encode(encoder.finish().context("connection_invalid_envelope")?).into_string();
+    ensure!(
+        grants.len() <= MAX_ENVELOPE_LENGTH,
+        "connection_envelope_too_large"
+    );
+    url.query_pairs_mut().append_pair(GRANTS_PARAMETER, &grants);
+    Ok(url)
+}
+
+/// The grants a link's query carries, as [`grants_url`] encodes them.
+fn decode_query_grants(url: &Url) -> Result<Vec<DelegationChain>> {
+    let mut grants = url
+        .query_pairs()
+        .filter(|(key, _)| key == GRANTS_PARAMETER)
+        .map(|(_, value)| value.into_owned());
+    let encoded_grants = grants.next().context("connection_invalid_envelope")?;
+    ensure!(
+        grants.next().is_none() && encoded_grants.len() <= MAX_ENVELOPE_LENGTH,
+        "connection_invalid_envelope"
+    );
+    let bytes = bs58::decode(encoded_grants)
+        .into_vec()
+        .context("connection_invalid_envelope")?;
+    let mut envelope = AgentInvite::decode_v2_envelope(&bytes)?;
+    ensure!(
+        envelope.remove("version") == Some(Ipld::Integer(2)),
+        "connection_unsupported_version"
+    );
+    AgentInvite::decode_grants(&mut envelope)
+}
+
+/// Grants issued to a key an agent already holds, rather than to a key
+/// minted for the link. The link names the key and carries no secret: the
+/// grants are bound to their audience, so only the agent holding that key can
+/// use them, and one agent can hold grants to many spaces under one key.
+#[derive(Clone, Debug)]
+pub struct AgentGrant {
+    grants: SpaceGrantBundle,
+}
+
+impl AgentGrant {
+    /// Validate `chains` as the fixed data grants to `recipient`.
+    pub async fn new(
+        recipient: &Did,
+        chains: Vec<DelegationChain>,
+        scopes: &[Scope],
+        trusted_remote: &Url,
+        now: Timestamp,
+    ) -> Result<Self> {
+        let grants =
+            SpaceGrantBundle::validate(chains, recipient, scopes, trusted_remote, now).await?;
+        Ok(Self { grants })
+    }
+
+    /// The grant bundle.
+    pub fn grants(&self) -> &SpaceGrantBundle {
+        &self.grants
+    }
+
+    /// Encode the grants in the query, as for [`AgentInvite::to_url`], and
+    /// name the recipient key in the fragment.
+    pub fn to_url(&self, base: &str) -> Result<String> {
+        let mut url = grants_url(base, self.grants.chains())?;
+        url.set_fragment(Some(&format!("{KEYED_PREFIX}{}", self.grants.recipient())));
+        Ok(url.into())
+    }
+
+    /// Whether `value` is a link to grants for a key the agent holds, as
+    /// opposed to a link carrying its own key.
+    pub fn is_url(value: &str) -> bool {
+        Url::parse(value)
+            .ok()
+            .and_then(|url| url.fragment().map(|f| f.starts_with(KEYED_PREFIX)))
+            .unwrap_or(false)
+    }
+
+    /// The key a link's grants are addressed to, as its fragment names it.
+    pub fn recipient_of(value: &str) -> Result<Did> {
+        let url = Url::parse(value).context("connection_invalid_url")?;
+        url.fragment()
+            .and_then(|fragment| fragment.strip_prefix(KEYED_PREFIX))
+            .context("connection_missing_key")?
+            .parse()
+            .map_err(|_| anyhow::anyhow!("connection_invalid_key"))
+    }
+
+    /// Decode and validate a link for `recipient`, the key the caller holds.
+    /// A link naming another key is refused before its grants are read.
+    pub async fn parse_url(
+        value: &str,
+        recipient: &Did,
+        scopes: &[Scope],
+        trusted_remote: &Url,
+        now: Timestamp,
+    ) -> Result<Self> {
+        ensure!(
+            value.len() <= MAX_ENVELOPE_LENGTH + 4096,
+            "connection_envelope_too_large"
+        );
+        ensure!(
+            Self::recipient_of(value)? == *recipient,
+            "connection_wrong_recipient"
+        );
+        let url = Url::parse(value).context("connection_invalid_url")?;
+        let mut base = url.clone();
+        base.set_query(None);
+        base.set_fragment(None);
+        validate_endpoint(&base)?;
+        Self::new(
+            recipient,
+            decode_query_grants(&url)?,
+            scopes,
+            trusted_remote,
+            now,
+        )
+        .await
+    }
+
+    /// Inspect a link for `recipient` after verifying its signatures and fixed
+    /// data rights. The signed endpoint is still untrusted routing
+    /// information, as for [`AgentInvite::inspect_url`].
+    pub async fn inspect_url(
+        value: &str,
+        recipient: &Did,
+        now: Timestamp,
+    ) -> Result<InvitationHint> {
+        let url = Url::parse(value).context("connection_invalid_url")?;
+        let chains = decode_query_grants(&url)?;
+        let subject = chains[0]
+            .subject()
+            .cloned()
+            .context("connection_subject_mismatch")?;
+        let leaf = chains[0]
+            .proofs()
+            .last()
+            .context("connection_invalid_chain")?;
+        let Some(Ipld::String(remote)) = leaf.meta().get(crate::HOME_ADDRESS) else {
+            anyhow::bail!("connection_untrusted_route");
+        };
+        let remote = Url::parse(remote).context("connection_invalid_url")?;
+        let grant = Self::parse_url(
+            value,
+            recipient,
+            &candidate_build_scopes(&subject),
+            &remote,
+            now,
+        )
+        .await?;
+        Ok(InvitationHint {
+            subject,
+            recipient: grant.grants.recipient.clone(),
+            remote,
+        })
     }
 }
 

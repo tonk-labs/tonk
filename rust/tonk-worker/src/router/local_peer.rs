@@ -169,13 +169,14 @@ impl LocalPeer {
     /// the link's key is never stored.
     async fn join_agent(&mut self, link: &str) -> Result<Value, String> {
         use dialog_credentials::{Ed25519Signer, Signer};
-        use dialog_ucan::UcanDelegation;
         use dialog_ucan_core::{DelegationBuilder, time::Timestamp};
         use tonk_invite::connection::{AgentInvite, SpaceGrantBundle, candidate_build_scopes};
-        use tonk_schema::prelude::DidExt;
 
         let invalid = || "Invalid, expired or untrusted agent link.".to_owned();
         let now = Timestamp::now();
+        if tonk_invite::connection::AgentGrant::is_url(link) {
+            return self.join_granted(link, now).await;
+        }
         let hint = AgentInvite::inspect_url(link, now)
             .await
             .map_err(|_| invalid())?;
@@ -219,6 +220,55 @@ impl LocalPeer {
         let grants = SpaceGrantBundle::validate(chains, &peer, &scopes, &remote, now)
             .await
             .map_err(|_| invalid())?;
+        drop(state);
+        self.keep_grants(grants, renewed).await
+    }
+
+    /// Redeem a link to grants issued to this peer's own key: nothing to
+    /// re-delegate, so the grants are kept exactly as the issuer signed
+    /// them. A link naming another key is refused.
+    async fn join_granted(
+        &mut self,
+        link: &str,
+        now: dialog_ucan_core::time::Timestamp,
+    ) -> Result<Value, String> {
+        use tonk_invite::connection::{AgentGrant, candidate_build_scopes};
+
+        let invalid = || "Invalid, expired or untrusted agent link.".to_owned();
+        let peer: dialog_varsig::Did = self.did.parse().map_err(|_| invalid())?;
+        if AgentGrant::recipient_of(link).ok().as_ref() != Some(&peer) {
+            return Err("This agent link was issued to a different agent.".to_owned());
+        }
+        let hint = AgentGrant::inspect_url(link, &peer, now)
+            .await
+            .map_err(|_| invalid())?;
+        let scopes = candidate_build_scopes(&hint.subject);
+        let grant = AgentGrant::parse_url(link, &peer, &scopes, &hint.remote, now)
+            .await
+            .map_err(|_| invalid())?;
+        let subject = grant.grants().subject().clone();
+        let renewed = list(&mut self.router, self.did.clone()).await?["spaces"]
+            .as_array()
+            .is_some_and(|spaces| {
+                spaces
+                    .iter()
+                    .any(|entry| entry["subject"] == subject.to_string())
+            });
+        self.keep_grants(grant.grants().clone(), renewed).await
+    }
+
+    /// Keep `grants` to this peer: save each chain and, for a space the
+    /// peer does not hold yet, mount its replica.
+    async fn keep_grants(
+        &mut self,
+        grants: tonk_invite::connection::SpaceGrantBundle,
+        renewed: bool,
+    ) -> Result<Value, String> {
+        use dialog_ucan::UcanDelegation;
+        use tonk_schema::prelude::DidExt;
+
+        let subject = grants.subject().clone();
+        let state = self.state.write().await;
         let stored = async {
             for chain in grants.chains() {
                 state
@@ -516,6 +566,97 @@ mod tests {
         let second = again.call("tonk_list_spaces", &json!({})).await.unwrap();
         assert_eq!(first["peer"], second["peer"]);
         again.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Grants to `recipient` for a fresh space, as an account's device
+    /// issues them, and the link that names `recipient`.
+    async fn granted_link(recipient: &dialog_varsig::Did) -> (String, dialog_varsig::Did) {
+        use dialog_credentials::{Ed25519Signer, Signer};
+        use dialog_ucan_core::{DelegationBuilder, DelegationChain, time::Timestamp};
+        use dialog_varsig::Principal as _;
+        use tonk_invite::connection::{
+            AgentGrant, DEFAULT_GRANT_TTL_SECONDS, candidate_build_scopes,
+        };
+
+        let space = Signer::from(Ed25519Signer::generate().await.unwrap());
+        let device = Signer::from(Ed25519Signer::generate().await.unwrap());
+        let now = Timestamp::now();
+        let deadline =
+            Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128).unwrap();
+        let remote: url::Url = "https://sync.example.test/ucan/".parse().unwrap();
+        let scopes = candidate_build_scopes(&space.did());
+        let parent = DelegationBuilder::new()
+            .issuer(space.clone())
+            .audience(&device.did())
+            .subject(dialog_ucan_core::subject::Subject::Specific(space.did()))
+            .command(vec!["use".into()])
+            .expiration(deadline)
+            .try_build()
+            .await
+            .unwrap();
+        let mut chains = Vec::new();
+        for scope in &scopes {
+            let leaf = DelegationBuilder::new()
+                .issuer(device.clone())
+                .audience(recipient)
+                .subject(scope.subject.clone())
+                .command(scope.command.0.clone())
+                .policy(scope.policy())
+                .expiration(deadline)
+                .meta(tonk_invite::home_address_meta(&remote))
+                .try_build()
+                .await
+                .unwrap();
+            chains.push(DelegationChain::new(parent.clone()).push(leaf).unwrap());
+        }
+        let link = AgentGrant::new(recipient, chains, &scopes, &remote, now)
+            .await
+            .unwrap()
+            .to_url("https://tonk.example/agent/")
+            .unwrap();
+        (link, space.did())
+    }
+
+    /// A link to grants for this peer's own key is redeemed as issued; one
+    /// naming another key is refused before anything is kept.
+    #[tokio::test]
+    async fn peer_redeems_grants_to_its_own_key_and_refuses_anothers() {
+        let root = scratch();
+        let _lock = try_lock(&root).unwrap().unwrap();
+        let mut peer = LocalPeer::open(root.clone()).await.unwrap();
+        let own: dialog_varsig::Did = peer.did().parse().unwrap();
+
+        let stranger = dialog_credentials::Ed25519Signer::generate().await.unwrap();
+        let (elsewhere, _) = granted_link(&dialog_varsig::Principal::did(&stranger)).await;
+        let refused = peer
+            .call("tonk_join", &json!({ "link": elsewhere }))
+            .await
+            .unwrap_err();
+        assert!(refused.contains("different agent"), "{refused}");
+
+        let (link, space) = granted_link(&own).await;
+        let joined = peer
+            .call("tonk_join", &json!({ "link": link }))
+            .await
+            .unwrap();
+        assert_eq!(joined["subject"], space.to_string());
+        assert_eq!(joined["renewed"], false);
+        let spaces = peer.call("tonk_list_spaces", &json!({})).await.unwrap();
+        assert!(
+            spaces["spaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["subject"] == space.to_string()),
+            "{spaces}"
+        );
+        let again = peer
+            .call("tonk_join", &json!({ "link": link }))
+            .await
+            .unwrap();
+        assert_eq!(again["renewed"], true);
+        peer.close().await;
         std::fs::remove_dir_all(root).unwrap();
     }
 
