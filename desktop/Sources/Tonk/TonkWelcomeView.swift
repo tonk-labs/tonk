@@ -30,7 +30,8 @@ struct TonkWelcomeView: View {
             ProgressView(
               runtime.attachingAccount
                 ? "Connecting your account…"
-                : creatingAccount ? "Create your Tonk passkey…" : "Approve your Tonk passkey…")
+                : creatingAccount && !runtime.enrollmentPending
+                  ? "Create your Tonk passkey…" : "Approve your Tonk passkey…")
           }
           if !runtime.nativeSignInPending {
             Button("Cancel") { runtime.cancelSignIn() }.disabled(runtime.attachingAccount)
@@ -109,10 +110,20 @@ struct TonkWelcomeView: View {
     VStack(spacing: 14) {
       Image(systemName: "envelope.badge").font(.system(size: 32)).foregroundStyle(.secondary)
         .accessibilityHidden(true)
-      Text("Confirm your email").font(.title2.weight(.semibold))
-      Text("Open the link we sent to \(address). Tonk continues on its own once you do.")
-        .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-      ProgressView().controlSize(.small)
+      if runtime.enrollmentPending {
+        Text("Finish creating your account").font(.title2.weight(.semibold))
+        Text("Your passkey is ready, but Tonk hasn’t sent the confirmation email to \(address) yet.")
+          .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        Button("Try again", systemImage: "arrow.clockwise") {
+          Task { await runtime.resumeEnrollment() }
+        }
+        .nativeControl(prominent: true).controlSize(.large)
+      } else {
+        Text("Confirm your email").font(.title2.weight(.semibold))
+        Text("Open the link we sent to \(address). Tonk continues on its own once you do.")
+          .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        ProgressView().controlSize(.small)
+      }
       Button("Continue without confirming") { runtime.skipEmailConfirmation() }
         .buttonStyle(.link)
         .help("Your account won’t sync until the address is confirmed.")
@@ -120,7 +131,8 @@ struct TonkWelcomeView: View {
   }
 
   private var canCreateAccount: Bool {
-    email.contains("@") && !displayName.trimmingCharacters(in: .whitespaces).isEmpty
+    RuntimeModel.isPlausibleEmail(email.trimmingCharacters(in: .whitespacesAndNewlines))
+      && !displayName.trimmingCharacters(in: .whitespaces).isEmpty
   }
 
   private func createAccount() {

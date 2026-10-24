@@ -26,6 +26,7 @@ extension RuntimeModel {
     accountStatusKnown = true
     accountMessage = nil
     confirmingEmail = nil
+    enrollmentPending = false
     accountEpoch += 1
     spaces = []
     catalogBranch = nil

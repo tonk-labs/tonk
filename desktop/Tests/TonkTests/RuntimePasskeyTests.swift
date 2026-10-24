@@ -100,6 +100,56 @@ final class RuntimePasskeyTests: XCTestCase {
     }
   }
 
+  func testSignUpRefusesAddressesTheServiceCannotEnroll() {
+    for valid in ["ada@example.com", "ada.lovelace+tonk@mail.example.co.uk"] {
+      XCTAssertTrue(RuntimeModel.isPlausibleEmail(valid), valid)
+    }
+    let long = String(repeating: "a", count: 250) + "@example.com"
+    for invalid in [
+      "alice@@example.com", "alice@example", "@example.com", "alice@", "alice@.com",
+      "alice@example..com", "al ice@example.com", "a/b@example.com", "alice@exa/mple.com", long,
+    ] {
+      XCTAssertFalse(RuntimeModel.isPlausibleEmail(invalid), invalid)
+    }
+  }
+
+  func testSignUpProgressTellsAnUnenrolledAccountFromAPendingOne() async throws {
+    let webView = try await fixture()
+    for (account, customer, expected) in [
+      ("rootMissing", "null", "none"),
+      ("registered", "null", "unenrolled"),
+      ("registered", "'Registered'", "registered"),
+      ("registered", "'Active'", "active"),
+    ] {
+      let result = try await webView.callAsyncJavaScript(
+        """
+        const api = async path => path === '/api/account'
+          ? {status: '\(account)'} : {status: \(customer)};
+        return await (async () => { \(RuntimeModel.signUpProgressScript) })();
+        """, arguments: [:], in: nil, contentWorld: .page
+      ) as! [String: Any]
+      XCTAssertEqual(result["state"] as? String, expected)
+    }
+  }
+
+  func testResumeEnrollmentAssertsTheAccountsOwnPasskey() async throws {
+    let webView = try await fixture()
+    let result = try await webView.callAsyncJavaScript(
+      """
+      let received;
+      window.tonkIdentity = {usePasskey(input) { received = input; return Promise.resolve({}); }};
+      const api = async () => ({rootDid: 'did:key:root', credentialId: 'abcd'});
+      const result = await (async () => { \(RuntimeModel.resumeEnrollmentScript) })();
+      return {received, result};
+      """, arguments: ["email": "ada@example.com"], in: nil, contentWorld: .page
+    ) as! [String: Any]
+    let received = result["received"] as! [String: Any]
+    XCTAssertEqual(received["credentialId"] as? String, "abcd")
+    XCTAssertEqual(
+      received["request"] as? [String: String], ["kind": "enroll", "email": "ada@example.com"])
+    XCTAssertEqual(result["result"] as? [String: Bool], ["enrolled": true])
+  }
+
   private func fixture() async throws -> WKWebView {
     let webView = WKWebView()
     webView.loadHTMLString("<p>Passkey login fixture</p>", baseURL: nil)
