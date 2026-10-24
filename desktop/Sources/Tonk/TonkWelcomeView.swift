@@ -54,7 +54,7 @@ struct TonkWelcomeView: View {
           }
           if runtime.supportsDirectPasskey {
             Button("Sign in through browser") { Task { await runtime.signInInBrowser() } }
-              .buttonStyle(.link)
+              .buttonStyle(.plain).font(.callout).foregroundStyle(.secondary)
           } else {
             Text(
               "Use your existing Tonk passkey in your browser.\nYou’ll return here when sign-in is complete."
