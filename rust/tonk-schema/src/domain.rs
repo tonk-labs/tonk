@@ -2233,6 +2233,15 @@ pub mod membership {
     #[domain("xyz.tonk.membership")]
     pub struct Name(pub String);
 
+    /// The account that issued the invite a member joined through — the
+    /// [`InvitedBy`] stamp's payload. Cardinality one.
+    ///
+    /// [`InvitedBy`]: crate::InvitedBy
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.membership")]
+    #[pick(last)]
+    pub struct Inviter(pub Entity);
+
     /// What kind of actor the member is — `tonk:agent` for an agent.
     /// The [`MemberKind`] stamp's payload. Absent for a person: only the
     /// agent kind is ever stamped, so a member is a person unless

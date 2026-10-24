@@ -844,6 +844,39 @@ pub mod tests {
             .expect("member-role query")
     }
 
+    /// Query all `InvitedBy` rows on `repo`'s content branch.
+    pub(crate) async fn content_invited_by(
+        state: &super::AppState,
+        repo: &str,
+    ) -> Vec<tonk_schema::InvitedBy> {
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+        let tonk = state.read().await;
+        let repository: Repository = tonk
+            .profile
+            .space(repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let content: Branch = repository
+            .branch("main")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("content branch opens");
+        content
+            .query()
+            .select(Query::<tonk_schema::InvitedBy> {
+                this: Term::var("this"),
+                inviter: Term::var("inviter"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("invited-by query")
+    }
+
     /// Query all `MemberKind` rows on `repo`'s content branch.
     pub(crate) async fn content_member_kinds(
         state: &super::AppState,
