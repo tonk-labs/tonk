@@ -286,7 +286,8 @@ final class AccessModel: ObservableObject {
         details = {...await (async () => { \(AccountDisplayFacts.script) })(), accountDetailsLoaded: true};
       } catch { details = {accountDetailsError: 'Account details could not be loaded. Try refreshing.'}; }
     }
-    return {...details, name: profile.display_name || profile.displayName || '', root: root.rootDid || '', passkey: root.passkey || null,
+    return {...details,
+            name: details.displayName || profile.display_name || profile.displayName || '', root: root.rootDid || '', passkey: root.passkey || null,
             connections: Array.isArray(connections) ? connections : []};
     """
 

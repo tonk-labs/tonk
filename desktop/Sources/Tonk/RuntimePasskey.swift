@@ -84,42 +84,59 @@ extension RuntimeModel {
       guard preflight["ready"] as? Bool == true else {
         throw CallbackError("The Tonk runtime is not ready to sign in.")
       }
-      NSApp.activate(ignoringOtherApps: true)
-      webView.window?.makeKeyAndOrderFront(nil)
-      webView.window?.makeFirstResponder(webView)
+      await focusAccountPage()
       let result = try await accountScript(Self.passkeyLoginScript)
       guard result["accepted"] as? Bool == true else {
         throw CallbackError("The passkey operation did not complete.")
       }
       attachingAccount = true
-      catalogRecoveryStarted = Date()
       // Login can select a retained account branch and retire the old page.
-      // Reload before querying, then wait for the worker's background attach.
-      catalogTask?.cancel()
-      catalogLoaded = false
-      catalogBranch = nil
-      spaces = []
-      accountEpoch += 1
-      webView.load(URLRequest(url: RuntimeLocation.home))
-      for _ in 0..<60 {
-        try await Task.sleep(for: .seconds(1))
-        if webView.isLoading { continue }
-        let account = try await accountScript("return await api('/api/account');")
-        if account["status"] as? String == "registered" {
-          accountConnected = true
-          accountMessage = nil
-          await refreshSpaces()
-          return
-        }
-      }
-      throw CallbackError(
-        "Your passkey was accepted, but account setup is still pending. Reload to check its progress."
-      )
+      try await reloadUntilRegistered()
     } catch {
       let message =
         (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String
         ?? error.localizedDescription
       accountMessage = "Couldn’t connect Tonk: \(message)"
     }
+  }
+
+  /// Gives the account page keyboard focus before a passkey ceremony. WebKit refuses
+  /// WebAuthn from an unfocused document, and focus moves asynchronously: a form
+  /// field that still holds it would otherwise make the first attempt fail.
+  func focusAccountPage() async {
+    NSApp.activate(ignoringOtherApps: true)
+    guard let window = webView.window else { return }
+    window.makeKeyAndOrderFront(nil)
+    window.makeFirstResponder(nil)
+    window.makeFirstResponder(webView)
+    for _ in 0..<20 {
+      if (try? await webView.evaluateJavaScript("document.hasFocus()")) as? Bool == true { return }
+      try? await Task.sleep(for: .milliseconds(50))
+    }
+  }
+
+  /// Reloads the account page and waits for the worker's background attach.
+  func reloadUntilRegistered() async throws {
+    catalogRecoveryStarted = Date()
+    catalogTask?.cancel()
+    catalogLoaded = false
+    catalogBranch = nil
+    spaces = []
+    accountEpoch += 1
+    webView.load(URLRequest(url: RuntimeLocation.home))
+    for _ in 0..<60 {
+      try await Task.sleep(for: .seconds(1))
+      if webView.isLoading { continue }
+      let account = try await accountScript("return await api('/api/account');")
+      if account["status"] as? String == "registered" {
+        accountConnected = true
+        accountMessage = nil
+        await refreshSpaces()
+        return
+      }
+    }
+    throw CallbackError(
+      "Your passkey was accepted, but account setup is still pending. Reload to check its progress."
+    )
   }
 }

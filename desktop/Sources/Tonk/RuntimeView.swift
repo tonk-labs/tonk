@@ -13,6 +13,10 @@ final class RuntimeModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   @Published var nativeSignInPending = false
   @Published var attachingAccount = false
   @Published var accountMessage: String?
+  /// The address a new account was created for, until its emailed link is opened.
+  @Published var confirmingEmail: String?
+  /// The account for `confirmingEmail` exists, but the service never enrolled it.
+  @Published var enrollmentPending = false
   @Published var accountConnected = false
   @Published var accountStatusKnown = false
   @Published var spaces: [TonkSpace] = []
