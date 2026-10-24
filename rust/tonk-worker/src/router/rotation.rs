@@ -21,7 +21,9 @@ use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal as _};
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
-use tonk_schema::{InvitedVia, MemberName, MemberRole, Membership, SeedKind, prelude::DidExt as _};
+use tonk_schema::{
+    InvitedVia, MemberKind, MemberName, MemberRole, Membership, SeedKind, prelude::DidExt as _,
+};
 
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
@@ -786,6 +788,30 @@ async fn migrate_membership_rows(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("{space}: read account provenance: {error:?}"))
         })?;
+    // An agent stays an agent under its new account: re-rooting a peer
+    // that signed in carries its kind across with the rest of its row.
+    let previous_kinds: Vec<MemberKind> = branch
+        .query()
+        .select(Query::<MemberKind> {
+            this: Term::from(previous_entity.clone()),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("{space}: read kind: {error:?}")))?;
+    let replacement_kinds: Vec<MemberKind> = branch
+        .query()
+        .select(Query::<MemberKind> {
+            this: Term::from(replacement_entity.clone()),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("{space}: read account kind: {error:?}"))
+        })?;
 
     let mut transaction = tonk
         .reactor
@@ -810,6 +836,15 @@ async fn migrate_membership_rows(
             transaction = transaction.assert(MemberName {
                 this: replacement_entity.clone(),
                 name: row.name.clone(),
+            });
+        }
+        transaction = transaction.retract(row);
+    }
+    for row in previous_kinds {
+        if replacement_kinds.is_empty() {
+            transaction = transaction.assert(MemberKind {
+                this: replacement_entity.clone(),
+                kind: row.kind.clone(),
             });
         }
         transaction = transaction.retract(row);

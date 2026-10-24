@@ -77,8 +77,8 @@ use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
 use tonk_invite::{Invite, InviteAudience, Ticket};
 use tonk_schema::{
-    Invitation, InvitationExecution, InvitedVia, MemberName, MemberRole, Membership, Replica,
-    RepositoryName, SeedKind, prelude::DidExt as _,
+    Invitation, InvitationExecution, InvitedVia, MemberKind, MemberName, MemberRole, Membership,
+    Replica, RepositoryName, SeedKind, prelude::DidExt as _,
 };
 use tonk_worker_api::JoinFailureKind;
 use zeroize::Zeroizing;
@@ -145,6 +145,12 @@ pub struct JoinRequest {
     /// caller must read `window.location.href` client-side and
     /// forward the complete string.
     pub url: String,
+    /// The claimer declares itself an agent rather than a person, and is
+    /// stamped [`MemberKind::AGENT`] on the roster. Accepted on the
+    /// claimer's own say-so: declaring itself an agent claims less than a
+    /// person would, so it is never an escalation. Absent means a person.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
 }
 
 /// Body of a successful `POST /api/profile/join` response.
@@ -485,7 +491,7 @@ pub async fn join(
     Json(body): Json<JoinRequest>,
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
     let tonk = state.write().await;
-    let outcome = join_invite(&tonk, &body.url).await?;
+    let outcome = join_invite_as(&tonk, &body.url, body.agent).await?;
     log!(
         "POST /api/profile/join -> subject {} (key {})",
         outcome.subject,
@@ -551,6 +557,16 @@ pub(crate) struct JoinOutcome {
 /// unreferenced content-addressed blocks, an unused candidate chain —
 /// is invisible, resumable, and reclaimed by pruning.
 pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutcome, JoinFailure> {
+    join_invite_as(tonk, url, false).await
+}
+
+/// [`join_invite`], with the claimer declaring itself an `agent` (see
+/// [`JoinRequest::agent`]).
+pub(crate) async fn join_invite_as(
+    tonk: &TonkState,
+    url: &str,
+    agent: bool,
+) -> Result<JoinOutcome, JoinFailure> {
     // Another host's link carried to this one (`/join/{link}`) joins as
     // that link: claimed from its own host, recorded in this profile.
     let carried = tonk_invite::join_address::carried(url);
@@ -569,7 +585,7 @@ pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutco
     let started = web_time::Instant::now();
     let prepared = prepare_join(tonk, url).await?;
     let prepared_at = web_time::Instant::now();
-    let outcome = perform_join(tonk, prepared).await?;
+    let outcome = perform_join(tonk, prepared, agent).await?;
     log!(
         "join: prepared {}ms, performed {}ms",
         prepared_at.duration_since(started).as_millis(),
@@ -725,7 +741,9 @@ pub(crate) async fn join_for_local_space_link(
         ));
     }
     let prepared = prepare_parsed_join(tonk, invite).await?;
-    perform_join(tonk, prepared).await.map_err(Into::into)
+    perform_join(tonk, prepared, false)
+        .await
+        .map_err(Into::into)
 }
 
 /// Replace a browser-approved local-space join's invite authority with its
@@ -870,6 +888,7 @@ async fn prepare_parsed_join(
 async fn perform_join(
     tonk: &TonkState,
     prepared: PreparedJoin,
+    agent: bool,
 ) -> Result<JoinOutcome, JoinFailure> {
     let repository = if prepared.installs_replica() {
         mount_replica(
@@ -974,6 +993,7 @@ async fn perform_join(
         &prepared.invitation_execution,
         &prepared.member,
         &prepared.subject,
+        agent,
     )
     .await?;
     if !changes.is_empty() {
@@ -1522,10 +1542,15 @@ fn membership_has_name(names: &[MemberName], membership: &Membership) -> bool {
 /// is cardinality-one, so blindly stamping `member` would demote a
 /// founder who reclaims their own invite.
 ///
+/// A claimer that declares itself an `agent` is stamped
+/// [`MemberKind::agent`], on a renewal too: the kind is sticky, so a
+/// later claim that does not declare it never removes it.
+///
 /// Generic over the environment so a staged branch and the reactor's
 /// cached durable handle take the same path: a new replica's roster is
 /// part of the revision that gets installed, and a renewal's is a commit
 /// on the branch it already has.
+#[allow(clippy::too_many_arguments)]
 async fn claim_changes<Env: BranchEnv>(
     tonk: &TonkState,
     branch: &Branch,
@@ -1534,6 +1559,7 @@ async fn claim_changes<Env: BranchEnv>(
     invitation_execution: &InvitationExecution,
     member: &Did,
     subject: &Did,
+    agent: bool,
 ) -> Result<(Changes, bool), JoinFailure> {
     let membership = Membership::new(member.clone(), subject.clone());
 
@@ -1591,15 +1617,43 @@ async fn claim_changes<Env: BranchEnv>(
                 JoinFailure::claim_failed(format!("member-name query failed: {error:?}"))
             })
     };
-    let (stamps, roles, names): (Vec<InvitedVia>, Vec<MemberRole>, Vec<MemberName>) =
-        futures_util::try_join!(stamps_read, roles_read, names_read)?;
+    // Only a declared agent needs to know whether it is stamped already;
+    // a person's join skips the read.
+    let kinds_read = async {
+        if !agent {
+            return Ok(Vec::new());
+        }
+        branch
+            .query()
+            .select(Query::<MemberKind> {
+                this: Term::from(membership.this().clone()),
+                kind: Term::var("kind"),
+            })
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                JoinFailure::claim_failed(format!("member-kind query failed: {error:?}"))
+            })
+    };
+    let (stamps, roles, names, kinds): (
+        Vec<InvitedVia>,
+        Vec<MemberRole>,
+        Vec<MemberName>,
+        Vec<MemberKind>,
+    ) = futures_util::try_join!(stamps_read, roles_read, names_read, kinds_read)?;
 
+    let stamp_agent = agent && !kinds.iter().any(MemberKind::is_agent);
     let already_stamped = stamps.iter().any(|stamp| stamp.this == *membership.this());
     let already_claimed = stamps
         .iter()
         .any(|stamp| stamp.this == *membership.this() && stamp.invitation.0 == *invitation.this());
     if already_claimed {
-        return Ok((Changes::new(), true));
+        let mut changes = Changes::new();
+        if stamp_agent {
+            MemberKind::agent(membership.this().clone()).assert(&mut changes);
+        }
+        return Ok((changes, true));
     }
 
     let already_roled = roles.iter().any(|role| role.this == *membership.this());
@@ -1621,6 +1675,9 @@ async fn claim_changes<Env: BranchEnv>(
     }
     if !already_stamped && !self_invite {
         InvitedVia::new(membership.this().clone(), invitation.this().clone()).assert(&mut changes);
+    }
+    if stamp_agent {
+        MemberKind::agent(membership.this().clone()).assert(&mut changes);
     }
     Ok((changes, already_claimed))
 }
@@ -2773,7 +2830,7 @@ pub(crate) mod tests {
     use dialog_varsig::Principal as _;
     use tonk_invite::{Invite, InviteAudience};
     use tonk_schema::prelude::DidExt as _;
-    use tonk_schema::{Invitation, MemberName, MemberRole, Membership};
+    use tonk_schema::{Invitation, MemberKind, MemberName, MemberRole, Membership};
 
     use crate::router::api_router_with_state;
     use crate::router::repository::build_repository_info;
@@ -2956,8 +3013,22 @@ pub(crate) mod tests {
         post_invite(app, "/api/profile/join", url).await
     }
 
+    /// [`post_join`], with the claimer declaring itself an agent, as the
+    /// local agent peer does.
+    async fn post_join_as_agent(app: &axum::Router, url: &str) -> StatusCode {
+        post_join_body(app, serde_json::json!({ "url": url, "agent": true })).await
+    }
+
     async fn post_invite(app: &axum::Router, path: &str, url: &str) -> StatusCode {
-        let body = serde_json::json!({ "url": url }).to_string();
+        post_body(app, path, serde_json::json!({ "url": url })).await
+    }
+
+    async fn post_join_body(app: &axum::Router, body: serde_json::Value) -> StatusCode {
+        post_body(app, "/api/profile/join", body).await
+    }
+
+    async fn post_body(app: &axum::Router, path: &str, body: serde_json::Value) -> StatusCode {
+        let body = body.to_string();
         let response = app
             .clone()
             .oneshot(
@@ -3101,6 +3172,101 @@ pub(crate) mod tests {
             .find(|r| r.this == membership_entity)
             .expect("role stamped on the claimer's membership");
         assert_eq!(role.role.0.to_string(), MemberRole::MEMBER);
+    }
+
+    /// The membership entity of this device's account on `key`'s roster.
+    async fn own_membership(
+        state: &crate::router::AppState,
+        key: &str,
+    ) -> dialog_artifacts::Entity {
+        let member_entity = member_entity(state).await;
+        content_memberships(state, key)
+            .await
+            .iter()
+            .find(|m| m.member.0 == member_entity)
+            .expect("claimer membership present")
+            .this()
+            .clone()
+    }
+
+    /// Whether `key`'s member list reports this device's account as an
+    /// agent.
+    async fn reported_as_agent(state: &crate::router::AppState, key: &str) -> bool {
+        let tonk = state.read().await;
+        use dialog_repository::RepositoryExt as _;
+        let repository: dialog_repository::Repository = tonk
+            .profile
+            .space(key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        build_repository_info(&tonk, key, &repository)
+            .await
+            .members
+            .iter()
+            .find(|m| m.is_self)
+            .expect("self present")
+            .is_agent
+    }
+
+    /// A claimer that declares itself an agent is stamped one on the
+    /// roster, and the member list reports it.
+    #[dialog_common::test]
+    async fn it_stamps_a_claimer_that_declares_itself_an_agent() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (url, key) = handcrafted_invite_url(110, 111).await;
+
+        assert_eq!(post_join_as_agent(&app, &url).await, StatusCode::CREATED);
+
+        let membership = own_membership(&state, &key).await;
+        let kinds = crate::router::tests::content_member_kinds(&state, &key).await;
+        assert_eq!(kinds.len(), 1, "one kind stamp");
+        assert_eq!(kinds[0].this, membership);
+        assert_eq!(kinds[0].kind.0.to_string(), MemberKind::AGENT);
+        assert!(reported_as_agent(&state, &key).await);
+    }
+
+    /// A claimer that declares nothing is a person: no kind is stamped.
+    #[dialog_common::test]
+    async fn it_leaves_a_claimer_that_declares_nothing_a_person() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (url, key) = handcrafted_invite_url(112, 113).await;
+
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+
+        assert!(
+            crate::router::tests::content_member_kinds(&state, &key)
+                .await
+                .is_empty()
+        );
+        assert!(!reported_as_agent(&state, &key).await);
+    }
+
+    /// The agent kind is sticky: a renewed join that declares it stamps a
+    /// member who first joined as a person, and a later claim that does
+    /// not declare it leaves the stamp in place.
+    #[dialog_common::test]
+    async fn it_keeps_an_agent_an_agent_across_renewed_joins() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        // Same subject signer, three different ephemerals.
+        let (first, key) = handcrafted_invite_url(114, 115).await;
+        let (second, _) = handcrafted_invite_url(114, 116).await;
+        let (third, _) = handcrafted_invite_url(114, 117).await;
+
+        assert_eq!(post_join(&app, &first).await, StatusCode::CREATED);
+        assert_eq!(post_join_as_agent(&app, &second).await, StatusCode::OK);
+        assert!(reported_as_agent(&state, &key).await, "renewal stamps it");
+
+        // Re-declaring and then omitting the declaration write nothing new.
+        assert_eq!(post_join_as_agent(&app, &second).await, StatusCode::OK);
+        assert_eq!(post_join(&app, &third).await, StatusCode::OK);
+
+        let membership = own_membership(&state, &key).await;
+        let kinds = crate::router::tests::content_member_kinds(&state, &key).await;
+        assert_eq!(kinds.len(), 1, "one kind stamp, never duplicated");
+        assert_eq!(kinds[0].this, membership);
+        assert!(reported_as_agent(&state, &key).await, "and never removed");
     }
 
     /// Claiming an invite names the claimer on the repo meta.
