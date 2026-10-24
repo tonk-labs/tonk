@@ -48,4 +48,12 @@ jobs:
           else
             gh release create "$tag" --verify-tag --title 'Tonk Desktop Nightly' --notes "$notes" --prerelease --latest=false
           fi
-          gh release upload "$tag" artifacts/Tonk-* --clobber
+          # Replace the archive before the feed that points at it.
+          archives=()
+          for file in artifacts/Tonk-*; do
+            [ "$file" = artifacts/Tonk-appcast.xml ] || archives+=("$file")
+          done
+          gh release upload "$tag" "${archives[@]}" --clobber
+          if [ -f artifacts/Tonk-appcast.xml ]; then
+            gh release upload "$tag" artifacts/Tonk-appcast.xml --clobber
+          fi
