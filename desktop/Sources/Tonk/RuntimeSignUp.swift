@@ -130,9 +130,7 @@ extension RuntimeModel {
       default:
         throw CallbackError("Tonk couldn’t check that address. Try again in a moment.")
       }
-      NSApp.activate(ignoringOtherApps: true)
-      webView.window?.makeKeyAndOrderFront(nil)
-      webView.window?.makeFirstResponder(webView)
+      await focusAccountPage()
       passkeyCreated = true
       let result = try await accountScript(
         Self.signUpScript, arguments: ["email": email, "displayName": displayName])
@@ -195,9 +193,7 @@ extension RuntimeModel {
       nativeSignInPending = false
     }
     do {
-      NSApp.activate(ignoringOtherApps: true)
-      webView.window?.makeKeyAndOrderFront(nil)
-      webView.window?.makeFirstResponder(webView)
+      await focusAccountPage()
       _ = try await accountScript(Self.resumeEnrollmentScript, arguments: ["email": email])
       enrollmentPending = false
     } catch {

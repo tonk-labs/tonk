@@ -84,9 +84,7 @@ extension RuntimeModel {
       guard preflight["ready"] as? Bool == true else {
         throw CallbackError("The Tonk runtime is not ready to sign in.")
       }
-      NSApp.activate(ignoringOtherApps: true)
-      webView.window?.makeKeyAndOrderFront(nil)
-      webView.window?.makeFirstResponder(webView)
+      await focusAccountPage()
       let result = try await accountScript(Self.passkeyLoginScript)
       guard result["accepted"] as? Bool == true else {
         throw CallbackError("The passkey operation did not complete.")
@@ -99,6 +97,21 @@ extension RuntimeModel {
         (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String
         ?? error.localizedDescription
       accountMessage = "Couldn’t connect Tonk: \(message)"
+    }
+  }
+
+  /// Gives the account page keyboard focus before a passkey ceremony. WebKit refuses
+  /// WebAuthn from an unfocused document, and focus moves asynchronously: a form
+  /// field that still holds it would otherwise make the first attempt fail.
+  func focusAccountPage() async {
+    NSApp.activate(ignoringOtherApps: true)
+    guard let window = webView.window else { return }
+    window.makeKeyAndOrderFront(nil)
+    window.makeFirstResponder(nil)
+    window.makeFirstResponder(webView)
+    for _ in 0..<20 {
+      if (try? await webView.evaluateJavaScript("document.hasFocus()")) as? Bool == true { return }
+      try? await Task.sleep(for: .milliseconds(50))
     }
   }
 
