@@ -231,13 +231,6 @@ extension RuntimeModel {
     return nil
   }
 
-  /// Leaves the confirmation wait without it. The account works on this Mac, but
-  /// does not sync until the address is confirmed.
-  func skipEmailConfirmation() {
-    confirmingEmail = nil
-    enrollmentPending = false
-  }
-
   /// Polls the customer status, which is also what records activation, until the
   /// emailed link has been opened on any device.
   private func waitForEmailConfirmation() async {

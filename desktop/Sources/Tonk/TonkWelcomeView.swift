@@ -15,11 +15,7 @@ struct TonkWelcomeView: View {
         .scaledToFit()
         .frame(width: 80, height: 80)
         .accessibilityHidden(true)
-      VStack(spacing: 12) {
-        Text("Welcome to Tonk").font(.largeTitle.weight(.semibold))
-        Text("Your spaces, with an agent to help you build.")
-          .font(.title3).foregroundStyle(.secondary)
-      }
+      Text("Welcome to Tonk").font(.largeTitle.weight(.semibold))
       VStack(spacing: 14) {
         if let address = runtime.confirmingEmail, !runtime.signInPending {
           confirmation(address)
@@ -82,7 +78,7 @@ struct TonkWelcomeView: View {
   private var accountForm: some View {
     VStack(spacing: 14) {
       Form {
-        TextField("Email", text: $email, prompt: Text("you@example.com"))
+        TextField("Email", text: $email, prompt: Text(verbatim: "you@example.com"))
           .textContentType(.emailAddress)
         TextField("Display name", text: $displayName, prompt: Text("How others see you"))
           .textContentType(.name)
@@ -120,13 +116,10 @@ struct TonkWelcomeView: View {
         .nativeControl(prominent: true).controlSize(.large)
       } else {
         Text("Confirm your email").font(.title2.weight(.semibold))
-        Text("Open the link we sent to \(address). Tonk continues on its own once you do.")
+        Text("Open the link we sent to \(address).")
           .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
         ProgressView().controlSize(.small)
       }
-      Button("Continue without confirming") { runtime.skipEmailConfirmation() }
-        .buttonStyle(.link)
-        .help("Your account won’t sync until the address is confirmed.")
     }
   }
 

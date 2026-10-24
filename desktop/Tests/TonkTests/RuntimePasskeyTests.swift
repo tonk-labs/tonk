@@ -150,6 +150,28 @@ final class RuntimePasskeyTests: XCTestCase {
     XCTAssertEqual(result["result"] as? [String: Bool], ["enrolled": true])
   }
 
+  func testSettingsShowsTheAccountNameBeforeTheProfileCopy() async throws {
+    let webView = try await fixture()
+    for (accountName, expected) in [("'Ada'", "Ada"), ("null", "brisk-otter")] {
+      let result = try await webView.callAsyncJavaScript(
+        """
+        const fetch = async () => ({ok: true, json: async () => []});
+        const api = async (path, body) => {
+          if (path === '/api/profile') return {display_name: 'brisk-otter'};
+          if (path === '/api/identity/root') return {rootDid: 'did:key:root'};
+          if (path.includes('/meta/')) return [];
+          const name = body.predicate.with.name;
+          if (name?.the === 'xyz.tonk.account/display-name')
+            return \(accountName) === null ? [] : [{fields: {name: \(accountName)}}];
+          return [];
+        };
+        return await (async () => { \(AccessModel.accountScript) })();
+        """, arguments: [:], in: nil, contentWorld: .page
+      ) as! [String: Any]
+      XCTAssertEqual(result["name"] as? String, expected)
+    }
+  }
+
   private func fixture() async throws -> WKWebView {
     let webView = WKWebView()
     webView.loadHTMLString("<p>Passkey login fixture</p>", baseURL: nil)
