@@ -72,7 +72,25 @@ struct TonkWelcomeView: View {
         }
       }.frame(maxWidth: 520)
       Spacer()
-    }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
+    }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
+      .overlay(alignment: .topLeading) {
+        if showsAccountForm {
+          Button("Back", systemImage: "chevron.left", action: leaveAccountForm)
+            .buttonStyle(.borderless)
+            .keyboardShortcut(.cancelAction)
+            .padding(16)
+        }
+      }
+      .background(.background)
+  }
+
+  private var showsAccountForm: Bool {
+    creatingAccount && !runtime.signInPending && runtime.confirmingEmail == nil
+  }
+
+  private func leaveAccountForm() {
+    runtime.accountMessage = nil
+    creatingAccount = false
   }
 
   private var accountForm: some View {
@@ -80,25 +98,16 @@ struct TonkWelcomeView: View {
       Form {
         TextField("Email", text: $email, prompt: Text(verbatim: "you@example.com"))
           .textContentType(.emailAddress)
-        TextField("Display name", text: $displayName, prompt: Text("How others see you"))
+        TextField("Display name", text: $displayName, prompt: Text(verbatim: "Jane Appleseed"))
           .textContentType(.name)
       }
       .formStyle(.columns)
       .frame(maxWidth: 360)
       .onSubmit(createAccount)
-      Text("Tonk creates a passkey on this Mac. You won’t need a password.")
-        .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-      HStack(spacing: 12) {
-        Button("Back") {
-          runtime.accountMessage = nil
-          creatingAccount = false
-        }
-        .nativeControl().controlSize(.large)
-        Button("Create account", systemImage: "person.crop.circle.badge.plus", action: createAccount)
-          .nativeControl(prominent: true).controlSize(.large)
-          .keyboardShortcut(.defaultAction)
-          .disabled(!canCreateAccount)
-      }
+      Button("Create account", systemImage: "person.crop.circle.badge.plus", action: createAccount)
+        .nativeControl(prominent: true).controlSize(.large)
+        .keyboardShortcut(.defaultAction)
+        .disabled(!canCreateAccount)
     }
   }
 
