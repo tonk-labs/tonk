@@ -48,6 +48,8 @@ jobs:
           TONK_NIGHTLY_PROVISIONING_PROFILE_BASE64: ${{ secrets.TONK_NIGHTLY_PROVISIONING_PROFILE_BASE64 }}
           # Public client key, kept equal to posthogKey in flake.nix (checked by test_posthog_key.py).
           TONK_POSTHOG_KEY: phc_dPEh0Tb5GFMZtykYV6Yg8VEHqJeAutrL7frEMYKmRuW
+          # Sparkle EdDSA public key; channels with a feed check for updates only when it is set.
+          TONK_SPARKLE_PUBLIC_KEY: ${{ vars.TONK_SPARKLE_PUBLIC_KEY }}
         run: bash desktop/scripts/ci-sign.sh
       - name: Notarize and staple
         env:
@@ -55,6 +57,10 @@ jobs:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: bash desktop/scripts/ci-notarize.sh
+      - name: Sign update feed
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: bash desktop/scripts/ci-appcast.sh
       - name: Record artifact identity
         run: |
           python3 - <<'PY'
