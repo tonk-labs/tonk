@@ -91,6 +91,8 @@ pub(crate) mod account_devices;
 mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
+/// Agents asking for access, approved from `/agent/connect`.
+mod agent_access;
 pub(crate) mod agent_connections;
 mod revoke_invite;
 

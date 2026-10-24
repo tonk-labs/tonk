@@ -21,7 +21,7 @@ import urllib.request
 
 EXPECTED_TOOLS = {
     "tonk_list_spaces", "tonk_join", "tonk_query", "tonk_evaluate", "tonk_guide",
-    "tonk_show", "tonk_watch", "tonk_display", "tonk_view_log",
+    "tonk_show", "tonk_watch", "tonk_display", "tonk_view_log", "tonk_request_access",
 }
 APP_MIME = "text/html;profile=mcp-app"
 # A stand-in guest runtime directory; the real pack is built from tonk-ui.

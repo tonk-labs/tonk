@@ -62,6 +62,7 @@
 //! [`Subject::Specific`]: dialog_ucan_core::subject::Subject::Specific
 //! [`Subject::Any`]: dialog_ucan_core::subject::Subject::Any
 
+pub mod agent_request;
 mod attribution;
 pub mod connection;
 pub mod delivery;

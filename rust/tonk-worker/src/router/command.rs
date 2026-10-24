@@ -214,6 +214,9 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<super::repository::CreateSpaceRequest>()
         .command::<super::repository::InviteRequest>()
         .command::<super::repository::AgentHandoffRequest>()
+        // An agent asks for access; the person approves it space by space.
+        .command::<tonk_schema::command::OpenAgentRequest>()
+        .command::<tonk_schema::command::ApproveAgentAccess>()
         .command::<super::repository::EnableSyncRequest>()
         .command::<tonk_schema::command::Load>()
         .command::<tonk_schema::command::PromoteMember>()

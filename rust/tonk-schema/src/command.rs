@@ -1151,6 +1151,84 @@ pub struct JoinFailure {
     pub kind: crate::domain::join::Kind,
 }
 
+/// `tonk:open-agent-request`: verify an agent's access request opened at
+/// `/agent/connect`, fired by the page's mount with its full location
+/// (the request rides in the fragment). The handler publishes
+/// [`AgentAccessRequest`], or [`AgentAccessFailure`] when the link is
+/// malformed, forged or expired.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct OpenAgentRequest {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The complete request URL, fragment included.
+    pub url: crate::domain::command::current::open_agent_request::Url,
+}
+
+impl Command for OpenAgentRequest {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `tonk:approve-agent-access`: grant one space to the agent a request
+/// names. The request is verified again, so approving never trusts the
+/// page's copy of it; the outcome lands as [`AgentAccessGrant`] on the
+/// space's entity.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ApproveAgentAccess {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The request URL the page opened.
+    pub request: crate::domain::command::current::approve_agent_access::Request,
+    /// The space to grant, as its subject DID.
+    pub space: crate::domain::command::current::approve_agent_access::Space,
+}
+
+impl Command for ApproveAgentAccess {
+    type Input = Self;
+    type Output = ();
+}
+
+/// The request the approval page is showing, at the fixed
+/// `state:agent-access` entity. Overlay-only.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AgentAccessRequest {
+    /// The fixed `state:agent-access` entity.
+    pub this: Entity,
+    /// The agent's display name.
+    pub name: crate::domain::agent_access::Name,
+    /// The agent's DID.
+    pub agent: crate::domain::agent_access::Agent,
+    /// The code to compare with the one the agent shows.
+    pub code: crate::domain::agent_access::Code,
+    /// The verified request URL.
+    pub request: crate::domain::agent_access::Request,
+}
+
+/// Why the request at `state:agent-access` could not be opened.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AgentAccessFailure {
+    /// The fixed `state:agent-access` entity.
+    pub this: Entity,
+    /// Human-readable failure message.
+    pub reason: crate::domain::agent_access::Reason,
+}
+
+/// What approving the open request produced for one space, on that
+/// space's entity in the profile overlay.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AgentAccessGrant {
+    /// The space's subject entity.
+    pub this: Entity,
+    /// The agent the grant is for.
+    pub agent: crate::domain::agent_access::Agent,
+    /// `ready`, or a pending or failure explanation.
+    pub status: crate::domain::agent_access::Status,
+    /// The recovery class, as the agent-invite controls use.
+    pub mode: crate::domain::agent_access::Mode,
+    /// The keyed grant link when ready, otherwise empty.
+    pub link: crate::domain::agent_access::Link,
+}
+
 #[cfg(test)]
 mod share_blocked {
     #[cfg(target_arch = "wasm32")]

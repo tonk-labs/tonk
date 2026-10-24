@@ -3320,6 +3320,270 @@ view!:
         </main>
       </div>
 
+# ============================================================
+# AGENT ACCESS — approve an agent's request at /agent/connect
+# ============================================================
+
+# An agent that holds its own key asks for access by sending its person a
+# link to /agent/connect carrying a short-lived request it signed. Opening
+# the page verifies the request and shows who is asking, with a code the
+# agent shows too; approving a space issues that space's grants to the
+# agent's key. Everything shown is profile overlay state: the request
+# expires within the hour, and a keyed link is useful only to its agent.
+#
+# How the page's mount fills the open command: the complete href, since
+# the request rides in the fragment the service worker never sees.
+event!: &on/open-agent-request
+  type: "mount"
+  where:
+    url: ".detail.href"
+
+command!: &agent-access/open
+  this: tonk:open-agent-request
+  description: Verify an agent's access request and show who is asking.
+  with:
+    url:
+      description: The complete request URL, including its fragment.
+      the: xyz.tonk.command.open-agent-request/url
+      as: text
+
+# Each space's approve button names its space, and reads the request off
+# the form all the buttons sit in.
+event!: &on/approve-agent-access
+  type: "click"
+  where:
+    request: ".currentTarget.form.elements.request.value"
+    space: ".currentTarget.dataset.space"
+
+command!: &agent-access/approve
+  this: tonk:approve-agent-access
+  description: Grant one space to the agent the open request names.
+  with:
+    request:
+      description: The request URL the page opened, verified again on approval.
+      the: xyz.tonk.command.approve-agent-access/request
+      as: text
+    space:
+      description: The space to grant, as its subject DID.
+      the: xyz.tonk.command.approve-agent-access/space
+      as: entity
+
+concept!: &agent-access/request
+  this: tonk:agent-access/request
+  description: The agent's access request the approval page is showing (overlay-only).
+  with:
+    name:
+      description: The agent's display name, as it signed it.
+      the: xyz.tonk.agent-access/name
+      as: text
+    agent:
+      description: The DID of the key the agent asks to be granted access under.
+      the: xyz.tonk.agent-access/agent
+      as: text
+    code:
+      description: The verification code the agent also shows its person.
+      the: xyz.tonk.agent-access/code
+      as: text
+    request:
+      description: The verified request URL, carried by each approve control.
+      the: xyz.tonk.agent-access/request
+      as: text
+
+concept!: &agent-access/failure
+  this: tonk:agent-access/failure
+  description: Why an agent's access request could not be opened (overlay-only).
+  with:
+    reason:
+      description: Human-readable failure message.
+      the: xyz.tonk.agent-access/reason
+      as: text
+
+# On the space's own entity, so each row of the space list shows its own.
+concept!: &agent-access/grant
+  this: tonk:agent-access/grant
+  description: What approving the open request produced for one space (overlay-only).
+  with:
+    agent:
+      description: The DID of the agent the grant is for.
+      the: xyz.tonk.agent-access/agent
+      as: text
+    status:
+      description: Ready marker or a pending or failure explanation.
+      the: xyz.tonk.agent-access/status
+      as: text
+    mode:
+      description: The recovery class; scoped once the link is ready.
+      the: xyz.tonk.agent-access/mode
+      as: text
+    link:
+      description: The keyed grant link when ready, otherwise empty.
+      the: xyz.tonk.agent-access/link
+      as: text
+
+view!:
+  this: tonk:agent-access/request
+  show:
+    directory: |
+      <section class="edge-wall agent-access" data-id={this} aria-labelledby="agent-access-title">
+        <h1 class="edge-statement" id="agent-access-title">{name} is asking for access</h1>
+        <div class="edge-narrator">
+          Check that the agent shows this code before you approve:
+          <code class="agent-access__code" data-agent-access-code>{code}</code>
+        </div>
+        <div class="edge-narrator">
+          Approve only the spaces it should read and change. Each approval
+          gives you a link for the agent; the link works only with the
+          agent's own key.
+        </div>
+        <form class="agent-access__spaces" data-agent-access-form>
+          <input type="hidden" name="request" value={request}>
+          <tonk-display model="tonk:space" view="agent-access">
+            <span slot="empty"></span>
+            <span slot="loading"></span>
+          </tonk-display>
+        </form>
+      </section>
+
+view!:
+  this: tonk:agent-access/failure
+  show:
+    directory: |
+      <section class="edge-wall edge-wall--closed" data-id={this} role="status" aria-labelledby="agent-access-closed">
+        <h1 class="edge-statement" id="agent-access-closed">{reason}</h1>
+        <div class="edge-run">
+          <a class="ebtn solid" href="/">go to home</a>
+        </div>
+      </section>
+
+# One space in the approval list. Named by its alias, as the hub's other
+# views of it are.
+view!:
+  this: space
+  show:
+    agent-access: |
+      <div class="agent-access__space" data-id={this}>
+        <span class="agent-access__name">{name}</span>
+        <button class="ebtn" type="button" data-space={subject}
+          on:approve-agent-access=tonk:approve-agent-access>approve</button>
+        <tonk-display entity={this} model="tonk:agent-access/grant">
+          <span slot="no-entity"></span>
+          <span slot="loading"></span>
+        </tonk-display>
+      </div>
+
+view!:
+  this: tonk:agent-access/grant
+  show:
+    ui: |
+      <div class="agent-access__grant" data-id={this} data-mode={mode}>
+        <span class="agent-access__status" data-agent-access-status>{status}</span>
+        <span class="agent-access__link">
+          <code data-agent-access-link>{link}</code>
+          <wa-copy-button value="{link}"></wa-copy-button>
+        </span>
+      </div>
+
+route!: &route/agent/connect
+  this: id:tonk:route/agent/connect
+  path: "/agent/connect"
+  concept: tonk:agent-access/route
+
+concept!: &agent-access/route
+  this: tonk:agent-access/route
+  description: The /agent/connect page — approve an agent's access request.
+  with:
+    # A route model must declare a field; the view reads none of it (the
+    # open trigger reads the location itself).
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      as: text
+  maybe:
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        latent bar's command line talks to the profile.
+      the: xyz.tonk.site/profile-branch
+      as: text
+
+view!:
+  this: tonk:agent-access/route
+  show:
+    ui: |
+      <div class="display-view-slot">
+        <tonk-fab with="{profile-branch}@profile:tonk" latent>
+          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
+        </tonk-fab>
+        <tab-title text="Tonk — agent access"></tab-title>
+        <main class="agent-access-view">
+          <style>
+            .agent-access-view {
+              --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
+              --edge-soft:#5b4953; --edge-card:#f7f6f5; --edge-ring:rgba(56,24,42,.85);
+              min-height:100vh; min-height:100dvh; padding:48px 16px 80px;
+              box-sizing:border-box; color:var(--edge-ink); background:var(--edge-page);
+              font-family:'IBM Plex Sans Condensed','Bahnschrift','Arial Narrow',system-ui,sans-serif;
+              font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased;
+            }
+            :root.wa-dark .agent-access-view {
+              --edge-page:#161313; --edge-ink:#e2dfdd; --edge-on:#221c1d;
+              --edge-soft:#c8c3bf; --edge-card:#1b1718; --edge-ring:rgba(226,223,221,.55);
+            }
+            .agent-access-view .edge-mast { display:block; width:132px; margin:0 auto 56px; }
+            .agent-access-view .edge-mast img { display:block; width:100%; height:auto; }
+            :root.wa-dark .agent-access-view .edge-mast img { filter:invert(1); }
+            .agent-access-view .edge-wall { width:min(576px,100%); margin:0 auto;
+              display:flex; flex-direction:column; gap:7px; }
+            .agent-access-view .edge-statement, .agent-access-view .edge-narrator {
+              min-height:36px; background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
+            .agent-access-view .edge-statement { margin:0; padding:10px 14px;
+              font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
+              line-height:1.55; text-wrap:balance; }
+            .agent-access-view .edge-narrator { display:block; padding:10px 14px; color:var(--edge-soft);
+              font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px; font-weight:400;
+              line-height:1.55; text-wrap:pretty; }
+            .agent-access__code { display:block; margin-top:6px; color:var(--edge-ink);
+              font:600 18px/1.3 'IBM Plex Mono',ui-monospace,monospace; letter-spacing:.08em; }
+            .agent-access__spaces { display:flex; flex-direction:column; gap:7px; margin:0; }
+            .agent-access__space { display:grid; grid-template-columns:1fr auto; gap:0;
+              align-items:stretch; background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
+            .agent-access__name { padding:10px 14px; align-self:center; overflow-wrap:anywhere; }
+            .agent-access__space > tonk-display { grid-column:1 / -1; }
+            .agent-access__grant { padding:0 14px 10px; font-family:'IBM Plex Sans',system-ui,sans-serif;
+              font-size:13px; font-weight:400; color:var(--edge-soft); }
+            .agent-access__link { display:none; align-items:center; gap:6px; }
+            .agent-access__link code { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+              white-space:nowrap; font:12px/1.4 'IBM Plex Mono',ui-monospace,monospace; color:var(--edge-ink); }
+            .agent-access__grant[data-mode="scoped"] .agent-access__status { display:none; }
+            .agent-access__grant[data-mode="scoped"] .agent-access__link { display:flex; }
+            .agent-access-view .edge-run { display:flex; }
+            .agent-access-view .ebtn { min-height:40px; box-sizing:border-box; padding:8px 14px;
+              display:flex; align-items:flex-end; justify-content:flex-end; appearance:none; border:0;
+              border-radius:0; color:var(--edge-on); background:var(--edge-ink); font:inherit;
+              line-height:1; text-decoration:none; text-transform:lowercase; cursor:pointer; }
+            .agent-access-view .edge-run .ebtn { flex:1 1 0; }
+            .agent-access-view .ebtn:active { scale:.96; }
+            @media (max-width:680px) {
+              .agent-access-view { padding-top:20px; }
+              .agent-access-view .edge-mast { width:98px; margin-bottom:40px; }
+              .agent-access-view .ebtn { min-height:44px; }
+            }
+          </style>
+          <a class="edge-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+          <page-mount on:open-agent-request=tonk:open-agent-request></page-mount>
+          <tonk-display model="tonk:agent-access/request">
+            <span slot="empty"></span>
+            <span slot="loading"></span>
+            <span slot="no-entity"></span>
+          </tonk-display>
+          <tonk-display model="tonk:agent-access/failure">
+            <span slot="empty"></span>
+            <span slot="loading"></span>
+            <span slot="no-entity"></span>
+          </tonk-display>
+        </main>
+      </div>
+
 # The space route: the profile routes ANY `/space/{id}/...` to the same UI — a
 # full-size repo portal with the FAB floating on top — and hands the rest of the
 # path to a NESTED `<tonk-site>` inside the portal, which routes it against the

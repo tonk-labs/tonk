@@ -110,6 +110,7 @@ impl LocalPeer {
                 join(&mut self.router, &link).await
             }
             "tonk_list_spaces" => list(&mut self.router, self.did.clone()).await,
+            "tonk_request_access" => self.request_access(text("name"), text("origin")).await,
             "tonk_query" | "tonk_evaluate" | "publish_retained" => {
                 let writing = tool == "tonk_evaluate";
                 let recovering = tool == "publish_retained";
@@ -222,6 +223,50 @@ impl LocalPeer {
             .map_err(|_| invalid())?;
         drop(state);
         self.keep_grants(grants, renewed).await
+    }
+
+    /// Ask a person for access to their spaces: a request signed by this
+    /// peer's own key, for them to open where they are signed in to Tonk at
+    /// `origin` (the public service when empty). The verification code is
+    /// for the agent to show them, to compare with the page.
+    async fn request_access(&mut self, name: &str, origin: &str) -> Result<Value, String> {
+        use tonk_invite::agent_request::AgentRequest;
+
+        let origin = if origin.trim().is_empty() {
+            "https://tonk.network"
+        } else {
+            origin.trim()
+        };
+        let base = url::Url::parse(origin)
+            .and_then(|origin| origin.join("/agent/connect"))
+            .map_err(|_| {
+                "Give the Tonk address the person uses, such as https://tonk.network.".to_owned()
+            })?;
+        let signer = self
+            .state
+            .read()
+            .await
+            .profile
+            .credential()
+            .signer()
+            .clone();
+        let request = AgentRequest::new(&signer, name, dialog_ucan_core::time::Timestamp::now())
+            .await
+            .map_err(|_| {
+                format!(
+                    "Name this agent in 1 to {} characters.",
+                    tonk_invite::agent_request::MAX_NAME_LENGTH
+                )
+            })?;
+        let link = request
+            .to_url(base.as_str())
+            .map_err(|_| "Could not make the request link.".to_owned())?;
+        Ok(json!({
+            "link": link,
+            "code": request.verification_code(),
+            "expires_at": request.expires_at().map(|at| at.to_unix()),
+            "next": "Ask the person to open the link where they use Tonk, check that the page shows the same code, and choose the spaces to share. Then join the links the page gives them with tonk_join.",
+        }))
     }
 
     /// Redeem a link to grants issued to this peer's own key: nothing to
@@ -566,6 +611,56 @@ mod tests {
         let second = again.call("tonk_list_spaces", &json!({})).await.unwrap();
         assert_eq!(first["peer"], second["peer"]);
         again.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The peer asks for access under its own key: a signed request the
+    /// browser can verify, naming this peer, with the code to compare.
+    #[tokio::test]
+    async fn peer_requests_access_under_its_own_key() {
+        use tonk_invite::agent_request::AgentRequest;
+
+        let root = scratch();
+        let _lock = try_lock(&root).unwrap().unwrap();
+        let mut peer = LocalPeer::open(root.clone()).await.unwrap();
+        let asked = peer
+            .call(
+                "tonk_request_access",
+                &json!({ "name": "Claude Code on a laptop" }),
+            )
+            .await
+            .unwrap();
+        let link = asked["link"].as_str().unwrap();
+        assert!(
+            link.starts_with("https://tonk.network/agent/connect#"),
+            "{link}"
+        );
+        let request = AgentRequest::from_url(link, dialog_ucan_core::time::Timestamp::now())
+            .await
+            .unwrap();
+        assert_eq!(request.agent().to_string(), peer.did());
+        assert_eq!(request.name(), "Claude Code on a laptop");
+        assert_eq!(asked["code"], request.verification_code());
+
+        let local = peer
+            .call(
+                "tonk_request_access",
+                &json!({ "name": "agent", "origin": "http://localhost:8080" }),
+            )
+            .await
+            .unwrap();
+        assert!(
+            local["link"]
+                .as_str()
+                .unwrap()
+                .starts_with("http://localhost:8080/agent/connect#")
+        );
+        assert!(
+            peer.call("tonk_request_access", &json!({ "name": " " }))
+                .await
+                .is_err()
+        );
+        peer.close().await;
         std::fs::remove_dir_all(root).unwrap();
     }
 
