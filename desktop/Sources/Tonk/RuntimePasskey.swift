@@ -92,34 +92,38 @@ extension RuntimeModel {
         throw CallbackError("The passkey operation did not complete.")
       }
       attachingAccount = true
-      catalogRecoveryStarted = Date()
       // Login can select a retained account branch and retire the old page.
-      // Reload before querying, then wait for the worker's background attach.
-      catalogTask?.cancel()
-      catalogLoaded = false
-      catalogBranch = nil
-      spaces = []
-      accountEpoch += 1
-      webView.load(URLRequest(url: RuntimeLocation.home))
-      for _ in 0..<60 {
-        try await Task.sleep(for: .seconds(1))
-        if webView.isLoading { continue }
-        let account = try await accountScript("return await api('/api/account');")
-        if account["status"] as? String == "registered" {
-          accountConnected = true
-          accountMessage = nil
-          await refreshSpaces()
-          return
-        }
-      }
-      throw CallbackError(
-        "Your passkey was accepted, but account setup is still pending. Reload to check its progress."
-      )
+      try await reloadUntilRegistered()
     } catch {
       let message =
         (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String
         ?? error.localizedDescription
       accountMessage = "Couldn’t connect Tonk: \(message)"
     }
+  }
+
+  /// Reloads the account page and waits for the worker's background attach.
+  func reloadUntilRegistered() async throws {
+    catalogRecoveryStarted = Date()
+    catalogTask?.cancel()
+    catalogLoaded = false
+    catalogBranch = nil
+    spaces = []
+    accountEpoch += 1
+    webView.load(URLRequest(url: RuntimeLocation.home))
+    for _ in 0..<60 {
+      try await Task.sleep(for: .seconds(1))
+      if webView.isLoading { continue }
+      let account = try await accountScript("return await api('/api/account');")
+      if account["status"] as? String == "registered" {
+        accountConnected = true
+        accountMessage = nil
+        await refreshSpaces()
+        return
+      }
+    }
+    throw CallbackError(
+      "Your passkey was accepted, but account setup is still pending. Reload to check its progress."
+    )
   }
 }

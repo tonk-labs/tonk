@@ -45,6 +45,61 @@ final class RuntimePasskeyTests: XCTestCase {
     XCTAssertEqual(completion, ["accepted": true, "reload": true])
   }
 
+  func testSignUpCreatesAccountThroughWorkerCustody() async throws {
+    let webView = try await fixture()
+    let result = try await webView.callAsyncJavaScript(
+      """
+      let received;
+      window.tonkIdentity = {createPasskey(input) {
+        received = input;
+        return Promise.resolve({ok: {reload: true, privateValue: 'must remain in WebKit'}});
+      }};
+      const result = await (async () => { \(RuntimeModel.signUpScript) })();
+      return {received, result};
+      """,
+      arguments: [
+        "runtimeOrigin": "https://tonk.network", "email": "ada@example.com",
+        "displayName": "Ada",
+      ], in: nil, contentWorld: .page
+    ) as! [String: Any]
+    let received = result["received"] as! [String: Any]
+    XCTAssertEqual(received["name"] as? String, "ada@example.com")
+    XCTAssertEqual(received["displayName"] as? String, "ada@example.com")
+    let request = received["request"] as! [String: String]
+    XCTAssertEqual(request, [
+      "kind": "create-account", "email": "ada@example.com", "displayName": "Ada",
+      "deviceName": "Tonk", "remote": "https://tonk.network/ucan/",
+      "provider": "https://tonk.network/ucan/", "createdOn": "Tonk on macOS",
+    ])
+    let completion = result["result"] as! [String: Bool]
+    XCTAssertEqual(completion, ["created": true, "reload": true])
+  }
+
+  func testSignUpLookupRoutesOnTheAccessServiceAnswer() async throws {
+    let webView = try await fixture()
+    for (email, status, expected) in [
+      ("Ada@Example.com", 404, "unregistered"),
+      ("ada@example.com", 200, "active"),
+      ("ada@example.com", 202, "pending"),
+      ("ada@example.com", 410, "suspended"),
+      ("ada@example.com", 429, "unavailable"),
+      ("not-an-address", 404, "invalid"),
+    ] {
+      let result = try await webView.callAsyncJavaScript(
+        """
+        let requested = null;
+        const fetch = async path => { requested = path; return {status}; };
+        const answer = await (async () => { \(RuntimeModel.signUpLookupScript) })();
+        return {state: answer.state, requested};
+        """, arguments: ["email": email, "status": status], in: nil, contentWorld: .page
+      ) as! [String: Any]
+      XCTAssertEqual(result["state"] as? String, expected, email)
+      if expected != "invalid" {
+        XCTAssertEqual(result["requested"] as? String, "/customer/example.com/ada/did.json")
+      }
+    }
+  }
+
   private func fixture() async throws -> WKWebView {
     let webView = WKWebView()
     webView.loadHTMLString("<p>Passkey login fixture</p>", baseURL: nil)
