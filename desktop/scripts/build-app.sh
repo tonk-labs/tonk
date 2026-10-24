@@ -31,6 +31,7 @@ configuration=${TONK_BUILD_CONFIGURATION:-debug}
 # app's Contents folder and then at this machine's build path, so a shipped app
 # crashes when it first loads a resource. Swift Build looks in Contents/Resources.
 swift build -c "$configuration" --build-system swiftbuild \
+    -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
     -Xlinker -platform_version -Xlinker macos \
     -Xlinker "$minimum_macos" -Xlinker "$sdk_version"
 # Swift Build's products folder varies by toolchain; ask instead of assuming .build/<config>.
@@ -70,6 +71,21 @@ for bundle in "$products/Tonk_Tonk.bundle" "$products/textual_Textual.bundle" "$
     fi
     ditto "$bundle" "$app/Contents/Resources/$(basename "$bundle")"
 done
+# Sparkle's XPC services exist for sandboxed hosts; this app is not sandboxed.
+sparkle="$app/Contents/Frameworks/Sparkle.framework"
+mkdir -p "$app/Contents/Frameworks"
+ditto "$products/Sparkle.framework" "$sparkle"
+rm -rf "$sparkle/XPCServices" "$sparkle/Versions/B/XPCServices"
+# Builds stamped with a feed and its EdDSA public key update themselves (AppUpdater.swift).
+# The feed must be signed, and updates are verified before extraction and installed only when asked.
+if [[ -n "$desktop_feed_url" && -n "${TONK_SPARKLE_PUBLIC_KEY:-}" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $desktop_feed_url" \
+        -c "Add :SUPublicEDKey string $TONK_SPARKLE_PUBLIC_KEY" \
+        -c 'Add :SURequireSignedFeed bool true' \
+        -c 'Add :SUVerifyUpdateBeforeExtraction bool true' \
+        -c 'Add :SUEnableAutomaticChecks bool true' \
+        -c 'Add :SUAllowsAutomaticUpdates bool false' "$app/Contents/Info.plist"
+fi
 sign_args=()
 if [[ -n "${TONK_PROVISIONING_PROFILE:-}" ]]; then
     security cms -D -i "$TONK_PROVISIONING_PROFILE" > .build/tonk-passkey-profile.plist
@@ -81,10 +97,15 @@ if [[ -n "${TONK_PROVISIONING_PROFILE:-}" ]]; then
 fi
 if [[ "${TONK_RELEASE_BUILD:-0}" == 1 ]]; then
     python3 scripts/stamp-release.py "$app/Contents/Info.plist"
-    sign_args+=(--options runtime --timestamp)
+    code_args=(--options runtime --timestamp)
 else
-    sign_args+=(--timestamp=none)
+    code_args=(--timestamp=none)
 fi
+sign_args+=("${code_args[@]}")
+# Sign nested code inside out; the app's entitlements belong to the app alone.
+for nested in "$sparkle/Versions/B/Autoupdate" "$sparkle/Versions/B/Updater.app" "$sparkle"; do
+    codesign --force --sign "$identity" "${code_args[@]}" "$nested"
+done
 codesign --force --sign "$identity" "${sign_args[@]}" "$app"
 codesign --verify --strict "$app"
 if [[ -n "${TONK_PROVISIONING_PROFILE:-}" ]]; then

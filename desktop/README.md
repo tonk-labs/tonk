@@ -23,7 +23,13 @@ Nightly is its own app, **Tonk Nightly** (`xyz.tonk.nightly`), and uses
 have separate identities and local data, so they can be installed side by side.
 Builds are Developer ID signed and notarized, and include
 `Tonk-macos-arm64.sha256` and `Tonk-desktop-manifest.json` with the exact
-version, channel and source commit. Downloads are manual.
+version, channel and source commit.
+
+After the first download, Tonk Nightly updates itself with
+[Sparkle](https://sparkle-project.org): it checks the release's signed
+`Tonk-appcast.xml` daily, and **Tonk Nightly > Check for Updates…** checks now. It
+asks before installing and relaunching. Builds without a feed and update key
+(local, ad-hoc and test copies, and stable until it is published) never update.
 
 ## Build
 
@@ -122,6 +128,15 @@ not overwrite the current main build.
 
 Release notarization also requires `APP_STORE_CONNECT_KEY_P8`,
 `APP_STORE_CONNECT_KEY_ID`, and `APP_STORE_CONNECT_ISSUER_ID`, shared with CLI CI.
+
+Automatic updates use a Sparkle EdDSA key pair. Set the repository variable
+`TONK_SPARKLE_PUBLIC_KEY` and the secret `SPARKLE_PRIVATE_KEY` (the base64 seed from
+`generate_keys -x`, found under `desktop/.build/artifacts/sparkle/Sparkle/bin` after
+a build). With the variable set, nightly builds embed the feed and key, and
+`scripts/ci-appcast.sh` signs the notarized archive and the feed, failing the release
+if the private key does not match the embedded public key. Without it, nightly
+ships without updates. Rotating the key strands installed copies: they accept only
+updates signed by the key they shipped with.
 
 Direct passkeys are enabled only on each channel's own remote. `tonk.network`
 must serve an AASA `webcredentials` entry for `8WVKS2F24C.xyz.tonk`, and
