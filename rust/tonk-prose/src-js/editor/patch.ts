@@ -3,7 +3,70 @@
 
 import { TextSelection } from "prosemirror-state";
 import type { EditorState, Transaction } from "prosemirror-state";
+import { Fragment } from "prosemirror-model";
+import type { Node } from "prosemirror-model";
 import { parseMarkdown } from "./markdown";
+
+/** Whether a top-level node is an empty paragraph. Markdown has no
+ *  spelling for one, so it only ever exists in the live document: the
+ *  author pressed Enter and has not typed yet. */
+function isEmptyParagraph(node: Node): boolean {
+  return node.type.name === "paragraph" && node.content.size === 0;
+}
+
+/** `next` with `current`'s empty top-level paragraphs carried into it.
+ *
+ *  `next` is parsed from markdown, so it never has one, and diffing
+ *  against it read the paragraph the author had just opened as deleted:
+ *  any outside value (another replica's edit, a store round-trip) took it
+ *  out, and what they typed next joined the block above. Each run of
+ *  empty paragraphs goes back after the node it followed, found by
+ *  content, else before the node it preceded, else where it was. */
+function keepEmptyParagraphs(current: Node, next: Node): Node {
+  const nodes: Node[] = [];
+  next.forEach((node) => nodes.push(node));
+  const runs: { before: Node | null; after: Node | null; at: number; run: Node[] }[] = [];
+  let kept = 0;
+  for (let i = 0; i < current.childCount; i++) {
+    const node = current.child(i);
+    if (!isEmptyParagraph(node)) {
+      kept++;
+      continue;
+    }
+    const last = runs[runs.length - 1];
+    if (last && last.at === kept && last.after === null) {
+      last.run.push(node);
+    } else {
+      runs.push({ before: i > 0 ? current.child(i - 1) : null, after: null, at: kept, run: [node] });
+    }
+    const following = i + 1 < current.childCount ? current.child(i + 1) : null;
+    if (following && !isEmptyParagraph(following)) runs[runs.length - 1].after = following;
+  }
+  // A document of nothing but empty paragraphs is the editor's
+  // placeholder for an empty value, not something the author opened.
+  if (runs.length === 0 || kept === 0) return next;
+
+  // Insert from the end so earlier indices stay valid; `at` is where the
+  // run sat among the non-empty nodes, which is where `next` most likely
+  // still has its neighbours.
+  for (const { before, after, at, run } of runs.reverse()) {
+    const near = (target: Node | null): number => {
+      if (!target) return -1;
+      let best = -1;
+      nodes.forEach((node, index) => {
+        if (node.eq(target) && (best < 0 || Math.abs(index - at) < Math.abs(best - at))) best = index;
+      });
+      return best;
+    };
+    let index: number;
+    if (!before) index = 0;
+    else if (near(before) >= 0) index = near(before) + 1;
+    else if (near(after) >= 0) index = near(after);
+    else index = Math.min(at, nodes.length);
+    nodes.splice(index, 0, ...run);
+  }
+  return next.copy(Fragment.fromArray(nodes));
+}
 
 /** The transaction that turns `state`'s document into `markdown`, or
  *  null when they already match.
@@ -18,8 +81,8 @@ export function patchMarkdown(
   state: EditorState,
   markdown: string,
 ): Transaction | null {
-  const next = parseMarkdown(markdown);
   const current = state.doc;
+  const next = keepEmptyParagraphs(current, parseMarkdown(markdown));
   const start = current.content.findDiffStart(next.content);
   if (start === null) return null;
   const end = current.content.findDiffEnd(next.content);
