@@ -42,14 +42,14 @@ struct TonkWelcomeView: View {
           HStack(spacing: 12) {
             Button("Sign in to Tonk", systemImage: "person.crop.circle.badge.checkmark") {
               Task { await runtime.signIn() }
-            }.nativeControl(prominent: true).controlSize(.large)
+            }.buttonStyle(.borderedProminent).controlSize(.large)
               .disabled(runtime.loading)
             if runtime.supportsDirectPasskey {
               Button("Create account") {
                 runtime.accountMessage = nil
                 creatingAccount = true
               }
-              .nativeControl().controlSize(.large)
+              .controlSize(.large)
             }
           }
           if runtime.supportsDirectPasskey {
@@ -105,7 +105,7 @@ struct TonkWelcomeView: View {
       .frame(maxWidth: 360)
       .onSubmit(createAccount)
       Button("Create account", systemImage: "person.crop.circle.badge.plus", action: createAccount)
-        .nativeControl(prominent: true).controlSize(.large)
+        .buttonStyle(.borderedProminent).controlSize(.large)
         .keyboardShortcut(.defaultAction)
         .disabled(!canCreateAccount)
     }
@@ -122,7 +122,7 @@ struct TonkWelcomeView: View {
         Button("Try again", systemImage: "arrow.clockwise") {
           Task { await runtime.resumeEnrollment() }
         }
-        .nativeControl(prominent: true).controlSize(.large)
+        .buttonStyle(.borderedProminent).controlSize(.large)
       } else {
         Text("Confirm your email").font(.title2.weight(.semibold))
         Text("Open the link we sent to \(address).")

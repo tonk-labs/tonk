@@ -97,10 +97,18 @@ struct AddContactSheet: View {
 
   @ViewBuilder
   private func candidate(_ choice: Choice) -> some View {
-    if let existing = access.contacts.first(where: { $0.id == choice.did }) {
-      ContactResultRow(
-        title: existing.name, detail: choice.identity?.email ?? choice.did,
-        trailing: "Already a contact")
+    if access.isSaved(choice.did),
+      let existing = access.contacts.first(where: { $0.id == choice.did })
+    {
+      Button {
+        onAdded(existing.id)
+        dismiss()
+      } label: {
+        ContactResultRow(
+          title: existing.name, detail: choice.identity?.email ?? choice.did,
+          trailing: "Already a contact · Show", chevron: true)
+      }.buttonStyle(ContactResultButtonStyle())
+        .help("Show this contact")
     } else {
       Button {
         choose(choice)
@@ -126,7 +134,7 @@ struct AddContactSheet: View {
 
   private func submitSearch() {
     if let did = lookup.did {
-      guard !access.contacts.contains(where: { $0.id == did }) else { return }
+      guard !access.isSaved(did) else { return }
       choose(Choice(did: did, identity: lookup.identity))
     } else if !lookup.isLoading, lookup.result == nil {
       lookupTask?.cancel()
@@ -137,7 +145,18 @@ struct AddContactSheet: View {
   private func choose(_ choice: Choice) {
     chosen = choice
     error = nil
+    if name.isEmpty { name = suggestedName(choice) }
     nameFocused = true
+  }
+
+  /// The name they gave in a shared space, else the start of their email.
+  private func suggestedName(_ choice: Choice) -> String {
+    let rostered = access.spaces.values.lazy.compactMap { $0.member(choice.did)?.name }
+      .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    if let rostered { return rostered }
+    guard let local = choice.identity?.email.split(separator: "@").first else { return "" }
+    return local.split(whereSeparator: { ".-_+".contains($0) })
+      .map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
   }
 
   // MARK: Details
@@ -331,7 +350,6 @@ private struct EmailInviteResult: View {
 struct ContactLabelsField: View {
   @Binding var labels: [String]
   @State private var draft = ""
-  static let suggestions = ["Team", "Work", "Family", "Verified"]
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -356,21 +374,6 @@ struct ContactLabelsField: View {
       }
       .padding(.horizontal, 6).frame(minHeight: 32)
       .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
-      let remaining = Self.suggestions.filter { suggestion in
-        !labels.contains { $0.caseInsensitiveCompare(suggestion) == .orderedSame }
-      }
-      if !remaining.isEmpty {
-        HStack(spacing: 6) {
-          Text("Suggested:").foregroundStyle(.secondary)
-          ForEach(remaining, id: \.self) { suggestion in
-            Button(suggestion) { add(suggestion) }.buttonStyle(.plain)
-              .padding(.horizontal, 8).frame(height: 22)
-              .overlay(
-                Capsule().strokeBorder(.tertiary, style: StrokeStyle(lineWidth: 1, dash: [3])))
-              .help("Add the label \(suggestion)")
-          }
-        }.font(.system(size: 12))
-      }
     }
   }
 

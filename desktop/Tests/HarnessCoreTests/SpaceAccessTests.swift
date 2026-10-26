@@ -95,7 +95,25 @@ final class SpaceAccessTests: XCTestCase {
       isPublic: false)
     XCTAssertEqual(links[0].title, "Link for Jonas")
     XCTAssertEqual(
-      links[0].detail(now: now), "Jonas · Read and write · Never expires")
+      links[0].detail(now: now), "Read and write · Never expires")
+  }
+
+  func testAScopedLinkIsNamedForWhoeverClaimedItNeverByAKeyFragment() {
+    let links = SpaceAccess.links(
+      subject: subject,
+      invites: [
+        InviteSummary(
+          targetCid: "claimed", kind: "scoped", recipientRoot: "did:key:zRoot",
+          invitation: "tonk:claimed"),
+        InviteSummary(targetCid: "waiting", kind: "scoped", recipientRoot: "did:key:zStranger"),
+      ],
+      agents: [],
+      members: [
+        SpaceMember(
+          did: "did:key:zDevice", name: "jack test", role: nil, invitation: "tonk:claimed")
+      ],
+      isPublic: false)
+    XCTAssertEqual(links.map(\.title), ["Link for jack test", "Link for one person"])
   }
 
   func testPeopleSummaryNamesTheFounder() {

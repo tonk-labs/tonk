@@ -24,6 +24,10 @@ extension View {
   }
 }
 
+/// Glass buttons for the control layer only: window chrome and controls that
+/// float over content, as Liquid Glass intends. Buttons inside content (pages,
+/// forms, sheets) keep the system push style, with `.borderedProminent` for the
+/// main action, so the two never mix within one surface.
 struct NativeControlStyle: ViewModifier {
   var prominent = false
   var circular = false

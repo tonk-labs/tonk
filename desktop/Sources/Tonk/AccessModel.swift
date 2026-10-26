@@ -53,6 +53,11 @@ final class AccessModel: ObservableObject {
     return byID.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
   }
 
+  /// Saved on this Mac, rather than only seen in a space's roster.
+  func isSaved(_ did: String) -> Bool {
+    savedContacts[selfDid ?? ""]?.contains { $0.id == did } == true
+  }
+
   func saveContact(_ contact: DesktopContact) throws {
     guard let root = selfDid, let contactsURL else {
       throw HarnessError.message("Sign in before saving a contact.")
@@ -148,6 +153,22 @@ final class AccessModel: ObservableObject {
   private let vault: any AccessLinkStore
   private let copyToPasteboard: (String) -> Bool
   private var accountLoaded = false
+  /// Who the account is, kept on this Mac so the name shows before the worker answers.
+  private struct AccountSnapshot: Codable {
+    let root: String
+    let name: String?
+    let email: String?
+  }
+  private var accountSnapshotURL: URL?
+  /// What each space showed last time, so links and people appear before the
+  /// worker answers. Link secrets stay in the Keychain vault, not here.
+  private struct SpacesSnapshot: Codable {
+    let root: String
+    let spaces: [String: SpaceAccess]
+  }
+  private var spacesSnapshotURL: URL?
+  /// A full refresh is under way, including over cached rows already shown.
+  @Published private(set) var refreshingAll = false
   /// The account's spaces, in catalog order; counts and pages follow it.
   private var catalog: [String] = []
   /// Spaces asked to refresh while a refresh was already reading them.
@@ -181,8 +202,28 @@ final class AccessModel: ObservableObject {
     self.journal = journal
   }
 
-  func prepare(directory: URL, runtime: any SpaceAccessRuntime) {
+  /// `expectedRoot` is the account the cached catalog belongs to; the saved name
+  /// is shown only for that same account.
+  func prepare(directory: URL, runtime: any SpaceAccessRuntime, expectedRoot: String? = nil) {
     self.runtime = runtime
+    accountSnapshotURL = directory.appendingPathComponent("account-display.json")
+    spacesSnapshotURL = directory.appendingPathComponent("space-access.json")
+    if let expectedRoot, let spacesSnapshotURL,
+      let data = try? Data(contentsOf: spacesSnapshotURL),
+      let snapshot = try? JSONDecoder().decode(SpacesSnapshot.self, from: data),
+      snapshot.root == expectedRoot
+    {
+      spaces = snapshot.spaces
+    }
+    if let expectedRoot, let accountSnapshotURL,
+      let data = try? Data(contentsOf: accountSnapshotURL),
+      let snapshot = try? JSONDecoder().decode(AccountSnapshot.self, from: data),
+      snapshot.root == expectedRoot
+    {
+      selfDid = snapshot.root
+      accountName = snapshot.name
+      accountEmail = snapshot.email
+    }
     contactsURL = directory.appendingPathComponent("address-book.json")
     if let contactsURL, let data = try? Data(contentsOf: contactsURL) {
       savedContacts =
@@ -209,6 +250,9 @@ final class AccessModel: ObservableObject {
     accountDetailsLoaded = false
     accountDetailsError = nil
     accountLoaded = false
+    if let accountSnapshotURL { try? FileManager.default.removeItem(at: accountSnapshotURL) }
+    if let spacesSnapshotURL { try? FileManager.default.removeItem(at: spacesSnapshotURL) }
+    refreshingAll = false
     loading = []
     working = []
     notice = nil
@@ -250,8 +294,13 @@ final class AccessModel: ObservableObject {
       guard generation == started else { return }
       let data = try JSONSerialization.data(withJSONObject: result["connections"] ?? [])
       agentConnections = try JSONDecoder().decode([AgentConnection].self, from: data)
-      accountName = (result["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-      selfDid = (result["root"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+      let root = (result["root"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+      // Before the account branch first syncs the name can read empty; keep the
+      // one already shown for this same account rather than blanking it.
+      accountName =
+        (result["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        ?? (root != nil && root == selfDid ? accountName : nil)
+      selfDid = root
       let passkey = result["passkey"] as? [String: Any]
       passkeyCreatedOn = passkey?["createdOn"] as? String
       passkeyCreatedAt = (passkey?["createdAt"] as? Double).map(Date.init(timeIntervalSince1970:))
@@ -268,6 +317,11 @@ final class AccessModel: ObservableObject {
       }
       accountLoaded = true
       errors["account"] = nil
+      if let root, let accountSnapshotURL {
+        try? JSONEncoder().encode(
+          AccountSnapshot(root: root, name: accountName, email: accountEmail)
+        ).write(to: accountSnapshotURL, options: .atomic)
+      }
     } catch {
       if generation == started { errors["account"] = Self.message(error) }
     }
@@ -330,13 +384,13 @@ final class AccessModel: ObservableObject {
           subject: space.subject, invites: invites, agents: agentConnections, members: members,
           isPublic: isPublic,
           names: Dictionary(
-            (savedContacts[selfDid ?? ""] ?? []).map { ($0.id, $0.name) },
-            uniquingKeysWith: { first, _ in first })),
+            contacts.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })),
         agents: agentConnections.filter { $0.subject == space.subject },
         views: Self.views(home: result["home"], directories: result["directories"]),
         isPublic: isPublic, selfDid: selfDid)
       access.publicAddress = Self.publicAddress(result["remote"], subject: space.subject)
       spaces[space.id] = access
+      saveSpacesSnapshot()
       let warnings = result["warnings"] as? [String] ?? []
       errors[space.id] = warnings.isEmpty ? nil : warnings.joined(separator: " ")
     } catch {
@@ -344,9 +398,17 @@ final class AccessModel: ObservableObject {
     }
   }
 
+  private func saveSpacesSnapshot() {
+    guard let root = selfDid, let spacesSnapshotURL else { return }
+    try? JSONEncoder().encode(SpacesSnapshot(root: root, spaces: spaces))
+      .write(to: spacesSnapshotURL, options: .atomic)
+  }
+
   /// Load each space once, sequentially, so counts fill in without a burst.
   func refreshAll(_ catalog: [TonkSpace]) async {
     let started = generation
+    refreshingAll = true
+    defer { if generation == started { refreshingAll = false } }
     setCatalog(catalog)
     await refreshAccount()
     for space in catalog {
@@ -679,6 +741,56 @@ final class AccessModel: ObservableObject {
       return false
     }
   }
+
+  /// Remove a member from a space: the worker revokes the grant that admits
+  /// them, whichever link they joined with, and retracts their roster row.
+  /// The command has no receipt, so success is the row's absence.
+  func removeMember(_ did: String, name: String, from space: TonkSpace) async -> Bool {
+    let key = "member:" + did
+    guard let runtime, !working.contains(key) else { return false }
+    let started = generation
+    working.insert(key)
+    defer { if generation == started { working.remove(key) } }
+    do {
+      let result = try await runtime.accountScript(
+        Self.expelScript,
+        arguments: [
+          "subject": space.subject, "member": did, "request": "urn:uuid:" + UUID().uuidString,
+        ])
+      guard generation == started else { return false }
+      guard result["done"] as? Bool == true else {
+        throw HarnessError.message(
+          "The space did not confirm it. Only admins can remove people, and someone who joined before this version may need the link they used revoked instead."
+        )
+      }
+      notice = "\(name) was removed from \(space.title)"
+      await refresh(space)
+      return true
+    } catch {
+      guard generation == started else { return false }
+      notice = "Couldn’t remove \(name): " + Self.message(error)
+      return false
+    }
+  }
+
+  static let expelScript = """
+    const field = (the, as) => ({the, as, cardinality: 'one'});
+    const base = '/api/repository/' + encodeURIComponent(subject) + '/branch/main';
+    await api(base + '/transact', {claims: [{op: 'assert', application: {
+      predicate: {kind: 'transient', concept: {with: {
+        member: field('xyz.tonk.command.expel-member/member', 'Entity')
+      }}}, parameters: {this: request, member}
+    }}]});
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const rows = await api(base + '/query', {
+        predicate: {with: {member: field('xyz.tonk.membership/member', 'Entity')}},
+        terms: {this: {'?': {name: 'this'}}, member}
+      });
+      if (rows.length === 0) return {done: true};
+    }
+    return {done: false};
+    """
 
   /// Replace a plain link: the new link works before the old one stops.
   /// Replace a plain link. Fully replaced is success; a new link copied while the old one

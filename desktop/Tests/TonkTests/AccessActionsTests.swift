@@ -153,6 +153,28 @@ final class AccessActionsTests: XCTestCase {
     XCTAssertGreaterThan(runtime.spaceReads, 0, "the space refreshes so Links shows the new row")
   }
 
+  func testRemovingAMemberExpelsThemRatherThanRevokingTheirLink() async throws {
+    let runtime = AccessRuntimeStub()
+    let access = AccessModel(vault: LinkStoreStub(), copyToPasteboard: { _ in true })
+    access.runtime = runtime
+    let removed = await access.removeMember("did:key:zMira", name: "Mira", from: try space())
+    XCTAssertTrue(removed)
+    XCTAssertEqual(runtime.expelled, ["did:key:zMira"])
+    XCTAssertEqual(runtime.revoked, [], "no invitation is revoked, so others who used it stay")
+    XCTAssertEqual(access.notice, "Mira was removed from Verification")
+    XCTAssertGreaterThan(runtime.spaceReads, 0, "the roster refreshes")
+  }
+
+  func testAnUnconfirmedRemovalIsReportedAsAFailure() async throws {
+    let runtime = AccessRuntimeStub()
+    runtime.expelConfirmed = false
+    let access = AccessModel(vault: LinkStoreStub(), copyToPasteboard: { _ in true })
+    access.runtime = runtime
+    let removed = await access.removeMember("did:key:zMira", name: "Mira", from: try space())
+    XCTAssertFalse(removed)
+    XCTAssertTrue(access.notice?.hasPrefix("Couldn’t remove Mira") == true)
+  }
+
   func testInvitingRejectsALinkTheWorkerAddressedToAnotherAccount() async throws {
     let runtime = AccessRuntimeStub()
     runtime.scopedEcho = "did:key:zSomeoneElse"
@@ -206,6 +228,58 @@ final class AccessActionsTests: XCTestCase {
       agents: [], members: [], isPublic: false, names: ["did:key:zAda": "Ada"])
     XCTAssertEqual(links.map(\.title), ["Link for Ada"])
     XCTAssertEqual(links.first?.canReset, false)
+  }
+
+  func testTheAccountNameShowsFromThisMacBeforeTheWorkerAnswers() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runtime = AccessRuntimeStub()
+    let first = AccessModel(vault: LinkStoreStub())
+    first.prepare(directory: directory, runtime: runtime)
+    await first.refreshAccount()
+    XCTAssertEqual(first.accountName, "Verifier")
+
+    let reopened = AccessModel(vault: LinkStoreStub())
+    reopened.prepare(directory: directory, runtime: runtime, expectedRoot: "did:key:zVerifier")
+    XCTAssertEqual(reopened.accountName, "Verifier", "shown before any worker read")
+    XCTAssertEqual(reopened.selfDid, "did:key:zVerifier")
+
+    let otherAccount = AccessModel(vault: LinkStoreStub())
+    otherAccount.prepare(directory: directory, runtime: runtime, expectedRoot: "did:key:zOther")
+    XCTAssertNil(otherAccount.accountName, "never another account's name")
+
+    runtime.accountDetails = ["name": ""]
+    await reopened.refreshAccount()
+    XCTAssertEqual(reopened.accountName, "Verifier", "an unsynced empty name does not blank it")
+  }
+
+  func testLinksShowFromThisMacBeforeTheWorkerAnswers() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let space = try space()
+    let runtime = AccessRuntimeStub()
+    runtime.invites = [["targetCid": "open", "kind": "open", "status": "active"]]
+    let first = AccessModel(vault: LinkStoreStub())
+    first.prepare(directory: directory, runtime: runtime)
+    await first.refreshAll([space])
+    XCTAssertEqual(first.links(for: space.id).map(\.target), ["open"])
+
+    let reads = runtime.spaceReads
+    let reopened = AccessModel(vault: LinkStoreStub())
+    reopened.prepare(directory: directory, runtime: runtime, expectedRoot: "did:key:zVerifier")
+    XCTAssertEqual(reopened.links(for: space.id).map(\.target), ["open"])
+    XCTAssertEqual(runtime.spaceReads, reads, "shown without reading the space")
+
+    let otherAccount = AccessModel(vault: LinkStoreStub())
+    otherAccount.prepare(directory: directory, runtime: runtime, expectedRoot: "did:key:zOther")
+    XCTAssertTrue(otherAccount.links(for: space.id).isEmpty)
+
+    reopened.reset()
+    let afterReset = AccessModel(vault: LinkStoreStub())
+    afterReset.prepare(directory: directory, runtime: runtime, expectedRoot: "did:key:zVerifier")
+    XCTAssertTrue(afterReset.links(for: space.id).isEmpty, "signing out forgets them")
   }
 
   func testAddressBookPersistsByAccountAndResetHidesIt() async throws {
@@ -482,6 +556,8 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
   var invites: [[String: Any]] = []
   var spaceReads = 0
   var recipients: [String] = []
+  var expelled: [String] = []
+  var expelConfirmed = true
   /// The audience the worker reports for a scoped mint; `nil` echoes the request.
   var scopedEcho: String?
   func createCLILink(_ space: TonkSpace) async throws -> String {
@@ -500,6 +576,10 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
     if script == AccessModel.spaceScript {
       spaceReads += 1
       return ["invites": invites, "members": [], "warnings": spaceWarnings]
+    }
+    if script == AccessModel.expelScript {
+      expelled.append(arguments["member"] as! String)
+      return ["done": expelConfirmed]
     }
     if script.contains("const minted") {
       await mintRead?()

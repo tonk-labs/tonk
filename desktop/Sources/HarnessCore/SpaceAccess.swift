@@ -23,8 +23,8 @@ public struct InviteSummary: Decodable, Equatable, Sendable {
 }
 
 /// One row of `GET /api/account/connections`.
-public struct AgentConnection: Decodable, Equatable, Sendable {
-  public struct Installation: Decodable, Equatable, Sendable {
+public struct AgentConnection: Codable, Equatable, Sendable {
+  public struct Installation: Codable, Equatable, Sendable {
     public let id: String
     public let name: String
     public init(id: String, name: String) {
@@ -90,7 +90,7 @@ public struct AgentConnection: Decodable, Equatable, Sendable {
 }
 
 /// A roster row from the `tonk:member` facts on a space's content branch.
-public struct SpaceMember: Equatable, Sendable, Identifiable {
+public struct SpaceMember: Codable, Equatable, Sendable, Identifiable {
   public let did: String
   public let name: String?
   public let role: String?
@@ -116,7 +116,7 @@ public struct SpaceMember: Equatable, Sendable, Identifiable {
 }
 
 /// A space view card: the home view or a model's directory.
-public struct SpaceViewEntry: Equatable, Sendable, Identifiable {
+public struct SpaceViewEntry: Codable, Equatable, Sendable, Identifiable {
   public let model: String
   public let title: String
   public let isHome: Bool
@@ -151,7 +151,7 @@ public enum AccessLinkKind: String, Codable, Sendable {
 }
 
 /// One manageable grant on a space, presented the same way whatever minted it.
-public struct AccessLink: Equatable, Sendable, Identifiable {
+public struct AccessLink: Codable, Equatable, Sendable, Identifiable {
   public let kind: AccessLinkKind
   public let subject: String
   /// Invite target CID, agent connection id, or the space DID for a publication.
@@ -195,8 +195,9 @@ public struct AccessLink: Equatable, Sendable, Identifiable {
   /// Every link opens the whole space; only the public one says so, to set it
   /// apart from the read-and-write links beside it.
   public func detail(now: Date) -> String {
+    // A link for one person already names them in its title.
     [
-      audience == "Anyone" ? "Anyone with the link" : audience, ability,
+      kind == .scoped ? nil : audience == "Anyone" ? "Anyone with the link" : audience, ability,
       kind == .publicRead ? "Whole space" : nil, Self.expiry(expiresAt, status: status, now: now),
     ].compactMap { $0 }.joined(separator: " · ")
   }
@@ -217,7 +218,7 @@ public struct AccessLink: Equatable, Sendable, Identifiable {
     return "Used by " + AccessText.list(usedBy)
   }
 
-  static func expiry(_ date: Date?, status: String, now: Date) -> String {
+  public static func expiry(_ date: Date?, status: String, now: Date) -> String {
     if status == "revoked" { return "Revoked" }
     guard let date else { return "Never expires" }
     if status == "expired" || date <= now { return "Expired" }
@@ -231,7 +232,7 @@ public struct AccessLink: Equatable, Sendable, Identifiable {
 }
 
 /// Everything the overview shows for one space, assembled from worker reads.
-public struct SpaceAccess: Equatable, Sendable {
+public struct SpaceAccess: Codable, Equatable, Sendable {
   public var members: [SpaceMember]
   public var links: [AccessLink]
   public var agents: [AgentConnection]
@@ -287,15 +288,17 @@ public struct SpaceAccess: Equatable, Sendable {
         rows.append(
           AccessLink(kind: .person, subject: subject, target: invite.targetCid, usedBy: usedBy))
       case "scoped":
-        // The roster names someone who joined; a saved contact names someone invited.
-        let recipient = invite.recipientRoot.flatMap { root in
-          members.first(where: { $0.did == root })?.displayName ?? names[root]
-        }
-        let fallback = invite.recipientRoot.map { "account " + $0.suffix(6) } ?? "one account"
+        // The roster names someone who joined; a contact names someone invited;
+        // failing both, whoever claimed it. A key fragment means nothing to people.
+        let recipient =
+          invite.recipientRoot.flatMap { root in
+            members.first(where: { $0.did == root })?.name.flatMap { $0.isEmpty ? nil : $0 }
+              ?? names[root]
+          } ?? (usedBy?.count == 1 ? usedBy?.first : nil)
         rows.append(
           AccessLink(
             kind: .scoped, subject: subject, target: invite.targetCid,
-            audience: recipient ?? fallback, usedBy: usedBy))
+            audience: recipient ?? "one person", usedBy: usedBy))
       default:
         // Legacy rows carry no execution kind; still revocable as a link.
         rows.append(
@@ -356,4 +359,8 @@ extension String {
     guard let first else { return self }
     return first.lowercased() + dropFirst()
   }
+}
+
+extension SpaceAccess {
+  public func member(_ did: String) -> SpaceMember? { members.first { $0.did == did } }
 }

@@ -32,7 +32,8 @@ struct TonkApp: App {
             return
           }
           runtime.prepareCatalogCache(directory: model.root)
-          access.prepare(directory: model.root, runtime: runtime)
+          access.prepare(
+            directory: model.root, runtime: runtime, expectedRoot: runtime.cachedAccountRoot)
           delegate.archive = archive
           delegate.runtime = runtime
           model.runtime = runtime
