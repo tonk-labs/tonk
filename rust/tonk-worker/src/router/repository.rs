@@ -11421,6 +11421,66 @@ mod tests {
         );
     }
 
+    /// A MOVE re-keys a block: its old entry goes, one under the new key
+    /// takes its place, and the block itself stays. A placement alone left
+    /// the old entry behind, so the block sat in the sequence twice and the
+    /// earlier key put it back where it had been moved from.
+    #[dialog_common::test]
+    async fn it_moves_a_notebook_block_without_leaving_its_old_entry() {
+        let (_app, state, key) = fresh_repo("test-notebook-move").await;
+        let repo = key.as_str();
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, NOTEBOOK).await;
+
+        seed(
+            &state,
+            repo,
+            "block/move!:\n  subject: id:notebook/scratch/1\n  notebook: id:notebook/scratch\n  from: \"N1\"\n  key: \"N7\"\n",
+        )
+        .await;
+        let entries = "notebook:\n  this: id:notebook/scratch\n  block: {?key: ?block}\n";
+        assert_eq!(
+            entry_count(&state, repo, entries, "block").await,
+            3,
+            "still one entry per block"
+        );
+        assert_eq!(
+            count(
+                &state,
+                repo,
+                "notebook:\n  this: id:notebook/scratch\n  block: {N1: ?block}\n"
+            )
+            .await,
+            0,
+            "the old entry is gone"
+        );
+        assert_eq!(
+            rows(
+                &state,
+                repo,
+                "notebook:\n  this: id:notebook/scratch\n  block: {N7: ?block}\n"
+            )
+            .await
+            .first()
+            .and_then(|row| row.get("block"))
+            .and_then(|entries| entries.get("N7"))
+            .and_then(|block| block.as_str())
+            .map(str::to_owned),
+            Some("id:notebook/scratch/1".to_owned()),
+            "the block is under its new key"
+        );
+        assert_eq!(
+            count(
+                &state,
+                repo,
+                "notebook/block:\n  this: id:notebook/scratch/1\n  notebook: ?notebook\n  source: ?source\n"
+            )
+            .await,
+            1,
+            "the block itself is untouched"
+        );
+    }
+
     /// A RUN of blocks inserted in ONE transaction lands in document order.
     ///
     /// This is the case a per-block command cannot express: block 2's

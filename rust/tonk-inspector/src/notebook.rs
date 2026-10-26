@@ -40,7 +40,7 @@ use web_sys::{
     CustomEvent, Element, Event, HtmlElement, MutationObserver, MutationObserverInit, window,
 };
 
-use crate::blocks::{Block, assign_keys, insert_notation, project, reconcile, split, title_of};
+use crate::blocks::{Block, commit_notation, moves, project, reconcile, split, title_of};
 use crate::cell_output::render as render_result;
 use crate::element::{evaluate, reflect_string, resolve_context};
 
@@ -283,10 +283,19 @@ tonk-notation .tonk-cm-variable {
 const RETRY_MS: i32 = 120;
 const RETRIES: u32 = 25;
 
-/// How long to wait for the editor to settle before committing. Must clear
-/// `<tonk-prose>`'s own 400ms change debounce, or a commit reads a prefix of
-/// what was typed.
-const SETTLE_MS: i32 = 600;
+/// How long a write this element made shadows the store's value for the
+/// same block. The store normally catches up within a frame or two; the
+/// bound is for a write that never lands, after which the store wins again
+/// rather than the editor holding a value nothing persisted.
+const PENDING_MS: f64 = 8000.0;
+
+/// How long to wait before committing again after a commit failed.
+const RETRY_COMMIT_MS: i32 = 2000;
+
+/// Cell ids, unique across every notebook in this document. Each id names
+/// an LSP buffer, and two editors on one buffer share a document: what one
+/// cell typed showed up in the other.
+static NEXT_CELL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Class of the result node this element appends into each fence wrapper.
 const RESULT_CLASS: &str = "notebook-cell-result";
@@ -314,7 +323,13 @@ pub struct TonkNotebookElement {
     closures: Closures,
     observer: ObserverCell,
     mutation: MutationClosure,
+    /// The mounted notebook, so a teardown can reach what it registered
+    /// outside this element (the document's `selectionchange`).
+    notebook: NotebookSlot,
 }
+
+/// The mounted notebook, shared with the deferred lifecycle tasks.
+type NotebookSlot = Rc<RefCell<Option<Rc<Notebook>>>>;
 
 impl CustomElement for TonkNotebookElement {
     fn shadow() -> bool {
@@ -357,6 +372,7 @@ impl CustomElement for TonkNotebookElement {
         let observer = self.observer.clone();
         let mutation = self.mutation.clone();
         let mounting = self.mounting.clone();
+        let slot = self.notebook.clone();
         spawn_local(async move {
             if !host.is_connected() {
                 // Not in the document: release the claim so the re-attach
@@ -364,7 +380,7 @@ impl CustomElement for TonkNotebookElement {
                 mounting.set(false);
                 return;
             }
-            mount(&host, closures, observer, mutation);
+            mount(&host, closures, observer, mutation, slot);
         });
     }
 
@@ -384,15 +400,46 @@ impl CustomElement for TonkNotebookElement {
         self.connected_callback(this);
     }
 
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
-        if let Some(observer) = self.observer.borrow_mut().take() {
-            observer.disconnect();
+    fn disconnected_callback(&mut self, this: &HtmlElement) {
+        // DEFERRED, and only if the element is still out of the document.
+        //
+        // A render pass that moves this element detaches and re-attaches
+        // it in one task. Tearing down on the detach dropped every listener
+        // closure while the listeners stayed registered on the editor that
+        // moved with it, and the re-attach found the editor still there and
+        // did not mount again: from then on each keystroke threw "closure
+        // invoked recursively or after being dropped", nothing committed,
+        // and nothing another replica wrote was projected.
+        let host = this.clone();
+        let closures = self.closures.clone();
+        let observer = self.observer.clone();
+        let mutation = self.mutation.clone();
+        let mounting = self.mounting.clone();
+        let slot = self.notebook.clone();
+        let teardown = Closure::once_into_js(move || {
+            if host.is_connected() {
+                return;
+            }
+            if let Some(observer) = observer.borrow_mut().take() {
+                observer.disconnect();
+            }
+            mutation.borrow_mut().take();
+            if let Some(notebook) = slot.borrow_mut().take() {
+                notebook.release();
+            }
+            // Take the editor out WITH its listeners, so nothing is left
+            // to call a dropped closure, and a later re-attach mounts a
+            // fresh one instead of finding this one and stopping.
+            if let Ok(Some(provider)) = host.query_selector("tonk-diagnostics-provider") {
+                provider.remove();
+            }
+            closures.borrow_mut().clear();
+            mounting.set(false);
+        });
+        if let Some(window) = window() {
+            let _ = window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(teardown.unchecked_ref(), 0);
         }
-        self.mutation.borrow_mut().take();
-        self.closures.borrow_mut().clear();
-        // Release the claim: a re-attach must be able to mount again, and its
-        // own guard on the already-present provider stops a duplicate.
-        self.mounting.set(false);
     }
 }
 
@@ -404,6 +451,7 @@ fn mount(
     closures: Closures,
     observer_slot: ObserverCell,
     mutation_slot: MutationClosure,
+    notebook_slot: NotebookSlot,
 ) {
     {
         // Mount ONCE. `connectedCallback` fires on every re-attach, and
@@ -505,15 +553,18 @@ fn mount(
             closures: closures.clone(),
             cells: RefCell::new(HashMap::new()),
             blocks: RefCell::new(Vec::new()),
+            pending: RefCell::new(Pending::default()),
             projected: RefCell::new(String::new()),
-            title: RefCell::new(None),
-            next_cell: std::cell::Cell::new(0),
+            // The title the notebook already has, so the first commit does
+            // not rename it to itself.
+            title: RefCell::new(this.get_attribute("title").filter(|t| !t.is_empty())),
             projected_once: std::cell::Cell::new(false),
             marked: std::cell::Cell::new(-1),
             selection_listener: RefCell::new(None),
             selection_bound: std::cell::Cell::new(false),
             settling: std::cell::Cell::new(false),
         });
+        *notebook_slot.borrow_mut() = Some(notebook.clone());
 
         notebook.install_editor_listeners();
 
@@ -543,6 +594,29 @@ fn mount(
     }
 }
 
+/// Writes a commit made that the rows may not show yet, each with the
+/// time (`Date.now()` milliseconds) after which the store wins again.
+#[derive(Default)]
+struct Pending {
+    /// Block sources written, by entity.
+    edits: HashMap<String, PendingEdit>,
+    /// Blocks re-keyed: entity to key.
+    keys: HashMap<String, (String, f64)>,
+    /// Blocks removed.
+    removed: HashMap<String, f64>,
+    /// Sources of blocks inserted whose entities have not appeared yet.
+    /// While any are outstanding, commits and projections wait.
+    inserts: Vec<String>,
+    inserts_until: f64,
+}
+
+/// One block source a commit wrote.
+struct PendingEdit {
+    /// What we wrote.
+    source: String,
+    until: f64,
+}
+
 /// Shared notebook state: the prose document, where to evaluate, and the
 /// per-fence cells bound so far.
 struct Notebook {
@@ -556,17 +630,24 @@ struct Notebook {
     /// Fence wrappers already wired, keyed by the cell id stamped on them.
     /// Keeps a re-scan from binding the same fence twice.
     cells: RefCell<HashMap<String, Rc<Cell>>>,
-    /// The blocks currently projected into the editor, in document order.
-    /// An edit is diffed against these, so only what moved is written.
+    /// The BASE: the blocks the editor's text was last brought in line
+    /// with, by a projection or by a commit, in document order. An edit is
+    /// the editor's text diffed against these.
+    ///
+    /// Deliberately not the store's latest rows. Diffing against rows that
+    /// already carry another replica's edit reads the editor's older text
+    /// for that block as a local change, and the commit writes it back over
+    /// the remote edit.
     blocks: RefCell<Vec<Block>>,
-    /// The document text last handed to the editor. Guards against writing
-    /// back the editor's own echo of a store update.
+    /// Writes this element made that the rows may not show yet.
+    pending: RefCell<Pending>,
+    /// The editor's text as of the base: what it read back after the last
+    /// projection, or what the last commit wrote. Differing from the
+    /// editor's live text means the author has typed since.
     projected: RefCell<String>,
-    /// The title last emitted, so a commit that leaves the heading alone
+    /// The title last written, so a commit that leaves the heading alone
     /// does not rewrite the notebook's name.
     title: RefCell<Option<String>>,
-    /// Next cell id. Monotonic, so an id is never reused by a later fence.
-    next_cell: std::cell::Cell<u32>,
     /// Whether the store's blocks have been projected into the editor yet.
     /// Until they have, an edit has nothing truthful to diff against.
     projected_once: std::cell::Cell<bool>,
@@ -743,16 +824,10 @@ impl Notebook {
         }
     }
 
-    /// Read the hidden block rows and project them into the editor.
-    ///
-    /// Called whenever the rows change, which covers both the first render
-    /// and every store update. Writing the same text twice is a no-op in the
-    /// editor (`setMarkdown` returns early when the markdown already matches),
-    /// so an echo of our own write does not disturb the caret.
-    fn project_blocks(self: &Rc<Self>) {
-        let Ok(rows) = self.host.query_selector_all(".notebook-block-row") else {
-            return;
-        };
+    /// The blocks the rows currently carry, in document order, or `None`
+    /// when there is nothing to project yet.
+    fn read_rows(&self) -> Option<Vec<Block>> {
+        let rows = self.host.query_selector_all(".notebook-block-row").ok()?;
         // Sources come from the block rows, one per block entity, in
         // whatever order they landed. Order comes from the notebook's own
         // `block` sequence, rendered as `.notebook-order__item` rows in
@@ -787,8 +862,11 @@ impl Notebook {
                 arrival.push(entity);
             }
         }
-        if sources.is_empty() {
-            return;
+        // No rows before the first projection is "not loaded yet". After
+        // it, it is a notebook whose every block was deleted, which is
+        // still something to project.
+        if sources.is_empty() && !self.projected_once.get() {
+            return None;
         }
 
         let mut ordered: Vec<Block> = Vec::new();
@@ -831,272 +909,335 @@ impl Notebook {
                 });
             }
         }
-
-        let sources: Vec<String> = ordered.iter().map(|b| b.source.clone()).collect();
-        let document = project(&sources);
-        *self.blocks.borrow_mut() = ordered;
-        self.projected_once.set(true);
-        if document == *self.projected.borrow() {
-            return;
-        }
-
-        // NEVER overwrite an edit in progress.
-        //
-        // The editor's current text is the author's; `projected` is what this
-        // element last wrote. When they differ, the author has typed since —
-        // and writing the store's projection over that discards the typing and
-        // jumps the caret to the end. Which is exactly what "I changed the
-        // query, it reverted, and my keystrokes ended up in the paragraph
-        // below" looks like.
-        //
-        // The store's version is not lost: `commit` writes the author's text
-        // on block exit, the rows update, and the next projection matches.
-        // A genuine remote change while typing is deferred to that same
-        // moment rather than snatching the document mid-keystroke.
-        if let Some(live) = reflect_string(self.prose.as_ref(), "value")
-            && !live.is_empty()
-            && live != *self.projected.borrow()
-        {
-            return;
-        }
-
-        *self.projected.borrow_mut() = document.clone();
-        // `.value`, not text content: the light-DOM text is read once at
-        // mount, while the property routes through `setMarkdown`, which
-        // narrows to the blocks that actually differ and leaves the caret
-        // alone. Writing text content on a live editor would reset it.
-        //
-        // `commit` compares against `projected` (set just above), so the
-        // `change` this write provokes finds nothing to write back.
-        let _ = js_sys::Reflect::set(&self.prose, &"value".into(), &JsValue::from_str(&document));
+        Some(ordered)
     }
 
-    /// Record a cell's source as the text that was just evaluated.
+    /// The editor's live markdown.
+    fn live(&self) -> Option<String> {
+        reflect_string(self.prose.as_ref(), "value")
+    }
+
+    /// Bring the editor in line with the rows.
     ///
-    /// Called with the body the cell ran, so the stored source and the
-    /// rendered result are the same text by construction. Writes ONE block —
-    /// the one this cell projects from — rather than re-splitting the
-    /// document, so it cannot disturb a block the author is editing
-    /// elsewhere.
+    /// Called whenever the rows change, which covers the first render, a
+    /// commit of ours landing, and every other replica's edit. The rows
+    /// are read through this element's own writes that have not landed
+    /// yet, so a projection never undoes what the author just typed.
     ///
-    /// A cell's fence is the block's whole source, so the stored text is the
-    /// body wrapped back in its fence.
-    fn record_cell_source(self: &Rc<Self>, cell_id: &str, body: &str) {
-        // Which block this cell came from. The cell id indexes the fences in
-        // document order, and `blocks` is in that same order, so find the
-        // n-th block that is a fence.
-        let Ok(index) = cell_id.parse::<usize>() else {
+    /// When the author has typed since the last sync, that typing is
+    /// committed FIRST, against the base the editor's text came from, and
+    /// the rows are projected on top: their text stays, another replica's
+    /// edit still lands, and nothing waits for the author to leave the
+    /// block they are in.
+    fn project_blocks(self: &Rc<Self>) {
+        let Some(rows) = self.read_rows() else {
             return;
         };
-        let entity = {
-            let blocks = self.blocks.borrow();
-            let mut fences = blocks
-                .iter()
-                .filter(|b| b.source.trim_start().starts_with("```"));
-            match fences.nth(index) {
-                Some(block) => block.entity.clone(),
-                None => return,
-            }
-        };
+        // A commit's inserted blocks have not reached the rows. Projecting
+        // now would show the document without them, and diffing against a
+        // base without them would insert them a second time.
+        if !self.adopt_inserts(&rows) {
+            return;
+        }
 
-        let fenced = format!("```{CELL_LANGUAGE}\n{}\n```", body.trim_end());
-        // Unchanged is not worth a write, and a write per keystroke is
-        // exactly what block storage exists to avoid.
-        {
-            let blocks = self.blocks.borrow();
-            if blocks
-                .iter()
-                .any(|b| b.entity == entity && b.source == fenced)
-            {
+        let live = self.live().unwrap_or_default();
+        let typed = self.projected_once.get()
+            && !self.host.has_attribute("draft")
+            && self.editor_mounted()
+            && live != *self.projected.borrow();
+        if typed {
+            self.commit();
+            if !self.pending.borrow().inserts.is_empty() {
                 return;
             }
         }
-        // Keep the local view in step so the next projection does not read
-        // this back as an external change and fight the editor.
-        {
-            let mut blocks = self.blocks.borrow_mut();
-            if let Some(block) = blocks.iter_mut().find(|b| b.entity == entity) {
-                block.source = fenced.clone();
-            }
+
+        let mut stored = rows;
+        self.overlay(&mut stored);
+
+        let sources: Vec<String> = stored.iter().map(|b| b.source.clone()).collect();
+        let document = project(&sources);
+        *self.blocks.borrow_mut() = stored;
+        self.projected_once.set(true);
+        if document != self.live().unwrap_or_default() {
+            // `.value`, not text content: the light-DOM text is read once at
+            // mount, while the property routes through `setMarkdown`, which
+            // replaces only the characters that differ and leaves the caret
+            // alone. Writing text content on a live editor would reset it.
+            let _ =
+                js_sys::Reflect::set(&self.prose, &"value".into(), &JsValue::from_str(&document));
         }
-        self.dispatch_edit(&entity, &fenced);
+        self.settle_base();
     }
 
-    /// Commit once the editor has settled.
+    /// Take the blocks our pending inserts produced into the base, once
+    /// they have all shown up in `rows`. Returns false while still waiting.
     ///
-    /// `<tonk-prose>` coalesces edits behind a 400ms debounce, and a fence's
-    /// text reaches the prose document only through that path — so reading
-    /// immediately yields a stale, often mid-word document. Waiting past the
-    /// debounce is what makes the committed text the text that was typed.
-    fn commit_when_settled(self: Rc<Self>) {
-        let notebook = self;
-        let callback = Closure::once_into_js(move || notebook.commit());
-        if let Some(window) = window() {
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                callback.unchecked_ref(),
-                SETTLE_MS,
-            );
+    /// Matched by source: the entity derives on the other side, and commits
+    /// wait while inserts are out, so nothing has changed these sources
+    /// since they were sent.
+    fn adopt_inserts(&self, rows: &[Block]) -> bool {
+        let mut pending = self.pending.borrow_mut();
+        if pending.inserts.is_empty() {
+            return true;
         }
+        let mut base = self.blocks.borrow_mut();
+        let mut fresh: Vec<&Block> = rows
+            .iter()
+            .filter(|block| !base.iter().any(|b| b.entity == block.entity))
+            .collect();
+        let mut landed: Vec<&Block> = Vec::new();
+        for source in &pending.inserts {
+            if let Some(at) = fresh.iter().position(|block| &block.source == source) {
+                landed.push(fresh.remove(at));
+            }
+        }
+        if landed.len() < pending.inserts.len() && pending.inserts_until > js_sys::Date::now() {
+            return false;
+        }
+        pending.inserts.clear();
+        // Each landed block goes into the base after the nearest block that
+        // precedes it in the rows, so the base keeps the editor's order.
+        for (index, block) in rows.iter().enumerate() {
+            if !landed.iter().any(|b| b.entity == block.entity) {
+                continue;
+            }
+            let after = rows[..index]
+                .iter()
+                .rev()
+                .find_map(|prev| base.iter().position(|b| b.entity == prev.entity));
+            base.insert(after.map_or(0, |at| at + 1), block.clone());
+        }
+        true
+    }
+
+    /// Record the editor's text as the base, as the editor itself spells it.
+    ///
+    /// The editor normalizes what it is given (an empty fence gains a line,
+    /// trailing spaces go, `~~~` becomes backticks), so its text can differ
+    /// from the projection that produced it. Taking the projection as the
+    /// base instead made every such block look edited: the next commit
+    /// rewrote it, and until then every remote change was held back as if
+    /// the author were mid-edit.
+    fn settle_base(&self) {
+        let Some(value) = self.live() else {
+            return;
+        };
+        let parts = split(&value);
+        let mut base = self.blocks.borrow_mut();
+        if parts.len() == base.len() {
+            for (block, part) in base.iter_mut().zip(parts) {
+                block.source = part;
+            }
+        }
+        *self.projected.borrow_mut() = value;
+    }
+
+    /// Whether the editor core has mounted. Until it has, `value` is the
+    /// buffered projection rather than anything the author typed.
+    fn editor_mounted(&self) -> bool {
+        js_sys::Reflect::get(&self.prose, &"editor".into()).is_ok_and(|editor| editor.is_truthy())
+    }
+
+    /// Read the rows through this element's writes that have not landed.
+    ///
+    /// Each pending write shadows the row it targets until the row shows
+    /// it, or until it expires.
+    ///
+    /// Another replica's write to a block we have a write in flight for
+    /// is shadowed too: ours lands after it and wins the block, as the
+    /// later write. Projecting theirs meanwhile would replace the text
+    /// under the author's caret, and the commit of whatever they typed
+    /// next would put ours back. Two replicas typing in the same block at
+    /// once therefore keep the later writer's text, not both: a merge
+    /// would need the version each started from, which block rows do not
+    /// carry.
+    fn overlay(&self, stored: &mut Vec<Block>) {
+        let now = js_sys::Date::now();
+        let mut pending = self.pending.borrow_mut();
+        pending.edits.retain(|entity, edit| {
+            let Some(block) = stored.iter_mut().find(|b| &b.entity == entity) else {
+                return edit.until > now;
+            };
+            if block.source == edit.source || edit.until <= now {
+                // Landed, or never will: the row is the truth again.
+                return false;
+            }
+            block.source = edit.source.clone();
+            true
+        });
+        pending.keys.retain(|entity, (key, until)| {
+            match stored.iter_mut().find(|b| &b.entity == entity) {
+                Some(block) if block.key.as_deref() == Some(key.as_str()) => false,
+                Some(block) if *until > now => {
+                    block.key = Some(key.clone());
+                    true
+                }
+                Some(_) => false,
+                None => *until > now,
+            }
+        });
+        pending
+            .removed
+            .retain(|entity, until| *until > now && stored.iter().any(|b| &b.entity == entity));
+        stored.retain(|block| !pending.removed.contains_key(&block.entity));
+        // Keys are positions that sort in byte order; a pending re-key moves
+        // its block. Unkeyed blocks stay at the end, in arrival order.
+        stored.sort_by(|a, b| match (&a.key, &b.key) {
+            (Some(a), Some(b)) => a.cmp(b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
     }
 
     /// Commit the editor's current document: split it into blocks, diff
-    /// against what was projected, and dispatch one command per change.
+    /// against the base, and write every change in ONE transaction.
     ///
-    /// Called when the caret leaves a block (and on blur), not on every
-    /// keystroke — a revision should say what the author finished, not what
-    /// their keyboard did.
+    /// Runs on each of `<tonk-prose>`'s debounced `change` events, on
+    /// blur, and before any projection that finds the author has typed.
+    /// The block diff keeps each commit small however often it runs: a
+    /// keystroke writes the one block it changed.
     fn commit(self: &Rc<Self>) {
-        // `<tonk-prose>` exposes the document's markdown on `.value`.
-        let Some(document) = reflect_string(self.prose.as_ref(), "value") else {
-            return;
-        };
-        if document == *self.projected.borrow() {
-            return;
-        }
-
         // Never commit before the store's blocks have been projected. Until
-        // then `blocks` is empty, so `reconcile` reads every block as newly
-        // created: the edit mints fresh entities, leaves the real ones
-        // untouched, and writes an order naming only the new ones — which is
-        // exactly "I typed something and on reload it was gone".
+        // then the base is empty, so every block reads as newly created.
         //
         // An explicit flag, not `blocks.is_empty()`: a genuinely empty
         // notebook has no blocks either, and must still accept its first.
-        if !self.projected_once.get() {
+        if !self.projected_once.get() || !self.editor_mounted() {
             return;
         }
-
         // A DRAFT has no notebook to write to yet.
         //
         // Its blocks would be created against no owner, so they would
         // render nowhere and be re-minted on the next keystroke. The
         // author's body text is not lost: naming the notebook creates it,
         // the page navigates there, and what was typed is projected into
-        // the real one. Until then the draft is a document in the editor
-        // and nothing else.
+        // the real one.
         if self.host.has_attribute("draft") {
             return;
         }
+        let Some(document) = self.live() else {
+            return;
+        };
+        if document == *self.projected.borrow() {
+            return;
+        }
+        // An earlier commit's inserts are still on their way. Diffing now
+        // would insert them again; the projection that sees them land
+        // commits whatever was typed meanwhile.
+        if !self.pending.borrow().inserts.is_empty() {
+            return;
+        }
+
         let next = split(&document);
-        let edit = reconcile(&self.blocks.borrow(), &next);
-
-        for (entity, source) in &edit.changed {
-            self.dispatch_edit(entity, source);
-        }
-
+        let base = self.blocks.borrow().clone();
+        let edit = reconcile(&base, &next);
+        let moves = moves(&base, &edit);
         // The document's heading IS the notebook's title, so an edit that
-        // changes the heading renames the notebook. Emitted only when it
-        // actually changed: a rename on every commit would write a fact per
-        // keystroke-flush, and the title is the one field the index reads.
-        if let Some(title) = title_of(&document)
-            && self.title.borrow().as_deref() != Some(title.as_str())
-        {
-            self.dispatch_retitle(&title);
-            *self.title.borrow_mut() = Some(title);
-        }
-        // A created block is INSERTED, and the element names no entity.
-        //
-        // Identity derives from the command body; the position derives from
-        // the predecessor's. The element used to mint the entity itself,
-        // from the document's block COUNT — a position wearing an identity's
-        // clothes, which repeats whenever the count returns to a value it
-        // held, so a new block claimed one that already existed and
-        // `reconcile` wrote one block's source onto another.
-        //
-        // Each insert names the block it FOLLOWS. For a run of new blocks
-        // only the first has a stored predecessor; the rest follow the block
-        // before them in the document, which is itself new. That resolves
-        // because the rule reads the predecessor through `block/position`,
-        // which covers a position derived in this same commit as readily as
-        // a stored one — so the element never has to name an entity that
-        // does not exist yet.
+        // changes the heading renames the notebook.
+        let title = title_of(&document).filter(|t| self.title.borrow().as_deref() != Some(t));
         let notebook = self.notebook_entity();
-        let stored = self.blocks.borrow();
-        // Inserts go as NOTATION, not as one command event per block.
-        //
-        // A run of new blocks has to say which follows which, and a block
-        // created in the same transaction has no entity to name. Notation
-        // can name it by variable — `this: ?b0` on one assertion, `head:
-        // ?b0` on the next — which an event cannot carry. Backward
-        // references are the only kind that analyze, and a run only ever
-        // needs to look back.
-        if let Some(document) = insert_notation(&notebook, &edit.order, &edit.created) {
-            let consumer = self.host.clone();
-            spawn_local(async move {
-                if let Err(message) = evaluate(&consumer, &document, true).await {
-                    web_sys::console::error_1(
-                        &format!("notebook: insert failed: {message}").into(),
-                    );
-                }
-            });
-        }
+        let text = commit_notation(&notebook, &base, &edit, title.as_deref());
 
-        // Placement is for blocks that MOVED. A created block is placed by
-        // the insert rules, so re-keying it here would place it twice.
-        let order: Vec<(String, Option<String>)> = edit
+        let until = js_sys::Date::now() + PENDING_MS;
+        {
+            let mut pending = self.pending.borrow_mut();
+            for (entity, source) in &edit.changed {
+                pending.edits.insert(
+                    entity.clone(),
+                    PendingEdit {
+                        source: source.clone(),
+                        until,
+                    },
+                );
+            }
+            for (entity, key) in &moves {
+                pending.keys.insert(entity.clone(), (key.clone(), until));
+            }
+            for entity in &edit.removed {
+                pending.removed.insert(entity.clone(), until);
+            }
+            if !edit.created.is_empty() {
+                pending.inserts = edit.created.clone();
+                pending.inserts_until = until;
+            }
+        }
+        // The new base is the document as written, minus the blocks whose
+        // entities the insert has yet to produce.
+        let rebased: Vec<Block> = edit
             .order
             .iter()
-            .filter_map(|slot| {
-                slot.as_ref().map(|entity| {
-                    let key = stored
-                        .iter()
-                        .find(|block| &block.entity == entity)
-                        .and_then(|block| block.key.clone());
-                    (entity.clone(), key)
+            .zip(&next)
+            .filter_map(|(slot, source)| {
+                let entity = slot.as_ref()?;
+                let key = moves
+                    .iter()
+                    .find(|(moved, _)| moved == entity)
+                    .map(|(_, key)| key.clone())
+                    .or_else(|| {
+                        base.iter()
+                            .find(|b| &b.entity == entity)
+                            .and_then(|b| b.key.clone())
+                    });
+                Some(Block {
+                    entity: entity.clone(),
+                    source: source.clone(),
+                    key,
                 })
             })
             .collect();
-        for (entity, key) in assign_keys(&order) {
-            self.dispatch_place(&entity, &notebook, &key);
+        *self.blocks.borrow_mut() = rebased;
+        *self.projected.borrow_mut() = document;
+        if title.is_some() {
+            *self.title.borrow_mut() = title;
         }
-        for entity in &edit.removed {
-            if let Some(key) = stored
-                .iter()
-                .find(|block| &block.entity == entity)
-                .and_then(|block| block.key.clone())
-            {
-                self.dispatch_remove(entity, &notebook, &key);
+
+        let Some(text) = text else {
+            return;
+        };
+        let inserting = !edit.created.is_empty();
+        self.write(&text);
+        if inserting {
+            // Should the inserts never show up, stop waiting for them once
+            // they expire.
+            let notebook = self.clone();
+            let expire = Closure::once_into_js(move || notebook.project_blocks());
+            if let Some(window) = window() {
+                let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    expire.unchecked_ref(),
+                    PENDING_MS as i32 + 50,
+                );
             }
         }
-        drop(stored);
-
-        *self.projected.borrow_mut() = document;
     }
 
-    /// Dispatch one `block/edit` command: `{source}` on the detail, with
-    /// `data-subject` naming the block the rule writes to.
-    ///
-    /// The event is `blockedit`, NOT `change`: the inner `<tonk-prose>`
-    /// dispatches its own bubbling `change` carrying `{value, content}`,
-    /// which would reach the same handler and fail to resolve `source`.
-    fn dispatch_edit(&self, entity: &str, source: &str) {
-        let _ = self.host.dataset().set("subject", entity);
-        let detail = js_sys::Object::new();
-        let _ = js_sys::Reflect::set(&detail, &"source".into(), &source.into());
-        // The owning notebook rides along on EVERY edit, not just a creating
-        // one. A block written with only its source does not match
-        // `tonk:notebook/block`, so it renders no row: the order names an
-        // entity that never appears, and a newly typed block vanishes on
-        // reload. Re-asserting it on an existing block is a no-op.
-        let notebook = self.notebook_entity();
-        let _ = js_sys::Reflect::set(&detail, &"notebook".into(), &notebook.as_str().into());
-        self.emit("blockedit", &detail);
-    }
-
-    /// Emit `titlechange`, which the library's `notebook/retitle` command
-    /// reads to rename the notebook.
-    fn dispatch_retitle(&self, title: &str) {
-        let detail = js_sys::Object::new();
-        let _ = js_sys::Reflect::set(&detail, &"title".into(), &title.into());
-        let notebook = self.notebook_entity();
-        let _ = js_sys::Reflect::set(&detail, &"notebook".into(), &notebook.as_str().into());
-        self.emit("titlechange", &detail);
+    /// Transact `text`, a document of this notebook's commands.
+    fn write(self: &Rc<Self>, text: &str) {
+        let notebook = self.clone();
+        let text = text.to_owned();
+        spawn_local(async move {
+            if let Err(message) = evaluate(&notebook.host, &text, true).await {
+                web_sys::console::error_1(&format!("notebook: commit failed: {message}").into());
+                // Nothing of this write landed. Stop waiting for its
+                // inserts, and let the next projection compare against
+                // the rows: the author's text is still in the editor, so
+                // it reads as typed and is committed again. After a pause,
+                // so a write that keeps failing does not spin.
+                notebook.pending.borrow_mut().inserts.clear();
+                *notebook.projected.borrow_mut() = String::new();
+                let retry = Closure::once_into_js(move || notebook.project_blocks());
+                if let Some(window) = window() {
+                    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                        retry.unchecked_ref(),
+                        RETRY_COMMIT_MS,
+                    );
+                }
+            }
+        });
     }
 
     /// The notebook these blocks belong to.
-    ///
-    /// Read from a stored block rather than the host's `data-subject`, which
-    /// `dispatch_edit` repoints at whichever entity it is currently writing.
     fn notebook_entity(&self) -> String {
         if let Some(entity) = self.host.dataset().get("notebook") {
             return entity;
@@ -1107,76 +1248,75 @@ impl Notebook {
             .unwrap_or_else(|| "id:notebook/scratch".to_owned())
     }
 
-    /// Dispatch one `block/place` command: put `entity` into `notebook`'s
-    /// sequence under `key`.
-    fn dispatch_place(&self, entity: &str, notebook: &str, key: &str) {
-        let _ = self.host.dataset().set("subject", entity);
-        let detail = js_sys::Object::new();
-        let _ = js_sys::Reflect::set(&detail, &"notebook".into(), &notebook.into());
-        let _ = js_sys::Reflect::set(&detail, &"key".into(), &key.into());
-        self.emit("place", &detail);
-    }
-
-    /// Dispatch one `block/remove` command: retract `entity`'s entry
-    /// under `key` from `notebook`'s sequence.
-    fn dispatch_remove(&self, entity: &str, notebook: &str, key: &str) {
-        let _ = self.host.dataset().set("subject", entity);
-        let detail = js_sys::Object::new();
-        let _ = js_sys::Reflect::set(&detail, &"notebook".into(), &notebook.into());
-        // `removed`, not `key`: the two commands must not share a shape, or
-        // one event would decode as both.
-        let _ = js_sys::Reflect::set(&detail, &"removed".into(), &key.into());
-        self.emit("remove", &detail);
-    }
-
-    /// Fire a bubbling CustomEvent off the host, which the view has wired to
-    /// a command (`onblockedit=block/edit`, `onplace=block/place`,
-    /// `onremove=block/remove`).
-    fn emit(&self, name: &str, detail: &js_sys::Object) {
-        let init = web_sys::CustomEventInit::new();
-        init.set_detail(detail);
-        init.set_bubbles(true);
-        if let Ok(event) = CustomEvent::new_with_event_init_dict(name, &init) {
-            let _ = self.host.dispatch_event(&event);
+    /// Drop what this notebook registered outside its own subtree.
+    fn release(&self) {
+        if let (Some(listener), Some(document)) = (
+            self.selection_listener.borrow_mut().take(),
+            window().and_then(|w| w.document()),
+        ) {
+            let _ = document.remove_event_listener_with_callback(
+                "selectionchange",
+                listener.as_ref().unchecked_ref(),
+            );
         }
     }
 
-    /// Watch the caret so a block commits when the author leaves it, and
-    /// flush on blur so leaving the editor entirely does not lose the edit.
+    /// Commit as the author types, and flush on blur so leaving the editor
+    /// does not wait for the next change.
     fn install_editor_listeners(self: &Rc<Self>) {
-        // The block the caret last sat in, as a top-level child index.
-        let last: Rc<std::cell::Cell<i32>> = Rc::new(std::cell::Cell::new(-1));
-
-        // `<tonk-prose>` dispatches only `ready` and `change`, and
-        // `selectionchange` fires on `document`, never on an element — so the
-        // caret is sampled on each debounced `change` rather than watched
-        // directly. An edit that stays inside one block therefore does not
-        // commit; moving to another block does, on that block's first
-        // keystroke. Blur covers leaving without typing again.
+        // Commit on every debounced `change`, not only when the caret
+        // leaves a block. Holding edits until then left the author's text
+        // in the editor alone for as long as they stayed in one block: a
+        // reload lost it, and every other replica's edit was held back
+        // behind it. The debounce already coalesces a burst of typing, and
+        // the block diff writes only the block that changed.
         let notebook = self.clone();
-        let tracked = last.clone();
         let on_change = Closure::wrap(Box::new(move |event: Event| {
             // The inner editor's `change` is ITS event, and it bubbles and is
-            // composed. Left alone it reaches the host, where the view has
-            // wired `onblockedit`/command handlers, and its `{value, content}`
-            // detail fails to resolve `source`. Worse, `project_blocks`'
-            // `.value` write goes through `setMarkdown`, which dispatches a
-            // transaction and so fires this event too — the notebook's own
-            // projection would raise an edit command for a change nobody made.
-            // Stop it here; the notebook re-emits its own `blockedit` per
-            // changed block on commit.
+            // composed. Left alone it reaches the host, where the view may
+            // have wired command handlers. Stop it here.
             event.stop_propagation();
-            let index = notebook.caret_block_index().unwrap_or(-1);
-            if tracked.get() >= 0 && index != tracked.get() {
-                notebook.clone().commit_when_settled();
-            }
-            tracked.set(index);
             notebook.mark_active_block();
+            // A cell's `<tonk-code>` fires `change` per keystroke, composed,
+            // so it arrives here retargeted to the prose host. Only prose's
+            // own debounced `change` carries a `content` envelope; the
+            // cell's keystroke reaches prose's document, and so its next
+            // debounced `change`, anyway.
+            let detail = event
+                .dyn_ref::<CustomEvent>()
+                .map(|c| c.detail())
+                .unwrap_or(JsValue::NULL);
+            if js_sys::Reflect::has(&detail, &"content".into()).unwrap_or(false) {
+                notebook.commit();
+            }
         }) as Box<dyn FnMut(Event)>);
         let _ = self
             .prose
             .add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
         self.closures.borrow_mut().push(on_change);
+
+        // The editor normalizes the text it was handed when its core
+        // mounts. Take that as the base, or the first projection reads the
+        // normalization as typing and commits it.
+        //
+        // Prose's own `ready` only. Every cell's `<tonk-code>` fires one
+        // too, composed, so it arrives here retargeted to the prose host;
+        // taking the editor's text as the base then swallowed whatever the
+        // author had typed since the last commit, and the next projection
+        // wrote the rows back over it. A fence typed as "```lang" + Enter
+        // turned back into a paragraph and the caret fell out of the editor.
+        let notebook = self.clone();
+        let on_ready = Closure::wrap(Box::new(move |event: Event| {
+            let origin = event.composed_path().get(0);
+            let prose: &JsValue = notebook.prose.as_ref();
+            if origin == *prose && notebook.projected_once.get() {
+                notebook.settle_base();
+            }
+        }) as Box<dyn FnMut(Event)>);
+        let _ = self
+            .prose
+            .add_event_listener_with_callback("ready", on_ready.as_ref().unchecked_ref());
+        self.closures.borrow_mut().push(on_ready);
 
         // Moving the caret without typing still moves the block, so the
         // highlight tracks `selectionchange` too.
@@ -1205,12 +1345,15 @@ impl Notebook {
         }
         self.selection_listener.borrow_mut().replace(on_selection);
 
-        // Leaving the editor is also leaving the block. `focusout` (not
-        // `blur`) because blur does not bubble out of the editor's inner
+        // Leaving the editor commits at once. `focusout` (not `blur`)
+        // because blur does not bubble out of the editor's inner
         // contenteditable to the host element.
+        //
+        // `<tonk-prose>`'s value is its live document, so there is nothing
+        // to wait for: a cell's keystrokes reach it synchronously.
         let notebook = self.clone();
         let on_blur = Closure::wrap(Box::new(move |_event: Event| {
-            notebook.clone().commit_when_settled();
+            notebook.commit();
         }) as Box<dyn FnMut(Event)>);
         let _ = self
             .prose
@@ -1436,10 +1579,12 @@ impl Notebook {
                     // no evaluation. Which is exactly what a second code block
                     // looked like.
                     //
-                    // Only keys the LSP buffer and the cell map; nothing
+                    // Global across notebooks, because the id names the LSP
+                    // buffer. Only keys the buffer and the cell map; nothing
                     // persists it (see `plan/notebook.md`, open question 4).
-                    let id = self.next_cell.get().to_string();
-                    self.next_cell.set(self.next_cell.get() + 1);
+                    let id = NEXT_CELL
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        .to_string();
                     let _ = wrapper.dataset().set("notebookCell", &id);
                     id
                 }
@@ -1521,43 +1666,23 @@ impl Cell {
             editor.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
         notebook.closures.borrow_mut().push(closure);
 
-        // Commit when the caret LEAVES this cell.
-        //
-        // The document-level tracking watches prose's top-level block index,
-        // which an edit inside a fence never moves — the caret is in the
-        // fence's own CodeMirror, not in the prose document. Without this a
-        // cell's edits are never written at all: you change a query, click
-        // away, and the next projection restores the old text.
-        let leaving = notebook.clone();
-        let on_blur = Closure::wrap(Box::new(move |_event: Event| {
-            // Let prose settle before reading it. `commit` serializes the
-            // PROSE document, and a fence's live text reaches that document
-            // through the node view's forwarding, behind prose's own 400ms
-            // change debounce. Reading on the blur tick captures the document
-            // mid-word: changing `concept:` to `name:` stored `n:`, the state
-            // at the instant the first keystroke had propagated.
-            //
-            // Longer than that debounce, so what is read is the settled
-            // document rather than a prefix of it.
-            leaving.clone().commit_when_settled();
-        }) as Box<dyn FnMut(Event)>);
-        let _ =
-            editor.add_event_listener_with_callback("focusout", on_blur.as_ref().unchecked_ref());
-        notebook.closures.borrow_mut().push(on_blur);
+        // Leaving a cell needs no listener of its own: `focusout` is
+        // composed, so the cell's reaches the prose host, whose listener
+        // commits.
 
         let cell = Cell {
             editor: editor.clone(),
             result,
         };
 
-        cell.install(notebook, id);
+        cell.install(notebook);
         cell
     }
 
     /// Listen for the editor's `diagnostics` frame and evaluate on a clean
     /// one. Mirrors the inspector's auto-evaluate: the LSP has just validated
     /// the buffer, so this is the moment the document is worth running.
-    fn install(&self, notebook: &Rc<Notebook>, id: &str) {
+    fn install(&self, notebook: &Rc<Notebook>) {
         let editor = self.editor.clone();
         // In-flight guard: a diagnostics burst must not stack evaluates, and
         // a late reply from a superseded run must not overwrite a newer one.
@@ -1566,8 +1691,6 @@ impl Cell {
         let cell_result = self.result.clone();
         let cell_editor = editor.clone();
         let held_closures = notebook.closures.clone();
-        let notebook_for_cell = notebook.clone();
-        let cell_id = id.to_owned();
         // The notebook's own routing context, handed to every card this cell
         // renders. Results live in prose's shadow root, and context
         // resolution reads an element's own `with` rather than walking
@@ -1595,19 +1718,6 @@ impl Cell {
                 cell_result.set_inner_html("");
                 return;
             }
-            // Store the text we are ABOUT TO RUN, not a re-read of the
-            // document later.
-            //
-            // A cell's stored source and its rendered result must be the same
-            // text — otherwise a notebook shows an answer to a question it
-            // does not contain. Re-reading the prose document at commit time
-            // could not guarantee that: prose coalesces edits behind a
-            // debounce, so the read raced the typing and stored a prefix
-            // (`concept:` edited to `name:` was stored as `n:`).
-            //
-            // Handing the evaluated body straight to the notebook removes the
-            // race rather than timing around it: what ran is what is written.
-            notebook_for_cell.record_cell_source(&cell_id, &body);
             // A mutation cell is recognized but never auto-run: there is
             // nowhere for its writes to land yet (checkpoints are a later
             // step), and running it against the live branch is exactly what
