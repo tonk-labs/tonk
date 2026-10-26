@@ -26,9 +26,15 @@ if name == 'security':
     elif args[0] == 'import' and os.environ.get('SIGN_TEST_FAILURE') == 'import': sys.exit(1)
 elif name == 'nix':
     if os.environ.get('SIGN_TEST_FAILURE') == 'build': sys.exit(1)
-    app = root/'desktop/.build/Tonk.app/Contents'; app.mkdir(parents=True)
-    (app/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'xyz.tonk','TonkDirectPasskeyEnabled':True}))
-    (app/'embedded.provisionprofile').write_bytes(pathlib.Path(os.environ['TONK_PROVISIONING_PROFILE']).read_bytes())
+    nightly = os.environ.get('TONK_DESKTOP_CHANNEL') == 'nightly'
+    app = root/('desktop/.build/Tonk Nightly.app' if nightly else 'desktop/.build/Tonk.app')/'Contents'
+    app.mkdir(parents=True)
+    info = {'CFBundleIdentifier': 'xyz.tonk.nightly' if nightly else 'xyz.tonk',
+            'TonkChannel': 'nightly' if nightly else 'stable'}
+    if 'TONK_PROVISIONING_PROFILE' in os.environ:
+        info['TonkDirectPasskeyEnabled'] = True
+        (app/'embedded.provisionprofile').write_bytes(pathlib.Path(os.environ['TONK_PROVISIONING_PROFILE']).read_bytes())
+    (app/'Info.plist').write_bytes(plistlib.dumps(info))
 elif name == 'codesign':
     if '-dv' in args: print('TeamIdentifier=8WVKS2F24C', file=sys.stderr)
     if '--entitlements' in args:
@@ -43,20 +49,21 @@ elif name == 'ditto': pathlib.Path(args[-1]).write_bytes(b'fixture archive')
 
 
 class SigningLifecycleTests(unittest.TestCase):
-    def exercise(self, failure=None):
+    def exercise(self, failure=None, channel=None, nightly_profile=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             scripts = root/'desktop/scripts'
             scripts.mkdir(parents=True)
-            for name in ['ci-sign.sh', 'passkey-entitlements.py']:
+            for name in ['ci-sign.sh', 'channel.sh', 'passkey-entitlements.py']:
                 shutil.copy(SCRIPTS/name, scripts/name)
             profile = {
                 'ExpirationDate': datetime.datetime(2044, 1, 1),
                 'DeveloperCertificates': [CERT if failure != 'certificate' else b'other'],
                 'Entitlements': {
-                    'com.apple.application-identifier': '8WVKS2F24C.xyz.tonk',
+                    'com.apple.application-identifier': '8WVKS2F24C.xyz.tonk' + ('.nightly' if nightly_profile else ''),
                     'com.apple.developer.team-identifier': '8WVKS2F24C',
-                    'com.apple.developer.associated-domains': ['webcredentials:tonk.network'],
+                    'com.apple.developer.associated-domains': [
+                        'webcredentials:tonk.foundation' if nightly_profile else 'webcredentials:tonk.network'],
                 },
             }
             (root/'profile.plist').write_bytes(plistlib.dumps(profile))
@@ -74,6 +81,14 @@ class SigningLifecycleTests(unittest.TestCase):
                            'TONK_PROVISIONING_PROFILE_BASE64': 'cHJvZmlsZQ==',
                            'SIGN_TEST_ROOT': str(root), 'SIGN_TEST_ID': IDENTITY,
                            'SIGN_TEST_FAILURE': failure or ''}
+            # Pin the channel and profiles: CI runs these tests inside a nightly job.
+            for name in ['TONK_NIGHTLY_PROVISIONING_PROFILE_BASE64', 'TONK_PROVISIONING_PROFILE']:
+                environment.pop(name, None)
+            environment['TONK_DESKTOP_CHANNEL'] = channel or 'stable'
+            if channel:
+                del environment['TONK_PROVISIONING_PROFILE_BASE64']
+                if nightly_profile:
+                    environment['TONK_NIGHTLY_PROVISIONING_PROFILE_BASE64'] = 'cHJvZmlsZQ=='
             result = subprocess.run(['bash', str(scripts/'ci-sign.sh')], env=environment,
                                     capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode == 0, failure is None, result.stderr)
@@ -83,11 +98,20 @@ class SigningLifecycleTests(unittest.TestCase):
             self.assertNotIn('fixture-password', result.stdout+result.stderr)
             archive = root/'desktop/artifacts/Tonk-macos-arm64.zip'
             self.assertEqual(archive.exists(), failure is None)
+            if failure is None:
+                profiled = channel is None or nightly_profile
+                self.assertEqual('security:cms' in (root/'calls').read_text(), profiled)
             if failure == 'certificate':
                 self.assertNotIn('nix:', (root/'calls').read_text())
 
     def test_success_and_cleanup(self):
         self.exercise()
+
+    def test_nightly_signs_without_passkeys_until_its_profile_exists(self):
+        self.exercise(channel='nightly')
+
+    def test_nightly_signs_with_its_own_passkey_profile(self):
+        self.exercise(channel='nightly', nightly_profile=True)
 
     def test_failure_cleanup_and_no_uploadable_archive(self):
         for failure in ['import', 'certificate', 'build', 'entitlements']:

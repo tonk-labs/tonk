@@ -46,6 +46,16 @@
 //! claims it from the access service at the link's origin; see
 //! [`ticket`].
 //!
+//! ## Join addresses
+//!
+//! ```text
+//! <origin>/join/<link>
+//! ```
+//!
+//! Any of the links above, carried whole after another host's `/join/`,
+//! so a recipient joins on the host they keep their account on; see
+//! [`join_address`].
+//!
 //! The open/scoped distinction is the *audience* axis. The *subject* axis is
 //! always scoped to a specific repo — orthogonal and non-negotiable.
 //!
@@ -55,6 +65,7 @@
 mod attribution;
 pub mod connection;
 pub mod delivery;
+pub mod join_address;
 pub mod local_space_link;
 pub mod public;
 pub mod shortcut;

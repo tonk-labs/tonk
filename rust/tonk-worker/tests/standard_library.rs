@@ -1221,8 +1221,20 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
     assert!(!failure.contains("tonk-join-retry"));
     assert!(!failure.contains("join this space"));
     assert!(!failure.contains("start a new space"));
-    assert!(!route.contains("<form"));
-    assert!(!route.contains("<input"));
+    // The only form is the bare /join page's paste field, which joins
+    // through the same command the page's own location does; the
+    // failure wall above stays a closed wall with no field of its own.
+    assert_eq!(route.matches("<form").count(), 1);
+    assert_eq!(route.matches("<input").count(), 1);
+    let paste = route
+        .split("<join-paste")
+        .nth(1)
+        .and_then(|tail| tail.split("</join-paste>").next())
+        .expect("the paste form lives in <join-paste>");
+    assert!(paste.contains("<form") && paste.contains("<input"));
+    assert!(route.contains("<join-paste class=\"join-paste\" on:join=tonk:join>"));
+    assert!(route.contains(".join-paste { display:none; }"));
+    assert!(route.contains(".join-view[data-path=\"/join\"] .join-paste"));
     assert!(!route.contains("tonk-invite-link"));
     assert!(route.contains("<page-mount on:join=tonk:join>"));
     assert_eq!(failure.matches("class=\"ebtn solid\"").count(), 1);
@@ -1261,7 +1273,7 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
     assert!(PROFILE_LIBRARY.contains("class=\"join-opening-status\""));
     assert!(PROFILE_LIBRARY.contains("class=\"tonk-pulse\""));
     assert!(route.contains(
-        ".join-view:has(.join-status-slot[data-state=\"ready\"]):not(:has(.edge-wall--closed))"
+        ".join-view:not([data-path=\"/join\"]):has(.join-status-slot[data-state=\"ready\"]):not(:has(.edge-wall--closed))"
     ));
 
     let action = css_rule(route, ".ebtn {");
