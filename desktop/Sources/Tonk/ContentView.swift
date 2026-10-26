@@ -227,10 +227,7 @@ struct ContentView: View {
 
   private var newChatAction: (() -> Void)? {
     guard isSpace, model.openedSpace != nil, !chatActionsDisabled else { return nil }
-    return {
-      model.startSpaceChat()
-      showHistory = false
-    }
+    return startNewChat
   }
 
   private var viewTitle: String? {
@@ -360,9 +357,6 @@ struct ContentView: View {
 
     }
     .background(DesktopStyle.group)
-    .safeAreaInset(edge: .top, spacing: 0) {
-      chatHeader.padding(.bottom, 10).background(DesktopStyle.group)
-    }
     .safeAreaInset(edge: .bottom, spacing: 0) { composer }
   }
 
@@ -373,29 +367,48 @@ struct ContentView: View {
   }
 
   private var viewSidebar: some View {
-    VStack(spacing: 10) {
+    VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 6) {
         ViewWindowControls().frame(width: 56, height: 28).padding(.leading, 6)
         Spacer(minLength: 4)
+        ViewChromeButton(title: "New Chat (⇧⌘N)", asset: "r2IconSquarePen", action: startNewChat)
+          .disabled(chatActionsDisabled)
+        allChatsButton
         viewSidebarToggle
-        viewMoreMenu
       }.frame(height: 36).background(ViewWindowDragRegion())
-      HStack(spacing: 6) {
-        viewAddress
-        if let space = model.openedSpace {
-          // The share capsule is 32 points, the breadcrumb pill's height.
-          SpaceShareControl(space: space, access: access, compact: true, surface: .workspace)
-        }
-      }
+      Text(showHistory ? "Chats" : chatTitle).font(.system(size: 13, weight: .semibold))
+        .lineLimit(1).help(showHistory ? "Chats" : chatTitle)
+        .padding(.leading, 6).accessibilityAddTraits(.isHeader)
       if showHistory {
         ChatHistoryView(
-          model: model, space: model.openedSpace, onOpen: openHistory,
-          inline: true, onShowChat: { showHistory = false })
+          model: model, space: model.openedSpace, onOpen: openHistory, onNewChat: startNewChat)
       } else {
         chat
       }
     }.padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 8)
       .background(DesktopStyle.group)
+  }
+
+  private func startNewChat() {
+    model.startSpaceChat()
+    showHistory = false
+  }
+
+  /// Switches the sidebar between the open chat and the list of chats.
+  private var allChatsButton: some View {
+    Button {
+      if !showHistory { model.saved.checkpointChat() }
+      showHistory.toggle()
+    } label: {
+      DesktopGlyph(name: "r2IconList", size: 15)
+    }
+    .nativeControl(circular: true).controlSize(.large)
+    .background(showHistory ? Color.primary.opacity(0.1) : .clear, in: Circle())
+    .help(showHistory ? "Back to chat (⇧⌘H)" : "All chats (⇧⌘H)")
+    .accessibilityLabel("All chats")
+    .accessibilityAddTraits(showHistory ? .isSelected : [])
+    .keyboardShortcut("h", modifiers: [.command, .shift])
+    .disabled(chatActionsDisabled)
   }
 
   private var viewSidebarToggle: some View {
@@ -409,10 +422,6 @@ struct ContentView: View {
       Button("Refresh", action: refreshContent).disabled(refreshDisabled)
       Button("Open in Browser", action: openSpaceInBrowser)
       Button("Chat Agent Settings…") { openChatSettings() }
-      Button("All Chats") {
-        showingChat = true
-        showHistory = true
-      }
     } label: {
       Label {
         Text("More Options")
@@ -438,24 +447,38 @@ struct ContentView: View {
           .help(viewTitle ?? "Home")
       }
       Spacer(minLength: 0)
-    }.font(.system(size: 13)).padding(.horizontal, 10).frame(height: 32)
-      .background(
-        showingChat ? Color(nsColor: .textBackgroundColor) : Color.clear,
-        in: RoundedRectangle(cornerRadius: 10))
+    }.font(.system(size: 13)).frame(height: 32)
+  }
+
+  /// With the chat open, the space's own controls sit on the view card, so the
+  /// chat sidebar holds only chat.
+  private var cardHeader: some View {
+    HStack(spacing: 8) {
+      viewAddress
+      if let space = model.openedSpace {
+        SpaceShareControl(space: space, access: access, compact: true, surface: .workspace)
+      }
+      viewMoreMenu
+    }.padding(.leading, 14).padding(.trailing, 8).frame(height: 44)
+      .background(Color(nsColor: .windowBackgroundColor))
+      .overlay(alignment: .bottom) { Divider() }
   }
 
   private var viewDetail: some View {
-    workspace
-      .clipShape(RoundedRectangle(cornerRadius: showingChat ? 12 : 0))
-      .padding(.vertical, showingChat ? 8 : 0).padding(.trailing, showingChat ? 8 : 0)
-      .background(DesktopStyle.group)
+    VStack(spacing: 0) {
+      if showingChat { cardHeader }
+      workspace
+    }
+    .clipShape(RoundedRectangle(cornerRadius: showingChat ? 12 : 0))
+    .padding(.vertical, showingChat ? 8 : 0).padding(.trailing, showingChat ? 8 : 0)
+    .background(DesktopStyle.group)
   }
 
   private var collapsedChrome: some View {
     HStack(spacing: 10) {
       ViewWindowControls().frame(width: 56, height: 28)
       viewSidebarToggle
-      viewAddress.frame(maxWidth: 340)
+      viewAddress.padding(.horizontal, 10).frame(maxWidth: 340)
       Spacer(minLength: 0)
       if let space = model.openedSpace {
         SpaceShareControl(space: space, access: access, surface: .workspace)
@@ -479,29 +502,6 @@ struct ContentView: View {
         showHistory = false
       }
     }
-  }
-
-  private var chatHeader: some View {
-    VStack(alignment: .leading, spacing: 1) {
-      HStack(spacing: 6) {
-        Button {
-          model.saved.checkpointChat()
-          showHistory = true
-        } label: {
-          Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold))
-            .frame(width: 20, height: 20)
-        }
-        .nativeControl(circular: true).controlSize(.large)
-        .help("All chats (⇧⌘H)").accessibilityLabel("All chats")
-        .disabled(chatActionsDisabled).keyboardShortcut("h", modifiers: [.command, .shift])
-        Text(chatTitle).font(.system(size: 13, weight: .semibold)).lineLimit(1).help(chatTitle)
-        Spacer(minLength: 0)
-        ViewChromeButton(title: "New Chat", asset: "r2IconSquarePen") { model.startSpaceChat() }
-          .disabled(chatActionsDisabled)
-      }
-      Text("Chat agent · edits \(model.openedSpace?.title ?? "this space") as you")
-        .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2).padding(.leading, 34)
-    }.padding(.leading, 2).padding(.top, 6)
   }
 
   /// A quick model switch in place; the full settings stay one item away.
