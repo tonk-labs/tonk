@@ -40,31 +40,36 @@ const HOST_PREFIXES = ["/_host/", "/.well-known/"];
 
 const log = (...args) => console.log("[Space Kernel]", ...args);
 
-// What the kernel wrote since the last time, kept a moment after each write
-// so a burst is kept at once.
-let draining = null;
-function drainSoon(embedder) {
-    draining ??= new Promise(resolve => setTimeout(resolve, 50))
-        .then(() => embedder.drain())
-        .then(keep)
-        .catch(error => log("what the kernel wrote was not kept:", error))
-        .finally(() => {
-            draining = null;
-        });
-    return draining;
+// What the kernel wrote since the last time, kept in the order it wrote it.
+// An answer goes out once what its request wrote is kept, so a worker stopped
+// right after answering loses nothing it answered for.
+let keeping = Promise.resolve();
+function keepWrites(embedder) {
+    const written = keeping.then(() => embedder.drain()).then(keep);
+    keeping = written.catch(error => log("what the kernel wrote was not kept:", error));
+    return written;
 }
 
-// The body of an answer of the kernel, as it writes it.
-function bodyOf(embedder, reply) {
+// The body of an answer of the kernel, as it writes it, ending once what it
+// wrote along the way is kept. The worker stays up until it ends.
+function bodyOf(embedder, reply, event) {
+    let ended;
+    event.waitUntil(new Promise(resolve => (ended = resolve)));
     return new ReadableStream({
         async pull(controller) {
-            const piece = await reply.body.next();
-            drainSoon(embedder);
-            if (piece) controller.enqueue(piece);
-            else controller.close();
+            try {
+                const piece = await reply.body.next();
+                if (piece) return controller.enqueue(piece);
+                await keepWrites(embedder);
+                controller.close();
+            } catch (error) {
+                controller.error(error);
+            }
+            ended();
         },
         cancel() {
             reply.body.cancel();
+            keepWrites(embedder).finally(ended);
         },
     });
 }
@@ -375,7 +380,10 @@ function hostPage(status) {
 // relay in it, or the host's page.
 function framed(reply) {
     const type = reply.headers.get("content-type") ?? "";
-    if (!/^text\/html/i.test(type) || !reply.body) return hostPage(reply.status);
+    if (!/^text\/html/i.test(type) || !reply.body) {
+        reply.body?.cancel();
+        return hostPage(reply.status);
+    }
     const headers = new Headers(reply.headers);
     headers.delete("content-length");
     return new Response(withRelay(reply.body), { status: reply.status, headers });
@@ -386,9 +394,9 @@ async function serveKernel(event) {
     const url = new URL(event.request.url);
     const body = new Uint8Array(await event.request.arrayBuffer());
     const reply = await embedder.handle(event.request.method, url.pathname + url.search, [...event.request.headers], body);
-    drainSoon(embedder);
+    await keepWrites(embedder);
     const bodiless = reply.status === 204 || reply.status === 304 || event.request.method === "HEAD";
-    const response = new Response(bodiless ? null : bodyOf(embedder, reply), {
+    const response = new Response(bodiless ? null : bodyOf(embedder, reply, event), {
         status: reply.status,
         headers: reply.headers,
     });
@@ -404,17 +412,17 @@ async function answerCall(port, { call, request }) {
         const embedder = await booting;
         const body = new Uint8Array(await new Response(request.body ?? null).arrayBuffer());
         const reply = await embedder.handle(request.method, request.path, request.headers ?? [], body);
-        drainSoon(embedder);
+        await keepWrites(embedder);
         calls.set(call, reply.body);
         port.postMessage({ call, head: { status: reply.status, headers: reply.headers } });
         for (;;) {
             const piece = await reply.body.next();
-            drainSoon(embedder);
             if (!piece) break;
-            if (!calls.has(call)) return;
+            if (!calls.has(call)) return await keepWrites(embedder);
             const chunk = piece.buffer.slice(piece.byteOffset, piece.byteOffset + piece.byteLength);
             port.postMessage({ call, chunk }, [chunk]);
         }
+        await keepWrites(embedder);
         port.postMessage({ call, end: true });
     } catch (error) {
         restartIfStopped(error);

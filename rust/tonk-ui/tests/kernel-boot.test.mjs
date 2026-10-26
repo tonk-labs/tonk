@@ -64,11 +64,14 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
   const fetched = [];
   const store = indexedDB();
   const pages = [{ postMessage: (message) => void told.push(message) }];
+  // What the kernel wrote that the bootloader has not drained yet.
+  const written = [];
   const embedder = {
-    drain: async () => [],
+    drain: async () => written.splice(0),
     timings: {},
     handle: async (method, path) => {
       handled.push(`${method} ${path}`);
+      if (path === "/write") written.push({ kind: "cell", subject: SPACE, namespace: "branch/main", cell: "revision", value: 1 });
       const [status, text, type = "text/plain"] =
         path === "/api/identify" ? [200, JSON.stringify({ did: "did:key:zKernel" })]
         : path === "/.kernel/adopt" ? [204, ""]
@@ -182,9 +185,16 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
       respondWith: (response) => void (responded = response),
       waitUntil: (promise) => void waits.push(promise),
     });
+    // A body is read as a page reads it, and the worker's work waited for
+    // after, since some of it lasts as long as the body does.
     const response = await responded;
+    if (!response?.body) {
+      await Promise.all(waits);
+      return response;
+    }
+    const body = await response.arrayBuffer();
     await Promise.all(waits);
-    return response;
+    return new Response(body, response);
   };
   const message = (data) => {
     let answered;
@@ -316,6 +326,19 @@ test("the host's own files come from the network, and are kept for when it does 
   site.goOffline();
   const kept = await site.request("/space.html", { mode: "navigate" });
   assert.match(await kept.text(), /SHELL/, "offline, the kept copy answers");
+});
+
+test("an answer goes out once what its request wrote is kept", async () => {
+  const site = space();
+  site.handPort();
+  let responded;
+  site.listeners.fetch({
+    request: { url: `${ORIGIN}/write`, method: "POST", mode: "cors", headers: new Headers(), arrayBuffer: async () => new ArrayBuffer(0) },
+    respondWith: (response) => void (responded = response),
+    waitUntil() {},
+  });
+  await responded;
+  assert.ok(site.store.stores.get("records").has(`cell|${SPACE}|branch/main|revision`), "kept before the answer");
 });
 
 test("the worker speaks the shell's protocol", () => {
