@@ -117,12 +117,10 @@ pub struct RegisterDeviceRequest {
 /// is where the label is known, and asserting there is what makes the
 /// row reach every device without a registry to ask.
 ///
-/// The push is what makes registration visible before the grant is even
-/// delivered: the waiting device's first account pull brings the row
-/// down with the authority it describes. A profile with no provider keeps
-/// the row local. Otherwise, if the one-shot push races the worker's ordinary
-/// account sweep, finish through that serialized sweep before delivering the
-/// grant.
+/// The push is what makes registration visible to every other device. A
+/// profile with no provider keeps the row local. Otherwise, if the one-shot
+/// push races the worker's ordinary account sweep, finish through that
+/// serialized sweep.
 ///
 /// [`DeviceLink`]: tonk_schema::DeviceLink
 #[wasm_compat]
@@ -132,7 +130,21 @@ pub async fn register(
 ) -> Result<Json<serde_json::Value>, TonkWorkerError> {
     let mut timing = super::link_timing::LinkTiming::new("registration", "state-lock");
     let state = state.read().await;
-    timing.next("decode-grant");
+    timing.next("record-device");
+    let attachment_id = record_device(&state, request).await?;
+    timing.next("publish-device");
+    publish_registration(&state).await?;
+    timing.next("reply");
+    Ok(Json(serde_json::json!({ "attachmentId": attachment_id })))
+}
+
+/// Retain the device's grant and describe it on profile main, locally.
+/// Answers the attachment id: the delegation CID, which names the exact
+/// grant this registration described.
+pub(crate) async fn record_device(
+    state: &TonkState,
+    request: RegisterDeviceRequest,
+) -> Result<String, TonkWorkerError> {
     let bytes = hex::decode(&request.delegation_hex).map_err(|error| {
         TonkWorkerError::Conflict(format!("device delegation is not valid hex: {error}"))
     })?;
@@ -148,37 +160,38 @@ pub async fn register(
             request.did
         )));
     }
-    timing.next("describe-device");
-    crate::onboarding::describe_device_link(&state, &chain, request.name)
+    crate::onboarding::describe_device_link(state, &chain, request.name)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("describe the registered device: {error}"))
         })?;
-    timing.next("push-account");
-    if let Err(push_error) = super::account_state::push_account_main(&state).await {
-        timing.next("fallback-sweep");
-        let (status, swept) = super::account_state::ensure_account_state_swept(&state).await;
-        match status {
-            tonk_account::AccountStateStatus::Unconfigured => {
-                log!("registered device remains local: {push_error}");
-            }
-            tonk_account::AccountStateStatus::Unhydrated => {
-                return Err(TonkWorkerError::Internal(format!(
-                    "publish the registered device after {push_error}: account state is {status:?}"
-                )));
-            }
-            tonk_account::AccountStateStatus::Ready => swept.map_err(|sweep_error| {
-                TonkWorkerError::Internal(format!(
-                    "publish the registered device after {push_error}: {sweep_error}"
-                ))
-            })?,
+    Ok(chain.proof_cids()[0].to_string())
+}
+
+/// Push a recorded registration to the account remote.
+///
+/// A refused push means another device moved the account since this one
+/// last synced, and finishing means pulling the account first, so it is
+/// done through the serialized sweep.
+pub(crate) async fn publish_registration(state: &TonkState) -> Result<(), TonkWorkerError> {
+    let Err(push_error) = super::account_state::push_account_main(state).await else {
+        return Ok(());
+    };
+    let (status, swept) = super::account_state::ensure_account_state_swept(state).await;
+    match status {
+        tonk_account::AccountStateStatus::Unconfigured => {
+            log!("registered device remains local: {push_error}");
+            Ok(())
         }
+        tonk_account::AccountStateStatus::Unhydrated => Err(TonkWorkerError::Internal(format!(
+            "publish the registered device after {push_error}: account state is {status:?}"
+        ))),
+        tonk_account::AccountStateStatus::Ready => swept.map_err(|sweep_error| {
+            TonkWorkerError::Internal(format!(
+                "publish the registered device after {push_error}: {sweep_error}"
+            ))
+        }),
     }
-    // The delegation CID is the attachment id now: it names the exact
-    // grant this registration described, which is what the id was for.
-    timing.next("reply");
-    let attachment_id = chain.proof_cids()[0].to_string();
-    Ok(Json(serde_json::json!({ "attachmentId": attachment_id })))
 }
 
 /// Prefer the portable account-space fact; fall back to what the provider

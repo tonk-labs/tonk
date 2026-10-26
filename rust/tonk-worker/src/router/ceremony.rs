@@ -365,28 +365,35 @@ async fn authorize_device_inner(
     let authorized = tonk_identity::ceremony::authorize_device(root, audience, &remote)
         .await
         .map_err(|error| format!("the device grant did not sign: {error:#}"))?;
-    // The service only accepts device registration from an active
-    // member, which this browser is and the waiting device is not:
-    // register it here, before the grant is delivered, so a device that
-    // installs the grant is already listed and able to reach the service.
-    timing.next("register-device");
-    let registered = super::account_devices::register(
-        axum::extract::State(state.clone()),
-        axum::Json(super::account_devices::RegisterDeviceRequest {
-            did: authorization.audience.clone(),
-            name: authorization.name.clone(),
-            delegation_hex: authorized.delegation_hex.clone(),
-        }),
-    )
-    .await
-    .map_err(|error| format!("the device was not registered: {error}"))?;
+    // Describe the device here, the side that mints the grant and knows
+    // its label, so it is listed and revocable. Only the local record
+    // gates delivery: the service authorizes the device by its chain
+    // alone, and publishing can need a pull of the whole account first,
+    // so the waiting device gets its grant without waiting on that.
+    timing.next("record-device");
+    let attachment_id = {
+        let tonk = state.read().await;
+        super::account_devices::record_device(
+            &tonk,
+            super::account_devices::RegisterDeviceRequest {
+                did: authorization.audience.clone(),
+                name: authorization.name.clone(),
+                delegation_hex: authorized.delegation_hex.clone(),
+            },
+        )
+        .await
+        .map_err(|error| format!("the device was not registered: {error}"))?
+    };
+    let publishing = state.clone();
+    crate::detach(async move {
+        let mut timing = super::link_timing::LinkTiming::new("registration", "state-lock");
+        let tonk = publishing.read().await;
+        timing.next("publish-device");
+        if let Err(error) = super::account_devices::publish_registration(&tonk).await {
+            log!("the registered device stays local until a later sweep: {error}");
+        }
+    });
     timing.next("encode-callback");
-    let attachment_id = registered
-        .0
-        .get("attachmentId")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
     let payload = serde_json::json!({
         "delegationHex": authorized.delegation_hex,
         // The grant's signed meta is the authoritative address; this
