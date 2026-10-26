@@ -221,7 +221,9 @@ pub(crate) async fn detach_test_account(
     Ok(())
 }
 
-async fn status(state: &crate::worker::TonkState) -> Result<AccountStatus, TonkWorkerError> {
+pub(super) async fn status(
+    state: &crate::worker::TonkState,
+) -> Result<AccountStatus, TonkWorkerError> {
     let device_did = state.profile.did().to_string();
     let root = match super::identity::local_root(state).await {
         Ok(root) => root,

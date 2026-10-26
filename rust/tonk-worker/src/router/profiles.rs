@@ -474,9 +474,12 @@ pub(crate) async fn sign_out(
         // lands between the two halves of the withdrawal, while the
         // chain still proves this device may read what it writes into.
         let withdrawal = super::account_devices::begin_withdrawal(&tonk).await;
-        let status = super::account::disconnect(&tonk).await;
+        let disconnected = super::account::disconnect(&tonk).await;
         super::account_devices::finish_withdrawal(&tonk, withdrawal).await;
-        let status = status?;
+        disconnected?;
+        // Read once the withdrawal has forgotten the root, so the status
+        // reports the grant gone.
+        let status = super::account::status(&tonk).await?;
         super::profile::leave_account(&tonk).await;
         (
             status,
