@@ -7,10 +7,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
-# The boot cell's codec and what a credential signs, which the host reads too.
+# The boot cell's codec, which the host reads too.
 blake3 = { workspace = true }
-ipld-core = { workspace = true }
-serde_ipld_dagcbor = { workspace = true }
 
 # Everything else is for a component on WASI.
 [target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
@@ -31,9 +29,7 @@ dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-credentials = { workspace = true }
-dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
-ed25519-dalek = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints.rust]

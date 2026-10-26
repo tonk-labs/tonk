@@ -1,7 +1,7 @@
 //! A credential, as a signer of Dialog DB. A credential is a resource of the
 //! host; this side holds its public key. Dialog DB builds what it signs and
-//! hands the bytes over; this reads them into a payload ([`crate::payload`])
-//! and has the host sign that, so no key is in the memory of the guest kernel.
+//! hands the bytes over, and the host signs them, so no key is in the memory
+//! of the guest kernel.
 
 use std::rc::Rc;
 
@@ -16,69 +16,17 @@ use dialog_credentials::{
 
 use crate::guest::layer_error;
 use crate::layer::LayerError;
-use crate::payload::{self, Payload};
 use crate::world::sapling::kernel::credential::{self as world, Credential};
-
-/// `payload`, as the world names it.
-fn named(payload: Payload) -> world::Payload {
-    match payload {
-        Payload::Invocation(invocation) => world::Payload::Invocation(world::Invocation {
-            audience: invocation.audience,
-            subject: invocation.subject,
-            command: invocation.command,
-            arguments: invocation.arguments,
-            proofs: invocation.proofs,
-            cause: invocation.cause,
-            issued_at: invocation.issued_at,
-            expiration: invocation.expiration,
-            meta: invocation.meta,
-            nonce: invocation.nonce,
-        }),
-        Payload::Delegation(delegation) => world::Payload::Delegation(world::Delegation {
-            audience: delegation.audience,
-            subject: delegation.subject,
-            command: delegation.command,
-            policy: delegation.policy,
-            expiration: delegation.expiration,
-            not_before: delegation.not_before,
-            meta: delegation.meta,
-            nonce: delegation.nonce,
-        }),
-        Payload::Head(head) => world::Payload::Head(world::Head {
-            branch: head.branch,
-            tree: head.tree.to_vec(),
-            edition: head.edition,
-            context: head.context.map(|context| {
-                context
-                    .into_iter()
-                    .map(|watermark| world::Watermark {
-                        origin: watermark.origin.to_vec(),
-                        edition: watermark.edition,
-                        count: watermark.count,
-                    })
-                    .collect()
-            }),
-        }),
-        Payload::RevisionRecord(record) => {
-            world::Payload::RevisionRecord(world::RevisionRecord { body: record.body })
-        }
-    }
-}
 
 struct CredentialSign(Rc<Credential>);
 
 impl ExternalSign for CredentialSign {
     fn sign(&self, bytes: &[u8]) -> ExternalSigning {
         let credential = Rc::clone(&self.0);
-        let payload = payload::read(bytes, &credential.did());
+        let payload = world::Payload::Bytes(bytes.to_vec());
         Box::pin(async move {
-            let payload = payload.map_err(|reason| {
-                signature::Error::from_source(LayerError::Denied(format!(
-                    "a credential signs a UCAN, a head or a revision record: {reason}"
-                )))
-            })?;
             let signature = credential
-                .sign(named(payload))
+                .sign(payload)
                 .await
                 .map_err(|error| signature::Error::from_source(layer_error(error)))?;
             <[u8; 64]>::try_from(signature).map_err(|_| signature::Error::new())

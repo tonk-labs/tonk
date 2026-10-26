@@ -1,7 +1,7 @@
 //! The keys a guest kernel reaches through handles: `credential` and
 //! `session`. Every key stays here: as its seed, or as a signer whose seed
 //! nothing reads, as a browser keeps a session's key. A guest kernel signs
-//! what it can name as a payload, conceals its own messages to a DID, and
+//! the bytes it writes, conceals its own messages to a DID, and
 //! entrusts a key to a custodian whose key is here too, so no key reaches it.
 //!
 //! Not yet bound: an authority's key is held here as a credential's is, where
@@ -18,7 +18,6 @@ use dialog_credentials::secret::{Context, SealedSecret, SecretExtractableDerive}
 use dialog_varsig::Principal as _;
 use dialog_varsig::eddsa::Ed25519Signature;
 use ed25519_dalek::Signer as _;
-use tonk_kernel_world::payload::{self, Payload};
 use wcmp::{Accessor, Resource};
 use zeroize::Zeroizing;
 
@@ -235,60 +234,6 @@ fn fresh_seed() -> Result<Zeroizing<[u8; 32]>, Error> {
     Ok(seed)
 }
 
-/// `signed`, as the payload the guest kernel names.
-fn payload_of(signed: Signed) -> Result<Payload, Error> {
-    let hash = |bytes: Vec<u8>| {
-        <[u8; 32]>::try_from(bytes).map_err(|_| Error::Invalid("a hash is 32 bytes".into()))
-    };
-    Ok(match signed {
-        Signed::Invocation(invocation) => Payload::Invocation(payload::Invocation {
-            audience: invocation.audience,
-            subject: invocation.subject,
-            command: invocation.command,
-            arguments: invocation.arguments,
-            proofs: invocation.proofs,
-            cause: invocation.cause,
-            issued_at: invocation.issued_at,
-            expiration: invocation.expiration,
-            meta: invocation.meta,
-            nonce: invocation.nonce,
-        }),
-        Signed::Delegation(delegation) => Payload::Delegation(payload::Delegation {
-            audience: delegation.audience,
-            subject: delegation.subject,
-            command: delegation.command,
-            policy: delegation.policy,
-            expiration: delegation.expiration,
-            not_before: delegation.not_before,
-            meta: delegation.meta,
-            nonce: delegation.nonce,
-        }),
-        Signed::Head(head) => Payload::Head(payload::Head {
-            branch: head.branch,
-            tree: hash(head.tree)?,
-            edition: head.edition,
-            context: head
-                .context
-                .map(|context| {
-                    context
-                        .into_iter()
-                        .map(|watermark| {
-                            Ok(payload::Watermark {
-                                origin: hash(watermark.origin)?,
-                                edition: watermark.edition,
-                                count: watermark.count,
-                            })
-                        })
-                        .collect::<Result<_, Error>>()
-                })
-                .transpose()?,
-        }),
-        Signed::RevisionRecord(record) => {
-            Payload::RevisionRecord(payload::RevisionRecord { body: record.body })
-        }
-    })
-}
-
 impl credential::Host for KernelHost {}
 
 impl<T: 'static> credential::HostWithStore<T> for Sapling {
@@ -342,7 +287,7 @@ impl<T: 'static> credential::HostCredentialWithStore<T> for Sapling {
     ) -> Result<Vec<u8>, Error> {
         trace("credential.sign");
         let key = accessor.with(|mut access| access.get().key(&credential));
-        let bytes = payload::write(&payload_of(signed)?, &key.did()).map_err(Error::Invalid)?;
+        let Signed::Bytes(bytes) = signed;
         key.sign(&bytes).await
     }
 
