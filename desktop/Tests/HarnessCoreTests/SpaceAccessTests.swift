@@ -98,39 +98,6 @@ final class SpaceAccessTests: XCTestCase {
       links[0].detail(now: now), "Jonas · Read and write · Never expires")
   }
 
-  func testItRemovesAMemberByTheLinkTheyJoinedWith() {
-    let members = [
-      SpaceMember(did: "did:key:zKai", name: "Kai", role: "tonk:founder", invitation: nil),
-      SpaceMember(did: "did:key:zJonas", name: "Jonas", role: nil, invitation: "tonk:personal"),
-      SpaceMember(did: "did:key:zLu", name: "Lu", role: nil, invitation: "tonk:open"),
-      SpaceMember(did: "did:key:zMira", name: "Mira", role: nil, invitation: "tonk:open"),
-      SpaceMember(did: "did:key:zTheo", name: "Theo", role: nil, invitation: "tonk:gone"),
-    ]
-    let invites = [
-      InviteSummary(
-        targetCid: "personal", kind: "scoped", recipientRoot: "did:key:zJonas",
-        invitation: "tonk:personal"),
-      InviteSummary(targetCid: "open", kind: "open", invitation: "tonk:open"),
-    ]
-    let access = SpaceAccess(
-      members: members,
-      links: SpaceAccess.links(
-        subject: subject, invites: invites, agents: [], members: members, isPublic: false))
-
-    XCTAssertEqual(access.removal(of: "did:key:zKai"), .founder)
-    guard case .personal(let link) = access.removal(of: "did:key:zJonas") else {
-      return XCTFail("a personal link removes only its recipient")
-    }
-    XCTAssertEqual(link.target, "personal")
-    guard case .shared(let shared, let others) = access.removal(of: "did:key:zLu") else {
-      return XCTFail("an open link is shared")
-    }
-    XCTAssertEqual(shared.target, "open")
-    XCTAssertEqual(others, ["Mira"])
-    XCTAssertEqual(access.removal(of: "did:key:zTheo"), .unknown)
-    XCTAssertNil(access.removal(of: "did:key:zStranger"))
-  }
-
   func testPeopleSummaryNamesTheFounder() {
     var access = SpaceAccess(
       members: [

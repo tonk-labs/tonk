@@ -680,6 +680,56 @@ final class AccessModel: ObservableObject {
     }
   }
 
+  /// Remove a member from a space: the worker revokes the grant that admits
+  /// them, whichever link they joined with, and retracts their roster row.
+  /// The command has no receipt, so success is the row's absence.
+  func removeMember(_ did: String, name: String, from space: TonkSpace) async -> Bool {
+    let key = "member:" + did
+    guard let runtime, !working.contains(key) else { return false }
+    let started = generation
+    working.insert(key)
+    defer { if generation == started { working.remove(key) } }
+    do {
+      let result = try await runtime.accountScript(
+        Self.expelScript,
+        arguments: [
+          "subject": space.subject, "member": did, "request": "urn:uuid:" + UUID().uuidString,
+        ])
+      guard generation == started else { return false }
+      guard result["done"] as? Bool == true else {
+        throw HarnessError.message(
+          "The space did not confirm it. Only admins can remove people, and someone who joined before this version may need the link they used revoked instead."
+        )
+      }
+      notice = "\(name) was removed from \(space.title)"
+      await refresh(space)
+      return true
+    } catch {
+      guard generation == started else { return false }
+      notice = "Couldn’t remove \(name): " + Self.message(error)
+      return false
+    }
+  }
+
+  static let expelScript = """
+    const field = (the, as) => ({the, as, cardinality: 'one'});
+    const base = '/api/repository/' + encodeURIComponent(subject) + '/branch/main';
+    await api(base + '/transact', {claims: [{op: 'assert', application: {
+      predicate: {kind: 'transient', concept: {with: {
+        member: field('xyz.tonk.command.expel-member/member', 'Entity')
+      }}}, parameters: {this: request, member}
+    }}]});
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const rows = await api(base + '/query', {
+        predicate: {with: {member: field('xyz.tonk.membership/member', 'Entity')}},
+        terms: {this: {'?': {name: 'this'}}, member}
+      });
+      if (rows.length === 0) return {done: true};
+    }
+    return {done: false};
+    """
+
   /// Replace a plain link: the new link works before the old one stops.
   /// Replace a plain link. Fully replaced is success; a new link copied while the old one
   /// still works is degraded; nothing copied is a failure.

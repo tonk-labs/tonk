@@ -153,6 +153,28 @@ final class AccessActionsTests: XCTestCase {
     XCTAssertGreaterThan(runtime.spaceReads, 0, "the space refreshes so Links shows the new row")
   }
 
+  func testRemovingAMemberExpelsThemRatherThanRevokingTheirLink() async throws {
+    let runtime = AccessRuntimeStub()
+    let access = AccessModel(vault: LinkStoreStub(), copyToPasteboard: { _ in true })
+    access.runtime = runtime
+    let removed = await access.removeMember("did:key:zMira", name: "Mira", from: try space())
+    XCTAssertTrue(removed)
+    XCTAssertEqual(runtime.expelled, ["did:key:zMira"])
+    XCTAssertEqual(runtime.revoked, [], "no invitation is revoked, so others who used it stay")
+    XCTAssertEqual(access.notice, "Mira was removed from Verification")
+    XCTAssertGreaterThan(runtime.spaceReads, 0, "the roster refreshes")
+  }
+
+  func testAnUnconfirmedRemovalIsReportedAsAFailure() async throws {
+    let runtime = AccessRuntimeStub()
+    runtime.expelConfirmed = false
+    let access = AccessModel(vault: LinkStoreStub(), copyToPasteboard: { _ in true })
+    access.runtime = runtime
+    let removed = await access.removeMember("did:key:zMira", name: "Mira", from: try space())
+    XCTAssertFalse(removed)
+    XCTAssertTrue(access.notice?.hasPrefix("Couldn’t remove Mira") == true)
+  }
+
   func testInvitingRejectsALinkTheWorkerAddressedToAnotherAccount() async throws {
     let runtime = AccessRuntimeStub()
     runtime.scopedEcho = "did:key:zSomeoneElse"
@@ -482,6 +504,8 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
   var invites: [[String: Any]] = []
   var spaceReads = 0
   var recipients: [String] = []
+  var expelled: [String] = []
+  var expelConfirmed = true
   /// The audience the worker reports for a scoped mint; `nil` echoes the request.
   var scopedEcho: String?
   func createCLILink(_ space: TonkSpace) async throws -> String {
@@ -500,6 +524,10 @@ private final class AccessRuntimeStub: SpaceAccessRuntime {
     if script == AccessModel.spaceScript {
       spaceReads += 1
       return ["invites": invites, "members": [], "warnings": spaceWarnings]
+    }
+    if script == AccessModel.expelScript {
+      expelled.append(arguments["member"] as! String)
+      return ["done": expelConfirmed]
     }
     if script.contains("const minted") {
       await mintRead?()

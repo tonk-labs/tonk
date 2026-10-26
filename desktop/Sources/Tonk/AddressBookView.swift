@@ -339,60 +339,29 @@ private struct MemberSpaceRow: View {
   @State private var confirming = false
 
   var body: some View {
-    let removal = state.removal(of: did)
+    let founder = state.member(did)?.isFounder == true
     HStack(spacing: 12) {
       VStack(alignment: .leading, spacing: 3) {
         Text(space.title)
-        Text(detail(removal)).font(.system(size: 12)).foregroundStyle(.secondary)
+        Text((founder ? "Founder" : "Member") + (isSelf ? " · You" : ""))
+          .font(.system(size: 12)).foregroundStyle(.secondary)
       }
       Spacer(minLength: 8)
-      if !isSelf, let removal { control(removal) }
-    }.padding(.horizontal, 14).padding(.vertical, 10)
-  }
-
-  private func detail(_ removal: MemberRemoval?) -> String {
-    if isSelf { return state.member(did)?.isFounder == true ? "Founder · You" : "Member · You" }
-    switch removal {
-    case .founder: return "Founder"
-    case .personal: return "Member · joined with a link made for them"
-    case .shared: return "Member · joined with the space’s shared link"
-    case .unknown, nil: return "Member"
-    }
-  }
-
-  @ViewBuilder private func control(_ removal: MemberRemoval) -> some View {
-    switch removal {
-    case .personal(let link):
-      Button("Remove…") { confirming = true }
-        .disabled(access.working.contains(link.id))
-        .confirmationDialog("Remove \(name) from \(space.title)?", isPresented: $confirming) {
-          Button("Remove", role: .destructive) { Task { await access.revoke(link, space: space) } }
-        } message: {
-          Text("This revokes the link made for \(name). Their copy of the space stops syncing.")
-        }
-    case .shared(let link, let others):
-      Button("Reset Link…") { confirming = true }
-        .disabled(access.working.contains(link.id))
-        .help("\(name) joined with a link others can use, so it can’t remove only them")
-        .confirmationDialog(
-          "Reset the shared link to \(space.title)?", isPresented: $confirming
-        ) {
-          Button("Reset Link", role: .destructive) {
-            Task { await access.resetLink(link, space: space) }
+      // The founder holds the space itself; leaving is not a removal.
+      if !isSelf && !founder {
+        Button("Remove…") { confirming = true }
+          .disabled(access.working.contains("member:" + did))
+          .confirmationDialog("Remove \(name) from \(space.title)?", isPresented: $confirming) {
+            Button("Remove", role: .destructive) {
+              Task { await access.removeMember(did, name: name, from: space) }
+            }
+          } message: {
+            Text(
+              "\(name) loses access to \(space.title), whichever link they joined with. Other people keep theirs."
+            )
           }
-        } message: {
-          Text(
-            others.isEmpty
-              ? "\(name) joined with the shared link. Resetting it removes \(name) and copies a new link for anyone you invite next."
-              : "\(name) joined with the shared link, as did \(AccessText.list(others)). Resetting it removes all of them and copies a new link to send to anyone who should stay."
-          )
-        }
-    case .founder:
-      EmptyView()
-    case .unknown:
-      Text("Can’t remove here").font(.system(size: 12)).foregroundStyle(.secondary)
-        .help("The link \(name) joined with is not listed. Manage it in the space’s links.")
-    }
+      }
+    }.padding(.horizontal, 14).padding(.vertical, 10)
   }
 }
 

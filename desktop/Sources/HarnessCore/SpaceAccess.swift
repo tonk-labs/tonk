@@ -161,14 +161,10 @@ public struct AccessLink: Equatable, Sendable, Identifiable {
   public let status: String
   /// `nil` when the worker cannot say who used it.
   public let usedBy: [String]?
-  /// The invitation a member names when they claim this link; `nil` for agents,
-  /// the public link and older workers.
-  public let invitation: String?
 
   public init(
     kind: AccessLinkKind, subject: String, target: String, audience: String = "Anyone",
-    expiresAt: Date? = nil, status: String = "active", usedBy: [String]?,
-    invitation: String? = nil
+    expiresAt: Date? = nil, status: String = "active", usedBy: [String]?
   ) {
     self.kind = kind
     self.subject = subject
@@ -177,7 +173,6 @@ public struct AccessLink: Equatable, Sendable, Identifiable {
     self.expiresAt = expiresAt
     self.status = status
     self.usedBy = usedBy
-    self.invitation = invitation
   }
 
   public var id: String { kind.rawValue + ":" + target }
@@ -290,9 +285,7 @@ public struct SpaceAccess: Equatable, Sendable {
       switch invite.kind {
       case "open":
         rows.append(
-          AccessLink(
-            kind: .person, subject: subject, target: invite.targetCid, usedBy: usedBy,
-            invitation: invite.invitation))
+          AccessLink(kind: .person, subject: subject, target: invite.targetCid, usedBy: usedBy))
       case "scoped":
         // The roster names someone who joined; a saved contact names someone invited.
         let recipient = invite.recipientRoot.flatMap { root in
@@ -302,13 +295,11 @@ public struct SpaceAccess: Equatable, Sendable {
         rows.append(
           AccessLink(
             kind: .scoped, subject: subject, target: invite.targetCid,
-            audience: recipient ?? fallback, usedBy: usedBy, invitation: invite.invitation))
+            audience: recipient ?? fallback, usedBy: usedBy))
       default:
         // Legacy rows carry no execution kind; still revocable as a link.
         rows.append(
-          AccessLink(
-            kind: .person, subject: subject, target: invite.targetCid, usedBy: usedBy,
-            invitation: invite.invitation))
+          AccessLink(kind: .person, subject: subject, target: invite.targetCid, usedBy: usedBy))
       }
     }
     for agent in agents where agent.subject == subject && agent.isLive {
@@ -367,31 +358,6 @@ extension String {
   }
 }
 
-/// How one member's access to a space can be taken away. Access comes from the
-/// link they claimed, so removing someone means revoking that link.
-public enum MemberRemoval: Equatable, Sendable {
-  /// A link made for this person alone: revoking it removes only them.
-  case personal(AccessLink)
-  /// A link anyone could use. Resetting it removes everyone who joined with it.
-  case shared(AccessLink, alsoRemoves: [String])
-  /// The founder holds the space itself and cannot be removed.
-  case founder
-  /// The link they joined with is gone or the worker does not say which it was.
-  case unknown
-}
-
 extension SpaceAccess {
   public func member(_ did: String) -> SpaceMember? { members.first { $0.did == did } }
-
-  /// `nil` when `did` is not a member of this space.
-  public func removal(of did: String) -> MemberRemoval? {
-    guard let member = member(did) else { return nil }
-    if member.isFounder { return .founder }
-    guard let invitation = member.invitation,
-      let link = links.first(where: { $0.invitation == invitation })
-    else { return .unknown }
-    if link.kind == .scoped { return .personal(link) }
-    let others = members.filter { $0.invitation == invitation && $0.did != did }
-    return .shared(link, alsoRemoves: others.map(\.displayName))
-  }
 }
