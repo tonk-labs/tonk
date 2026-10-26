@@ -454,8 +454,9 @@ async fn add_profile(
 /// Sign out: withdraw this device's grant, forget the provider, and move
 /// to a branch that follows nothing.
 ///
-/// The grant goes first, while the operator still holds it and can push
-/// the retraction. The account branch itself is kept, spaces and all:
+/// The grant is withdrawn around the provider being cleared (see
+/// [`Withdrawal`](super::account_devices::Withdrawal)), and before the
+/// branch is left. The account branch itself is kept, spaces and all:
 /// signing back in returns to it.
 pub(crate) async fn sign_out(
     state: &AppState,
@@ -469,8 +470,16 @@ pub(crate) async fn sign_out(
 
     let (status, storage, name, profile, registry, profile_library) = {
         let tonk = state.read().await;
-        super::account_devices::withdraw_own_authority(&tonk).await;
-        let status = super::account::disconnect(&tonk).await?;
+        // Clearing the provider writes into the account branch, so it
+        // lands between the two halves of the withdrawal, while the
+        // chain still proves this device may read what it writes into.
+        let withdrawal = super::account_devices::begin_withdrawal(&tonk).await;
+        let disconnected = super::account::disconnect(&tonk).await;
+        super::account_devices::finish_withdrawal(&tonk, withdrawal).await;
+        disconnected?;
+        // Read once the withdrawal has forgotten the root, so the status
+        // reports the grant gone.
+        let status = super::account::status(&tonk).await?;
         super::profile::leave_account(&tonk).await;
         (
             status,
