@@ -7141,8 +7141,9 @@ dependencies = [
 
 [[package]]
 name = "wcmp"
-version = "0.1.1"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill.git?branch=explore%2Fcontext-slot-globals#8639a4f5e2bfea7d8d228744120d6986c7a8667e"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c71ed82dda0c33117b244683a37a688fd2d784ab152110d78d68fbc5feb9010a"
 dependencies = [
  "anyhow",
  "js-sys",
@@ -7160,8 +7161,9 @@ dependencies = [
 
 [[package]]
 name = "wcmp-bindgen"
-version = "0.1.1"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill.git?branch=explore%2Fcontext-slot-globals#8639a4f5e2bfea7d8d228744120d6986c7a8667e"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b255989c584fcfd931b1b78353fe05e71ce8edd16bd48f8aa5a80a6d309adab1"
 dependencies = [
  "anyhow",
  "heck",
@@ -7173,8 +7175,9 @@ dependencies = [
 
 [[package]]
 name = "wcmp-macros"
-version = "0.1.1"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill.git?branch=explore%2Fcontext-slot-globals#8639a4f5e2bfea7d8d228744120d6986c7a8667e"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45edd4024a1ba3dc9349da36adcf8c68e772fa306469b42b33f7db217d3e0636"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7184,8 +7187,9 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core"
-version = "0.1.1"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill.git?branch=explore%2Fcontext-slot-globals#8639a4f5e2bfea7d8d228744120d6986c7a8667e"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6172c53bd3226a7dd83f246fdd2220cfd1377f16f89709b82132909a555ed0c8"
 dependencies = [
  "anyhow",
  "thiserror 2.0.18",
@@ -7195,8 +7199,9 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core-wasmtime"
-version = "0.1.1"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill.git?branch=explore%2Fcontext-slot-globals#8639a4f5e2bfea7d8d228744120d6986c7a8667e"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a5c531eba32d38df2996d25575d9ed2f327d816162f079f0768dca3f33fb142"
 dependencies = [
  "anyhow",
  "tracing",
@@ -7206,8 +7211,9 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core-web"
-version = "0.1.1"
-source = "git+https://github.com/dialog-db/wasm-component-model-polyfill.git?branch=explore%2Fcontext-slot-globals#8639a4f5e2bfea7d8d228744120d6986c7a8667e"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9078205c38bdc474b3fc32cc54cf1bd4303dbf67583e1d368b2683437e4fbde"
 dependencies = [
  "anyhow",
  "js-sys",
