@@ -651,7 +651,6 @@ struct ContentView: View {
     case .addressBook: "Address book"
     case .account: "Settings"
     case .allLinks: "All links"
-    case .agentLinks: "Connections"
     case .space(let id): runtime.spaces.first(where: { $0.id == id })?.title ?? "Spaces"
     case nil: "Spaces"
     }
@@ -756,13 +755,11 @@ struct ContentView: View {
         case .allLinks:
           LinksPageView(
             agentsOnly: false, spaces: runtime.spaces, access: access, onNewLink: startNewLink)
-        case .agentLinks:
-          ConnectionsPageView(
-            spaces: runtime.spaces, access: access, model: model,
-            onSettings: { openChatSettings() })
         case .addressBook:
           AddressBookView(
-            access: access, spaces: runtime.spaces, searchFocusRequest: contactSearchFocusRequest)
+            access: access, model: model, spaces: runtime.spaces,
+            searchFocusRequest: contactSearchFocusRequest,
+            onChatSettings: { openChatSettings() })
         case .account:
           DesktopSettingsView(
             model: model, access: access, onSignOut: signOutOfTonk, showsChat: settingsShowsChat)

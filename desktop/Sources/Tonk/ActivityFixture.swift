@@ -206,7 +206,7 @@ extension ActivityFixture {
 }
 
 extension ActivityFixture {
-  /// Fixture-only first page: `--fixture-page all|agents|<space name>`.
+  /// Fixture-only first page: `--fixture-page all|address-book|account|<space name>`.
   static func initialPage(_ spaces: [TonkSpace]) -> DesktopPage? {
     let args = ProcessInfo.processInfo.arguments
     guard RuntimeLocation.deployment == .local, let index = args.firstIndex(of: "--fixture-page"),
@@ -216,7 +216,6 @@ extension ActivityFixture {
     case "address-book": return .addressBook
     case "account": return .account
     case "all": return .allLinks
-    case "agents": return .agentLinks
     case let name: return spaces.first(where: { $0.title == name }).map { .space($0.id) }
     }
   }

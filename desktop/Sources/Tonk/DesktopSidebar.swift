@@ -5,7 +5,6 @@ enum DesktopPage: Hashable {
   case allLinks
   case addressBook
   case account
-  case agentLinks
   case space(String)
 }
 
@@ -37,18 +36,15 @@ struct DesktopSidebar: View {
         }
         .tag(DesktopPage.allLinks)
         Label {
-          Text("Connections")
-        } icon: {
-          DesktopGlyph(name: "imgIconPlug")
-        }
-        .badge(access.connections.count)
-        .tag(DesktopPage.agentLinks)
-        Label {
           Text("Address book")
         } icon: {
           DesktopGlyph(name: "imgIconBookUser")
         }
-        .badge(access.contacts.count)
+        .badge(
+          AddressBookEntry.entries(
+            contacts: access.contacts, grants: access.connections, chatAgent: nil
+          ).count
+        )
         .tag(DesktopPage.addressBook)
       }
       Section("Spaces") {
