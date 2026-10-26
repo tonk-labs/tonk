@@ -19,7 +19,8 @@
     display: block;
     box-sizing: border-box;
     min-height: 100dvh;
-    padding: 24px 16px 48px;
+    /* Clear the space chrome pinned over the page's top edge. */
+    padding: 88px 16px 48px;
     background: var(--vc-paper);
     color: var(--vc-ink);
     font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -123,7 +124,7 @@
   vc-history .vc-detail {
     align-self: start;
     position: sticky;
-    top: 16px;
+    top: 88px;
     padding: 16px;
     border: 1px solid var(--vc-line);
     border-radius: 10px;

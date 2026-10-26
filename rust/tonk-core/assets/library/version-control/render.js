@@ -5,7 +5,15 @@
   const branch = self.getAttribute('branch') || 'main';
   const wanted = self.getAttribute('selected') ?? '';
   const head = rows.find((row) => row.revision.heads.includes(branch))?.revision;
-  const selected = model.revisions.get(wanted) ?? head ?? rows[0]?.revision ?? null;
+  // With nothing in the path, keep showing what was shown: a comment is a
+  // commit, so following the head would move the reader off the thread
+  // they just wrote in.
+  const selected = model.revisions.get(wanted)
+    ?? model.revisions.get(self.__shown)
+    ?? head
+    ?? rows[0]?.revision
+    ?? null;
+  self.__shown = selected?.id ?? null;
 
   // A re-render must not lose what the reader was in the middle of.
   const active = self.ownerDocument.activeElement;
