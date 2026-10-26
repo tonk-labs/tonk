@@ -645,6 +645,41 @@ pub(crate) async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
     Ok(())
 }
 
+/// Pull profile main from the account remote, then push it.
+///
+/// What a device leaving the account publishes on its way out: it has
+/// to merge what other devices pushed since its last sweep, or the push
+/// is refused as non-fast-forward. The pull materializes the operational
+/// regions only, as the sweep's does.
+///
+/// The profile's own secrets commit to this branch through the profile's
+/// handle rather than the reactor's, so the reactor's handle is refreshed
+/// first: a pull from a stale head cannot publish its merge.
+pub(crate) async fn pull_and_push_account_main(tonk: &TonkState) -> Result<(), String> {
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| format!("account branch unavailable: {error}"))?;
+    session
+        .handle()
+        .refresh(&tonk.operator)
+        .await
+        .map_err(|error| format!("account branch head unreadable: {error}"))?;
+    session
+        .handle()
+        .pull()
+        .download()
+        .operational()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| format!("account pull failed: {error}"))?;
+    migrate_adopted_profile_head(tonk).await;
+    push_account_main(tonk).await
+}
+
 /// Preserve both retryable failures when library repair and account push fail
 /// in the same sweep.
 fn finish_account_sweep(
@@ -2351,8 +2386,9 @@ pub(crate) mod tests {
         );
 
         // Onto a fresh branch, the way sign-out and add-account land.
-        super::super::account_devices::withdraw_own_authority(&state).await;
+        let withdrawal = super::super::account_devices::begin_withdrawal(&state).await;
         super::super::account::disconnect(&state).await.unwrap();
+        super::super::account_devices::finish_withdrawal(&state, withdrawal).await;
         super::super::profile::leave_account(&state).await;
         // The way the worker lands there: a fresh state over the same
         // storage, as `promote` builds one.
@@ -2800,6 +2836,63 @@ pub(crate) mod tests {
                 .as_deref(),
             Some(RENAMED),
             "the rename made on the other device arrives",
+        );
+    }
+
+    /// Signing out pushes the retraction of this device's rows, so the
+    /// account's other devices stop listing it.
+    ///
+    /// The push has to run while the device can still prove it may reach
+    /// the account: before the chain it retained is retracted. Retracting
+    /// the chain first refused this push every time, and refused, now and
+    /// then, a write sign-out made after it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_retracts_its_device_rows_from_the_account_on_sign_out() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        async fn listed(state: &TonkState) -> Vec<String> {
+            let main = state
+                .reactor
+                .profile_repository()
+                .branch(&state.active_branch)
+                .acquire(&state.operator)
+                .await
+                .unwrap();
+            tonk_schema::device_link::device_links(main.handle(), &state.operator)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|(_, did)| did)
+                .collect()
+        }
+
+        let (home, _service, root, remote) = ready_account_state(None).await;
+        assert_eq!(ensure_account_state(&home).await, AccountStateStatus::Ready);
+        let device = device_on(&root, &remote, None).await;
+        let (status, swept) = ensure_account_state_swept(&device).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.unwrap();
+        let own = device.profile.did().to_string();
+
+        let (_, swept) = ensure_account_state_swept(&home).await;
+        swept.unwrap();
+        assert!(
+            listed(&home).await.contains(&own),
+            "the other device is listed once it links"
+        );
+
+        let device = Arc::new(RwLock::new(device));
+        super::super::profiles::sign_out(&device, None)
+            .await
+            .unwrap();
+
+        let (_, swept) = ensure_account_state_swept(&home).await;
+        swept.unwrap();
+        assert!(
+            !listed(&home).await.contains(&own),
+            "the signed-out device's rows leave the account"
         );
     }
 

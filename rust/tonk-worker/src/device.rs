@@ -405,6 +405,20 @@ impl Registry {
         let mut attempt = 0;
         loop {
             let registry = self.open_self(storage).await?;
+            // A pointer that already names `name` is left alone. The
+            // registry's branch is the profile's `main`, which may follow
+            // an account and hold its history only by reference, and a
+            // commit can cascade into a node held that way. Sign-out
+            // re-promotes the same profile after withdrawing the grant
+            // that would fetch it, so an unneeded save there can fail.
+            let recorded = self
+                .read(&registry)
+                .await
+                .ok()
+                .map(|recorded| recorded.unwrap_or_else(|| self.profile.clone()));
+            if recorded.as_deref() == Some(name) {
+                return Ok(());
+            }
             match registry
                 .secrets()
                 .site(ACTIVE_PROFILE_SITE)
@@ -862,6 +876,51 @@ mod tests {
             active.did(),
             second.did(),
             "the pointer must name the newest key, not the first rotation"
+        );
+    }
+
+    /// Recording the profile the pointer already names writes nothing.
+    ///
+    /// The registry's branch is the profile's `main`, which follows the
+    /// account once one is adopted, and holds the account's history and
+    /// coverage regions by reference. Sign-out withdraws the grant that
+    /// would fetch them and then re-promotes the same profile; a save then
+    /// commits into that tree, and fails whenever the commit cascades into
+    /// a node still held remotely.
+    #[dialog_common::test]
+    async fn it_writes_nothing_when_the_pointer_already_names_the_profile() {
+        let registry = scratch();
+        let storage = registry.storage().await.unwrap();
+        let head = async || {
+            registry
+                .open_self(&storage)
+                .await
+                .unwrap()
+                .state()
+                .revision()
+        };
+
+        let initial = head().await;
+        registry
+            .set_active(&storage, &registry.profile)
+            .await
+            .unwrap();
+        assert_eq!(
+            head().await,
+            initial,
+            "an unrecorded pointer already names the initial profile"
+        );
+
+        let (name, _) = registry.create_profile(&storage).await.unwrap();
+        registry.set_active(&storage, &name).await.unwrap();
+        let recorded = head().await;
+        assert_ne!(recorded, initial, "a new name is recorded");
+
+        registry.set_active(&storage, &name).await.unwrap();
+        assert_eq!(
+            head().await,
+            recorded,
+            "the same name is not recorded again"
         );
     }
 

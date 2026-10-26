@@ -10,6 +10,7 @@ use axum::{Json, extract::State};
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use serde::Deserialize;
+use std::collections::BTreeSet;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::delegations::account_scope;
@@ -418,57 +419,106 @@ async fn retract_device_links(state: &TonkState, target: &str) -> Result<(), Ton
         })
 }
 
-/// Withdraw this device's own authority over the account it is on, on
-/// the way out of it.
+/// A withdrawal of this device's own authority, begun: what it still
+/// has to do once the sign-out has written its local records.
 ///
 /// Signing out is not a flag: it is the grant being gone. It is held in
 /// three places, withdrawn in the order that keeps each step reachable.
-/// The device rows and the chain are retracted and pushed first, while
-/// the operator can still push; the revocation is published next, so
-/// every access service stops honouring the grant; the local root record
-/// is forgotten last, so signing back in has to reopen the passkey.
+/// The revocation is minted and its endpoints read first, while the
+/// provider that names the account's own service is still attached. The
+/// device rows are retracted, and the caller clears the provider. Then
+/// the local root record is forgotten, so signing back in has to reopen
+/// the passkey; the branch is pulled and pushed while the operator can
+/// still reach the account; the chain is retracted; and the revocation
+/// is published, so every access service stops honouring the grant.
+///
+/// The chain goes last among the writes because it is the proof every
+/// write into the account branch may need. That branch holds the
+/// account's history by reference, and a commit can cascade into a node
+/// still held remotely; fetching it is refused once no chain proves this
+/// device may read the account. So nothing is written after it, and its
+/// own retraction stays local: the published revocation is what
+/// withdraws the grant.
 ///
 /// Best-effort throughout. A step that fails is logged and the rest run,
 /// because a device left with a stale row is better off than one left
 /// with a live grant — and a publication that fails offline leaves the
 /// grant honoured remotely until it lands, which is worth saying loudly.
-pub(crate) async fn withdraw_own_authority(state: &TonkState) {
-    if let Some(link) = super::account::account_link(state).await {
-        revoke_own_grant(state, &link).await;
-    }
-    // Forgotten whether or not a link was live: a root record with no
-    // provider attached is still a grant this device holds.
-    if let Err(error) = super::identity::forget_root(state).await {
-        log!("sign-out kept the local root record: {error}");
-    }
+pub(crate) struct Withdrawal {
+    link: Option<DelegationChain>,
+    publication: Option<Publication>,
 }
 
-/// Retract, push and publish this device's own grant.
-async fn revoke_own_grant(state: &TonkState, link: &DelegationChain) {
+/// A minted revocation and where it must go, read before the provider
+/// naming the account's own service is cleared.
+struct Publication {
+    artifact: Vec<u8>,
+    endpoints: Result<BTreeSet<String>, TonkWorkerError>,
+}
+
+/// Begin withdrawing this device's own authority: mint its revocation,
+/// read where it must be published, and retract the device's rows.
+pub(crate) async fn begin_withdrawal(state: &TonkState) -> Withdrawal {
+    let Some(link) = super::account::account_link(state).await else {
+        return Withdrawal {
+            link: None,
+            publication: None,
+        };
+    };
     let own = state.profile.did().to_string();
-    let artifact = match self_revocation(state, link).await {
+    let artifact = match self_revocation(state, &link).await {
         Ok((revocation, _)) => hex::decode(&revocation).ok(),
         Err(error) => {
             log!("sign-out could not mint its revocation: {error}");
             None
         }
     };
-
+    let publication = match artifact {
+        Some(artifact) => Some(Publication {
+            artifact,
+            endpoints: revocation_endpoints(state).await,
+        }),
+        None => None,
+    };
     if let Err(error) = retract_device_links(state, &own).await {
         log!("sign-out keeps its device rows: {error}");
     }
-    if let Err(error) = retract_own_delegation(state, link).await {
-        log!("sign-out keeps its delegation on the branch: {error}");
+    Withdrawal {
+        link: Some(link),
+        publication,
     }
-    if let Err(error) = super::account_state::push_account_main(state).await {
-        log!("sign-out did not push its retractions: {error}");
+}
+
+/// Finish a withdrawal once the caller's own records are written: forget
+/// the root record, push, retract the chain, publish the revocation.
+pub(crate) async fn finish_withdrawal(state: &TonkState, withdrawal: Withdrawal) {
+    // Forgotten whether or not a link was live: a root record with no
+    // provider attached is still a grant this device holds.
+    if let Err(error) = super::identity::forget_root(state).await {
+        log!("sign-out kept the local root record: {error}");
     }
-    if let Some(artifact) = artifact
-        && let Err(error) = publish_revocation(state, &artifact).await
+    if let Some(link) = &withdrawal.link {
+        if let Err(error) = super::account_state::pull_and_push_account_main(state).await {
+            log!("sign-out did not push its retractions: {error}");
+        }
+        if let Err(error) = retract_own_delegation(state, link).await {
+            log!("sign-out keeps its delegation on the branch: {error}");
+        }
+    }
+    if let Some(Publication {
+        artifact,
+        endpoints,
+    }) = withdrawal.publication
     {
-        log!(
-            "sign-out revocation not published; the grant stays honoured remotely until it is: {error}"
-        );
+        let published = match endpoints {
+            Ok(endpoints) => publish_revocation_to(&endpoints, &artifact).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = published {
+            log!(
+                "sign-out revocation not published; the grant stays honoured remotely until it is: {error}"
+            );
+        }
     }
 }
 
@@ -505,8 +555,13 @@ pub(super) async fn publish_revocation(
     state: &TonkState,
     artifact: &[u8],
 ) -> Result<(), TonkWorkerError> {
+    let endpoints = revocation_endpoints(state).await?;
+    publish_revocation_to(&endpoints, artifact).await
+}
+
+/// Every access service a revocation from this profile must reach.
+async fn revocation_endpoints(state: &TonkState) -> Result<BTreeSet<String>, TonkWorkerError> {
     use dialog_remote_ucan::UcanAddress;
-    use std::collections::BTreeSet;
 
     let mut endpoints: BTreeSet<String> = BTreeSet::new();
 
@@ -543,14 +598,21 @@ pub(super) async fn publish_revocation(
             )));
         }
     }
+    Ok(endpoints)
+}
 
+/// Post `artifact` to each of `endpoints`; any refusal fails the whole.
+async fn publish_revocation_to(
+    endpoints: &BTreeSet<String>,
+    artifact: &[u8],
+) -> Result<(), TonkWorkerError> {
     if endpoints.is_empty() {
         return Err(TonkWorkerError::Conflict(
             "this profile has no access service to publish a revocation to".to_string(),
         ));
     }
 
-    for endpoint in &endpoints {
+    for endpoint in endpoints {
         let url = url::Url::parse(endpoint).map_err(|error| {
             TonkWorkerError::Internal(format!("unusable access endpoint '{endpoint}': {error}"))
         })?;
