@@ -79,8 +79,12 @@ final class RuntimeAccountTests: XCTestCase {
         requests.push({path, body});
         const fields = body.predicate.with;
         if (fields.branch) return [{fields:{branch:'branch-entity'}}];
-        if (fields.name) return [{fields:{name:'account/test'}}];
+        if (fields.name?.the === 'xyz.tonk.branch/name') return [{fields:{name:'account/test'}}];
         if (path !== '/api/profile/branch/account%2Ftest/query') throw new Error('Wrong branch');
+        if (fields.name) {
+          if (body.terms.this !== root.rootDid) throw new Error('Unscoped name read');
+          return [{fields:{name:'Ada'}}];
+        }
         if (fields.email) {
           if (body.terms.this !== root.rootDid) throw new Error('Unscoped email read');
           return [{fields:{email:'person@example.test'}}];
@@ -100,7 +104,8 @@ final class RuntimeAccountTests: XCTestCase {
     XCTAssertEqual(details["email"] as? String, "person@example.test")
     let passkeys = try XCTUnwrap(details["passkeys"] as? [[String: Any]])
     XCTAssertEqual(passkeys.compactMap { $0["createdOn"] as? String }, ["Chrome", "Safari"])
-    XCTAssertEqual((object["requests"] as? [Any])?.count, 6)
+    XCTAssertEqual(details["displayName"] as? String, "Ada")
+    XCTAssertEqual((object["requests"] as? [Any])?.count, 7)
     let serialized = String(
       decoding: try JSONSerialization.data(withJSONObject: details), as: UTF8.self)
     XCTAssertFalse(serialized.contains("did:key"))

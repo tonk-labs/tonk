@@ -7,6 +7,8 @@ struct AdvancedSettingsView: View {
   @State private var error: String?
   @State private var saved = false
 
+  private static let defaultHome = RuntimeLocation.Channel.current.defaultRemote.home
+
   init() {
     let remote = RuntimeLocation.resolve(arguments: [], defaults: .standard)
     _custom = State(initialValue: remote.home.absoluteString)
@@ -16,12 +18,12 @@ struct AdvancedSettingsView: View {
     VStack(alignment: .leading, spacing: 20) {
       Text("Advanced settings").font(.title2.weight(.semibold))
       HStack(spacing: 12) {
-        TextField("Remote URL", text: $custom, prompt: Text("https://tonk.network"))
+        TextField("Remote URL", text: $custom, prompt: Text(Self.defaultHome.absoluteString))
           .textFieldStyle(.roundedBorder).autocorrectionDisabled()
         Button("Reset") {
-          custom = RuntimeLocation.Deployment.production.home.absoluteString
+          custom = Self.defaultHome.absoluteString
         }
-        .help("Reset to tonk.network")
+        .help("Reset to \(Self.defaultHome.host ?? "the default remote")")
       }
       Text(
         "Each remote has its own account, spaces, and chats on this Mac. Quit and reopen Tonk to use the selected remote."

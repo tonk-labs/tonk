@@ -4,6 +4,7 @@ set -euo pipefail
 export DEVELOPER_DIR=${TONK_XCODE_DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 unset SDKROOT
 cd "$(dirname "$0")/.."
+source scripts/channel.sh
 
 command=${1:-help}
 if [[ $# -gt 0 ]]; then
@@ -33,7 +34,7 @@ build() {
 }
 
 open_app() {
-    local app="$PWD/.build/Tonk.app"
+    local app="$PWD/.build/$desktop_app_name.app"
     if [[ ! -d "$app" ]]; then
         echo "Build the app first: dev:build" >&2
         exit 1
@@ -54,15 +55,15 @@ case "$command" in
         fi
         build
         if [[ "$command" == dev:install ]]; then
-            status "Installing to ~/Applications/Tonk.app"
-            destination="$HOME/Applications/Tonk.app"
+            status "Installing to ~/Applications/$desktop_app_name.app"
+            destination="$HOME/Applications/$desktop_app_name.app"
             mkdir -p "$HOME/Applications"
             staging=$(mktemp -d "$HOME/Applications/.tonk-install.XXXXXX")
             trap 'rm -rf "$staging"' EXIT
-            /usr/bin/ditto .build/Tonk.app "$staging/Tonk.app"
-            /usr/bin/codesign --verify --strict "$staging/Tonk.app"
+            /usr/bin/ditto ".build/$desktop_app_name.app" "$staging/$desktop_app_name.app"
+            /usr/bin/codesign --verify --strict "$staging/$desktop_app_name.app"
             rm -rf "$destination"
-            mv "$staging/Tonk.app" "$destination"
+            mv "$staging/$desktop_app_name.app" "$destination"
             echo "$destination"
         fi
         ;;

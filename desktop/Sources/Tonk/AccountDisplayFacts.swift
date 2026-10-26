@@ -27,10 +27,16 @@ enum AccountDisplayFacts {
       branch = names[0].fields.name;
     }
     const path = '/api/profile/branch/' + encodeURIComponent(branch) + '/query';
-    const [registration, envelopes] = await Promise.all([
+    const [registration, named, envelopes] = await Promise.all([
       api(path, {
         predicate: {with: {email: field('xyz.tonk.account/customer-email', 'Text')}},
         terms: {this: root.rootDid, email: variable('email')}
+      }),
+      // The account's own name, which signup and renames write. The profile's
+      // copy of it only appears once the account first syncs.
+      api(path, {
+        predicate: {with: {name: field('xyz.tonk.account/display-name', 'Text')}},
+        terms: {this: root.rootDid, name: variable('name')}
       }),
       api(path, {
         predicate: {with: {to: field('xyz.tonk.secret/to', 'Entity'),
@@ -38,7 +44,7 @@ enum AccountDisplayFacts {
         terms: {this: variable('this'), to: variable('to'), sender: root.rootDid}
       })
     ]);
-    if (!Array.isArray(registration) || !Array.isArray(envelopes))
+    if (!Array.isArray(registration) || !Array.isArray(named) || !Array.isArray(envelopes))
       throw new Error('Invalid account facts response.');
     const recipients = [...new Set(envelopes.map(row => row.fields?.to).filter(Boolean))];
     const rows = (await Promise.all(recipients.map(recipient => api(path, {
@@ -49,6 +55,7 @@ enum AccountDisplayFacts {
     const passkeys = rows.map((row, index) => ({
       id: String(index), createdOn: row.fields.createdOn, createdAt: row.fields.createdAt
     })).sort((a,b) => b.createdAt - a.createdAt);
-    return {email: registration[0]?.fields?.email || null, passkeys};
+    return {email: registration[0]?.fields?.email || null,
+            displayName: named[0]?.fields?.name || null, passkeys};
     """
 }

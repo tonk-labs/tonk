@@ -4,6 +4,7 @@ set -euo pipefail
 export DEVELOPER_DIR=${TONK_XCODE_DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 unset SDKROOT
 cd "$(dirname "$0")/.."
+source scripts/channel.sh
 node ../mcp/scripts/sync-desktop.mjs
 # A stable signer lets WebKit's Keychain access survive executable changes.
 # Ad-hoc signing uses the binary hash as its identity and prompts after rebuilds.
@@ -26,15 +27,25 @@ fi
 minimum_macos=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' Resources/Info.plist)
 sdk_version=$(xcrun --sdk macosx --show-sdk-version)
 configuration=${TONK_BUILD_CONFIGURATION:-debug}
-swift build -c "$configuration" -Xlinker -platform_version -Xlinker macos \
+# The native build system's Bundle.module looks for resource bundles beside the
+# app's Contents folder and then at this machine's build path, so a shipped app
+# crashes when it first loads a resource. Swift Build looks in Contents/Resources.
+swift build -c "$configuration" --build-system swiftbuild \
+    -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+    -Xlinker -platform_version -Xlinker macos \
     -Xlinker "$minimum_macos" -Xlinker "$sdk_version"
-app="$PWD/.build/Tonk.app"
+# Swift Build's products folder varies by toolchain; ask instead of assuming .build/<config>.
+products=$(swift build -c "$configuration" --build-system swiftbuild --show-bin-path)
+app="$PWD/.build/$desktop_app_name.app"
 # Recreate the generated bundle so renamed executables cannot survive a rebuild.
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 mkdir -p "$app/Contents/Resources"
-cp ".build/$configuration/Tonk" "$app/Contents/MacOS/Tonk"
+cp "$products/Tonk" "$app/Contents/MacOS/Tonk"
 cp Resources/Info.plist "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $desktop_bundle_id" \
+    -c "Set :CFBundleName $desktop_app_name" -c "Set :CFBundleDisplayName $desktop_app_name" \
+    -c "Add :TonkChannel string $desktop_channel" "$app/Contents/Info.plist"
 # SwiftUI resolves Text keys in the main bundle, so the string tables live there.
 for table in Resources/*.lproj; do
     ditto "$table" "$app/Contents/Resources/$(basename "$table")"
@@ -52,23 +63,49 @@ xcrun actool "$PWD/Resources/Tonk.icon" \
     --app-icon Tonk \
     --output-partial-info-plist "$PWD/.build/tonk-icon-info.plist"
 /usr/libexec/PlistBuddy -c "Merge '$PWD/.build/tonk-icon-info.plist'" "$app/Contents/Info.plist"
-for bundle in ".build/$configuration/Tonk_Tonk.bundle" ".build/$configuration/textual_Textual.bundle" ".build/$configuration/swiftui-math_SwiftUIMath.bundle"; do
+for bundle in "$products/Tonk_Tonk.bundle" "$products/textual_Textual.bundle" "$products/swiftui-math_SwiftUIMath.bundle"; do
+    # A flat folder means the native build system made it; the app cannot load it.
+    if [[ ! -f "$bundle/Contents/Info.plist" ]]; then
+        echo "$bundle is not a loadable resource bundle; build with Swift Build." >&2
+        exit 1
+    fi
     ditto "$bundle" "$app/Contents/Resources/$(basename "$bundle")"
 done
+# Sparkle's XPC services exist for sandboxed hosts; this app is not sandboxed.
+sparkle="$app/Contents/Frameworks/Sparkle.framework"
+mkdir -p "$app/Contents/Frameworks"
+ditto "$products/Sparkle.framework" "$sparkle"
+rm -rf "$sparkle/XPCServices" "$sparkle/Versions/B/XPCServices"
+# Builds stamped with a feed and its EdDSA public key update themselves (AppUpdater.swift).
+# The feed must be signed, and updates are verified before extraction and installed only when asked.
+if [[ -n "$desktop_feed_url" && -n "${TONK_SPARKLE_PUBLIC_KEY:-}" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $desktop_feed_url" \
+        -c "Add :SUPublicEDKey string $TONK_SPARKLE_PUBLIC_KEY" \
+        -c 'Add :SURequireSignedFeed bool true' \
+        -c 'Add :SUVerifyUpdateBeforeExtraction bool true' \
+        -c 'Add :SUEnableAutomaticChecks bool true' \
+        -c 'Add :SUAllowsAutomaticUpdates bool false' "$app/Contents/Info.plist"
+fi
 sign_args=()
 if [[ -n "${TONK_PROVISIONING_PROFILE:-}" ]]; then
     security cms -D -i "$TONK_PROVISIONING_PROFILE" > .build/tonk-passkey-profile.plist
-    python3 scripts/passkey-entitlements.py .build/tonk-passkey-profile.plist .build/tonk-passkey-entitlements.plist
+    TONK_DESKTOP_CHANNEL=$desktop_channel python3 scripts/passkey-entitlements.py \
+        .build/tonk-passkey-profile.plist .build/tonk-passkey-entitlements.plist
     cp "$TONK_PROVISIONING_PROFILE" "$app/Contents/embedded.provisionprofile"
     /usr/libexec/PlistBuddy -c 'Add :TonkDirectPasskeyEnabled bool true' "$app/Contents/Info.plist"
     sign_args=(--entitlements .build/tonk-passkey-entitlements.plist)
 fi
 if [[ "${TONK_RELEASE_BUILD:-0}" == 1 ]]; then
     python3 scripts/stamp-release.py "$app/Contents/Info.plist"
-    sign_args+=(--options runtime --timestamp)
+    code_args=(--options runtime --timestamp)
 else
-    sign_args+=(--timestamp=none)
+    code_args=(--timestamp=none)
 fi
+sign_args+=("${code_args[@]}")
+# Sign nested code inside out; the app's entitlements belong to the app alone.
+for nested in "$sparkle/Versions/B/Autoupdate" "$sparkle/Versions/B/Updater.app" "$sparkle"; do
+    codesign --force --sign "$identity" "${code_args[@]}" "$nested"
+done
 codesign --force --sign "$identity" "${sign_args[@]}" "$app"
 codesign --verify --strict "$app"
 if [[ -n "${TONK_PROVISIONING_PROFILE:-}" ]]; then

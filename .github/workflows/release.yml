@@ -13,7 +13,10 @@ name: 'Release'
 # pre-release.
 #
 # This workflow builds the CLI from the tag and attaches it to the tag's
-# GitHub release. A stable release becomes GitHub's `latest`, which is what
+# GitHub release. Desktop is not released from tags yet: until it ships to
+# production, only the nightly build from `main` is published
+# (`desktop-dev.yml`). Calling `desktop-release.yml` with `channel: stable`
+# here builds the tonk.network variant. A stable release becomes GitHub's `latest`, which is what
 # `install.sh` and `tonk update` resolve for the stable channel. A staging
 # release also replaces the rolling `tonk-staging` release, which the
 # staging channel resolves.
@@ -40,11 +43,6 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/resolve-release
         id: release
-
-  build-desktop:
-    needs: resolve
-    uses: ./.github/workflows/desktop-release.yml
-    secrets: inherit
 
   build-cli:
     name: 'Build ${{ matrix.artifact-name }}'
@@ -153,7 +151,7 @@ jobs:
 
   publish:
     name: 'Publish GitHub release'
-    needs: ['resolve', 'build-cli', 'build-peer', 'build-desktop', 'artifact-smoke']
+    needs: ['resolve', 'build-cli', 'build-peer', 'artifact-smoke']
     runs-on: ubuntu-latest
     timeout-minutes: 200
     permissions:
@@ -182,10 +180,6 @@ jobs:
         with:
           name: tonk-agent-peer-linux-x86_64
           path: artifacts/peer-linux-x86_64
-      - uses: actions/download-artifact@v4
-        with:
-          name: Tonk-desktop-macos-arm64
-          path: desktop-assets
       - name: Prepare release assets
         run: |
           set -euo pipefail
@@ -227,8 +221,6 @@ jobs:
           generate_release_notes: true
           append_body: true
           body: |
-            **Desktop (macOS 15+, Apple Silicon):** Download `Tonk-macos-arm64.zip`, unzip, and move `Tonk.app` to Applications. Signed and notarized.
-
             **Install CLI (macOS / Linux):**
             ```
             curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.sh \
@@ -246,7 +238,6 @@ jobs:
             checksums.txt
             manifest.json
             install.sh
-            desktop-assets/Tonk-*
 
       # The staging channel resolves the rolling `tonk-staging` release, so a
       # staging release replaces it. Stable needs no rolling release: it
@@ -265,9 +256,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: tonk (staging)
           body: |
-            Rolling staging release of Tonk CLI and Desktop, currently ${{ github.ref_name }}.
-
-            **Desktop (macOS 15+, Apple Silicon):** Download `Tonk-macos-arm64.zip`, unzip, and move `Tonk.app` to Applications. Signed and notarized.
+            Rolling staging release of Tonk CLI, currently ${{ github.ref_name }}.
 
             **Install CLI pre-release (macOS / Linux):**
             ```
@@ -286,4 +275,3 @@ jobs:
             checksums.txt
             manifest.json
             install.sh
-            desktop-assets/Tonk-*
