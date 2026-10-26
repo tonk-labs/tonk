@@ -100,7 +100,11 @@ import {
   historyKeymap,
   indentWithTab,
 } from "@codemirror/commands";
-import { acceptCompletion, completionKeymap } from "@codemirror/autocomplete";
+import {
+  acceptCompletion,
+  completionKeymap,
+  moveCompletionSelection,
+} from "@codemirror/autocomplete";
 import {
   bracketMatching,
   indentOnInput,
@@ -527,7 +531,7 @@ function baseExtensions(): Extension[] {
     // `indentWithTab` and Tab still indents.
     //
     // `completionKeymap` is what makes the popup navigable at all:
-    // ArrowUp/Down and Ctrl-n/p move the selection, Enter accepts,
+    // ArrowUp/Down move the selection, Enter accepts,
     // Escape closes. Without it those keys fall through to
     // `defaultKeymap` and move the CURSOR instead — the popup stays
     // open showing a selection you cannot change, and Enter splits the
@@ -538,6 +542,12 @@ function baseExtensions(): Extension[] {
     // claims the key first wins.
     keymap.of([
       { key: "Tab", run: acceptCompletion },
+      // Ctrl-n/p move through an open list too, as in most editors.
+      // `completionKeymap` does not bind them, so the comment above
+      // promised keys that did nothing; with no list open they return
+      // false and fall through to the line motions they usually are.
+      { key: "Ctrl-n", run: moveCompletionSelection(true) },
+      { key: "Ctrl-p", run: moveCompletionSelection(false) },
       ...completionKeymap,
       ...defaultKeymap,
       ...historyKeymap,
@@ -626,6 +636,9 @@ class TonkCodeElement extends HTMLElement {
    *  itself never builds or owns a client — diagnostics, hover,
    *  completion etc. require a provider in scope. */
   #lspClient: LSPClient | null = null;
+  /** The `source` and language the attached client's plugin opened, so a
+   *  repeat `connect` for the same attachment is a no-op. */
+  #lspAttachment: string | null = null;
 
   /** Suppress the `change` event during programmatic `.value`
    *  writes so consumers don't see their own writes echoed back. */
@@ -1058,7 +1071,20 @@ class TonkCodeElement extends HTMLElement {
     if (!this.#view) return;
     const source = this.getAttribute("source");
     if (!source) return;
+    const attachment = `${source}\n${this.#lspLanguageId()}`;
+    // A second announcement of the same attachment (the `source`
+    // attribute landing, then an explicit re-announce) must not build a
+    // second plugin: the new one opens the file before the old one has
+    // closed it, the workspace refuses two views on one file, and the
+    // crashed plugin takes diagnostics (and everything that waits on
+    // them) down with it.
+    if (client === this.#lspClient && attachment === this.#lspAttachment) return;
+    if (this.#lspClient) {
+      // Close the old file first, for the same reason.
+      this.#view.dispatch({ effects: this.#lsp.reconfigure([]) });
+    }
     this.#lspClient = client;
+    this.#lspAttachment = attachment;
     this.#view.dispatch({
       effects: this.#lsp.reconfigure(
         client.plugin(source, this.#lspLanguageId()),
@@ -1072,6 +1098,7 @@ class TonkCodeElement extends HTMLElement {
    *  destroy the client — that's the provider's lifecycle. */
   disconnect(): void {
     this.#lspClient = null;
+    this.#lspAttachment = null;
     if (this.#view) {
       this.#view.dispatch({
         effects: this.#lsp.reconfigure([]),
@@ -1093,14 +1120,34 @@ class TonkCodeElement extends HTMLElement {
       }
       return;
     }
-    if (next === this.#view.state.doc.toString()) return;
+    const prev = this.#view.state.doc.toString();
+    if (next === prev) return;
+    // Replace only the span that differs. A whole-document replace maps
+    // the caret to one end of the buffer, so an out-of-band write (another
+    // replica editing this cell) threw the author's caret out of the line
+    // they were typing in.
+    let start = 0;
+    const shared = Math.min(prev.length, next.length);
+    while (start < shared && prev.charCodeAt(start) === next.charCodeAt(start)) {
+      start++;
+    }
+    let prevEnd = prev.length;
+    let nextEnd = next.length;
+    while (
+      prevEnd > start &&
+      nextEnd > start &&
+      prev.charCodeAt(prevEnd - 1) === next.charCodeAt(nextEnd - 1)
+    ) {
+      prevEnd--;
+      nextEnd--;
+    }
     this.#suppressChange = true;
     try {
       this.#view.dispatch({
         changes: {
-          from: 0,
-          to: this.#view.state.doc.length,
-          insert: next,
+          from: start,
+          to: prevEnd,
+          insert: next.slice(start, nextEnd),
         },
       });
     } finally {

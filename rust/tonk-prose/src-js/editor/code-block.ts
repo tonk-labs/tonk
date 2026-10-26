@@ -144,6 +144,17 @@ class TonkCodeBlockView implements NodeView {
   #maybeEscape(event: KeyboardEvent): void {
     const cm = this.#editor.view;
     if (!cm) return;
+    // While a completion list is open the arrows move through it.
+    // Escaping the block as well took the caret out of the cell, so a
+    // completion could not be picked with the keyboard at all. (Not
+    // `defaultPrevented`: CodeMirror's own line motion prevents the
+    // default too, and that is exactly the key that should escape.)
+    if (
+      (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+      this.#editor.shadowRoot?.querySelector(".cm-tooltip-autocomplete")
+    ) {
+      return;
+    }
     const { doc, selection } = cm.state;
     const main = selection.main;
     if (!main.empty) return;

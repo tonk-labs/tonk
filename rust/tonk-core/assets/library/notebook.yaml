@@ -482,6 +482,30 @@ command!: &block/place
       the: xyz.tonk.block.place/key
       as: text
 
+# A move re-keys a block that already has an entry: the entry under `from`
+# goes and one under `key` takes its place, in the same commit. Placing the
+# new key alone left the old entry behind, so the block sat in the sequence
+# twice and the earlier key put it back where it had been moved from.
+command!: &block/move
+  description: Move one block to another position in its notebook's sequence.
+  with:
+    subject:
+      description: The block entity.
+      the: xyz.tonk.block.move/subject
+      as: entity
+    notebook:
+      description: The notebook whose sequence the block moves in.
+      the: xyz.tonk.block.move/notebook
+      as: entity
+    from:
+      description: The position the block held.
+      the: xyz.tonk.block.move/from
+      as: text
+    key:
+      description: The position the block moves to.
+      the: xyz.tonk.block.move/key
+      as: text
+
 command!: &block/remove
   description: Take one block out of its notebook's sequence.
   with:
@@ -671,6 +695,26 @@ rule!:
         subject: ?block
         notebook: ?this
         key: ?block/key
+
+rule!:
+  description: Enter a moved block under its new position.
+  assert!: notebook/blocks
+  when:
+    - assert: block/move
+      where:
+        subject: ?block
+        notebook: ?this
+        key: ?block/key
+
+rule!:
+  description: Retract a moved block's entry under its old position.
+  retract!: notebook/blocks
+  when:
+    - assert: block/move
+      where:
+        subject: ?block
+        notebook: ?this
+        from: ?block/key
 
 rule!:
   description: Retract a block's entry from the notebook's sequence.
