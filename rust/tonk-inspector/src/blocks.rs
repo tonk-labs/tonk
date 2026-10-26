@@ -538,6 +538,35 @@ fn longest_increasing_run(keys: &[Option<dialog_artifacts::position::Position>])
     run
 }
 
+/// Keep the editor's spelling of every block whose row has not changed.
+///
+/// The editor normalizes what it is given (a trailing space goes, `~~~`
+/// becomes backticks), so a stored source can differ from the editor's text
+/// for the same block indefinitely. Projecting the stored spelling made the
+/// document differ from the editor's on every projection, so each one wrote
+/// it into the editor again, and that write rebuilt the document from
+/// markdown: an empty paragraph the author had just opened with Enter has no
+/// markdown, so it was deleted, and what they typed next joined the block
+/// above it.
+///
+/// `seen` is each block's row source as of the last projection and `base`
+/// the blocks as the editor spells them. A block whose row still says what
+/// it said then has not changed in the store, so its editor spelling stands.
+pub fn respell(
+    stored: &mut [Block],
+    seen: &std::collections::HashMap<String, String>,
+    base: &[Block],
+) {
+    for block in stored {
+        if seen.get(&block.entity) != Some(&block.source) {
+            continue;
+        }
+        if let Some(ours) = base.iter().find(|b| b.entity == block.entity) {
+            block.source = ours.source.clone();
+        }
+    }
+}
+
 /// What an edit did to a notebook's blocks.
 ///
 /// Separating these is the point: a paragraph cut from one place and pasted
@@ -1413,6 +1442,31 @@ mod tests {
             "Query cells run on their own.".to_owned(),
         ];
         assert_ne!(split(&project(&ungrouped)), ungrouped);
+    }
+
+    /// A block the editor normalized keeps the editor's spelling while its
+    /// row is unchanged, so the projection equals the editor's text and is
+    /// not written back into it. A row that changed is projected as stored.
+    #[dialog_common::test]
+    fn it_keeps_the_editors_spelling_of_an_unchanged_row() {
+        let rows = stored(&[("a", "ends with a space "), ("b", "remote edit")]);
+        let seen: std::collections::HashMap<String, String> = [
+            ("a".to_owned(), "ends with a space ".to_owned()),
+            ("b".to_owned(), "before".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let base = stored(&[("a", "ends with a space"), ("b", "before")]);
+
+        let mut projected = rows.clone();
+        respell(&mut projected, &seen, &base);
+        assert_eq!(projected[0].source, "ends with a space", "unchanged row");
+        assert_eq!(projected[1].source, "remote edit", "changed row");
+
+        // The first projection has seen nothing, so it projects the rows.
+        let mut first = rows.clone();
+        respell(&mut first, &std::collections::HashMap::new(), &base);
+        assert_eq!(first, rows);
     }
 
     #[dialog_common::test]

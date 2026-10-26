@@ -40,7 +40,7 @@ use web_sys::{
     CustomEvent, Element, Event, HtmlElement, MutationObserver, MutationObserverInit, window,
 };
 
-use crate::blocks::{Block, commit_notation, moves, project, reconcile, split, title_of};
+use crate::blocks::{Block, commit_notation, moves, project, reconcile, respell, split, title_of};
 use crate::cell_output::render as render_result;
 use crate::element::{evaluate, reflect_string, resolve_context};
 
@@ -555,6 +555,7 @@ fn mount(
             blocks: RefCell::new(Vec::new()),
             pending: RefCell::new(Pending::default()),
             projected: RefCell::new(String::new()),
+            seen: RefCell::new(HashMap::new()),
             // The title the notebook already has, so the first commit does
             // not rename it to itself.
             title: RefCell::new(this.get_attribute("title").filter(|t| !t.is_empty())),
@@ -645,6 +646,10 @@ struct Notebook {
     /// projection, or what the last commit wrote. Differing from the
     /// editor's live text means the author has typed since.
     projected: RefCell<String>,
+    /// Each block's row source as of the last projection, by entity. A row
+    /// that still says the same keeps the editor's spelling of the block
+    /// (see [`respell`]).
+    seen: RefCell<HashMap<String, String>>,
     /// The title last written, so a commit that leaves the heading alone
     /// does not rewrite the notebook's name.
     title: RefCell<Option<String>>,
@@ -954,6 +959,12 @@ impl Notebook {
 
         let mut stored = rows;
         self.overlay(&mut stored);
+        let rows_now: HashMap<String, String> = stored
+            .iter()
+            .map(|block| (block.entity.clone(), block.source.clone()))
+            .collect();
+        respell(&mut stored, &self.seen.borrow(), &self.blocks.borrow());
+        *self.seen.borrow_mut() = rows_now;
 
         let sources: Vec<String> = stored.iter().map(|b| b.source.clone()).collect();
         let document = project(&sources);
