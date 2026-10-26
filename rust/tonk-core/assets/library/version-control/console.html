@@ -1,0 +1,218 @@
+<style>
+  vc-history {
+    --vc-ink: #1d1b19;
+    --vc-muted: #6f6a63;
+    --vc-paper: #faf8f5;
+    --vc-raised: #ffffff;
+    --vc-line: #e3ded6;
+    --vc-accent: #2f5fd0;
+    --vc-accent-soft: #e6edfb;
+    --vc-head: #1f8a4c;
+    --vc-lane-0: #2f5fd0;
+    --vc-lane-1: #c2410c;
+    --vc-lane-2: #7c3aed;
+    --vc-lane-3: #0f766e;
+    --vc-lane-4: #b45309;
+    --vc-lane-5: #be185d;
+    --vc-row: 36px;
+    --vc-lane: 16px;
+    display: block;
+    box-sizing: border-box;
+    min-height: 100dvh;
+    padding: 24px 16px 48px;
+    background: var(--vc-paper);
+    color: var(--vc-ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    vc-history {
+      --vc-ink: #ece8e2;
+      --vc-muted: #a19b92;
+      --vc-paper: #161514;
+      --vc-raised: #201f1d;
+      --vc-line: #34312d;
+      --vc-accent: #7aa2ff;
+      --vc-accent-soft: #23304d;
+      --vc-head: #4ade80;
+      --vc-lane-0: #7aa2ff;
+      --vc-lane-1: #fb923c;
+      --vc-lane-2: #c4b5fd;
+      --vc-lane-3: #5eead4;
+      --vc-lane-4: #fbbf24;
+      --vc-lane-5: #f9a8d4;
+    }
+  }
+  vc-history *, vc-history *::before, vc-history *::after { box-sizing: border-box; }
+  vc-history [hidden] { display: none !important; }
+  vc-history .vc-shell {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+    max-width: 1120px;
+    margin: 0 auto;
+  }
+  @media (min-width: 860px) {
+    vc-history .vc-shell { grid-template-columns: minmax(0, 1fr) minmax(0, 380px); }
+  }
+  vc-history .vc-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0 0 12px;
+  }
+  vc-history .vc-heading h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+  vc-history .vc-heading p { margin: 0; color: var(--vc-muted); font-size: 13px; }
+  vc-history .vc-log {
+    margin: 0;
+    padding: 4px 0;
+    list-style: none;
+    border: 1px solid var(--vc-line);
+    border-radius: 10px;
+    background: var(--vc-raised);
+    overflow: hidden;
+  }
+  vc-history .vc-entry { position: relative; height: var(--vc-row); }
+  vc-history .vc-entry a {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 100%;
+    padding: 0 12px 0 0;
+    color: inherit;
+    text-decoration: none;
+    outline: none;
+  }
+  vc-history .vc-entry a:hover { background: var(--vc-accent-soft); }
+  vc-history .vc-entry a:focus-visible { box-shadow: inset 0 0 0 2px var(--vc-accent); }
+  vc-history .vc-entry[aria-current="true"] a { background: var(--vc-accent-soft); }
+  vc-history .vc-rails { flex: none; display: block; height: 100%; overflow: visible; }
+  vc-history .vc-rails path { fill: none; stroke-width: 2; stroke-linecap: round; }
+  vc-history .vc-rails circle { stroke-width: 2; }
+  vc-history .vc-id {
+    flex: none;
+    font: 12px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: var(--vc-muted);
+  }
+  vc-history .vc-who {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  vc-history .vc-badge {
+    flex: none;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+    border: 1px solid currentColor;
+  }
+  vc-history .vc-badge--head { color: var(--vc-head); }
+  vc-history .vc-badge--merge { color: var(--vc-muted); }
+  vc-history .vc-badge--comments { color: var(--vc-accent); border-color: transparent; background: var(--vc-accent-soft); }
+  vc-history .vc-empty {
+    padding: 32px 16px;
+    border: 1px dashed var(--vc-line);
+    border-radius: 10px;
+    color: var(--vc-muted);
+    text-align: center;
+  }
+  vc-history .vc-detail {
+    align-self: start;
+    position: sticky;
+    top: 16px;
+    padding: 16px;
+    border: 1px solid var(--vc-line);
+    border-radius: 10px;
+    background: var(--vc-raised);
+  }
+  vc-history .vc-detail h2 { margin: 0 0 12px; font-size: 16px; font-weight: 650; }
+  vc-history .vc-detail h3 {
+    margin: 18px 0 8px;
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--vc-muted);
+  }
+  vc-history .vc-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; margin: 0; }
+  vc-history .vc-facts dt { color: var(--vc-muted); }
+  vc-history .vc-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  vc-history .vc-mono { font: 12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  vc-history .vc-links { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+  vc-history .vc-links a {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: var(--vc-accent-soft);
+    color: var(--vc-accent);
+    text-decoration: none;
+  }
+  vc-history .vc-links a:hover { text-decoration: underline; }
+  vc-history .vc-thread { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+  vc-history .vc-comment { padding: 10px 12px; border-radius: 8px; background: var(--vc-paper); }
+  vc-history .vc-comment header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+    font-size: 12px;
+    color: var(--vc-muted);
+  }
+  vc-history .vc-comment header strong { color: var(--vc-ink); font-weight: 600; }
+  vc-history .vc-comment p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  vc-history .vc-quiet { margin: 0; color: var(--vc-muted); }
+  vc-history form { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+  vc-history textarea {
+    width: 100%;
+    min-height: 72px;
+    padding: 8px 10px;
+    border: 1px solid var(--vc-line);
+    border-radius: 8px;
+    background: var(--vc-paper);
+    color: inherit;
+    font: inherit;
+    resize: vertical;
+  }
+  vc-history textarea:focus { outline: 2px solid var(--vc-accent); outline-offset: -1px; }
+  vc-history button {
+    align-self: flex-end;
+    padding: 6px 14px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--vc-accent);
+    color: var(--vc-raised);
+    font: 600 13px/1.4 inherit;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  vc-history button:disabled { opacity: 0.5; cursor: default; }
+  vc-history button.vc-withdraw {
+    align-self: auto;
+    padding: 0;
+    background: none;
+    color: var(--vc-muted);
+    font-weight: 500;
+    font-size: 12px;
+  }
+  vc-history button.vc-withdraw:hover { color: var(--vc-ink); text-decoration: underline; }
+</style>
+<vc-history
+  html:branch={branch}
+  html:selected={entity}
+  on:vc-comment=version-control/comment-on
+  on:vc-uncomment=version-control/uncomment
+>
+  <div class="vc-data" hidden>
+    <tonk-display with="{branch}@{repo}" model=version-control/revision view=vc-row></tonk-display>
+    <tonk-display with="{branch}@{repo}" model=version-control/parent view=vc-row></tonk-display>
+    <tonk-display with="{branch}@{repo}" model=version-control/head view=vc-row></tonk-display>
+    <tonk-display with="{branch}@{repo}" model=version-control/comment view=vc-row></tonk-display>
+    <tonk-display with="{branch}@{repo}" model=version-control/session view=vc-row></tonk-display>
+    <tonk-display with="{branch}@{repo}" model=member/account view=vc-row></tonk-display>
+  </div>
+</vc-history>
