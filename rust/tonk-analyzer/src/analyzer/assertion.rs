@@ -24,7 +24,7 @@ use tonk_schema::prelude::EntityExt;
 use tonk_schema::transact::{Application, DomainApplication, ThisIntent, derive_this};
 
 /// The `as:` spelling of a value type, for diagnostics.
-fn type_spelling(ty: dialog_query::artifact::Type) -> String {
+pub(crate) fn type_spelling(ty: dialog_query::artifact::Type) -> String {
     use dialog_query::artifact::Type;
     match ty {
         Type::String => "text".into(),

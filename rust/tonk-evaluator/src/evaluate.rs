@@ -5381,7 +5381,8 @@ person!:
     /// A branch shaped like the session and delegation records a
     /// profile holds: one session whose `profile` is `did:key:zAlice`,
     /// and two delegations addressed to `did:key:zAlice` and
-    /// `did:key:zBob`, plus a `note` concept with no records.
+    /// `did:key:zBob`, an invitation whose `audience` is the text
+    /// `"did:key:zAlice"`, and a `note` concept with no records.
     async fn sessions_and_delegations() -> anyhow::Result<(TestSession, Branch)> {
         let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
@@ -5401,6 +5402,13 @@ concept!: &delegation
     audience:
       the: io.gozala.delegation/audience
       as: entity
+      description: "audience"
+
+concept!: &invitation
+  with:
+    audience:
+      the: io.gozala.invitation/audience
+      as: text
       description: "audience"
 
 concept!: &note
@@ -5424,6 +5432,9 @@ delegation!:
 
 delegation!:
   audience: did:key:zBob
+
+invitation!:
+  audience: "did:key:zAlice"
 "#,
             true,
         )
@@ -5487,6 +5498,31 @@ delegation!:
         assert!(
             matches.iter().all(|block| block.results.is_empty()),
             "no session's profile is a delegation, so neither block has rows: {matches:?}"
+        );
+        Ok(())
+    }
+
+    /// An entity and the text spelling the same DID are different
+    /// values, so a variable joining an entity field with a text field
+    /// matches nothing — the analyzer flags it as
+    /// `E_VARIABLE_TYPE_CONFLICT` — and the evaluator shows no rows
+    /// rather than every row of each expression.
+    #[dialog_common::test]
+    async fn it_shows_no_rows_when_a_variable_joins_an_entity_with_text() -> anyhow::Result<()> {
+        let (operator, branch) = sessions_and_delegations().await?;
+
+        let matches = evaluate_notation(
+            &branch,
+            &operator,
+            "session:\n  profile: ?p\n\ninvitation:\n  audience: ?p\n",
+            false,
+        )
+        .await?;
+
+        assert_eq!(matches.len(), 2, "one block per expression: {matches:?}");
+        assert!(
+            matches.iter().all(|block| block.results.is_empty()),
+            "an entity never equals text, so neither block has rows: {matches:?}"
         );
         Ok(())
     }

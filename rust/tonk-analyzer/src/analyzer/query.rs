@@ -4,11 +4,13 @@
 //! [`ThisIntent`] with no name to publish.
 
 use dialog_artifacts::Value;
+use dialog_query::artifact::Type;
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
-use tonk_notation::{Application as SyntaxApplication, Field, HeadName};
+use tonk_notation::{Application as SyntaxApplication, Field, FieldValue, HeadName};
 
 use super::assertion::derive_head_intent;
-use super::error::{AnalyzeError, AnalyzeErrorKind};
+use super::assertion::type_spelling;
+use super::error::{AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind};
 use super::field::{
     collection_entry_terms, field_value_to_term, is_meta_field, untyped_descriptor,
     validate_claim_attribute,
@@ -314,4 +316,93 @@ fn this_term_for_query(this: &ThisIntent) -> Term<dialog_query::Any> {
             Term::<dialog_query::Any>::unique()
         }
     }
+}
+
+/// A slot of a query expression bound to a user-written `?var`, and
+/// the type of value the slot reads.
+pub(crate) struct TypedBinding {
+    /// The variable name (without `?`).
+    name: String,
+    /// The type the slot reads.
+    content_type: Type,
+    /// The slot, as `<head>.<field>` (`db/session.profile`).
+    slot: String,
+    /// Source range of the variable.
+    range: lsp_types::Range,
+}
+
+/// The slots of `query` that bind a `?var` to a known type.
+///
+/// `this:` reads an entity under every head. A concept field reads
+/// its declared `as:`; a keyed collection, a field without a declared
+/// type, a domain head's fields and a resolver's operands read any
+/// type, so they constrain nothing and are left out.
+pub(crate) fn typed_bindings(
+    query: &SyntaxApplication,
+    application: &Application,
+) -> Vec<TypedBinding> {
+    let descriptor = match application {
+        Application::Concept { query, .. } => Some(&query.predicate),
+        Application::Domain { .. } => None,
+        _ => return Vec::new(),
+    };
+    let mut bindings = Vec::new();
+    for field in &query.fields {
+        let FieldValue::Variable(name) = &field.value else {
+            continue;
+        };
+        let content_type = if field.name == "this" {
+            Some(Type::Entity)
+        } else {
+            descriptor.and_then(|descriptor| {
+                descriptor
+                    .with()
+                    .iter()
+                    .find(|(field_name, _)| *field_name == field.name)
+                    .filter(|(_, attr)| attr.the().attribute().is_some())
+                    .and_then(|(_, attr)| attr.content_type())
+            })
+        };
+        if let Some(content_type) = content_type {
+            bindings.push(TypedBinding {
+                name: name.clone(),
+                content_type,
+                slot: format!("{}.{}", query.predicate.source, field.name),
+                range: field.value_range,
+            });
+        }
+    }
+    bindings
+}
+
+/// An error for every binding whose type can never equal the type
+/// of the first binding of the same variable.
+pub(crate) fn variable_type_conflicts(bindings: &[TypedBinding]) -> Vec<AnalyzeDiagnostic> {
+    // Any number type reads any number it holds, so numbers join
+    // across types; every other type only with itself.
+    fn family(content_type: Type) -> Option<Type> {
+        (!content_type.is_number()).then(|| content_type.storage())
+    }
+    let mut first: std::collections::HashMap<&str, &TypedBinding> =
+        std::collections::HashMap::new();
+    let mut conflicts = Vec::new();
+    for binding in bindings {
+        let Some(earlier) = first.get(binding.name.as_str()) else {
+            first.insert(&binding.name, binding);
+            continue;
+        };
+        if family(earlier.content_type) != family(binding.content_type) {
+            conflicts.push(AnalyzeDiagnostic::error(
+                AnalyzeDiagnosticKind::VariableTypeConflict {
+                    name: binding.name.clone(),
+                    first: earlier.slot.clone(),
+                    expected: type_spelling(earlier.content_type),
+                    slot: binding.slot.clone(),
+                    found: type_spelling(binding.content_type),
+                },
+                binding.range,
+            ));
+        }
+    }
+    conflicts
 }

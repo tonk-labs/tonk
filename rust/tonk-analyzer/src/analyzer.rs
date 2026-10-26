@@ -318,9 +318,14 @@ fn expand(
         (0..syntax.expressions.len()).map(|_| None).collect();
 
     // ---- query pass: build query Applications ----
+    // Each query's typed `?var` slots, checked together once every
+    // query is built: expressions join on shared variables, so a
+    // variable whose slots read different types matches nothing.
+    let mut typed_bindings = Vec::new();
     for (index, expression) in syntax.expressions.iter().enumerate() {
         if let Expression::Query(q) = expression {
             let application = build_query_application(q, scope, &working)?;
+            typed_bindings.extend(query::typed_bindings(q, &application));
             working.queries.push(application.clone());
             nodes[index] = Some(ExpressionAnalysis::Query(Box::new(Tree {
                 source: QueryNode { source: q.clone() },
@@ -331,6 +336,8 @@ fn expand(
             })));
         }
     }
+
+    diagnostics.extend(query::variable_type_conflicts(&typed_bindings));
 
     // ---- mutation pass: build mutation Statements ----
     let mut requires: HashSet<String> = HashSet::new();
@@ -3032,6 +3039,110 @@ xyz.tonk.person!:
             matches!(&term, Some(Term::Constant(Value::Bytes(bytes))) if bytes == b"# About me\n"),
             "included content on an untyped field should stay bytes, got {term:?}"
         );
+    }
+
+    /// Two concepts shaped like `db/session` (an entity `profile`)
+    /// and `ucan/delegation` (a text `audience`), plus a float
+    /// `score` and an integer `rank`, declared in-document so the
+    /// queries below resolve them.
+    const SESSION_AND_DELEGATION: &str = r#"
+concept!: &session
+  with:
+    profile:
+      the: io.test.session/profile
+      as: entity
+      description: "test"
+    rank:
+      the: io.test.session/rank
+      as: signed-integer
+      description: "test"
+
+concept!: &delegation
+  with:
+    audience:
+      the: io.test.delegation/audience
+      as: text
+      description: "test"
+    holder:
+      the: io.test.delegation/holder
+      as: entity
+      description: "test"
+    score:
+      the: io.test.delegation/score
+      as: float
+      description: "test"
+"#;
+
+    /// The `E_VARIABLE_TYPE_CONFLICT` diagnostics `queries` raise.
+    async fn type_conflicts(queries: &str) -> Vec<AnalyzeDiagnostic> {
+        let syntax = must_parse(&format!("{SESSION_AND_DELEGATION}\n{queries}"));
+        let tree = analyze_empty(&syntax).await.unwrap();
+        tree.analysis
+            .diagnostics
+            .into_iter()
+            .filter(|d| d.code() == "E_VARIABLE_TYPE_CONFLICT")
+            .collect()
+    }
+
+    /// A variable bound to an entity in one expression and to text in
+    /// another can never agree, so the document is an error naming
+    /// both slots and their types, at the second binding.
+    #[dialog_common::test]
+    async fn it_errors_when_a_variable_joins_an_entity_with_text() {
+        let conflicts =
+            type_conflicts("session:\n  profile: ?p\n\ndelegation:\n  audience: ?p\n").await;
+        assert_eq!(conflicts.len(), 1, "one conflict: {conflicts:?}");
+        let conflict = &conflicts[0];
+        assert!(matches!(
+            conflict.severity,
+            crate::analyzer::error::DiagnosticSeverity::Error
+        ));
+        assert!(matches!(
+            &conflict.kind,
+            AnalyzeDiagnosticKind::VariableTypeConflict { name, first, expected, slot, found }
+                if name == "p"
+                    && first == "session.profile"
+                    && expected == "entity"
+                    && slot == "delegation.audience"
+                    && found == "text"
+        ));
+        let range = conflict.range.expect("the conflict has a range");
+        let audience_line = format!(
+            "{SESSION_AND_DELEGATION}\nsession:\n  profile: ?p\n\ndelegation:\n  audience: ?p\n"
+        )
+        .lines()
+        .position(|line| line == "  audience: ?p")
+        .expect("the document has the audience binding");
+        assert_eq!(
+            range.start.line as usize, audience_line,
+            "the error sits on the second binding: {range:?}"
+        );
+    }
+
+    /// `this:` reads an entity, so binding it to a text field
+    /// conflicts too.
+    #[dialog_common::test]
+    async fn it_errors_when_a_variable_joins_this_with_text() {
+        let conflicts =
+            type_conflicts("session:\n  this: ?p\n\ndelegation:\n  audience: ?p\n").await;
+        assert_eq!(conflicts.len(), 1, "one conflict: {conflicts:?}");
+        assert!(matches!(
+            &conflicts[0].kind,
+            AnalyzeDiagnosticKind::VariableTypeConflict { first, expected, .. }
+                if first == "session.this" && expected == "entity"
+        ));
+    }
+
+    /// Slots of one type join without complaint, `this:` with an
+    /// entity field included, and numbers join across number types
+    /// since each reads any number it holds.
+    #[dialog_common::test]
+    async fn it_accepts_variables_whose_slots_share_a_type() {
+        let conflicts = type_conflicts(
+            "session:\n  profile: ?p\n  rank: ?n\n\ndelegation:\n  holder: ?p\n  score: ?n\n\nsession:\n  this: ?p\n",
+        )
+        .await;
+        assert!(conflicts.is_empty(), "no conflicts: {conflicts:?}");
     }
 
     /// A raw domain write whose literal the declared attribute's type

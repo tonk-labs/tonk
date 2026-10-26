@@ -285,6 +285,33 @@ pub enum AnalyzeDiagnosticKind {
         /// The keyword it reads as.
         keyword: String,
     },
+    /// One `?var` is bound by query slots of different types, such as
+    /// an `as: entity` field in one expression and an `as: text` field
+    /// in another. A value equals only a value of its own type (an
+    /// entity never equals the text spelling the same DID), so the
+    /// expressions can never agree on the variable and the document
+    /// matches nothing. An error, like an assertion field with no
+    /// value: no evaluation of the document produces a row. Numbers
+    /// are one family here, since a number type reads any number it
+    /// holds.
+    #[error(
+        "?{name} is {found} in {slot} but {expected} in {first} — \
+         a {found} value never equals a {expected} one, so these \
+         expressions match nothing; bind each to its own variable or \
+         align the fields' `as:`"
+    )]
+    VariableTypeConflict {
+        /// The variable name (without `?`).
+        name: String,
+        /// The slot that first bound it (`db/session.profile`).
+        first: String,
+        /// The type that slot reads, in `as:` spelling.
+        expected: String,
+        /// The conflicting slot (`ucan/delegation.audience`).
+        slot: String,
+        /// The type the conflicting slot reads, in `as:` spelling.
+        found: String,
+    },
     /// the author gets a heads-up with the spelling that would.
     #[error("{attribute} is declared {declared}, this literal stores {found} — {hint}")]
     DeclaredTypeDivergence {
@@ -320,6 +347,7 @@ impl AnalyzeDiagnosticKind {
             Self::OlderKeywordSpelling { .. } => "W_OLDER_KEYWORD_SPELLING",
             Self::DeclaredTypeDivergence { .. } => "W_DECLARED_TYPE_DIVERGENCE",
             Self::UnknownEmbed { .. } => "W_UNKNOWN_EMBED",
+            Self::VariableTypeConflict { .. } => "E_VARIABLE_TYPE_CONFLICT",
         }
     }
 }
