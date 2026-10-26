@@ -117,12 +117,9 @@ pub struct RegisterDeviceRequest {
 /// is where the label is known, and asserting there is what makes the
 /// row reach every device without a registry to ask.
 ///
-/// The push is what makes registration visible before the grant is even
-/// delivered: the waiting device's first account pull brings the row
-/// down with the authority it describes. A profile with no provider keeps
-/// the row local. Otherwise, if the one-shot push races the worker's ordinary
-/// account sweep, finish through that serialized sweep before delivering the
-/// grant.
+/// This route answers only once the row is published; the approval
+/// ceremony uses [`register_then_publish`] instead, so the grant is not
+/// held behind the upload.
 ///
 /// [`DeviceLink`]: tonk_schema::DeviceLink
 #[wasm_compat]
@@ -131,7 +128,51 @@ pub async fn register(
     Json(request): Json<RegisterDeviceRequest>,
 ) -> Result<Json<serde_json::Value>, TonkWorkerError> {
     let mut timing = super::link_timing::LinkTiming::new("registration", "state-lock");
-    let state = state.read().await;
+    let tonk = state.read().await;
+    let attachment_id = record_device(&tonk, request, &mut timing).await?;
+    timing.next("push-account");
+    publish_devices(&tonk).await?;
+    timing.next("reply");
+    Ok(Json(serde_json::json!({ "attachmentId": attachment_id })))
+}
+
+/// Record a device locally and publish it behind the caller's answer.
+///
+/// The service authorizes the new device by its delegation chain, not
+/// by the published row, so the grant does not wait for the push. The
+/// push of the whole account branch took about ten seconds per approval.
+/// Other devices see the row when the push lands; if this worker stops
+/// first, the row is still committed locally and the next sync pushes it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn register_then_publish(
+    state: &AppState,
+    request: RegisterDeviceRequest,
+) -> Result<String, TonkWorkerError> {
+    let mut timing = super::link_timing::LinkTiming::new("registration", "state-lock");
+    let attachment_id = {
+        let tonk = state.read().await;
+        record_device(&tonk, request, &mut timing).await?
+    };
+    timing.next("reply");
+    let state = state.clone();
+    crate::detach(async move {
+        let mut timing = super::link_timing::LinkTiming::new("registration-publish", "state-lock");
+        let tonk = state.read().await;
+        timing.next("push-account");
+        if let Err(error) = publish_devices(&tonk).await {
+            log!("the registered device was not published: {error}");
+        }
+    });
+    Ok(attachment_id)
+}
+
+/// Retain the grant and describe the device in profile main, returning
+/// the attachment id. Local only.
+async fn record_device(
+    state: &TonkState,
+    request: RegisterDeviceRequest,
+    timing: &mut super::link_timing::LinkTiming,
+) -> Result<String, TonkWorkerError> {
     timing.next("decode-grant");
     let bytes = hex::decode(&request.delegation_hex).map_err(|error| {
         TonkWorkerError::Conflict(format!("device delegation is not valid hex: {error}"))
@@ -149,15 +190,22 @@ pub async fn register(
         )));
     }
     timing.next("describe-device");
-    crate::onboarding::describe_device_link(&state, &chain, request.name)
+    crate::onboarding::describe_device_link(state, &chain, request.name)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("describe the registered device: {error}"))
         })?;
-    timing.next("push-account");
-    if let Err(push_error) = super::account_state::push_account_main(&state).await {
-        timing.next("fallback-sweep");
-        let (status, swept) = super::account_state::ensure_account_state_swept(&state).await;
+    // The delegation CID is the attachment id now: it names the exact
+    // grant this registration described, which is what the id was for.
+    Ok(chain.proof_cids()[0].to_string())
+}
+
+/// Push profile main so other devices see the registered row. A profile
+/// with no provider keeps the row local. If the one-shot push races the
+/// worker's ordinary account sweep, finish through that serialized sweep.
+async fn publish_devices(state: &TonkState) -> Result<(), TonkWorkerError> {
+    if let Err(push_error) = super::account_state::push_account_main(state).await {
+        let (status, swept) = super::account_state::ensure_account_state_swept(state).await;
         match status {
             tonk_account::AccountStateStatus::Unconfigured => {
                 log!("registered device remains local: {push_error}");
@@ -174,11 +222,7 @@ pub async fn register(
             })?,
         }
     }
-    // The delegation CID is the attachment id now: it names the exact
-    // grant this registration described, which is what the id was for.
-    timing.next("reply");
-    let attachment_id = chain.proof_cids()[0].to_string();
-    Ok(Json(serde_json::json!({ "attachmentId": attachment_id })))
+    Ok(())
 }
 
 /// Prefer the portable account-space fact; fall back to what the provider
@@ -844,6 +888,43 @@ mod tests {
             .find(|row| row.did == device.did().to_string())
             .expect("the registered device is listed");
         assert_eq!(registered.name, "e2e terminal");
+    }
+
+    /// The approval path answers with the attachment id once the row is
+    /// recorded locally; publishing it follows the answer.
+    #[dialog_common::test]
+    async fn it_records_a_device_before_publishing_it() {
+        use dialog_varsig::Principal as _;
+
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let account = dialog_credentials::Ed25519Signer::generate().await.unwrap();
+        let device = dialog_credentials::Ed25519Signer::generate().await.unwrap();
+        let chain = tonk_account::delegations::mint_account_union(
+            &dialog_credentials::Signer::from(account),
+            &device.did(),
+        )
+        .await
+        .unwrap();
+
+        let attachment_id = register_then_publish(
+            &state,
+            RegisterDeviceRequest {
+                did: device.did().to_string(),
+                name: "approved terminal".into(),
+                delegation_hex: hex::encode(chain.to_bytes().unwrap()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(attachment_id, chain.proof_cids()[0].to_string());
+
+        let devices = list(State(state)).await.unwrap();
+        let registered = devices
+            .0
+            .iter()
+            .find(|row| row.did == device.did().to_string())
+            .expect("the device is listed before its row is published");
+        assert_eq!(registered.name, "approved terminal");
     }
 
     /// Revoking another device mints from the target's grant retained in
