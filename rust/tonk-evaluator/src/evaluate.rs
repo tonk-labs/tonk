@@ -607,18 +607,22 @@ fn collect_queries(document: &tonk_analyzer::analysis::DocumentAnalysis) -> Vec<
 }
 
 /// Per-expression query results plus the joined frames for
-/// mutation planning.
+/// mutation planning and rendering.
 ///
 /// Each expression runs its own [`ConceptQuery`] independently;
 /// the driver hash-joins frames on shared user-named variables.
 /// Disjoint expressions cross-product (no shared variable to
 /// constrain on); connected expressions equi-join.
 struct QueryResults {
-    /// Per-expression frames for the *user-written* queries, in
-    /// document order. Each frame carries every user-named
-    /// variable bound by that expression's query.
-    per_expression: Vec<Vec<Parameters>>,
-    /// The natural join of `per_expression`. Used for mutation
+    /// The natural join of each group of expressions connected
+    /// through shared variables, parallel to the user-written
+    /// queries: entry `i` is the join of the group expression `i`
+    /// belongs to. A block renders from its group's join, so an
+    /// expression shows only the rows that agree with every
+    /// expression it shares a variable with, while an unrelated
+    /// expression with no rows cannot empty it.
+    connected: Vec<Vec<Parameters>>,
+    /// The natural join of every user-written query. Used for mutation
     /// planning (one row = one substitution into a [`Statement`]).
     /// Equivalent to the cross-product when no expressions share
     /// variables. Synthesized snapshots are deliberately excluded
@@ -651,6 +655,7 @@ async fn run_query<Env: EvaluateEnv>(
         per_expression.push(frames);
     }
     let joined = natural_join(&per_expression);
+    let connected = join_connected(queries, &per_expression);
 
     // Synthesized snapshots run standalone — never joined into
     // `joined`, so an empty snapshot can't zero mutation
@@ -662,10 +667,100 @@ async fn run_query<Env: EvaluateEnv>(
     }
 
     Ok(QueryResults {
-        per_expression,
+        connected,
         joined,
         synthesized_per_expression,
     })
+}
+
+/// Join each expression's frames with every expression it is
+/// connected to through shared variables, directly or through a
+/// chain of others.
+///
+/// Returns one relation per query, parallel to `queries`: the join
+/// of that query's group. Expressions in one group get the same
+/// relation, so two expressions sharing `?p` both read the rows
+/// where they agree on `?p`, and no rows when they never do. Values
+/// agree only when they are equal, type included: an entity never
+/// equals the text spelling the same DID.
+fn join_connected(
+    queries: &[LabeledQuery],
+    per_expression: &[Vec<Parameters>],
+) -> Vec<Vec<Parameters>> {
+    let variables: Vec<Vec<String>> = queries
+        .iter()
+        .map(|query| application_variables(&query.application))
+        .collect();
+
+    // Each query starts in its own group; a variable seen in an
+    // earlier group pulls the later query into it.
+    let mut group: Vec<usize> = (0..queries.len()).collect();
+    let mut owner = std::collections::HashMap::<&str, usize>::new();
+    for (index, names) in variables.iter().enumerate() {
+        for name in names {
+            match owner.get(name.as_str()) {
+                Some(&previous) => {
+                    let (from, to) = (group[index], group[previous]);
+                    if from != to {
+                        for slot in group.iter_mut() {
+                            if *slot == from {
+                                *slot = to;
+                            }
+                        }
+                    }
+                }
+                None => {
+                    owner.insert(name, index);
+                }
+            }
+        }
+    }
+
+    let mut joins = std::collections::HashMap::<usize, Vec<Parameters>>::new();
+    group
+        .iter()
+        .map(|id| {
+            joins
+                .entry(*id)
+                .or_insert_with(|| {
+                    let members: Vec<Vec<Parameters>> = group
+                        .iter()
+                        .zip(per_expression)
+                        .filter(|(member, _)| *member == id)
+                        .map(|(_, frames)| frames.clone())
+                        .collect();
+                    natural_join(&members)
+                })
+                .clone()
+        })
+        .collect()
+}
+
+/// Names of the variables an application binds, in the order its
+/// terms list them: its own terms plus any satellite `join` terms,
+/// which bind the extra entries of a keyed collection.
+fn application_variables(application: &Application) -> Vec<String> {
+    let terms: Vec<&Parameters> = match application {
+        Application::Concept { query, join, .. } => std::iter::once(&query.terms)
+            .chain(join.iter().map(|q| &q.terms))
+            .collect(),
+        Application::Domain { application, .. } => vec![&application.parameters],
+        Application::Resolver { terms, .. } => vec![terms],
+        Application::Rule { .. } | Application::DeductiveRule { .. } => Vec::new(),
+    };
+    let mut names: Vec<String> = Vec::new();
+    for terms in terms {
+        for (_, term) in terms.iter() {
+            if let Term::Variable {
+                name: Some(name), ..
+            } = term
+                && !names.iter().any(|known| known.as_str() == &**name)
+            {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names
 }
 
 /// Natural join of N frame relations on shared user-named
@@ -927,11 +1022,12 @@ async fn collect_single_matches<Env: EvaluateEnv>(
 
 /// Render per-source-expression match blocks.
 ///
-/// Each block projects from the joined frames so connected
-/// queries display the filtered intersection. Within an
-/// expression, frames are deduplicated by their `this` entity to
-/// avoid showing the same row repeatedly when an unrelated
-/// expression's cross-product introduces duplicates.
+/// Each block projects from the join of the expressions it shares
+/// variables with, so connected queries display the filtered
+/// intersection — and nothing when they share no row — while an
+/// unrelated expression neither filters nor empties them. Within
+/// an expression, frames are deduplicated by the variables it
+/// binds.
 fn render_match_blocks(
     document: &tonk_analyzer::analysis::DocumentAnalysis,
     results: Option<&QueryResults>,
@@ -948,24 +1044,9 @@ fn render_match_blocks(
     let transient = document.transient_entities();
     let mut blocks = Vec::with_capacity(user_queries.len() + document.synthesized.len());
 
-    // User-written queries: each block draws from the joined
-    // frames so connected queries display the filtered
-    // intersection.
     for (i, query) in user_queries.iter().enumerate() {
-        // Source frames: prefer joined when non-empty (so
-        // connected queries see the filter); otherwise fall back
-        // to the expression's own frames so disjoint expressions
-        // still surface their solo matches when another
-        // expression returned zero rows and zeroed the join.
-        let source_frames: &[Parameters] = if !results.joined.is_empty() {
-            &results.joined
-        } else {
-            results
-                .per_expression
-                .get(i)
-                .map(Vec::as_slice)
-                .unwrap_or(&[])
-        };
+        let source_frames: &[Parameters] =
+            results.connected.get(i).map(Vec::as_slice).unwrap_or(&[]);
         let mut block = render_block(query.label.clone(), &query.application, source_frames);
         mark_transient(&mut block, &query.application, &transient);
         blocks.push(block);
@@ -1040,33 +1121,7 @@ fn render_block(
     };
 
     // Variable names this expression binds — used to dedupe rows.
-    let mut my_vars: Vec<String> = Vec::new();
-    let terms = match application {
-        Application::Concept { query: q, .. } => &q.terms,
-        Application::Domain { application: d, .. } => &d.parameters,
-        Application::Rule { .. }
-        | Application::DeductiveRule { .. }
-        | Application::Resolver { .. } => {
-            unreachable!("filtered above")
-        }
-    };
-    // Satellite `join` queries bind extra dictionary entries;
-    // their variables distinguish rows too.
-    let satellite_terms = match application {
-        Application::Concept { join, .. } => join.iter().map(|q| &q.terms).collect(),
-        _ => Vec::new(),
-    };
-    for terms in std::iter::once(terms).chain(satellite_terms) {
-        for (_, term) in terms.iter() {
-            if let Term::Variable {
-                name: Some(name), ..
-            } = term
-                && !my_vars.iter().any(|known| known.as_str() == &**name)
-            {
-                my_vars.push(name.to_string());
-            }
-        }
-    }
+    let my_vars = application_variables(application);
 
     let mut seen = std::collections::HashSet::<Vec<String>>::new();
     let mut block_results = Vec::new();
@@ -5281,6 +5336,193 @@ person!:
             err.to_string().to_lowercase().contains("text")
                 || err.to_string().to_lowercase().contains("type"),
             "expected a type-mismatch error mentioning the text type, got: {err}"
+        );
+        Ok(())
+    }
+
+    /// The session a test helper hands out, named so a setup
+    /// helper can commit through it.
+    type TestSession =
+        dialog_peer::Peer<dialog_storage::provider::storage::VolatileSpace, dialog_peer::Session>;
+
+    /// Evaluate `doc` and return its pre-mutation match blocks,
+    /// committing what it writes when `commit` is set.
+    async fn evaluate_notation(
+        branch: &Branch,
+        operator: &TestSession,
+        doc: &str,
+        commit: bool,
+    ) -> anyhow::Result<Vec<QueryMatchBlock>> {
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let evaluated = parsed
+            .syntax
+            .expect("syntax")
+            .evaluate(branch.transaction())
+            .perform(operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?;
+        let matches = evaluated.matches.clone();
+        if commit {
+            evaluated
+                .commit()
+                .publish()
+                .perform(operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
+        }
+        Ok(matches)
+    }
+
+    /// A branch shaped like the session and delegation records a
+    /// profile holds: one session whose `profile` is `did:key:zAlice`,
+    /// and two delegations addressed to `did:key:zAlice` and
+    /// `did:key:zBob`, plus a `note` concept with no records.
+    async fn sessions_and_delegations() -> anyhow::Result<(TestSession, Branch)> {
+        let (operator, profile) = test_session_with_peer().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        evaluate_notation(
+            &branch,
+            &operator,
+            r#"concept!: &session
+  with:
+    profile:
+      the: io.gozala.session/profile
+      as: entity
+      description: "profile"
+
+concept!: &delegation
+  with:
+    audience:
+      the: io.gozala.delegation/audience
+      as: entity
+      description: "audience"
+
+concept!: &note
+  with:
+    body:
+      the: io.gozala.note/body
+      as: text
+      description: "body"
+"#,
+            true,
+        )
+        .await?;
+        evaluate_notation(
+            &branch,
+            &operator,
+            r#"session!:
+  profile: did:key:zAlice
+
+delegation!:
+  audience: did:key:zAlice
+
+delegation!:
+  audience: did:key:zBob
+"#,
+            true,
+        )
+        .await?;
+        Ok((operator, branch))
+    }
+
+    /// The `audience` values a block's rows carry, sorted.
+    fn audiences(block: &QueryMatchBlock) -> Vec<String> {
+        let mut audiences: Vec<String> = block
+            .results
+            .iter()
+            .filter_map(|r| r.fields.get("audience")?.as_str().map(str::to_owned))
+            .collect();
+        audiences.sort();
+        audiences
+    }
+
+    /// Two expressions sharing `?p` unify on it: each block shows
+    /// only the rows that agree with the other, so the delegation
+    /// addressed to someone without a session is left out.
+    #[dialog_common::test]
+    async fn it_shows_only_rows_that_agree_on_a_shared_variable() -> anyhow::Result<()> {
+        let (operator, branch) = sessions_and_delegations().await?;
+
+        let matches = evaluate_notation(
+            &branch,
+            &operator,
+            "session:\n  profile: ?p\n\ndelegation:\n  audience: ?p\n",
+            false,
+        )
+        .await?;
+
+        assert_eq!(matches.len(), 2, "one block per expression: {matches:?}");
+        assert_eq!(matches[0].results.len(), 1, "{matches:?}");
+        assert_eq!(
+            matches[0].results[0].fields.get("profile"),
+            Some(&serde_json::json!("did:key:zAlice"))
+        );
+        assert_eq!(audiences(&matches[1]), vec!["did:key:zAlice"]);
+        Ok(())
+    }
+
+    /// Expressions sharing a variable that no rows agree on match
+    /// nothing. The blocks are empty rather than each listing every
+    /// row of its own, which would show results the document's
+    /// conjunction rules out.
+    #[dialog_common::test]
+    async fn it_shows_no_rows_when_connected_expressions_never_agree() -> anyhow::Result<()> {
+        let (operator, branch) = sessions_and_delegations().await?;
+
+        let matches = evaluate_notation(
+            &branch,
+            &operator,
+            "session:\n  profile: ?p\n\ndelegation:\n  this: ?p\n  audience: _\n",
+            false,
+        )
+        .await?;
+
+        assert_eq!(matches.len(), 2, "one block per expression: {matches:?}");
+        assert!(
+            matches.iter().all(|block| block.results.is_empty()),
+            "no session's profile is a delegation, so neither block has rows: {matches:?}"
+        );
+        Ok(())
+    }
+
+    /// An expression with no rows empties only the expressions it
+    /// shares a variable with. An unrelated expression still shows
+    /// its own rows, and a connected pair still shows its join.
+    #[dialog_common::test]
+    async fn it_keeps_unrelated_expressions_apart_from_an_empty_one() -> anyhow::Result<()> {
+        let (operator, branch) = sessions_and_delegations().await?;
+
+        let matches = evaluate_notation(
+            &branch,
+            &operator,
+            "session:\n  profile: ?p\n\ndelegation:\n  audience: ?p\n\nnote:\n  body: ?body\n",
+            false,
+        )
+        .await?;
+
+        assert_eq!(matches.len(), 3, "one block per expression: {matches:?}");
+        assert_eq!(matches[0].results.len(), 1, "{matches:?}");
+        assert_eq!(audiences(&matches[1]), vec!["did:key:zAlice"]);
+        assert!(matches[2].results.is_empty(), "{matches:?}");
+
+        let matches = evaluate_notation(
+            &branch,
+            &operator,
+            "note:\n  body: ?body\n\ndelegation:\n  audience: ?a\n",
+            false,
+        )
+        .await?;
+        assert!(matches[0].results.is_empty(), "{matches:?}");
+        assert_eq!(
+            audiences(&matches[1]),
+            vec!["did:key:zAlice", "did:key:zBob"],
+            "a delegation shares nothing with the empty note, so all of them show"
         );
         Ok(())
     }
