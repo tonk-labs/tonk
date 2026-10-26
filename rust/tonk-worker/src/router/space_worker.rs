@@ -19,7 +19,9 @@
 use dialog_artifacts::Asset;
 use dialog_capability::Subject;
 use dialog_common::Blake3Hash;
-use dialog_credentials::DidKeyResolver;
+use dialog_credentials::key::KeyExport;
+use dialog_credentials::secret::{Context, SecretExtractableDerive};
+use dialog_credentials::{DidKeyResolver, Ed25519Verifier};
 use dialog_effects::Use;
 use dialog_repository::{RepositoryExt as _, Revision, Upstream, codec};
 use dialog_ucan::UcanDelegation;
@@ -28,16 +30,19 @@ use dialog_ucan_core::{
     time::{TimeRange, Timestamp},
 };
 use dialog_varsig::Did;
+use dialog_varsig::Principal as _;
 use dialog_varsig::signature::AnySignature;
 use futures_util::stream;
 use ipld_core::ipld::Ipld;
 use std::collections::BTreeMap;
 use tonk_common::log;
 use tonk_invite::{HOME_ADDRESS, home_address_meta};
+use tonk_kernel_world::handover;
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 use tonk_schema::SpaceKernel;
 use tonk_schema::prelude::DidExt as _;
 use url::Url;
+use zeroize::Zeroizing;
 
 use super::account::{act_for, acts_for, member_did};
 use super::adopt::ensure_space_mounted;
@@ -96,6 +101,67 @@ pub(crate) async fn delegate(
         .to_bytes()
         .map_err(|e| TonkWorkerError::Internal(format!("failed to encode delegation: {e}")))?;
     Ok(Grant { chain, expires })
+}
+
+/// What the person's profile hands a space's host for the space's session:
+/// the session's key, concealed to the key the host made to receive it, and
+/// the delegation of the space to that key.
+pub(crate) struct Handover {
+    /// The DID of the session's key.
+    pub(crate) session: Did,
+    /// The seed of the session's key, concealed to the receiving key.
+    pub(crate) sealed: Vec<u8>,
+    /// The delegation of the space to the session's key.
+    pub(crate) grant: Grant,
+}
+
+/// Hand the host of `space` the key of its session, concealed to `receiver`,
+/// with a delegation of the space to it. The key is derived from the
+/// profile's own for the space, so it is the same key each time the host
+/// asks: what the session committed stays its own.
+pub(crate) async fn hand_over(
+    tonk: &TonkState,
+    space: &Did,
+    receiver: &Did,
+) -> Result<Handover, TonkWorkerError> {
+    let failed = |what: &str, error: &dyn std::fmt::Display| {
+        TonkWorkerError::Internal(format!("{what} for {space}: {error}"))
+    };
+    let own = tonk
+        .profile
+        .credential()
+        .signer()
+        .as_ed25519()
+        .ok_or_else(|| TonkWorkerError::Internal("the profile's key is not Ed25519".into()))?;
+    let key = SecretExtractableDerive::derive(
+        &own.secret(Context::new(handover::DERIVATION)),
+        space.as_str().as_bytes(),
+    )
+    .await
+    .map_err(|error| failed("no session key was derived", &error))?;
+    let seed = match key.export().await {
+        Ok(KeyExport::Extractable(seed)) => Zeroizing::new(seed),
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        Ok(_) => return Err(failed("no session key was derived", &"its seed is sealed")),
+        Err(error) => return Err(failed("no session key was derived", &error)),
+    };
+    let receiver: Ed25519Verifier = receiver
+        .as_str()
+        .parse()
+        .map_err(|_| TonkWorkerError::Router(format!("{receiver} is not an Ed25519 did:key")))?;
+    let sealed = receiver
+        .secret(Context::new(handover::HANDOVER))
+        .conceal(&seed)
+        .await
+        .map_err(|error| failed("the session key was not concealed", &error))?
+        .to_bytes();
+    let session = key.did();
+    let grant = delegate(tonk, space, &session).await?;
+    Ok(Handover {
+        session,
+        sealed,
+        grant,
+    })
 }
 
 /// What a space's worker is told with its delegation, and has to take up
@@ -626,6 +692,44 @@ mod tests {
             "the worker acts for the account the person's profile acts for"
         );
         resume(&worker, &space).await.unwrap();
+    }
+
+    /// The profile hands a space's host the key of the space's session,
+    /// which only the key the host made to receive it reveals, with the
+    /// space delegated to it. Asked again, it hands over the same key.
+    #[dialog_common::test]
+    async fn it_hands_a_space_s_host_the_key_of_its_session() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_credentials::secret::SealedSecret;
+
+        let (host, space) = host_with_space().await;
+        let host = host.read().await;
+        let receiver = Ed25519Signer::generate().await.unwrap();
+        let handed = hand_over(&host, &space, &receiver.did()).await.unwrap();
+
+        let sealed = SealedSecret::from_bytes(&handed.sealed).unwrap();
+        let seed = receiver
+            .secret(Context::new(handover::HANDOVER))
+            .reveal(&sealed)
+            .await
+            .unwrap();
+        let seed = <[u8; 32]>::try_from(seed.as_slice()).unwrap();
+        let key = Ed25519Signer::import(&seed).await.unwrap();
+        assert_eq!(key.did(), handed.session, "the receiver reveals the key");
+        let chain = DelegationChain::try_from(handed.grant.chain.as_slice()).unwrap();
+        assert_eq!(chain.audience(), &handed.session, "the space is the key's");
+
+        let stranger = Ed25519Signer::generate().await.unwrap();
+        assert!(
+            stranger
+                .secret(Context::new(handover::HANDOVER))
+                .reveal(&sealed)
+                .await
+                .is_err(),
+            "no other key reveals it"
+        );
+        let again = hand_over(&host, &space, &stranger.did()).await.unwrap();
+        assert_eq!(again.session, handed.session, "it is the same key again");
     }
 
     /// The page that hands a space's worker its delegation is on the space's

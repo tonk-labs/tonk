@@ -651,6 +651,20 @@ function bindSpacePort(port, { repo, branch }) {
                 port.postMessage({ id, space: repo, chain, expires: grant.expires }, [chain]);
                 return;
             }
+            // A space's host asks for the key of the space's session,
+            // concealed to a key it made to receive it, and the delegation
+            // of the space to that key. Both are for the space this port is
+            // bound to, never another.
+            if (typeof data.session === "string") {
+                const handed = await worker.handOverSpace(repo, data.session);
+                const sealed = handed.sealed.buffer;
+                const chain = handed.chain.buffer;
+                port.postMessage(
+                    { id, space: repo, session: handed.session, sealed, chain, expires: handed.expires },
+                    [sealed, chain],
+                );
+                return;
+            }
             // A space that runs a kernel installs the one it was made for
             // from this profile, which holds the deployment's copy: a space
             // made on this device takes nothing from anywhere else.

@@ -47,11 +47,15 @@ pub fn authority() -> Authority {
     with(|held| held.session.authority())
 }
 
+/// The delegations to the credential that the host hands over now: at the
+/// first boot, and again as it renews them. None on a boot after the first,
+/// where the kernel holds what it took up before.
+pub fn proofs() -> Vec<Vec<u8>> {
+    with(|held| held.session.proofs())
+}
+
 /// The delegation this worker opens a layer with: the first of its proofs, or
 /// none.
 pub fn chain() -> Vec<u8> {
-    with(|held| held.session.proofs())
-        .into_iter()
-        .next()
-        .unwrap_or_default()
+    proofs().into_iter().next().unwrap_or_default()
 }

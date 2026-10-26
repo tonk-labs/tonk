@@ -5,17 +5,23 @@
 
 use std::rc::Rc;
 
+use dialog_credentials::Ed25519Signer;
+use dialog_credentials::key::KeyExport;
+use dialog_credentials::secret::{Context, SealedSecret};
+use dialog_varsig::Principal as _;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use futures::lock::Mutex;
 use js_sys::{Array, Object, Reflect, Uint8Array};
+use tonk_kernel_world::handover;
 use wasm_bindgen::prelude::*;
 use wcmp::Engine;
+use zeroize::Zeroizing;
 
 use crate::bindings::sapling::kernel::storage::Edition;
 use crate::credentials::Standing;
 use crate::kernel::{Kernel, Served};
-use crate::sapling::{Change, did_key};
+use crate::sapling::Change;
 use crate::{boot, platform};
 
 #[wasm_bindgen]
@@ -46,12 +52,91 @@ impl BodyReader {
     }
 }
 
-/// The `did:key` of the session key made from `seed` (32 bytes).
+/// A key the host makes to receive the key of its session: the person's
+/// profile conceals the session key's seed to it.
 #[wasm_bindgen]
-pub fn session(seed: Uint8Array) -> Result<String, JsError> {
-    Ok(did_key(&ed25519_dalek::SigningKey::from_bytes(&seed_of(
-        &seed,
-    )?)))
+pub struct Receiver {
+    key: Ed25519Signer,
+}
+
+/// Make a key to receive the key of this origin's session with.
+#[wasm_bindgen]
+pub async fn receiver() -> Result<Receiver, JsError> {
+    let key = Ed25519Signer::generate()
+        .await
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    Ok(Receiver { key })
+}
+
+#[wasm_bindgen]
+impl Receiver {
+    /// The DID the profile conceals the session's key to.
+    #[wasm_bindgen(getter)]
+    pub fn did(&self) -> String {
+        self.key.did().to_string()
+    }
+
+    /// The session's key that `sealed` conceals to this one, as the
+    /// bootloader keeps it: a key nothing reads the seed of.
+    pub async fn accept(&self, sealed: Uint8Array) -> Result<JsValue, JsError> {
+        let sealed = SealedSecret::from_bytes(&sealed.to_vec())
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        let seed = Zeroizing::new(
+            self.key
+                .secret(Context::new(handover::HANDOVER))
+                .reveal(&sealed)
+                .await
+                .map_err(|error| JsError::new(&error.to_string()))?,
+        );
+        let seed = <[u8; 32]>::try_from(seed.as_slice())
+            .map(Zeroizing::new)
+            .map_err(|_| JsError::new("a session's key is a 32-byte seed"))?;
+        let key = Ed25519Signer::import(&*seed)
+            .await
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        kept(&key).await
+    }
+}
+
+/// A new key, as the bootloader keeps it: for now, the authority a session
+/// acts for, until a passkey opens the person's own.
+#[wasm_bindgen(js_name = generateKey)]
+pub async fn generate_key() -> Result<JsValue, JsError> {
+    let key = Ed25519Signer::generate()
+        .await
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    kept(&key).await
+}
+
+/// The DID of `key`, a key the bootloader keeps.
+#[wasm_bindgen(js_name = keyDid)]
+pub async fn key_did(key: JsValue) -> Result<String, JsError> {
+    Ok(restore(key).await?.did().to_string())
+}
+
+/// The space the records `kept` hold a kernel for, or `undefined` when they
+/// hold none.
+#[wasm_bindgen(js_name = heldSpace)]
+pub fn held_space(kept: Array) -> Result<Option<String>, JsError> {
+    Ok(boot::held(&changes_of(&kept)?))
+}
+
+/// `key`, as the bootloader keeps it.
+async fn kept(key: &Ed25519Signer) -> Result<JsValue, JsError> {
+    Ok(key
+        .export()
+        .await
+        .map_err(|error| JsError::new(&error.to_string()))?
+        .into())
+}
+
+/// A key the bootloader kept.
+async fn restore(key: JsValue) -> Result<Ed25519Signer, JsError> {
+    let export =
+        KeyExport::try_from(key).map_err(|_| JsError::new("a kept key is not a key's export"))?;
+    Ed25519Signer::import(export)
+        .await
+        .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// The content identifier of a kernel's wasm.
@@ -78,23 +163,21 @@ pub fn pinned(subject: String, kept: Array) -> Result<Option<String>, JsError> {
 }
 
 /// Boot the kernel the space `subject` pins, over the records `kept`, with a
-/// session that acts under the key of `seed`, for the authority of
-/// `authority`, by the delegations `proofs`.
+/// session that acts under the key `session`, for the authority of
+/// `authority`, by the delegations `proofs`: none on a boot after the first,
+/// where the kernel holds what it took up before.
 #[wasm_bindgen]
 pub async fn boot(
     subject: String,
-    seed: Uint8Array,
-    authority: Uint8Array,
+    session: JsValue,
+    authority: JsValue,
     proofs: Array,
     kept: Array,
 ) -> Result<Embedder, JsError> {
-    let standing = Standing::new(
-        seed_of(&seed)?,
-        seed_of(&authority)?,
-        proofs
-            .iter()
-            .map(|proof| Uint8Array::new(&proof).to_vec())
-            .collect(),
+    let standing = Standing::sealed(
+        restore(session).await?,
+        restore(authority).await?,
+        proofs_of(&proofs),
     );
     let started = platform::now_millis();
     let changes = changes_of(&kept)?;
@@ -126,10 +209,11 @@ pub async fn boot(
     Ok(Embedder { kernel, timings })
 }
 
-fn seed_of(seed: &Uint8Array) -> Result<[u8; 32], JsError> {
-    seed.to_vec()
-        .try_into()
-        .map_err(|_| JsError::new("a seed is 32 bytes"))
+fn proofs_of(proofs: &Array) -> Vec<Vec<u8>> {
+    proofs
+        .iter()
+        .map(|proof| Uint8Array::new(&proof).to_vec())
+        .collect()
 }
 
 /// The changes among `kept`. A host before custodies kept keys and site
@@ -151,6 +235,14 @@ impl Embedder {
             .await
             .map_err(|error| JsError::new(&error))?;
         Ok(changes.iter().map(to_js).collect())
+    }
+
+    /// Hand the kernel's session the delegations `proofs`, renewed by the
+    /// person's profile: the kernel takes them up as it next reads them.
+    pub fn renew(&self, proofs: Array) -> Result<(), JsError> {
+        self.kernel
+            .renew(proofs_of(&proofs))
+            .map_err(|error| JsError::new(&error))
     }
 
     /// How long each stage of the boot took, in milliseconds.

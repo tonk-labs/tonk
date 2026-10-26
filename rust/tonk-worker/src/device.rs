@@ -258,6 +258,24 @@ impl Registry {
                 )
                 .await?
             }
+            // A kernel's peer is its session: it acts with the key its host
+            // hands it, under the delegations its session brings.
+            #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+            Standing::Site => {
+                let session = tonk_kernel_world::credentials::signer(
+                    tonk_kernel_world::session::credential(),
+                )
+                .map_err(|error| dialog_peer::PeerError::Open(error.to_string()))?;
+                tonk_account::peer::open_delegate_as(
+                    session,
+                    location.clone(),
+                    base,
+                    storage.clone(),
+                    &system,
+                )
+                .await?
+            }
+            #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
             Standing::Site => {
                 tonk_account::peer::open_delegate(
                     location.clone(),

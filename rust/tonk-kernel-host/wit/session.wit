@@ -12,7 +12,10 @@ interface session {
     credential: func() -> credential;
     /// The authority this worker acts for.
     authority: func() -> authority;
-    /// The delegations to `credential` this worker acts under.
+    /// The delegations to `credential` the embedder hands over now: at the
+    /// first boot, and again as it renews them. None on a boot after the
+    /// first: the guest kernel keeps what it was delegated, and takes up
+    /// what is handed over each time it reads a new set.
     proofs: func() -> list<ucan>;
   }
 }

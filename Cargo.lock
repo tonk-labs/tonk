@@ -5896,6 +5896,7 @@ dependencies = [
  "blake3",
  "bs58",
  "dialog-credentials",
+ "dialog-ucan-core",
  "dialog-varsig",
  "ed25519-dalek 2.2.0",
  "futures",

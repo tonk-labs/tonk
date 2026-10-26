@@ -231,6 +231,37 @@ where
     CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
 {
     let credential = open_credential(&location, credentials, &storage, create).await?;
+    assemble_peer(credential, location, base, storage, system, branch).await
+}
+
+/// Open the peer a site's own worker is, as [`open_delegate`] does, acting
+/// with `credential`, which its host hands it, not one kept in a credential
+/// store.
+pub async fn open_delegate_as<S>(
+    credential: SignerCredential,
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    system: &SignerCredential,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+{
+    assemble_peer(credential, location, base, storage, system, ACCESS_BRANCH).await
+}
+
+/// The peer acting with `credential`, its home found from `location`.
+async fn assemble_peer<S>(
+    credential: SignerCredential,
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    system: &SignerCredential,
+    branch: &str,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+{
     record_location(&credential.did(), &location);
     let home = home(&location, &base, &credential.did(), &storage).await?;
     Peer::new(credential.clone())

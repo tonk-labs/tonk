@@ -37,6 +37,8 @@ web-sys = { version = "0.3", features = ["console", "Window", "WorkerGlobalScope
 
 # The native tests run the Tonk kernel on Wasmtime's core engine.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# The delegation a space signs to a kernel's session.
+dialog-ucan-core.workspace = true
 tonk-components = { workspace = true }
 # The wire form of a query, as the worker's own tests derive it.
 tonk-worker = { workspace = true, features = ["helpers"] }

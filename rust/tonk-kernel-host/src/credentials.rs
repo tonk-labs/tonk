@@ -1,7 +1,8 @@
 //! The keys a guest kernel reaches through handles: `credential` and
-//! `session`. Every key's seed stays here. A guest kernel signs what it can
-//! name as a payload, conceals its own messages to a DID, and entrusts a key
-//! to a custodian whose key is here too, so no seed reaches it.
+//! `session`. Every key stays here: as its seed, or as a signer whose seed
+//! nothing reads, as a browser keeps a session's key. A guest kernel signs
+//! what it can name as a payload, conceals its own messages to a DID, and
+//! entrusts a key to a custodian whose key is here too, so no key reaches it.
 //!
 //! Not yet bound: an authority's key is held here as a credential's is, where
 //! a browser would open it only with a passkey.
@@ -14,6 +15,8 @@ use dialog_credentials::Ed25519Verifier;
 use dialog_credentials::ed25519::Extractable;
 use dialog_credentials::key::{ExtractableKey, KeyExport};
 use dialog_credentials::secret::{Context, SealedSecret, SecretExtractableDerive};
+use dialog_varsig::Principal as _;
+use dialog_varsig::eddsa::Ed25519Signature;
 use ed25519_dalek::Signer as _;
 use tonk_kernel_world::payload::{self, Payload};
 use wcmp::{Accessor, Resource};
@@ -30,24 +33,54 @@ use crate::sapling::{KernelHost, Sapling, did_key, trace};
 /// message in it, nor reveal one, so it opens a custody only by `recover`.
 const CUSTODY: &str = "sapling.kernel/custody";
 
-/// A key a handle names: its seed, and whether the guest kernel knew the
-/// seed, which makes it no custodian.
+/// A key a handle names.
 #[derive(Clone)]
-pub struct Key {
-    seed: Zeroizing<[u8; 32]>,
-    imported: bool,
+pub enum Key {
+    /// A key whose seed is here, and whether the guest kernel knew the seed,
+    /// which makes it no custodian.
+    Seed {
+        seed: Zeroizing<[u8; 32]>,
+        imported: bool,
+    },
+    /// A key held as a signer whose seed nothing reads, as a browser keeps a
+    /// session's key in a `CryptoKey` it cannot export. It signs, reveals and
+    /// derives, and is never entrusted.
+    Sealed(Box<Ed25519Signer>),
 }
 
 impl Key {
     fn generated(seed: Zeroizing<[u8; 32]>) -> Self {
-        Self {
+        Self::Seed {
             seed,
             imported: false,
         }
     }
 
     fn did(&self) -> String {
-        did_key(&ed25519_dalek::SigningKey::from_bytes(&self.seed))
+        match self {
+            Self::Seed { seed, .. } => did_key(&ed25519_dalek::SigningKey::from_bytes(seed)),
+            Self::Sealed(signer) => signer.did().to_string(),
+        }
+    }
+
+    /// Whether the guest kernel knew this key's seed.
+    fn imported(&self) -> bool {
+        matches!(self, Self::Seed { imported: true, .. })
+    }
+
+    async fn sign(&self, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+        match self {
+            Self::Seed { seed, .. } => Ok(ed25519_dalek::SigningKey::from_bytes(seed)
+                .sign(bytes)
+                .to_bytes()
+                .to_vec()),
+            Self::Sealed(signer) => {
+                let signature: Ed25519Signature = dialog_varsig::Signer::sign(&**signer, bytes)
+                    .await
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                Ok(signature.0.to_vec())
+            }
+        }
     }
 }
 
@@ -66,6 +99,20 @@ impl Standing {
         Self {
             credential: Key::generated(Zeroizing::new(seed)),
             authority: Key::generated(Zeroizing::new(authority)),
+            proofs,
+        }
+    }
+
+    /// The standing of a worker that acts under `credential`, for the
+    /// authority of `authority`, with `proofs`: keys held as signers.
+    pub fn sealed(
+        credential: Ed25519Signer,
+        authority: Ed25519Signer,
+        proofs: Vec<Vec<u8>>,
+    ) -> Self {
+        Self {
+            credential: Key::Sealed(Box::new(credential)),
+            authority: Key::Sealed(Box::new(authority)),
             proofs,
         }
     }
@@ -98,6 +145,14 @@ impl KernelHost {
 
     fn standing(&self, session: &Resource<Session>) -> &Standing {
         &self.sessions[session.rep() as usize]
+    }
+
+    /// Hand each session the delegations `proofs` in place of the ones it
+    /// had: its host renewed them.
+    pub fn renew(&mut self, proofs: Vec<Vec<u8>>) {
+        for standing in &mut self.sessions {
+            standing.proofs = proofs.clone();
+        }
     }
 }
 
@@ -147,12 +202,11 @@ async fn conceal(to: &str, context: Context, message: &[u8]) -> Result<Vec<u8>, 
 async fn reveal(key: &Key, context: Context, secret: &[u8]) -> Result<Vec<u8>, Error> {
     let sealed =
         SealedSecret::from_bytes(secret).map_err(|error| Error::Invalid(error.to_string()))?;
-    signer(&key.seed)
-        .await?
-        .secret(context)
-        .reveal(&sealed)
-        .await
-        .map_err(|_| Error::Denied("it is not concealed to this key, in this context".into()))
+    let revealed = match key {
+        Key::Seed { seed, .. } => signer(seed).await?.secret(context).reveal(&sealed).await,
+        Key::Sealed(signer) => signer.secret(context).reveal(&sealed).await,
+    };
+    revealed.map_err(|_| Error::Denied("it is not concealed to this key, in this context".into()))
 }
 
 /// The key `custody` holds, entrusted to `custodian`.
@@ -252,7 +306,7 @@ impl<T: 'static> credential::HostWithStore<T> for Sapling {
         let seed = <[u8; 32]>::try_from(seed.as_slice())
             .map(Zeroizing::new)
             .map_err(|_| Error::Invalid("a seed is 32 bytes".into()))?;
-        let key = Key {
+        let key = Key::Seed {
             seed,
             imported: true,
         };
@@ -289,10 +343,7 @@ impl<T: 'static> credential::HostCredentialWithStore<T> for Sapling {
         trace("credential.sign");
         let key = accessor.with(|mut access| access.get().key(&credential));
         let bytes = payload::write(&payload_of(signed)?, &key.did()).map_err(Error::Invalid)?;
-        Ok(ed25519_dalek::SigningKey::from_bytes(&key.seed)
-            .sign(&bytes)
-            .to_bytes()
-            .to_vec())
+        key.sign(&bytes).await
     }
 
     async fn reveal(
@@ -320,12 +371,17 @@ impl<T: 'static> credential::HostCredentialWithStore<T> for Sapling {
             };
             (host.key(&credential), custodian)
         });
-        if custodian.imported {
+        if custodian.imported() {
             return Err(Error::Denied(
                 "a key whose seed the guest kernel knows is no custodian".into(),
             ));
         }
-        conceal(&custodian.did(), custody_free(CUSTODY), key.seed.as_slice()).await
+        let Key::Seed { seed, .. } = &key else {
+            return Err(Error::Denied(
+                "a key held as a signer is never entrusted".into(),
+            ));
+        };
+        conceal(&custodian.did(), custody_free(CUSTODY), seed.as_slice()).await
     }
 
     async fn recover(
@@ -348,10 +404,16 @@ impl<T: 'static> credential::HostCredentialWithStore<T> for Sapling {
         trace("credential.derive");
         let context = context(&label)?;
         let key = accessor.with(|mut access| access.get().key(&credential));
-        let signer = signer(&key.seed).await?;
-        let derived = SecretExtractableDerive::derive(&signer.secret(context), &derivation)
-            .await
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let derived = match &key {
+            Key::Seed { seed, .. } => {
+                SecretExtractableDerive::derive(&signer(seed).await?.secret(context), &derivation)
+                    .await
+            }
+            Key::Sealed(signer) => {
+                SecretExtractableDerive::derive(&signer.secret(context), &derivation).await
+            }
+        }
+        .map_err(|error| Error::Invalid(error.to_string()))?;
         let key = Key::generated(seed_of(&derived).await?);
         Ok(accessor.with(|mut access| access.get().hold(key)))
     }
@@ -419,5 +481,48 @@ impl session::HostSession for KernelHost {
 
     fn drop(&mut self, _session: Resource<Session>) -> wcmp::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    const SEED: [u8; 32] = [5; 32];
+
+    async fn sealed() -> Key {
+        Key::Sealed(Box::new(Ed25519Signer::import(&SEED).await.unwrap()))
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn it_signs_with_a_sealed_key_as_with_its_seed() {
+        let seed = Key::generated(Zeroizing::new(SEED));
+        let sealed = sealed().await;
+        assert_eq!(sealed.did(), seed.did());
+        let signature = sealed.sign(b"payload").await.unwrap();
+        let verifier = ed25519_dalek::SigningKey::from_bytes(&SEED).verifying_key();
+        let signature = ed25519_dalek::Signature::from_slice(&signature).unwrap();
+        assert!(verifier.verify_strict(b"payload", &signature).is_ok());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn it_reveals_with_a_sealed_key() {
+        let sealed = sealed().await;
+        let context = custody_free("test/reveal");
+        let secret = conceal(&sealed.did(), context, b"message").await.unwrap();
+        assert_eq!(reveal(&sealed, context, &secret).await.unwrap(), b"message");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn it_recovers_a_key_entrusted_to_a_sealed_key() {
+        let sealed = sealed().await;
+        let custody = conceal(&sealed.did(), custody_free(CUSTODY), &[6; 32])
+            .await
+            .unwrap();
+        let recovered = recover(&sealed, &custody).await.unwrap();
+        assert_eq!(
+            recovered.did(),
+            Key::generated(Zeroizing::new([6; 32])).did()
+        );
     }
 }

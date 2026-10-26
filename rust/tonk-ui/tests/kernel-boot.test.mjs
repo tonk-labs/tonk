@@ -11,6 +11,7 @@ const SOURCE = readFileSync(join(HERE, "..", "assets", "kernel_boot.js"), "utf8"
 const ORIGIN = "https://bspace.tonk.test";
 const SPACE = "did:key:zSpace";
 const KERNEL = "bafkr4ikernel";
+const SESSION = "did:key:zSession";
 
 // IndexedDB as far as the bootloader uses it: object stores of keyed values,
 // read and written in transactions that complete once their requests have.
@@ -22,7 +23,9 @@ function indexedDB() {
     return asked;
   };
   const db = {
+    objectStoreNames: { contains: (name) => stores.has(name) },
     createObjectStore: (name) => void (stores.has(name) || stores.set(name, new Map())),
+    deleteObjectStore: (name) => void stores.delete(name),
     transaction: (name) => {
       const transaction = {
         objectStore: () => ({
@@ -84,18 +87,25 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
       };
     },
   };
+  const renewed = [];
+  embedder.renew = (proofs) => void renewed.push(proofs.length);
   const bindgen = Object.assign(async () => {}, {
-    session: () => "did:key:zSession",
+    // A key, as the embedder exports one: here, its DID.
+    receiver: async () => ({ did: "did:key:zReceiver", accept: async () => SESSION }),
+    keyDid: async (key) => key,
+    generateKey: async () => "did:key:zAuthority",
+    heldSpace: (records) => records.find((record) => record.kind === "blob")?.subject,
     kernelId: (bytes) => new TextDecoder().decode(bytes).replace("WASM", KERNEL),
     install: (subject, bytes) => [{ kind: "blob", subject, key: [1], bytes, kernel: KERNEL }],
     pinned: (subject, records) => records.find((record) => record.subject === subject)?.kernel,
-    boot: async (subject, seed, authority, proofs, records) => {
-      booted.push({ subject, proofs: proofs.length, records: records.length });
+    boot: async (subject, session, authority, proofs, records) => {
+      booted.push({ subject, session, authority, proofs: proofs.length, records: records.length });
       return embedder;
     },
   });
   if (holds) {
     store.stores.set("records", new Map([["blob", { kind: "blob", subject: SPACE, key: [1], kernel: holds }]]));
+    store.stores.set("keys", new Map([["session", SESSION]]));
   }
   let offline = false;
   const network = async (address) => {
@@ -142,8 +152,11 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
   const port = {
     postMessage: (message) => {
       asked.push(message);
-      const answer = message.delegate
-        ? { id: message.id, space: SPACE, chain: new ArrayBuffer(1), expires: Date.now() / 1000 + 86400 }
+      const delegated = { space: SPACE, chain: new ArrayBuffer(1), expires: Date.now() / 1000 + 86400 };
+      const answer = message.session
+        ? { id: message.id, ...delegated, session: SESSION, sealed: new ArrayBuffer(1) }
+        : message.delegate
+        ? { id: message.id, ...delegated }
         : message.kernel
           ? { id: message.id, bytes: new TextEncoder().encode(shipped[message.kernel] ?? "").buffer }
           : { id: message.id, settled: true };
@@ -188,7 +201,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     new Promise((resolve) =>
       listeners.message({ data: { type: "booted" }, ports: [{ postMessage: resolve }], waitUntil() {} }),
     );
-  return { listeners, imported, fetched, booted, handled, asked, told, handPort, passDown, request, message, goOffline, started };
+  return { listeners, imported, fetched, booted, handled, asked, told, renewed, store, handPort, passDown, request, message, goOffline, started };
 }
 
 test("the bootloader loads the host's embedder", () => {
@@ -242,22 +255,48 @@ test("a space with no kernel of its own installs the one its worker names, and b
   assert.equal(response.status, 404);
   assert.deepEqual(
     site.asked.map((asked) => Object.keys(asked).filter((key) => key !== "id")),
-    [["delegate"], ["seeded", "from"], ["kernel"], ["delegate"]],
-    "it asks the profile which space it is, says it holds it, takes its kernel, and asks a delegation for the kernel",
+    [["session"], ["seeded", "from"], ["kernel"]],
+    "it asks the profile for its session, says it holds the space, and takes its kernel",
   );
-  assert.equal(site.asked[0].delegate, "did:key:zSession");
+  assert.equal(site.asked[0].session, "did:key:zReceiver", "the key is concealed to one made to receive it");
   assert.equal(site.asked[2].kernel, KERNEL);
   assert.ok(!site.fetched.some((path) => path.startsWith("/_host/kernel/")), "nothing of the kernel is fetched");
-  assert.deepEqual(site.booted, [{ subject: SPACE, proofs: 1, records: 1 }]);
-  assert.deepEqual(site.handled, ["GET /api/identify", "POST /.kernel/adopt", "GET /api/anything"]);
+  assert.deepEqual(site.booted, [
+    { subject: SPACE, session: SESSION, authority: "did:key:zAuthority", proofs: 1, records: 1 },
+  ]);
+  assert.deepEqual(site.handled, ["GET /api/anything"], "the kernel takes its space up as it boots");
 });
 
-test("a space that holds its kernel boots it from its own store", async () => {
-  const site = space({ holds: KERNEL, shipped: {} });
+test("the session's key is kept, as the embedder exports it", async () => {
+  const site = space();
   site.handPort();
-  await site.request("/api/anything");
+  await site.started();
+  assert.equal(site.store.stores.get("keys").get("session"), SESSION);
+});
+
+test("a space that holds its kernel boots it from its own store, with the session it kept", async () => {
+  const site = space({ holds: KERNEL, shipped: {} });
+  await site.started();
   assert.ok(!site.fetched.some((path) => path.startsWith("/_host/kernel/")), "nothing is fetched to boot");
-  assert.deepEqual(site.booted, [{ subject: SPACE, proofs: 1, records: 1 }]);
+  assert.deepEqual(
+    site.booted.map(({ subject, session, proofs }) => ({ subject, session, proofs })),
+    [{ subject: SPACE, session: SESSION, proofs: 0 }],
+    "it boots with no port up, handing the kernel no proofs",
+  );
+});
+
+test("a kernel that boots on what it kept has its delegation renewed once a port is up", async () => {
+  const site = space({ holds: KERNEL, shipped: {} });
+  await site.started();
+  assert.deepEqual(site.renewed, [], "nothing is renewed before a port is up");
+  site.handPort();
+  for (let i = 0; i < 50 && !site.renewed.length; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(
+    site.asked.map((asked) => asked.delegate).filter(Boolean),
+    [SESSION],
+    "the profile delegates to the key the kernel acts with",
+  );
+  assert.deepEqual(site.renewed, [1]);
 });
 
 test("a worker for another kernel than the space pins does not boot it", async () => {
@@ -294,21 +333,4 @@ test("a request the profile passes down is answered by the kernel", async () => 
   assert.equal(body.join(""), "not found");
   assert.equal(answer.at(-1).end, true);
   assert.deepEqual(site.handled.slice(-1), ["GET /api/roster"]);
-});
-
-test("the kernel takes up its space with a delegation to its own profile", async () => {
-  const site = space();
-  site.handPort();
-  await site.started();
-  const delegations = site.asked.filter((message) => message.delegate);
-  assert.equal(delegations.at(-1).delegate, "did:key:zKernel", "the profile delegates to the kernel's profile");
-  assert.deepEqual(site.handled.slice(0, 2), ["GET /api/identify", "POST /.kernel/adopt"]);
-});
-
-test("a kernel asks for its delegation once as it boots", async () => {
-  const site = space();
-  site.handPort();
-  await site.started();
-  // A delegation that lapses in a day needs no renewal yet.
-  assert.equal(site.asked.filter((message) => message.delegate).length, 2);
 });

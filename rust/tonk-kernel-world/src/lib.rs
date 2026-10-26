@@ -15,10 +15,11 @@
 //! - [`space`]: a space's credential store, as custodies and secrets in its
 //!   cells.
 //!
-//! On every other target the crate holds only [`boot`] and [`payload`], what
-//! the host reads too.
+//! On every other target the crate holds only [`boot`], [`handover`] and
+//! [`payload`], what the host and the person's profile read too.
 
 pub mod boot;
+pub mod handover;
 pub mod payload;
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]

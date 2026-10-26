@@ -7684,7 +7684,12 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     // harness that serves no library) costs a degraded Hub until the
     // next attempt — not a worker that refuses to boot or a profile
     // switch that dies half-way.
-    if let Err(error) = reconcile_profile_library(tonk).await {
+    //
+    // A space's own worker serves no Hub: its peer only holds what the
+    // person's profile delegated it.
+    if tonk.registry.standing != crate::device::Standing::Site
+        && let Err(error) = reconcile_profile_library(tonk).await
+    {
         log!("profile library reconciliation skipped: {error}");
     }
     // A fresh state, a fresh overlay: say whether this device is linked

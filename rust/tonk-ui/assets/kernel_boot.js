@@ -10,8 +10,10 @@
 // What this worker does:
 //
 // - Keeps the space's store: each record the embedder writes, in IndexedDB.
-// - Asks the person's profile, over the port a page of this origin hands it,
-//   for a delegation for the space, which says which space this origin is.
+// - Keeps the key of the space's session, which the person's profile hands
+//   it over the port a page of this origin hands it, with the delegation of
+//   the space to the key, which says which space this origin is. The kernel
+//   acts as that session, and keeps what it is delegated.
 // - Installs into a space that holds no kernel the one it was made for, which
 //   the person's profile hands it, as the space's own blob and boot cell.
 //   From then on the kernel comes from the space's store, not from anywhere
@@ -67,16 +69,11 @@ function bodyOf(embedder, reply) {
     });
 }
 
-// A whole answer of the kernel, for an answer that ends.
-async function whole(embedder, reply) {
-    return new Uint8Array(await new Response(bodyOf(embedder, reply)).arrayBuffer());
-}
-
 // ---- The space's store --------------------------------------------------
 //
 // Each record the embedder drains, under a key naming what it writes, so a
-// later write replaces it. `meta` keeps what is this origin's own: its
-// session key and the delegation it holds.
+// later write replaces it. `keys` keeps the keys of this origin's session,
+// as the embedder exports them: keys nothing reads the seed of.
 
 const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
 const keyOf = record =>
@@ -85,10 +82,12 @@ const keyOf = record =>
     : `cell|${record.subject}|${record.namespace}|${record.cell}`;
 
 const database = new Promise((resolve, reject) => {
-    const request = indexedDB.open("space-kernel", 1);
+    const request = indexedDB.open("space-kernel", 2);
     request.onupgradeneeded = () => {
-        request.result.createObjectStore("records");
-        request.result.createObjectStore("meta");
+        const db = request.result;
+        if (!db.objectStoreNames.contains("records")) db.createObjectStore("records");
+        if (db.objectStoreNames.contains("meta")) db.deleteObjectStore("meta");
+        db.createObjectStore("keys");
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -111,25 +110,19 @@ async function keep(records) {
         for (const record of records) store.put(record, keyOf(record));
     });
 }
-const readMeta = key => transact("meta", "readonly", store => store.get(key));
-const writeMeta = (key, value) => transact("meta", "readwrite", store => store.put(value, key));
+const keptKey = name => transact("keys", "readonly", store => store.get(name));
+const keepKey = (name, key) => transact("keys", "readwrite", store => store.put(key, name));
 
-// A key of this origin's own, made on its first start and never sent
-// anywhere.
-async function ownSeed(name) {
-    let seed = await readMeta(name);
-    if (!seed) {
-        seed = crypto.getRandomValues(new Uint8Array(32));
-        await writeMeta(name, seed);
-    }
-    return seed;
-}
-
-// The key this origin signs with. The profile delegates the space to it.
-const sessionSeed = () => ownSeed("session");
 // Not yet: the person's authority, which a passkey opens. This origin keeps
 // a key in its place, so the kernel has an authority to entrust keys to.
-const authoritySeed = () => ownSeed("authority");
+async function authorityKey() {
+    let key = await keptKey("authority");
+    if (!key) {
+        key = await wasm_bindgen.generateKey();
+        await keepKey("authority", key);
+    }
+    return key;
+}
 
 // ---- The port up --------------------------------------------------------
 //
@@ -197,46 +190,31 @@ async function askHost(request) {
 
 // ---- The space ----------------------------------------------------------
 
-// The delegation this origin holds for its space, asked of the profile once.
-// It says which space this origin is: the label of an origin does not.
-async function grant(seed) {
-    const held = await readMeta("grant");
-    if (held) return held;
-    const audience = wasm_bindgen.session(seed);
-    const answer = await askHost({ delegate: audience });
-    const taken = { space: answer.space, chain: new Uint8Array(answer.chain), expires: answer.expires };
-    await writeMeta("grant", taken);
+// The key of this origin's session, from the person's profile, which derives
+// it from its own for the space and conceals it to a key made here to
+// receive it, with the delegation of the space to it. It says which space
+// this origin is: the label of an origin does not. Asked once: the kernel
+// keeps what it is delegated.
+async function receiveSession() {
+    const receiver = await wasm_bindgen.receiver();
+    const answer = await askHost({ session: receiver.did });
+    const session = await receiver.accept(new Uint8Array(answer.sealed));
+    await keepKey("session", session);
     // A space that runs a kernel starts blank: nothing of what the profile
     // would seed it with is taken. Saying it holds the space lets the
     // profile stop waiting for it to.
     await askHost({ seeded: true, from: "kernel" }).catch(error => log("the profile was not told:", error));
-    return taken;
+    return { space: answer.space, session, proofs: [new Uint8Array(answer.chain)] };
 }
 
-// Ask for a new delegation once the one the kernel holds has less than this
-// left.
-const RENEW_MARGIN_SECONDS = 60 * 60;
-
-// The kernel acts for the space as a profile of its own, which it makes on
-// its first start: the profile delegates the space to that, and the kernel
-// takes the delegation up. Asked again when the kernel's profile is another
-// or the one held is about to lapse.
-async function takeUpSpace(embedder) {
-    const held = await readMeta("adopted");
-    const identified = await embedder.handle("GET", "/api/identify", [], new Uint8Array());
-    const who = await whole(embedder, identified);
-    if (identified.status !== 200) throw new Error(`the kernel did not say who it is: ${identified.status}`);
-    const { did } = JSON.parse(new TextDecoder().decode(who));
-    if (held?.did === did && held.expires - Date.now() / 1000 > RENEW_MARGIN_SECONDS) return;
-    const answer = await askHost({ delegate: did });
-    const taken = await embedder.handle("POST", "/.kernel/adopt", [], new Uint8Array(answer.chain));
-    const said = await whole(embedder, taken);
-    await drainSoon(embedder);
-    if (taken.status !== 204) {
-        throw new Error(`the kernel did not take up its space: ${new TextDecoder().decode(said)}`);
-    }
-    await writeMeta("adopted", { did, expires: answer.expires });
-    log("took up", answer.space, "until", new Date(answer.expires * 1000).toISOString());
+// Hand the kernel a delegation of its space renewed by the person's profile,
+// once a page of this origin hands this worker a port up to it. The profile
+// derives the same key for the space each time, so it delegates to the key
+// the kernel already acts with.
+async function renew(embedder, session) {
+    const answer = await askHost({ delegate: await wasm_bindgen.keyDid(session) });
+    embedder.renew([new Uint8Array(answer.chain)]);
+    log("renewed", answer.space, "until", new Date(answer.expires * 1000).toISOString());
 }
 
 // The host's files this origin serves, from the network while it answers,
@@ -270,9 +248,11 @@ async function start() {
     const started = performance.now();
     if (!PINNED) throw new Error("this worker pins no kernel");
     await wasm_bindgen({ module_or_path: await hostFile(new Request(new URL("/_host/embedder_bg.wasm", self.location.href))) });
-    const seed = await sessionSeed();
-    const { space, chain } = await grant(seed);
     let records = await kept();
+    let session = await keptKey("session");
+    let space = session && wasm_bindgen.heldSpace(records);
+    let proofs = [];
+    if (!space) ({ space, session, proofs } = await receiveSession());
     // A space with no kernel of its own yet is one being created: install the
     // one its worker was registered for.
     if (!wasm_bindgen.pinned(space, records)) {
@@ -283,18 +263,18 @@ async function start() {
     }
     const pinned = wasm_bindgen.pinned(space, records);
     if (pinned !== PINNED) throw new Error(`the space pins ${pinned}, not ${PINNED}`);
-    const embedder = await wasm_bindgen.boot(space, seed, await authoritySeed(), [chain], records);
+    const embedder = await wasm_bindgen.boot(space, session, await authorityKey(), proofs, records);
     await keep(await embedder.drain());
     log("booted in", Math.round(performance.now() - started), "ms", embedder.timings);
+    // A kernel handed no proofs acts on the ones it kept: a renewal goes
+    // alongside, and holds nothing up.
+    if (!proofs.length) renew(embedder, session).catch(error => log("the delegation was not renewed:", error));
     return embedder;
 }
 
-// Boot the kernel, then have it take up its space. A page load waits on the
-// boot alone: after a space's first start, booting needs nothing of the
-// person's profile, and a delegation renewed alongside never holds a page up.
-// What the profile asks of the space waits on both. A kernel that has not
-// taken up its space still answers, with what it holds: nothing of the space.
-// The next start asks again.
+// Boot the kernel, which takes up its space as it boots. After a space's
+// first start, booting needs nothing of the person's profile, and a
+// delegation renewed alongside never holds a page up.
 function run() {
     booting = start();
     booting.catch(error => {
@@ -304,16 +284,8 @@ function run() {
         // worker imports the script of the newer one.
         if (error instanceof WebAssembly.LinkError) self.registration?.update();
     });
-    takenUp = booting.then(embedder =>
-        takeUpSpace(embedder)
-            .catch(error => log("the kernel did not take up its space:", error))
-            .then(() => embedder),
-    );
-    // Whoever waits on it hears a boot that failed; nothing else need.
-    takenUp.catch(() => {});
 }
 let booting;
-let takenUp;
 run();
 
 // A kernel that trapped answers nothing again: boot it anew, from what the
@@ -429,7 +401,7 @@ async function serveKernel(event) {
 const calls = new Map();
 async function answerCall(port, { call, request }) {
     try {
-        const embedder = await takenUp;
+        const embedder = await booting;
         const body = new Uint8Array(await new Response(request.body ?? null).arrayBuffer());
         const reply = await embedder.handle(request.method, request.path, request.headers ?? [], body);
         drainSoon(embedder);
@@ -464,12 +436,12 @@ self.addEventListener("message", event => {
     const type = event.data?.type;
     if (type === "protocol") event.ports[0]?.postMessage({ protocol: PROTOCOL });
     else if (type === "claim") event.waitUntil(self.clients.claim());
-    // The shell that installed this worker waits for the kernel to boot and
-    // take up its space before it goes to the space's address.
+    // The shell that installed this worker waits for the kernel to boot, and
+    // so take up its space, before it goes to the space's address.
     else if (type === "booted") {
         const reply = event.ports[0];
         event.waitUntil(
-            takenUp.then(
+            booting.then(
                 () => reply?.postMessage({ booted: true }),
                 error => reply?.postMessage({ error: String(error?.message ?? error) }),
             ),

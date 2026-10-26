@@ -120,6 +120,98 @@ async fn it_answers_while_a_subscription_is_open() {
     }
 }
 
+/// A kernel's peer is its session: it acts with the key its host hands it.
+#[tokio::test(flavor = "current_thread")]
+async fn it_acts_as_its_session() {
+    let engine = engine();
+    let (said, _) = identify(&engine, tonk_components::TONK_KERNEL_BYTES, Vec::new()).await;
+    let session = did_key(&ed25519_dalek::SigningKey::from_bytes(&[7; 32]));
+    assert!(said.contains(&session), "{said} names {session}");
+}
+
+/// The delegation of the space to the session's key, signed by the space,
+/// with the account it is for in its meta, as the person's profile signs it.
+async fn space_to_session() -> Vec<u8> {
+    use dialog_ucan_core::subject::Subject;
+    use dialog_ucan_core::{DelegationBuilder, DelegationChain};
+    use ipld_core::ipld::Ipld;
+
+    let space = dialog_credentials::Ed25519Signer::import(&[3; 32])
+        .await
+        .unwrap();
+    let session: dialog_varsig::Did = did_key(&ed25519_dalek::SigningKey::from_bytes(&[7; 32]))
+        .parse()
+        .unwrap();
+    let account = did_key(&ed25519_dalek::SigningKey::from_bytes(&[9; 32]));
+    let delegation = DelegationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(space))
+        .audience(&session)
+        .subject(Subject::Specific(space_did()))
+        .command(vec!["use".to_owned()])
+        .meta([("acts.for".to_owned(), Ipld::String(account))].into())
+        .try_build()
+        .await
+        .unwrap();
+    DelegationChain::new(delegation).to_bytes().unwrap()
+}
+
+fn space_did() -> dialog_varsig::Did {
+    space().parse().unwrap()
+}
+
+/// What the kernel says of the space.
+async fn holds(kernel: &mut Kernel) -> tonk_kernel_host::kernel::Answer {
+    let path = format!("/api/repository/{}", space());
+    kernel.request("GET", &path, b"").await.unwrap()
+}
+
+/// The first boot takes the space up with the proofs its session brings. A
+/// boot after it is handed none, and holds the space all the same: the
+/// kernel kept what it took up.
+#[tokio::test(flavor = "current_thread")]
+async fn it_takes_up_its_space_from_its_session() {
+    let engine = engine();
+    let bytes = tonk_components::TONK_KERNEL_BYTES;
+
+    let mut kernel = Kernel::load(&engine, bytes).await.unwrap();
+    kernel
+        .init(
+            &space(),
+            Standing::new([7; 32], [8; 32], vec![space_to_session().await]),
+        )
+        .await
+        .unwrap();
+    let answer = holds(&mut kernel).await;
+    assert_eq!(
+        answer.status,
+        200,
+        "the kernel holds its space: {}",
+        answer.text()
+    );
+    let kept = kernel.drain();
+
+    let mut again = Kernel::load_restoring(&engine, bytes, kept).await.unwrap();
+    again.init(&space(), standing()).await.unwrap();
+    let answer = holds(&mut again).await;
+    assert_eq!(
+        answer.status,
+        200,
+        "a kernel handed no proofs holds what it took up: {}",
+        answer.text()
+    );
+}
+
+/// A kernel handed no proofs, and holding none, does not hold its space.
+#[tokio::test(flavor = "current_thread")]
+async fn it_holds_no_space_it_was_not_delegated() {
+    let engine = engine();
+    let mut kernel = Kernel::load(&engine, tonk_components::TONK_KERNEL_BYTES)
+        .await
+        .unwrap();
+    kernel.init(&space(), standing()).await.unwrap();
+    assert_ne!(holds(&mut kernel).await.status, 200);
+}
+
 /// The build names the kernel as a space's boot cell pins it.
 #[test]
 fn it_names_the_kernel_the_way_a_space_pins_it() {

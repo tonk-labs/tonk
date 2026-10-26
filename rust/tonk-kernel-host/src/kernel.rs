@@ -56,6 +56,7 @@ enum Job {
         reply: oneshot::Sender<Result<Head, String>>,
     },
     Drain(oneshot::Sender<Vec<crate::sapling::Change>>),
+    Renew(Vec<Vec<u8>>),
 }
 
 /// A guest kernel that a driver runs (see [`Kernel::serve`]): requests reach
@@ -88,6 +89,14 @@ impl Served {
         answered
             .await
             .map_err(|_| "the kernel has stopped".to_owned())?
+    }
+
+    /// Hand the session the delegations `proofs`, which its host renewed:
+    /// the guest kernel takes them up as it next reads them.
+    pub fn renew(&self, proofs: Vec<Vec<u8>>) -> Result<(), String> {
+        self.jobs
+            .unbounded_send(Job::Renew(proofs))
+            .map_err(|_| "the kernel has stopped".to_owned())
     }
 
     /// Each write since the last drain, for the host to keep durably.
@@ -188,6 +197,9 @@ impl Kernel {
                                         core::mem::take(&mut access.data_mut().journal)
                                     });
                                     let _ = reply.send(changes);
+                                }
+                                Some(Job::Renew(proofs)) => {
+                                    accessor.with(|mut access| access.data_mut().renew(proofs));
                                 }
                                 Some(Job::Request { method, path, headers, body, reply }) => {
                                     let handle = &handle;

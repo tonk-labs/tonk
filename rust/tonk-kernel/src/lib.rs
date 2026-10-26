@@ -59,11 +59,10 @@ struct Space {
     layer: Rc<Layer>,
 }
 
-/// Where the bootloader hands the kernel the delegation for its space: the
-/// chain from the space to the profile `/api/identify` names. A chain is
-/// taken up only if the space signed it all the way down, so whoever posts
-/// it here cannot make the kernel act for another space.
-const ADOPT_PATH: &str = "/.kernel/adopt";
+/// The proofs of the session this kernel took up last. Its host hands proofs
+/// over at the first boot and again as it renews them, and each set is taken
+/// up once.
+static TAKEN: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
 // SAFETY: a component instance runs on a single thread; nothing here is
 // reached from another.
@@ -87,6 +86,8 @@ impl lifecycle::Guest for Kernel {
     async fn init(boot: lifecycle::Boot) -> Result<(), Error> {
         let started = world::wasi::clocks::monotonic_clock::now();
         tonk_kernel_world::session::take_up(boot.session);
+        // A kernel is a space's own worker: its peer is its session.
+        tonk_worker::set_standing(tonk_worker::Standing::Site);
         // The space this kernel serves: the subject of its `memory:space`.
         let space = boot
             .stack
@@ -97,9 +98,11 @@ impl lifecycle::Guest for Kernel {
                 layer: Rc::new(stacked.layer),
             });
         let state = TonkState::open_kernel().await.map_err(invalid)?;
-        // A space taken up before: put back what a restart lost about it,
-        // and give it its first commit if it went without.
+        // The space, taken up with the proofs its session brings, or as it
+        // was taken up before: put back what a restart lost about it, and
+        // give it its first commit if it went without.
         if let Some(space) = &space {
+            take_up(&state, space).await;
             if let Err(error) = state.resume_space(&space.subject).await {
                 eprintln!("tonk-kernel: {} was not resumed: {error}", space.subject);
             }
@@ -155,10 +158,10 @@ impl handler::Guest for Kernel {
         let Some((router, state, space)) = held() else {
             return Ok(http::respond(503, Some("text/plain"), b"booting".to_vec()));
         };
-        let request = incoming(request).await?;
-        if request.uri().path() == ADOPT_PATH {
-            return adopt(request, &state, space.as_ref()).await;
+        if let Some(space) = &space {
+            take_up(&*state.read().await, space).await;
         }
+        let request = incoming(request).await?;
         let Ok(answer) = router.oneshot(request).await;
         let (parts, mut body) = answer.into_parts();
         let headers = parts
@@ -183,44 +186,24 @@ impl handler::Guest for Kernel {
     }
 }
 
-/// Take up the delegation in the body of `request` for `space`.
-async fn adopt(
-    request: axum::http::Request<axum::body::Body>,
-    state: &AppState,
-    space: Option<&Space>,
-) -> Result<Response, ErrorCode> {
-    if request.method() != axum::http::Method::POST {
-        return Ok(http::respond(
-            405,
-            Some("text/plain"),
-            b"POST a delegation".to_vec(),
-        ));
+/// Take up the proofs the session holds for `space`, unless they are the
+/// ones taken up last. A chain is taken up only if the space signed it all
+/// the way down to this kernel's session, so a host cannot make the kernel
+/// act for another space.
+async fn take_up(state: &TonkState, space: &Space) {
+    let proofs = tonk_kernel_world::session::proofs();
+    if proofs.is_empty() || *TAKEN.lock().unwrap_or_else(PoisonError::into_inner) == proofs {
+        return;
     }
-    let Some(space) = space else {
-        return Ok(http::respond(
-            409,
-            Some("text/plain"),
-            b"this kernel serves no space".to_vec(),
-        ));
-    };
-    let chain = request
-        .into_body()
-        .collect()
-        .await
-        .map_err(|error| ErrorCode::InternalError(Some(error.to_string())))?
-        .to_bytes();
-    let state = state.read().await;
-    if let Err(error) = state.adopt_space(&space.subject, &chain).await {
-        return Ok(http::respond(
-            400,
-            Some("text/plain"),
-            error.to_string().into_bytes(),
-        ));
+    for chain in &proofs {
+        if let Err(error) = state.adopt_space(&space.subject, chain).await {
+            eprintln!(
+                "tonk-kernel: a proof for {} was not taken up: {error}",
+                space.subject
+            );
+        }
     }
-    match found(&state, space).await {
-        Ok(()) => Ok(http::respond(204, None, Vec::new())),
-        Err(error) => Ok(http::respond(500, Some("text/plain"), error.into_bytes())),
-    }
+    *TAKEN.lock().unwrap_or_else(PoisonError::into_inner) = proofs;
 }
 
 /// Give the space its first commit, if it has none: the kernel its boot cell

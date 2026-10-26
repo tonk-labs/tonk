@@ -35,6 +35,20 @@ pub fn install(subject: &str, kernel: &[u8]) -> (String, Vec<Change>) {
     (id, changes)
 }
 
+/// The space whose boot cell the store holds, among what it holds: the space
+/// a host that kept them serves.
+pub fn held(held: &[Change]) -> Option<String> {
+    held.iter().find_map(|change| match change {
+        Change::Cell {
+            subject,
+            namespace,
+            cell,
+            edition: Some(_),
+        } if namespace == NAMESPACE && cell == CELL => Some(subject.clone()),
+        _ => None,
+    })
+}
+
 /// The kernel the space `subject` pins, as its id and its bytes, from what
 /// the space's store holds. `None` when the space pins none. An error when it
 /// pins one it does not hold, or holds bytes that are not the ones pinned.
@@ -103,6 +117,13 @@ mod tests {
         let (_, changes) = install(SPACE, b"kernel");
         let error = pinned(SPACE, &changes[1..]).unwrap_err();
         assert!(error.contains("does not hold it"), "{error}");
+    }
+
+    #[test]
+    fn it_finds_the_space_whose_kernel_it_holds() {
+        let (_, changes) = install(SPACE, b"kernel");
+        assert_eq!(held(&changes), Some(SPACE.to_owned()));
+        assert_eq!(held(&changes[..1]), None, "a blob alone pins nothing");
     }
 
     #[test]
