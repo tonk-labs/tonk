@@ -123,7 +123,7 @@ struct DesktopAccountView: View {
           }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
           ProviderSettingsView(model: model, embedded: true).id("chat-settings")
         }.frame(maxWidth: 720).padding(28).frame(maxWidth: .infinity)
-      }.font(.system(size: 13)).controlSize(.small).buttonBorderShape(.capsule)
+      }.font(.system(size: 13))
         .onAppear {
           name = access.accountName ?? ""
           if showsChat { proxy.scrollTo("chat-settings", anchor: .top) }
@@ -207,6 +207,6 @@ struct DesktopSettingsView: View {
   var showsChat = false
   var body: some View {
     DesktopAccountView(access: access, model: model, onSignOut: onSignOut, showsChat: showsChat)
-      .frame(maxWidth: .infinity, maxHeight: .infinity).nativeControl()
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 }

@@ -42,7 +42,7 @@ struct DesktopSidebar: View {
         }
         .badge(
           AddressBookEntry.entries(
-            contacts: access.contacts, grants: access.connections, chatAgent: nil
+            contacts: access.contacts, grants: access.connections
           ).count
         )
         .tag(DesktopPage.addressBook)
@@ -93,7 +93,7 @@ struct DesktopSidebar: View {
     .controlSize(.small)
     .searchable(text: $search, placement: .sidebar, prompt: "Search spaces")
     .searchFocused(searchFocused)
-    .safeAreaInset(edge: .bottom, spacing: 0) { footer }
+    .sidebarFooter(footer)
   }
 
   private func save(_ space: TonkSpace, icon: String?, color: String?) {
@@ -141,6 +141,21 @@ struct DesktopSidebar: View {
     }
     .font(.system(size: 13))
     .padding(8)
-    .overlay(alignment: .top) { Divider() }
+  }
+}
+
+extension View {
+  /// The account footer: spaces blur as they scroll under it, as the system's
+  /// own bars do, and it stays clear when nothing is beneath.
+  @ViewBuilder
+  fileprivate func sidebarFooter<Footer: View>(_ footer: Footer) -> some View {
+    if #available(macOS 26.0, *) {
+      safeAreaBar(edge: .bottom, spacing: 0) { footer }
+        .scrollEdgeEffectStyle(.soft, for: .bottom)
+    } else {
+      safeAreaInset(edge: .bottom, spacing: 0) {
+        footer.background(.bar).overlay(alignment: .top) { Divider() }
+      }
+    }
   }
 }

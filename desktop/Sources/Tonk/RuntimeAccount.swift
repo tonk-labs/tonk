@@ -196,8 +196,17 @@ extension RuntimeModel {
         method: body ? 'POST' : 'GET', headers: {'Content-Type': 'application/json'},
         body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(60000)
       });
-      // Do not echo responses or grants into native diagnostics.
-      if (!response.ok) throw new Error(path + ' failed (HTTP ' + response.status + ').');
+      // Do not echo responses or grants into native diagnostics. A worker error
+      // envelope carries a short, human message; show that, never the body.
+      if (!response.ok) {
+        let reason = '';
+        try {
+          const failure = await response.json();
+          const message = failure?.error?.message;
+          if (typeof message === 'string' && message) reason = ': ' + message.slice(0, 300);
+        } catch {}
+        throw new Error(path.split('/').slice(-1)[0] + ' failed (HTTP ' + response.status + ')' + reason);
+      }
       if (!(response.headers.get('content-type') || '').includes('json'))
         throw new Error('The installed Tonk runtime does not support ' + path + '.');
       return await response.json();

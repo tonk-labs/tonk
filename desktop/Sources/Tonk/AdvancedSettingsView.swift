@@ -51,10 +51,10 @@ struct AdvancedSettingsView: View {
             error = nil
             saved = true
           } catch { self.error = error.localizedDescription }
-        }.nativeControl(prominent: true).keyboardShortcut(.defaultAction).disabled(saved)
+        }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(saved)
       }
     }
-    .padding(24).frame(width: 540).nativeControl()
+    .padding(24).frame(width: 540)
     .onChange(of: custom) { _, _ in
       saved = false
       error = nil

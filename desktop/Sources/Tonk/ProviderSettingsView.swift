@@ -201,13 +201,13 @@ struct ProviderSettingsView: View {
               if !embedded { dismiss() }
             } catch { self.error = error.localizedDescription }
           }
-        }.nativeControl(prominent: true).keyboardShortcut(
+        }.buttonStyle(.borderedProminent).keyboardShortcut(
           .return, modifiers: embedded ? [.command] : []
         )
         .disabled(model.loginPending || model.connecting)
       }.controlSize(.regular).padding(.top, 6)
     }
-    .padding(embedded ? 0 : 22).frame(width: embedded ? nil : 440).nativeControl().disabled(saving)
+    .padding(embedded ? 0 : 22).frame(width: embedded ? nil : 440).disabled(saving)
     .task { if !model.connected { await model.connect() } }
     .interactiveDismissDisabled(saving)
     .sheet(isPresented: $showAdvancedSettings) { AdvancedSettingsView() }
@@ -259,7 +259,7 @@ struct ProviderSettingsView: View {
           } catch { self.error = error.localizedDescription }
         }
       }
-      .nativeControl(prominent: true)
+      .buttonStyle(.borderedProminent)
       .disabled(model.busy || model.creatingSpace || model.connecting || model.loginPending)
       .frame(maxWidth: .infinity, alignment: .trailing)
     }

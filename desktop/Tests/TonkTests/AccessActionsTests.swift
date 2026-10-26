@@ -230,6 +230,58 @@ final class AccessActionsTests: XCTestCase {
     XCTAssertEqual(links.first?.canReset, false)
   }
 
+  func testTheAccountNameShowsFromThisMacBeforeTheWorkerAnswers() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runtime = AccessRuntimeStub()
+    let first = AccessModel(vault: LinkStoreStub())
+    first.prepare(directory: directory, runtime: runtime)
+    await first.refreshAccount()
+    XCTAssertEqual(first.accountName, "Verifier")
+
+    let reopened = AccessModel(vault: LinkStoreStub())
+    reopened.prepare(directory: directory, runtime: runtime, expectedRoot: "did:key:zVerifier")
+    XCTAssertEqual(reopened.accountName, "Verifier", "shown before any worker read")
+    XCTAssertEqual(reopened.selfDid, "did:key:zVerifier")
+
+    let otherAccount = AccessModel(vault: LinkStoreStub())
+    otherAccount.prepare(directory: directory, runtime: runtime, expectedRoot: "did:key:zOther")
+    XCTAssertNil(otherAccount.accountName, "never another account's name")
+
+    runtime.accountDetails = ["name": ""]
+    await reopened.refreshAccount()
+    XCTAssertEqual(reopened.accountName, "Verifier", "an unsynced empty name does not blank it")
+  }
+
+  func testLinksShowFromThisMacBeforeTheWorkerAnswers() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let space = try space()
+    let runtime = AccessRuntimeStub()
+    runtime.invites = [["targetCid": "open", "kind": "open", "status": "active"]]
+    let first = AccessModel(vault: LinkStoreStub())
+    first.prepare(directory: directory, runtime: runtime)
+    await first.refreshAll([space])
+    XCTAssertEqual(first.links(for: space.id).map(\.target), ["open"])
+
+    let reads = runtime.spaceReads
+    let reopened = AccessModel(vault: LinkStoreStub())
+    reopened.prepare(directory: directory, runtime: runtime, expectedRoot: "did:key:zVerifier")
+    XCTAssertEqual(reopened.links(for: space.id).map(\.target), ["open"])
+    XCTAssertEqual(runtime.spaceReads, reads, "shown without reading the space")
+
+    let otherAccount = AccessModel(vault: LinkStoreStub())
+    otherAccount.prepare(directory: directory, runtime: runtime, expectedRoot: "did:key:zOther")
+    XCTAssertTrue(otherAccount.links(for: space.id).isEmpty)
+
+    reopened.reset()
+    let afterReset = AccessModel(vault: LinkStoreStub())
+    afterReset.prepare(directory: directory, runtime: runtime, expectedRoot: "did:key:zVerifier")
+    XCTAssertTrue(afterReset.links(for: space.id).isEmpty, "signing out forgets them")
+  }
+
   func testAddressBookPersistsByAccountAndResetHidesIt() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

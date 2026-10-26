@@ -7,7 +7,6 @@ struct ChatHistoryView: View {
   @ObservedObject var model: HarnessModel
   let space: TonkSpace?
   let onOpen: (ChatSession) -> Void
-  var onNewChat: () -> Void = {}
   @State private var search = ""
   private var allSessions: [ChatSession] {
     return model.saved.chats(in: space?.id).filter {
@@ -30,23 +29,22 @@ struct ChatHistoryView: View {
           .accessibilityLabel("Search chats")
       }.font(.system(size: 13)).padding(.horizontal, 10).frame(height: 28)
         .background(.fill.tertiary, in: Capsule())
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 2) {
-          ForEach(ChatDateGroup.allCases, id: \.self) { group in
-            let rows = sessions.filter { ChatDateGroup($0.updatedAt) == group }
-            if !rows.isEmpty {
-              Text(group.title).font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8).padding(.top, 10).padding(.bottom, 2)
-              ForEach(rows) { session in row(session, group: group) }
-            }
-          }
-          if sessions.isEmpty {
-            Text(allSessions.isEmpty ? "No chats yet" : "No matching chats")
-              .font(.system(size: 13)).foregroundStyle(.secondary).padding(8)
-            if allSessions.isEmpty {
-              Button("New chat", action: onNewChat).nativeControl(prominent: true)
-                .padding(.leading, 8).disabled(disabled)
+      if sessions.isEmpty {
+        // New chat is already the round button at the top of the sidebar.
+        Text(allSessions.isEmpty ? "No chats yet" : "No matching chats")
+          .font(.system(size: 13)).foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+      } else {
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 2) {
+            ForEach(ChatDateGroup.allCases, id: \.self) { group in
+              let rows = sessions.filter { ChatDateGroup($0.updatedAt) == group }
+              if !rows.isEmpty {
+                Text(group.title).font(.system(size: 11, weight: .medium))
+                  .foregroundStyle(.secondary)
+                  .padding(.horizontal, 8).padding(.top, 10).padding(.bottom, 2)
+                ForEach(rows) { session in row(session, group: group) }
+              }
             }
           }
         }

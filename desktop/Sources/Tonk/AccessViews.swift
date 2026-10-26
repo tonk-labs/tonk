@@ -111,7 +111,9 @@ private struct MemberList: View {
           }
         }
       }
-      .padding(12)
+      // Rows start at the edge, not centered in the popover's minimum width.
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 12).padding(.vertical, 10)
     }
     .frame(minWidth: 180, maxHeight: 320)
     .fixedSize(horizontal: true, vertical: false)
@@ -226,7 +228,6 @@ struct AccessLinkRow: View {
             ? "Only links made on this Mac can be copied. Reset it or make a new link to get one."
             : "Copy link")
     }
-    .buttonStyle(.bordered).controlSize(.small).buttonBorderShape(.capsule)
   }
 
   private var confirmTitle: String {

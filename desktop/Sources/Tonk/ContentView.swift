@@ -53,7 +53,7 @@ struct ContentView: View {
       waiting: failure != nil
     ) {
       if failure != nil {
-        Button("Try again") { runtime.load() }.nativeControl()
+        Button("Try again") { runtime.load() }
       }
     }
     .background(.background)
@@ -118,7 +118,6 @@ struct ContentView: View {
 
   private var commandTargets: some View {
     workspaceLayers
-      .nativeControl()
       .containerBackground(
         reduceTransparency
           ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.thinMaterial),
@@ -214,6 +213,15 @@ struct ContentView: View {
 
   @ToolbarContentBuilder
   private var windowToolbar: some ToolbarContent {
+    // Links fill in space by space; the page shows placeholders, the toolbar the activity.
+    if !isSpace && runtime.showsSpacePicker && page == .allLinks
+      && (!access.loadedAll || access.refreshingAll)
+    {
+      ToolbarItem(id: "links-loading", placement: .primaryAction) {
+        ProgressView().controlSize(.small)
+          .help("Loading links").accessibilityLabel("Loading links")
+      }.customGlassToolbarItem()
+    }
     if !isSpace && runtime.showsSpacePicker, let space = selectedSpace {
       ToolbarItem(id: "share-space", placement: .primaryAction) {
         SpaceShareControl(space: space, access: access)
@@ -270,12 +278,6 @@ struct ContentView: View {
               HStack {
                 if message.role == "user" { Spacer(minLength: 24) }
                 VStack(alignment: .leading, spacing: 7) {
-                  if message.role == "assistant" {
-                    HStack(spacing: 6) {
-                      DesktopGlyph(name: "r2IconBot", size: 14)
-                      Text(model.agentName)
-                    }.font(.system(size: 12)).foregroundStyle(.secondary)
-                  }
                   MessageMarkdown(text: message.text).font(.system(size: 13))
                 }
                 .padding(message.role == "user" ? 10 : 0)
@@ -342,7 +344,7 @@ struct ContentView: View {
             .background(Color(nsColor: .textBackgroundColor))
           } else if model.saved.conversation.messages.isEmpty && !model.busy {
             Text(
-              "Ask \(model.agentName) to change anything in \(model.openedSpace?.title ?? "this space")."
+              "Ask anything about \(model.openedSpace?.title ?? "this space"), or ask for a change."
             )
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
@@ -381,7 +383,7 @@ struct ContentView: View {
         .padding(.leading, 6).accessibilityAddTraits(.isHeader)
       if showHistory {
         ChatHistoryView(
-          model: model, space: model.openedSpace, onOpen: openHistory, onNewChat: startNewChat)
+          model: model, space: model.openedSpace, onOpen: openHistory)
       } else {
         chat
       }
@@ -591,8 +593,7 @@ struct ContentView: View {
           } else {
             Button(model.provider == .claude ? "Sign in with Claude" : "Sign in with ChatGPT") {
               Task { await model.signIn() }
-            }.nativeControl(
-              prominent: true)
+            }.buttonStyle(.borderedProminent)
             Text(
               model.provider == .claude
                 ? "Uses your Claude Code sign-in on this Mac."
@@ -604,7 +605,7 @@ struct ContentView: View {
       } else {
         VStack(alignment: .leading, spacing: 6) {
           TextField(
-            "Ask \(model.agentName) to change \(model.openedSpace?.title ?? "this space")…",
+            "Ask about \(model.openedSpace?.title ?? "this space")…",
             text: Binding(get: { draft }, set: { draft = $0 }),
             axis: .vertical
           )
@@ -748,7 +749,7 @@ struct ContentView: View {
               space: space, access: access,
               canRefresh: runtime.accountConnected && !runtime.showingCachedCatalog,
               onOpenView: { open($0, in: space) },
-              onNewLink: { Task { await access.copyDefaultLink(in: space) } })
+              onNewLink: { Task { await access.make(.person, in: space) } })
           } else {
             CatalogStatusView(runtime: runtime)
           }
@@ -757,9 +758,9 @@ struct ContentView: View {
             agentsOnly: false, spaces: runtime.spaces, access: access, onNewLink: startNewLink)
         case .addressBook:
           AddressBookView(
-            access: access, model: model, spaces: runtime.spaces,
+            access: access, spaces: runtime.spaces,
             searchFocusRequest: contactSearchFocusRequest,
-            onChatSettings: { openChatSettings() })
+            onOpenSpace: { page = .space($0.id) })
         case .account:
           DesktopSettingsView(
             model: model, access: access, onSignOut: signOutOfTonk, showsChat: settingsShowsChat)

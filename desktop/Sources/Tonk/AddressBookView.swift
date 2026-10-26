@@ -12,10 +12,10 @@ struct DesktopContact: Codable, Identifiable, Equatable {
 /// of Contacts: pick someone, see what they can reach, act on it in place.
 struct AddressBookView: View {
   @ObservedObject var access: AccessModel
-  @ObservedObject var model: HarnessModel
   let spaces: [TonkSpace]
   var searchFocusRequest = 0
-  var onChatSettings: () -> Void = {}
+  /// Opens a space's own page, where its links and settings are managed.
+  var onOpenSpace: (TonkSpace) -> Void = { _ in }
   @State private var search = ""
   @State private var selected: String?
   @State private var editing: DesktopContact?
@@ -23,9 +23,8 @@ struct AddressBookView: View {
   @State private var adding = false
 
   private var entries: [AddressBookEntry] {
-    AddressBookEntry.entries(
-      contacts: access.contacts, grants: access.connections, chatAgent: model.agentName
-    ).filter { $0.matches(search) }
+    AddressBookEntry.entries(contacts: access.contacts, grants: access.connections)
+      .filter { $0.matches(search) }
   }
 
   var body: some View {
@@ -41,7 +40,7 @@ struct AddressBookView: View {
           } label: {
             Label("Add contact", systemImage: "plus").labelStyle(.iconOnly)
               .frame(width: 20, height: 20)
-          }.nativeControl(circular: true).controlSize(.large).help("Add contact")
+          }.help("Add contact")
         }.padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4)
         List(entries, selection: $selected) { entry in
           AddressBookRow(entry: entry).tag(entry.id).listRowSeparator(.hidden)
@@ -52,7 +51,6 @@ struct AddressBookView: View {
                   Button("Invite to a Space…") { inviting = contact }.disabled(spaces.isEmpty)
                 }
               }
-              if entry.kind == .chatAgent { Button("Chat Agent Settings…", action: onChatSettings) }
             }
         }
         // The sidebar style insets the selection as a rounded rectangle, as in frame 11.
@@ -68,9 +66,8 @@ struct AddressBookView: View {
       Divider()
       if let entry = entries.first(where: { $0.id == selected }) {
         AddressBookDetail(
-          entry: entry, access: access, model: model, spaces: spaces,
-          onEdit: { editing = $0 }, onInvite: { inviting = $0 },
-          onChatSettings: onChatSettings
+          entry: entry, access: access, spaces: spaces,
+          onEdit: { editing = $0 }, onInvite: { inviting = $0 }, onOpenSpace: onOpenSpace
         ).id(entry.id)
       } else {
         Text(
@@ -91,11 +88,31 @@ struct AddressBookView: View {
         }
       }
       .onChange(of: entries.map(\.id), initial: true) { _, ids in
-        if selected == nil || !ids.contains(selected!) {
-          // Lead with a person or agent; the chat agent is always first in the list.
-          selected = ids.first { $0 != AddressBookEntry.chatAgentID } ?? ids.first
-        }
+        if selected == nil || !ids.contains(selected!) { selected = ids.first }
       }
+  }
+}
+
+/// Copies text and says so for a moment, so the click visibly did something.
+struct CopyButton<Label: View>: View {
+  let text: String
+  @ViewBuilder var label: (_ copied: Bool) -> Label
+  @State private var copied = false
+
+  var body: some View {
+    Button {
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(text, forType: .string)
+      copied = true
+      AccessibilityNotification.Announcement("Copied").post()
+    } label: {
+      label(copied)
+    }
+    .task(id: copied) {
+      guard copied else { return }
+      try? await Task.sleep(for: .seconds(1.5))
+      copied = false
+    }
   }
 }
 
@@ -108,12 +125,10 @@ private struct AddressBookAvatar: View {
     case .person:
       Text(AccessText.initials(entry.name)).font(.system(size: size * 0.4, weight: .semibold))
         .frame(width: size, height: size).background(.quaternary, in: Circle())
-    case .agent, .chatAgent:
-      DesktopGlyph(
-        name: entry.kind == .chatAgent ? "imgIconMessages" : "r2IconBot", size: size * 0.55
-      )
-      .frame(width: size, height: size)
-      .background(.quaternary, in: RoundedRectangle(cornerRadius: size * 0.25))
+    case .agent:
+      DesktopGlyph(name: "r2IconBot", size: size * 0.55)
+        .frame(width: size, height: size)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: size * 0.25))
     }
   }
 }
@@ -127,16 +142,15 @@ private struct AddressBookRow: View {
       VStack(alignment: .leading, spacing: 3) {
         Text(entry.name).lineLimit(1)
         Group {
-          if entry.kind == .chatAgent {
-            Text("Tonk’s chat · edits as you")
+          if let email = entry.email?.email {
+            Text(email).lineLimit(1).truncationMode(.middle)
           } else if let did = entry.did {
             HStack(spacing: 4) {
               Text(did).font(.system(size: 11, design: .monospaced))
                 .lineLimit(1).truncationMode(.middle)
-              Button {
-                AddressBookDetail.copy(did)
-              } label: {
-                DesktopGlyph(name: "r2CopyKey", size: 12)
+              CopyButton(text: did) { copied in
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                  .font(.system(size: 10)).frame(width: 12, height: 12)
               }
               .buttonStyle(.plain).help("Copy key")
               .accessibilityLabel("Copy key for \(entry.name)")
@@ -152,30 +166,37 @@ private struct AddressBookRow: View {
 
 /// Contacts' launching-off points: the actions you take with someone, as a row
 /// of round buttons under their name.
+private struct ContactActionLabel: View {
+  let title: String
+  let systemImage: String
+
+  var body: some View {
+    VStack(spacing: 4) {
+      Image(systemName: systemImage).font(.system(size: 14))
+        .frame(width: 34, height: 34).background(.quaternary, in: Circle())
+      Text(title).font(.system(size: 11))
+    }.frame(minWidth: 56).contentShape(Rectangle())
+  }
+}
+
 private struct ContactAction: View {
   let title: String
   let systemImage: String
   let action: () -> Void
 
   var body: some View {
-    Button(action: action) {
-      VStack(spacing: 4) {
-        Image(systemName: systemImage).font(.system(size: 14))
-          .frame(width: 34, height: 34).background(.quaternary, in: Circle())
-        Text(title).font(.system(size: 11))
-      }.frame(minWidth: 56).contentShape(Rectangle())
-    }.buttonStyle(.plain).accessibilityLabel(title)
+    Button(action: action) { ContactActionLabel(title: title, systemImage: systemImage) }
+      .buttonStyle(.plain).accessibilityLabel(title)
   }
 }
 
 private struct AddressBookDetail: View {
   let entry: AddressBookEntry
   @ObservedObject var access: AccessModel
-  @ObservedObject var model: HarnessModel
   let spaces: [TonkSpace]
   let onEdit: (DesktopContact) -> Void
   let onInvite: (DesktopContact) -> Void
-  let onChatSettings: () -> Void
+  let onOpenSpace: (TonkSpace) -> Void
 
   private var isSelf: Bool { entry.did != nil && entry.did == access.selfDid }
 
@@ -193,14 +214,10 @@ private struct AddressBookDetail: View {
       VStack(alignment: .leading, spacing: 22) {
         header
         actions
-        if entry.kind == .chatAgent {
-          chatAgentSection
-        } else {
-          spacesSection
-          if let did = entry.did { keySection(did) }
-          if let contact = entry.contact, access.contacts.contains(where: { $0.id == contact.id }) {
-            ContactLabelsSection(contact: contact, access: access)
-          }
+        spacesSection
+        identitySection
+        if let contact = entry.contact, access.contacts.contains(where: { $0.id == contact.id }) {
+          ContactLabelsSection(contact: contact, access: access)
         }
       }
       .frame(maxWidth: 680, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 18)
@@ -220,28 +237,26 @@ private struct AddressBookDetail: View {
 
   private var subtitle: String {
     switch entry.kind {
-    case .chatAgent: return "Tonk’s chat agent · edits as you, beside a view"
     case .agent:
       if entry.grants.contains(where: \.isTerminalAuthorization) { return "Agent · Tonk CLI" }
       return entry.grants.isEmpty ? "Agent" : "Agent · connected with access you gave"
     case .person:
-      if isSelf { return "You" }
-      return entry.contact?.emailIdentity?.email ?? "Person"
+      return isSelf ? "You" : "Person"
     }
   }
 
   @ViewBuilder private var actions: some View {
     HStack(spacing: 6) {
-      if entry.kind == .chatAgent {
-        ContactAction(title: "Settings", systemImage: "gearshape", action: onChatSettings)
-      }
       if let contact = entry.contact, !isSelf {
         ContactAction(title: "Invite", systemImage: "person.crop.circle.badge.plus") {
           onInvite(contact)
         }.disabled(spaces.isEmpty).help("Invite to a space with a link only they can use")
       }
       if let did = entry.did {
-        ContactAction(title: "Copy Key", systemImage: "key") { Self.copy(did) }
+        CopyButton(text: did) { copied in
+          ContactActionLabel(
+            title: copied ? "Copied" : "Copy Key", systemImage: copied ? "checkmark" : "key")
+        }.buttonStyle(.plain).accessibilityLabel("Copy Key").help("Copy their did:key")
       }
       if let contact = entry.contact {
         ContactAction(title: "Edit", systemImage: "pencil") { onEdit(contact) }
@@ -266,7 +281,7 @@ private struct AddressBookDetail: View {
             if space.id != members.first?.0.id { Divider() }
             MemberSpaceRow(
               name: entry.name, did: entry.did ?? "", isSelf: isSelf, space: space, state: state,
-              access: access)
+              access: access, onOpenSpace: onOpenSpace)
           }
           ForEach(entry.grants, id: \.id) { grant in
             if !members.isEmpty || grant.id != entry.grants.first?.id { Divider() }
@@ -278,57 +293,52 @@ private struct AddressBookDetail: View {
     }
   }
 
-  private func keySection(_ did: String) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text("did:key").font(.caption).foregroundStyle(.secondary)
-      HStack(alignment: .center) {
-        Text(did).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-        Spacer(minLength: 4)
-        Button("Copy") { Self.copy(did) }
-      }.padding(16).background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
-      if let identity = entry.contact?.emailIdentity {
-        Text(
-          "\(identity.email), found through \(identity.directory.host ?? identity.directory.absoluteString) on \(identity.checkedAt.formatted(date: .abbreviated, time: .omitted))."
-        )
-        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+  /// Email and key, each copyable, as the card's contact details.
+  @ViewBuilder private var identitySection: some View {
+    let identity = entry.email
+    if identity != nil || entry.did != nil {
+      VStack(alignment: .leading, spacing: 8) {
+        VStack(spacing: 0) {
+          if let identity {
+            IdentityRow(label: "email", value: identity.email, monospaced: false)
+          }
+          if let did = entry.did {
+            if identity != nil { Divider() }
+            IdentityRow(label: "did:key", value: did, monospaced: true)
+          }
+        }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+        if let identity {
+          Text(
+            "Email checked with \(identity.directory.host ?? identity.directory.absoluteString) on \(identity.checkedAt.formatted(date: .abbreviated, time: .omitted))."
+          )
+          .font(.caption).foregroundStyle(.secondary)
+        }
       }
     }
   }
+}
 
-  private var chatAgentSection: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      VStack(spacing: 0) {
-        detailRow("Provider", model.provider.title)
-        Divider()
-        detailRow("Model", model.modelLabel)
-        Divider()
-        detailRow(
-          "Status",
-          model.connecting ? "Connecting…" : (model.connected ? "Connected" : "Not connected"))
-      }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
-      Text(
-        "It edits as you, only in Tonk’s chat, while you’re chatting. An agent that edits as itself, from anywhere, appears here once it connects with access you gave."
-      )
-      .font(.system(size: 12)).foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
-    }
-  }
+private struct IdentityRow: View {
+  let label: String
+  let value: String
+  let monospaced: Bool
 
-  private func detailRow(_ label: String, _ value: String) -> some View {
-    HStack {
-      Text(label)
-      Spacer()
-      Text(value).foregroundStyle(.secondary).lineLimit(1)
-    }.padding(.horizontal, 14).frame(height: 36)
-  }
-
-  static func copy(_ text: String) {
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 12) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text(label).font(.caption).foregroundStyle(.secondary)
+        Text(value).font(monospaced ? .system(size: 12, design: .monospaced) : .system(size: 13))
+          .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer(minLength: 4)
+      CopyButton(text: value) { copied in
+        Text(copied ? "Copied" : "Copy").frame(minWidth: 44)
+      }.accessibilityLabel("Copy \(label)")
+    }.padding(.horizontal, 14).padding(.vertical, 10)
   }
 }
 
-/// One space a person is in, with the way to take that access away.
+/// One space someone is in: open it to manage its links, or remove them.
 private struct MemberSpaceRow: View {
   let name: String
   let did: String
@@ -336,11 +346,12 @@ private struct MemberSpaceRow: View {
   let space: TonkSpace
   let state: SpaceAccess
   @ObservedObject var access: AccessModel
+  let onOpenSpace: (TonkSpace) -> Void
   @State private var confirming = false
 
   var body: some View {
     let founder = state.member(did)?.isFounder == true
-    HStack(spacing: 12) {
+    HStack(spacing: 8) {
       VStack(alignment: .leading, spacing: 3) {
         Text(space.title)
         Text((founder ? "Founder" : "Member") + (isSelf ? " · You" : ""))
@@ -361,6 +372,8 @@ private struct MemberSpaceRow: View {
             )
           }
       }
+      Button("Manage Space") { onOpenSpace(space) }
+        .help("Open \(space.title) to manage its people, links and settings")
     }.padding(.horizontal, 14).padding(.vertical, 10)
   }
 }
@@ -457,19 +470,6 @@ private struct ContactLabelsSection: View {
             )
         }
       }.font(.system(size: 12))
-      let suggestions = ContactLabelsField.suggestions.filter { suggestion in
-        !contact.labels.contains { $0.caseInsensitiveCompare(suggestion) == .orderedSame }
-      }
-      if !suggestions.isEmpty {
-        HStack(spacing: 4) {
-          Text("Suggested:")
-          ForEach(suggestions, id: \.self) { suggestion in
-            Button(suggestion) { addLabel(suggestion) }.buttonStyle(.plain)
-              .help("Add the label \(suggestion)")
-            if suggestion != suggestions.last { Text("·") }
-          }
-        }.font(.system(size: 12)).foregroundStyle(.secondary)
-      }
       if let saveError { Text(saveError).foregroundStyle(.red) }
     }
   }
@@ -494,47 +494,72 @@ private struct ContactLabelsSection: View {
   }
 }
 
-/// Edits a saved contact's name and labels; adding one goes through AddContactSheet.
+/// Edits a contact's name and labels; adding one goes through AddContactSheet.
+/// The email is the one they were added with: the directory finds a key from
+/// an email, never an email from a key, so it is not editable here.
 private struct ContactEditor: View {
-  @State var contact: DesktopContact
+  @State private var contact: DesktopContact
   @ObservedObject var access: AccessModel
   @State private var error: String?
+  @FocusState private var nameFocused: Bool
   @Environment(\.dismiss) private var dismiss
-  private var canSave: Bool {
-    !contact.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+  init(contact: DesktopContact, access: AccessModel) {
+    _contact = State(initialValue: contact)
+    self.access = access
   }
 
+  private var trimmedName: String { contact.name.trimmingCharacters(in: .whitespacesAndNewlines) }
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      Text("Edit Contact").font(.headline)
-      VStack(alignment: .leading, spacing: 4) {
-        if let identity = contact.emailIdentity { Text(identity.email) }
-        Text(contact.id).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
-          .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+    VStack(alignment: .leading, spacing: 18) {
+      HStack(spacing: 12) {
+        Text(AccessText.initials(trimmedName.isEmpty ? "?" : trimmedName))
+          .font(.system(size: 14, weight: .semibold))
+          .frame(width: 40, height: 40).background(.quaternary, in: Circle())
+        VStack(alignment: .leading, spacing: 2) {
+          Text(trimmedName.isEmpty ? "Edit Contact" : trimmedName).font(.headline).lineLimit(1)
+          if let email = contact.emailIdentity?.email {
+            Text(email).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+          }
+          HStack(spacing: 4) {
+            Text(contact.id).font(.system(size: 11, design: .monospaced))
+              .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            CopyButton(text: contact.id) { copied in
+              Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 10))
+            }.buttonStyle(.plain).foregroundStyle(.secondary).help("Copy key")
+          }
+        }
       }
-      VStack(alignment: .leading, spacing: 6) {
-        Text("Name").font(.caption).foregroundStyle(.secondary)
-        TextField("Name", text: $contact.name).textFieldStyle(.roundedBorder)
-          .accessibilityLabel("Contact name").onSubmit(save)
+      Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 12) {
+        GridRow {
+          Text("Name").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+          TextField("Name", text: $contact.name).textFieldStyle(.roundedBorder)
+            .focused($nameFocused).accessibilityLabel("Contact name").onSubmit(save)
+        }
+        GridRow {
+          Text("Labels").foregroundStyle(.secondary)
+          ContactLabelsField(labels: $contact.labels)
+        }
       }
-      VStack(alignment: .leading, spacing: 6) {
-        Text("Labels").font(.caption).foregroundStyle(.secondary)
-        ContactLabelsField(labels: $contact.labels)
+      if let error {
+        Text(error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
       }
-      if let error { Text(error).foregroundStyle(.red) }
       HStack {
         Spacer()
         Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-        Button("Save", action: save).keyboardShortcut(.defaultAction).disabled(!canSave)
+        Button("Save", action: save).keyboardShortcut(.defaultAction)
+          .disabled(trimmedName.isEmpty)
       }
-    }.padding(22).frame(width: 440)
+    }.padding(22).frame(width: 460)
+      .onAppear { nameFocused = true }
       .onChange(of: access.selfDid) { _, _ in dismiss() }
   }
 
   private func save() {
-    guard canSave else { return }
+    guard !trimmedName.isEmpty else { return }
     var updated = contact
-    updated.name = contact.name.trimmingCharacters(in: .whitespacesAndNewlines)
+    updated.name = trimmedName
     do {
       try access.saveContact(updated)
       dismiss()
