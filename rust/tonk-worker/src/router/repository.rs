@@ -16008,12 +16008,15 @@ mod library_quarantine_tests {
                 include_str!("../../../tonk-core/assets/library/version-control.yaml"),
             ),
         ] {
-            super::super::evaluate::evaluate_body(
+            // Parsed where the library lives, as an install parses it, so a
+            // component's `!include`s resolve.
+            let syntax = super::super::library::parse(body)
+                .await
+                .unwrap_or_else(|error| panic!("the {name} library parses: {error}"));
+            super::super::evaluate::seed_syntax_on_branch(
                 &tonk,
-                &key,
-                CONTENT_BRANCH,
-                body.to_owned(),
-                true,
+                tonk.reactor.repository(&key).branch(CONTENT_BRANCH),
+                syntax,
             )
             .await
             .unwrap_or_else(|error| panic!("the {name} library installs: {error}"));
