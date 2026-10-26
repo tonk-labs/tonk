@@ -27,6 +27,11 @@
 
 use std::collections::BTreeMap;
 
+use serde_json::Value;
+
+use crate::render::{
+    COMMAND_LABEL, CONCEPT_LABEL, RULE_LABEL, concept_descriptor, rule_definition,
+};
 use crate::response::{EvaluateResponse, QueryMatchBlock, QueryResult};
 
 /// How many result cards to render before summarising the rest.
@@ -34,9 +39,6 @@ use crate::response::{EvaluateResponse, QueryMatchBlock, QueryResult};
 /// Enough to see the shape of a result set, few enough that the cell stays
 /// shorter than the prose around it.
 const CARD_CAP: usize = 12;
-
-/// How many fields to show on one card before eliding.
-const FIELD_CAP: usize = 6;
 
 /// Escape text for interpolation into HTML.
 fn esc(text: &str) -> String {
@@ -108,50 +110,45 @@ fn render_block(block: &QueryMatchBlock, with: &str) -> String {
         return format!("<div class=\"nb-out\">{summary}</div>");
     }
 
-    let shown: String = block
+    let cards: Vec<String> = block
         .results
         .iter()
-        .take(CARD_CAP)
         .map(|result| render_card(result, &block.label, with))
         .collect();
-    // State what was dropped. A silently truncated gallery reads as the whole
-    // answer, which is worse than a long one.
-    let more = if count > CARD_CAP {
-        format!(
-            "<div class=\"nb-out__more\">and {} more</div>",
-            count - CARD_CAP
-        )
-    } else {
+    let (shown, rest) = cards.split_at(count.min(CARD_CAP));
+    // The rest folds away, Observable-style: one line saying how many,
+    // and a click opens them in place. Native `<details>`, so it needs no
+    // script and keeps its state while the cell is not re-run.
+    let more = if rest.is_empty() {
         String::new()
+    } else {
+        format!(
+            "<details class=\"nb-out__rest\">\
+               <summary class=\"nb-out__more\">{} more</summary>\
+               <div class=\"nb-out__gallery\">{}</div>\
+             </details>",
+            rest.len(),
+            rest.concat()
+        )
     };
     format!(
-        "<div class=\"nb-out\">{summary}<div class=\"nb-out__gallery\">{shown}</div>{more}</div>"
+        "<div class=\"nb-out\">{summary}<div class=\"nb-out__gallery\">{}</div>{more}</div>",
+        shown.concat()
     )
 }
 
 /// One result as a card.
 ///
-/// The entity goes to a `<tonk-display>`, which resolves the model's view
-/// and — when nothing defines one — falls back to a notation dump of its
-/// own. That fallback is the reason this does not list fields itself: the
-/// display already knows how to present a result nothing has a view for,
-/// and doing it here means a concept that LATER gains a view keeps
-/// rendering as a field list.
+/// A result whose model has a view goes to a `<tonk-display>`, which draws
+/// it with that view. Everything else is shown as the notation that would
+/// assert it, and the schema heads (`concept:`, `command:`, `rule:`) as
+/// their definitions: text you can read, copy and evaluate, rather than a
+/// tile of field names over `{2}`.
 ///
 /// The model comes from the query's own label (`person ?alice:` → `person`)
 /// when the result does not name one itself, so an ordinary query gets its
 /// concept's view rather than the generic listing.
 fn render_card(result: &QueryResult, label: &str, with: &str) -> String {
-    // Prefer a `name` over the entity URI: `db:attribute` and `attribute`
-    // are the same row, and the readable one belongs in the title. The URI
-    // stays as the tooltip, so nothing is lost.
-    let named = result
-        .fields
-        .get("name")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|name| !name.is_empty());
-    let title = esc(named.unwrap_or_else(|| short_entity(&result.this)));
     // A transient result (a command) is in the response but was never
     // written to the branch, so a `<tonk-display>` re-reading it would
     // find no fields and report a missing attribute on a command that
@@ -162,48 +159,191 @@ fn render_card(result: &QueryResult, label: &str, with: &str) -> String {
         model_of(&result.fields).or_else(|| model_from_label(label))
     };
     if let Some(model) = model {
+        // A header names the row: its `name` when it has one, and always
+        // the entity itself, so among many results each says which it is
+        // (and the id can be copied into the next query).
+        let named = result
+            .fields
+            .get("name")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(|name| format!("<span class=\"nb-card__name\">{}</span>", esc(name)))
+            .unwrap_or_default();
         return format!(
             "<div class=\"nb-card nb-card--display\">\
-               <div class=\"nb-card__title\">{title}</div>\
+               <div class=\"nb-card__title\">{named}<span class=\"nb-card__entity\">{}</span></div>\
                <tonk-display entity=\"{}\" model=\"{}\" with=\"{}\"></tonk-display>\
              </div>",
+            esc(&tonk_notation::spell_uri(&result.this)),
             esc(&result.this),
             esc(&model),
             esc(with)
         );
     }
-    let fields: String = result
+    format!(
+        "<div class=\"nb-card nb-card--notation\">\
+           <tonk-notation><script type=\"text/tonk-notation\">{}</script></tonk-notation>\
+         </div>",
+        script_text(&notation(result, label))
+    )
+}
+
+/// A result as the notation that asserts it: `head!:`, its `this:`, then
+/// its fields. A schema row (`concept:`, `command:`, `rule:`) is written
+/// as its definition, rebuilt from the stored descriptor, so what the cell
+/// shows can be copied into another cell and evaluated.
+fn notation(result: &QueryResult, label: &str) -> String {
+    let label = label.trim();
+    let fields: Vec<(String, Value)> = match label {
+        CONCEPT_LABEL | COMMAND_LABEL => concept_descriptor(result, label == CONCEPT_LABEL)
+            .map(|map| map.into_iter().collect())
+            .unwrap_or_else(|| plain_fields(result)),
+        RULE_LABEL => rule_definition(result)
+            .map(|map| map.into_iter().collect())
+            .unwrap_or_else(|| plain_fields(result)),
+        _ => plain_fields(result),
+    };
+    let head = if label.is_empty() { "_" } else { label };
+    let mut out = format!(
+        "{head}!:\n  this: {}\n",
+        tonk_notation::spell_uri(&result.this)
+    );
+    for (name, value) in &fields {
+        write_entry(&mut out, name, value, 2);
+    }
+    out.truncate(out.trim_end().len());
+    out
+}
+
+/// The result's own fields, minus `this`, which the head already names.
+fn plain_fields(result: &QueryResult) -> Vec<(String, Value)> {
+    result
         .fields
         .iter()
-        // `name` is the title now; repeating it as a row wastes a line on
-        // every card.
-        .filter(|(key, _)| key.as_str() != "name")
-        .take(FIELD_CAP)
-        .map(|(name, value)| {
-            format!(
-                "<div class=\"nb-card__field\">\
-                   <span class=\"nb-card__key\">{}</span>\
-                   <span class=\"nb-card__value\">{}</span>\
-                 </div>",
-                esc(name),
-                esc(&scalar(value))
-            )
-        })
-        .collect();
-    let elided = if result.fields.len() > FIELD_CAP {
-        format!(
-            "<div class=\"nb-card__more\">+{}</div>",
-            result.fields.len() - FIELD_CAP
-        )
+        .filter(|(name, _)| name.as_str() != "this")
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+/// One `key: value` line at `indent`; a nested mapping or sequence goes on
+/// the lines below it, one entry per line, the way it would be typed.
+fn write_entry(out: &mut String, key: &str, value: &Value, indent: usize) {
+    out.push_str(&" ".repeat(indent));
+    write_key(out, key);
+    write_after_key(out, key, value, indent);
+}
+
+fn write_after_key(out: &mut String, key: &str, value: &Value, indent: usize) {
+    match value {
+        Value::Object(map) if !map.is_empty() => {
+            out.push('\n');
+            for (name, value) in map {
+                write_entry(out, name, value, indent + 2);
+            }
+        }
+        Value::Array(items) if !items.is_empty() => {
+            out.push('\n');
+            for item in items {
+                out.push_str(&" ".repeat(indent + 2));
+                out.push('-');
+                match item {
+                    Value::Object(map) if !map.is_empty() => {
+                        for (index, (name, value)) in map.iter().enumerate() {
+                            if index == 0 {
+                                out.push(' ');
+                                write_key(out, name);
+                                write_after_key(out, name, value, indent + 4);
+                            } else {
+                                write_entry(out, name, value, indent + 4);
+                            }
+                        }
+                    }
+                    other => write_after_key(out, key, other, indent + 2),
+                }
+            }
+        }
+        // Text with a line break or a `"` is a literal block scalar, so
+        // neither has to be escaped: `|` keeps the one trailing newline,
+        // `|-` says there is none. A URI or variable never needs it.
+        Value::String(text)
+            if text.contains('\n') || (text.contains('"') && !looks_like_uri(text)) =>
+        {
+            let (chomp, body) = match text.strip_suffix('\n') {
+                Some(body) => ("|", body),
+                None => ("|-", text.as_str()),
+            };
+            out.push_str(&format!(" {chomp}\n"));
+            for line in body.split('\n') {
+                if !line.is_empty() {
+                    out.push_str(&" ".repeat(indent + 2));
+                    out.push_str(line);
+                }
+                out.push('\n');
+            }
+        }
+        other => {
+            out.push(' ');
+            out.push_str(&scalar(key, other));
+            out.push('\n');
+        }
+    }
+}
+
+/// A mapping key: bare when it reads as one, quoted otherwise.
+fn write_key(out: &mut String, key: &str) {
+    let bare = !key.is_empty()
+        && !key.starts_with(['-', '?'])
+        && key
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '!' | '?'));
+    if bare {
+        out.push_str(key);
     } else {
-        String::new()
-    };
-    format!(
-        "<div class=\"nb-card\" title=\"{}\">\
-           <div class=\"nb-card__title\">{title}</div>{fields}{elided}\
-         </div>",
-        esc(&result.this)
-    )
+        out.push_str(&serde_json::to_string(key).unwrap_or_default());
+    }
+    out.push(':');
+}
+
+/// A single-line value as notation: an entity bare, a type anchor under
+/// `as` bare, other text quoted so it parses back as text.
+fn scalar(key: &str, value: &Value) -> String {
+    match value {
+        Value::Null => "_".to_owned(),
+        Value::Bool(flag) => flag.to_string(),
+        Value::Number(number) => number.to_string(),
+        Value::Object(_) => "{}".to_owned(),
+        Value::Array(_) => "[]".to_owned(),
+        Value::String(text) => {
+            let anchor = key == "as"
+                && !text.is_empty()
+                && text.chars().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, ':' | '/' | '-')
+                });
+            if anchor || (text.starts_with('?') && !text.contains(char::is_whitespace)) {
+                text.clone()
+            } else if looks_like_uri(text) {
+                tonk_notation::spell_uri(text).into_owned()
+            } else {
+                serde_json::to_string(text).unwrap_or_default()
+            }
+        }
+    }
+}
+
+/// A value to write bare as an entity: no whitespace, and either a scheme
+/// (`did:key:…`, `id:foo`) or a reverse-dotted attribute id
+/// (`xyz.tonk.view/greeting`). The same rule `<tonk-display>`'s notation
+/// fallback uses, so the two read alike.
+fn looks_like_uri(text: &str) -> bool {
+    !text.contains(char::is_whitespace)
+        && (text.contains(':') || (text.contains('.') && text.contains('/')))
+}
+
+/// Notation as the text of a `<script>`: nothing in it is decoded, so
+/// only a closing tag needs breaking up.
+fn script_text(text: &str) -> String {
+    text.replace("</script", "<\\/script")
 }
 
 /// The model a query's label names, when it is one a view could be defined
@@ -229,65 +369,6 @@ fn model_of(fields: &BTreeMap<String, serde_json::Value>) -> Option<String> {
         return None;
     }
     Some(model.to_owned())
-}
-
-/// A one-line rendering of a field value. Objects and arrays are summarised
-/// rather than dumped: a card is a glance, not a document.
-fn scalar(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Null => "—".to_owned(),
-        serde_json::Value::Bool(flag) => flag.to_string(),
-        serde_json::Value::Number(number) => number.to_string(),
-        serde_json::Value::String(text) => {
-            let trimmed = text.trim();
-            // A field whose value is itself serialized JSON (a concept's
-            // `source`, for one) shows as `{"description":"…` — punctuation,
-            // not information. Say what it is instead.
-            if (trimmed.starts_with('{') && trimmed.ends_with('}'))
-                || (trimmed.starts_with('[') && trimmed.ends_with(']'))
-            {
-                return match serde_json::from_str::<serde_json::Value>(trimmed) {
-                    Ok(parsed) => scalar(&parsed),
-                    Err(_) => "{…}".to_owned(),
-                };
-            }
-            // Long prose would blow the card open.
-            if trimmed.chars().count() > 60 {
-                let head: String = trimmed.chars().take(59).collect();
-                format!("{head}…")
-            } else {
-                trimmed.to_owned()
-            }
-        }
-        serde_json::Value::Array(items) => match items.len() {
-            0 => "[]".to_owned(),
-            n => format!("[{n}]"),
-        },
-        serde_json::Value::Object(map) => match map.len() {
-            0 => "{}".to_owned(),
-            n => format!("{{{n}}}"),
-        },
-    }
-}
-
-/// The readable tail of an entity URI. `did:key:z6Mk…` and
-/// `id:notebook/scratch` are both long and mostly prefix; a card wants the
-/// part that distinguishes one result from the next.
-fn short_entity(entity: &str) -> &str {
-    if let Some(rest) = entity.rsplit('/').next()
-        && !rest.is_empty()
-        && rest != entity
-    {
-        return rest;
-    }
-    // A `did:key:` has no slash; show its tail rather than the scheme every
-    // row shares.
-    if entity.len() > 24
-        && let Some(tail) = entity.get(entity.len() - 12..)
-    {
-        return tail;
-    }
-    entity
 }
 
 #[cfg(test)]
@@ -362,10 +443,10 @@ mod tests {
         assert!(!html.contains("nb-out__gallery"), "no gallery for nothing");
     }
 
-    /// The failure the whole module exists to prevent: a large result set
-    /// must not render a card per result.
+    /// A large result set shows its first cards and folds the rest behind
+    /// one line that opens them in place, rather than dropping them.
     #[dialog_common::test]
-    fn it_caps_the_gallery_and_says_what_it_dropped() {
+    fn it_folds_the_results_past_the_cap() {
         let results: Vec<QueryResult> = (0..40)
             .map(|n| result(&format!("id:thing/{n}"), &[("name", json!("x"))]))
             .collect();
@@ -374,9 +455,21 @@ mod tests {
             results,
         };
         let html = render_block(&block, "main@id:repo");
-        assert_eq!(html.matches("nb-card__title").count(), CARD_CAP);
-        assert!(html.contains("and 28 more"));
+        let (shown, folded) = html.split_once("<details").expect("a fold");
+        assert_eq!(shown.matches("class=\"nb-card ").count(), CARD_CAP);
+        assert_eq!(folded.matches("class=\"nb-card ").count(), 28);
+        assert!(folded.contains("28 more</summary>"), "{folded}");
         assert!(html.contains("40 results"));
+    }
+
+    /// No fold when everything fits.
+    #[dialog_common::test]
+    fn it_does_not_fold_a_short_result() {
+        let block = QueryMatchBlock {
+            label: "thing".to_owned(),
+            results: vec![result("id:thing/1", &[])],
+        };
+        assert!(!render_block(&block, "main@id:repo").contains("<details"));
     }
 
     /// A result naming a model is drawn by the space's own view.
@@ -392,18 +485,56 @@ mod tests {
         assert!(html.contains("model=\"tonk:notebook\""));
     }
 
-    /// A meta head's rows are schema, not domain data: no view is defined
-    /// for `concept` or `attribute`, so the card lists fields rather than
-    /// mounting a display that would only dump them again.
+    /// A `concept:` row is shown as the concept's definition, a
+    /// `concept!:` you can copy and evaluate, not a tile listing
+    /// `source {2}` and `transient false`.
     #[dialog_common::test]
-    fn it_lists_fields_for_a_meta_head() {
+    fn it_shows_a_concept_as_its_definition() {
         let html = render_card(
-            &result("id:x", &[("name", json!("Alice"))]),
+            &result(
+                "db:person",
+                &[
+                    (
+                        "source",
+                        json!(
+                            r#"{"description":"A person: someone.","with":{"name":{"the":"xyz.person/name","as":"Text"}}}"#
+                        ),
+                    ),
+                    ("transient", json!(false)),
+                ],
+            ),
             "concept",
             "main@id:repo",
         );
         assert!(!html.contains("<tonk-display"));
-        assert!(html.contains("Alice"));
+        assert!(html.contains("<tonk-notation>"), "{html}");
+        assert!(html.contains("concept!:\n  this: db:person\n"), "{html}");
+        assert!(html.contains("  with:\n    name:\n"), "{html}");
+        // Key order follows the stored descriptor when `serde_json` keeps
+        // insertion order, so each line is checked on its own.
+        assert!(html.contains("\n      as: text"), "{html}");
+        assert!(html.contains("\n      the: xyz.person/name"), "{html}");
+        assert!(
+            html.contains("description: \"A person: someone.\""),
+            "a string is quoted, so the copy parses: {html}"
+        );
+        assert!(!html.contains("{2}"), "{html}");
+    }
+
+    /// A result with no view to draw it is the notation that asserts it,
+    /// nested values as indented lines rather than JSON.
+    #[dialog_common::test]
+    fn it_shows_a_viewless_result_as_notation() {
+        let mut command = result(
+            "did:key:z6MkCommand",
+            &[("block", json!({"N1": "id:nb/1", "N5": "id:nb/2"}))],
+        );
+        command.transient = true;
+        let html = render_card(&command, "notebook/blocks", "main@id:repo");
+        assert!(
+            html.contains("notebook/blocks!:\n  this: did:key:z6MkCommand\n  block:\n    N1: id:nb/1\n    N5: id:nb/2"),
+            "nested values as block lines, not JSON: {html}"
+        );
     }
 
     /// An ordinary query's label IS its model, so the result goes to a
@@ -451,58 +582,41 @@ mod tests {
         assert!(html.contains("model=\"tonk:notebook\""));
     }
 
-    /// A description would otherwise blow the card open.
+    /// Every drawn result is headed by its entity, so among many results
+    /// each says which it is, with its name when it has one.
     #[dialog_common::test]
-    fn it_truncates_a_long_string() {
-        let long = "a".repeat(200);
-        let rendered = scalar(&json!(long));
-        assert!(rendered.chars().count() <= 80);
-        assert!(rendered.ends_with('…'));
-    }
-
-    /// Nested values are summarised, not dumped.
-    #[dialog_common::test]
-    fn it_summarises_containers() {
-        assert_eq!(scalar(&json!([1, 2, 3])), "[3]");
-        assert_eq!(scalar(&json!({"a": 1})), "{1}");
-        assert_eq!(scalar(&json!(null)), "—");
-    }
-
-    /// `db:attribute` and `attribute` are the same row; the readable one
-    /// belongs in the title, and repeating it as a field wastes a line.
-    #[dialog_common::test]
-    fn it_titles_a_card_by_its_name() {
+    fn it_heads_a_drawn_result_with_its_entity() {
         let html = render_card(
-            &result(
-                "db:attribute",
-                &[("name", json!("attribute")), ("transient", json!(false))],
-            ),
-            "concept",
+            &result("id:alice", &[("name", json!("Alice"))]),
+            "person",
             "main@id:repo",
         );
-        assert!(html.contains(">attribute</div>"));
-        assert!(
-            !html.contains("nb-card__key\">name"),
-            "name is not repeated"
-        );
-        assert!(
-            html.contains("title=\"db:attribute\""),
-            "URI kept as tooltip"
-        );
+        assert!(html.contains("nb-card__name\">Alice<"), "{html}");
+        assert!(html.contains("nb-card__entity\">id:alice<"), "{html}");
     }
 
-    /// A field holding serialized JSON showed as `{"description":"…` —
-    /// punctuation, not information.
+    /// What is shown parses back as notation: copying a definition out of a
+    /// cell and evaluating it is the point of showing it this way.
     #[dialog_common::test]
-    fn it_summarises_a_json_encoded_field() {
-        let encoded = json!(r#"{"description":"x","with":{"a":1}}"#);
-        assert_eq!(scalar(&encoded), "{2}");
-    }
-
-    #[dialog_common::test]
-    fn it_shortens_an_entity_to_its_distinguishing_tail() {
-        assert_eq!(short_entity("id:notebook/scratch/3"), "3");
-        assert_eq!(short_entity("short"), "short");
+    fn it_writes_notation_that_parses() {
+        let text = notation(
+            &result(
+                "db:person",
+                &[(
+                    "source",
+                    json!(
+                        r#"{"description":"Multi\nline: text","with":{"name":{"the":"xyz.person/name","as":"Text"}}}"#
+                    ),
+                )],
+            ),
+            "concept",
+        );
+        let parsed = tonk_notation::parse(&text);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "{:?}\n{text}",
+            parsed.diagnostics
+        );
     }
 
     #[dialog_common::test]

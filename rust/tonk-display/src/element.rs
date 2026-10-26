@@ -1251,12 +1251,12 @@ async fn start_downstream(
     // model re-enters the same view unconditionally, so the only stable
     // number of levels is one.
     //
-    // Fall back to the notation dump rather than rendering nothing: the
+    // Fall back to the default display rather than rendering nothing: the
     // entity's data is still worth showing, and a card that silently
     // disappears is worse than one that shows what it holds. So a
     // self-rendering display skips only the VIEW flow (no view
     // subscription, no facet fallback) and keeps the entity
-    // subscription; `handle_entity_frame` mounts the notation dump.
+    // subscription; `handle_entity_frame` mounts the default display.
     let entity = host.get_attribute("entity").filter(|s| !s.is_empty());
     let directory = entity.is_none();
     let view = host.get_attribute("view").filter(|s| !s.is_empty());
@@ -1265,7 +1265,7 @@ async fn start_downstream(
     } else {
         DETAIL_FACET
     });
-    let self_render = renders_itself(host, &model_entity, intended_facet);
+    let self_render = renders_itself(host, &model_entity, intended_facet, entity.as_deref());
 
     // The `view` attribute names a FACET — a `show` entry key of the
     // model's view instance (`ui`, `directory`, `label`, `title`, …)
@@ -2560,11 +2560,13 @@ fn apply_entity_frame(
     }
     update_notation(host, &s, &first);
     // A self-rendering display has no view flow to mount a slide; its
-    // data still shows — as the notation dump, mounted on the first
-    // non-empty frame and updated in place from then on.
+    // data still shows — through the DEFAULT display (`tonk:_`), as if
+    // the model had no view of its own, which for a single entity is the
+    // notation dump. Its owner is `tonk:_`, so nothing in it re-enters
+    // the view that was refused.
     if s.self_render && s.slides.is_empty() && s.notation_source.is_none() {
         drop(s);
-        mount_notation_fallback(host, state, &first);
+        spawn_default_view(host, state);
         dispatch_event(host, "tonk-display:result", Some(event_detail(&first)));
         return;
     }
@@ -2860,13 +2862,30 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
 const MODEL_CHAIN: &str = "data-tonk-models";
 
 /// The models being rendered above `host`, innermost last.
+///
+/// Looked up across shadow roots. `closest` stops at one, and a view that
+/// renders inside an element's shadow tree (a notebook cell's results live
+/// in `<tonk-prose>`'s) would otherwise start with an empty chain and never
+/// see the notebook it sits in: a cell querying `notebook:` mounted the
+/// notebook again in its own results, forever.
 fn model_chain(host: &Element) -> Vec<String> {
-    host.closest(&format!("[{MODEL_CHAIN}]"))
-        .ok()
-        .flatten()
-        .and_then(|el| el.get_attribute(MODEL_CHAIN))
-        .map(|chain| chain.split('\u{1f}').map(str::to_owned).collect())
-        .unwrap_or_default()
+    let selector = format!("[{MODEL_CHAIN}]");
+    let mut at = host.clone();
+    loop {
+        if let Some(chain) = at
+            .closest(&selector)
+            .ok()
+            .flatten()
+            .and_then(|el| el.get_attribute(MODEL_CHAIN))
+        {
+            return chain.split('\u{1f}').map(str::to_owned).collect();
+        }
+        let root = at.get_root_node();
+        match root.dyn_into::<web_sys::ShadowRoot>() {
+            Ok(shadow) => at = shadow.host(),
+            Err(_) => return Vec::new(),
+        }
+    }
 }
 
 /// Whether rendering `model` here would render it inside ITSELF.
@@ -2888,20 +2907,56 @@ fn model_chain(host: &Element) -> Vec<String> {
 /// notebook's `ui` mounting notebook's `ui` forever — so a chain entry
 /// blocks only the facet it recorded. A bare entry with no facet (an
 /// older stamp, or a test's hand-written chain) stays a blanket block.
-fn renders_itself(host: &Element, model: &str, facet: &str) -> bool {
-    model_chain(host)
-        .iter()
-        .any(|seen| match seen.split_once('\u{1e}') {
-            Some((owner, seen_facet)) => owner == model && seen_facet == facet,
-            None => seen == model,
-        })
+///
+/// When both sides name an ENTITY, it has to match too: what loops is the
+/// same entity through the same view, and a notebook whose cell shows a
+/// DIFFERENT notebook is a card, not a cycle. And an entity may appear
+/// inside itself ONCE ([`SELF_NESTING`]): a notebook cell querying
+/// `notebook:` shows its own notebook as a card, and only that card's own
+/// repeat falls back to the default display. An entry or a display with
+/// no entity (a directory) keeps the (owner, facet) rule and repeats
+/// nothing.
+fn renders_itself(host: &Element, model: &str, facet: &str, entity: Option<&str>) -> bool {
+    let mut repeats = 0;
+    for seen in model_chain(host) {
+        let mut parts = seen.split('\u{1e}');
+        let owner = parts.next().unwrap_or_default();
+        let Some(seen_facet) = parts.next() else {
+            if seen == model {
+                return true;
+            }
+            continue;
+        };
+        if owner != model || seen_facet != facet {
+            continue;
+        }
+        match (parts.next(), entity) {
+            (Some(seen_entity), Some(entity)) if seen_entity != entity => {}
+            (Some(_), Some(_)) => repeats += 1,
+            _ => return true,
+        }
+    }
+    repeats > SELF_NESTING
 }
 
-/// Record `(owner, facet)` as rendered, for the displays mounted inside
-/// `view_el`.
-fn stamp_model_chain(host: &Element, view_el: &Element, model: &str, facet: &str) {
+/// How many times an entity may be rendered inside itself through the
+/// same view before the next repeat falls back to the default display.
+const SELF_NESTING: usize = 1;
+
+/// Record `(owner, facet)`, and the entity when the display has one, as
+/// rendered, for the displays mounted inside `view_el`.
+fn stamp_model_chain(
+    host: &Element,
+    view_el: &Element,
+    model: &str,
+    facet: &str,
+    entity: Option<&str>,
+) {
     let mut chain = model_chain(host);
-    chain.push(format!("{model}\u{1e}{facet}"));
+    chain.push(match entity {
+        Some(entity) => format!("{model}\u{1e}{facet}\u{1e}{entity}"),
+        None => format!("{model}\u{1e}{facet}"),
+    });
     let _ = view_el.set_attribute(MODEL_CHAIN, &chain.join("\u{1f}"));
 }
 
@@ -3019,7 +3074,8 @@ fn mount_view_slide(
     // the model being rendered: a counter card inside the DEFAULT
     // carousel must still resolve counter's own view, while a counter
     // display inside counter's OWN template must not.
-    stamp_model_chain(host, &view_el, owner, facet);
+    let entity = host.get_attribute("entity").filter(|s| !s.is_empty());
+    stamp_model_chain(host, &view_el, owner, facet, entity.as_deref());
     // Read the embeds the template declares and inject what they name
     // into the document head. From the template TEXT, not the mounted
     // DOM: the markup below becomes the ROW template, so a `<link>`
@@ -4549,7 +4605,7 @@ mod tests {
         outer.append_child(&inner).expect("append");
 
         assert!(
-            !renders_itself(&inner, "tonk:notebook", "ui"),
+            !renders_itself(&inner, "tonk:notebook", "ui", None),
             "a different model nested inside one is ordinary nesting"
         );
     }
@@ -4570,7 +4626,7 @@ mod tests {
         outer.append_child(&inner).expect("append");
 
         assert!(
-            renders_itself(&inner, "tonk:notebook", "ui"),
+            renders_itself(&inner, "tonk:notebook", "ui", None),
             "a model already being rendered above must not render again"
         );
     }
@@ -4588,16 +4644,16 @@ mod tests {
         let outer = document.create_element("div").expect("outer");
         let middle = document.create_element("div").expect("middle");
         outer.append_child(&middle).expect("append");
-        stamp_model_chain(&middle, &middle, "concept:todo", "directory");
+        stamp_model_chain(&middle, &middle, "concept:todo", "directory", None);
         let inner = document.create_element("div").expect("inner");
         middle.append_child(&inner).expect("append");
 
         assert!(
-            !renders_itself(&inner, "concept:todo", "ui"),
+            !renders_itself(&inner, "concept:todo", "ui", None),
             "a detail card inside its model's directory template is nesting, not a cycle"
         );
         assert!(
-            renders_itself(&inner, "concept:todo", "directory"),
+            renders_itself(&inner, "concept:todo", "directory", None),
             "re-entering the SAME facet is still the cycle"
         );
     }
@@ -4613,17 +4669,56 @@ mod tests {
         let middle = document.create_element("div").expect("middle");
         outer.append_child(&middle).expect("append");
         // A board rendered inside the notebook extends the chain.
-        stamp_model_chain(&middle, &middle, "tonk:board", "ui");
+        stamp_model_chain(&middle, &middle, "tonk:board", "ui", None);
         let inner = document.create_element("div").expect("inner");
         middle.append_child(&inner).expect("append");
 
         assert!(
-            renders_itself(&inner, "tonk:notebook", "ui"),
+            renders_itself(&inner, "tonk:notebook", "ui", None),
             "the notebook is still above, two levels up"
         );
         assert!(
-            !renders_itself(&inner, "tonk:workspace", "ui"),
+            !renders_itself(&inner, "tonk:workspace", "ui", None),
             "an unrelated model is unaffected"
+        );
+    }
+
+    /// The same entity through the same view is refused past one level of
+    /// self-nesting, even when the repeat sits inside a SHADOW ROOT. A notebook cell's results render
+    /// in `<tonk-prose>`'s shadow tree, and the chain lookup stopped at
+    /// that boundary: a cell querying `notebook:` mounted its own notebook
+    /// in its results, which ran the cell again, forever.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_catches_an_entity_rendering_itself_across_a_shadow_root() {
+        let document = window().expect("window").document().expect("document");
+        let outer = document.create_element("div").expect("outer");
+        stamp_model_chain(&outer, &outer, "tonk:notebook", "ui", Some("id:nb/a"));
+        let host = document.create_element("div").expect("shadow host");
+        outer.append_child(&host).expect("append");
+        let init = web_sys::ShadowRootInit::new(web_sys::ShadowRootMode::Open);
+        let shadow = host.attach_shadow(&init).expect("shadow");
+        let inner = document.create_element("div").expect("inner");
+        shadow.append_child(&inner).expect("append");
+
+        assert!(
+            !renders_itself(&inner, "tonk:notebook", "ui", Some("id:nb/a")),
+            "an entity may show inside itself once"
+        );
+        stamp_model_chain(&inner, &inner, "tonk:notebook", "ui", Some("id:nb/a"));
+        let innermost = document.create_element("div").expect("innermost");
+        inner.append_child(&innermost).expect("append");
+        assert!(
+            renders_itself(&innermost, "tonk:notebook", "ui", Some("id:nb/a")),
+            "the repeat's own repeat is the cycle, seen across the shadow root"
+        );
+        assert!(
+            !renders_itself(&inner, "tonk:notebook", "ui", Some("id:nb/b")),
+            "a different notebook shown in a cell is a card, not a cycle"
+        );
+        assert!(
+            !renders_itself(&inner, "tonk:notebook", "label", Some("id:nb/a")),
+            "the same entity through another view is not a cycle"
         );
     }
 

@@ -100,7 +100,11 @@ import {
   historyKeymap,
   indentWithTab,
 } from "@codemirror/commands";
-import { acceptCompletion, completionKeymap } from "@codemirror/autocomplete";
+import {
+  acceptCompletion,
+  completionKeymap,
+  moveCompletionSelection,
+} from "@codemirror/autocomplete";
 import {
   bracketMatching,
   indentOnInput,
@@ -527,7 +531,7 @@ function baseExtensions(): Extension[] {
     // `indentWithTab` and Tab still indents.
     //
     // `completionKeymap` is what makes the popup navigable at all:
-    // ArrowUp/Down and Ctrl-n/p move the selection, Enter accepts,
+    // ArrowUp/Down move the selection, Enter accepts,
     // Escape closes. Without it those keys fall through to
     // `defaultKeymap` and move the CURSOR instead — the popup stays
     // open showing a selection you cannot change, and Enter splits the
@@ -538,6 +542,12 @@ function baseExtensions(): Extension[] {
     // claims the key first wins.
     keymap.of([
       { key: "Tab", run: acceptCompletion },
+      // Ctrl-n/p move through an open list too, as in most editors.
+      // `completionKeymap` does not bind them, so the comment above
+      // promised keys that did nothing; with no list open they return
+      // false and fall through to the line motions they usually are.
+      { key: "Ctrl-n", run: moveCompletionSelection(true) },
+      { key: "Ctrl-p", run: moveCompletionSelection(false) },
       ...completionKeymap,
       ...defaultKeymap,
       ...historyKeymap,

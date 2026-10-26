@@ -145,6 +145,8 @@ tonk-notation {
   --tonk-code-font: var(--wa-font-family-code, ui-monospace, monospace);
   --tonk-code-font-size: var(--wa-font-size-s, 0.875rem);
 }
+/* Long lines WRAP, indentation kept, rather than scrolling inside the
+   block: a result is read in place, between paragraphs. */
 tonk-notation .tonk-notation-pre {
   margin: 0;
   background: transparent;
@@ -152,8 +154,8 @@ tonk-notation .tonk-notation-pre {
   font-family: var(--tonk-code-font);
   font-size: var(--tonk-code-font-size);
   line-height: 1.5;
-  white-space: pre;
-  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 tonk-notation .tonk-cm-key { color: var(--tonk-code-key); }
 tonk-notation .tonk-cm-effect {
@@ -238,33 +240,103 @@ tonk-notation .tonk-cm-variable {
   color: var(--wa-color-text-normal, #e8eaed);
 }
 .nb-out__count { font-variant-numeric: tabular-nums; }
+/* Cards are as wide as what they hold, laid left to right and wrapping
+   onto the next row, the way Observable lays out outputs. A fixed grid
+   column squeezed every result into the same narrow tile: values ended in
+   ellipses, and a result drawn by its own view (a notebook) became a
+   sliver you had to scroll inside. A card never exceeds the row, so long
+   content wraps rather than overflowing. */
 .nb-out__gallery {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
-  gap: 0.375rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem;
   margin-top: 0.375rem;
 }
 .nb-card {
+  flex: 0 1 auto;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   border: 1px solid var(--wa-color-neutral-border-quiet, #3c4043);
   border-radius: var(--wa-border-radius-m, 0.375rem);
   padding: 0.375rem 0.5rem;
-  overflow: hidden;
 }
 .nb-card__title {
   font-family: var(--wa-font-family-code, ui-monospace, monospace);
   color: var(--wa-color-text-normal, #e8eaed);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  overflow-wrap: anywhere;
   margin-bottom: 0.125rem;
 }
 .nb-card__field {
   display: flex; gap: 0.375rem;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  align-items: baseline;
 }
-.nb-card__key { color: var(--wa-color-text-quiet, #9aa0a6); }
+.nb-card__key {
+  color: var(--wa-color-text-quiet, #9aa0a6);
+  flex: none;
+}
 .nb-card__value {
   color: var(--wa-color-text-normal, #e8eaed);
-  overflow: hidden; text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
+/* A result drawn by its own view is a framed card with a header bar
+   naming the entity, so among many results each one is plain to find:
+   the name in bold, then the id in the entity colour. */
+.nb-card--display {
+  padding: 0;
+  overflow: hidden;
+}
+.nb-card--display > .nb-card__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.3rem 0.625rem;
+  background: rgba(127, 127, 127, 0.1);
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border-bottom: 1px solid var(--wa-color-neutral-border-quiet, #3c4043);
+  font-family: var(--wa-font-family-body, inherit);
+  font-size: 0.8125rem;
+}
+.nb-card--display > tonk-display {
+  display: block;
+  padding: 0.5rem 0.625rem;
+}
+.nb-card--display tonk-prose {
+  --tonk-prose-padding: 0;
+}
+.nb-card__name {
+  font-weight: 600;
+  color: var(--wa-color-text-normal, #e8eaed);
+}
+.nb-card__entity {
+  font-family: var(--wa-font-family-code, ui-monospace, monospace);
+  color: var(--tonk-bauhaus-blue, #5a7fb8);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+/* A result with no view of its own is a `<tonk-notation>` block: the
+   notation that asserts it, highlighted like the editor. */
+.nb-card--notation {
+  padding: 0.375rem 0.625rem;
+}
+/* The folded rest of a long result: one line that opens it in place. */
+.nb-out__rest > summary {
+  cursor: pointer;
+  list-style: none;
+  margin-top: 0.375rem;
+  width: fit-content;
+}
+.nb-out__rest > summary::-webkit-details-marker { display: none; }
+.nb-out__rest > summary::before {
+  content: "\25B8\00A0";
+  display: inline-block;
+}
+.nb-out__rest[open] > summary::before { content: "\25BE\00A0"; }
 .nb-card__more, .nb-out__more {
   margin-top: 0.25rem;
   font-style: italic;
@@ -511,6 +583,15 @@ fn mount(
         let Some(prose) = document.create_element("tonk-prose").ok() else {
             return;
         };
+        // No frame and no focus ring. Prose draws a border that turns into
+        // a bright accent ring while focused, which around a whole page (or
+        // a notebook shown in a cell) is a neon outline, not a cue: the
+        // active-block band already shows where the caret is. Inline, so
+        // it beats prose's `:host(:focus-within)` rule.
+        let _ = prose.set_attribute(
+            "style",
+            "border: none; box-shadow: none; border-radius: 0; background: transparent;",
+        );
         // A DRAFT notebook's heading is a switcher: type a title and it
         // suggests the notebooks that match, opens the one you pick, or
         // creates the name you typed. A saved notebook's heading only
