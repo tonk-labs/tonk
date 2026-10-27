@@ -346,11 +346,27 @@ pub(crate) async fn persist_link(
 /// only tell a linked branch by this row: asserted while a link exists,
 /// retracted otherwise, and re-published whenever a state boots.
 pub(crate) async fn publish_link(state: &crate::worker::TonkState) {
-    use tonk_schema::{AccountLink, prelude::DidExt as _};
-
-    let Ok(this) = AccountLink::ENTITY.parse::<dialog_artifacts::Entity>() else {
+    let Some(branch) = write_link_row(state).await else {
         return;
     };
+    state.reactor.schedule_poll(branch);
+    state.reactor.run_scheduled_polls(&state.operator).await;
+}
+
+/// Assert or retract the link row, answering the branch it went on.
+///
+/// Writing the row bumps the branch's overlay epoch, so the poll that
+/// delivers it re-evaluates every subscription on the branch, and some
+/// await the network. [`publish_link`] runs that poll for the views open
+/// now; a caller about to replace the state leaves it.
+async fn write_link_row(
+    state: &crate::worker::TonkState,
+) -> Option<std::sync::Arc<dialog_reactor::BranchState>> {
+    use tonk_schema::{AccountLink, prelude::DidExt as _};
+
+    let this = AccountLink::ENTITY
+        .parse::<dialog_artifacts::Entity>()
+        .ok()?;
     let linked = account_link(state).await.map(|chain| chain.issuer().this());
     let main = match state
         .reactor
@@ -362,7 +378,7 @@ pub(crate) async fn publish_link(state: &crate::worker::TonkState) {
         Ok(main) => main,
         Err(error) => {
             log!("account link row: open the active branch: {error}");
-            return;
+            return None;
         }
     };
     match linked {
@@ -372,10 +388,7 @@ pub(crate) async fn publish_link(state: &crate::worker::TonkState) {
                 .retain_overlay_entities(|overlaid| overlaid != &this);
         }
     }
-    state
-        .reactor
-        .schedule_poll(std::sync::Arc::clone(&main.state));
-    state.reactor.run_scheduled_polls(&state.operator).await;
+    Some(main.state)
 }
 
 /// Attach provider services and finish bounded backup/restore before reporting
@@ -477,8 +490,13 @@ pub(crate) async fn disconnect(
     // same passkey still short-circuits in place.
     timing.next("update-roster");
     super::profiles::upsert_active_entry(state, None).await;
-    timing.next("publish-link-row");
-    publish_link(state).await;
+    // The row is retracted without the poll that would deliver it: the
+    // caller swaps the state next, which drops this branch's subscribers
+    // and reloads the page, and the state that boots publishes its own
+    // row. On a real account that poll re-evaluated every subscription on
+    // the branch, and held a sign-out for half a minute.
+    timing.next("retract-link-row");
+    let _ = write_link_row(state).await;
     timing.next("read-status");
     status(state).await
 }
