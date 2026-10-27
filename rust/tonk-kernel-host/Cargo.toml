@@ -17,6 +17,8 @@ dialog-credentials.workspace = true
 # Each layer a space of Dialog DB, where Dialog DB keeps its location.
 dialog-effects.workspace = true
 dialog-storage.workspace = true
+# The chain a layer outside a kernel's stack is opened with.
+dialog-ucan-core.workspace = true
 dialog-varsig.workspace = true
 ipld-core = "0.4"
 serde_ipld_dagcbor = "0.6"
@@ -44,8 +46,6 @@ web-sys = { version = "0.3", features = ["console", "Window", "WorkerGlobalScope
 
 # The native tests run the Tonk kernel on Wasmtime's core engine.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-# The delegation a space signs to a kernel's session.
-dialog-ucan-core.workspace = true
 tonk-components = { workspace = true }
 # The wire form of a query, as the worker's own tests derive it.
 tonk-worker = { workspace = true, features = ["helpers"] }

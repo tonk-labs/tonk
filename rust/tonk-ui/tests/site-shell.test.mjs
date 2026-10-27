@@ -31,12 +31,13 @@ const settle = async () => { for (let i = 0; i < 20; i++) await turn(); };
 // - `active`: whether the origin's worker is running already, whoever it
 //   controls.
 // - `pin`: the release the space pins, as its worker wrote it down.
+// - `persona`: the persona the profile pins, as its shell wrote it down.
 // - `runs`: the release the worker in control was registered for.
 function boot(
   name,
   {
     address = "/", controlled = true, served = true, framed = "site", content = [], store = new Map(),
-    answers = {}, marked = false, active = false, pin = null, runs = null,
+    answers = {}, marked = false, active = false, pin = null, runs = null, persona = null,
   } = {},
 ) {
   const host = name === "profile" ? "profile.tonk.test" : "bspace.tonk.test";
@@ -60,6 +61,8 @@ function boot(
   }
   // What became of the worker's registration.
   const registration = { unregistered: false, unregister: async () => void (registration.unregistered = true) };
+  // What the shell keeps of what it boots: the persona a profile pins.
+  const booted = { record: persona ? { v: 2, kernel: persona } : null };
   const worker = {
     scriptURL: `${origin}/boot.js${runs ? `?pin=${encodeURIComponent(runs)}` : ""}`,
     postMessage(message, transfer) {
@@ -152,9 +155,14 @@ function boot(
     },
     caches: {
       open: async () => ({
-        match: async () => (pin ? new Response(JSON.stringify({ v: 1, pin })) : undefined),
+        match: async () =>
+          booted.record ? new Response(JSON.stringify(booted.record))
+          : pin ? new Response(JSON.stringify({ v: 1, pin }))
+          : undefined,
+        put: async (_key, response) => void (booted.record = await response.json()),
       }),
     },
+    Response,
     URL, encodeURIComponent,
     MessageChannel: Channel,
     setTimeout, clearTimeout, setInterval: () => 0, Promise, Number, Date, String,
@@ -171,7 +179,7 @@ function boot(
   };
   return {
     said, failed, toWorker, ran, requests, went, body, container, at, workerSays, moved, workerListeners,
-    registration,
+    registration, booted,
   };
 }
 
@@ -478,8 +486,24 @@ for (const [what, options] of [
   });
 }
 
-test("a profile runs the release its deployment was built with, whatever is written down", async () => {
-  const site = boot("profile", { controlled: false, served: false, pin: PIN });
+test("a profile that pins no persona runs the one its deployment ships, and pins it", async () => {
+  const site = boot("profile", {
+    controlled: false,
+    served: false,
+    answers: { "/_host/kernel.json": { kernel: "bafkr4ikernel", persona: "bafkr4ipersona" } },
+  });
   await settle();
-  assert.equal(site.container.registered[0][0], "/boot.js");
+  assert.equal(site.container.registered[0][0], "/kernel_boot.js?kernel=bafkr4ipersona");
+  assert.deepEqual(site.booted.record, { v: 2, kernel: "bafkr4ipersona" });
+});
+
+test("a profile runs the persona it pins, whatever its deployment ships", async () => {
+  const site = boot("profile", {
+    controlled: false,
+    served: false,
+    persona: "bafkr4ipinned",
+    answers: { "/_host/kernel.json": { kernel: "bafkr4ikernel", persona: "bafkr4inewer" } },
+  });
+  await settle();
+  assert.equal(site.container.registered[0][0], "/kernel_boot.js?kernel=bafkr4ipinned");
 });

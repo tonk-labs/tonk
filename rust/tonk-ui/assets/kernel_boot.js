@@ -22,7 +22,7 @@
 //
 // On the profile's origin (`profile.{host}`) the space is the person's
 // profile: the session's own, so it needs no one's delegation, and its
-// kernel is the deployment's. There this worker answers every page load
+// kernel is the persona it pins. There this worker answers every page load
 // with the profile's shell, and serves the ports a space's host asks the
 // profile over.
 //   From then on the kernel comes from the space's store, not from anywhere
@@ -224,11 +224,11 @@ async function start() {
     let space = PROFILE ? session.did : await wasm_bindgen.heldSpace();
     let proofs = [];
     if (!space) ({ space, proofs } = await delegateSession(session));
-    // A space with no kernel of its own yet is one being created: install the
-    // one its worker was registered for. The profile runs the deployment's,
-    // and takes up a new one as the deployment does.
+    // A space with no kernel of its own yet is one being created, and a
+    // profile with none a new one: install the one its worker was registered
+    // for.
     let pinned = await wasm_bindgen.pinned(space);
-    if (!pinned || (PROFILE && pinned !== PINNED)) {
+    if (!pinned) {
         const kernel = PROFILE ? await deployedKernel(PINNED) : await shippedKernel(PINNED);
         pinned = await wasm_bindgen.install(space, kernel);
         log("installed the kernel", pinned);

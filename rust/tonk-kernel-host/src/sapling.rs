@@ -109,9 +109,19 @@ impl<T: 'static> storage::HostWithStore<T> for Sapling {
     async fn open(
         accessor: &Accessor<T, Self>,
         subject: String,
-        _chain: Vec<u8>,
+        chain: Vec<u8>,
     ) -> Result<Resource<Layer>, Error> {
         trace("open");
+        let session = accessor
+            .with(|mut access| {
+                access
+                    .get()
+                    .sessions
+                    .first()
+                    .map(|standing| standing.credential.did())
+            })
+            .ok_or_else(|| Error::Denied("this worker has no session".into()))?;
+        crate::chain::check(&chain, &subject, &session).await?;
         Ok(accessor.with(|mut access| access.get().layer(&subject)))
     }
 }

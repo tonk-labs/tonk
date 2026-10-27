@@ -2,6 +2,7 @@
 //! natively on Wasmtime's core engine and in a browser on its own.
 
 pub mod boot;
+pub mod chain;
 pub mod credentials;
 #[cfg(target_arch = "wasm32")]
 pub mod embedder;

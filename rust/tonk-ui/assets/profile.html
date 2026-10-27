@@ -159,17 +159,32 @@
                 // is: it asks for a port of its own (`need-port`), and nothing
                 // here loads again.
                 // The worker the profile runs: the bootloader of the persona
-                // this deployment ships, or `null` where that cannot be told
-                // now (offline), which leaves the worker as it is.
+                // the profile pins, or, for a profile that pins none yet, of
+                // the one this deployment ships, which it pins from then on.
+                // A newer persona is taken up only when the person chooses.
+                // `null` where neither can be told now (offline), which leaves
+                // the worker as it is.
+                var BOOT_CACHE = "tonk-boot";
+                var BOOT_KEY = "/__boot";
                 async function shipped() {
+                    var id = null;
                     try {
-                        var answer = await fetch("/_host/kernel.json", { cache: "no-cache" });
-                        if (!answer.ok) return null;
-                        var id = (await answer.json()).persona;
-                        return typeof id === "string" ? "/kernel_boot.js?kernel=" + encodeURIComponent(id) : null;
-                    } catch (error) {
-                        return null;
+                        var held = await (await caches.open(BOOT_CACHE)).match(BOOT_KEY);
+                        var record = held ? await held.json() : null;
+                        if (record && record.v === 2 && typeof record.kernel === "string") id = record.kernel;
+                    } catch (error) {}
+                    if (!id) {
+                        try {
+                            var answer = await fetch("/_host/kernel.json", { cache: "no-cache" });
+                            var persona = answer.ok ? (await answer.json()).persona : null;
+                            if (typeof persona !== "string") return null;
+                            await (await caches.open(BOOT_CACHE)).put(BOOT_KEY, Response.json({ v: 2, kernel: persona }));
+                            id = persona;
+                        } catch (error) {
+                            return null;
+                        }
                     }
+                    return "/kernel_boot.js?kernel=" + encodeURIComponent(id);
                 }
 
                 function runs(worker) {
@@ -200,7 +215,8 @@
                             resolve();
                         });
                     });
-                    await container.register(script || "/boot.js", {
+                    if (!script) throw new Error("the profile pins no persona, and this deployment names none");
+                    await container.register(script, {
                         scope: "/",
                         updateViaCache: "none",
                     });
