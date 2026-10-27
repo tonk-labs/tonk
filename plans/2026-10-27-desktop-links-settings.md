@@ -26,4 +26,11 @@ Checks on 27 October 2026:
 - Visually checked light mode at 800×600 and the compact 700-pixel width (existing window minimum prevents 500-pixel height), plus the final build in dark mode at compact width. Final passkey copy removal is visible in the final native accessibility tree.
 - `git diff --check`: passed.
 
-Limits: fixtures use invented accounts and unavailable link secrets; no live grant mutation, passkey ceremony, provider login, or remote change was performed. No full VoiceOver or Reduce Transparency/Motion walkthrough. The separate sharing-flow redesign is not included. Changes remain uncommitted in the attached managed worktree; the original dirty checkout is untouched.
+Limits: fixtures use invented accounts and unavailable link secrets; no live grant mutation, passkey ceremony, provider login, or remote change was performed. No full VoiceOver or Reduce Transparency/Motion walkthrough. The separate sharing-flow redesign is not included. Changes were committed on `codex/desktop-links-settings`; the original dirty checkout is untouched.
+
+
+## Space-management integration
+
+PR #1192 merged as `55b155cb99` after 47 passing checks and 3 intentional skips. Its review finding about a lost Create response was fixed with original-receipt recovery and two regression tests before merging.
+
+The links/Settings commit was rebased onto that merge. The resulting desktop and MCP source trees match the combined candidate verified locally: 220 tests reported, 4 opt-in tests skipped, 0 failures. The combined native fixture showed New Space, the Rename context action and naming sheet, and all three Settings tabs. Rename was cancelled without changing data. Live space mutations were not exercised.
