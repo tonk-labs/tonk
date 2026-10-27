@@ -436,7 +436,7 @@ final class AccessModel: ObservableObject {
         let reason = '';
         try {
           const message = (await response.json())?.error?.message;
-          if (typeof message === 'string' && message) reason = ': ' + message.slice(0, 300);
+          if (typeof message === 'string' && message) reason = ': ' + message.slice(0, 2000);
         } catch {}
         throw new Error('evaluate failed (HTTP ' + response.status + ')' + reason);
       }
