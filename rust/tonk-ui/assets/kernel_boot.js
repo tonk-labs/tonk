@@ -9,11 +9,14 @@
 //
 // What this worker does:
 //
-// - Keeps the space's store: each record the embedder writes, in IndexedDB.
-// - Keeps the key of the space's session, which the person's profile hands
-//   it over the port a page of this origin hands it, with the delegation of
-//   the space to the key, which says which space this origin is. The kernel
-//   acts as that session, claims what it needs delegated, and keeps it.
+// - Boots the kernel over the space where Dialog DB keeps it, as the
+//   embedder opens each layer: its IndexedDB database, with its blobs in the
+//   origin's file system.
+// - Opens the key of this origin's session from Dialog DB's credential
+//   store, where nothing reads its seed, and asks the person's profile, over
+//   the port a page of this origin hands it, to delegate the space to it,
+//   which says which space this origin is. The kernel acts as that session,
+//   claims what it needs delegated, and keeps it.
 // - Installs into a space that holds no kernel the one it was made for, which
 //   the person's profile hands it, as the space's own blob and boot cell.
 //
@@ -49,19 +52,9 @@ const HOST_PREFIXES = ["/_host/", "/.well-known/"];
 
 const log = (...args) => console.log(PROFILE ? "[Profile Kernel]" : "[Space Kernel]", ...args);
 
-// What the kernel wrote since the last time, kept in the order it wrote it.
-// An answer goes out once what its request wrote is kept, so a worker stopped
-// right after answering loses nothing it answered for.
-let keeping = Promise.resolve();
-function keepWrites(embedder) {
-    const written = keeping.then(() => embedder.drain()).then(keep);
-    keeping = written.catch(error => log("what the kernel wrote was not kept:", error));
-    return written;
-}
-
-// The body of an answer of the kernel, as it writes it, ending once what it
-// wrote along the way is kept. The worker stays up until it ends.
-function bodyOf(embedder, reply, event) {
+// The body of an answer of the kernel, as it writes it. The worker stays up
+// until it ends.
+function bodyOf(reply, event) {
     let ended;
     event.waitUntil(new Promise(resolve => (ended = resolve)));
     return new ReadableStream({
@@ -69,7 +62,6 @@ function bodyOf(embedder, reply, event) {
             try {
                 const piece = await reply.body.next();
                 if (piece) return controller.enqueue(piece);
-                await keepWrites(embedder);
                 controller.close();
             } catch (error) {
                 controller.error(error);
@@ -78,54 +70,15 @@ function bodyOf(embedder, reply, event) {
         },
         cancel() {
             reply.body.cancel();
-            keepWrites(embedder).finally(ended);
+            ended();
         },
     });
 }
 
-// ---- The space's store --------------------------------------------------
-//
-// Each record the embedder drains, under a key naming what it writes, so a
-// later write replaces it. `keys` keeps the keys of this origin's session,
-// as the embedder exports them: keys nothing reads the seed of.
-
-const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
-const keyOf = record =>
-    record.kind === "block" ? `block|${record.subject}|${record.catalog}|${hex(record.key)}`
-    : record.kind === "blob" ? `blob|${record.subject}|${hex(record.key)}`
-    : `cell|${record.subject}|${record.namespace}|${record.cell}`;
-
-const database = new Promise((resolve, reject) => {
-    const request = indexedDB.open("space-kernel", 2);
-    request.onupgradeneeded = () => {
-        const db = request.result;
-        if (!db.objectStoreNames.contains("records")) db.createObjectStore("records");
-        if (db.objectStoreNames.contains("meta")) db.deleteObjectStore("meta");
-        db.createObjectStore("keys");
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-});
-
-async function transact(store, mode, act) {
-    const db = await database;
-    return new Promise((resolve, reject) => {
-        const transaction = db.transaction(store, mode);
-        const result = act(transaction.objectStore(store));
-        transaction.oncomplete = () => resolve(result?.result);
-        transaction.onerror = () => reject(transaction.error);
-    });
-}
-
-const kept = () => transact("records", "readonly", store => store.getAll());
-async function keep(records) {
-    if (!records.length) return;
-    await transact("records", "readwrite", store => {
-        for (const record of records) store.put(record, keyOf(record));
-    });
-}
-const keptKey = name => transact("keys", "readonly", store => store.get(name));
-const keepKey = (name, key) => transact("keys", "readwrite", store => store.put(key, name));
+// The name the key of this origin's session is kept under in Dialog DB's
+// credential store: the one a profile's worker before the kernel kept the
+// profile's key under, so the profile goes on as who it was.
+const SESSION = "tonk";
 
 // ---- The port up --------------------------------------------------------
 //
@@ -194,15 +147,10 @@ async function askHost(request) {
 // ---- The space ----------------------------------------------------------
 
 // The delegation of the space to this origin's session, from the person's
-// profile, for a key made and kept here, which nothing reads the seed of. It
-// says which space this origin is: the label of an origin does not. Asked
-// once: the kernel keeps what it is delegated.
+// profile. It says which space this origin is: the label of an origin does
+// not. Asked once: the kernel keeps what it is delegated.
 async function delegateSession(session) {
-    if (!session) {
-        session = await wasm_bindgen.generateSession();
-        await keepKey("session", session);
-    }
-    const answer = await askHost({ delegate: await wasm_bindgen.keyDid(session) });
+    const answer = await askHost({ delegate: session.did });
     // A space that runs a kernel starts blank: nothing of what the profile
     // would seed it with is taken. Saying it holds the space lets the
     // profile stop waiting for it to.
@@ -218,21 +166,10 @@ function claims(session, handed) {
     return async claim => {
         if (handed.length) return handed.splice(0);
         log("the kernel claims", claim.command, "for", claim.reason);
-        const answer = await askHost({ delegate: await wasm_bindgen.keyDid(session) });
+        const answer = await askHost({ delegate: session.did });
         log("delegated", answer.space, "until", new Date(answer.expires * 1000).toISOString());
         return [new Uint8Array(answer.chain)];
     };
-}
-
-// The key of the profile's session, made here the first time, and the
-// profile's space, which is the session's own: the profile acts under its
-// own authority, so it claims nothing.
-async function profileSession(session) {
-    if (!session) {
-        session = await wasm_bindgen.generateSession();
-        await keepKey("session", session);
-    }
-    return { space: await wasm_bindgen.keyDid(session), session };
 }
 
 // The host's files this origin serves, from the network while it answers,
@@ -277,27 +214,27 @@ async function start() {
     const started = performance.now();
     if (!PINNED) throw new Error("this worker pins no kernel");
     await wasm_bindgen({ module_or_path: await hostFile(new Request(new URL("/_host/embedder_bg.wasm", self.location.href))) });
-    let records = await kept();
-    let session = await keptKey("session");
-    let space = session && wasm_bindgen.heldSpace(records);
+    const session = await wasm_bindgen.openSession(SESSION);
+    // The profile's space is its session's own: the profile acts under its
+    // own authority, so it claims nothing.
+    let space = PROFILE ? session.did : await wasm_bindgen.heldSpace();
     let proofs = [];
-    if (PROFILE) ({ space, session } = await profileSession(session));
-    else if (!space) ({ space, session, proofs } = await delegateSession(session));
+    if (!space) {
+        ({ space, proofs } = await delegateSession(session));
+        await wasm_bindgen.holdSpace(space);
+    }
     // A space with no kernel of its own yet is one being created: install the
     // one its worker was registered for. The profile runs the deployment's,
     // and takes up a new one as the deployment does.
-    const held = wasm_bindgen.pinned(space, records);
-    if (!held || (PROFILE && held !== PINNED)) {
+    let pinned = await wasm_bindgen.pinned(space);
+    if (!pinned || (PROFILE && pinned !== PINNED)) {
         const kernel = PROFILE ? await deployedKernel(PINNED) : await shippedKernel(PINNED);
-        await keep(wasm_bindgen.install(space, kernel));
-        records = await kept();
-        log("installed the kernel", PINNED);
+        pinned = await wasm_bindgen.install(space, kernel);
+        log("installed the kernel", pinned);
     }
-    const pinned = wasm_bindgen.pinned(space, records);
     if (pinned !== PINNED) throw new Error(`the space pins ${pinned}, not ${PINNED}`);
     const answer = PROFILE ? async () => [] : claims(session, proofs);
-    const embedder = await wasm_bindgen.boot(space, session, answer, records);
-    await keep(await embedder.drain());
+    const embedder = await wasm_bindgen.boot(space, session, answer);
     log("booted in", Math.round(performance.now() - started), "ms", embedder.timings);
     return embedder;
 }
@@ -419,9 +356,8 @@ async function serveKernel(event) {
     const url = new URL(event.request.url);
     const body = new Uint8Array(await event.request.arrayBuffer());
     const reply = await embedder.handle(event.request.method, url.pathname + url.search, [...event.request.headers], body);
-    await keepWrites(embedder);
     const bodiless = reply.status === 204 || reply.status === 304 || event.request.method === "HEAD";
-    const response = new Response(bodiless ? null : bodyOf(embedder, reply, event), {
+    const response = new Response(bodiless ? null : bodyOf(reply, event), {
         status: reply.status,
         headers: reply.headers,
     });
@@ -437,17 +373,15 @@ async function answerCall(port, { call, request }) {
         const embedder = await booting;
         const body = new Uint8Array(await new Response(request.body ?? null).arrayBuffer());
         const reply = await embedder.handle(request.method, request.path, request.headers ?? [], body);
-        await keepWrites(embedder);
         calls.set(call, reply.body);
         port.postMessage({ call, head: { status: reply.status, headers: reply.headers } });
         for (;;) {
             const piece = await reply.body.next();
             if (!piece) break;
-            if (!calls.has(call)) return await keepWrites(embedder);
+            if (!calls.has(call)) return;
             const chunk = piece.buffer.slice(piece.byteOffset, piece.byteOffset + piece.byteLength);
             port.postMessage({ call, chunk }, [chunk]);
         }
-        await keepWrites(embedder);
         port.postMessage({ call, end: true });
     } catch (error) {
         restartIfStopped(error);
@@ -532,7 +466,6 @@ async function askKernel(method, path, json) {
     const reply = await embedder.handle(method, path, [["content-type", "application/json"]], body);
     const pieces = [];
     for (let piece; (piece = await reply.body.next()); ) pieces.push(piece);
-    await keepWrites(embedder);
     const text = new TextDecoder().decode(await new Blob(pieces).arrayBuffer());
     if (reply.status !== 200) throw new Error(`${method} ${path}: ${reply.status} ${text}`);
     return JSON.parse(text);

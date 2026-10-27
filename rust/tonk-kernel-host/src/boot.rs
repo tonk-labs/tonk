@@ -6,138 +6,160 @@
 //! the kernel's wasm (CIDv1, raw codec, BLAKE3, base32). The wasm is the
 //! space's blob under that BLAKE3 hash. A space that holds both runs that
 //! kernel, and needs nothing from anywhere else to start it.
+//!
+//! Which space an origin's host serves is a cell of the origin's own:
+//! `boot/subject`, in the layer [`ORIGIN`] names.
 
 pub use tonk_kernel_world::boot::{CELL, NAMESPACE, kernel_id};
 use tonk_kernel_world::boot::{cell_content, digest, read_cell};
+use tonk_kernel_world::naming::layer_name;
 
-use crate::bindings::sapling::kernel::storage::Edition;
-use crate::sapling::Change;
+use dialog_effects::storage::{Directory, Location};
 
-/// The writes that install `kernel` into the space `subject`: the kernel as
-/// a blob, and the boot cell pinning it. Answers the kernel's id with them.
-pub fn install(subject: &str, kernel: &[u8]) -> (String, Vec<Change>) {
-    let id = kernel_id(kernel);
-    let content = cell_content(&id);
-    let version = blake3::hash(&content).as_bytes().to_vec();
-    let changes = vec![
-        Change::Blob {
-            subject: subject.to_owned(),
-            key: blake3::hash(kernel).as_bytes().to_vec(),
-            bytes: kernel.to_vec(),
-        },
-        Change::Cell {
-            subject: subject.to_owned(),
-            namespace: NAMESPACE.to_owned(),
-            cell: CELL.to_owned(),
-            edition: Some(Edition { content, version }),
-        },
-    ];
-    (id, changes)
+use crate::layers::{self, LayerSpace, Layers};
+
+/// Where an origin's host keeps which space it serves.
+pub const ORIGIN: &str = "tonk.origin";
+
+/// The cell of [`ORIGIN`] that holds the subject of the space it serves.
+const SUBJECT: &str = "subject";
+
+fn failed(error: impl core::fmt::Debug) -> String {
+    format!("{error:?}")
 }
 
-/// The space whose boot cell the store holds, among what it holds: the space
-/// a host that kept them serves.
-pub fn held(held: &[Change]) -> Option<String> {
-    held.iter().find_map(|change| match change {
-        Change::Cell {
-            subject,
-            namespace,
-            cell,
-            edition: Some(_),
-        } if namespace == NAMESPACE && cell == CELL => Some(subject.clone()),
-        _ => None,
-    })
+async fn origin(layers: &Layers) -> Result<LayerSpace, String> {
+    layers
+        .open(&layer_name(&Location::new(Directory::Profile, ORIGIN)))
+        .await
+        .map_err(failed)
+}
+
+/// Install `kernel` into the space `subject`: the kernel as a blob of the
+/// space, and the boot cell pinning it. Answers the kernel's id.
+pub async fn install(layers: &Layers, subject: &str, kernel: &[u8]) -> Result<String, String> {
+    let space = layers.open(subject).await.map_err(failed)?;
+    let id = kernel_id(kernel);
+    layers::write(&space, kernel).await.map_err(failed)?;
+    let current = layers::resolve(&space, NAMESPACE, CELL)
+        .await
+        .map_err(failed)?;
+    layers::publish(
+        &space,
+        NAMESPACE,
+        CELL,
+        cell_content(&id),
+        current.map(|edition| edition.version),
+    )
+    .await
+    .map_err(failed)?;
+    Ok(id)
 }
 
 /// The kernel the space `subject` pins, as its id and its bytes, from what
-/// the space's store holds. `None` when the space pins none. An error when it
-/// pins one it does not hold, or holds bytes that are not the ones pinned.
-pub fn pinned(subject: &str, held: &[Change]) -> Result<Option<(String, Vec<u8>)>, String> {
-    let mut boot = None;
-    for change in held {
-        if let Change::Cell {
-            subject: of,
-            namespace,
-            cell,
-            edition,
-        } = change
-            && of == subject
-            && namespace == NAMESPACE
-            && cell == CELL
-        {
-            boot = edition.as_ref();
-        }
-    }
-    let Some(boot) = boot else {
+/// the space holds. `None` when the space pins none. An error when it pins
+/// one it does not hold, or holds bytes that are not the ones pinned.
+pub async fn pinned(layers: &Layers, subject: &str) -> Result<Option<(String, Vec<u8>)>, String> {
+    let space = layers.open(subject).await.map_err(failed)?;
+    let Some(boot) = layers::resolve(&space, NAMESPACE, CELL)
+        .await
+        .map_err(failed)?
+    else {
         return Ok(None);
     };
     let id = read_cell(&boot.content)?;
     let digest = digest(&id)?;
-    let kernel = held
-        .iter()
-        .rev()
-        .find_map(|change| match change {
-            Change::Blob {
-                subject: of,
-                key,
-                bytes,
-            } if of == subject && key.as_slice() == digest => Some(bytes),
-            _ => None,
-        })
-        .ok_or_else(|| format!("the space pins the kernel {id} and does not hold it"))?;
-    if blake3::hash(kernel).as_bytes() != &digest {
+    let kernel = match layers::read(&space, &digest, 0, None).await {
+        Ok(kernel) => kernel,
+        Err(_) => {
+            return Err(format!(
+                "the space pins the kernel {id} and does not hold it"
+            ));
+        }
+    };
+    if blake3::hash(&kernel).as_bytes() != &digest {
         return Err(format!("the space holds other bytes than the kernel {id}"));
     }
-    Ok(Some((id, kernel.clone())))
+    Ok(Some((id, kernel)))
 }
 
-#[cfg(test)]
+/// Say that this origin's host serves the space `subject`.
+pub async fn hold(layers: &Layers, subject: &str) -> Result<(), String> {
+    let origin = origin(layers).await?;
+    let current = layers::resolve(&origin, NAMESPACE, SUBJECT)
+        .await
+        .map_err(failed)?;
+    layers::publish(
+        &origin,
+        NAMESPACE,
+        SUBJECT,
+        subject.as_bytes().to_vec(),
+        current.map(|edition| edition.version),
+    )
+    .await
+    .map_err(failed)?;
+    Ok(())
+}
+
+/// The space this origin's host serves, if it serves one yet.
+pub async fn held(layers: &Layers) -> Result<Option<String>, String> {
+    let origin = origin(layers).await?;
+    let edition = layers::resolve(&origin, NAMESPACE, SUBJECT)
+        .await
+        .map_err(failed)?;
+    edition
+        .map(|edition| String::from_utf8(edition.content).map_err(failed))
+        .transpose()
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
     const SPACE: &str = "did:key:z6MkSpace";
 
-    #[test]
-    fn it_boots_the_kernel_it_installed() {
-        let (id, changes) = install(SPACE, b"kernel");
+    fn scratch(name: &str) -> Layers {
+        let path = std::env::temp_dir().join(format!(
+            "tonk-kernel-host-boot-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        Layers::under(path.to_string_lossy().into_owned())
+    }
+
+    #[tokio::test]
+    async fn it_boots_the_kernel_it_installed() {
+        let layers = scratch("installed");
+        let id = install(&layers, SPACE, b"kernel").await.unwrap();
         assert_eq!(
-            pinned(SPACE, &changes).unwrap(),
+            pinned(&layers, SPACE).await.unwrap(),
             Some((id, b"kernel".to_vec()))
         );
     }
 
-    #[test]
-    fn it_pins_nothing_for_a_space_with_no_boot_cell() {
-        let (_, changes) = install(SPACE, b"kernel");
-        assert_eq!(pinned("did:key:z6MkOther", &changes).unwrap(), None);
+    #[tokio::test]
+    async fn it_pins_nothing_for_a_space_with_no_boot_cell() {
+        let layers = scratch("none");
+        install(&layers, SPACE, b"kernel").await.unwrap();
+        assert_eq!(pinned(&layers, "did:key:z6MkOther").await.unwrap(), None);
     }
 
-    #[test]
-    fn it_refuses_a_pin_whose_kernel_the_space_does_not_hold() {
-        let (_, changes) = install(SPACE, b"kernel");
-        let error = pinned(SPACE, &changes[1..]).unwrap_err();
-        assert!(error.contains("does not hold it"), "{error}");
+    #[tokio::test]
+    async fn it_takes_up_another_kernel_in_place_of_the_one_it_pinned() {
+        let layers = scratch("replaced");
+        install(&layers, SPACE, b"kernel").await.unwrap();
+        let id = install(&layers, SPACE, b"another").await.unwrap();
+        assert_eq!(
+            pinned(&layers, SPACE).await.unwrap(),
+            Some((id, b"another".to_vec()))
+        );
     }
 
-    #[test]
-    fn it_finds_the_space_whose_kernel_it_holds() {
-        let (_, changes) = install(SPACE, b"kernel");
-        assert_eq!(held(&changes), Some(SPACE.to_owned()));
-        assert_eq!(held(&changes[..1]), None, "a blob alone pins nothing");
-    }
-
-    #[test]
-    fn it_writes_the_same_boot_cell_for_the_same_kernel() {
-        let (_, first) = install(SPACE, b"kernel");
-        let (_, second) = install(SPACE, b"kernel");
-        let content = |changes: &[Change]| match &changes[1] {
-            Change::Cell {
-                edition: Some(edition),
-                ..
-            } => edition.content.clone(),
-            other => panic!("not the boot cell: {other:?}"),
-        };
-        assert_eq!(content(&first), content(&second));
-        assert_eq!(content(&first)[..4], [0xa2, 0x61, b'v', 0x02]);
+    #[tokio::test]
+    async fn it_remembers_the_space_its_origin_serves() {
+        let layers = scratch("held");
+        assert_eq!(held(&layers).await.unwrap(), None);
+        hold(&layers, SPACE).await.unwrap();
+        assert_eq!(held(&layers).await.unwrap(), Some(SPACE.to_owned()));
     }
 }

@@ -5,11 +5,20 @@
 use futures::StreamExt as _;
 use tonk_kernel_host::credentials::Standing;
 use tonk_kernel_host::kernel::Kernel;
-use tonk_kernel_host::sapling::{Change, did_key};
+use tonk_kernel_host::layers::{self, Layers};
+use tonk_kernel_host::sapling::did_key;
 use wcmp::Engine;
 
 fn engine() -> Engine {
     Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap()
+}
+
+/// Layers of a test's own, empty, in a directory named for `test`: a kernel
+/// that starts again over them finds what the one before kept.
+fn scratch(test: &str) -> Layers {
+    let path = std::env::temp_dir().join(format!("tonk-kernel-{test}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    Layers::under(path.to_string_lossy().into_owned())
 }
 
 fn space() -> String {
@@ -22,13 +31,13 @@ fn standing() -> Standing {
     Standing::new([7; 32], Vec::new())
 }
 
-/// Boot a kernel over what an earlier one kept, and answer who it is.
-async fn identify(engine: &Engine, bytes: &[u8], kept: Vec<Change>) -> (String, Vec<Change>) {
-    let mut kernel = Kernel::load_restoring(engine, bytes, kept).await.unwrap();
+/// Boot a kernel over the layers in `layers`, and answer who it is.
+async fn identify(engine: &Engine, bytes: &[u8], layers: &Layers) -> String {
+    let mut kernel = Kernel::load(engine, bytes, layers.clone()).await.unwrap();
     kernel.init(&space(), standing()).await.unwrap();
     let answer = kernel.request("GET", "/api/identify", b"").await.unwrap();
     assert_eq!(answer.status, 200, "{}", answer.text());
-    (answer.text(), kernel.drain())
+    answer.text()
 }
 
 /// The kernel instantiates against the world alone, boots Tonk's worker, and
@@ -37,7 +46,9 @@ async fn identify(engine: &Engine, bytes: &[u8], kept: Vec<Change>) -> (String, 
 async fn it_answers_with_tonk_s_worker() {
     let engine = engine();
     let bytes = tonk_components::TONK_KERNEL_BYTES;
-    let mut kernel = Kernel::load(&engine, bytes).await.unwrap();
+    let mut kernel = Kernel::load(&engine, bytes, scratch("answers"))
+        .await
+        .unwrap();
     kernel.init(&space(), standing()).await.unwrap();
 
     for path in ["/api/identify", "/api/profile"] {
@@ -56,17 +67,16 @@ async fn it_keeps_its_keys_as_custodies() {
     let engine = engine();
     let bytes = tonk_components::TONK_KERNEL_BYTES;
 
-    let (first, kept) = identify(&engine, bytes, Vec::new()).await;
-    let custodies = kept
-        .iter()
-        .filter(|change| matches!(change, Change::Cell { namespace, edition: Some(_), .. } if namespace == "custody"))
-        .count();
-    assert!(
-        custodies >= 1,
-        "the kernel keeps each key's custody: {kept:?}"
-    );
+    let kept = scratch("custodies");
+    let first = identify(&engine, bytes, &kept).await;
+    let credentials = kept
+        .open("did:local:profile:dialog.credential")
+        .await
+        .unwrap();
+    let custodies = layers::list(&credentials, "custody").await.unwrap();
+    assert!(!custodies.is_empty(), "the kernel keeps each key's custody");
 
-    let (again, _) = identify(&engine, bytes, kept).await;
+    let again = identify(&engine, bytes, &kept).await;
     assert_eq!(
         first, again,
         "a kernel that starts again is the same profile"
@@ -80,7 +90,9 @@ async fn it_keeps_its_keys_as_custodies() {
 async fn it_answers_while_a_subscription_is_open() {
     let engine = engine();
     let bytes = tonk_components::TONK_KERNEL_BYTES;
-    let mut kernel = Kernel::load(&engine, bytes).await.unwrap();
+    let mut kernel = Kernel::load(&engine, bytes, scratch("subscription"))
+        .await
+        .unwrap();
     kernel.init(&space(), standing()).await.unwrap();
     let (served, driver) = kernel.serve();
 
@@ -124,7 +136,12 @@ async fn it_answers_while_a_subscription_is_open() {
 #[tokio::test(flavor = "current_thread")]
 async fn it_acts_as_its_session() {
     let engine = engine();
-    let (said, _) = identify(&engine, tonk_components::TONK_KERNEL_BYTES, Vec::new()).await;
+    let said = identify(
+        &engine,
+        tonk_components::TONK_KERNEL_BYTES,
+        &scratch("session"),
+    )
+    .await;
     let session = did_key(&ed25519_dalek::SigningKey::from_bytes(&[7; 32]));
     assert!(said.contains(&session), "{said} names {session}");
 }
@@ -136,9 +153,13 @@ async fn it_acts_as_its_session() {
 async fn it_is_a_person_s_profile_on_its_session_s_own_space() {
     let engine = engine();
     let session = did_key(&ed25519_dalek::SigningKey::from_bytes(&[7; 32]));
-    let mut kernel = Kernel::load(&engine, tonk_components::TONK_KERNEL_BYTES)
-        .await
-        .unwrap();
+    let mut kernel = Kernel::load(
+        &engine,
+        tonk_components::TONK_KERNEL_BYTES,
+        scratch("profile"),
+    )
+    .await
+    .unwrap();
     kernel.init(&session, standing()).await.unwrap();
     for path in ["/api/identify", "/api/profiles", "/api/profile"] {
         let answer = kernel.request("GET", path, b"").await.unwrap();
@@ -165,6 +186,25 @@ async fn it_is_a_person_s_profile_on_its_session_s_own_space() {
         .unwrap();
     assert_eq!(answer.status, 200, "{}", answer.text());
     println!("transact -> {}", answer.text());
+
+    let listed = kernel.request("GET", "/api/profile", b"").await.unwrap();
+    println!("profile -> {}", listed.text());
+    let listed: serde_json::Value = serde_json::from_str(&listed.text()).unwrap();
+    let space = listed["space"][0]["subject"].as_str().map(str::to_owned);
+    println!("space -> {space:?}");
+    if let Some(space) = space {
+        let visit = serde_json::json!({ "claims": [{ "op": "assert", "application": {
+            "predicate": { "kind": "transient", "concept": { "with": {
+                "url": { "the": "xyz.tonk.command.join/url", "as": "Text" }
+            } } },
+            "parameters": { "this": "cmd:join", "url": format!("http://localhost:8080/space/{space}") }
+        } }] });
+        let answer = kernel
+            .request("POST", &path, visit.to_string().as_bytes())
+            .await
+            .unwrap();
+        println!("visit -> {} {}", answer.status, answer.text());
+    }
 }
 
 /// The delegation of the space to the session's key, signed by the space,
@@ -211,7 +251,8 @@ async fn it_takes_up_its_space_from_its_session() {
     let engine = engine();
     let bytes = tonk_components::TONK_KERNEL_BYTES;
 
-    let mut kernel = Kernel::load(&engine, bytes).await.unwrap();
+    let kept = scratch("take-up");
+    let mut kernel = Kernel::load(&engine, bytes, kept.clone()).await.unwrap();
     kernel
         .init(
             &space(),
@@ -226,9 +267,8 @@ async fn it_takes_up_its_space_from_its_session() {
         "the kernel holds its space: {}",
         answer.text()
     );
-    let kept = kernel.drain();
 
-    let mut again = Kernel::load_restoring(&engine, bytes, kept).await.unwrap();
+    let mut again = Kernel::load(&engine, bytes, kept).await.unwrap();
     again.init(&space(), standing()).await.unwrap();
     let answer = holds(&mut again).await;
     assert_eq!(
@@ -243,9 +283,13 @@ async fn it_takes_up_its_space_from_its_session() {
 #[tokio::test(flavor = "current_thread")]
 async fn it_holds_no_space_it_was_not_delegated() {
     let engine = engine();
-    let mut kernel = Kernel::load(&engine, tonk_components::TONK_KERNEL_BYTES)
-        .await
-        .unwrap();
+    let mut kernel = Kernel::load(
+        &engine,
+        tonk_components::TONK_KERNEL_BYTES,
+        scratch("not-delegated"),
+    )
+    .await
+    .unwrap();
     kernel.init(&space(), standing()).await.unwrap();
     assert_ne!(holds(&mut kernel).await.status, 200);
 }

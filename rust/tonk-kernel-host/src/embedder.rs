@@ -1,13 +1,17 @@
 //! The embedder a space's service worker drives. A space holds its own
 //! kernel (see [`crate::boot`]): the bootloader installs one into a space
-//! that holds none, boots the one a space pins from what the space's store
-//! keeps, and hands it each request of the space's origin.
+//! that holds none, boots the one a space pins, and hands it each request of
+//! the space's origin. Each layer the kernel opens is kept where Dialog DB
+//! keeps its location (see [`crate::layers`]), and the session's key in
+//! Dialog DB's credential store.
 
 use std::rc::Rc;
 use std::sync::Arc;
 
 use dialog_credentials::Ed25519Signer;
-use dialog_credentials::key::KeyExport;
+use dialog_effects::storage::Directory;
+use dialog_identity::OpenCredential;
+use dialog_storage::provider::storage::CredentialStore;
 use dialog_varsig::Principal as _;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
@@ -18,11 +22,10 @@ use wasm_bindgen_futures::JsFuture;
 use wcmp::Engine;
 
 use crate::bindings::sapling::kernel::session::{Claim, Subject};
-use crate::bindings::sapling::kernel::storage::Edition;
 use crate::bindings::sapling::kernel::types::Error;
 use crate::credentials::{Answer, Claims, Standing};
 use crate::kernel::{Kernel, Served};
-use crate::sapling::Change;
+use crate::layers::{LayerSpace, Layers};
 use crate::{boot, platform};
 
 #[wasm_bindgen]
@@ -53,46 +56,54 @@ impl BodyReader {
     }
 }
 
-/// A key for this origin's session, made here, as the bootloader keeps it:
-/// a key nothing reads the seed of. The person's profile delegates the space
-/// to it.
-#[wasm_bindgen(js_name = generateSession)]
-pub async fn generate_session() -> Result<JsValue, JsError> {
-    let key = Ed25519Signer::generate()
+/// The key this origin's session acts under: the key dialog's credential
+/// store keeps under `name`, made there, where nothing reads its seed, if it
+/// keeps none. A profile's worker before the kernel kept the profile's key
+/// there under its name, so the profile goes on as who it was.
+#[wasm_bindgen]
+pub struct Session {
+    key: Ed25519Signer,
+}
+
+#[wasm_bindgen]
+impl Session {
+    #[wasm_bindgen(getter)]
+    pub fn did(&self) -> String {
+        self.key.did().to_string()
+    }
+}
+
+/// Open the key dialog's credential store keeps under `name`, or make one.
+#[wasm_bindgen(js_name = openSession)]
+pub async fn open_session(name: String) -> Result<Session, JsError> {
+    let store = CredentialStore::<LayerSpace>::new();
+    let credential = OpenCredential::open(name)
+        .at(Directory::Profile)
+        .perform(&store)
         .await
         .map_err(|error| JsError::new(&error.to_string()))?;
-    kept(&key).await
+    let key = credential
+        .signer()
+        .as_ed25519()
+        .cloned()
+        .ok_or_else(|| JsError::new("the session's key is not Ed25519"))?;
+    Ok(Session { key })
 }
 
-/// The DID of `key`, a key the bootloader keeps.
-#[wasm_bindgen(js_name = keyDid)]
-pub async fn key_did(key: JsValue) -> Result<String, JsError> {
-    Ok(restore(key).await?.did().to_string())
-}
-
-/// The space the records `kept` hold a kernel for, or `undefined` when they
-/// hold none.
+/// The space this origin's host serves, or `undefined` before it serves one.
 #[wasm_bindgen(js_name = heldSpace)]
-pub fn held_space(kept: Array) -> Result<Option<String>, JsError> {
-    Ok(boot::held(&changes_of(&kept)?))
+pub async fn held_space() -> Result<Option<String>, JsError> {
+    boot::held(&Layers::default())
+        .await
+        .map_err(|error| JsError::new(&error))
 }
 
-/// `key`, as the bootloader keeps it.
-async fn kept(key: &Ed25519Signer) -> Result<JsValue, JsError> {
-    Ok(key
-        .export()
+/// Say that this origin's host serves the space `subject`.
+#[wasm_bindgen(js_name = holdSpace)]
+pub async fn hold_space(subject: String) -> Result<(), JsError> {
+    boot::hold(&Layers::default(), &subject)
         .await
-        .map_err(|error| JsError::new(&error.to_string()))?
-        .into())
-}
-
-/// A key the bootloader kept.
-async fn restore(key: JsValue) -> Result<Ed25519Signer, JsError> {
-    let export =
-        KeyExport::try_from(key).map_err(|_| JsError::new("a kept key is not a key's export"))?;
-    Ed25519Signer::import(export)
-        .await
-        .map_err(|error| JsError::new(&error.to_string()))
+        .map_err(|error| JsError::new(&error))
 }
 
 /// The content identifier of a kernel's wasm.
@@ -101,46 +112,46 @@ pub fn kernel_id(kernel: Uint8Array) -> String {
     boot::kernel_id(&kernel.to_vec())
 }
 
-/// The records that install `kernel` into the space `subject`, for the
-/// bootloader to keep with the rest of the space's store.
+/// Install `kernel` into the space `subject`, where the space is kept.
 #[wasm_bindgen]
-pub fn install(subject: String, kernel: Uint8Array) -> Array {
-    let (_, changes) = boot::install(&subject, &kernel.to_vec());
-    changes.iter().map(to_js).collect()
+pub async fn install(subject: String, kernel: Uint8Array) -> Result<String, JsError> {
+    boot::install(&Layers::default(), &subject, &kernel.to_vec())
+        .await
+        .map_err(|error| JsError::new(&error))
 }
 
-/// The id of the kernel the space `subject` pins, among the records `kept`,
-/// or `undefined` when it pins none.
+/// The id of the kernel the space `subject` pins, or `undefined` when it pins
+/// none.
 #[wasm_bindgen]
-pub fn pinned(subject: String, kept: Array) -> Result<Option<String>, JsError> {
-    let changes = changes_of(&kept)?;
-    let pinned = boot::pinned(&subject, &changes).map_err(|error| JsError::new(&error))?;
+pub async fn pinned(subject: String) -> Result<Option<String>, JsError> {
+    let pinned = boot::pinned(&Layers::default(), &subject)
+        .await
+        .map_err(|error| JsError::new(&error))?;
     Ok(pinned.map(|(id, _)| id))
 }
 
-/// Boot the kernel the space `subject` pins, over the records `kept`, with a
-/// session that acts under the key `session`, whose claims `claim` answers:
-/// a function that takes `{ subject, command, arguments, reason }`, with
-/// `subject` undefined for any subject and `arguments` as `[name, value]`
-/// pairs, and resolves to the delegations that grant it, each an encoded
-/// chain.
+/// Boot the kernel the space `subject` pins, with a session that acts under
+/// `session`, whose claims `claim` answers: a function that takes
+/// `{ subject, command, arguments, reason }`, with `subject` undefined for
+/// any subject and `arguments` as `[name, value]` pairs, and resolves to the
+/// delegations that grant it, each an encoded chain.
 #[wasm_bindgen]
 pub async fn boot(
     subject: String,
-    session: JsValue,
+    session: &Session,
     claim: Function,
-    kept: Array,
 ) -> Result<Embedder, JsError> {
-    let standing = Standing::sealed(restore(session).await?, claims_of(claim));
+    let standing = Standing::sealed(session.key.clone(), claims_of(claim));
     let started = platform::now_millis();
-    let changes = changes_of(&kept)?;
-    let (_, bytes) = boot::pinned(&subject, &changes)
+    let layers = Layers::default();
+    let (_, bytes) = boot::pinned(&layers, &subject)
+        .await
         .map_err(|error| JsError::new(&error))?
         .ok_or_else(|| JsError::new("the space pins no kernel"))?;
-    let mut timings = vec![("restore".to_owned(), platform::now_millis() - started)];
+    let mut timings = vec![("read".to_owned(), platform::now_millis() - started)];
     let engine = Engine::with_backend(wcmp_wasm_core_web::Web::new())
         .map_err(|error| JsError::new(&error.to_string()))?;
-    let mut kernel = Kernel::load_restoring(&engine, &bytes, changes)
+    let mut kernel = Kernel::load(&engine, &bytes, layers)
         .await
         .map_err(|error| JsError::new(&error))?;
     kernel
@@ -197,27 +208,8 @@ fn claim_to_js(claim: Claim) -> JsValue {
     object.into()
 }
 
-/// The changes among `kept`. A host before custodies kept keys and site
-/// secrets as records of their own; a kernel keeps them in its cells now.
-fn changes_of(kept: &Array) -> Result<Vec<Change>, JsError> {
-    kept.iter()
-        .filter(|record| !matches!(text(record, "kind").as_deref(), Ok("key" | "secret")))
-        .map(|record| from_js(&record))
-        .collect()
-}
-
 #[wasm_bindgen]
 impl Embedder {
-    /// Each write since the last drain, as records the bootloader keeps.
-    pub async fn drain(&self) -> Result<Array, JsError> {
-        let changes = self
-            .kernel
-            .drain()
-            .await
-            .map_err(|error| JsError::new(&error))?;
-        Ok(changes.iter().map(to_js).collect())
-    }
-
     /// How long each stage of the boot took, in milliseconds.
     #[wasm_bindgen(getter)]
     pub fn timings(&self) -> JsValue {
@@ -272,99 +264,4 @@ impl Embedder {
             Ok(reply.into())
         })
     }
-}
-
-fn field(record: &JsValue, name: &str) -> Result<JsValue, JsError> {
-    Reflect::get(record, &name.into())
-        .map_err(|_| JsError::new(&format!("a kept record has no {name}")))
-}
-
-fn text(record: &JsValue, name: &str) -> Result<String, JsError> {
-    field(record, name)?
-        .as_string()
-        .ok_or_else(|| JsError::new(&format!("{name} is not text")))
-}
-
-fn bytes(record: &JsValue, name: &str) -> Result<Vec<u8>, JsError> {
-    Ok(Uint8Array::new(&field(record, name)?).to_vec())
-}
-
-/// A record the bootloader kept, as the change it stands for.
-fn from_js(record: &JsValue) -> Result<Change, JsError> {
-    let subject = text(record, "subject")?;
-    Ok(match text(record, "kind")?.as_str() {
-        "block" => Change::Block {
-            subject,
-            catalog: text(record, "catalog")?,
-            key: bytes(record, "key")?,
-            bytes: bytes(record, "bytes")?,
-        },
-        "blob" => Change::Blob {
-            subject,
-            key: bytes(record, "key")?,
-            bytes: bytes(record, "bytes")?,
-        },
-        "cell" => Change::Cell {
-            subject,
-            namespace: text(record, "namespace")?,
-            cell: text(record, "cell")?,
-            edition: match field(record, "content")?.is_undefined() {
-                true => None,
-                false => Some(Edition {
-                    content: bytes(record, "content")?,
-                    version: bytes(record, "version")?,
-                }),
-            },
-        },
-        other => return Err(JsError::new(&format!("a kept record of the kind {other}"))),
-    })
-}
-
-/// A change, as a record the bootloader keeps.
-fn to_js(change: &Change) -> JsValue {
-    let record = Object::new();
-    let set = |name: &str, value: JsValue| {
-        let _ = Reflect::set(&record, &name.into(), &value);
-    };
-    let blob = |value: &[u8]| JsValue::from(Uint8Array::from(value));
-    match change {
-        Change::Block {
-            subject,
-            catalog,
-            key,
-            bytes,
-        } => {
-            set("kind", "block".into());
-            set("subject", subject.into());
-            set("catalog", catalog.into());
-            set("key", blob(key));
-            set("bytes", blob(bytes));
-        }
-        Change::Blob {
-            subject,
-            key,
-            bytes,
-        } => {
-            set("kind", "blob".into());
-            set("subject", subject.into());
-            set("key", blob(key));
-            set("bytes", blob(bytes));
-        }
-        Change::Cell {
-            subject,
-            namespace,
-            cell,
-            edition,
-        } => {
-            set("kind", "cell".into());
-            set("subject", subject.into());
-            set("namespace", namespace.into());
-            set("cell", cell.into());
-            if let Some(edition) = edition {
-                set("content", blob(&edition.content));
-                set("version", blob(&edition.version));
-            }
-        }
-    }
-    record.into()
 }

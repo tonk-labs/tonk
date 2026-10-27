@@ -1,7 +1,7 @@
-//! The interfaces of `sapling:kernel` that are Sapling's own, served from
-//! memory: each subject's blocks, cells, and blobs, and the catch-ups a guest
-//! kernel sends. The keys are `credentials`'. What a browser host would back with
-//! IndexedDB or OPFS, and with the profile's keys.
+//! The interfaces of `sapling:kernel` that are Sapling's own: each layer's
+//! blocks, cells and blobs, kept where Dialog DB keeps the layer's location
+//! (see [`crate::layers`]), and the catch-ups a guest kernel sends. The keys
+//! are `credentials`'.
 
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -15,24 +15,20 @@ use wcmp::{
 use crate::bindings::sapling::kernel::{application, network, storage, types};
 use crate::credentials::{Key, Standing};
 use crate::http_types::{HttpHost, HttpTable};
+use crate::layers::{self, LayerSpace, Layers};
 use storage::{BlobRead, ByteRange, Edition, Encoding, Layer};
 use types::Error;
-
-/// What one subject holds.
-#[derive(Default)]
-pub struct Subject {
-    blocks: HashMap<(String, Vec<u8>), Vec<u8>>,
-    cells: HashMap<(String, String), Edition>,
-    blobs: HashMap<Vec<u8>, Vec<u8>>,
-}
 
 /// The host data of a store that runs a guest kernel.
 #[derive(Default)]
 pub struct KernelHost {
     pub http: HttpTable,
+    /// Where the layers are kept.
+    pub layers: Layers,
     /// The subject of each layer handle, by its representation.
-    layers: Vec<String>,
-    subjects: HashMap<String, Subject>,
+    names: Vec<String>,
+    /// Each layer opened, by its subject.
+    opened: HashMap<String, LayerSpace>,
     /// The key each `credential` handle names, by its representation.
     pub(crate) keys: Vec<Key>,
     /// The key each `authority` handle names, by its representation.
@@ -41,127 +37,45 @@ pub struct KernelHost {
     pub(crate) sessions: Vec<Standing>,
     /// The catch-ups the guest kernel sent with `application.send`.
     pub sent: Vec<Vec<u8>>,
-    /// Each write since the last drain, for the host to keep durably.
-    pub journal: Vec<Change>,
-}
-
-/// One write to a subject, as a host keeps it durably. Its `Debug` leaves out
-/// the bytes of a block or a blob.
-#[derive(Clone)]
-pub enum Change {
-    Block {
-        subject: String,
-        catalog: String,
-        key: Vec<u8>,
-        bytes: Vec<u8>,
-    },
-    Cell {
-        subject: String,
-        namespace: String,
-        cell: String,
-        edition: Option<Edition>,
-    },
-    Blob {
-        subject: String,
-        key: Vec<u8>,
-        bytes: Vec<u8>,
-    },
-}
-
-impl core::fmt::Debug for Change {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Change::Block {
-                subject,
-                catalog,
-                key,
-                ..
-            } => f
-                .debug_struct("Block")
-                .field("subject", subject)
-                .field("catalog", catalog)
-                .field("key", key)
-                .finish_non_exhaustive(),
-            Change::Cell {
-                subject,
-                namespace,
-                cell,
-                edition,
-            } => f
-                .debug_struct("Cell")
-                .field("subject", subject)
-                .field("namespace", namespace)
-                .field("cell", cell)
-                .field("edition", edition)
-                .finish(),
-            Change::Blob { subject, key, .. } => f
-                .debug_struct("Blob")
-                .field("subject", subject)
-                .field("key", key)
-                .finish_non_exhaustive(),
-        }
-    }
 }
 
 impl KernelHost {
-    /// Put back what an earlier store wrote, before the guest kernel boots.
-    pub fn restore(&mut self, changes: impl IntoIterator<Item = Change>) {
-        for change in changes {
-            match change {
-                Change::Block {
-                    subject,
-                    catalog,
-                    key,
-                    bytes,
-                } => {
-                    self.subjects
-                        .entry(subject)
-                        .or_default()
-                        .blocks
-                        .insert((catalog, key), bytes);
-                }
-                Change::Cell {
-                    subject,
-                    namespace,
-                    cell,
-                    edition,
-                } => {
-                    let cells = &mut self.subjects.entry(subject).or_default().cells;
-                    match edition {
-                        Some(edition) => cells.insert((namespace, cell), edition),
-                        None => cells.remove(&(namespace, cell)),
-                    };
-                }
-                Change::Blob {
-                    subject,
-                    key,
-                    bytes,
-                } => {
-                    self.subjects
-                        .entry(subject)
-                        .or_default()
-                        .blobs
-                        .insert(key, bytes);
-                }
-            }
+    /// A host that keeps its layers in `layers`.
+    pub fn new(layers: Layers) -> Self {
+        Self {
+            layers,
+            ..Self::default()
         }
-    }
-
-    pub(crate) fn subject_name(&self, layer: &Resource<Layer>) -> String {
-        self.layers[layer.rep() as usize].clone()
     }
 
     /// A handle on the layer of `subject`, for the boot or for `open`.
     pub fn layer(&mut self, subject: &str) -> Resource<Layer> {
-        self.subjects.entry(subject.to_owned()).or_default();
-        self.layers.push(subject.to_owned());
-        Resource::new_own((self.layers.len() - 1) as u32)
+        self.names.push(subject.to_owned());
+        Resource::new_own((self.names.len() - 1) as u32)
     }
 
-    pub(crate) fn subject(&mut self, layer: &Resource<Layer>) -> &mut Subject {
-        let name = self.layers[layer.rep() as usize].clone();
-        self.subjects.entry(name).or_default()
+    fn subject_name(&self, layer: &Resource<Layer>) -> String {
+        self.names[layer.rep() as usize].clone()
     }
+}
+
+/// The space of `layer`, opened once and kept.
+async fn space<T: 'static>(
+    accessor: &Accessor<T, Sapling>,
+    layer: &Resource<Layer>,
+) -> Result<LayerSpace, Error> {
+    let (name, layers, held) = accessor.with(|mut access| {
+        let host = access.get();
+        let name = host.subject_name(layer);
+        let held = host.opened.get(&name).cloned();
+        (name, host.layers.clone(), held)
+    });
+    if let Some(space) = held {
+        return Ok(space);
+    }
+    let space = layers.open(&name).await?;
+    accessor.with(|mut access| access.get().opened.insert(name, space.clone()));
+    Ok(space)
 }
 
 impl HttpHost for KernelHost {
@@ -183,7 +97,7 @@ impl storage::Host for KernelHost {}
 
 impl storage::HostLayer for KernelHost {
     fn subject(&mut self, layer: Resource<Layer>) -> String {
-        self.layers[layer.rep() as usize].clone()
+        self.subject_name(&layer)
     }
 
     fn drop(&mut self, _layer: Resource<Layer>) -> wcmp::Result<()> {
@@ -210,14 +124,7 @@ impl<T: 'static> storage::HostLayerWithStore<T> for Sapling {
         key: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, Error> {
         trace("get");
-        Ok(accessor.with(|mut access| {
-            access
-                .get()
-                .subject(&layer)
-                .blocks
-                .get(&(catalog, key))
-                .cloned()
-        }))
+        layers::get(&space(accessor, &layer).await?, &catalog, &key).await
     }
 
     async fn get_many(
@@ -227,12 +134,12 @@ impl<T: 'static> storage::HostLayerWithStore<T> for Sapling {
         keys: Vec<Vec<u8>>,
     ) -> Result<Vec<Option<Vec<u8>>>, Error> {
         trace("get_many");
-        Ok(accessor.with(|mut access| {
-            let subject = access.get().subject(&layer);
-            keys.into_iter()
-                .map(|key| subject.blocks.get(&(catalog.clone(), key)).cloned())
-                .collect()
-        }))
+        let space = space(accessor, &layer).await?;
+        let mut blocks = Vec::with_capacity(keys.len());
+        for key in keys {
+            blocks.push(layers::get(&space, &catalog, &key).await?);
+        }
+        Ok(blocks)
     }
 
     async fn put(
@@ -243,18 +150,7 @@ impl<T: 'static> storage::HostLayerWithStore<T> for Sapling {
         bytes: Vec<u8>,
     ) -> Result<(), Error> {
         trace("put");
-        accessor.with(|mut access| {
-            let host = access.get();
-            let subject = host.subject_name(&layer);
-            host.journal.push(Change::Block {
-                subject,
-                catalog: catalog.clone(),
-                key: key.clone(),
-                bytes: bytes.clone(),
-            });
-            host.subject(&layer).blocks.insert((catalog, key), bytes);
-        });
-        Ok(())
+        layers::put(&space(accessor, &layer).await?, &catalog, &key, bytes).await
     }
 
     async fn resolve(
@@ -264,14 +160,7 @@ impl<T: 'static> storage::HostLayerWithStore<T> for Sapling {
         cell: String,
     ) -> Result<Option<Edition>, Error> {
         trace("resolve");
-        Ok(accessor.with(|mut access| {
-            access
-                .get()
-                .subject(&layer)
-                .cells
-                .get(&(namespace, cell))
-                .cloned()
-        }))
+        layers::resolve(&space(accessor, &layer).await?, &namespace, &cell).await
     }
 
     async fn publish(
@@ -283,28 +172,8 @@ impl<T: 'static> storage::HostLayerWithStore<T> for Sapling {
         when: Option<Vec<u8>>,
     ) -> Result<Vec<u8>, Error> {
         trace("publish");
-        accessor.with(|mut access| {
-            let host = access.get();
-            let subject = host.subject_name(&layer);
-            let cells = &mut host.subject(&layer).cells;
-            let name = (namespace, cell);
-            if cells.get(&name).map(|held| &held.version) != when.as_ref() {
-                return Err(Error::Conflict);
-            }
-            let version = blake3::hash(&content).as_bytes().to_vec();
-            let edition = Edition {
-                content,
-                version: version.clone(),
-            };
-            cells.insert(name.clone(), edition.clone());
-            host.journal.push(Change::Cell {
-                subject,
-                namespace: name.0,
-                cell: name.1,
-                edition: Some(edition),
-            });
-            Ok(version)
-        })
+        let space = space(accessor, &layer).await?;
+        layers::publish(&space, &namespace, &cell, content, when).await
     }
 
     async fn retract(
@@ -315,25 +184,7 @@ impl<T: 'static> storage::HostLayerWithStore<T> for Sapling {
         when: Vec<u8>,
     ) -> Result<(), Error> {
         trace("retract");
-        accessor.with(|mut access| {
-            let host = access.get();
-            let subject = host.subject_name(&layer);
-            let cells = &mut host.subject(&layer).cells;
-            let name = (namespace, cell);
-            match cells.get(&name) {
-                Some(held) if held.version == when => {
-                    cells.remove(&name);
-                    host.journal.push(Change::Cell {
-                        subject,
-                        namespace: name.0,
-                        cell: name.1,
-                        edition: None,
-                    });
-                    Ok(())
-                }
-                _ => Err(Error::Conflict),
-            }
-        })
+        layers::retract(&space(accessor, &layer).await?, &namespace, &cell, when).await
     }
 
     async fn list(
@@ -342,16 +193,7 @@ impl<T: 'static> storage::HostLayerWithStore<T> for Sapling {
         namespace: String,
     ) -> Result<Vec<String>, Error> {
         trace("list");
-        Ok(accessor.with(|mut access| {
-            access
-                .get()
-                .subject(&layer)
-                .cells
-                .keys()
-                .filter(|(held, _)| *held == namespace)
-                .map(|(_, cell)| cell.clone())
-                .collect()
-        }))
+        layers::list(&space(accessor, &layer).await?, &namespace).await
     }
 
     async fn watch(
@@ -370,14 +212,7 @@ impl<T: 'static> storage::HostLayerWithStore<T> for Sapling {
         key: Vec<u8>,
     ) -> Result<Option<u64>, Error> {
         trace("size");
-        Ok(accessor.with(|mut access| {
-            access
-                .get()
-                .subject(&layer)
-                .blobs
-                .get(&key)
-                .map(|blob| blob.len() as u64)
-        }))
+        layers::size(&space(accessor, &layer).await?, &key).await
     }
 
     async fn read(
@@ -390,17 +225,9 @@ impl<T: 'static> storage::HostLayerWithStore<T> for Sapling {
         _proof: bool,
     ) -> Result<BlobRead, Error> {
         trace("read");
+        let space = space(accessor, &layer).await?;
+        let bytes = layers::read(&space, &key, range.start, range.end).await?;
         accessor.with(|mut access| {
-            let bytes = {
-                let Some(blob) = access.get().subject(&layer).blobs.get(&key) else {
-                    return Err(Error::Invalid("no such blob".into()));
-                };
-                let start = (range.start as usize).min(blob.len());
-                let end = range
-                    .end
-                    .map_or(blob.len(), |end| (end as usize).min(blob.len()));
-                blob[start..end.max(start)].to_vec()
-            };
             let body = StreamReader::new(access.store(), bytes)
                 .map_err(|error| Error::Unavailable(error.to_string()))?;
             Ok(BlobRead {
@@ -431,18 +258,7 @@ impl<T: 'static> storage::HostLayerWithStore<T> for Sapling {
         let blob = done
             .await
             .map_err(|_| Error::BrokeOff("the stream was dropped".into()))?;
-        let key = blake3::hash(&blob).as_bytes().to_vec();
-        accessor.with(|mut access| {
-            let host = access.get();
-            let subject = host.subject_name(&layer);
-            host.journal.push(Change::Blob {
-                subject,
-                key: key.clone(),
-                bytes: blob.clone(),
-            });
-            host.subject(&layer).blobs.insert(key.clone(), blob);
-        });
-        Ok(key)
+        layers::write(&space(accessor, &layer).await?, &blob).await
     }
 }
 

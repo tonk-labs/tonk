@@ -15,48 +15,10 @@ const SESSION = "did:key:zSession";
 // What a kernel claims of its space.
 const CLAIM = { subject: SPACE, command: "/", arguments: [], reason: "serve the space" };
 
-// IndexedDB as far as the bootloader uses it: object stores of keyed values,
-// read and written in transactions that complete once their requests have.
-function indexedDB() {
-  const stores = new Map();
-  const request = (value) => {
-    const asked = { result: value };
-    queueMicrotask(() => asked.onsuccess?.());
-    return asked;
-  };
-  const db = {
-    objectStoreNames: { contains: (name) => stores.has(name) },
-    createObjectStore: (name) => void (stores.has(name) || stores.set(name, new Map())),
-    deleteObjectStore: (name) => void stores.delete(name),
-    transaction: (name) => {
-      const transaction = {
-        objectStore: () => ({
-          get: (key) => request(stores.get(name).get(key)),
-          getAll: () => request([...stores.get(name).values()]),
-          put: (value, key) => request(void stores.get(name).set(key, value)),
-        }),
-      };
-      setTimeout(() => transaction.oncomplete?.(), 0);
-      return transaction;
-    },
-  };
-  return {
-    stores,
-    open: () => {
-      const opening = { result: db };
-      queueMicrotask(() => {
-        opening.onupgradeneeded?.();
-        opening.onsuccess?.();
-      });
-      return opening;
-    },
-  };
-}
-
 // Run the kernel bootloader as the worker of a space pinning `pinned`,
 // against stand-ins for a service worker's globals and for the embedder.
-// `holds` is the kernel the space's store already holds, if any; `shipped`
-// is what the deployment serves under `/_host/kernel/`.
+// `holds` is the kernel the space already holds, if any; `shipped` is what
+// the deployment serves under `/_host/kernel/`.
 function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } } = {}) {
   const listeners = {};
   const told = [];
@@ -64,16 +26,11 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
   const handled = [];
   const imported = [];
   const fetched = [];
-  const store = indexedDB();
   const pages = [{ postMessage: (message) => void told.push(message) }];
-  // What the kernel wrote that the bootloader has not drained yet.
-  const written = [];
   const embedder = {
-    drain: async () => written.splice(0),
     timings: {},
     handle: async (method, path) => {
       handled.push(`${method} ${path}`);
-      if (path === "/write") written.push({ kind: "cell", subject: SPACE, namespace: "branch/main", cell: "revision", value: 1 });
       const [status, text, type = "text/plain"] =
         path === "/api/identify" ? [200, JSON.stringify({ did: "did:key:zKernel" })]
         : path === "/.kernel/adopt" ? [204, ""]
@@ -92,23 +49,26 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
       };
     },
   };
+  // What the embedder keeps where Dialog DB keeps it: the space this origin
+  // serves, and the kernel each space pins.
+  const kept = { held: holds ? SPACE : undefined, pins: new Map(holds ? [[SPACE, holds]] : []) };
+  const opened = [];
   const bindgen = Object.assign(async () => {}, {
-    // A key, as the embedder exports one: here, its DID.
-    generateSession: async () => SESSION,
-    keyDid: async (key) => key,
-    heldSpace: (records) => records.find((record) => record.kind === "blob")?.subject,
+    openSession: async (name) => (opened.push(name), { did: SESSION }),
+    heldSpace: async () => kept.held,
+    holdSpace: async (subject) => void (kept.held = subject),
     kernelId: (bytes) => new TextDecoder().decode(bytes).replace("WASM", KERNEL),
-    install: (subject, bytes) => [{ kind: "blob", subject, key: [1], bytes, kernel: KERNEL }],
-    pinned: (subject, records) => records.find((record) => record.subject === subject)?.kernel,
-    boot: async (subject, session, claim, records) => {
-      booted.push({ subject, session, claim, records: records.length });
+    install: async (subject, bytes) => {
+      const id = new TextDecoder().decode(bytes).replace("WASM", KERNEL);
+      kept.pins.set(subject, id);
+      return id;
+    },
+    pinned: async (subject) => kept.pins.get(subject),
+    boot: async (subject, session, claim) => {
+      booted.push({ subject, session: session.did, claim });
       return embedder;
     },
   });
-  if (holds) {
-    store.stores.set("records", new Map([["blob", { kind: "blob", subject: SPACE, key: [1], kernel: holds }]]));
-    store.stores.set("keys", new Map([["session", SESSION]]));
-  }
   let offline = false;
   const network = async (address) => {
     if (offline) throw new TypeError("Failed to fetch");
@@ -129,7 +89,6 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     self,
     importScripts: (...urls) => void imported.push(...urls),
     wasm_bindgen: bindgen,
-    indexedDB: store,
     fetch: network,
     performance,
     crypto,
@@ -208,7 +167,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     new Promise((resolve) =>
       listeners.message({ data: { type: "booted" }, ports: [{ postMessage: resolve }], waitUntil() {} }),
     );
-  return { listeners, imported, fetched, booted, handled, asked, told, store, handPort, passDown, request, message, goOffline, started };
+  return { listeners, imported, fetched, booted, handled, asked, told, kept, opened, handPort, passDown, request, message, goOffline, started };
 }
 
 test("the bootloader loads the host's embedder", () => {
@@ -269,8 +228,8 @@ test("a space with no kernel of its own installs the one its worker names, and b
   assert.equal(site.asked[2].kernel, KERNEL);
   assert.ok(!site.fetched.some((path) => path.startsWith("/_host/kernel/")), "nothing of the kernel is fetched");
   assert.deepEqual(
-    site.booted.map(({ subject, session, records }) => ({ subject, session, records })),
-    [{ subject: SPACE, session: SESSION, records: 1 }],
+    site.booted.map(({ subject, session }) => ({ subject, session })),
+    [{ subject: SPACE, session: SESSION }],
   );
   assert.deepEqual(site.handled, ["GET /api/anything"], "the kernel takes its space up as it boots");
 });
@@ -285,14 +244,21 @@ test("the kernel's first claim is answered with the delegation handed over with 
   assert.equal(site.asked.length, asked, "the profile is not asked again");
 });
 
-test("the session's key is kept, as the embedder exports it", async () => {
+test("the session's key is the one Dialog DB's credential store keeps under the profile's name", async () => {
   const site = space();
   site.handPort();
   await site.started();
-  assert.equal(site.store.stores.get("keys").get("session"), SESSION);
+  assert.deepEqual(site.opened, ["tonk"]);
 });
 
-test("a space that holds its kernel boots it from its own store, with the session it kept", async () => {
+test("the origin remembers the space it was delegated", async () => {
+  const site = space();
+  site.handPort();
+  await site.started();
+  assert.equal(site.kept.held, SPACE, "the space the profile delegated is the one this origin serves");
+});
+
+test("a space that holds its kernel boots it from where it is kept, with no port up", async () => {
   const site = space({ holds: KERNEL, shipped: {} });
   await site.started();
   assert.ok(!site.fetched.some((path) => path.startsWith("/_host/kernel/")), "nothing is fetched to boot");
@@ -337,19 +303,6 @@ test("the host's own files come from the network, and are kept for when it does 
   site.goOffline();
   const kept = await site.request("/space.html", { mode: "navigate" });
   assert.match(await kept.text(), /SHELL/, "offline, the kept copy answers");
-});
-
-test("an answer goes out once what its request wrote is kept", async () => {
-  const site = space();
-  site.handPort();
-  let responded;
-  site.listeners.fetch({
-    request: { url: `${ORIGIN}/write`, method: "POST", mode: "cors", headers: new Headers(), arrayBuffer: async () => new ArrayBuffer(0) },
-    respondWith: (response) => void (responded = response),
-    waitUntil() {},
-  });
-  await responded;
-  assert.ok(site.store.stores.get("records").has(`cell|${SPACE}|branch/main|revision`), "kept before the answer");
 });
 
 test("the worker speaks the shell's protocol", () => {

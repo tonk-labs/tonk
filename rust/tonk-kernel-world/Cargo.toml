@@ -9,6 +9,8 @@ publish = false
 [dependencies]
 # The boot cell's codec, which the host reads too.
 blake3 = { workspace = true }
+# The locations layers are named for, which the host keeps them at.
+dialog-effects = { workspace = true }
 
 # Everything else is for a component on WASI.
 [target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
@@ -17,7 +19,6 @@ dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-credentials = { workspace = true }
-dialog-effects = { workspace = true }
 dialog-storage = { workspace = true }
 dialog-varsig = { workspace = true }
 futures-util = { workspace = true }

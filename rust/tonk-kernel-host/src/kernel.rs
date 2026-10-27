@@ -10,6 +10,7 @@ use crate::bindings::Host_;
 use crate::bindings::exports::sapling::kernel::lifecycle::{Access, Boot, Stacked};
 use crate::credentials::Standing;
 use crate::http_types::{self, Body, Fields, HttpHost, Request, Types};
+use crate::layers::Layers;
 use crate::sapling::{KernelHost, Sapling};
 use crate::{platform, wasi, wasi_bindings};
 
@@ -55,7 +56,6 @@ enum Job {
         body: Vec<u8>,
         reply: oneshot::Sender<Result<Head, String>>,
     },
-    Drain(oneshot::Sender<Vec<crate::sapling::Change>>),
 }
 
 /// A guest kernel that a driver runs (see [`Kernel::serve`]): requests reach
@@ -88,17 +88,6 @@ impl Served {
         answered
             .await
             .map_err(|_| "the kernel has stopped".to_owned())?
-    }
-
-    /// Each write since the last drain, for the host to keep durably.
-    pub async fn drain(&self) -> Result<Vec<crate::sapling::Change>, String> {
-        let (reply, drained) = oneshot::channel();
-        self.jobs
-            .unbounded_send(Job::Drain(reply))
-            .map_err(|_| "the kernel has stopped".to_owned())?;
-        drained
-            .await
-            .map_err(|_| "the kernel has stopped".to_owned())
     }
 }
 
@@ -183,12 +172,6 @@ impl Kernel {
                         futures::select! {
                             job = queued.next() => match job {
                                 None => break,
-                                Some(Job::Drain(reply)) => {
-                                    let changes = accessor.with(|mut access| {
-                                        core::mem::take(&mut access.data_mut().journal)
-                                    });
-                                    let _ = reply.send(changes);
-                                }
                                 Some(Job::Request { method, path, headers, body, reply }) => {
                                     let handle = &handle;
                                     running.push(
@@ -213,18 +196,9 @@ impl Kernel {
         (Served { jobs }, driver)
     }
 
-    /// Compile and instantiate the guest kernel in `bytes` on `engine`.
-    pub async fn load(engine: &Engine, bytes: &[u8]) -> Result<Kernel, String> {
-        Kernel::load_restoring(engine, bytes, Vec::new()).await
-    }
-
-    /// [`Kernel::load`], with the store holding `changes` an earlier store
-    /// wrote, as a worker that starts again over a space it held does.
-    pub async fn load_restoring(
-        engine: &Engine,
-        bytes: &[u8],
-        changes: Vec<crate::sapling::Change>,
-    ) -> Result<Kernel, String> {
+    /// Compile and instantiate the guest kernel in `bytes` on `engine`, over
+    /// the layers kept in `layers`.
+    pub async fn load(engine: &Engine, bytes: &[u8], layers: Layers) -> Result<Kernel, String> {
         let mut timings = Vec::new();
         let started = platform::now_millis();
         let component = Component::new(engine, bytes)
@@ -244,8 +218,7 @@ impl Kernel {
         Host_::add_to_linker::<_, Sapling>(&mut linker, |host| host)
             .map_err(|error| error.to_string())?;
 
-        let mut host = KernelHost::default();
-        host.restore(changes);
+        let mut host = KernelHost::new(layers);
         host.http.set_types(Some(types));
         let mut store = Store::new(engine, host).map_err(|error| error.to_string())?;
         let instance = linker
@@ -297,11 +270,6 @@ impl Kernel {
         self.timings
             .push(("init", platform::now_millis() - started));
         answer.map_err(|error| format!("init answered {error:?}"))
-    }
-
-    /// Each write since the last drain, for the host to keep durably.
-    pub fn drain(&mut self) -> Vec<crate::sapling::Change> {
-        core::mem::take(&mut self.store.data_mut().journal)
     }
 
     /// Hand the guest kernel one request, and read its whole answer.

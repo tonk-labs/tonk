@@ -212,6 +212,7 @@ dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "
 dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
 dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
 dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
+dialog-identity = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
 dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
 dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }
 dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-generate" }

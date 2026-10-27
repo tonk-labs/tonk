@@ -5895,8 +5895,12 @@ version = "0.6.16-rc.1"
 dependencies = [
  "blake3",
  "bs58",
+ "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-effects",
+ "dialog-identity",
+ "dialog-storage",
  "dialog-ucan-core",
  "dialog-varsig",
  "ed25519-dalek 2.2.0",

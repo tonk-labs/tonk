@@ -31,7 +31,7 @@ use dialog_effects::credential::prelude::{
     RetractCredentialExt as _, RetractSecretExt as _, SaveCredentialExt as _, SaveSecretExt as _,
 };
 use dialog_effects::credential::{CredentialError, Generate, Load, Retract, Save, Secret};
-use dialog_effects::storage::{Directory, Location, StorageError};
+use dialog_effects::storage::{Location, StorageError};
 use dialog_storage::provider::{Space, Volatile};
 use dialog_storage::resource::Resource;
 use dialog_varsig::Principal as _;
@@ -39,6 +39,7 @@ use dialog_varsig::Principal as _;
 use crate::credentials;
 use crate::guest::HandleLayer;
 use crate::layer::{LayerError, SharedLayer, share};
+use crate::naming::layer_name;
 use crate::session;
 use crate::store::{Store, Witness};
 use crate::world::sapling::kernel::credential::{self as host, Custodian};
@@ -66,41 +67,6 @@ struct Opened(Store);
 unsafe impl Send for Opened {}
 
 static OPENED: Mutex<BTreeMap<String, Opened>> = Mutex::new(BTreeMap::new());
-
-/// The name of the layer `location` opens. A space, which Tonk opens in the
-/// current directory under its subject's DID, opens the layer of that
-/// subject: the one its host boots it over, which holds its boot cell and its
-/// kernel. Anything else opens a layer named by a DID of the method `local`,
-/// with each character a DID does not allow escaped.
-pub fn layer_name(location: &Location) -> String {
-    if location.directory == Directory::Current
-        && location.name.starts_with("did:")
-        && !location.name.starts_with("did:local:")
-    {
-        return location.name.clone();
-    }
-    let directory = match &location.directory {
-        Directory::Profile => "profile".to_owned(),
-        Directory::Current => "current".to_owned(),
-        Directory::Temp => "temp".to_owned(),
-        Directory::At(path) => format!("at:{path}"),
-    };
-    let escape = |text: &str| {
-        text.bytes()
-            .map(|byte| match byte {
-                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' | b'_' => {
-                    (byte as char).to_string()
-                }
-                other => format!("%{other:02X}"),
-            })
-            .collect::<String>()
-    };
-    format!(
-        "did:local:{}:{}",
-        escape(&directory),
-        escape(&location.name)
-    )
-}
 
 async fn opened(location: &Location) -> Result<Opened, StorageError> {
     let name = layer_name(location);

@@ -7,6 +7,7 @@ pub mod credentials;
 pub mod embedder;
 pub mod http_types;
 pub mod kernel;
+pub mod layers;
 pub mod platform;
 pub mod sapling;
 pub mod wasi;
