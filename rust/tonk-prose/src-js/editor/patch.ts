@@ -7,11 +7,17 @@ import { Fragment } from "prosemirror-model";
 import type { Node } from "prosemirror-model";
 import { parseMarkdown } from "./markdown";
 
-/** Whether a top-level node is an empty paragraph. Markdown has no
- *  spelling for one, so it only ever exists in the live document: the
- *  author pressed Enter and has not typed yet. */
+/** Whether a top-level node is a blank paragraph: empty, or holding
+ *  only spaces and tabs. Markdown has no spelling for one (a blank line
+ *  separates blocks), so it only ever exists in the live document: the
+ *  author pressed Enter and has not typed yet, or has typed a space. */
 function isEmptyParagraph(node: Node): boolean {
-  return node.type.name === "paragraph" && node.content.size === 0;
+  if (node.type.name !== "paragraph") return false;
+  let blank = true;
+  node.forEach((child) => {
+    if (!child.isText || !/^[ \t]*$/.test(child.text ?? "")) blank = false;
+  });
+  return blank;
 }
 
 /** `next` with `current`'s empty top-level paragraphs carried into it.
