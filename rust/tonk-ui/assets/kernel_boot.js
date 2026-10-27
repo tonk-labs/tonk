@@ -184,16 +184,16 @@ async function askHost(request) {
 
 // ---- The space ----------------------------------------------------------
 
-// The key of this origin's session, from the person's profile, which derives
-// it from its own for the space and conceals it to a key made here to
-// receive it, with the delegation of the space to it. It says which space
-// this origin is: the label of an origin does not. Asked once: the kernel
-// keeps what it is delegated.
-async function receiveSession() {
-    const receiver = await wasm_bindgen.receiver();
-    const answer = await askHost({ session: receiver.did });
-    const session = await receiver.accept(new Uint8Array(answer.sealed));
-    await keepKey("session", session);
+// The delegation of the space to this origin's session, from the person's
+// profile, for a key made and kept here, which nothing reads the seed of. It
+// says which space this origin is: the label of an origin does not. Asked
+// once: the kernel keeps what it is delegated.
+async function delegateSession(session) {
+    if (!session) {
+        session = await wasm_bindgen.generateSession();
+        await keepKey("session", session);
+    }
+    const answer = await askHost({ delegate: await wasm_bindgen.keyDid(session) });
     // A space that runs a kernel starts blank: nothing of what the profile
     // would seed it with is taken. Saying it holds the space lets the
     // profile stop waiting for it to.
@@ -203,9 +203,8 @@ async function receiveSession() {
 
 // What answers the kernel's claims: the delegations the person's profile
 // handed over with the session, once, and after them the ones it delegates
-// anew, once a page of this origin hands this worker a port up to it. The
-// profile derives the same key for the space each time, so it delegates to
-// the key the kernel already acts with.
+// anew to the same key, once a page of this origin hands this worker a port
+// up to it.
 function claims(session, handed) {
     return async claim => {
         if (handed.length) return handed.splice(0);
@@ -251,7 +250,7 @@ async function start() {
     let session = await keptKey("session");
     let space = session && wasm_bindgen.heldSpace(records);
     let proofs = [];
-    if (!space) ({ space, session, proofs } = await receiveSession());
+    if (!space) ({ space, session, proofs } = await delegateSession(session));
     // A space with no kernel of its own yet is one being created: install the
     // one its worker was registered for.
     if (!wasm_bindgen.pinned(space, records)) {

@@ -94,7 +94,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
   };
   const bindgen = Object.assign(async () => {}, {
     // A key, as the embedder exports one: here, its DID.
-    receiver: async () => ({ did: "did:key:zReceiver", accept: async () => SESSION }),
+    generateSession: async () => SESSION,
     keyDid: async (key) => key,
     heldSpace: (records) => records.find((record) => record.kind === "blob")?.subject,
     kernelId: (bytes) => new TextDecoder().decode(bytes).replace("WASM", KERNEL),
@@ -155,9 +155,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
     postMessage: (message) => {
       asked.push(message);
       const delegated = { space: SPACE, chain: new ArrayBuffer(1), expires: Date.now() / 1000 + 86400 };
-      const answer = message.session
-        ? { id: message.id, ...delegated, session: SESSION, sealed: new ArrayBuffer(1) }
-        : message.delegate
+      const answer = message.delegate
         ? { id: message.id, ...delegated }
         : message.kernel
           ? { id: message.id, bytes: new TextEncoder().encode(shipped[message.kernel] ?? "").buffer }
@@ -264,10 +262,10 @@ test("a space with no kernel of its own installs the one its worker names, and b
   assert.equal(response.status, 404);
   assert.deepEqual(
     site.asked.map((asked) => Object.keys(asked).filter((key) => key !== "id")),
-    [["session"], ["seeded", "from"], ["kernel"]],
-    "it asks the profile for its session, says it holds the space, and takes its kernel",
+    [["delegate"], ["seeded", "from"], ["kernel"]],
+    "it asks the profile to delegate to its session, says it holds the space, and takes its kernel",
   );
-  assert.equal(site.asked[0].session, "did:key:zReceiver", "the key is concealed to one made to receive it");
+  assert.equal(site.asked[0].delegate, SESSION, "the space is delegated to the key made here");
   assert.equal(site.asked[2].kernel, KERNEL);
   assert.ok(!site.fetched.some((path) => path.startsWith("/_host/kernel/")), "nothing of the kernel is fetched");
   assert.deepEqual(

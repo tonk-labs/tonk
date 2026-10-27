@@ -8,17 +8,14 @@ use std::sync::Arc;
 
 use dialog_credentials::Ed25519Signer;
 use dialog_credentials::key::KeyExport;
-use dialog_credentials::secret::{Context, SealedSecret};
 use dialog_varsig::Principal as _;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use futures::lock::Mutex;
 use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array};
-use tonk_kernel_world::handover;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use wcmp::Engine;
-use zeroize::Zeroizing;
 
 use crate::bindings::sapling::kernel::session::{Claim, Subject};
 use crate::bindings::sapling::kernel::storage::Edition;
@@ -56,50 +53,15 @@ impl BodyReader {
     }
 }
 
-/// A key the host makes to receive the key of its session: the person's
-/// profile conceals the session key's seed to it.
-#[wasm_bindgen]
-pub struct Receiver {
-    key: Ed25519Signer,
-}
-
-/// Make a key to receive the key of this origin's session with.
-#[wasm_bindgen]
-pub async fn receiver() -> Result<Receiver, JsError> {
+/// A key for this origin's session, made here, as the bootloader keeps it:
+/// a key nothing reads the seed of. The person's profile delegates the space
+/// to it.
+#[wasm_bindgen(js_name = generateSession)]
+pub async fn generate_session() -> Result<JsValue, JsError> {
     let key = Ed25519Signer::generate()
         .await
         .map_err(|error| JsError::new(&error.to_string()))?;
-    Ok(Receiver { key })
-}
-
-#[wasm_bindgen]
-impl Receiver {
-    /// The DID the profile conceals the session's key to.
-    #[wasm_bindgen(getter)]
-    pub fn did(&self) -> String {
-        self.key.did().to_string()
-    }
-
-    /// The session's key that `sealed` conceals to this one, as the
-    /// bootloader keeps it: a key nothing reads the seed of.
-    pub async fn accept(&self, sealed: Uint8Array) -> Result<JsValue, JsError> {
-        let sealed = SealedSecret::from_bytes(&sealed.to_vec())
-            .map_err(|error| JsError::new(&error.to_string()))?;
-        let seed = Zeroizing::new(
-            self.key
-                .secret(Context::new(handover::HANDOVER))
-                .reveal(&sealed)
-                .await
-                .map_err(|error| JsError::new(&error.to_string()))?,
-        );
-        let seed = <[u8; 32]>::try_from(seed.as_slice())
-            .map(Zeroizing::new)
-            .map_err(|_| JsError::new("a session's key is a 32-byte seed"))?;
-        let key = Ed25519Signer::import(&*seed)
-            .await
-            .map_err(|error| JsError::new(&error.to_string()))?;
-        kept(&key).await
-    }
+    kept(&key).await
 }
 
 /// The DID of `key`, a key the bootloader keeps.

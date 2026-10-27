@@ -2340,44 +2340,6 @@ impl TonkServiceWorker {
         })
     }
 
-    /// Hand the host of `space` the key of its session, concealed to
-    /// `receiver`, a key the host made to receive it. Resolves to
-    /// `{ session, sealed, chain, expires }`: the session's DID, its sealed
-    /// seed, and the delegation of the space to it with when that lapses
-    /// (unix seconds).
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[wasm_bindgen(js_name = "handOverSpace")]
-    pub fn hand_over_space(&self, space: String, receiver: String) -> Promise {
-        let state = self.state.clone();
-        future_to_promise(async move {
-            let space: Did = space
-                .parse()
-                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
-            let receiver: Did = receiver
-                .parse()
-                .map_err(|e| JsError::new(&format!("receiver: {e:?}")))?;
-            let tonk = state.read().await;
-            let handover = space_worker::hand_over(&tonk, &space, &receiver)
-                .await
-                .map_err(|e| JsError::new(&e.to_string()))?;
-            let result = js_sys::Object::new();
-            let set = |name: &str, value: &JsValue| {
-                let _ = js_sys::Reflect::set(&result, &name.into(), value);
-            };
-            set("session", &handover.session.as_str().into());
-            set(
-                "sealed",
-                &js_sys::Uint8Array::from(handover.sealed.as_slice()).into(),
-            );
-            set(
-                "chain",
-                &js_sys::Uint8Array::from(handover.grant.chain.as_slice()).into(),
-            );
-            set("expires", &(handover.grant.expires as f64).into());
-            Ok(result.into())
-        })
-    }
-
     /// Keep none of `space`'s content here: its own origin's worker has said
     /// it holds it. `push_first` when that worker filled from the remote and
     /// not from this one. Resolves to whether anything was released.
