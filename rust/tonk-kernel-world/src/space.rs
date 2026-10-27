@@ -112,7 +112,8 @@ async fn opened(location: &Location) -> Result<Opened, StorageError> {
         return Ok(opened.clone());
     }
     let refused = |error| StorageError::Storage(format!("the host opened no layer: {error:?}"));
-    let layer = storage::open(name.clone(), session::chain())
+    // A layer of this worker's own, `did:local:`, which no chain delegates.
+    let layer = storage::open(name.clone(), Vec::new())
         .await
         .map_err(refused)?;
     let layer =

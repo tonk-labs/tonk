@@ -4,6 +4,7 @@
 //! keeps, and hands it each request of the space's origin.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use dialog_credentials::Ed25519Signer;
 use dialog_credentials::key::KeyExport;
@@ -12,14 +13,17 @@ use dialog_varsig::Principal as _;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use futures::lock::Mutex;
-use js_sys::{Array, Object, Reflect, Uint8Array};
+use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array};
 use tonk_kernel_world::handover;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
 use wcmp::Engine;
 use zeroize::Zeroizing;
 
+use crate::bindings::sapling::kernel::session::{Claim, Subject};
 use crate::bindings::sapling::kernel::storage::Edition;
-use crate::credentials::Standing;
+use crate::bindings::sapling::kernel::types::Error;
+use crate::credentials::{Answer, Claims, Standing};
 use crate::kernel::{Kernel, Served};
 use crate::sapling::Change;
 use crate::{boot, platform};
@@ -98,16 +102,6 @@ impl Receiver {
     }
 }
 
-/// A new key, as the bootloader keeps it: for now, the authority a session
-/// acts for, until a passkey opens the person's own.
-#[wasm_bindgen(js_name = generateKey)]
-pub async fn generate_key() -> Result<JsValue, JsError> {
-    let key = Ed25519Signer::generate()
-        .await
-        .map_err(|error| JsError::new(&error.to_string()))?;
-    kept(&key).await
-}
-
 /// The DID of `key`, a key the bootloader keeps.
 #[wasm_bindgen(js_name = keyDid)]
 pub async fn key_did(key: JsValue) -> Result<String, JsError> {
@@ -163,22 +157,19 @@ pub fn pinned(subject: String, kept: Array) -> Result<Option<String>, JsError> {
 }
 
 /// Boot the kernel the space `subject` pins, over the records `kept`, with a
-/// session that acts under the key `session`, for the authority of
-/// `authority`, by the delegations `proofs`: none on a boot after the first,
-/// where the kernel holds what it took up before.
+/// session that acts under the key `session`, whose claims `claim` answers:
+/// a function that takes `{ subject, command, arguments, reason }`, with
+/// `subject` undefined for any subject and `arguments` as `[name, value]`
+/// pairs, and resolves to the delegations that grant it, each an encoded
+/// chain.
 #[wasm_bindgen]
 pub async fn boot(
     subject: String,
     session: JsValue,
-    authority: JsValue,
-    proofs: Array,
+    claim: Function,
     kept: Array,
 ) -> Result<Embedder, JsError> {
-    let standing = Standing::sealed(
-        restore(session).await?,
-        restore(authority).await?,
-        proofs_of(&proofs),
-    );
+    let standing = Standing::sealed(restore(session).await?, claims_of(claim));
     let started = platform::now_millis();
     let changes = changes_of(&kept)?;
     let (_, bytes) = boot::pinned(&subject, &changes)
@@ -209,11 +200,39 @@ pub async fn boot(
     Ok(Embedder { kernel, timings })
 }
 
-fn proofs_of(proofs: &Array) -> Vec<Vec<u8>> {
-    proofs
-        .iter()
-        .map(|proof| Uint8Array::new(&proof).to_vec())
-        .collect()
+/// The kernel's claims, answered by the bootloader's `claim`.
+fn claims_of(claim: Function) -> Claims {
+    Arc::new(move |asked: Claim| {
+        let answer = claim.call1(&JsValue::UNDEFINED, &claim_to_js(asked));
+        Box::pin(async move {
+            let unanswered = |error: JsValue| Error::Unavailable(format!("{error:?}"));
+            let chains = JsFuture::from(Promise::resolve(&answer.map_err(unanswered)?))
+                .await
+                .map_err(unanswered)?;
+            Ok(Array::from(&chains)
+                .iter()
+                .map(|chain| Uint8Array::new(&chain).to_vec())
+                .collect())
+        }) as Answer
+    })
+}
+
+fn claim_to_js(claim: Claim) -> JsValue {
+    let object = Object::new();
+    let subject = match claim.subject {
+        Subject::This(did) => JsValue::from(did),
+        Subject::Any => JsValue::UNDEFINED,
+    };
+    let arguments: Array = claim
+        .arguments
+        .into_iter()
+        .map(|(name, value)| Array::of2(&name.into(), &Uint8Array::from(value.as_slice()).into()))
+        .collect();
+    let _ = Reflect::set(&object, &"subject".into(), &subject);
+    let _ = Reflect::set(&object, &"command".into(), &claim.command.into());
+    let _ = Reflect::set(&object, &"arguments".into(), &arguments);
+    let _ = Reflect::set(&object, &"reason".into(), &claim.reason.into());
+    object.into()
 }
 
 /// The changes among `kept`. A host before custodies kept keys and site
@@ -235,14 +254,6 @@ impl Embedder {
             .await
             .map_err(|error| JsError::new(&error))?;
         Ok(changes.iter().map(to_js).collect())
-    }
-
-    /// Hand the kernel's session the delegations `proofs`, renewed by the
-    /// person's profile: the kernel takes them up as it next reads them.
-    pub fn renew(&self, proofs: Array) -> Result<(), JsError> {
-        self.kernel
-            .renew(proofs_of(&proofs))
-            .map_err(|error| JsError::new(&error))
     }
 
     /// How long each stage of the boot took, in milliseconds.

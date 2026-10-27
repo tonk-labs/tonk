@@ -528,6 +528,13 @@ impl TonkState {
         Ok(())
     }
 
+    /// Whether this worker took up a delegation before: it acts for the
+    /// account the delegation named.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn acts(&self) -> Result<bool, crate::TonkWorkerError> {
+        Ok(crate::router::account::acts_for(self).await?.is_some())
+    }
+
     /// Give `space`, which this worker holds, its first commit if it has
     /// none: the kernel it runs, the asset `kernel` (its BLAKE3 `hash` and
     /// `size`, which the space's store already holds), and the pin to it.

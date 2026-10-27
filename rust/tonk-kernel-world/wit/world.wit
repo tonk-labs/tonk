@@ -58,6 +58,12 @@ world kernel {
   import network;
 }
 
+/// `kernel`, for the persona of a person: it signs them in.
+world persona {
+  include kernel;
+  import authentication;
+}
+
 /// What the adapters of `tonk-kernel-world` reach: the storage of a layer,
 /// the keys the embedder holds, and the session. A guest kernel that uses them
 /// imports the same interfaces through its own world.

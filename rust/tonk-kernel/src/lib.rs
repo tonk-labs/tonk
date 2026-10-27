@@ -31,6 +31,7 @@ use std::sync::{Mutex, PoisonError};
 use axum::Router;
 use http_body_util::BodyExt as _;
 use tonk_kernel_world::boot;
+use tonk_kernel_world::world::sapling::kernel::session::{Claim, Subject};
 use tonk_kernel_world::world::sapling::kernel::storage::Layer;
 use tonk_kernel_world::world::sapling::kernel::types::Error;
 use tonk_worker::{AppState, TonkState};
@@ -43,12 +44,9 @@ use world::wasi::http::types::{ErrorCode, Request, Response};
 /// thread-local: on `wasm32-wasip3` each export call is a task of its own.
 static ROUTER: Mutex<Option<Held>> = Mutex::new(None);
 
-/// The router holds Dialog DB's state, which is not `Send`: the router, the
-/// state behind it, and the space the boot named.
+/// The router holds Dialog DB's state, which is not `Send`.
 struct Held {
     router: Router,
-    state: AppState,
-    space: Option<Space>,
 }
 
 /// The space this kernel serves: its subject, and the layer the boot gave it,
@@ -59,21 +57,16 @@ struct Space {
     layer: Rc<Layer>,
 }
 
-/// The proofs of the session this kernel took up last. Its host hands proofs
-/// over at the first boot and again as it renews them, and each set is taken
-/// up once.
-static TAKEN: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
-
 // SAFETY: a component instance runs on a single thread; nothing here is
 // reached from another.
 unsafe impl Send for Held {}
 
-fn held() -> Option<(Router, AppState, Option<Space>)> {
+fn router() -> Option<Router> {
     ROUTER
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .as_ref()
-        .map(|held| (held.router.clone(), held.state.clone(), held.space.clone()))
+        .map(|held| held.router.clone())
 }
 
 fn invalid(error: impl std::fmt::Display) -> Error {
@@ -98,11 +91,19 @@ impl lifecycle::Guest for Kernel {
                 layer: Rc::new(stacked.layer),
             });
         let state = TonkState::open_kernel().await.map_err(invalid)?;
-        // The space, taken up with the proofs its session brings, or as it
-        // was taken up before: put back what a restart lost about it, and
-        // give it its first commit if it went without.
+        // The space, taken up with the delegation its session claims, or as
+        // it was taken up before, with the delegation claimed anew alongside:
+        // put back what a restart lost about it, and give it its first commit
+        // if it went without.
+        let renewing = match &space {
+            Some(space) if state.acts().await.unwrap_or(false) => Some(space.clone()),
+            Some(space) => {
+                take_up(&state, space).await;
+                None
+            }
+            None => None,
+        };
         if let Some(space) = &space {
-            take_up(&state, space).await;
             if let Err(error) = state.resume_space(&space.subject).await {
                 eprintln!("tonk-kernel: {} was not resumed: {error}", space.subject);
             }
@@ -111,11 +112,10 @@ impl lifecycle::Guest for Kernel {
             }
         }
         let (router, state, _) = tonk_worker::api_router_with_state(state);
-        *ROUTER.lock().unwrap_or_else(PoisonError::into_inner) = Some(Held {
-            router,
-            state,
-            space,
-        });
+        *ROUTER.lock().unwrap_or_else(PoisonError::into_inner) = Some(Held { router });
+        if let Some(space) = renewing {
+            wit_bindgen::spawn_local(async move { renew(&state, &space).await });
+        }
         let took = world::wasi::clocks::monotonic_clock::now() - started;
         tonk_common::log!("tonk-kernel: opened the worker in {}us", took / 1000);
         Ok(())
@@ -155,12 +155,9 @@ async fn incoming(request: Request) -> Result<axum::http::Request<axum::body::Bo
 
 impl handler::Guest for Kernel {
     async fn handle(request: Request) -> Result<Response, ErrorCode> {
-        let Some((router, state, space)) = held() else {
+        let Some(router) = router() else {
             return Ok(http::respond(503, Some("text/plain"), b"booting".to_vec()));
         };
-        if let Some(space) = &space {
-            take_up(&*state.read().await, space).await;
-        }
         let request = incoming(request).await?;
         let Ok(answer) = router.oneshot(request).await;
         let (parts, mut body) = answer.into_parts();
@@ -186,24 +183,53 @@ impl handler::Guest for Kernel {
     }
 }
 
-/// Take up the proofs the session holds for `space`, unless they are the
-/// ones taken up last. A chain is taken up only if the space signed it all
-/// the way down to this kernel's session, so a host cannot make the kernel
-/// act for another space.
+/// Claim the delegation of `space` to this kernel's session, and take up
+/// what the host hands over.
 async fn take_up(state: &TonkState, space: &Space) {
-    let proofs = tonk_kernel_world::session::proofs();
-    if proofs.is_empty() || *TAKEN.lock().unwrap_or_else(PoisonError::into_inner) == proofs {
-        return;
-    }
-    for chain in &proofs {
+    let chains = delegated(space, "to serve the space").await;
+    adopt(state, space, &chains).await;
+}
+
+/// Claim the delegation of `space` anew, as the kernel serves what it took up
+/// before, so a delegation running out is replaced. Nothing is locked while
+/// the host asks the person's profile.
+async fn renew(state: &AppState, space: &Space) {
+    let chains = delegated(space, "to keep serving the space").await;
+    adopt(&*state.read().await, space, &chains).await;
+}
+
+/// The delegations of `space` to this kernel's session, as its host answers
+/// the claim: none when it answers with none, or fails to.
+async fn delegated(space: &Space, reason: &str) -> Vec<Vec<u8>> {
+    let claim = Claim {
+        subject: Subject::This(space.subject.clone()),
+        command: "/".to_owned(),
+        arguments: Vec::new(),
+        reason: reason.to_owned(),
+    };
+    tonk_kernel_world::session::claim(claim)
+        .await
+        .unwrap_or_else(|error| {
+            eprintln!(
+                "tonk-kernel: {} was not delegated: {error:?}",
+                space.subject
+            );
+            Vec::new()
+        })
+}
+
+/// Take up `chains`. A chain is taken up only if the space signed it all the
+/// way down to this kernel's session, so a host cannot make the kernel act
+/// for another space.
+async fn adopt(state: &TonkState, space: &Space, chains: &[Vec<u8>]) {
+    for chain in chains {
         if let Err(error) = state.adopt_space(&space.subject, chain).await {
             eprintln!(
-                "tonk-kernel: a proof for {} was not taken up: {error}",
+                "tonk-kernel: a delegation of {} was not taken up: {error}",
                 space.subject
             );
         }
     }
-    *TAKEN.lock().unwrap_or_else(PoisonError::into_inner) = proofs;
 }
 
 /// Give the space its first commit, if it has none: the kernel its boot cell

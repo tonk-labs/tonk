@@ -1,14 +1,15 @@
-//! The session the boot hands a guest kernel: the key it acts under, the
-//! authority it acts for, and the delegations between them.
+//! The session the boot hands a guest kernel: the key it acts under, and the
+//! delegations to it that it claims from its host.
 
 use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
 
-use crate::world::sapling::kernel::credential::{Authority, Credential};
-use crate::world::sapling::kernel::session::Session;
+use crate::world::sapling::kernel::credential::Credential;
+use crate::world::sapling::kernel::session::{Claim, Session};
+use crate::world::sapling::kernel::types::Error;
 
 struct Held {
-    session: Session,
+    session: Rc<Session>,
     credential: Rc<Credential>,
 }
 
@@ -22,7 +23,7 @@ static SESSION: Mutex<Option<Held>> = Mutex::new(None);
 pub fn take_up(session: Session) {
     let credential = Rc::new(session.credential());
     *SESSION.lock().unwrap_or_else(PoisonError::into_inner) = Some(Held {
-        session,
+        session: Rc::new(session),
         credential,
     });
 }
@@ -42,20 +43,10 @@ pub fn credential() -> Rc<Credential> {
     with(|held| Rc::clone(&held.credential))
 }
 
-/// The authority this worker acts for.
-pub fn authority() -> Authority {
-    with(|held| held.session.authority())
-}
-
-/// The delegations to the credential that the host hands over now: at the
-/// first boot, and again as it renews them. None on a boot after the first,
-/// where the kernel holds what it took up before.
-pub fn proofs() -> Vec<Vec<u8>> {
-    with(|held| held.session.proofs())
-}
-
-/// The delegation this worker opens a layer with: the first of its proofs, or
-/// none.
-pub fn chain() -> Vec<u8> {
-    proofs().into_iter().next().unwrap_or_default()
+/// The delegations to the credential that grant `claim`, which the host holds
+/// or obtains. A guest kernel claims what it does not hold, and keeps what it
+/// is handed.
+pub async fn claim(claim: Claim) -> Result<Vec<Vec<u8>>, Error> {
+    let session = with(|held| Rc::clone(&held.session));
+    session.claim(claim).await
 }

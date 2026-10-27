@@ -5895,6 +5895,7 @@ version = "0.6.16-rc.1"
 dependencies = [
  "blake3",
  "bs58",
+ "dialog-common",
  "dialog-credentials",
  "dialog-ucan-core",
  "dialog-varsig",

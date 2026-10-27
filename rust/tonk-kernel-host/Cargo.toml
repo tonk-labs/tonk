@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 blake3 = "1"
+dialog-common.workspace = true
 dialog-credentials.workspace = true
 dialog-varsig.workspace = true
 ipld-core = "0.4"

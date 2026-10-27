@@ -1,15 +1,16 @@
-//! The keys a guest kernel reaches through handles: `credential` and
-//! `session`. Every key stays here: as its seed, or as a signer whose seed
-//! nothing reads, as a browser keeps a session's key. A guest kernel signs
-//! the bytes it writes, conceals its own messages to a DID, and
+//! The keys a guest kernel reaches through handles: `credential`, `session`
+//! and `authentication`. Every key stays here: as its seed, or as a signer
+//! whose seed nothing reads, as a browser keeps a session's key. A guest
+//! kernel signs the bytes it writes, conceals its own messages to a DID, and
 //! entrusts a key to a custodian whose key is here too, so no key reaches it.
+//! What it claims, its host's [`Claims`] answer.
 //!
-//! Not yet bound: an authority's key is held here as a credential's is, where
-//! a browser would open it only with a passkey.
+//! Not yet bound: signing a person in, which a browser does with a passkey.
 
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use dialog_common::ConditionalSync;
 use dialog_credentials::Ed25519Signer;
 use dialog_credentials::Ed25519Verifier;
 use dialog_credentials::ed25519::Extractable;
@@ -18,13 +19,18 @@ use dialog_credentials::secret::{Context, SealedSecret, SecretExtractableDerive}
 use dialog_varsig::Principal as _;
 use dialog_varsig::eddsa::Ed25519Signature;
 use ed25519_dalek::Signer as _;
+#[cfg(not(target_arch = "wasm32"))]
+use futures::future::BoxFuture;
+#[cfg(target_arch = "wasm32")]
+use futures::future::LocalBoxFuture;
 use wcmp::{Accessor, Resource};
 use zeroize::Zeroizing;
 
+use crate::bindings::sapling::kernel::authentication;
 use crate::bindings::sapling::kernel::credential::{
     self, Authority, Credential, Custodian, Payload as Signed,
 };
-use crate::bindings::sapling::kernel::session::{self, Session};
+use crate::bindings::sapling::kernel::session::{self, Claim, Session};
 use crate::bindings::sapling::kernel::types::Error;
 use crate::sapling::{KernelHost, Sapling, did_key, trace};
 
@@ -83,36 +89,56 @@ impl Key {
     }
 }
 
-/// What a session handle names: the key it acts under, the authority it acts
-/// for, and the delegations between them.
+/// The delegations a claim is answered with, once they come: `Send`
+/// natively, as a store's futures are, and not in the browser, where a
+/// JavaScript promise answers it.
+#[cfg(not(target_arch = "wasm32"))]
+pub type Answer = BoxFuture<'static, Result<Vec<Vec<u8>>, Error>>;
+#[cfg(target_arch = "wasm32")]
+pub type Answer = LocalBoxFuture<'static, Result<Vec<Vec<u8>>, Error>>;
+
+/// What answers a guest kernel's claims: the delegations its host holds, or
+/// obtains, such as from the person's profile.
+pub trait Claimant: ConditionalSync {
+    fn claim(&self, claim: Claim) -> Answer;
+}
+
+impl<F: Fn(Claim) -> Answer + ConditionalSync> Claimant for F {
+    fn claim(&self, claim: Claim) -> Answer {
+        self(claim)
+    }
+}
+
+pub type Claims = Arc<dyn Claimant>;
+
+/// What a session handle names: the key it acts under, and what answers its
+/// claims.
 pub struct Standing {
     pub credential: Key,
-    pub authority: Key,
-    pub proofs: Vec<Vec<u8>>,
+    pub claims: Claims,
 }
 
 impl Standing {
-    /// The standing of a worker that acts under the key of `seed`, for the
-    /// authority of `authority`, with `proofs`.
-    pub fn new(seed: [u8; 32], authority: [u8; 32], proofs: Vec<Vec<u8>>) -> Self {
+    /// The standing of a worker that acts under the key of `seed`, whose
+    /// first claim is answered with `handed`, and every claim after it with
+    /// none.
+    pub fn new(seed: [u8; 32], handed: Vec<Vec<u8>>) -> Self {
+        let handed = Mutex::new(handed);
         Self {
             credential: Key::generated(Zeroizing::new(seed)),
-            authority: Key::generated(Zeroizing::new(authority)),
-            proofs,
+            claims: Arc::new(move |_| {
+                let chains = core::mem::take(&mut *handed.lock().expect("handed"));
+                Box::pin(async move { Ok(chains) }) as Answer
+            }),
         }
     }
 
-    /// The standing of a worker that acts under `credential`, for the
-    /// authority of `authority`, with `proofs`: keys held as signers.
-    pub fn sealed(
-        credential: Ed25519Signer,
-        authority: Ed25519Signer,
-        proofs: Vec<Vec<u8>>,
-    ) -> Self {
+    /// The standing of a worker that acts under `credential`, a key held as
+    /// a signer, whose claims `claims` answers.
+    pub fn sealed(credential: Ed25519Signer, claims: Claims) -> Self {
         Self {
             credential: Key::Sealed(Box::new(credential)),
-            authority: Key::Sealed(Box::new(authority)),
-            proofs,
+            claims,
         }
     }
 }
@@ -127,11 +153,6 @@ impl KernelHost {
         self.keys[credential.rep() as usize].clone()
     }
 
-    fn hold_authority(&mut self, key: Key) -> Resource<Authority> {
-        self.authorities.push(key);
-        Resource::new_own((self.authorities.len() - 1) as u32)
-    }
-
     fn authority(&self, authority: &Resource<Authority>) -> Key {
         self.authorities[authority.rep() as usize].clone()
     }
@@ -144,14 +165,6 @@ impl KernelHost {
 
     fn standing(&self, session: &Resource<Session>) -> &Standing {
         &self.sessions[session.rep() as usize]
-    }
-
-    /// Hand each session the delegations `proofs` in place of the ones it
-    /// had: its host renewed them.
-    pub fn renew(&mut self, proofs: Vec<Vec<u8>>) {
-        for standing in &mut self.sessions {
-            standing.proofs = proofs.clone();
-        }
     }
 }
 
@@ -378,6 +391,17 @@ impl<T: 'static> credential::HostAuthorityWithStore<T> for Sapling {
         Ok(accessor.with(|mut access| access.get().authority(&authority).did()))
     }
 
+    async fn sign(
+        accessor: &Accessor<T, Self>,
+        authority: Resource<Authority>,
+        signed: Signed,
+    ) -> Result<Vec<u8>, Error> {
+        trace("authority.sign");
+        let key = accessor.with(|mut access| access.get().authority(&authority));
+        let Signed::Bytes(bytes) = signed;
+        key.sign(&bytes).await
+    }
+
     async fn confide(
         accessor: &Accessor<T, Self>,
         authority: Resource<Authority>,
@@ -405,6 +429,14 @@ impl<T: 'static> credential::HostAuthorityWithStore<T> for Sapling {
         let key = recover(&custodian, &custody).await?;
         Ok(accessor.with(|mut access| access.get().hold(key)))
     }
+
+    async fn enroll(
+        _accessor: &Accessor<T, Self>,
+        _authority: Resource<Authority>,
+        _id: Option<String>,
+    ) -> Result<(), Error> {
+        Err(Error::Unavailable("this host enrolls no passkey".into()))
+    }
 }
 
 impl session::Host for KernelHost {}
@@ -415,17 +447,32 @@ impl session::HostSession for KernelHost {
         self.hold(key)
     }
 
-    fn authority(&mut self, session: Resource<Session>) -> Resource<Authority> {
-        let key = self.standing(&session).authority.clone();
-        self.hold_authority(key)
-    }
-
-    fn proofs(&mut self, session: Resource<Session>) -> Vec<Vec<u8>> {
-        self.standing(&session).proofs.clone()
-    }
-
     fn drop(&mut self, _session: Resource<Session>) -> wcmp::Result<()> {
         Ok(())
+    }
+}
+
+impl<T: 'static> session::HostSessionWithStore<T> for Sapling {
+    async fn claim(
+        accessor: &Accessor<T, Self>,
+        session: Resource<Session>,
+        claim: Claim,
+    ) -> Result<Vec<Vec<u8>>, Error> {
+        trace("session.claim");
+        let claims =
+            accessor.with(|mut access| Arc::clone(&access.get().standing(&session).claims));
+        claims.claim(claim).await
+    }
+}
+
+impl authentication::Host for KernelHost {}
+
+impl<T: 'static> authentication::HostWithStore<T> for Sapling {
+    async fn authenticate(
+        _accessor: &Accessor<T, Self>,
+        _id: Option<String>,
+    ) -> Result<Resource<Authority>, Error> {
+        Err(Error::Unavailable("this host signs no one in".into()))
     }
 }
 

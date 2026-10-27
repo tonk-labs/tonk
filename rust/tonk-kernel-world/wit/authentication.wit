@@ -1,0 +1,15 @@
+package sapling:kernel@0.1.0;
+
+/// How the guest kernel of a persona has a person sign in. Only a persona
+/// imports it: the guest kernel of a space never signs anyone in.
+interface authentication {
+  use types.{error};
+  use credential.{authority};
+
+  /// The account of the person `id` names, such as by an email, once they
+  /// sign in with a passkey. With no `id`, the person chooses a passkey.
+  /// The embedder signs them up when they have no account: it makes the
+  /// account and its passkey, and keeps the account's key entrusted to the
+  /// passkey. `denied` when the person declines.
+  authenticate: async func(id: option<string>) -> result<authority, error>;
+}

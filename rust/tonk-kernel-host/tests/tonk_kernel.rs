@@ -16,10 +16,10 @@ fn space() -> String {
     did_key(&ed25519_dalek::SigningKey::from_bytes(&[3; 32]))
 }
 
-/// The standing every kernel here boots with: the same key and authority, so
-/// a kernel that starts again is the same worker.
+/// The standing every kernel here boots with: the same key, so a kernel that
+/// starts again is the same worker, and no delegation to claim.
 fn standing() -> Standing {
-    Standing::new([7; 32], [8; 32], Vec::new())
+    Standing::new([7; 32], Vec::new())
 }
 
 /// Boot a kernel over what an earlier one kept, and answer who it is.
@@ -165,8 +165,8 @@ async fn holds(kernel: &mut Kernel) -> tonk_kernel_host::kernel::Answer {
     kernel.request("GET", &path, b"").await.unwrap()
 }
 
-/// The first boot takes the space up with the proofs its session brings. A
-/// boot after it is handed none, and holds the space all the same: the
+/// The first boot takes the space up with the delegation its session claims.
+/// A boot after it is handed none, and holds the space all the same: the
 /// kernel kept what it took up.
 #[tokio::test(flavor = "current_thread")]
 async fn it_takes_up_its_space_from_its_session() {
@@ -177,7 +177,7 @@ async fn it_takes_up_its_space_from_its_session() {
     kernel
         .init(
             &space(),
-            Standing::new([7; 32], [8; 32], vec![space_to_session().await]),
+            Standing::new([7; 32], vec![space_to_session().await]),
         )
         .await
         .unwrap();
@@ -196,12 +196,12 @@ async fn it_takes_up_its_space_from_its_session() {
     assert_eq!(
         answer.status,
         200,
-        "a kernel handed no proofs holds what it took up: {}",
+        "a kernel handed no delegation holds what it took up: {}",
         answer.text()
     );
 }
 
-/// A kernel handed no proofs, and holding none, does not hold its space.
+/// A kernel handed no delegation, and holding none, does not hold its space.
 #[tokio::test(flavor = "current_thread")]
 async fn it_holds_no_space_it_was_not_delegated() {
     let engine = engine();

@@ -13,7 +13,7 @@
 // - Keeps the key of the space's session, which the person's profile hands
 //   it over the port a page of this origin hands it, with the delegation of
 //   the space to the key, which says which space this origin is. The kernel
-//   acts as that session, and keeps what it is delegated.
+//   acts as that session, claims what it needs delegated, and keeps it.
 // - Installs into a space that holds no kernel the one it was made for, which
 //   the person's profile hands it, as the space's own blob and boot cell.
 //   From then on the kernel comes from the space's store, not from anywhere
@@ -118,17 +118,6 @@ async function keep(records) {
 const keptKey = name => transact("keys", "readonly", store => store.get(name));
 const keepKey = (name, key) => transact("keys", "readwrite", store => store.put(key, name));
 
-// Not yet: the person's authority, which a passkey opens. This origin keeps
-// a key in its place, so the kernel has an authority to entrust keys to.
-async function authorityKey() {
-    let key = await keptKey("authority");
-    if (!key) {
-        key = await wasm_bindgen.generateKey();
-        await keepKey("authority", key);
-    }
-    return key;
-}
-
 // ---- The port up --------------------------------------------------------
 //
 // A page of this origin hands this worker a port to the person's profile,
@@ -212,14 +201,19 @@ async function receiveSession() {
     return { space: answer.space, session, proofs: [new Uint8Array(answer.chain)] };
 }
 
-// Hand the kernel a delegation of its space renewed by the person's profile,
-// once a page of this origin hands this worker a port up to it. The profile
-// derives the same key for the space each time, so it delegates to the key
-// the kernel already acts with.
-async function renew(embedder, session) {
-    const answer = await askHost({ delegate: await wasm_bindgen.keyDid(session) });
-    embedder.renew([new Uint8Array(answer.chain)]);
-    log("renewed", answer.space, "until", new Date(answer.expires * 1000).toISOString());
+// What answers the kernel's claims: the delegations the person's profile
+// handed over with the session, once, and after them the ones it delegates
+// anew, once a page of this origin hands this worker a port up to it. The
+// profile derives the same key for the space each time, so it delegates to
+// the key the kernel already acts with.
+function claims(session, handed) {
+    return async claim => {
+        if (handed.length) return handed.splice(0);
+        log("the kernel claims", claim.command, "for", claim.reason);
+        const answer = await askHost({ delegate: await wasm_bindgen.keyDid(session) });
+        log("delegated", answer.space, "until", new Date(answer.expires * 1000).toISOString());
+        return [new Uint8Array(answer.chain)];
+    };
 }
 
 // The host's files this origin serves, from the network while it answers,
@@ -268,18 +262,15 @@ async function start() {
     }
     const pinned = wasm_bindgen.pinned(space, records);
     if (pinned !== PINNED) throw new Error(`the space pins ${pinned}, not ${PINNED}`);
-    const embedder = await wasm_bindgen.boot(space, session, await authorityKey(), proofs, records);
+    const embedder = await wasm_bindgen.boot(space, session, claims(session, proofs), records);
     await keep(await embedder.drain());
     log("booted in", Math.round(performance.now() - started), "ms", embedder.timings);
-    // A kernel handed no proofs acts on the ones it kept: a renewal goes
-    // alongside, and holds nothing up.
-    if (!proofs.length) renew(embedder, session).catch(error => log("the delegation was not renewed:", error));
     return embedder;
 }
 
 // Boot the kernel, which takes up its space as it boots. After a space's
 // first start, booting needs nothing of the person's profile, and a
-// delegation renewed alongside never holds a page up.
+// delegation the kernel claims alongside never holds a page up.
 function run() {
     booting = start();
     booting.catch(error => {
