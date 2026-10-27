@@ -458,6 +458,7 @@ pub(crate) async fn disconnect(
     // linked-state signal is leaving the branch, which the caller does
     // after this. Here only the provider goes, so nothing routes to the
     // account meanwhile.
+    let mut timing = super::link_timing::LinkTiming::new("disconnect", "clear-provider");
     state
         .profile
         .secrets()
@@ -474,8 +475,11 @@ pub(crate) async fn disconnect(
     // fields clear, so the switcher renders this row as a local
     // workspace. The persisted root stays, so signing back in with the
     // same passkey still short-circuits in place.
+    timing.next("update-roster");
     super::profiles::upsert_active_entry(state, None).await;
+    timing.next("publish-link-row");
     publish_link(state).await;
+    timing.next("read-status");
     status(state).await
 }
 

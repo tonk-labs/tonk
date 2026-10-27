@@ -462,24 +462,31 @@ pub(crate) async fn sign_out(
     state: &AppState,
     source: Option<&super::ClientId>,
 ) -> Result<tonk_worker_api::AccountStatus, TonkWorkerError> {
+    let mut timing = super::link_timing::LinkTiming::new("sign-out", "transition-lock");
     let transition = {
         let tonk = state.read().await;
         Arc::clone(&tonk.profile_transition)
     };
     let _transition = transition.lock().await;
 
+    timing.next("state-lock");
     let (status, storage, name, profile, registry, profile_library) = {
         let tonk = state.read().await;
         // Clearing the provider writes into the account branch, so it
         // lands between the two halves of the withdrawal, while the
         // chain still proves this device may read what it writes into.
+        timing.next("begin-withdrawal");
         let withdrawal = super::account_devices::begin_withdrawal(&tonk).await;
+        timing.next("disconnect");
         let disconnected = super::account::disconnect(&tonk).await;
+        timing.next("finish-withdrawal");
         super::account_devices::finish_withdrawal(&tonk, withdrawal).await;
         disconnected?;
         // Read once the withdrawal has forgotten the root, so the status
         // reports the grant gone.
+        timing.next("status");
         let status = super::account::status(&tonk).await?;
+        timing.next("leave-account");
         super::profile::leave_account(&tonk).await;
         (
             status,
@@ -490,6 +497,7 @@ pub(crate) async fn sign_out(
             tonk.profile_library.clone(),
         )
     };
+    timing.next("boot-state");
     let new_state = crate::worker::boot_state_with_profile_library(
         storage,
         name,
@@ -498,6 +506,7 @@ pub(crate) async fn sign_out(
         profile_library,
     )
     .await?;
+    timing.next("promote");
     promote(state, new_state, source).await?;
     Ok(status)
 }
@@ -593,19 +602,21 @@ async fn promote(
     // that identity across the replacement instead of installing a fresh
     // false latch. A swap that finishes after retirement began also closes
     // its never-exposed reactor before publishing it.
-    let (retiring, profile_transition, context_generation, clients) = {
+    let (retiring, profile_transition, context_generation, clients, profile_swaps) = {
         let current = state.read().await;
         (
             Arc::clone(&current.retiring),
             Arc::clone(&current.profile_transition),
             Arc::clone(&current.context_generation),
             Arc::clone(&current.clients),
+            current.profile_swaps.clone(),
         )
     };
     new_state.retiring = retiring;
     new_state.profile_transition = profile_transition;
     new_state.context_generation = context_generation;
     new_state.clients = clients;
+    new_state.profile_swaps = profile_swaps.clone();
     if new_state.is_retiring() {
         new_state.reactor.shutdown();
     }
@@ -626,6 +637,10 @@ async fn promote(
     // here through the in-memory swap there are no fallible operations.
     registry.set_active(&new_state.storage, &name).await?;
     {
+        // The swap waits for every guard over the state. Syncs hold theirs
+        // across remote round trips, so they are told to give way first.
+        let _timing = super::link_timing::LinkTiming::new("promote", "state-write-lock");
+        profile_swaps.begin();
         let mut active = state.write().await;
         *active = new_state;
         active.context_generation.fetch_add(1, Ordering::AcqRel);

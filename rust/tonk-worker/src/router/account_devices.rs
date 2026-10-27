@@ -503,6 +503,7 @@ struct Publication {
 /// Begin withdrawing this device's own authority: mint its revocation,
 /// read where it must be published, and retract the device's rows.
 pub(crate) async fn begin_withdrawal(state: &TonkState) -> Withdrawal {
+    let mut timing = super::link_timing::LinkTiming::new("withdrawal-begin", "account-link");
     let Some(link) = super::account::account_link(state).await else {
         return Withdrawal {
             link: None,
@@ -510,6 +511,7 @@ pub(crate) async fn begin_withdrawal(state: &TonkState) -> Withdrawal {
         };
     };
     let own = state.profile.did().to_string();
+    timing.next("mint-revocation");
     let artifact = match self_revocation(state, &link).await {
         Ok((revocation, _)) => hex::decode(&revocation).ok(),
         Err(error) => {
@@ -517,6 +519,7 @@ pub(crate) async fn begin_withdrawal(state: &TonkState) -> Withdrawal {
             None
         }
     };
+    timing.next("read-endpoints");
     let publication = match artifact {
         Some(artifact) => Some(Publication {
             artifact,
@@ -524,6 +527,7 @@ pub(crate) async fn begin_withdrawal(state: &TonkState) -> Withdrawal {
         }),
         None => None,
     };
+    timing.next("retract-device-rows");
     if let Err(error) = retract_device_links(state, &own).await {
         log!("sign-out keeps its device rows: {error}");
     }
@@ -536,15 +540,18 @@ pub(crate) async fn begin_withdrawal(state: &TonkState) -> Withdrawal {
 /// Finish a withdrawal once the caller's own records are written: forget
 /// the root record, push, retract the chain, publish the revocation.
 pub(crate) async fn finish_withdrawal(state: &TonkState, withdrawal: Withdrawal) {
+    let mut timing = super::link_timing::LinkTiming::new("withdrawal-finish", "forget-root");
     // Forgotten whether or not a link was live: a root record with no
     // provider attached is still a grant this device holds.
     if let Err(error) = super::identity::forget_root(state).await {
         log!("sign-out kept the local root record: {error}");
     }
     if let Some(link) = &withdrawal.link {
+        timing.next("pull-and-push");
         if let Err(error) = super::account_state::pull_and_push_account_main(state).await {
             log!("sign-out did not push its retractions: {error}");
         }
+        timing.next("retract-chain");
         if let Err(error) = retract_own_delegation(state, link).await {
             log!("sign-out keeps its delegation on the branch: {error}");
         }
@@ -554,6 +561,7 @@ pub(crate) async fn finish_withdrawal(state: &TonkState, withdrawal: Withdrawal)
         endpoints,
     }) = withdrawal.publication
     {
+        timing.next("publish-revocation");
         let published = match endpoints {
             Ok(endpoints) => publish_revocation_to(&endpoints, &artifact).await,
             Err(error) => Err(error),
@@ -646,6 +654,10 @@ async fn revocation_endpoints(state: &TonkState) -> Result<BTreeSet<String>, Ton
 }
 
 /// Post `artifact` to each of `endpoints`; any refusal fails the whole.
+///
+/// The posts go out together, so publishing costs the slowest service's
+/// answer rather than the sum of them, and one refusal does not keep the
+/// artifact from the services after it.
 async fn publish_revocation_to(
     endpoints: &BTreeSet<String>,
     artifact: &[u8],
@@ -656,7 +668,7 @@ async fn publish_revocation_to(
         ));
     }
 
-    for endpoint in endpoints {
+    let posts = endpoints.iter().map(|endpoint| async move {
         let url = url::Url::parse(endpoint).map_err(|error| {
             TonkWorkerError::Internal(format!("unusable access endpoint '{endpoint}': {error}"))
         })?;
@@ -671,8 +683,12 @@ async fn publish_revocation_to(
             "device revocation recorded at {endpoint}: {}",
             receipt.revoked
         );
-    }
-    Ok(())
+        Ok::<(), TonkWorkerError>(())
+    });
+    futures_util::future::join_all(posts)
+        .await
+        .into_iter()
+        .collect()
 }
 
 /// Revoke a device: mint the artifact, publish it to every access

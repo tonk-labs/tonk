@@ -2280,6 +2280,7 @@ pub(crate) mod tests {
             registry: crate::device::Registry::new(name.clone(), directory),
             profile_transition: Default::default(),
             context_generation: Default::default(),
+            profile_swaps: Default::default(),
         };
         crate::router::repository::bootstrap_profile(&state)
             .await

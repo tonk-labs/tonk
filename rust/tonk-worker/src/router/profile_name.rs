@@ -278,6 +278,7 @@ mod tests {
             ),
             profile_transition: Default::default(),
             context_generation: Default::default(),
+            profile_swaps: Default::default(),
         }
     }
 
