@@ -12,23 +12,26 @@ extension RuntimeModel {
     let branch = try manageableBranch()
     let request = "urn:uuid:" + UUID().uuidString
     let arguments: [String: Any] = ["branch": branch, "requestID": request, "name": name]
-    _ = try await accountScript(
-      """
-      await api('/api/profile/branch/' + encodeURIComponent(branch) + '/transact', {
-        claims: [{op: 'assert', application: {
-          predicate: {kind: 'transient', concept: {
-            description: 'A request to create a new space.',
-            with: {name: {the: 'xyz.tonk.command.create-space/name', as: 'Text'}}
-          }}, parameters: {this: requestID, name}
-        }}]
-      });
-      return {submitted: true};
-      """, arguments: arguments)
-    let (status, detail) = try await receipt(
-      request, on: branch, namespace: "xyz.tonk.space-creation",
-      unconfirmed:
-        "The space was requested, but Tonk hasn’t confirmed it yet. Check the sidebar before trying again."
-    )
+    let (status, detail) = try await Self.submitAndConfirmSpaceCreation {
+      _ = try await accountScript(
+        """
+        await api('/api/profile/branch/' + encodeURIComponent(branch) + '/transact', {
+          claims: [{op: 'assert', application: {
+            predicate: {kind: 'transient', concept: {
+              description: 'A request to create a new space.',
+              with: {name: {the: 'xyz.tonk.command.create-space/name', as: 'Text'}}
+            }}, parameters: {this: requestID, name}
+          }}]
+        });
+        return {submitted: true};
+        """, arguments: arguments)
+    } confirm: {
+      try await receipt(
+        request, on: branch, namespace: "xyz.tonk.space-creation",
+        unconfirmed:
+          "The space was requested, but Tonk hasn’t confirmed it yet. Check the sidebar before trying again."
+      )
+    }
     if status == "failed" { throw HarnessError.message(detail) }
     guard detail.hasPrefix("/space/") else {
       throw HarnessError.message("The worker returned an invalid creation receipt.")
@@ -39,6 +42,18 @@ extension RuntimeModel {
     ) {
       $0.first { $0.subject == subject }
     }
+  }
+
+  /// A failed response does not establish that submission failed. Confirm the same
+  /// request before reporting an outcome; never submit a second creation here.
+  static func submitAndConfirmSpaceCreation(
+    submit: () async throws -> Void,
+    confirm: () async throws -> (String, String)
+  ) async throws -> (String, String) {
+    try Task.checkCancellation()
+    _ = try? await submit()
+    try Task.checkCancellation()
+    return try await confirm()
   }
 
   /// Renames the space itself and its label on the account directory.
