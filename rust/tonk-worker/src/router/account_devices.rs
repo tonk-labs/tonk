@@ -654,6 +654,10 @@ async fn revocation_endpoints(state: &TonkState) -> Result<BTreeSet<String>, Ton
 }
 
 /// Post `artifact` to each of `endpoints`; any refusal fails the whole.
+///
+/// The posts go out together, so publishing costs the slowest service's
+/// answer rather than the sum of them, and one refusal does not keep the
+/// artifact from the services after it.
 async fn publish_revocation_to(
     endpoints: &BTreeSet<String>,
     artifact: &[u8],
@@ -664,7 +668,7 @@ async fn publish_revocation_to(
         ));
     }
 
-    for endpoint in endpoints {
+    let posts = endpoints.iter().map(|endpoint| async move {
         let url = url::Url::parse(endpoint).map_err(|error| {
             TonkWorkerError::Internal(format!("unusable access endpoint '{endpoint}': {error}"))
         })?;
@@ -679,8 +683,12 @@ async fn publish_revocation_to(
             "device revocation recorded at {endpoint}: {}",
             receipt.revoked
         );
-    }
-    Ok(())
+        Ok::<(), TonkWorkerError>(())
+    });
+    futures_util::future::join_all(posts)
+        .await
+        .into_iter()
+        .collect()
 }
 
 /// Revoke a device: mint the artifact, publish it to every access
