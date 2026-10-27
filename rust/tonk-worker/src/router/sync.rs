@@ -353,16 +353,20 @@ impl PublicationRetry {
 /// novelty shipped. Both say another writer got there first, and both
 /// converge the same way: the next sweep pulls, then pushes.
 fn is_upstream_moved(error: &crate::reactor::ReactorError) -> bool {
+    matches!(error, crate::reactor::ReactorError::Push(push) if is_push_out_of_date(push))
+}
+
+/// Whether a push was refused because upstream holds a head it has not
+/// merged: pulling that head and pushing again is the recovery.
+pub(crate) fn is_push_out_of_date(error: &dialog_repository::PushError) -> bool {
     matches!(
         error,
-        crate::reactor::ReactorError::Push(
-            dialog_repository::PushError::NonFastForward { .. }
-                | dialog_repository::PushError::PublishRemoteBranch(
-                    dialog_repository::PublishRemoteBranchError::Publish(
-                        PublishError::VersionMismatch { .. }
-                    )
+        dialog_repository::PushError::NonFastForward { .. }
+            | dialog_repository::PushError::PublishRemoteBranch(
+                dialog_repository::PublishRemoteBranchError::Publish(
+                    PublishError::VersionMismatch { .. }
                 )
-        )
+            )
     )
 }
 
