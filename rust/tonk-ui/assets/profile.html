@@ -166,6 +166,16 @@
                 // the worker as it is.
                 var BOOT_CACHE = "tonk-boot";
                 var BOOT_KEY = "/__boot";
+                // The persona this deployment ships, written in by the build
+                // (`scripts/build-kernel-host.sh`): a shell that a worker from
+                // before kernels served cannot ask that worker for
+                // `/_host/kernel.json`, which it does not know.
+                var SHIPPED_PERSONA = null;
+                async function deployed() {
+                    if (SHIPPED_PERSONA) return SHIPPED_PERSONA;
+                    var answer = await fetch("/_host/kernel.json", { cache: "no-cache" });
+                    return answer.ok ? (await answer.json()).persona : null;
+                }
                 async function shipped() {
                     var id = null;
                     try {
@@ -175,8 +185,7 @@
                     } catch (error) {}
                     if (!id) {
                         try {
-                            var answer = await fetch("/_host/kernel.json", { cache: "no-cache" });
-                            var persona = answer.ok ? (await answer.json()).persona : null;
+                            var persona = await deployed();
                             if (typeof persona !== "string") return null;
                             await (await caches.open(BOOT_CACHE)).put(BOOT_KEY, Response.json({ v: 2, kernel: persona }));
                             id = persona;
