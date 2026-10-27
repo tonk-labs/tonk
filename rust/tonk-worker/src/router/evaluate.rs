@@ -176,6 +176,7 @@ pub async fn evaluate(
         // suffices — same as `query`/`transact`/`sync`. The committing path serializes
         // on the branch transactor itself (see `evaluate_on_branch`).
         let tonk_state = state.read().await;
+        super::adopt::mount_on_first_use(&tonk_state, &state, &path.repo).await;
         let tonk_branch = tonk_state
             .reactor
             .repository(&path.repo)
