@@ -59,27 +59,30 @@ async fn it_answers_with_tonk_s_worker() {
     println!("timings: {:?}", kernel.timings);
 }
 
-/// The worker's keys are made by the host and entrusted to the session's
-/// credential: the kernel keeps each custody in a cell, and a kernel that
-/// starts again over them recovers the same keys, so it is the same profile.
+/// A kernel keeps no key of its own: it acts as its session, whose key its
+/// host holds, so it keeps no custody, and a kernel that starts again over
+/// what it kept is the same worker.
 #[tokio::test(flavor = "current_thread")]
-async fn it_keeps_its_keys_as_custodies() {
+async fn it_keeps_no_key_of_its_own() {
     let engine = engine();
     let bytes = tonk_components::TONK_KERNEL_BYTES;
-
-    let kept = scratch("custodies");
+    let kept = scratch("no-keys");
     let first = identify(&engine, bytes, &kept).await;
     let credentials = kept
         .open("did:local:profile:dialog.credential")
         .await
         .unwrap();
     let custodies = layers::list(&credentials, "custody").await.unwrap();
-    assert!(!custodies.is_empty(), "the kernel keeps each key's custody");
+    assert_eq!(
+        custodies,
+        Vec::<String>::new(),
+        "the kernel keeps no custody"
+    );
 
     let again = identify(&engine, bytes, &kept).await;
     assert_eq!(
         first, again,
-        "a kernel that starts again is the same profile"
+        "a kernel that starts again is the same worker"
     );
 }
 
@@ -147,8 +150,8 @@ async fn it_acts_as_its_session() {
 }
 
 /// A kernel that serves its session's own space is a person's profile: its
-/// peer is its session, with an account of its own, and it names the spaces
-/// it holds.
+/// peer is its session, and it creates a space with a key the host makes,
+/// whose seed it never knows.
 #[tokio::test(flavor = "current_thread")]
 async fn it_is_a_person_s_profile_on_its_session_s_own_space() {
     let engine = engine();
@@ -185,26 +188,22 @@ async fn it_is_a_person_s_profile_on_its_session_s_own_space() {
         .await
         .unwrap();
     assert_eq!(answer.status, 200, "{}", answer.text());
-    println!("transact -> {}", answer.text());
 
     let listed = kernel.request("GET", "/api/profile", b"").await.unwrap();
-    println!("profile -> {}", listed.text());
     let listed: serde_json::Value = serde_json::from_str(&listed.text()).unwrap();
-    let space = listed["space"][0]["subject"].as_str().map(str::to_owned);
-    println!("space -> {space:?}");
-    if let Some(space) = space {
-        let visit = serde_json::json!({ "claims": [{ "op": "assert", "application": {
-            "predicate": { "kind": "transient", "concept": { "with": {
-                "url": { "the": "xyz.tonk.command.join/url", "as": "Text" }
-            } } },
-            "parameters": { "this": "cmd:join", "url": format!("http://localhost:8080/space/{space}") }
-        } }] });
-        let answer = kernel
-            .request("POST", &path, visit.to_string().as_bytes())
-            .await
-            .unwrap();
-        println!("visit -> {} {}", answer.status, answer.text());
-    }
+    let space = listed["space"][0]["subject"]
+        .as_str()
+        .expect("the profile lists the space it created")
+        .to_owned();
+    let keys = kernel.keys();
+    assert!(
+        keys.contains(&(space.clone(), false)),
+        "the space's key is one the host made: {keys:?}"
+    );
+    assert!(
+        keys.iter().all(|(_, imported)| !imported),
+        "the kernel imports no seed it knows: {keys:?}"
+    );
 }
 
 /// The delegation of the space to the session's key, signed by the space,

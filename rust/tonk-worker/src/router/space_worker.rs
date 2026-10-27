@@ -30,6 +30,7 @@ use dialog_ucan_core::{
     time::{TimeRange, Timestamp},
 };
 use dialog_varsig::Did;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_varsig::Principal as _;
 use dialog_varsig::signature::AnySignature;
 use futures_util::stream;
@@ -675,44 +676,6 @@ mod tests {
             "the worker acts for the account the person's profile acts for"
         );
         resume(&worker, &space).await.unwrap();
-    }
-
-    /// The profile hands a space's host the key of the space's session,
-    /// which only the key the host made to receive it reveals, with the
-    /// space delegated to it. Asked again, it hands over the same key.
-    #[dialog_common::test]
-    async fn it_hands_a_space_s_host_the_key_of_its_session() {
-        use dialog_credentials::Ed25519Signer;
-        use dialog_credentials::secret::SealedSecret;
-
-        let (host, space) = host_with_space().await;
-        let host = host.read().await;
-        let receiver = Ed25519Signer::generate().await.unwrap();
-        let handed = hand_over(&host, &space, &receiver.did()).await.unwrap();
-
-        let sealed = SealedSecret::from_bytes(&handed.sealed).unwrap();
-        let seed = receiver
-            .secret(Context::new(handover::HANDOVER))
-            .reveal(&sealed)
-            .await
-            .unwrap();
-        let seed = <[u8; 32]>::try_from(seed.as_slice()).unwrap();
-        let key = Ed25519Signer::import(&seed).await.unwrap();
-        assert_eq!(key.did(), handed.session, "the receiver reveals the key");
-        let chain = DelegationChain::try_from(handed.grant.chain.as_slice()).unwrap();
-        assert_eq!(chain.audience(), &handed.session, "the space is the key's");
-
-        let stranger = Ed25519Signer::generate().await.unwrap();
-        assert!(
-            stranger
-                .secret(Context::new(handover::HANDOVER))
-                .reveal(&sealed)
-                .await
-                .is_err(),
-            "no other key reveals it"
-        );
-        let again = hand_over(&host, &space, &stranger.did()).await.unwrap();
-        assert_eq!(again.session, handed.session, "it is the same key again");
     }
 
     /// The page that hands a space's worker its delegation is on the space's

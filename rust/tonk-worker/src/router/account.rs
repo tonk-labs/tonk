@@ -124,6 +124,11 @@ pub(crate) async fn member_did(
     if let Some(account) = acts_for(state).await? {
         return Ok(account);
     }
+    // A kernel acts under its own authority until the person signs in.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    if let Err(TonkWorkerError::RootRequired) = super::identity::local_root(state).await {
+        return Ok(state.profile.did());
+    }
     current_account(state).await.map(|(did, _)| did)
 }
 

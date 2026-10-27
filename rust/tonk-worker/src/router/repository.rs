@@ -17,7 +17,9 @@ use ::axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
 };
-use dialog_credentials::{Credential, Ed25519Signer};
+use dialog_credentials::Credential;
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+use dialog_credentials::Ed25519Signer;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
     ConnectedReplica, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
@@ -29,14 +31,16 @@ use serde::{Deserialize, Serialize};
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_macros::handler;
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+use tonk_schema::SeedKind;
 use tonk_schema::claim::SourceClaim;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
     Branch as MetaBranch, Invitation, InvitedVia, MemberName, MemberRole, Membership, Remote,
-    RemoteExecution, Replica, RepositoryName, SeedKind, SpaceDescription, SpaceStatus,
-    TrackingBranch,
+    RemoteExecution, Replica, RepositoryName, SpaceDescription, SpaceStatus, TrackingBranch,
 };
 use url::Url;
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
 use zeroize::Zeroizing;
 
 use super::AppState;
@@ -6353,6 +6357,7 @@ pub async fn create_repository(
     // Delegating to an account from the start means enrolling a passkey
     // is an account key ROTATION, the same operation a compromised
     // passkey needs, rather than a bespoke migration.
+    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
     let owner = match super::identity::local_root(tonk).await {
         Ok(root) => root.root_did,
         Err(TonkWorkerError::RootRequired) => {
@@ -6383,6 +6388,12 @@ pub async fn create_repository(
             )));
         }
     };
+    // A kernel's space delegates to whom the profile acts for: itself, until
+    // the person signs in.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    let owner = super::account::member_did(tonk)
+        .await
+        .map_err(|error| RepositoryError::Internal(format!("the space has no owner: {error}")))?;
 
     // 1. Generate the repository's credential up front so its
     // `did:key` is its stable identity. The repository's routing
@@ -6395,26 +6406,31 @@ pub async fn create_repository(
     // sealed to the account below; the signer imports from it the same
     // way an account root does (non-extractable on the web target), so
     // the credential the repository stores is the shape it always was.
-    let mut seed = Zeroizing::new([0u8; 32]);
-    getrandom::fill(seed.as_mut())
-        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
-    let signer = Ed25519Signer::import(&*seed)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
+    let signer = {
+        let mut seed = Zeroizing::new([0u8; 32]);
+        getrandom::fill(seed.as_mut())
+            .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+        let signer = Ed25519Signer::import(&*seed)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+        // The seed sealed to the account is the ONLY copy of the space
+        // secret that outlives this function: the repository stores the
+        // verifier, and every later act on the space proves through `space
+        // -> account -> device`, the way a joined replica does. So the
+        // custody row lands before anything else does, and a seed that
+        // cannot be custodied is a space that is not created.
+        if !super::account_state::custody_seed(tonk, &signer.did(), SeedKind::Space, seed).await {
+            return Err(RepositoryError::Internal(
+                "the space seed could not be custodied under the account".to_string(),
+            ));
+        }
+        signer
+    };
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    let signer = generated_space_key(tonk).await?;
     let did = signer.did();
     let key = did.repo_key();
-
-    // The seed sealed to the account is the ONLY copy of the space secret
-    // that outlives this function: the repository stores the verifier, and
-    // every later act on the space proves through `space -> account ->
-    // device`, the way a joined replica does. So the custody row lands
-    // before anything else does, and a seed that cannot be custodied is a
-    // space that is not created.
-    if !super::account_state::custody_seed(tonk, &did, SeedKind::Space, seed).await {
-        return Err(RepositoryError::Internal(
-            "the space seed could not be custodied under the account".to_string(),
-        ));
-    }
 
     // Where the space renders on an origin of its own, the worker there
     // mounts it and holds everything in it. This worker makes its identity
@@ -6543,6 +6559,46 @@ pub async fn create_repository(
     }
 
     Ok(repository)
+}
+
+/// A new space's key, made by the kernel's host, which holds it: the
+/// kernel signs as the space through the host, and keeps the key's custody,
+/// entrusted to the session's credential, as this peer's copy of the key.
+/// Its seed never reaches the kernel.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+async fn generated_space_key(
+    tonk: &TonkState,
+) -> Result<dialog_credentials::SignerCredential, RepositoryError> {
+    use tonk_kernel_world::world::sapling::kernel::credential::{self, Custodian};
+
+    let failed = |what: &str, error: &dyn std::fmt::Debug| {
+        RepositoryError::Internal(format!("{what}: {error:?}"))
+    };
+    let space = std::rc::Rc::new(
+        credential::generate()
+            .await
+            .map_err(|error| failed("the host made no key for the space", &error))?,
+    );
+    let session = tonk_kernel_world::session::credential();
+    let custody = space
+        .entrust(Custodian::Credential(&session))
+        .await
+        .map_err(|error| failed("the space's key was not entrusted", &error))?;
+    let did: Did = space
+        .did()
+        .parse()
+        .map_err(|error| failed("the space's key names no DID", &error))?;
+    dialog_repository::secrets::grant(
+        tonk.profile.state(),
+        &did,
+        &tonk.profile.did(),
+        custody,
+        &tonk.profile,
+    )
+    .await
+    .map_err(|error| failed("the space's custody was not kept", &error))?;
+    tonk_kernel_world::credentials::signer(space)
+        .map_err(|error| failed("the space's key is not a signer", &error))
 }
 
 /// The profile secret a space's pending [`SpaceSeed`] is kept under.

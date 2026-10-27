@@ -215,26 +215,6 @@ where
     .await
 }
 
-/// Open the peer a profile is, as [`open_peer`] does, acting with
-/// `credential`, which its host hands it, not one kept in a credential
-/// store: a kernel's profile is its session.
-pub async fn open_peer_as<S>(
-    credential: SignerCredential,
-    location: Location,
-    base: Directory,
-    storage: Storage<S>,
-    system: &SignerCredential,
-) -> Result<Peer<S>, PeerError>
-where
-    S: PeerSpace + Resource<Location, Error: Display>,
-{
-    let peer = assemble_peer(credential, location, base, storage, system, ACCESS_BRANCH).await?;
-    onboard(&peer)
-        .await
-        .map_err(|error| PeerError::State(error.to_string()))?;
-    Ok(peer)
-}
-
 /// The peer both [`open_peer_on`] and [`open_delegate`] open, before either
 /// decides whether it has an account.
 async fn build_peer<S>(

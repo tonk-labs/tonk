@@ -61,7 +61,7 @@ impl Key {
         }
     }
 
-    fn did(&self) -> String {
+    pub(crate) fn did(&self) -> String {
         match self {
             Self::Seed { seed, .. } => did_key(&ed25519_dalek::SigningKey::from_bytes(seed)),
             Self::Sealed(signer) => signer.did().to_string(),
@@ -69,7 +69,7 @@ impl Key {
     }
 
     /// Whether the guest kernel knew this key's seed.
-    fn imported(&self) -> bool {
+    pub(crate) fn imported(&self) -> bool {
         matches!(self, Self::Seed { imported: true, .. })
     }
 

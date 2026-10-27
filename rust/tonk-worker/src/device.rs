@@ -223,6 +223,7 @@ impl Registry {
 
     /// The storage every profile in this registry's directory is
     /// mounted in, owned by the system tonk runs as there.
+    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
     pub(crate) async fn storage(&self) -> Result<Storage<DefaultSpace>, TonkWorkerError> {
         let (_, system) = tonk_account::peer::open_system::<DefaultSpace>(self.directory.clone())
             .await
@@ -230,6 +231,13 @@ impl Registry {
                 TonkWorkerError::Internal(format!("failed to open the system key: {error}"))
             })?;
         Ok(Storage::<DefaultSpace>::new().owned_by(system.did()))
+    }
+
+    /// The storage of a kernel: its host's layers, which its session owns.
+    /// The host keeps them; there is no system to own them.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub(crate) async fn storage(&self) -> Result<Storage<DefaultSpace>, TonkWorkerError> {
+        Ok(Storage::<DefaultSpace>::new().owned_by(session()?.did()))
     }
 
     /// Open the profile `name` in this registry's directory over
@@ -276,8 +284,10 @@ impl Registry {
 
     /// Open the profile `name` over `storage`, in a kernel: its peer is its
     /// session, which acts with the key its host hands it, so there is never
-    /// one to make. A person's has an account of its own; a space's own
-    /// worker's acts under the delegations its session brings.
+    /// one to make, and it holds the storage it is granted itself. It acts
+    /// for no account until the person signs in: a person's under its own
+    /// authority, a space's own worker's under the delegations its session
+    /// claims.
     #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
     async fn open(
         &self,
@@ -285,36 +295,15 @@ impl Registry {
         name: &str,
         _create: bool,
     ) -> Result<DefaultProfile, dialog_peer::PeerError> {
-        let (_, system) =
-            tonk_account::peer::open_system::<DefaultSpace>(self.directory.clone()).await?;
-        let location = Location::new(self.directory.clone(), name);
-        let base = self.space_location("").directory;
-        let session =
-            tonk_kernel_world::credentials::signer(tonk_kernel_world::session::credential())
-                .map_err(|error| dialog_peer::PeerError::Open(error.to_string()))?;
-        let profile = match self.standing {
-            Standing::Person => {
-                tonk_account::peer::open_peer_as(
-                    session,
-                    location.clone(),
-                    base,
-                    storage.clone(),
-                    &system,
-                )
-                .await?
-            }
-            Standing::Site => {
-                tonk_account::peer::open_delegate_as(
-                    session,
-                    location.clone(),
-                    base,
-                    storage.clone(),
-                    &system,
-                )
-                .await?
-            }
-        };
-        migrated(profile, &location).await
+        let session = session().map_err(|error| dialog_peer::PeerError::Open(error.to_string()))?;
+        tonk_account::peer::open_delegate_as(
+            session.clone(),
+            Location::new(self.directory.clone(), name),
+            self.space_location("").directory,
+            storage.clone(),
+            &session,
+        )
+        .await
     }
 
     /// Open the profile `name` as it acts on its account branch `branch`:
@@ -699,8 +688,16 @@ pub async fn create_profile(
     Registry::device().create_profile(storage).await
 }
 
+/// The key a kernel's session acts under, which its host holds.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+fn session() -> Result<dialog_credentials::SignerCredential, TonkWorkerError> {
+    tonk_kernel_world::credentials::signer(tonk_kernel_world::session::credential())
+        .map_err(|error| TonkWorkerError::Internal(error.to_string()))
+}
+
 /// `profile`, with the site secrets an older worker kept by name moved
 /// into it.
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
 async fn migrated(
     profile: DefaultProfile,
     location: &Location,

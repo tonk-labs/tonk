@@ -272,6 +272,17 @@ impl Kernel {
         answer.map_err(|error| format!("init answered {error:?}"))
     }
 
+    /// The DID of each key the host holds for the guest kernel, and whether
+    /// the guest kernel knew its seed.
+    pub fn keys(&mut self) -> Vec<(String, bool)> {
+        self.store
+            .data_mut()
+            .keys
+            .iter()
+            .map(|key| (key.did(), key.imported()))
+            .collect()
+    }
+
     /// Hand the guest kernel one request, and read its whole answer.
     pub async fn request(
         &mut self,
