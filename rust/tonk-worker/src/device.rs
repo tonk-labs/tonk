@@ -234,6 +234,7 @@ impl Registry {
 
     /// Open the profile `name` in this registry's directory over
     /// `storage`: load it, or, with `create`, make one when none is there.
+    #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
     async fn open(
         &self,
         storage: &Storage<DefaultSpace>,
@@ -258,24 +259,6 @@ impl Registry {
                 )
                 .await?
             }
-            // A kernel's peer is its session: it acts with the key its host
-            // hands it, under the delegations its session brings.
-            #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
-            Standing::Site => {
-                let session = tonk_kernel_world::credentials::signer(
-                    tonk_kernel_world::session::credential(),
-                )
-                .map_err(|error| dialog_peer::PeerError::Open(error.to_string()))?;
-                tonk_account::peer::open_delegate_as(
-                    session,
-                    location.clone(),
-                    base,
-                    storage.clone(),
-                    &system,
-                )
-                .await?
-            }
-            #[cfg(not(all(target_arch = "wasm32", not(target_os = "unknown"))))]
             Standing::Site => {
                 tonk_account::peer::open_delegate(
                     location.clone(),
@@ -288,14 +271,50 @@ impl Registry {
                 .await?
             }
         };
-        tonk_account::peer::migrate_site_secrets(
-            &profile,
-            &location,
-            &legacy_sites(crate::router::repository::PROFILE_BRANCH),
-        )
-        .await
-        .map_err(|error| dialog_peer::PeerError::State(error.to_string()))?;
-        Ok(profile)
+        migrated(profile, &location).await
+    }
+
+    /// Open the profile `name` over `storage`, in a kernel: its peer is its
+    /// session, which acts with the key its host hands it, so there is never
+    /// one to make. A person's has an account of its own; a space's own
+    /// worker's acts under the delegations its session brings.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    async fn open(
+        &self,
+        storage: &Storage<DefaultSpace>,
+        name: &str,
+        _create: bool,
+    ) -> Result<DefaultProfile, dialog_peer::PeerError> {
+        let (_, system) =
+            tonk_account::peer::open_system::<DefaultSpace>(self.directory.clone()).await?;
+        let location = Location::new(self.directory.clone(), name);
+        let base = self.space_location("").directory;
+        let session =
+            tonk_kernel_world::credentials::signer(tonk_kernel_world::session::credential())
+                .map_err(|error| dialog_peer::PeerError::Open(error.to_string()))?;
+        let profile = match self.standing {
+            Standing::Person => {
+                tonk_account::peer::open_peer_as(
+                    session,
+                    location.clone(),
+                    base,
+                    storage.clone(),
+                    &system,
+                )
+                .await?
+            }
+            Standing::Site => {
+                tonk_account::peer::open_delegate_as(
+                    session,
+                    location.clone(),
+                    base,
+                    storage.clone(),
+                    &system,
+                )
+                .await?
+            }
+        };
+        migrated(profile, &location).await
     }
 
     /// Open the profile `name` as it acts on its account branch `branch`:
@@ -678,6 +697,22 @@ pub async fn create_profile(
     storage: &Storage<DefaultSpace>,
 ) -> Result<(String, DefaultProfile), TonkWorkerError> {
     Registry::device().create_profile(storage).await
+}
+
+/// `profile`, with the site secrets an older worker kept by name moved
+/// into it.
+async fn migrated(
+    profile: DefaultProfile,
+    location: &Location,
+) -> Result<DefaultProfile, dialog_peer::PeerError> {
+    tonk_account::peer::migrate_site_secrets(
+        &profile,
+        location,
+        &legacy_sites(crate::router::repository::PROFILE_BRANCH),
+    )
+    .await
+    .map_err(|error| dialog_peer::PeerError::State(error.to_string()))?;
+    Ok(profile)
 }
 
 #[cfg(test)]

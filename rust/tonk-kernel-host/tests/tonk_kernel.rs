@@ -129,6 +129,44 @@ async fn it_acts_as_its_session() {
     assert!(said.contains(&session), "{said} names {session}");
 }
 
+/// A kernel that serves its session's own space is a person's profile: its
+/// peer is its session, with an account of its own, and it names the spaces
+/// it holds.
+#[tokio::test(flavor = "current_thread")]
+async fn it_is_a_person_s_profile_on_its_session_s_own_space() {
+    let engine = engine();
+    let session = did_key(&ed25519_dalek::SigningKey::from_bytes(&[7; 32]));
+    let mut kernel = Kernel::load(&engine, tonk_components::TONK_KERNEL_BYTES)
+        .await
+        .unwrap();
+    kernel.init(&session, standing()).await.unwrap();
+    for path in ["/api/identify", "/api/profiles", "/api/profile"] {
+        let answer = kernel.request("GET", path, b"").await.unwrap();
+        assert_eq!(answer.status, 200, "{path}: {}", answer.text());
+        println!("{path} -> {}", answer.text());
+    }
+    let said = kernel.request("GET", "/api/identify", b"").await.unwrap();
+    assert!(
+        said.text().contains(&session),
+        "{} names {session}",
+        said.text()
+    );
+
+    let create = serde_json::json!({ "claims": [{ "op": "assert", "application": {
+        "predicate": { "kind": "transient", "concept": { "with": {
+            "name": { "the": "xyz.tonk.command.create-space/name", "as": "Text" }
+        } } },
+        "parameters": { "this": "cmd:create", "name": "Untitled" }
+    } }] });
+    let path = format!("/api/repository/{session}/branch/main/transact");
+    let answer = kernel
+        .request("POST", &path, create.to_string().as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(answer.status, 200, "{}", answer.text());
+    println!("transact -> {}", answer.text());
+}
+
 /// The delegation of the space to the session's key, signed by the space,
 /// with the account it is for in its meta, as the person's profile signs it.
 async fn space_to_session() -> Vec<u8> {

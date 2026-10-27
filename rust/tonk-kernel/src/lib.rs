@@ -79,8 +79,6 @@ impl lifecycle::Guest for Kernel {
     async fn init(boot: lifecycle::Boot) -> Result<(), Error> {
         let started = world::wasi::clocks::monotonic_clock::now();
         tonk_kernel_world::session::take_up(boot.session);
-        // A kernel is a space's own worker: its peer is its session.
-        tonk_worker::set_standing(tonk_worker::Standing::Site);
         // The space this kernel serves: the subject of its `memory:space`.
         let space = boot
             .stack
@@ -90,6 +88,16 @@ impl lifecycle::Guest for Kernel {
                 subject: stacked.layer.subject(),
                 layer: Rc::new(stacked.layer),
             });
+        // A kernel's peer is its session. A space that is the session's own
+        // is a person's profile, which has an account of its own; any other
+        // is a space this kernel is the own worker of, which it acts on as
+        // its session is delegated.
+        let own = tonk_kernel_world::session::credential().did();
+        let (standing, space) = match space {
+            Some(space) if space.subject == own => (tonk_worker::Standing::Person, None),
+            space => (tonk_worker::Standing::Site, space),
+        };
+        tonk_worker::set_standing(standing);
         let state = TonkState::open_kernel().await.map_err(invalid)?;
         // The space, taken up with the delegation its session claims, or as
         // it was taken up before, with the delegation claimed anew alongside:

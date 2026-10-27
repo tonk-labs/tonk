@@ -158,9 +158,30 @@
                 // takes over later, a new build, takes this document as it
                 // is: it asks for a port of its own (`need-port`), and nothing
                 // here loads again.
+                // The worker the profile runs: the bootloader of the kernel
+                // this deployment ships, or `null` where that cannot be told
+                // now (offline), which leaves the worker as it is.
+                async function shipped() {
+                    try {
+                        var answer = await fetch("/_host/kernel.json", { cache: "no-cache" });
+                        if (!answer.ok) return null;
+                        var id = (await answer.json()).kernel;
+                        return typeof id === "string" ? "/kernel_boot.js?kernel=" + encodeURIComponent(id) : null;
+                    } catch (error) {
+                        return null;
+                    }
+                }
+
+                function runs(worker) {
+                    var url = new URL(worker.scriptURL);
+                    return url.pathname + url.search;
+                }
+
                 async function control() {
                     var container = navigator.serviceWorker;
-                    if (container.controller && (await speaks(container.controller))) return;
+                    var script = await shipped();
+                    var current = container.controller;
+                    if (current && (!script || runs(current) === script) && (await speaks(current))) return;
                     // A worker the browser cannot update keeps control of
                     // this origin for good: one registered as a classic script
                     // cannot become a module. It is withdrawn, and the current
@@ -179,7 +200,7 @@
                             resolve();
                         });
                     });
-                    await container.register("/boot.js", {
+                    await container.register(script || "/boot.js", {
                         scope: "/",
                         updateViaCache: "none",
                     });

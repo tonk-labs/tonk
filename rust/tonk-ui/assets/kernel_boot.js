@@ -16,6 +16,12 @@
 //   acts as that session, claims what it needs delegated, and keeps it.
 // - Installs into a space that holds no kernel the one it was made for, which
 //   the person's profile hands it, as the space's own blob and boot cell.
+//
+// On the profile's origin (`profile.{host}`) the space is the person's
+// profile: the session's own, so it needs no one's delegation, and its
+// kernel is the deployment's. There this worker answers every page load
+// with the profile's shell, and serves the ports a space's host asks the
+// profile over.
 //   From then on the kernel comes from the space's store, not from anywhere
 //   else. The kernel founds the space on it: its first commit records the
 //   kernel and the pin to it.
@@ -31,14 +37,17 @@
 importScripts("/_host/embedder.js");
 
 const PINNED = new URL(self.location.href).searchParams.get("kernel");
+// Which site this origin is. A profile's label starts with `profile`; a
+// space's is its key in base32, which never does.
+const PROFILE = self.location.hostname.split(".")[0].startsWith("profile");
 // The contract between this worker and its shell, as for a release.
 const PROTOCOL = 2;
 const RELAY_PATH = "/kernel/relay.js";
 // What this origin serves from the deployment, never from the kernel.
-const HOST_FILES = new Set(["/space.html", "/kernel_boot.js", RELAY_PATH]);
+const HOST_FILES = new Set(["/space.html", "/profile.html", "/kernel_boot.js", RELAY_PATH]);
 const HOST_PREFIXES = ["/_host/", "/.well-known/"];
 
-const log = (...args) => console.log("[Space Kernel]", ...args);
+const log = (...args) => console.log(PROFILE ? "[Profile Kernel]" : "[Space Kernel]", ...args);
 
 // What the kernel wrote since the last time, kept in the order it wrote it.
 // An answer goes out once what its request wrote is kept, so a worker stopped
@@ -215,6 +224,17 @@ function claims(session, handed) {
     };
 }
 
+// The key of the profile's session, made here the first time, and the
+// profile's space, which is the session's own: the profile acts under its
+// own authority, so it claims nothing.
+async function profileSession(session) {
+    if (!session) {
+        session = await wasm_bindgen.generateSession();
+        await keepKey("session", session);
+    }
+    return { space: await wasm_bindgen.keyDid(session), session };
+}
+
 // The host's files this origin serves, from the network while it answers,
 // and from what this worker kept of them when it does not: a space that
 // started once starts again offline.
@@ -236,7 +256,18 @@ async function hostFile(request) {
 // anywhere else. Checked against the id that names it.
 async function shippedKernel(id) {
     const answer = await askHost({ kernel: id });
-    const bytes = new Uint8Array(answer.bytes);
+    return checkedKernel(id, new Uint8Array(answer.bytes));
+}
+
+// The kernel `id` this deployment ships, from this origin's copy of it.
+async function deployedKernel(id) {
+    if (!/^b[a-z2-7]+$/.test(id)) throw new Error(`${id} names no kernel`);
+    const response = await hostFile(new Request(new URL(`/_host/kernel/${id}.wasm`, self.location.href)));
+    if (!response.ok) throw new Error(`the deployment ships no kernel ${id}: ${response.status}`);
+    return checkedKernel(id, new Uint8Array(await response.arrayBuffer()));
+}
+
+function checkedKernel(id, bytes) {
     const named = wasm_bindgen.kernelId(bytes);
     if (named !== id) throw new Error(`the kernel at ${id} is ${named}`);
     return bytes;
@@ -250,18 +281,22 @@ async function start() {
     let session = await keptKey("session");
     let space = session && wasm_bindgen.heldSpace(records);
     let proofs = [];
-    if (!space) ({ space, session, proofs } = await delegateSession(session));
+    if (PROFILE) ({ space, session } = await profileSession(session));
+    else if (!space) ({ space, session, proofs } = await delegateSession(session));
     // A space with no kernel of its own yet is one being created: install the
-    // one its worker was registered for.
-    if (!wasm_bindgen.pinned(space, records)) {
-        const installed = wasm_bindgen.install(space, await shippedKernel(PINNED));
-        await keep(installed);
+    // one its worker was registered for. The profile runs the deployment's,
+    // and takes up a new one as the deployment does.
+    const held = wasm_bindgen.pinned(space, records);
+    if (!held || (PROFILE && held !== PINNED)) {
+        const kernel = PROFILE ? await deployedKernel(PINNED) : await shippedKernel(PINNED);
+        await keep(wasm_bindgen.install(space, kernel));
         records = await kept();
         log("installed the kernel", PINNED);
     }
     const pinned = wasm_bindgen.pinned(space, records);
     if (pinned !== PINNED) throw new Error(`the space pins ${pinned}, not ${PINNED}`);
-    const embedder = await wasm_bindgen.boot(space, session, claims(session, proofs), records);
+    const answer = PROFILE ? async () => [] : claims(session, proofs);
+    const embedder = await wasm_bindgen.boot(space, session, answer, records);
     await keep(await embedder.drain());
     log("booted in", Math.round(performance.now() - started), "ms", embedder.timings);
     return embedder;
@@ -427,6 +462,129 @@ function cancelCall(call) {
     calls.delete(call);
 }
 
+// ---- The profile -------------------------------------------------------
+//
+// The profile's pages are the deployment's: every page load gets the
+// profile's shell, which brings up the hub from this origin's static files
+// and asks the kernel through `/api/`. A space's host reaches the profile
+// over a port a page of the space's origin hands up, bound to that space.
+
+const SHELL_PATH = "/profile.html";
+// What the shell this worker serves carries and the server's copy does not.
+const SHELL_MARK = '<meta name="tonk-shell" content="worker" />';
+// The app's static files, which the shell loads from this origin.
+const STATIC_PREFIXES = ["/guest/", "/styles-", "/images/", "/fonts/", "/tonk-code/", "/tonk-prose/", "/tonk-table/"];
+// No document on a site's origin may use the app's passkeys.
+const NO_PASSKEYS = "publickey-credentials-get=(), publickey-credentials-create=()";
+
+// Where the deployment says its sites are.
+async function siteOrigins() {
+    try {
+        const response = await hostFile(new Request(new URL("/.well-known/tonk", self.location.href)));
+        return (await response.json()).sites;
+    } catch {
+        return null;
+    }
+}
+
+// The profile's policy: framed by the app, and framing itself and the
+// spaces. It renders the app's own hub, which reads the template catalog
+// from where it is published.
+function profilePolicy(sites) {
+    const scheme = sites ? new URL(sites.app).protocol : null;
+    const profile = sites ? `${scheme}//profile${sites.suffix ?? ""}.${sites.host}` : null;
+    const ancestors = sites ? `'self' ${sites.app} ${profile}` : "'none'";
+    const framed = sites ? ` ${scheme}//*.${sites.host}` : "";
+    const published = " https: http://localhost:* http://127.0.0.1:*";
+    return [
+        "default-src 'none'",
+        "script-src 'self' blob: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'",
+        "style-src 'self' blob: 'unsafe-inline'",
+        `img-src 'self' blob: data:${published}`,
+        "media-src 'self' blob:",
+        "font-src 'self' data:",
+        `connect-src 'self' blob: data:${published}`,
+        `frame-src 'self' blob:${framed}`,
+        "worker-src blob:",
+        "form-action 'none'",
+        "base-uri 'self'",
+        `frame-ancestors ${ancestors}`,
+    ].join("; ");
+}
+
+async function serveShell() {
+    const response = await hostFile(new Request(new URL(SHELL_PATH, self.location.href), { cache: "no-cache" }));
+    const headers = new Headers(response.headers);
+    headers.set("content-security-policy", profilePolicy(await siteOrigins()));
+    headers.set("permissions-policy", NO_PASSKEYS);
+    headers.set("x-content-type-options", "nosniff");
+    headers.delete("content-length");
+    // Marked as this worker's: the shell renders the hub only in a document
+    // that carries the policy above, and reads the mark to know it does.
+    const shell = (await response.text()).replace("<head>", `<head>\n        ${SHELL_MARK}`);
+    return new Response(shell, { status: response.status, headers });
+}
+
+// The whole body of what the kernel answers `method` at `path` with.
+async function askKernel(method, path, json) {
+    const embedder = await booting;
+    const body = new TextEncoder().encode(JSON.stringify(json ?? null));
+    const reply = await embedder.handle(method, path, [["content-type", "application/json"]], body);
+    const pieces = [];
+    for (let piece; (piece = await reply.body.next()); ) pieces.push(piece);
+    await keepWrites(embedder);
+    const text = new TextDecoder().decode(await new Blob(pieces).arrayBuffer());
+    if (reply.status !== 200) throw new Error(`${method} ${path}: ${reply.status} ${text}`);
+    return JSON.parse(text);
+}
+
+// Serve the host of the space `repo` over `port`. What it asks is for the
+// space the port is bound to, never another, and is acknowledged before it
+// is answered, so the host can tell a restarted worker from a slow one.
+function bindSpacePort(port, { repo }) {
+    if (!port || typeof repo !== "string") return;
+    port.onmessage = async ({ data }) => {
+        const id = data?.id;
+        if (typeof id !== "number") return;
+        port.postMessage({ id, ack: true });
+        try {
+            // The delegation of the space to the key its host acts under.
+            if (typeof data.delegate === "string") {
+                const delegated = await askKernel("POST", `/api/repository/${repo}/delegate`, { audience: data.delegate });
+                const chain = new Uint8Array(delegated.chain).buffer;
+                port.postMessage({ id, space: delegated.space, chain, expires: delegated.expires }, [chain]);
+                return;
+            }
+            // The kernel the space was made for, from the deployment's copy:
+            // a space made on this device takes nothing from anywhere else.
+            if (typeof data.kernel === "string") {
+                const bytes = (await deployedKernel(data.kernel)).buffer;
+                port.postMessage({ id, bytes }, [bytes]);
+                return;
+            }
+            // A space that runs a kernel starts blank, so there is nothing
+            // of it here to settle.
+            if (data.seeded === true) {
+                port.postMessage({ id, settled: true });
+                return;
+            }
+            throw new Error("unknown request");
+        } catch (error) {
+            port.postMessage({ id, error: String(error?.message ?? error) });
+        }
+    };
+}
+
+// What the profile's origin answers itself, never the kernel: its shell for
+// every page load, and the app's static files.
+function serveProfile(event, url) {
+    if (event.request.mode === "navigate") return serveShell();
+    if (event.request.method === "GET" && STATIC_PREFIXES.some(prefix => url.pathname.startsWith(prefix))) {
+        return hostFile(event.request);
+    }
+    return null;
+}
+
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));
 
@@ -449,6 +607,11 @@ self.addEventListener("message", event => {
         adopt(event.ports[0]);
         event.waitUntil(booting.catch(() => {}));
     }
+    // The page of the app hands the profile one end of a port to a space's
+    // host.
+    else if (type === "space-port" && PROFILE) bindSpacePort(event.ports[0], event.data);
+    // A shell asks for the content at its address: the profile keeps none.
+    else if (type === "content") event.ports[0]?.postMessage({ admitted: true });
 });
 
 self.addEventListener("fetch", event => {
@@ -456,6 +619,11 @@ self.addEventListener("fetch", event => {
     if (url.origin !== self.location.origin) return;
     if (HOST_FILES.has(url.pathname) || HOST_PREFIXES.some(prefix => url.pathname.startsWith(prefix))) {
         event.respondWith(hostFile(event.request));
+        return;
+    }
+    const profiled = PROFILE && serveProfile(event, url);
+    if (profiled) {
+        event.respondWith(profiled);
         return;
     }
     event.respondWith(
