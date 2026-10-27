@@ -707,6 +707,22 @@ pub(crate) async fn pull_and_push_account_main(tonk: &TonkState) -> Result<Publi
         .refresh(&tonk.operator)
         .await
         .map_err(|error| format!("account branch head unreadable: {error}"))?;
+    // What the push will diff: everything between the sync point recorded
+    // for each upstream and the head ships, so an old sync point names a
+    // backlog of commits no sweep pushed. More than one upstream means
+    // blocks held by reference are probed one by one.
+    {
+        let handle = session.handle();
+        let bases: Vec<_> = handle
+            .pushes()
+            .iter()
+            .map(|upstream| upstream.tree().cloned())
+            .collect();
+        log!(
+            "account push: head={:?} sync points={bases:?}",
+            handle.revision().map(|revision| revision.tree)
+        );
+    }
     timing.next("push");
     match try_push_account_main(tonk).await {
         Ok(()) => return Ok(Published::Pushed),
@@ -2619,6 +2635,31 @@ pub(crate) mod tests {
             head(&home).await,
             "the leaving device published a merge of both",
         );
+    }
+
+    /// A profile switch publishes the account branch itself, so a sweep
+    /// that would push the same blocks alongside it waits until it ends.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_defers_an_account_sweep_while_a_profile_switch_runs() {
+        let (home, _service, _root, _remote) = ready_account_state(None).await;
+        let key = require_ready_account_state(&home).await.unwrap().key;
+        let transition = std::sync::Arc::clone(&home.profile_transition);
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(home));
+
+        let switching = transition.lock().await;
+        let deferred = crate::router::sync_repository(&state, &key).await;
+        assert!(
+            deferred
+                .as_ref()
+                .is_err_and(|error| error.contains("deferred")),
+            "a sweep during a switch is deferred, not run: {deferred:?}",
+        );
+
+        drop(switching);
+        crate::router::sync_repository(&state, &key)
+            .await
+            .expect("the sweep runs once the switch has ended");
     }
 
     /// A remote account may still contain a revoked grant for this device.
