@@ -223,10 +223,7 @@ async function start() {
     // own authority, so it claims nothing.
     let space = PROFILE ? session.did : await wasm_bindgen.heldSpace();
     let proofs = [];
-    if (!space) {
-        ({ space, proofs } = await delegateSession(session));
-        await wasm_bindgen.holdSpace(space);
-    }
+    if (!space) ({ space, proofs } = await delegateSession(session));
     // A space with no kernel of its own yet is one being created: install the
     // one its worker was registered for. The profile runs the deployment's,
     // and takes up a new one as the deployment does.

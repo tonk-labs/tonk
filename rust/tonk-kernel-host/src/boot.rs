@@ -7,32 +7,16 @@
 //! space's blob under that BLAKE3 hash. A space that holds both runs that
 //! kernel, and needs nothing from anywhere else to start it.
 //!
-//! Which space an origin's host serves is a cell of the origin's own:
-//! `boot/subject`, in the layer [`ORIGIN`] names.
+//! The space an origin's host serves is the one whose layer holds a boot
+//! cell: the host keeps no record of its own of which it is.
 
 pub use tonk_kernel_world::boot::{CELL, NAMESPACE, kernel_id};
 use tonk_kernel_world::boot::{cell_content, digest, read_cell};
-use tonk_kernel_world::naming::layer_name;
 
-use dialog_effects::storage::{Directory, Location};
-
-use crate::layers::{self, LayerSpace, Layers};
-
-/// Where an origin's host keeps which space it serves.
-pub const ORIGIN: &str = "tonk.origin";
-
-/// The cell of [`ORIGIN`] that holds the subject of the space it serves.
-const SUBJECT: &str = "subject";
+use crate::layers::{self, Layers};
 
 fn failed(error: impl core::fmt::Debug) -> String {
     format!("{error:?}")
-}
-
-async fn origin(layers: &Layers) -> Result<LayerSpace, String> {
-    layers
-        .open(&layer_name(&Location::new(Directory::Profile, ORIGIN)))
-        .await
-        .map_err(failed)
 }
 
 /// Install `kernel` into the space `subject`: the kernel as a blob of the
@@ -83,33 +67,20 @@ pub async fn pinned(layers: &Layers, subject: &str) -> Result<Option<(String, Ve
     Ok(Some((id, kernel)))
 }
 
-/// Say that this origin's host serves the space `subject`.
-pub async fn hold(layers: &Layers, subject: &str) -> Result<(), String> {
-    let origin = origin(layers).await?;
-    let current = layers::resolve(&origin, NAMESPACE, SUBJECT)
-        .await
-        .map_err(failed)?;
-    layers::publish(
-        &origin,
-        NAMESPACE,
-        SUBJECT,
-        subject.as_bytes().to_vec(),
-        current.map(|edition| edition.version),
-    )
-    .await
-    .map_err(failed)?;
-    Ok(())
-}
-
-/// The space this origin's host serves, if it serves one yet.
+/// The space this origin's host serves: the one whose layer holds a boot
+/// cell, if any does yet.
 pub async fn held(layers: &Layers) -> Result<Option<String>, String> {
-    let origin = origin(layers).await?;
-    let edition = layers::resolve(&origin, NAMESPACE, SUBJECT)
-        .await
-        .map_err(failed)?;
-    edition
-        .map(|edition| String::from_utf8(edition.content).map_err(failed))
-        .transpose()
+    for subject in layers.subjects().await.map_err(failed)? {
+        let space = layers.open(&subject).await.map_err(failed)?;
+        if layers::resolve(&space, NAMESPACE, CELL)
+            .await
+            .map_err(failed)?
+            .is_some()
+        {
+            return Ok(Some(subject));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -156,10 +127,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn it_remembers_the_space_its_origin_serves() {
+    async fn it_serves_the_space_whose_kernel_it_holds() {
         let layers = scratch("held");
         assert_eq!(held(&layers).await.unwrap(), None);
-        hold(&layers, SPACE).await.unwrap();
+        install(&layers, SPACE, b"kernel").await.unwrap();
         assert_eq!(held(&layers).await.unwrap(), Some(SPACE.to_owned()));
     }
 }

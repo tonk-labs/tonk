@@ -43,14 +43,14 @@ pub mod world {
 
 mod http;
 
-use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
 
 use axum::Router;
 use http_body_util::BodyExt as _;
 use tonk_kernel_world::boot;
+use tonk_kernel_world::guest::HandleLayer;
+use tonk_kernel_world::layer::{SharedLayer, share};
 use tonk_kernel_world::world::sapling::kernel::session::{Claim, Subject};
-use tonk_kernel_world::world::sapling::kernel::storage::Layer;
 use tonk_kernel_world::world::sapling::kernel::types::Error;
 use tonk_worker::{AppState, TonkState};
 use tower::ServiceExt as _;
@@ -77,11 +77,12 @@ const STANDING: tonk_worker::Standing = tonk_worker::Standing::Person;
 const STANDING: tonk_worker::Standing = tonk_worker::Standing::Site;
 
 /// The space this kernel serves: its subject, and the layer the boot gave it,
-/// which holds the space's boot cell and the kernel's wasm.
+/// which holds the space's boot cell and the kernel's wasm, and everything
+/// else the kernel keeps.
 #[derive(Clone)]
 struct Space {
     subject: String,
-    layer: Rc<Layer>,
+    layer: SharedLayer,
 }
 
 // SAFETY: a component instance runs on a single thread; nothing here is
@@ -120,10 +121,19 @@ impl lifecycle::Guest for Kernel {
             .stack
             .into_iter()
             .find(|stacked| stacked.scopes.iter().any(|scope| scope == "memory:space"))
-            .map(|stacked| Space {
-                subject: stacked.layer.subject(),
-                layer: Rc::new(stacked.layer),
-            });
+            .map(|stacked| {
+                let subject = stacked.layer.subject();
+                HandleLayer::new(stacked.layer).map(|layer| Space {
+                    subject,
+                    layer: share(layer),
+                })
+            })
+            .transpose()
+            .map_err(invalid)?;
+        // Everything the kernel keeps is in the layer of its stack.
+        if let Some(space) = &space {
+            tonk_kernel_world::stack::keep(space.layer.clone());
+        }
         tonk_worker::set_standing(STANDING);
         // A persona serves the person's profile, which is its own: it takes
         // no space up.
@@ -280,7 +290,7 @@ async fn adopt(state: &TonkState, space: &Space, chains: &[Vec<u8>]) {
 async fn found(state: &TonkState, space: &Space) -> Result<(), String> {
     let cell = space
         .layer
-        .resolve(boot::NAMESPACE.to_owned(), boot::CELL.to_owned())
+        .resolve(boot::NAMESPACE, boot::CELL)
         .await
         .map_err(|error| format!("the boot cell: {error:?}"))?;
     let Some(cell) = cell else {
@@ -290,7 +300,7 @@ async fn found(state: &TonkState, space: &Space) -> Result<(), String> {
     let hash = boot::digest(&id)?;
     let size = space
         .layer
-        .size(hash.to_vec())
+        .size(&hash)
         .await
         .map_err(|error| format!("the kernel {id}: {error:?}"))?
         .ok_or_else(|| format!("the space does not hold the kernel {id} whole"))?;

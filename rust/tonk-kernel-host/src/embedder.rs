@@ -98,14 +98,6 @@ pub async fn held_space() -> Result<Option<String>, JsError> {
         .map_err(|error| JsError::new(&error))
 }
 
-/// Say that this origin's host serves the space `subject`.
-#[wasm_bindgen(js_name = holdSpace)]
-pub async fn hold_space(subject: String) -> Result<(), JsError> {
-    boot::hold(&Layers::default(), &subject)
-        .await
-        .map_err(|error| JsError::new(&error))
-}
-
 /// The content identifier of a kernel's wasm.
 #[wasm_bindgen(js_name = kernelId)]
 pub fn kernel_id(kernel: Uint8Array) -> String {

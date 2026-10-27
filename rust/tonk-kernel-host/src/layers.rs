@@ -63,6 +63,59 @@ impl Layers {
         Location::new(Directory::At(format!("{root}/{kept}")), location.name)
     }
 
+    /// The subjects whose layers are kept: each a space's DID, which a
+    /// space's layer is named by.
+    pub async fn subjects(&self) -> Result<Vec<String>, Error> {
+        let names = self.kept().await?;
+        Ok(names
+            .into_iter()
+            .filter(|name| name.starts_with("did:") && !name.starts_with("did:local:"))
+            .collect())
+    }
+
+    /// The name of each store kept: in a browser, each IndexedDB database of
+    /// the origin.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    async fn kept(&self) -> Result<Vec<String>, Error> {
+        use js_sys::{Array, Function, Promise, Reflect};
+        use wasm_bindgen::{JsCast as _, JsValue};
+
+        let unavailable = |error: JsValue| Error::Unavailable(format!("{error:?}"));
+        let factory = Reflect::get(&js_sys::global(), &"indexedDB".into()).map_err(unavailable)?;
+        let databases: Function = Reflect::get(&factory, &"databases".into())
+            .map_err(unavailable)?
+            .dyn_into()
+            .map_err(unavailable)?;
+        let listed: Promise = databases
+            .call0(&factory)
+            .map_err(unavailable)?
+            .dyn_into()
+            .map_err(unavailable)?;
+        let listed = wasm_bindgen_futures::JsFuture::from(listed)
+            .await
+            .map_err(unavailable)?;
+        Ok(Array::from(&listed)
+            .iter()
+            .filter_map(|database| Reflect::get(&database, &"name".into()).ok()?.as_string())
+            .collect())
+    }
+
+    /// The name of each store kept under the current directory, where a
+    /// space's layer is.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    async fn kept(&self) -> Result<Vec<String>, Error> {
+        let Some(root) = &self.under else {
+            return Ok(Vec::new());
+        };
+        let Ok(entries) = std::fs::read_dir(std::path::Path::new(root).join("current")) else {
+            return Ok(Vec::new());
+        };
+        Ok(entries
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect())
+    }
+
     /// The space the layer `name` is kept in.
     pub async fn open(&self, name: &str) -> Result<LayerSpace, Error> {
         LayerSpace::open(&self.location(name))

@@ -14,6 +14,8 @@
 //!   from the host.
 //! - [`space`]: a space's credential store, as custodies and secrets in its
 //!   cells.
+//! - [`stack`]: the layer of the worker's own, which every location it
+//!   opens is a part of.
 //!
 //! On every other target the crate holds only [`boot`] and [`naming`], what
 //! the host and the person's profile read too.
@@ -46,5 +48,7 @@ pub mod session;
 pub mod signal;
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod space;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub mod stack;
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod store;

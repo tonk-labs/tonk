@@ -59,20 +59,28 @@ async fn it_answers_with_tonk_s_worker() {
     println!("timings: {:?}", kernel.timings);
 }
 
-/// A kernel keeps no key of its own: it acts as its session, whose key its
-/// host holds, so it keeps no custody, and a kernel that starts again over
-/// what it kept is the same worker.
+/// A kernel keeps everything in the layer of its stack, and no key of its
+/// own there: it acts as its session, whose key its host holds. A kernel
+/// that starts again over what it kept is the same worker.
 #[tokio::test(flavor = "current_thread")]
-async fn it_keeps_no_key_of_its_own() {
+async fn it_keeps_everything_in_its_stack_and_no_key() {
     let engine = engine();
     let bytes = tonk_components::TONK_KERNEL_BYTES;
-    let kept = scratch("no-keys");
+    let root = std::env::temp_dir().join(format!("tonk-kernel-stack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let kept = Layers::under(root.to_string_lossy().into_owned());
     let first = identify(&engine, bytes, &kept).await;
-    let credentials = kept
-        .open("did:local:profile:dialog.credential")
+
+    let stores: Vec<_> = walkdir(&root);
+    assert_eq!(
+        stores,
+        vec![format!("current/{}", space())],
+        "the host keeps the layer of the stack alone"
+    );
+    let stack = kept.open(&space()).await.unwrap();
+    let custodies = layers::list(&stack, "did:local:profile:dialog.credential/custody")
         .await
         .unwrap();
-    let custodies = layers::list(&credentials, "custody").await.unwrap();
     assert_eq!(
         custodies,
         Vec::<String>::new(),
@@ -84,6 +92,23 @@ async fn it_keeps_no_key_of_its_own() {
         first, again,
         "a kernel that starts again is the same worker"
     );
+}
+
+/// Each store under `root`: a directory two levels down, as `Layers::under`
+/// keeps a location.
+fn walkdir(root: &std::path::Path) -> Vec<String> {
+    let mut stores = Vec::new();
+    for kind in std::fs::read_dir(root).unwrap().flatten() {
+        for store in std::fs::read_dir(kind.path()).unwrap().flatten() {
+            stores.push(format!(
+                "{}/{}",
+                kind.file_name().to_string_lossy(),
+                store.file_name().to_string_lossy()
+            ));
+        }
+    }
+    stores.sort();
+    stores
 }
 
 /// A served kernel answers each request while another's answer is still

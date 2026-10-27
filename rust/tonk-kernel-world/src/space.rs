@@ -4,9 +4,9 @@
 //!
 //! Dialog DB opens each part of a space from a [`Location`] alone. A location
 //! that names a mounted layer (see [`crate::mount`]) opens that layer; any
-//! other opens a layer of the host named for the location, as a DID of the
-//! method `local`, and every part of the space shares it. The host keeps a
-//! layer per name.
+//! other is the worker's own, and opens the layer of its stack: the layer
+//! itself for the stack's subject, and a part of it for any other location
+//! (see [`crate::stack`]), so that every part of a space shares one layer.
 //!
 //! A space's credential store keeps no key: a key is made in the host
 //! ([`credential::Generate`]) and entrusted to the session's credential, and
@@ -37,13 +37,11 @@ use dialog_storage::resource::Resource;
 use dialog_varsig::Principal as _;
 
 use crate::credentials;
-use crate::guest::HandleLayer;
 use crate::layer::{LayerError, SharedLayer, share};
 use crate::naming::layer_name;
 use crate::session;
 use crate::store::{Store, Witness};
 use crate::world::sapling::kernel::credential::{self as host, Custodian};
-use crate::world::sapling::kernel::storage;
 
 /// A space of Dialog DB on a layer of the kernel's host.
 pub type KernelSpace = Space<Store, Store, Credentials, Volatile, Store>;
@@ -77,14 +75,17 @@ async fn opened(location: &Location) -> Result<Opened, StorageError> {
     {
         return Ok(opened.clone());
     }
-    let refused = |error| StorageError::Storage(format!("the host opened no layer: {error:?}"));
-    // A layer of this worker's own, `did:local:`, which no chain delegates.
-    let layer = storage::open(name.clone(), Vec::new())
-        .await
-        .map_err(refused)?;
-    let layer =
-        HandleLayer::new(layer).map_err(|error| StorageError::Storage(error.to_string()))?;
-    let opened = Opened(Store::new(share(layer), Witness::default()));
+    // Every location of this worker's own is in the layer of its stack: the
+    // stack's subject is that layer, and any other location a part of it.
+    let stack = crate::stack::layer().ok_or_else(|| {
+        StorageError::Storage("the boot handed this worker no layer of its own".into())
+    })?;
+    let layer = if stack.subject().to_string() == name {
+        stack
+    } else {
+        share(crate::stack::Within::new(stack, name.clone()))
+    };
+    let opened = Opened(Store::new(layer, Witness::default()));
     OPENED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)

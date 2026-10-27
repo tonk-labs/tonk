@@ -51,12 +51,11 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
   };
   // What the embedder keeps where Dialog DB keeps it: the space this origin
   // serves, and the kernel each space pins.
-  const kept = { held: holds ? SPACE : undefined, pins: new Map(holds ? [[SPACE, holds]] : []) };
+  const kept = { pins: new Map(holds ? [[SPACE, holds]] : []) };
   const opened = [];
   const bindgen = Object.assign(async () => {}, {
     openSession: async (name) => (opened.push(name), { did: SESSION }),
-    heldSpace: async () => kept.held,
-    holdSpace: async (subject) => void (kept.held = subject),
+    heldSpace: async () => kept.pins.keys().next().value,
     kernelId: (bytes) => new TextDecoder().decode(bytes).replace("WASM", KERNEL),
     install: async (subject, bytes) => {
       const id = new TextDecoder().decode(bytes).replace("WASM", KERNEL);
@@ -255,7 +254,7 @@ test("the origin remembers the space it was delegated", async () => {
   const site = space();
   site.handPort();
   await site.started();
-  assert.equal(site.kept.held, SPACE, "the space the profile delegated is the one this origin serves");
+  assert.equal(site.kept.pins.keys().next().value, SPACE, "the space the profile delegated is the one this origin serves");
 });
 
 test("a space that holds its kernel boots it from where it is kept, with no port up", async () => {
