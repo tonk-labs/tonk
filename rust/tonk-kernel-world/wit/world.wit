@@ -58,10 +58,12 @@ world kernel {
   import network;
 }
 
-/// `kernel`, for the persona of a person: it signs them in.
+/// `kernel`, for the persona of a person: it signs them in, and grants the
+/// person's other workers what they claim.
 world persona {
   include kernel;
   import authentication;
+  export grant;
 }
 
 /// What the adapters of `tonk-kernel-world` reach: the storage of a layer,

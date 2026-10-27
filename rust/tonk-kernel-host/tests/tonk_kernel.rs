@@ -149,26 +149,75 @@ async fn it_acts_as_its_session() {
     assert!(said.contains(&session), "{said} names {session}");
 }
 
-/// A kernel that serves its session's own space is a person's profile: its
-/// peer is its session, and it creates a space with a key the host makes,
-/// whose seed it never knows.
+/// A persona creates a space in its profile: its key one the host makes,
+/// whose seed the persona never knows.
 #[tokio::test(flavor = "current_thread")]
-async fn it_is_a_person_s_profile_on_its_session_s_own_space() {
+async fn it_creates_a_space_with_a_key_the_host_makes() {
     let engine = engine();
-    let session = did_key(&ed25519_dalek::SigningKey::from_bytes(&[7; 32]));
+    let (mut kernel, space) = persona_with_space(&engine, scratch("profile")).await;
+    let keys = kernel.keys();
+    assert!(
+        keys.contains(&(space.clone(), false)),
+        "the space's key is one the host made: {keys:?}"
+    );
+    assert!(
+        keys.iter().all(|(_, imported)| !imported),
+        "the persona imports no seed it knows: {keys:?}"
+    );
+}
+
+/// A persona grants another worker's session the space it claims, and the
+/// space's own worker takes the space up with what the persona granted.
+#[tokio::test(flavor = "current_thread")]
+async fn it_takes_up_a_space_its_persona_grants() {
+    use tonk_kernel_host::bindings::sapling::kernel::session::{Claim, Subject};
+
+    let engine = engine();
+    let (mut persona, space) = persona_with_space(&engine, scratch("granting")).await;
+    let worker = did_key(&ed25519_dalek::SigningKey::from_bytes(&[8; 32]));
+    let claim = Claim {
+        subject: Subject::This(space.clone()),
+        command: "/".to_owned(),
+        arguments: Vec::new(),
+        reason: "to serve the space".to_owned(),
+    };
+    let granted = persona
+        .grant(&worker, claim)
+        .await
+        .unwrap()
+        .expect("the persona grants the space it created");
+    assert_eq!(granted.len(), 1);
+
     let mut kernel = Kernel::load(
         &engine,
         tonk_components::TONK_KERNEL_BYTES,
-        scratch("profile"),
+        scratch("granted"),
     )
     .await
     .unwrap();
+    kernel
+        .init(&space, Standing::new([8; 32], granted))
+        .await
+        .unwrap();
+    let path = format!("/api/repository/{space}");
+    let answer = kernel.request("GET", &path, b"").await.unwrap();
+    assert_eq!(
+        answer.status,
+        200,
+        "the worker holds its space: {}",
+        answer.text()
+    );
+}
+
+/// A persona, booted over `layers` with the session of the seed `[7; 32]`,
+/// that has created a space, as its profile's page creates one; and the
+/// space's DID.
+async fn persona_with_space(engine: &Engine, layers: Layers) -> (Kernel, String) {
+    let session = did_key(&ed25519_dalek::SigningKey::from_bytes(&[7; 32]));
+    let mut kernel = Kernel::load(engine, tonk_components::TONK_PERSONA_BYTES, layers)
+        .await
+        .unwrap();
     kernel.init(&session, standing()).await.unwrap();
-    for path in ["/api/identify", "/api/profiles", "/api/profile"] {
-        let answer = kernel.request("GET", path, b"").await.unwrap();
-        assert_eq!(answer.status, 200, "{path}: {}", answer.text());
-        println!("{path} -> {}", answer.text());
-    }
     let said = kernel.request("GET", "/api/identify", b"").await.unwrap();
     assert!(
         said.text().contains(&session),
@@ -195,15 +244,7 @@ async fn it_is_a_person_s_profile_on_its_session_s_own_space() {
         .as_str()
         .expect("the profile lists the space it created")
         .to_owned();
-    let keys = kernel.keys();
-    assert!(
-        keys.contains(&(space.clone(), false)),
-        "the space's key is one the host made: {keys:?}"
-    );
-    assert!(
-        keys.iter().all(|(_, imported)| !imported),
-        "the kernel imports no seed it knows: {keys:?}"
-    );
+    (kernel, space)
 }
 
 /// The delegation of the space to the session's key, signed by the space,

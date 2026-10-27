@@ -1,0 +1,15 @@
+package sapling:kernel@0.1.0;
+
+/// The delegations a persona grants the sessions of the person's other
+/// workers, as their hosts claim them for them (see `session.claim`). Only a
+/// persona exports it.
+interface grant {
+  use types.{did, ucan, error};
+  use session.{claim};
+
+  /// Delegate what `claim` asks to `audience`, the credential of another
+  /// worker's session: each a chain down to `audience`, signed at its last
+  /// hop by this persona's credential. A persona delegates only what reaches
+  /// it, and refuses what does not.
+  delegate: async func(audience: did, claim: claim) -> result<list<ucan>, error>;
+}

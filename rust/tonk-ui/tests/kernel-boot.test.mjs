@@ -113,7 +113,7 @@ function space({ pinned = KERNEL, holds = null, shipped = { [KERNEL]: "WASM" } }
   const port = {
     postMessage: (message) => {
       asked.push(message);
-      const delegated = { space: SPACE, chain: new ArrayBuffer(1), expires: Date.now() / 1000 + 86400 };
+      const delegated = { space: SPACE, chains: [new ArrayBuffer(1)] };
       const answer = message.delegate
         ? { id: message.id, ...delegated }
         : message.kernel
@@ -221,8 +221,8 @@ test("a space with no kernel of its own installs the one its worker names, and b
   assert.equal(response.status, 404);
   assert.deepEqual(
     site.asked.map((asked) => Object.keys(asked).filter((key) => key !== "id")),
-    [["delegate"], ["seeded", "from"], ["kernel"]],
-    "it asks the profile to delegate to its session, says it holds the space, and takes its kernel",
+    [["delegate", "claim"], ["seeded", "from"], ["kernel"]],
+    "it claims the space for its session, says it holds the space, and takes its kernel",
   );
   assert.equal(site.asked[0].delegate, SESSION, "the space is delegated to the key made here");
   assert.equal(site.asked[2].kernel, KERNEL);

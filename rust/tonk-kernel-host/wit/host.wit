@@ -13,3 +13,10 @@ world host {
   export lifecycle;
   export channel;
 }
+
+/// What a host reaches of a guest kernel built for `persona`, beside what
+/// `host` binds: the delegations it grants. A host acquires it only from a
+/// kernel that exports it.
+world persona-grant {
+  export grant;
+}

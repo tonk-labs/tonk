@@ -15,8 +15,6 @@
 //! The space worker stores it and publishes that revision ([`seed`]), so the
 //! replica holds the same history the host did, and syncs on from there.
 
-use axum::Json;
-use axum::extract::{Path, State};
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 use dialog_artifacts::Asset;
 use dialog_capability::Subject;
@@ -35,17 +33,14 @@ use dialog_varsig::Principal as _;
 use dialog_varsig::signature::AnySignature;
 use futures_util::stream;
 use ipld_core::ipld::Ipld;
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tonk_common::log;
 use tonk_invite::{HOME_ADDRESS, home_address_meta};
-use tonk_macros::handler;
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 use tonk_schema::SpaceKernel;
 use tonk_schema::prelude::DidExt as _;
 use url::Url;
 
-use super::AppState;
 use super::account::{act_for, acts_for, member_did};
 use super::adopt::ensure_space_mounted;
 use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url};
@@ -103,49 +98,6 @@ pub(crate) async fn delegate(
         .to_bytes()
         .map_err(|e| TonkWorkerError::Internal(format!("failed to encode delegation: {e}")))?;
     Ok(Grant { chain, expires })
-}
-
-/// What a space's own host asks of the person's profile: a delegation of the
-/// space to the key it acts under.
-#[derive(Debug, Deserialize)]
-pub struct DelegateRequest {
-    /// The DID of the key the space's own host acts under.
-    pub audience: String,
-}
-
-/// The delegation a space's own host is handed: the chain from the space to
-/// the key it asked for, and when it lapses, in unix seconds.
-#[derive(Debug, Serialize)]
-pub struct Delegated {
-    pub space: String,
-    pub chain: Vec<u8>,
-    pub expires: u64,
-}
-
-/// `POST /api/repository/{repo}/delegate`: delegate the space `repo` to the
-/// key its own host acts under. The host asks for it over a port bound to
-/// that one space, which a page of the space's origin handed up, so it is
-/// only ever asked for the space whose host is asking.
-#[handler]
-pub async fn delegate_to(
-    State(state): State<AppState>,
-    Path(repo): Path<String>,
-    Json(request): Json<DelegateRequest>,
-) -> Result<Json<Delegated>, TonkWorkerError> {
-    let space: Did = repo
-        .parse()
-        .map_err(|_| TonkWorkerError::Router(format!("{repo} is not a space's DID")))?;
-    let audience: Did = request
-        .audience
-        .parse()
-        .map_err(|_| TonkWorkerError::Router(format!("{} is not a DID", request.audience)))?;
-    let tonk = state.read().await;
-    let grant = delegate(&tonk, &space, &audience).await?;
-    Ok(Json(Delegated {
-        space: space.to_string(),
-        chain: grant.chain,
-        expires: grant.expires,
-    }))
 }
 
 /// What a space's worker is told with its delegation, and has to take up

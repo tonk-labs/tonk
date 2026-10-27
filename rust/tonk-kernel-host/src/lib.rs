@@ -21,6 +21,21 @@ pub mod bindings {
     });
 }
 
+/// The delegations a guest kernel built for `persona` grants: an export a
+/// host acquires only from a kernel that has it.
+pub mod persona_bindings {
+    wcmp::bindgen!({
+        path: "wit",
+        world: "sapling:kernel/persona-grant",
+        exports: { default: async | store },
+        with: {
+            "sapling:kernel/types@0.1.0": crate::bindings::sapling::kernel::types,
+            "sapling:kernel/credential@0.1.0": crate::bindings::sapling::kernel::credential,
+            "sapling:kernel/session@0.1.0": crate::bindings::sapling::kernel::session,
+        },
+    });
+}
+
 pub mod wasi_bindings {
     wcmp::bindgen!({
         path: "wit-wasi",

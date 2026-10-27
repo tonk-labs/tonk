@@ -9,6 +9,12 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+# The kernel for the world `sapling:kernel/persona`: the person's own worker,
+# which serves their profile and grants their other workers what they claim.
+# Without it, a space's own worker, for `sapling:kernel/kernel`.
+persona = []
+
 # The kernel is a component on WASI; other targets build an empty crate.
 [target.'cfg(all(target_arch = "wasm32", not(target_os = "unknown")))'.dependencies]
 axum = { workspace = true }

@@ -528,6 +528,24 @@ impl TonkState {
         Ok(())
     }
 
+    /// Delegate `space` to `audience`, the credential of the session of the
+    /// space's own worker, as the person's persona grants what that worker
+    /// claims: the chain from the space down to `audience`, encoded.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn delegate_space(
+        &self,
+        space: &str,
+        audience: &str,
+    ) -> Result<Vec<u8>, crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        let audience: Did = audience
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("audience: {e:?}")))?;
+        Ok(space_worker::delegate(self, &space, &audience).await?.chain)
+    }
+
     /// Whether this worker took up a delegation before: it acts for the
     /// account the delegation named.
     #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]

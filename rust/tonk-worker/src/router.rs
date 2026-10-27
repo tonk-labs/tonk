@@ -392,7 +392,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(revoke_invite::revoke),
         )
         .route("/api/repository/{repo}/invites", get(revoke_invite::list))
-        .merge(space_host_routes())
         .route("/api/account/connections", get(agent_connections::list))
         .route(
             "/api/account/connections/{id}/revoke",
@@ -546,21 +545,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .fallback_service(router)
         .layer(middleware::from_fn_with_state(state, profile_alias));
     (router, lsp_hub)
-}
-
-/// What a space's own host asks the person's profile, where spaces have
-/// hosts of their own.
-#[cfg(target_arch = "wasm32")]
-fn space_host_routes() -> Router<AppState> {
-    Router::new().route(
-        "/api/repository/{repo}/delegate",
-        post(space_worker::delegate_to),
-    )
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn space_host_routes() -> Router<AppState> {
-    Router::new()
 }
 
 /// Test utilities for router tests.

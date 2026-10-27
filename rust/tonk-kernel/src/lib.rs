@@ -4,12 +4,30 @@
 //! answers each request of its origin with the worker's own API router, over
 //! `wasi:http/handler`.
 //!
+//! Built with the feature `persona`, it targets `sapling:kernel/persona`: the
+//! person's own worker, which serves their profile and grants their other
+//! workers what they claim (`grant`). Without it, `sapling:kernel/kernel`: a
+//! space's own worker, which acts on what its session is delegated.
+//!
 //! Built for `wasm32-wasip3` by `tonk-components`; on every other target the
 //! crate is empty.
 
 #![cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 
 pub mod world {
+    #[cfg(feature = "persona")]
+    wit_bindgen::generate!({
+        path: "../tonk-kernel-world/wit",
+        world: "sapling:kernel/persona",
+        with: {
+            "sapling:kernel/types@0.1.0": tonk_kernel_world::world::sapling::kernel::types,
+            "sapling:kernel/storage@0.1.0": tonk_kernel_world::world::sapling::kernel::storage,
+            "sapling:kernel/credential@0.1.0": tonk_kernel_world::world::sapling::kernel::credential,
+            "sapling:kernel/session@0.1.0": tonk_kernel_world::world::sapling::kernel::session,
+        },
+        generate_all,
+    });
+    #[cfg(not(feature = "persona"))]
     wit_bindgen::generate!({
         path: "../tonk-kernel-world/wit",
         world: "sapling:kernel/kernel",
@@ -40,14 +58,23 @@ use world::exports::sapling::kernel::{channel, lifecycle};
 use world::exports::wasi::http::handler;
 use world::wasi::http::types::{ErrorCode, Request, Response};
 
-/// The worker's router, once `init` opened its state. A `static`, not a
-/// thread-local: on `wasm32-wasip3` each export call is a task of its own.
+/// The worker's router and state, once `init` opened them. A `static`, not
+/// a thread-local: on `wasm32-wasip3` each export call is a task of its own.
 static ROUTER: Mutex<Option<Held>> = Mutex::new(None);
 
 /// The router holds Dialog DB's state, which is not `Send`.
 struct Held {
     router: Router,
+    #[cfg(feature = "persona")]
+    state: AppState,
 }
+
+/// Whose worker this kernel is: the person's own, for a persona; else a
+/// space's own.
+#[cfg(feature = "persona")]
+const STANDING: tonk_worker::Standing = tonk_worker::Standing::Person;
+#[cfg(not(feature = "persona"))]
+const STANDING: tonk_worker::Standing = tonk_worker::Standing::Site;
 
 /// The space this kernel serves: its subject, and the layer the boot gave it,
 /// which holds the space's boot cell and the kernel's wasm.
@@ -69,6 +96,15 @@ fn router() -> Option<Router> {
         .map(|held| held.router.clone())
 }
 
+#[cfg(feature = "persona")]
+fn state() -> Option<AppState> {
+    ROUTER
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|held| held.state.clone())
+}
+
 fn invalid(error: impl std::fmt::Display) -> Error {
     Error::Invalid(error.to_string())
 }
@@ -88,16 +124,10 @@ impl lifecycle::Guest for Kernel {
                 subject: stacked.layer.subject(),
                 layer: Rc::new(stacked.layer),
             });
-        // A kernel's peer is its session. A space that is the session's own
-        // is a person's profile, which has an account of its own; any other
-        // is a space this kernel is the own worker of, which it acts on as
-        // its session is delegated.
-        let own = tonk_kernel_world::session::credential().did();
-        let (standing, space) = match space {
-            Some(space) if space.subject == own => (tonk_worker::Standing::Person, None),
-            space => (tonk_worker::Standing::Site, space),
-        };
-        tonk_worker::set_standing(standing);
+        tonk_worker::set_standing(STANDING);
+        // A persona serves the person's profile, which is its own: it takes
+        // no space up.
+        let space = space.filter(|_| STANDING == tonk_worker::Standing::Site);
         let state = TonkState::open_kernel().await.map_err(invalid)?;
         // The space, taken up with the delegation its session claims, or as
         // it was taken up before, with the delegation claimed anew alongside:
@@ -120,7 +150,11 @@ impl lifecycle::Guest for Kernel {
             }
         }
         let (router, state, _) = tonk_worker::api_router_with_state(state);
-        *ROUTER.lock().unwrap_or_else(PoisonError::into_inner) = Some(Held { router });
+        *ROUTER.lock().unwrap_or_else(PoisonError::into_inner) = Some(Held {
+            router,
+            #[cfg(feature = "persona")]
+            state: state.clone(),
+        });
         if let Some(space) = renewing {
             wit_bindgen::spawn_local(async move { renew(&state, &space).await });
         }
@@ -264,6 +298,25 @@ async fn found(state: &TonkState, space: &Space) -> Result<(), String> {
         .found_space(&space.subject, hash, size)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "persona")]
+impl world::exports::sapling::kernel::grant::Guest for Kernel {
+    async fn delegate(audience: String, claim: Claim) -> Result<Vec<Vec<u8>>, Error> {
+        let Subject::This(space) = claim.subject else {
+            return Err(Error::Invalid(
+                "a persona grants one space at a time".into(),
+            ));
+        };
+        let state =
+            state().ok_or_else(|| Error::Unavailable("the persona has not booted".into()))?;
+        let tonk = state.read().await;
+        let chain = tonk
+            .delegate_space(&space, &audience)
+            .await
+            .map_err(|error| Error::Denied(error.to_string()))?;
+        Ok(vec![chain])
+    }
 }
 
 world::export!(Kernel with_types_in world);

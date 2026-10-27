@@ -190,6 +190,37 @@ fn claims_of(claim: Function) -> Claims {
     })
 }
 
+/// A claim, as `claim_to_js` hands one to the bootloader.
+fn claim_from_js(claim: &JsValue) -> Result<Claim, JsError> {
+    let field = |name: &str| Reflect::get(claim, &name.into()).unwrap_or(JsValue::UNDEFINED);
+    let text = |name: &str| {
+        field(name)
+            .as_string()
+            .ok_or_else(|| JsError::new(&format!("a claim's {name} is text")))
+    };
+    let subject = match field("subject").as_string() {
+        Some(did) => Subject::This(did),
+        None => Subject::Any,
+    };
+    let arguments = Array::from(&field("arguments"))
+        .iter()
+        .map(|pair| {
+            let pair = Array::from(&pair);
+            let name = pair
+                .get(0)
+                .as_string()
+                .ok_or_else(|| JsError::new("a claim's argument is named"))?;
+            Ok((name, Uint8Array::new(&pair.get(1)).to_vec()))
+        })
+        .collect::<Result<_, JsError>>()?;
+    Ok(Claim {
+        subject,
+        command: text("command")?,
+        arguments,
+        reason: text("reason")?,
+    })
+}
+
 fn claim_to_js(claim: Claim) -> JsValue {
     let object = Object::new();
     let subject = match claim.subject {
@@ -210,6 +241,27 @@ fn claim_to_js(claim: Claim) -> JsValue {
 
 #[wasm_bindgen]
 impl Embedder {
+    /// Ask the kernel, a persona, to delegate what `claim` asks to
+    /// `audience`, another worker's session: `claim` as `{ subject, command,
+    /// arguments, reason }`, as a kernel's claim reaches the bootloader.
+    /// Resolves to the delegations, each an encoded chain.
+    pub fn grant(&self, audience: String, claim: JsValue) -> Result<Promise, JsError> {
+        let claim = claim_from_js(&claim)?;
+        let kernel = self.kernel.clone();
+        Ok(wasm_bindgen_futures::future_to_promise(async move {
+            let granted = kernel
+                .grant(&audience, claim)
+                .await
+                .map_err(|error| JsValue::from(JsError::new(&error)))?
+                .map_err(|error| JsValue::from(JsError::new(&format!("{error:?}"))))?;
+            Ok(granted
+                .iter()
+                .map(|chain| JsValue::from(Uint8Array::from(chain.as_slice())))
+                .collect::<Array>()
+                .into())
+        }))
+    }
+
     /// How long each stage of the boot took, in milliseconds.
     #[wasm_bindgen(getter)]
     pub fn timings(&self) -> JsValue {

@@ -146,16 +146,20 @@ async function askHost(request) {
 
 // ---- The space ----------------------------------------------------------
 
-// The delegation of the space to this origin's session, from the person's
-// profile. It says which space this origin is: the label of an origin does
-// not. Asked once: the kernel keeps what it is delegated.
+// What the kernel claims as it takes its space up for the first time: the
+// space, which the profile names, since the label of an origin does not.
+const FIRST_CLAIM = { command: "/", arguments: [], reason: "to serve the space" };
+
+// The delegation of the space to this origin's session, which the person's
+// persona grants. It says which space this origin is. Asked once: the kernel
+// keeps what it is delegated.
 async function delegateSession(session) {
-    const answer = await askHost({ delegate: session.did });
+    const answer = await askHost({ delegate: session.did, claim: FIRST_CLAIM });
     // A space that runs a kernel starts blank: nothing of what the profile
     // would seed it with is taken. Saying it holds the space lets the
     // profile stop waiting for it to.
     await askHost({ seeded: true, from: "kernel" }).catch(error => log("the profile was not told:", error));
-    return { space: answer.space, session, proofs: [new Uint8Array(answer.chain)] };
+    return { space: answer.space, session, proofs: answer.chains.map(chain => new Uint8Array(chain)) };
 }
 
 // What answers the kernel's claims: the delegations the person's profile
@@ -166,9 +170,9 @@ function claims(session, handed) {
     return async claim => {
         if (handed.length) return handed.splice(0);
         log("the kernel claims", claim.command, "for", claim.reason);
-        const answer = await askHost({ delegate: session.did });
-        log("delegated", answer.space, "until", new Date(answer.expires * 1000).toISOString());
-        return [new Uint8Array(answer.chain)];
+        const answer = await askHost({ delegate: session.did, claim });
+        log("granted", answer.space);
+        return answer.chains.map(chain => new Uint8Array(chain));
     };
 }
 
@@ -459,18 +463,6 @@ async function serveShell() {
     return new Response(shell, { status: response.status, headers });
 }
 
-// The whole body of what the kernel answers `method` at `path` with.
-async function askKernel(method, path, json) {
-    const embedder = await booting;
-    const body = new TextEncoder().encode(JSON.stringify(json ?? null));
-    const reply = await embedder.handle(method, path, [["content-type", "application/json"]], body);
-    const pieces = [];
-    for (let piece; (piece = await reply.body.next()); ) pieces.push(piece);
-    const text = new TextDecoder().decode(await new Blob(pieces).arrayBuffer());
-    if (reply.status !== 200) throw new Error(`${method} ${path}: ${reply.status} ${text}`);
-    return JSON.parse(text);
-}
-
 // Serve the host of the space `repo` over `port`. What it asks is for the
 // space the port is bound to, never another, and is acknowledged before it
 // is answered, so the host can tell a restarted worker from a slow one.
@@ -481,11 +473,14 @@ function bindSpacePort(port, { repo }) {
         if (typeof id !== "number") return;
         port.postMessage({ id, ack: true });
         try {
-            // The delegation of the space to the key its host acts under.
+            // What the space's kernel claims for its session, which this
+            // profile's persona grants. The claim is for the space this
+            // port is bound to, whatever it names.
             if (typeof data.delegate === "string") {
-                const delegated = await askKernel("POST", `/api/repository/${repo}/delegate`, { audience: data.delegate });
-                const chain = new Uint8Array(delegated.chain).buffer;
-                port.postMessage({ id, space: delegated.space, chain, expires: delegated.expires }, [chain]);
+                const claim = { ...(data.claim ?? FIRST_CLAIM), subject: repo };
+                const granted = await (await booting).grant(data.delegate, claim);
+                const chains = Array.from(granted, chain => chain.buffer);
+                port.postMessage({ id, space: repo, chains }, chains);
                 return;
             }
             // The kernel the space was made for, from the deployment's copy:

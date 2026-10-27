@@ -15,8 +15,13 @@ use std::process::Command;
 /// The target each component builds for: the world's WASI.
 const TARGET: &str = "wasm32-wasip3";
 
-/// The component crates of the workspace, and the constant that names each.
-const COMPONENTS: &[(&str, &str)] = &[("tonk-kernel", "TONK_KERNEL")];
+/// The components: the crate each is built from, the features it is built
+/// with, and the constant that names it. The persona is the same crate as the
+/// kernel, built for the world `sapling:kernel/persona`.
+const COMPONENTS: &[(&str, &[&str], &str)] = &[
+    ("tonk-kernel", &[], "TONK_KERNEL"),
+    ("tonk-kernel", &["persona"], "TONK_PERSONA"),
+];
 
 /// The crates a component is built from, and the workspace's manifest and
 /// lock: a change to any of them builds the components again.
@@ -45,54 +50,60 @@ fn main() {
     }
 
     let target_dir = out_dir.join("target");
-    let cargo = env::var_os("CARGO").expect("cargo sets it");
-    let mut command = Command::new(cargo);
-    command
-        .arg("build")
-        .arg("--release")
-        .arg(format!("--target={TARGET}"))
-        .arg("--manifest-path")
-        .arg(rust_dir.join("../Cargo.toml"))
-        .env("CARGO_TARGET_DIR", &target_dir)
-        // The flags of the outer build are for the host.
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env_remove("RUSTFLAGS")
-        .env_remove("CARGO_BUILD_TARGET")
-        .env_remove("CARGO_BUILD_RUSTFLAGS")
-        // A component is built, not linted, whatever the outer command:
-        // under `cargo clippy` the outer build runs rustc through clippy.
-        .env_remove("RUSTC_WORKSPACE_WRAPPER")
-        .env_remove("CLIPPY_ARGS")
-        .env("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s")
-        .env("CARGO_PROFILE_RELEASE_LTO", "true")
-        .env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1")
-        // Debug info only: the polyfill reads the section of features a
-        // module was built with, so that it can skip a scan of every body.
-        .env("CARGO_PROFILE_RELEASE_STRIP", "debuginfo");
-    for (package, _) in COMPONENTS {
-        command.arg("--package").arg(package);
-    }
-    let status = command.status().expect("cargo runs");
-    assert!(
-        status.success(),
-        "cargo could not build the components: {status}"
-    );
-
     let mut generated = String::new();
-    for (package, constant) in COMPONENTS {
-        let path = target_dir
+    // One build after another, in the same target directory: the components
+    // share every dependency, so each build after the first rebuilds only its
+    // own crate. Each is copied out before the next build writes over it.
+    for (package, features, constant) in COMPONENTS {
+        let cargo = env::var_os("CARGO").expect("cargo sets it");
+        let mut command = Command::new(cargo);
+        command
+            .arg("build")
+            .arg("--release")
+            .arg(format!("--target={TARGET}"))
+            .arg("--manifest-path")
+            .arg(rust_dir.join("../Cargo.toml"))
+            .arg("--package")
+            .arg(package)
+            .env("CARGO_TARGET_DIR", &target_dir)
+            // The flags of the outer build are for the host.
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .env_remove("RUSTFLAGS")
+            .env_remove("CARGO_BUILD_TARGET")
+            .env_remove("CARGO_BUILD_RUSTFLAGS")
+            // A component is built, not linted, whatever the outer command:
+            // under `cargo clippy` the outer build runs rustc through clippy.
+            .env_remove("RUSTC_WORKSPACE_WRAPPER")
+            .env_remove("CLIPPY_ARGS")
+            .env("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s")
+            .env("CARGO_PROFILE_RELEASE_LTO", "true")
+            .env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1")
+            // Debug info only: the polyfill reads the section of features a
+            // module was built with, so that it can skip a scan of every body.
+            .env("CARGO_PROFILE_RELEASE_STRIP", "debuginfo");
+        if !features.is_empty() {
+            command.arg("--features").arg(features.join(","));
+        }
+        let status = command.status().expect("cargo runs");
+        assert!(
+            status.success(),
+            "cargo could not build {constant}: {status}"
+        );
+        let built = target_dir
             .join(TARGET)
             .join("release")
             .join(format!("{}.wasm", package.replace('-', "_")));
         assert!(
-            path.is_file(),
+            built.is_file(),
             "cargo built no component at {}",
-            path.display()
+            built.display()
         );
-        let bytes = std::fs::read(&path).expect("the component reads");
+        let bytes = std::fs::read(&built).expect("the component reads");
+        let path = out_dir.join(format!("{}.wasm", constant.to_lowercase()));
+        std::fs::write(&path, &bytes).expect("OUT_DIR is writable");
         writeln!(
             generated,
-            "/// The bytes of the component that the crate `{package}` builds.\npub const {constant}_BYTES: &[u8] = include_bytes!({:?});\n/// Its content identifier: CIDv1, raw, BLAKE3, base32, as a space's boot\n/// cell pins it.\npub const {constant}_ID: &str = {:?};",
+            "/// The bytes of the component `{constant}`, built from the crate `{package}`.\npub const {constant}_BYTES: &[u8] = include_bytes!({:?});\n/// Its content identifier: CIDv1, raw, BLAKE3, base32, as a space's boot\n/// cell pins it.\npub const {constant}_ID: &str = {:?};",
             path.display().to_string(),
             content_id(&bytes),
         )

@@ -158,14 +158,14 @@
                 // takes over later, a new build, takes this document as it
                 // is: it asks for a port of its own (`need-port`), and nothing
                 // here loads again.
-                // The worker the profile runs: the bootloader of the kernel
+                // The worker the profile runs: the bootloader of the persona
                 // this deployment ships, or `null` where that cannot be told
                 // now (offline), which leaves the worker as it is.
                 async function shipped() {
                     try {
                         var answer = await fetch("/_host/kernel.json", { cache: "no-cache" });
                         if (!answer.ok) return null;
-                        var id = (await answer.json()).kernel;
+                        var id = (await answer.json()).persona;
                         return typeof id === "string" ? "/kernel_boot.js?kernel=" + encodeURIComponent(id) : null;
                     } catch (error) {
                         return null;
