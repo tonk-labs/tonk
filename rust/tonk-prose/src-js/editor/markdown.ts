@@ -100,7 +100,7 @@ export const serializer = new MarkdownSerializer(
         state.closeBlock(node);
         return;
       }
-      state.renderInline(node);
+      state.renderInline(node.copy(spellLeadingWhitespace(node.content)));
       state.closeBlock(node);
     },
   },
@@ -126,6 +126,34 @@ export const serializer = new MarkdownSerializer(
     },
   },
 );
+
+/** A line's leading space or tab, spelled as a character reference.
+ *
+ *  Markdown reads whitespace at the start of a paragraph line as
+ *  indentation, not text: four spaces or a tab make an indented code
+ *  block, and fewer are dropped. Written raw, a paragraph the author
+ *  typed after a stray indent came back from its own markdown as a
+ *  code block, or without its spaces, so every value written back
+ *  into the editor changed it under the author. `&#32;` is text to the
+ *  parser and decodes back to the space, so the line keeps what it
+ *  holds. A line of nothing but whitespace stays as it is: it is a
+ *  blank line either way. */
+function spellLeadingWhitespace(content: Fragment): Fragment {
+  const out: Node[] = [];
+  let lineStart = true;
+  content.forEach((child) => {
+    const lead = child.isText ? /^[ \t]/.exec(child.text ?? "") : null;
+    const code = child.marks.some((mark) => mark.type.spec.code);
+    if (lineStart && lead && !code && /\S/.test(child.text ?? "")) {
+      const entity = lead[0] === "\t" ? "&#9;" : "&#32;";
+      out.push(schema.text(entity + child.text!.slice(1), child.marks));
+    } else {
+      out.push(child);
+    }
+    lineStart = child.type === schema.nodes.hard_break;
+  });
+  return Fragment.from(out);
+}
 
 /** Drop `n` leading characters from a fragment's first text child —
  *  the task-prefix shave for the paragraph serializer. */
