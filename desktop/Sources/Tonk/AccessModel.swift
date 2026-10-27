@@ -432,15 +432,24 @@ final class AccessModel: ObservableObject {
         method: 'POST', headers: {'content-type': 'text/plain'}, body: document,
         signal: AbortSignal.timeout(60000)
       });
-      if (!response.ok) throw new Error('View query failed (HTTP ' + response.status + ').');
+      if (!response.ok) {
+        let reason = '';
+        try {
+          const message = (await response.json())?.error?.message;
+          if (typeof message === 'string' && message) reason = ': ' + message.slice(0, 300);
+        } catch {}
+        throw new Error('evaluate failed (HTTP ' + response.status + ')' + reason);
+      }
       const value = await response.json();
       return (value.matches_after || value.matchesAfter || []).flatMap(block => block.results || []);
     };
     // Keep partial data useful, but never present failed reads as a verified
-    // absence of links, publications, or views.
+    // absence of links, publications, or views. Keep the cause (HTTP status
+    // and worker message, or the timeout) so a failure can be diagnosed.
     const warnings = [];
-    const safe = (promise, fallback, section) => promise.catch(() => {
-      warnings.push(section + ' could not be loaded. Try refreshing.');
+    const safe = (promise, fallback, section) => promise.catch(error => {
+      const cause = String(error?.message || error || 'unknown error');
+      warnings.push(section + ' could not be loaded (' + cause + '). Try refreshing.');
       return fallback;
     });
     const [invites, members, executions, home, directories, concepts, info] = await Promise.all([
