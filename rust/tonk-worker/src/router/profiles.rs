@@ -602,19 +602,21 @@ async fn promote(
     // that identity across the replacement instead of installing a fresh
     // false latch. A swap that finishes after retirement began also closes
     // its never-exposed reactor before publishing it.
-    let (retiring, profile_transition, context_generation, clients) = {
+    let (retiring, profile_transition, context_generation, clients, profile_swaps) = {
         let current = state.read().await;
         (
             Arc::clone(&current.retiring),
             Arc::clone(&current.profile_transition),
             Arc::clone(&current.context_generation),
             Arc::clone(&current.clients),
+            current.profile_swaps.clone(),
         )
     };
     new_state.retiring = retiring;
     new_state.profile_transition = profile_transition;
     new_state.context_generation = context_generation;
     new_state.clients = clients;
+    new_state.profile_swaps = profile_swaps.clone();
     if new_state.is_retiring() {
         new_state.reactor.shutdown();
     }
@@ -635,8 +637,10 @@ async fn promote(
     // here through the in-memory swap there are no fallible operations.
     registry.set_active(&new_state.storage, &name).await?;
     {
-        // The swap waits for every request and sync holding the state.
+        // The swap waits for every guard over the state. Syncs hold theirs
+        // across remote round trips, so they are told to give way first.
         let _timing = super::link_timing::LinkTiming::new("promote", "state-write-lock");
+        profile_swaps.begin();
         let mut active = state.write().await;
         *active = new_state;
         active.context_generation.fetch_add(1, Ordering::AcqRel);

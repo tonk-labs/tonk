@@ -643,9 +643,12 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
         // and pushes. Falling through to the generic per-branch route below
         // would reconcile the same branch a second time every heartbeat, and
         // stamp status on a replica that has no chip to read it.
-        let (status, swept) = {
+        let sweep = async {
             let tonk = state.read().await;
             super::account_state::ensure_account_state_swept(&tonk).await
+        };
+        let Some((status, swept)) = unless_swapped(state, sweep).await else {
+            return Err("account sweep gave way to a profile switch".to_string());
         };
         if status != tonk_account::AccountStateStatus::Ready {
             return Err("account repository remains unhydrated".to_string());
@@ -714,8 +717,76 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
     }
 }
 
+/// Announces a profile swap to work that holds the state across remote IO.
+///
+/// A swap replaces the state under its write lock, which waits for every
+/// read guard. A sync holds one across its pull and push, so a slow or
+/// hung sync held a sign-out, or any profile switch, for as long as it
+/// ran. That work runs [`unless_swapped`] instead, and gives its guard up
+/// once a swap begins: the state it reconciles is being replaced, and the
+/// same branch is reconciled again by whichever state next holds it.
+#[derive(Clone)]
+pub(crate) struct ProfileSwaps(std::sync::Arc<tokio::sync::watch::Sender<u64>>);
+
+impl Default for ProfileSwaps {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(tokio::sync::watch::channel(0).0))
+    }
+}
+
+impl ProfileSwaps {
+    /// Tell the work running [`unless_swapped`] that a swap is waiting.
+    pub(crate) fn begin(&self) {
+        self.0.send_modify(|swaps| *swaps = swaps.wrapping_add(1));
+    }
+
+    /// How many swaps have begun: a sweep that sees it move is working
+    /// for a state that is gone, and stops rather than queue more for it.
+    pub(crate) fn begun(&self) -> u64 {
+        *self.0.borrow()
+    }
+}
+
+/// Run `work` unless a profile swap begins first, answering `None` then.
+///
+/// Dropping `work` releases whatever guard over the state it holds, so
+/// the swap waits for no remote round trip. Work begun once the swap is
+/// queued waits behind it, and so runs against the state that follows.
+pub(crate) async fn unless_swapped<T>(
+    state: &AppState,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    use futures_util::future::{Either, select};
+
+    let mut swaps = state.read().await.profile_swaps.0.subscribe();
+    let swapped = async move {
+        // The sender lives as long as any state does; a closed channel
+        // announces nothing, so the work runs to its end.
+        if swaps.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    match select(std::pin::pin!(work), std::pin::pin!(swapped)).await {
+        Either::Left((done, _)) => Some(done),
+        Either::Right(_) => None,
+    }
+}
+
+/// The error a remote operation answers with when a swap displaced it.
+fn gave_way(operation: &str, params: &SyncPath) -> TonkWorkerError {
+    log!(
+        "{operation} of {}/{} gave way to a profile switch",
+        params.repo,
+        params.branch
+    );
+    TonkWorkerError::Conflict(format!(
+        "{operation} of {}/{} gave way to a profile switch",
+        params.repo, params.branch
+    ))
+}
+
 /// Path parameters for sync endpoints.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct SyncPath {
     /// The repository name.
     pub repo: String,
@@ -728,6 +799,16 @@ pub struct SyncPath {
 pub async fn pull(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
+) -> Result<Json<SyncResponse>, TonkWorkerError> {
+    let work = pull_now(state.clone(), params.clone());
+    unless_swapped(&state, work)
+        .await
+        .unwrap_or_else(|| Err(gave_way("pull", &params)))
+}
+
+async fn pull_now(
+    state: AppState,
+    params: SyncPath,
 ) -> Result<Json<SyncResponse>, TonkWorkerError> {
     log!(
         "Pulling from upstream: repo={}, branch={}",
@@ -859,6 +940,16 @@ async fn migrate_adopted_head(tonk_state: &crate::worker::TonkState, repo: &str,
 pub async fn push(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
+) -> Result<Json<SyncResponse>, TonkWorkerError> {
+    let work = push_now(state.clone(), params.clone());
+    unless_swapped(&state, work)
+        .await
+        .unwrap_or_else(|| Err(gave_way("push", &params)))
+}
+
+async fn push_now(
+    state: AppState,
+    params: SyncPath,
 ) -> Result<Json<SyncResponse>, TonkWorkerError> {
     log!(
         "Pushing to upstream: repo={}, branch={}",
@@ -1114,6 +1205,16 @@ pub async fn sync_status(
 pub async fn sync(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
+) -> Result<Json<SyncResponse>, TonkWorkerError> {
+    let work = sync_now(state.clone(), params.clone());
+    unless_swapped(&state, work)
+        .await
+        .unwrap_or_else(|| Err(gave_way("sync", &params)))
+}
+
+async fn sync_now(
+    state: AppState,
+    params: SyncPath,
 ) -> Result<Json<SyncResponse>, TonkWorkerError> {
     log!(
         "Syncing with upstream: repo={}, branch={}",
@@ -1802,7 +1903,13 @@ pub async fn drain_sync(state: &AppState) {
         .filter(|repo| seen.insert(repo.clone()))
         .collect();
 
+    let swaps = state.read().await.profile_swaps.clone();
+    let began = swaps.begun();
     for repo in &order {
+        if swaps.begun() != began {
+            log!("drain_sync: a profile switch replaced the state this drain was sweeping");
+            return;
+        }
         // A space its loop is syncing waits for it: the drain then finds
         // it current, rather than reconciling it a second time at once.
         let syncing = state.read().await.sync_queue.syncing(repo);
@@ -1815,9 +1922,16 @@ pub async fn drain_sync(state: &AppState) {
         {
             // Push didn't fully land — re-mark so the next heartbeat retries.
             log!("drain_sync: {repo} did not fully reconcile: {e}");
+            if swaps.begun() != began {
+                return;
+            }
             let tonk = state.read().await;
             tonk.sync_queue.requeue(repo, now);
         }
+    }
+
+    if swaps.begun() != began {
+        return;
     }
 
     // The account rides profile main, which no repository — and so no
@@ -1846,8 +1960,14 @@ pub async fn drain_sync(state: &AppState) {
         }
     };
     if !account_already_swept && !account_watched {
-        let tonk = state.read().await;
-        let (status, swept) = super::account_state::ensure_account_state_swept(&tonk).await;
+        let sweep = async {
+            let tonk = state.read().await;
+            super::account_state::ensure_account_state_swept(&tonk).await
+        };
+        let Some((status, swept)) = unless_swapped(state, sweep).await else {
+            log!("drain_sync: account sweep gave way to a profile switch");
+            return;
+        };
         if status != tonk_account::AccountStateStatus::Unconfigured
             && let Err(error) = swept
         {
@@ -1946,7 +2066,13 @@ async fn space_loop(
             continue;
         };
         let _syncing = reporting(&format!("waiting to sync {repo}"), syncing.lock()).await;
+        let swaps = state.read().await.profile_swaps.clone();
+        let began = swaps.begun();
         let synced = reporting(&format!("sync of {repo}"), sync_repository(&state, &repo)).await;
+        if swaps.begun() != began {
+            // The state this loop syncs for is gone; its queue went with it.
+            continue;
+        }
         if let Err(error) = synced {
             log!("sync of {repo} did not fully reconcile: {error}");
             state
@@ -2610,6 +2736,41 @@ mod push_conflict_tests {
 
     use crate::router::repository::profile_library_tests::test_state;
     use crate::router::{AppState, api_router_with_state};
+
+    /// A sync holds the state across its remote round trips. A profile
+    /// swap used to wait for it, so one slow sync held a sign-out for as
+    /// long as it ran; the swap now tells it to give way.
+    #[dialog_common::test]
+    async fn it_releases_a_held_state_guard_when_a_profile_swap_begins() {
+        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let held = {
+            let state = state.clone();
+            tokio::spawn(async move {
+                super::unless_swapped(&state, async {
+                    let _guard = state.read().await;
+                    std::future::pending::<()>().await
+                })
+                .await
+            })
+        };
+        while state.try_write().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        let waiting = std::time::Duration::from_millis(50);
+        assert!(
+            tokio::time::timeout(waiting, state.write()).await.is_err(),
+            "the held guard keeps the swap waiting until it is told to give way"
+        );
+
+        state.read().await.profile_swaps.clone().begin();
+        let swapped = tokio::time::timeout(std::time::Duration::from_secs(5), state.write()).await;
+        assert!(swapped.is_ok(), "the swap takes the state at once");
+        drop(swapped);
+        assert!(
+            held.await.unwrap().is_none(),
+            "the work that gave way answers that it did not finish"
+        );
+    }
 
     #[test]
     fn publication_backoff_is_capped_and_stops_at_the_window() {

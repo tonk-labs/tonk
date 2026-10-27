@@ -9709,6 +9709,7 @@ route!: &foreign-profile-route
             registry: crate::device::Registry::new(name, directory),
             profile_transition: Default::default(),
             context_generation: Default::default(),
+            profile_swaps: Default::default(),
         }
     }
 
