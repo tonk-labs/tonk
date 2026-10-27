@@ -1,2 +1,2 @@
-import{e as a}from"./chunk-Z6G3LOYI.js";import"./chunk-LODKOR73.js";import"./chunk-GQCTWIUU.js";import"./chunk-4GSI2DWM.js";var r=a();export{r as default};
+import{e as a}from"./chunk-SEPPXMCA.js";import"./chunk-KLLWPMC6.js";import"./chunk-VRQFQMV3.js";import"./chunk-BGPYVA47.js";var r=a();export{r as default};
 //# sourceMappingURL=tonk-code-lang-javascript.js.map
