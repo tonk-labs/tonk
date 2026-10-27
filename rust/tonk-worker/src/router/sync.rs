@@ -649,10 +649,16 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
         // stamp status on a replica that has no chip to read it.
         let sweep = async {
             let tonk = state.read().await;
-            super::account_state::ensure_account_state_swept(&tonk).await
+            if switching_profiles(&tonk) {
+                return None;
+            }
+            Some(super::account_state::ensure_account_state_swept(&tonk).await)
         };
-        let Some((status, swept)) = unless_swapped(state, sweep).await else {
+        let Some(swept) = unless_swapped(state, sweep).await else {
             return Err("account sweep gave way to a profile switch".to_string());
+        };
+        let Some((status, swept)) = swept else {
+            return Err("account sweep deferred: a profile switch is under way".to_string());
         };
         if status != tonk_account::AccountStateStatus::Ready {
             return Err("account repository remains unhydrated".to_string());
@@ -774,6 +780,17 @@ pub(crate) async fn unless_swapped<T>(
         Either::Left((done, _)) => Some(done),
         Either::Right(_) => None,
     }
+}
+
+/// Whether a profile switch (a sign-out, an added account) is under way.
+///
+/// A switch publishes the account branch itself on its way out, so an
+/// account sweep started meanwhile pushes the same blocks at the same
+/// time. One of the two head writes is then refused: a sign-out uploaded
+/// 365 blocks in 19 s, was refused, and pulled and pushed again. The
+/// sweep waits for the state that follows instead.
+pub(crate) fn switching_profiles(tonk: &crate::worker::TonkState) -> bool {
+    tonk.profile_transition.try_lock().is_err()
 }
 
 /// The error a remote operation answers with when a swap displaced it.
@@ -1966,10 +1983,17 @@ pub async fn drain_sync(state: &AppState) {
     if !account_already_swept && !account_watched {
         let sweep = async {
             let tonk = state.read().await;
-            super::account_state::ensure_account_state_swept(&tonk).await
+            if switching_profiles(&tonk) {
+                return None;
+            }
+            Some(super::account_state::ensure_account_state_swept(&tonk).await)
         };
-        let Some((status, swept)) = unless_swapped(state, sweep).await else {
+        let Some(swept) = unless_swapped(state, sweep).await else {
             log!("drain_sync: account sweep gave way to a profile switch");
+            return;
+        };
+        let Some((status, swept)) = swept else {
+            log!("drain_sync: account sweep deferred: a profile switch is under way");
             return;
         };
         if status != tonk_account::AccountStateStatus::Unconfigured
