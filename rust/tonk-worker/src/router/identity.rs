@@ -157,7 +157,13 @@ pub(crate) async fn follow_signed_in_account(state: &TonkState) -> Result<(), To
         return Ok(());
     }
     let root = local_root(state).await?;
-    reconcile_root_delegation(state, &root.delegation).await?;
+    // A repair, not a precondition. Its commit can need a tree node only
+    // the account remote holds, and a refused fetch failed the whole boot:
+    // the worker then served nothing, sign-out included. The next boot
+    // tries again.
+    if let Err(error) = reconcile_root_delegation(state, &root.delegation).await {
+        tonk_common::log!("boot kept its device grants as they were: {error}");
+    }
     if state.profile.authority().await.ok().as_ref() == Some(&root.root_did) {
         return Ok(());
     }
