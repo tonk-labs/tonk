@@ -317,6 +317,11 @@ async fn revoking_authority(
 /// invocation carries the chain that proves the device may act for that
 /// subject; `/ucan/` runs the full chain check before dispatch and refuses
 /// a subject the presented proofs do not authorize.
+///
+/// That same chain also goes into the witness. `path` ends at whichever key
+/// signed the leaf: another device of the account, or this profile's key
+/// before it was linked. The witness must show the space reaching the
+/// signer of the revocation, and only this device's own authority does that.
 pub(super) async fn publish_revocation<R>(
     tonk: &TonkState,
     repo: &str,
@@ -331,7 +336,7 @@ where
     let artifact = {
         let subject = repository.did();
         let authority = revoking_authority(tonk, branch, &subject).await?;
-        tonk_identity::revocation::mint_delegated_revocation(
+        tonk_identity::revocation::mint_delegated_revocation_with_witness(
             tonk.profile.credential().signer().clone(),
             path,
             target,
@@ -342,8 +347,15 @@ where
     };
     tonk_identity::revocation::verify(&artifact)
         .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("revocation preflight failed: {error}"))
+        .map_err(|error| match error {
+            // The artifact is sound but this device's authority does not
+            // reach the grant: a refusal, not a fault.
+            tonk_identity::revocation::VerifyError::Unauthorized(_) => {
+                TonkWorkerError::Forbidden(format!("this device cannot revoke this grant: {error}"))
+            }
+            tonk_identity::revocation::VerifyError::Malformed(_) => {
+                TonkWorkerError::Internal(format!("revocation preflight failed: {error}"))
+            }
         })?;
     // The revocation belongs at the access service the space actually
     // syncs through, which is the remote `main` tracks.
@@ -521,6 +533,157 @@ mod tests {
             .await
             .expect("the retained certificates read")
             .is_some()
+    }
+
+    /// A link minted on another device of the same account is revocable
+    /// from this one. The invite path ends at the device that signed the
+    /// leaf, so it alone never shows this device holding the space; the
+    /// revocation has to carry this device's own authority as witness.
+    #[dialog_common::test]
+    async fn it_revokes_a_link_minted_on_another_device_of_the_account() {
+        use dialog_credentials::{Ed25519Signer, Signer};
+        use dialog_ucan_core::DelegationBuilder;
+        use dialog_ucan_core::subject::Subject;
+        use dialog_varsig::Principal as _;
+
+        let (tonk, service, root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await
+                .expect("the device grant mints");
+        crate::router::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "sibling-revoke-test".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().expect("the grant serializes")),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .expect("the root persists");
+        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let key = super::super::repository::create_space_inner(&state, "Sibling", None)
+            .await
+            .expect("the space creates");
+        super::super::repository::enable_sync_inner(&state, &key, &remote)
+            .await
+            .expect("the remote attaches");
+
+        {
+            let tonk = state.read().await;
+            let session = tonk
+                .reactor
+                .repository(&key)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .expect("content branch opens");
+            let subject = tonk
+                .profile
+                .space(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("the space loads")
+                .did();
+
+            // The path a sibling device's mint leaves on the shared branch:
+            // space -> account -> sibling device -> recipient.
+            let sibling = Ed25519Signer::import(&[91; 32])
+                .await
+                .expect("the sibling key imports");
+            let recipient = Ed25519Signer::import(&[92; 32])
+                .await
+                .expect("the recipient key imports");
+            let mut path = super::account_authority(&tonk, session.handle(), &subject)
+                .await
+                .expect("the account holds the space");
+            let device =
+                tonk_identity::delegation::mint_device_delegation(root.clone(), &sibling.did())
+                    .await
+                    .expect("the sibling's device grant mints");
+            for hop in device.proofs() {
+                path = path.push(hop.clone()).expect("the sibling grant chains");
+            }
+            let leaf = DelegationBuilder::new()
+                .issuer(Signer::from(sibling))
+                .audience(&recipient.did())
+                .subject(Subject::Specific(subject.clone()))
+                .command(vec!["use".to_string()])
+                .meta(tonk_invite::inviter_meta(&root.did()))
+                .try_build()
+                .await
+                .expect("the sibling signs the invite");
+            let path = path.push(leaf).expect("the invite chains");
+            assert!(
+                !path
+                    .proofs()
+                    .any(|hop| hop.audience() == &tonk.profile.did()),
+                "this device is not on the sibling's invite path"
+            );
+
+            session
+                .handle()
+                .delegations()
+                .retain_all(vec![dialog_ucan::UcanDelegation(path.clone())])
+                .perform(&tonk.operator)
+                .await
+                .expect("the sibling's path is retained");
+            let invitation =
+                tonk_schema::Invitation::from_chain(&path).expect("the path names the space");
+            let execution = tonk_schema::InvitationExecution::new(&invitation, "scoped");
+            tonk.reactor
+                .repository(&key)
+                .branch("main")
+                .transaction()
+                .assert(invitation)
+                .assert(execution)
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .expect("the invitation is recorded");
+            session
+                .handle()
+                .push()
+                .perform(&tonk.operator)
+                .await
+                .expect("the content reaches the service");
+        }
+
+        let Json(rows) = super::list(State(state.clone()), Path(key.clone()))
+            .await
+            .expect("the invitations list");
+        assert_eq!(rows.len(), 1, "the sibling's link is listed: {rows:?}");
+        let target = rows[0].target_cid.clone();
+        let Json(receipt) =
+            super::revoke(State(state.clone()), Path((key.clone(), target.clone())))
+                .await
+                .expect("this device revokes the sibling's link");
+        assert!(
+            receipt.recorded,
+            "the access service records the revocation"
+        );
+        assert_eq!(receipt.revoked.to_string(), target);
+        let Json(rows) = super::list(State(state.clone()), Path(key.clone()))
+            .await
+            .expect("the invitations list again");
+        assert!(rows.is_empty(), "the revoked link is gone: {rows:?}");
+
+        let account_key = {
+            let tonk = state.read().await;
+            crate::router::account_state::require_ready_account_state(&tonk)
+                .await
+                .expect("the linked account is ready")
+                .key
+                .clone()
+        };
+        let tonk = std::sync::Arc::try_unwrap(state)
+            .unwrap_or_else(|_| panic!("the state has no other holders"))
+            .into_inner();
+        crate::router::account_state::tests::discard(tonk, &account_key);
+        drop(service);
     }
 
     /// A member whose invite link was revoked is cut off, and a fresh link
