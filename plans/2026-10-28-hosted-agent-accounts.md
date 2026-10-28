@@ -236,10 +236,16 @@ Known limits:
 - The page JavaScript has not been tested in a browser before the live check.
 - The agent cannot create spaces yet (slice 2).
 
-Next steps:
+Live result (2026-10-28, preview PR 1196): passes in claude.ai and ChatGPT.
 
-1. A live connect on the preview.
-2. Slice 2: `tonk_create_space`.
+- Both went through OAuth, approval on `/settings/agent` and verification in Rust.
+- Each client has its own persistent agent DID, and both have the human's account
+  as sponsor.
+- Not tested live: reuse of the agent on reconnect (covered by Node tests).
+- The first reload after the redeploy stuck on the service worker's "recoverable
+  version" screen. That is a service-worker issue that existed before this work.
+
+Next step: slice 2, `tonk_create_space`.
 
 ## Open questions
 
