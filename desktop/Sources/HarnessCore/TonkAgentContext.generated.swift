@@ -296,6 +296,29 @@ var TonkAgent = (() => {
           required: ["link"],
           additionalProperties: false
         }
+      },
+      {
+        name: "tonk_create_space",
+        description: "Create a new Tonk space for the user. The user owns it and is its admin; you get read and write access to its content. Returns the space subject, for tonk_query and tonk_evaluate, and a claim link. Give the user the claim link and tell them to open it: it adds the space to their Tonk space list. Never repeat the claim link anywhere else. Create a space only when the user asks for one.",
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: false
+        },
+        inputSchema: {
+          type: "object",
+          properties: {
+            name: {
+              type: "string",
+              minLength: 1,
+              maxLength: 120,
+              description: "The space's name, as the user will see it."
+            }
+          },
+          required: ["name"],
+          additionalProperties: false
+        }
       }
     ]
   };
