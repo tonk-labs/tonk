@@ -28,7 +28,10 @@ struct SponsorRecord {
     recipient: String,
     expires_at: u64,
     /// The verified chain, presented as proof when provisioning. Public.
-    sponsorship_hex: String,
+    /// Absent from records written before agents could create spaces; such
+    /// an agent reconnects to store it.
+    #[serde(default)]
+    sponsorship_hex: Option<String>,
 }
 
 const SPONSOR_FILE: &str = "sponsor.json";
@@ -148,7 +151,7 @@ impl HostedAgents {
             sponsor: verified.sponsor.to_string(),
             recipient: recipient.to_string(),
             expires_at: verified.expires_at.to_unix(),
-            sponsorship_hex: sponsorship_hex.to_owned(),
+            sponsorship_hex: Some(sponsorship_hex.to_owned()),
         };
         write_record(&directory, &record)?;
         Ok(json!({
@@ -186,10 +189,13 @@ impl HostedAgents {
         let recipient: Did = record.recipient.parse().map_err(|_| UNAVAILABLE)?;
         let recipient =
             tonk_identity::sealed::RecipientKey::try_from(&recipient).map_err(|_| UNAVAILABLE)?;
-        let sponsorship = AgentSponsorship::from_bytes(
-            &hex::decode(&record.sponsorship_hex).map_err(|_| UNAVAILABLE)?,
-        )
-        .map_err(|_| UNAVAILABLE)?;
+        let sponsorship_hex = record.sponsorship_hex.as_deref().ok_or_else(|| {
+            "This agent's sponsorship predates creating spaces; disconnect and reconnect the connector to renew it."
+                .to_owned()
+        })?;
+        let sponsorship =
+            AgentSponsorship::from_bytes(&hex::decode(sponsorship_hex).map_err(|_| UNAVAILABLE)?)
+                .map_err(|_| UNAVAILABLE)?;
         let grants_expire =
             Timestamp::try_from(record.expires_at as i128).map_err(|_| UNAVAILABLE)?;
 
@@ -346,7 +352,7 @@ async fn claim_url(
 /// Hold the agent's directory for this invocation, as [`LocalPeer`] requires.
 fn lock(directory: &Path) -> Result<std::fs::File, String> {
     super::local_peer::try_lock(directory)
-        .map_err(|_| UNAVAILABLE.to_owned())?
+        .map_err(|_| "The agent's storage is not private or cannot be locked.".to_owned())?
         .ok_or_else(|| "The agent is busy.".to_owned())
 }
 
@@ -357,9 +363,9 @@ fn read_record(directory: &Path) -> Result<Option<SponsorRecord>, String> {
     match std::fs::read(directory.join(SPONSOR_FILE)) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map(Some)
-            .map_err(|_| UNAVAILABLE.into()),
+            .map_err(|_| "The agent's sponsor record is unreadable.".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(UNAVAILABLE.into()),
+        Err(_) => Err("The agent's sponsor record could not be read.".into()),
     }
 }
 
@@ -480,5 +486,40 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// An agent sponsored before agents could create spaces keeps working:
+    /// its record has no chain, so it lists and reads, and asks to reconnect
+    /// before it creates a space.
+    #[dialog_common::test]
+    async fn it_reads_a_sponsor_record_written_before_space_creation() {
+        let agents = HostedAgents::new(root(), "http://127.0.0.1:9/ucan/".parse().unwrap());
+        let created = agents.create().await.unwrap();
+        let id = created["agent"].as_str().unwrap();
+        let directory = agents.existing(id).unwrap();
+        std::fs::write(
+            directory.join(SPONSOR_FILE),
+            format!(
+                r#"{{"sponsor":"did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX","recipient":"{}","expiresAt":{}}}"#,
+                recipient(),
+                Timestamp::now().to_unix() + 3600
+            ),
+        )
+        .unwrap();
+        let identity = agents.identity(id).await.unwrap();
+        assert_eq!(
+            identity["sponsor"],
+            "did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX"
+        );
+        let listed = agents
+            .call_peer(id, "tonk_list_spaces", &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(listed["spaces"], json!([]));
+        let refused = agents
+            .create_space(id, "Trip", "ChatGPT")
+            .await
+            .unwrap_err();
+        assert!(refused.contains("reconnect"), "{refused}");
     }
 }
