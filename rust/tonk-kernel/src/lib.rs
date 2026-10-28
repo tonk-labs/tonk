@@ -47,7 +47,8 @@ pub mod world {
 mod http;
 mod site;
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use axum::Router;
 use axum::http::StatusCode;
@@ -57,6 +58,7 @@ use site::{Routed, Site};
 use tonk_kernel_world::boot;
 use tonk_kernel_world::guest::HandleLayer;
 use tonk_kernel_world::layer::{SharedLayer, share};
+use tonk_kernel_world::signal::Signal;
 use tonk_kernel_world::world::sapling::kernel::credential::{Access, PersonaAuthority};
 use tonk_kernel_world::world::sapling::kernel::types::Error;
 use tonk_worker::{AppState, TonkState};
@@ -69,11 +71,19 @@ use world::wasi::http::types::{ErrorCode, Request, Response};
 /// a thread-local: on `wasm32-wasip3` each export call is a task of its own.
 static ROUTER: Mutex<Option<Held>> = Mutex::new(None);
 
+/// Whether the space taken up for the first time is still being created:
+/// a request waits until it is, so nothing it writes races the creation.
+static CREATING: AtomicBool = AtomicBool::new(false);
+static CREATED: OnceLock<Signal> = OnceLock::new();
+
+fn created() -> &'static Signal {
+    CREATED.get_or_init(Signal::new)
+}
+
 /// The router holds Dialog DB's state, which is not `Send`.
 struct Held {
     router: Router,
     site: Site,
-    #[cfg(feature = "persona")]
     state: AppState,
 }
 
@@ -105,7 +115,6 @@ fn router() -> Option<(Router, Site)> {
         .map(|held| (held.router.clone(), held.site.clone()))
 }
 
-#[cfg(feature = "persona")]
 fn state() -> Option<AppState> {
     ROUTER
         .lock()
@@ -178,9 +187,11 @@ impl lifecycle::Guest for Kernel {
         *ROUTER.lock().unwrap_or_else(PoisonError::into_inner) = Some(Held {
             router,
             site,
-            #[cfg(feature = "persona")]
             state: state.clone(),
         });
+        if fresh.is_some() {
+            CREATING.store(true, Ordering::Release);
+        }
         wit_bindgen::spawn_local(configure());
         if let Some(space) = renewing {
             wit_bindgen::spawn_local(async move { renew(&state, &space).await });
@@ -244,6 +255,9 @@ impl handler::Guest for Kernel {
         let Some((router, site)) = router() else {
             return Ok(http::respond(503, Some("text/plain"), b"booting".to_vec()));
         };
+        if CREATING.load(Ordering::Acquire) {
+            created().changed(0).await;
+        }
         let request = incoming(request).await?;
         let answer = match site::route(request, &site) {
             Routed::Answer(answer) => answer,
@@ -257,6 +271,7 @@ impl handler::Guest for Kernel {
             }
             Routed::Seed(space) => seed_of(&space).await,
             Routed::Settle(space) => settle(&space).await,
+            Routed::Snapshot(space) => snapshot(&space).await,
         };
         let (parts, mut body) = answer.into_parts();
         let headers = parts
@@ -377,6 +392,8 @@ async fn create(state: &AppState, space: &Space) {
     if !seeded && let Err(error) = found(&*state.read().await, space).await {
         tonk_common::log!("tonk-kernel: {} was not founded: {error}", space.subject);
     }
+    CREATING.store(false, Ordering::Release);
+    created().notify();
 }
 
 /// Create the space's content from what the person's persona kept for it as
@@ -397,12 +414,26 @@ async fn seed(state: &AppState, space: &Space) -> Result<bool, String> {
         );
         return Ok(false);
     };
-    state
-        .read()
-        .await
-        .seed_space(&space.subject, &seed, hash, size)
-        .await
-        .map_err(|error| error.to_string())?;
+    let tonk = state.read().await;
+    let created = match &seed.copy {
+        Some(copy) => {
+            tonk.copy_space(
+                &space.subject,
+                &seed.seed,
+                &copy.content,
+                &copy.revision,
+                hash,
+                size,
+            )
+            .await
+        }
+        None => {
+            tonk.seed_space(&space.subject, &seed.seed, hash, size)
+                .await
+        }
+    };
+    drop(tonk);
+    created.map_err(|error| error.to_string())?;
     tonk_kernel_world::application::seeded()
         .await
         .map_err(|error| format!("the persona was not told: {error:?}"))?;
@@ -433,7 +464,6 @@ async fn pinned(space: &Space) -> Result<Option<([u8; 32], u64)>, String> {
 
 /// What the space `space` is to be created from: the seed this persona kept
 /// as it created it, or `null`.
-#[cfg(feature = "persona")]
 async fn seed_of(space: &str) -> axum::http::Response<axum::body::Body> {
     let Some(state) = state() else {
         return site::answer(StatusCode::SERVICE_UNAVAILABLE, &json!("booting"));
@@ -455,7 +485,6 @@ async fn seed_of(space: &str) -> axum::http::Response<axum::body::Body> {
 }
 
 /// The space `space` was created from its seed.
-#[cfg(feature = "persona")]
 async fn settle(space: &str) -> axum::http::Response<axum::body::Body> {
     let Some(state) = state() else {
         return site::answer(StatusCode::SERVICE_UNAVAILABLE, &json!("booting"));
@@ -467,21 +496,19 @@ async fn settle(space: &str) -> axum::http::Response<axum::body::Body> {
     }
 }
 
-/// A space's kernel keeps no seeds.
-#[cfg(not(feature = "persona"))]
-async fn seed_of(_space: &str) -> axum::http::Response<axum::body::Body> {
-    site::answer(
-        StatusCode::NOT_FOUND,
-        &json!("a space's kernel keeps no seeds"),
-    )
-}
-
-#[cfg(not(feature = "persona"))]
-async fn settle(_space: &str) -> axum::http::Response<axum::body::Body> {
-    site::answer(
-        StatusCode::NOT_FOUND,
-        &json!("a space's kernel keeps no seeds"),
-    )
+/// The space `space`'s `main`, for another space to be made a copy of: the
+/// CARv1 of everything its revision reaches, with the revision, JSON, in
+/// base64 in `x-tonk-revision`. `404` for a space with nothing on `main`.
+async fn snapshot(space: &str) -> axum::http::Response<axum::body::Body> {
+    let Some(state) = state() else {
+        return site::answer(StatusCode::SERVICE_UNAVAILABLE, &json!("booting"));
+    };
+    let snapshot = state.read().await.snapshot_space(space).await;
+    match snapshot {
+        Ok(Some((content, revision))) => site::snapshot(content, &revision),
+        Ok(None) => site::answer(StatusCode::NOT_FOUND, &json!("the space is empty")),
+        Err(error) => site::answer(StatusCode::INTERNAL_SERVER_ERROR, &json!(error.to_string())),
+    }
 }
 
 #[cfg(feature = "persona")]

@@ -6880,7 +6880,7 @@ async fn create_content_with(
 /// revision, and written under this space's own identity without the
 /// source's history or its records of itself. Then the founder's membership,
 /// as for any new space. Nothing is written over a `main` that has content.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn create_copy(
     tonk: &TonkState,
     subject: &Did,

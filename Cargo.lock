@@ -5881,6 +5881,7 @@ name = "tonk-kernel"
 version = "0.6.16-rc.1"
 dependencies = [
  "axum",
+ "base64",
  "http-body-util",
  "serde_json",
  "tonk-common",

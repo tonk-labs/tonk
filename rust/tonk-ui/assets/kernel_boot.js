@@ -586,10 +586,14 @@ async function answerOf(message) {
     // What the space is to be created from, which the person's profile kept
     // as it created it, and that it has been.
     if (message.seed === true && !PROFILE) {
-        const answer = await askHost({ seed: true });
+        const answer = await within(askHost({ seed: true }), CREATION_WAIT_MS, "the profile did not say what the space is made from");
         log(answer.fresh ? "the profile kept a seed for the space" : "the profile kept no seed for the space");
         if (!answer.fresh) settleCreation();
-        return { status: 200, body: answer.fresh ?? "null" };
+        const copy = answer.copy
+            ? { content64: toBase64(new Uint8Array(answer.copy.content)), revision64: answer.copy.revision64 }
+            : null;
+        const seed = answer.fresh ? JSON.parse(answer.fresh) : null;
+        return { status: 200, body: JSON.stringify({ seed, copy }) };
     }
     if (message.seeded === true && !PROFILE) {
         settleCreation();
@@ -609,10 +613,20 @@ async function deliver({ fetch: url, method, type, body64 }) {
     const headers = type ? { "content-type": type } : {};
     const body = body64 == null ? undefined : Uint8Array.from(atob(body64), char => char.charCodeAt(0));
     const response = await fetch(url, { method, headers, body, credentials: "omit", redirect: "error", cache: "no-store" });
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    return { status: response.status, body64: toBase64(new Uint8Array(await response.arrayBuffer())) };
+}
+
+// `promise`, or a failure saying `what` once `ms` passed.
+function within(promise, ms, what) {
+    let timer;
+    const late = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(what)), ms)));
+    return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+function toBase64(bytes) {
     let binary = "";
     for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
-    return { status: response.status, body64: btoa(binary) };
+    return btoa(binary);
 }
 
 // The text at `url`, read as anyone would read it: no credentials, no
@@ -744,7 +758,19 @@ function bindSpacePort(port, { repo }) {
             if (data.seed === true) {
                 const reply = await askPersona("GET", `/_kernel/seed/${repo}`);
                 if (reply.status !== 200) throw new Error(reply.text);
-                port.postMessage({ id, fresh: reply.text === "null" ? null : reply.text });
+                const fresh = reply.text === "null" ? null : reply.text;
+                // A space made as a copy starts from the space it copies, as
+                // that space's own kernel holds it now.
+                const source = fresh ? JSON.parse(fresh).copy_from : null;
+                if (!source) {
+                    port.postMessage({ id, fresh });
+                    return;
+                }
+                const snapshot = await callSpace(source, { method: "GET", path: "/_kernel/snapshot", headers: [], body: null });
+                if (snapshot.status !== 200) throw new Error(`the space to copy answered ${snapshot.status}`);
+                const revision64 = new Headers(snapshot.headers).get("x-tonk-revision");
+                const content = snapshot.body.buffer;
+                port.postMessage({ id, fresh, copy: { content, revision64 } }, [content]);
                 return;
             }
             if (data.seeded === true) {

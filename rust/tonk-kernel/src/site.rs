@@ -4,10 +4,13 @@
 //! address, the content the space's routes keep there. A persona also
 //! answers its host, at `/_kernel/seed/{space}`, what a space it created is to
 //! be created from, and takes `POST /_kernel/seed/{space}/settled` once the
-//! space's own kernel did.
+//! space's own kernel did. A space's kernel answers `/_kernel/snapshot` with
+//! the space, for another to be made a copy of.
 
 use axum::body::Body;
 use axum::http::{HeaderValue, Method, Request, Response, StatusCode, header};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 
@@ -31,6 +34,8 @@ pub enum Routed {
     Seed(String),
     /// The space, by its DID, was created from its seed.
     Settle(String),
+    /// The space, by its DID, for another to be made a copy of.
+    Snapshot(String),
 }
 
 /// The headers an asset's request keeps as it reaches the worker.
@@ -55,6 +60,9 @@ pub fn route(request: Request<Body>, site: &Site) -> Routed {
         }
         return Routed::Pass(request);
     };
+    if path == "/_kernel/snapshot" && method == Method::GET {
+        return Routed::Snapshot(space.clone());
+    }
     if path == "/" && method == Method::PUT {
         let target = format!("/api/repository/{space}/branch/main/blob");
         return Routed::Store(retarget(request, Method::POST, &target, &STORED_HEADERS));
@@ -111,6 +119,20 @@ pub fn answer(status: StatusCode, body: &Value) -> Response<Body> {
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
+    response
+}
+
+/// A space's snapshot: `content`, the CARv1, with `revision`, its JSON, in
+/// base64 in `x-tonk-revision`.
+pub fn snapshot(content: Vec<u8>, revision: &[u8]) -> Response<Body> {
+    let mut response = Response::new(Body::from(content));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/vnd.ipld.car"),
+    );
+    if let Ok(revision) = HeaderValue::from_str(&BASE64.encode(revision)) {
+        response.headers_mut().insert("x-tonk-revision", revision);
+    }
     response
 }
 

@@ -629,6 +629,53 @@ impl TonkState {
         Ok(())
     }
 
+    /// Create `space` as a copy of another space, from that space's
+    /// `content` and `revision` (see [`snapshot_space`]) and `seed` (JSON, as
+    /// [`pending_seed`] gives it), and record the kernel it runs, the asset
+    /// `kernel` (its BLAKE3 `hash` and `size`) on top. Nothing is written over
+    /// a `main` that has content.
+    ///
+    /// [`snapshot_space`]: Self::snapshot_space
+    /// [`pending_seed`]: Self::pending_seed
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn copy_space(
+        &self,
+        space: &str,
+        seed: &str,
+        content: &[u8],
+        revision: &[u8],
+        hash: [u8; 32],
+        size: u64,
+    ) -> Result<(), crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        let seed: crate::router::repository::SpaceSeed = serde_json::from_str(seed)
+            .map_err(|e| crate::TonkWorkerError::Router(format!("seed: {e}")))?;
+        crate::router::repository::create_copy(self, &space, &seed, content, revision)
+            .await
+            .map_err(|e| crate::TonkWorkerError::Internal(e.to_string()))?;
+        space_worker::pin(self, &space, Asset::stored(hash, size)).await?;
+        self.reactor.run_scheduled_polls(&self.operator).await;
+        Ok(())
+    }
+
+    /// `space`'s `main`, for another space to be made a copy of: the CARv1 of
+    /// everything its revision reaches, and the revision as JSON. `None` for a
+    /// space with nothing on `main` yet.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    pub async fn snapshot_space(
+        &self,
+        space: &str,
+    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, crate::TonkWorkerError> {
+        let space: Did = space
+            .parse()
+            .map_err(|e| crate::TonkWorkerError::Router(format!("space: {e:?}")))?;
+        Ok(space_worker::snapshot(self, &space)
+            .await?
+            .map(|snapshot| (snapshot.content, snapshot.revision)))
+    }
+
     /// Put back what a restart lost about `space`, a space this worker took
     /// up before.
     #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]

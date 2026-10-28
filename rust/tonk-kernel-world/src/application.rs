@@ -14,8 +14,9 @@
 //!   `{ "ask": id, "fetch": url, "method", "type": media type or null,
 //!   "body64": base64 or null }`, answered with `"body64"`
 //! - asked of the person's persona, by a space's worker, for what its space
-//!   is to be created from: `{ "ask": id, "seed": true }`, and that it has
-//!   been: `{ "ask": id, "seeded": true }`
+//!   is to be created from: `{ "ask": id, "seed": true }`, answered with a
+//!   body of `{ "seed": seed or null, "copy": { "content64", "revision64" }
+//!   or null }`, and that it has been: `{ "ask": id, "seeded": true }`
 //! - answered: `{ "answer": id, "status", "body": text }`, or
 //!   `{ "answer": id, "error": text }` when it could not be answered.
 
@@ -92,15 +93,50 @@ pub async fn fetch(
     })
 }
 
-/// Ask the person's persona what this worker's space is to be created from:
-/// the seed it kept as it created the space, as JSON, or `None` when there
-/// is nothing to create it from.
-pub async fn seed() -> Result<Option<String>, Error> {
+/// What a space is to be created from: the seed its persona kept as it
+/// created it, as JSON, and, for a space made as a copy of another, that
+/// space's snapshot.
+pub struct Seed {
+    pub seed: String,
+    pub copy: Option<Copy>,
+}
+
+/// The snapshot of a space another is made a copy of: the CARv1 of what its
+/// `main` reaches, and its revision, as JSON.
+pub struct Copy {
+    pub content: Vec<u8>,
+    pub revision: Vec<u8>,
+}
+
+/// Ask the person's persona what this worker's space is to be created from,
+/// or `None` when there is nothing to create it from.
+pub async fn seed() -> Result<Option<Seed>, Error> {
     let answer = send(|id| json!({ "ask": id, "seed": true })).await?;
     if !(200..300).contains(&answer.status) {
         return Err(Error::Unavailable(answer.body));
     }
-    Ok(Some(answer.body).filter(|seed| !seed.is_empty() && seed != "null"))
+    let malformed = |error: String| Error::Invalid(format!("the seed's answer: {error}"));
+    let answered: Value =
+        serde_json::from_str(&answer.body).map_err(|e| malformed(e.to_string()))?;
+    let seed = match answered.get("seed") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(seed) => seed.to_string(),
+    };
+    let decoded = |copy: &Value, field: &str| {
+        let text = copy
+            .get(field)
+            .and_then(Value::as_str)
+            .ok_or_else(|| malformed(format!("the copy has no {field}")))?;
+        BASE64.decode(text).map_err(|e| malformed(e.to_string()))
+    };
+    let copy = match answered.get("copy") {
+        None | Some(Value::Null) => None,
+        Some(copy) => Some(Copy {
+            content: decoded(copy, "content64")?,
+            revision: decoded(copy, "revision64")?,
+        }),
+    };
+    Ok(Some(Seed { seed, copy }))
 }
 
 /// Tell the person's persona this worker created its space's content from
