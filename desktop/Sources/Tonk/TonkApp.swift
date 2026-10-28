@@ -32,7 +32,8 @@ struct TonkApp: App {
             return
           }
           runtime.prepareCatalogCache(directory: model.root)
-          access.prepare(directory: model.root, runtime: runtime)
+          access.prepare(
+            directory: model.root, runtime: runtime, expectedRoot: runtime.cachedAccountRoot)
           delegate.archive = archive
           delegate.runtime = runtime
           model.runtime = runtime
@@ -108,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
     Telemetry.shared.appOpened()
+    AppUpdater.shared.start()
     // Resolve the compiled bundle icon explicitly: automatic AppKit lookup can
     // leave this SwiftPM-built app with a transparent Dock and switcher icon.
     if Bundle.main.object(forInfoDictionaryKey: "CFBundleIconName") != nil {

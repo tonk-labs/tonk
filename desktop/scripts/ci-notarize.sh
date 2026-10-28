@@ -4,6 +4,7 @@ set -euo pipefail
 export DEVELOPER_DIR=${TONK_XCODE_DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 unset SDKROOT
 cd "$(dirname "$0")/../.."
+source desktop/scripts/channel.sh
 for required in APP_STORE_CONNECT_KEY_P8 APP_STORE_CONNECT_KEY_ID APP_STORE_CONNECT_ISSUER_ID RUNNER_TEMP; do
     [[ -n "${!required:-}" ]] || { echo "Missing notarization input: $required" >&2; exit 1; }
 done
@@ -12,7 +13,7 @@ notary_dir=$(mktemp -d "$RUNNER_TEMP/tonk-desktop-notary.XXXXXX")
 trap 'rm -rf "$notary_dir"' EXIT
 key="$notary_dir/AuthKey.p8"
 printf '%s' "$APP_STORE_CONNECT_KEY_P8" > "$key"
-app=desktop/.build/Tonk.app
+app="desktop/.build/$desktop_app_name.app"
 archive=desktop/artifacts/Tonk-macos-arm64.zip
 # Remove uploadable outputs until notarization and stapling succeed.
 rm -f "$archive" desktop/artifacts/Tonk-macos-arm64.sha256

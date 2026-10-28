@@ -7,48 +7,76 @@ struct LinksPageView: View {
   @ObservedObject var access: AccessModel
   var onNewLink: () -> Void
 
+  private var linkCount: Int { access.allLinks.filter { !$0.forAgents }.count }
+
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 24) {
-        ForEach(spaces) { space in
-          let rows = access.links(for: space.id).filter { !$0.forAgents }
-          if let error = access.errors[space.id] {
-            VStack(alignment: .leading, spacing: 8) {
-              Text(space.title).fontWeight(.semibold)
-              VStack(alignment: .leading, spacing: 10) {
-                Text(error).foregroundStyle(.secondary)
-                Divider()
+    List {
+      ForEach(spaces) { space in
+        let rows = access.links(for: space.id).filter { !$0.forAgents }
+        if !rows.isEmpty || access.errors[space.id] != nil {
+          Section(space.title) {
+            if let error = access.errors[space.id] {
+              VStack(alignment: .leading, spacing: 8) {
+                Text(error).foregroundStyle(.secondary).textSelection(.enabled)
                 Button("Try Again") { Task { await access.refresh(space) } }
-              }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                .background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+              }.padding(.vertical, 8)
             }
-          }
-          if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-              HStack {
-                Text(space.title).fontWeight(.semibold)
-                Spacer()
-                Text("\(rows.count) link\(rows.count == 1 ? "" : "s")").foregroundStyle(.tertiary)
-              }
-              VStack(spacing: 0) {
-                ForEach(rows) { link in
-                  if link.id != rows.first?.id { Divider() }
-                  AccessLinkRow(link: link, space: space, access: access)
-                    .padding(.horizontal, 14).padding(.vertical, 10)
-                }
-              }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+            ForEach(rows) { link in
+              AccessLinkRow(link: link, space: space, access: access)
+                .padding(.vertical, 6)
             }
           }
         }
-        if access.allLinks.filter({ !$0.forAgents }).isEmpty {
-          HStack {
-            Text(access.loadedAll ? "No links yet." : "Loading links…").foregroundStyle(.secondary)
-            Spacer()
-            Button("Share a Space…", action: onNewLink).disabled(spaces.isEmpty)
-          }
+      }
+      if linkCount == 0 {
+        Group {
+          if access.loadedAll { emptyState } else { LinksPlaceholder() }
+        }.listRowSeparator(.hidden)
+      }
+    }
+    .listStyle(.inset).scrollContentBackground(.hidden)
+    .font(.system(size: 13))
+  }
+
+  private var emptyState: some View {
+    VStack(spacing: 10) {
+      DesktopGlyph(name: "imgIconLink", size: 28).foregroundStyle(.tertiary)
+      Text("No links yet").font(.headline)
+      Text("Share a space to make a link. Links you make for people show up here.")
+        .foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 320)
+      Button("Share a Space…", action: onNewLink).disabled(spaces.isEmpty)
+        .buttonStyle(.borderedProminent)
+    }.frame(maxWidth: .infinity).padding(.top, 60)
+  }
+}
+
+/// The shape of a links group, so the page does not open on blank space. It
+/// pulses gently while links load, and holds still under Reduce Motion.
+private struct LinksPlaceholder: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var dim = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Space name").fontWeight(.semibold)
+      VStack(spacing: 0) {
+        ForEach(0..<3, id: \.self) { index in
+          if index > 0 { Divider() }
+          VStack(alignment: .leading, spacing: 3) {
+            Text("Link for someone")
+            Text("Anyone with the link · Read and write").font(.system(size: 12))
+          }.padding(.horizontal, 14).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-      }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
-    }.font(.system(size: 13))
+      }
+    }
+    .redacted(reason: .placeholder)
+    .opacity(dim ? 0.45 : 1)
+    .accessibilityHidden(true)
+    .onAppear {
+      guard !reduceMotion else { return }
+      withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { dim = true }
+    }
   }
 }
 

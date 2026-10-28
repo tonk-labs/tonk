@@ -112,6 +112,7 @@ pub(crate) mod remotes;
 
 mod sync;
 pub use dialog_repository::Revision;
+pub(crate) use sync::ProfileSwaps;
 pub use sync::{
     SyncQueue, SyncResponse, SyncStatusResponse, branches_to_sync, drain_sync, sync_repository,
 };

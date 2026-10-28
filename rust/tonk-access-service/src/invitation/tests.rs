@@ -57,6 +57,14 @@ impl Fixture {
             .unwrap();
         fixture
     }
+    /// An invocation expiry five minutes past the fixture's clock. The
+    /// service bounds expiry by its own `now`, the fixture's, so one read off
+    /// the wall clock is refused once a second has ticked since the fixture
+    /// was made.
+    fn expiration(&self) -> Timestamp {
+        Timestamp::new(std::time::UNIX_EPOCH + std::time::Duration::from_secs(self.now + 300))
+            .unwrap()
+    }
     fn service(
         &self,
     ) -> InvitationService<'_, SqliteStore, CapturedEmail, IndexedRevocations<MemoryRevocationIndex>>
@@ -106,7 +114,7 @@ impl Fixture {
             .audience(&self.service.did())
             .subject(root)
             .command(vec!["email-invitation".into(), operation.into()])
-            .expiration(Timestamp::five_minutes_from_now())
+            .expiration(self.expiration())
             .arguments(
                 args.into_iter()
                     .map(|(key, value)| (key.into(), Promised::String(value)))
@@ -193,6 +201,17 @@ impl Fixture {
 }
 
 #[dialog_common::test]
+async fn it_dates_invocations_from_the_fixture_clock() {
+    // A second boundary passing between fixture setup and a request leaves
+    // the service's `now` one second behind the wall clock.
+    let mut f = Fixture::new().await;
+    f.now -= 1;
+    f.prepare(&"e".repeat(64), "carol@example.com")
+        .await
+        .unwrap();
+}
+
+#[dialog_common::test]
 async fn confirmed_recipient_claims_once_across_restart_and_concurrent_retries() {
     let mut f = Fixture::new().await;
     let id = "a".repeat(64);
@@ -262,7 +281,7 @@ async fn cancellation_expiry_and_revoked_sender_device_refuse() {
             .live(&f.store.invitation(&expired).await.unwrap().unwrap()),
         Err(InvitationError::Gone)
     ));
-    f.now = Timestamp::now().to_unix();
+    f.now -= LIFETIME;
     let device = Ed25519Signer::generate().await.unwrap();
     let identity = DelegationBuilder::new()
         .issuer(Signer::from(f.sender.clone()))
@@ -377,7 +396,7 @@ async fn lost_transport_acknowledgement_retries_the_same_delivery_once() {
         .audience(&f.service.did())
         .subject(&f.sender.did())
         .command(vec!["email-invitation".into(), "send".into()])
-        .expiration(Timestamp::five_minutes_from_now())
+        .expiration(f.expiration())
         .proofs(vec![])
         .arguments(std::collections::BTreeMap::from([
             ("invitation".into(), Promised::String(id.clone())),

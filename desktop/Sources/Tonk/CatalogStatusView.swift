@@ -35,7 +35,7 @@ struct CatalogStatusView: View {
           ) {
             if delayed {
               Button("Refresh") { Task { await runtime.refreshSpaces() } }
-                .nativeControl().controlSize(.large)
+                .controlSize(.large)
                 .disabled(runtime.catalogLoading)
             }
           }

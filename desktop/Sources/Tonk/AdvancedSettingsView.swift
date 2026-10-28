@@ -3,11 +3,15 @@ import SwiftUI
 
 struct AdvancedSettingsView: View {
   @Environment(\.dismiss) private var dismiss
+  let embedded: Bool
   @State private var custom: String
   @State private var error: String?
   @State private var saved = false
 
-  init() {
+  private static let defaultHome = RuntimeLocation.Channel.current.defaultRemote.home
+
+  init(embedded: Bool = false) {
+    self.embedded = embedded
     let remote = RuntimeLocation.resolve(arguments: [], defaults: .standard)
     _custom = State(initialValue: remote.home.absoluteString)
   }
@@ -16,12 +20,12 @@ struct AdvancedSettingsView: View {
     VStack(alignment: .leading, spacing: 20) {
       Text("Advanced settings").font(.title2.weight(.semibold))
       HStack(spacing: 12) {
-        TextField("Remote URL", text: $custom, prompt: Text("https://tonk.network"))
+        TextField("Remote URL", text: $custom, prompt: Text(Self.defaultHome.absoluteString))
           .textFieldStyle(.roundedBorder).autocorrectionDisabled()
         Button("Reset") {
-          custom = RuntimeLocation.Deployment.production.home.absoluteString
+          custom = Self.defaultHome.absoluteString
         }
-        .help("Reset to tonk.network")
+        .help("Reset to \(Self.defaultHome.host ?? "the default remote")")
       }
       Text(
         "Each remote has its own account, spaces, and chats on this Mac. Quit and reopen Tonk to use the selected remote."
@@ -40,7 +44,9 @@ struct AdvancedSettingsView: View {
       }
       HStack {
         Spacer()
-        Button(saved ? "Done" : "Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+        if !embedded {
+          Button(saved ? "Done" : "Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+        }
         Button("Save") {
           do {
             let remote = try RuntimeLocation.remote(custom)
@@ -49,10 +55,12 @@ struct AdvancedSettingsView: View {
             error = nil
             saved = true
           } catch { self.error = error.localizedDescription }
-        }.nativeControl(prominent: true).keyboardShortcut(.defaultAction).disabled(saved)
+        }.buttonStyle(.borderedProminent).keyboardShortcut(
+          .return, modifiers: embedded ? [.command] : []
+        ).disabled(saved)
       }
     }
-    .padding(24).frame(width: 540).nativeControl()
+    .padding(embedded ? 0 : 24).frame(width: embedded ? nil : 540)
     .onChange(of: custom) { _, _ in
       saved = false
       error = nil

@@ -220,7 +220,7 @@ pub fn insert_notation(
             out.push_str("block/insert!:\n");
             out.push_str(&format!("  this: ?{var}\n"));
             out.push_str(&format!("  notebook: {notebook}\n"));
-            out.push_str(&format!("  source: {}\n", yaml_block(source)));
+            out.push_str(&format!("  source: {}\n", quote(source)));
             // The successor: the next block in this run by variable, else
             // the nearest surviving block after the run, else the tail.
             if offset + 1 < run.len() {
@@ -235,7 +235,6 @@ pub fn insert_notation(
             // run's last block (`next: case:none`) consults it, and that
             // block's own predecessors are new, with no stored position —
             // so the anchor has to reach past them to something placed.
-            let _ = index;
             match &run_prev {
                 Some(prev) => out.push_str(&format!("  prev: {prev}\n")),
                 None => out.push_str("  prev: tonk:notebook/edge\n"),
@@ -247,18 +246,113 @@ pub fn insert_notation(
     (!out.is_empty()).then_some(out)
 }
 
-/// A source as a YAML block scalar, so markdown with newlines, colons and
-/// backticks survives without escaping.
-fn yaml_block(source: &str) -> String {
-    let mut out = String::from("|-\n");
-    for line in source.lines() {
-        out.push_str("    ");
-        out.push_str(line);
-        out.push('\n');
+/// The notation for one commit: every write an edit makes, as ONE document.
+///
+/// One document is one transaction, so a commit lands whole or not at all.
+/// Dispatching a command event per block instead raced: each event became
+/// its own claim, and a commit that edited one block and inserted another
+/// could land half of itself.
+///
+/// `stored` is what the edit was diffed against; it supplies the keys a
+/// move keeps and a removal names. `title` is the notebook's new title, when
+/// the edit changed its heading.
+pub fn commit_notation(
+    notebook: &str,
+    stored: &[Block],
+    edit: &Edit,
+    title: Option<&str>,
+) -> Option<String> {
+    let key_of = |entity: &str| {
+        stored
+            .iter()
+            .find(|block| block.entity == entity)
+            .and_then(|block| block.key.clone())
+    };
+    let mut out = edits_notation(notebook, &edit.changed);
+    for (entity, key) in moves(stored, edit) {
+        // A block that already has an entry MOVES: its old entry has to go
+        // in the same commit, or the block sits in the sequence twice and
+        // the old key puts it back where it was. One that never had an
+        // entry is simply placed.
+        match key_of(&entity) {
+            Some(from) => {
+                out.push_str("block/move!:\n");
+                out.push_str(&format!("  subject: {entity}\n"));
+                out.push_str(&format!("  notebook: {notebook}\n"));
+                out.push_str(&format!("  from: {}\n", quote(&from)));
+            }
+            None => {
+                out.push_str("block/place!:\n");
+                out.push_str(&format!("  subject: {entity}\n"));
+                out.push_str(&format!("  notebook: {notebook}\n"));
+            }
+        }
+        out.push_str(&format!("  key: {}\n\n", quote(&key)));
     }
-    // Trim the trailing newline: the caller adds one.
-    out.pop();
+    for entity in &edit.removed {
+        // A block whose entry never landed has no key. Its own facts must
+        // still go, or it comes back on the next projection; retracting
+        // the entry under `""` matches nothing and is harmless.
+        let key = key_of(entity).unwrap_or_default();
+        out.push_str("block/remove!:\n");
+        out.push_str(&format!("  subject: {entity}\n"));
+        out.push_str(&format!("  notebook: {notebook}\n"));
+        out.push_str(&format!("  key: {}\n\n", quote(&key)));
+    }
+    if let Some(title) = title {
+        out.push_str("notebook/retitle!:\n");
+        out.push_str(&format!("  subject: {notebook}\n"));
+        out.push_str(&format!("  title: {}\n\n", quote(title)));
+    }
+    if let Some(inserts) = insert_notation(notebook, &edit.order, &edit.created) {
+        out.push_str(&inserts);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// The notation that writes each `(block, source)`.
+fn edits_notation(notebook: &str, edits: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (entity, source) in edits {
+        out.push_str("block/edit!:\n");
+        out.push_str(&format!("  subject: {entity}\n"));
+        out.push_str(&format!("  notebook: {notebook}\n"));
+        out.push_str(&format!("  source: {}\n\n", quote(source)));
+    }
     out
+}
+
+/// The surviving blocks of an edit that need a new key, with the key.
+///
+/// Placement is for blocks that MOVED, or never had a key. A created block
+/// is placed by the insert rules, so re-keying it here would place it twice.
+pub fn moves(stored: &[Block], edit: &Edit) -> Vec<(String, String)> {
+    let order: Vec<(String, Option<String>)> = edit
+        .order
+        .iter()
+        .flatten()
+        .map(|entity| {
+            let key = stored
+                .iter()
+                .find(|block| &block.entity == entity)
+                .and_then(|block| block.key.clone());
+            (entity.clone(), key)
+        })
+        .collect();
+    assign_keys(&order)
+}
+
+/// A text value as a double-quoted scalar.
+///
+/// JSON's string syntax is YAML's double-quoted scalar, so every character
+/// survives exactly: leading indentation, trailing spaces and blank lines,
+/// tabs, a leading `?` that would otherwise read as a variable. The block
+/// scalar this replaced (`|-`) took its indentation from the FIRST line, so
+/// a block opening with an indented line (indented code, a nested list)
+/// failed to parse or lost its indentation, and `|-` chomped trailing
+/// newlines.
+fn quote(text: &str) -> String {
+    serde_json::to_string(text).expect("a string serializes")
 }
 
 /// The chunk range each block covers, as `(first, count)` over the
@@ -444,6 +538,35 @@ fn longest_increasing_run(keys: &[Option<dialog_artifacts::position::Position>])
     run
 }
 
+/// Keep the editor's spelling of every block whose row has not changed.
+///
+/// The editor normalizes what it is given (a trailing space goes, `~~~`
+/// becomes backticks), so a stored source can differ from the editor's text
+/// for the same block indefinitely. Projecting the stored spelling made the
+/// document differ from the editor's on every projection, so each one wrote
+/// it into the editor again, and that write rebuilt the document from
+/// markdown: an empty paragraph the author had just opened with Enter has no
+/// markdown, so it was deleted, and what they typed next joined the block
+/// above it.
+///
+/// `seen` is each block's row source as of the last projection and `base`
+/// the blocks as the editor spells them. A block whose row still says what
+/// it said then has not changed in the store, so its editor spelling stands.
+pub fn respell(
+    stored: &mut [Block],
+    seen: &std::collections::HashMap<String, String>,
+    base: &[Block],
+) {
+    for block in stored {
+        if seen.get(&block.entity) != Some(&block.source) {
+            continue;
+        }
+        if let Some(ours) = base.iter().find(|b| b.entity == block.entity) {
+            block.source = ours.source.clone();
+        }
+    }
+}
+
 /// What an edit did to a notebook's blocks.
 ///
 /// Separating these is the point: a paragraph cut from one place and pasted
@@ -464,6 +587,22 @@ pub struct Edit {
     pub order: Vec<Option<String>>,
     /// Whether the order differs from the one that was projected.
     pub reordered: bool,
+}
+
+/// How much of `a` survives in `b`: the characters they share at the start
+/// plus those they share at the end, never counting one twice. Zero for two
+/// blocks with nothing in common at either edge.
+fn likeness(a: &str, b: &str) -> usize {
+    let prefix = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+    let room = a.chars().count().min(b.chars().count()) - prefix;
+    let suffix = a
+        .chars()
+        .rev()
+        .zip(b.chars().rev())
+        .take(room)
+        .take_while(|(x, y)| x == y)
+        .count();
+    prefix + suffix
 }
 
 /// Diff an edited document's blocks against the stored ones.
@@ -503,20 +642,72 @@ pub fn reconcile(stored: &[Block], next: &[String]) -> Edit {
         }
     }
 
-    // Pass two: pair the leftovers positionally. Walking both in order means
-    // an edited block matches the stored block that occupied its place.
-    let mut spare = stored
+    // Pass two: pair the leftovers that sit in the SAME PLACE. The blocks
+    // matched verbatim are anchors; a leftover source and a leftover stored
+    // block are the same block, edited, only when they fall between the
+    // same two anchors. Pairing leftovers by order alone reached across the
+    // document: a paragraph typed at the top while another was deleted at
+    // the bottom was written onto the deleted block's identity.
+    let anchors: Vec<(usize, usize)> = claimed
         .iter()
         .enumerate()
-        .filter(|(index, _)| !taken[*index])
-        .map(|(index, _)| index)
-        .collect::<std::collections::VecDeque<_>>();
-    for slot in claimed.iter_mut() {
-        if slot.is_none()
-            && let Some(index) = spare.pop_front()
-        {
-            *slot = Some(index);
-            taken[index] = true;
+        .filter_map(|(slot, index)| index.map(|index| (slot, index)))
+        .collect();
+    let mut gaps: Vec<(std::ops::Range<usize>, Option<usize>, Option<usize>)> = Vec::new();
+    let mut from = 0;
+    let mut after: Option<usize> = None;
+    for &(slot, index) in &anchors {
+        gaps.push((from..slot, after, Some(index)));
+        from = slot + 1;
+        after = Some(index);
+    }
+    gaps.push((from..next.len(), after, None));
+
+    for (slots, after, before) in gaps {
+        let fresh: Vec<usize> = slots.collect();
+        if fresh.is_empty() {
+            continue;
+        }
+        // The stored blocks that sat between the same anchors. When the
+        // anchors themselves moved past each other there is no "between",
+        // and any leftover may be the one that moved with them.
+        let spare: Vec<usize> = (0..stored.len())
+            .filter(|index| !taken[*index])
+            .filter(|index| match (after, before) {
+                (Some(after), Some(before)) if after > before => true,
+                (Some(after), Some(before)) => after < *index && *index < before,
+                (Some(after), None) => after < *index,
+                (None, Some(before)) => *index < before,
+                (None, None) => true,
+            })
+            .collect();
+        if spare.is_empty() {
+            continue;
+        }
+        if let ([slot], [index]) = (fresh.as_slice(), spare.as_slice()) {
+            // One block where one block was: the common case of editing a
+            // block in place, however much of it was retyped.
+            claimed[*slot] = Some(*index);
+            taken[*index] = true;
+            continue;
+        }
+        // A split, a merge, or an insert beside an edit: pair by likeness,
+        // best first, and leave what resembles nothing as created/removed.
+        let mut pairs: Vec<(usize, usize, usize)> = Vec::new();
+        for &slot in &fresh {
+            for &index in &spare {
+                let score = likeness(&stored[index].source, &next[slot]);
+                if score > 0 {
+                    pairs.push((score, slot, index));
+                }
+            }
+        }
+        pairs.sort_by_key(|pair| std::cmp::Reverse(pair.0));
+        for (_, slot, index) in pairs {
+            if claimed[slot].is_none() && !taken[index] {
+                claimed[slot] = Some(index);
+                taken[index] = true;
+            }
         }
     }
 
@@ -771,16 +962,127 @@ mod tests {
         assert!(text.contains("next: id:b"), "{text}");
     }
 
-    /// Markdown survives: newlines, colons and backticks are carried in a
-    /// block scalar rather than escaped.
+    /// The text literals a parsed notation document carries, in order.
+    fn literals(text: &str) -> Vec<String> {
+        let parsed = tonk_notation::parse(text);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "notation parses cleanly: {:?}\n{text}",
+            parsed.diagnostics
+        );
+        let debug = format!("{:?}", parsed.syntax.expect("syntax"));
+        let mut found = Vec::new();
+        let mut rest = debug.as_str();
+        while let Some(at) = rest.find("String(\"") {
+            rest = &rest[at + "String(".len()..];
+            // The Debug form of a string is exactly what `{:?}` prints,
+            // so scan to the closing quote that is not escaped.
+            let mut end = 1;
+            let bytes = rest.as_bytes();
+            while bytes[end] != b'"' {
+                end += if bytes[end] == b'\\' { 2 } else { 1 };
+            }
+            found.push(rest[..=end].to_owned());
+            rest = &rest[end + 1..];
+        }
+        found
+    }
+
+    /// Markdown survives byte for byte, whatever it opens or ends with.
+    ///
+    /// Each of these was mangled by the `|-` block scalar the notation
+    /// used to carry sources in: an indented first line set the block's
+    /// indentation (failing the parse or eating spaces), and chomping
+    /// dropped trailing newlines.
     #[dialog_common::test]
     fn it_carries_markdown_verbatim() {
-        let order = vec![None];
-        let created = vec!["```dialog\nnotebook:\n  title: ?t\n```".to_owned()];
-        let text = insert_notation("id:nb", &order, &created).expect("notation");
-        assert!(text.contains("source: |-"), "{text}");
-        assert!(text.contains("    ```dialog"), "{text}");
-        assert!(text.contains("      title: ?t"), "{text}");
+        for source in [
+            "```dialog\nnotebook:\n  title: ?t\n```",
+            "    indented code\nnot indented",
+            "  - nested item\n- top item",
+            "?looks-like-a-variable",
+            "trailing spaces   ",
+            "```dialog-yaml\nconcept:\n\n\n```",
+            "tab\tand \"quotes\" and \\ backslash",
+            "# Heading: with a colon",
+        ] {
+            let text = insert_notation("id:nb", &[None], &[source.to_owned()]).expect("notation");
+            assert!(
+                literals(&text).contains(&format!("{source:?}")),
+                "{source:?} survives: {text}"
+            );
+        }
+    }
+
+    /// One commit is one document: the edit, the move, the removal, the
+    /// rename and the insert all land in the same transaction.
+    #[dialog_common::test]
+    fn it_writes_a_whole_commit_as_one_document() {
+        let a = assign_keys(&[("id:a".to_owned(), None)])[0].1.clone();
+        let b = assign_keys(&[
+            ("id:a".to_owned(), Some(a.clone())),
+            ("id:b".to_owned(), None),
+        ])[0]
+            .1
+            .clone();
+        let c = assign_keys(&[
+            ("id:b".to_owned(), Some(b.clone())),
+            ("id:c".to_owned(), None),
+        ])[0]
+            .1
+            .clone();
+        let block = |entity: &str, source: &str, key: Option<&String>| Block {
+            entity: entity.into(),
+            source: source.into(),
+            key: key.cloned(),
+        };
+        let stored = vec![
+            block("id:a", "first", Some(&a)),
+            block("id:b", "second", Some(&b)),
+            block("id:c", "third", Some(&c)),
+            block("id:d", "fourth", None),
+        ];
+        // c moves to the top, b is edited, d is deleted, a block is added.
+        let edit = reconcile(
+            &stored,
+            &sources(&["third", "first", "second edited", "new"]),
+        );
+        let text = commit_notation("id:nb", &stored, &edit, Some("Renamed")).expect("notation");
+
+        assert!(text.contains("block/edit!:\n  subject: id:b\n"), "{text}");
+        assert!(text.contains("block/remove!:\n  subject: id:d\n"), "{text}");
+        assert!(text.contains("key: \"\""), "an unkeyed removal: {text}");
+        assert!(
+            text.contains(&format!(
+                "block/move!:\n  subject: id:c\n  notebook: id:nb\n  from: {c:?}\n"
+            )),
+            "a keyed block moves from its old key: {text}"
+        );
+        assert_eq!(
+            text.matches("block/move!:").count() + text.matches("block/place!:").count(),
+            1,
+            "only the block that moved is re-keyed: {text}"
+        );
+        assert!(text.contains("block/insert!:"), "{text}");
+        assert!(text.contains("prev: id:b"), "{text}");
+        assert!(text.contains("notebook/retitle!:"), "{text}");
+        let literals = literals(&text);
+        for value in ["second edited", "new", "Renamed"] {
+            assert!(literals.contains(&format!("{value:?}")), "{value}: {text}");
+        }
+    }
+
+    /// An edit that changes nothing writes nothing.
+    #[dialog_common::test]
+    fn it_writes_no_commit_for_an_unchanged_document() {
+        let key = assign_keys(&[("id:a".to_owned(), None)])[0].1.clone();
+        let stored = vec![Block {
+            entity: "id:a".into(),
+            source: "first".into(),
+            key: Some(key),
+        }];
+        let edit = reconcile(&stored, &sources(&["first"]));
+        assert_eq!(commit_notation("id:nb", &stored, &edit, None), None);
     }
 
     /// The title is the leading heading's text.
@@ -1050,6 +1352,53 @@ mod tests {
         );
     }
 
+    /// A block typed at the top while one at the bottom is deleted is a
+    /// creation and a removal, never the deleted block rewritten with the
+    /// new text. Pairing leftovers by order alone did exactly that.
+    #[dialog_common::test]
+    fn it_does_not_pair_an_insert_with_a_distant_deletion() {
+        let before = stored(&[("a", "first"), ("b", "second"), ("c", "third")]);
+        let edit = reconcile(&before, &sources(&["new", "first", "second"]));
+
+        assert!(edit.changed.is_empty(), "nothing is rewritten: {edit:?}");
+        assert_eq!(edit.created, vec!["new".to_owned()]);
+        assert_eq!(edit.removed, vec!["c".to_owned()]);
+    }
+
+    /// Typing a new block above an edited one keeps the edited block's
+    /// identity: the edit is written to it, and the new block is created.
+    #[dialog_common::test]
+    fn it_keeps_an_edited_block_when_a_block_is_added_beside_it() {
+        let before = stored(&[("a", "first"), ("b", "second")]);
+        let edit = reconcile(&before, &sources(&["first", "inserted", "second, edited"]));
+
+        assert_eq!(
+            edit.changed,
+            vec![("b".to_owned(), "second, edited".to_owned())]
+        );
+        assert_eq!(edit.created, vec!["inserted".to_owned()]);
+        assert!(edit.removed.is_empty());
+        assert_eq!(
+            edit.order,
+            vec![Some("a".to_owned()), None, Some("b".to_owned())]
+        );
+    }
+
+    /// Splitting a paragraph keeps its identity on the half that resembles
+    /// it most and creates the other.
+    #[dialog_common::test]
+    fn it_keeps_identity_across_a_split() {
+        let before = stored(&[("a", "hello there, world")]);
+        let edit = reconcile(&before, &sources(&["hello there,", "world"]));
+
+        assert_eq!(
+            edit.changed,
+            vec![("a".to_owned(), "hello there,".to_owned())]
+        );
+        assert_eq!(edit.created, vec!["world".to_owned()]);
+        assert!(edit.removed.is_empty());
+    }
+
     /// Nothing changed at all: no writes, no reorder. Leaving a block you
     /// only read must be free.
     #[dialog_common::test]
@@ -1093,6 +1442,31 @@ mod tests {
             "Query cells run on their own.".to_owned(),
         ];
         assert_ne!(split(&project(&ungrouped)), ungrouped);
+    }
+
+    /// A block the editor normalized keeps the editor's spelling while its
+    /// row is unchanged, so the projection equals the editor's text and is
+    /// not written back into it. A row that changed is projected as stored.
+    #[dialog_common::test]
+    fn it_keeps_the_editors_spelling_of_an_unchanged_row() {
+        let rows = stored(&[("a", "ends with a space "), ("b", "remote edit")]);
+        let seen: std::collections::HashMap<String, String> = [
+            ("a".to_owned(), "ends with a space ".to_owned()),
+            ("b".to_owned(), "before".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let base = stored(&[("a", "ends with a space"), ("b", "before")]);
+
+        let mut projected = rows.clone();
+        respell(&mut projected, &seen, &base);
+        assert_eq!(projected[0].source, "ends with a space", "unchanged row");
+        assert_eq!(projected[1].source, "remote edit", "changed row");
+
+        // The first projection has seen nothing, so it projects the rows.
+        let mut first = rows.clone();
+        respell(&mut first, &std::collections::HashMap::new(), &base);
+        assert_eq!(first, rows);
     }
 
     #[dialog_common::test]

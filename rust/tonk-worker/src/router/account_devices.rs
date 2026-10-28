@@ -10,6 +10,7 @@ use axum::{Json, extract::State};
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use serde::Deserialize;
+use std::collections::BTreeSet;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::delegations::account_scope;
@@ -116,12 +117,9 @@ pub struct RegisterDeviceRequest {
 /// is where the label is known, and asserting there is what makes the
 /// row reach every device without a registry to ask.
 ///
-/// The push is what makes registration visible before the grant is even
-/// delivered: the waiting device's first account pull brings the row
-/// down with the authority it describes. A profile with no provider keeps
-/// the row local. Otherwise, if the one-shot push races the worker's ordinary
-/// account sweep, finish through that serialized sweep before delivering the
-/// grant.
+/// This route answers only once the row is published; the approval
+/// ceremony uses [`register_then_publish`] instead, so the grant is not
+/// held behind the upload.
 ///
 /// [`DeviceLink`]: tonk_schema::DeviceLink
 #[wasm_compat]
@@ -130,7 +128,51 @@ pub async fn register(
     Json(request): Json<RegisterDeviceRequest>,
 ) -> Result<Json<serde_json::Value>, TonkWorkerError> {
     let mut timing = super::link_timing::LinkTiming::new("registration", "state-lock");
-    let state = state.read().await;
+    let tonk = state.read().await;
+    let attachment_id = record_device(&tonk, request, &mut timing).await?;
+    timing.next("push-account");
+    publish_devices(&tonk).await?;
+    timing.next("reply");
+    Ok(Json(serde_json::json!({ "attachmentId": attachment_id })))
+}
+
+/// Record a device locally and publish it behind the caller's answer.
+///
+/// The service authorizes the new device by its delegation chain, not
+/// by the published row, so the grant does not wait for the push. The
+/// push of the whole account branch took about ten seconds per approval.
+/// Other devices see the row when the push lands; if this worker stops
+/// first, the row is still committed locally and the next sync pushes it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn register_then_publish(
+    state: &AppState,
+    request: RegisterDeviceRequest,
+) -> Result<String, TonkWorkerError> {
+    let mut timing = super::link_timing::LinkTiming::new("registration", "state-lock");
+    let attachment_id = {
+        let tonk = state.read().await;
+        record_device(&tonk, request, &mut timing).await?
+    };
+    timing.next("reply");
+    let state = state.clone();
+    crate::detach(async move {
+        let mut timing = super::link_timing::LinkTiming::new("registration-publish", "state-lock");
+        let tonk = state.read().await;
+        timing.next("push-account");
+        if let Err(error) = publish_devices(&tonk).await {
+            log!("the registered device was not published: {error}");
+        }
+    });
+    Ok(attachment_id)
+}
+
+/// Retain the grant and describe the device in profile main, returning
+/// the attachment id. Local only.
+async fn record_device(
+    state: &TonkState,
+    request: RegisterDeviceRequest,
+    timing: &mut super::link_timing::LinkTiming,
+) -> Result<String, TonkWorkerError> {
     timing.next("decode-grant");
     let bytes = hex::decode(&request.delegation_hex).map_err(|error| {
         TonkWorkerError::Conflict(format!("device delegation is not valid hex: {error}"))
@@ -148,15 +190,22 @@ pub async fn register(
         )));
     }
     timing.next("describe-device");
-    crate::onboarding::describe_device_link(&state, &chain, request.name)
+    crate::onboarding::describe_device_link(state, &chain, request.name)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("describe the registered device: {error}"))
         })?;
-    timing.next("push-account");
-    if let Err(push_error) = super::account_state::push_account_main(&state).await {
-        timing.next("fallback-sweep");
-        let (status, swept) = super::account_state::ensure_account_state_swept(&state).await;
+    // The delegation CID is the attachment id now: it names the exact
+    // grant this registration described, which is what the id was for.
+    Ok(chain.proof_cids()[0].to_string())
+}
+
+/// Push profile main so other devices see the registered row. A profile
+/// with no provider keeps the row local. If the one-shot push races the
+/// worker's ordinary account sweep, finish through that serialized sweep.
+async fn publish_devices(state: &TonkState) -> Result<(), TonkWorkerError> {
+    if let Err(push_error) = super::account_state::push_account_main(state).await {
+        let (status, swept) = super::account_state::ensure_account_state_swept(state).await;
         match status {
             tonk_account::AccountStateStatus::Unconfigured => {
                 log!("registered device remains local: {push_error}");
@@ -173,11 +222,7 @@ pub async fn register(
             })?,
         }
     }
-    // The delegation CID is the attachment id now: it names the exact
-    // grant this registration described, which is what the id was for.
-    timing.next("reply");
-    let attachment_id = chain.proof_cids()[0].to_string();
-    Ok(Json(serde_json::json!({ "attachmentId": attachment_id })))
+    Ok(())
 }
 
 /// Prefer the portable account-space fact; fall back to what the provider
@@ -418,57 +463,114 @@ async fn retract_device_links(state: &TonkState, target: &str) -> Result<(), Ton
         })
 }
 
-/// Withdraw this device's own authority over the account it is on, on
-/// the way out of it.
+/// A withdrawal of this device's own authority, begun: what it still
+/// has to do once the sign-out has written its local records.
 ///
 /// Signing out is not a flag: it is the grant being gone. It is held in
 /// three places, withdrawn in the order that keeps each step reachable.
-/// The device rows and the chain are retracted and pushed first, while
-/// the operator can still push; the revocation is published next, so
-/// every access service stops honouring the grant; the local root record
-/// is forgotten last, so signing back in has to reopen the passkey.
+/// The revocation is minted and its endpoints read first, while the
+/// provider that names the account's own service is still attached. The
+/// device rows are retracted, and the caller clears the provider. Then
+/// the local root record is forgotten, so signing back in has to reopen
+/// the passkey; the branch is pulled and pushed while the operator can
+/// still reach the account; the chain is retracted; and the revocation
+/// is published, so every access service stops honouring the grant.
+///
+/// The chain goes last among the writes because it is the proof every
+/// write into the account branch may need. That branch holds the
+/// account's history by reference, and a commit can cascade into a node
+/// still held remotely; fetching it is refused once no chain proves this
+/// device may read the account. So nothing is written after it, and its
+/// own retraction stays local: the published revocation is what
+/// withdraws the grant.
 ///
 /// Best-effort throughout. A step that fails is logged and the rest run,
 /// because a device left with a stale row is better off than one left
 /// with a live grant — and a publication that fails offline leaves the
 /// grant honoured remotely until it lands, which is worth saying loudly.
-pub(crate) async fn withdraw_own_authority(state: &TonkState) {
-    if let Some(link) = super::account::account_link(state).await {
-        revoke_own_grant(state, &link).await;
-    }
-    // Forgotten whether or not a link was live: a root record with no
-    // provider attached is still a grant this device holds.
-    if let Err(error) = super::identity::forget_root(state).await {
-        log!("sign-out kept the local root record: {error}");
-    }
+pub(crate) struct Withdrawal {
+    link: Option<DelegationChain>,
+    publication: Option<Publication>,
 }
 
-/// Retract, push and publish this device's own grant.
-async fn revoke_own_grant(state: &TonkState, link: &DelegationChain) {
+/// A minted revocation and where it must go, read before the provider
+/// naming the account's own service is cleared.
+struct Publication {
+    artifact: Vec<u8>,
+    endpoints: Result<BTreeSet<String>, TonkWorkerError>,
+}
+
+/// Begin withdrawing this device's own authority: mint its revocation,
+/// read where it must be published, and retract the device's rows.
+pub(crate) async fn begin_withdrawal(state: &TonkState) -> Withdrawal {
+    let mut timing = super::link_timing::LinkTiming::new("withdrawal-begin", "account-link");
+    let Some(link) = super::account::account_link(state).await else {
+        return Withdrawal {
+            link: None,
+            publication: None,
+        };
+    };
     let own = state.profile.did().to_string();
-    let artifact = match self_revocation(state, link).await {
+    timing.next("mint-revocation");
+    let artifact = match self_revocation(state, &link).await {
         Ok((revocation, _)) => hex::decode(&revocation).ok(),
         Err(error) => {
             log!("sign-out could not mint its revocation: {error}");
             None
         }
     };
-
+    timing.next("read-endpoints");
+    let publication = match artifact {
+        Some(artifact) => Some(Publication {
+            artifact,
+            endpoints: revocation_endpoints(state).await,
+        }),
+        None => None,
+    };
+    timing.next("retract-device-rows");
     if let Err(error) = retract_device_links(state, &own).await {
         log!("sign-out keeps its device rows: {error}");
     }
-    if let Err(error) = retract_own_delegation(state, link).await {
-        log!("sign-out keeps its delegation on the branch: {error}");
+    Withdrawal {
+        link: Some(link),
+        publication,
     }
-    if let Err(error) = super::account_state::push_account_main(state).await {
-        log!("sign-out did not push its retractions: {error}");
+}
+
+/// Finish a withdrawal once the caller's own records are written: forget
+/// the root record, push, retract the chain, publish the revocation.
+pub(crate) async fn finish_withdrawal(state: &TonkState, withdrawal: Withdrawal) {
+    let mut timing = super::link_timing::LinkTiming::new("withdrawal-finish", "forget-root");
+    // Forgotten whether or not a link was live: a root record with no
+    // provider attached is still a grant this device holds.
+    if let Err(error) = super::identity::forget_root(state).await {
+        log!("sign-out kept the local root record: {error}");
     }
-    if let Some(artifact) = artifact
-        && let Err(error) = publish_revocation(state, &artifact).await
+    if let Some(link) = &withdrawal.link {
+        timing.next("pull-and-push");
+        if let Err(error) = super::account_state::pull_and_push_account_main(state).await {
+            log!("sign-out did not push its retractions: {error}");
+        }
+        timing.next("retract-chain");
+        if let Err(error) = retract_own_delegation(state, link).await {
+            log!("sign-out keeps its delegation on the branch: {error}");
+        }
+    }
+    if let Some(Publication {
+        artifact,
+        endpoints,
+    }) = withdrawal.publication
     {
-        log!(
-            "sign-out revocation not published; the grant stays honoured remotely until it is: {error}"
-        );
+        timing.next("publish-revocation");
+        let published = match endpoints {
+            Ok(endpoints) => publish_revocation_to(&endpoints, &artifact).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = published {
+            log!(
+                "sign-out revocation not published; the grant stays honoured remotely until it is: {error}"
+            );
+        }
     }
 }
 
@@ -505,8 +607,13 @@ pub(super) async fn publish_revocation(
     state: &TonkState,
     artifact: &[u8],
 ) -> Result<(), TonkWorkerError> {
+    let endpoints = revocation_endpoints(state).await?;
+    publish_revocation_to(&endpoints, artifact).await
+}
+
+/// Every access service a revocation from this profile must reach.
+async fn revocation_endpoints(state: &TonkState) -> Result<BTreeSet<String>, TonkWorkerError> {
     use dialog_remote_ucan::UcanAddress;
-    use std::collections::BTreeSet;
 
     let mut endpoints: BTreeSet<String> = BTreeSet::new();
 
@@ -543,14 +650,25 @@ pub(super) async fn publish_revocation(
             )));
         }
     }
+    Ok(endpoints)
+}
 
+/// Post `artifact` to each of `endpoints`; any refusal fails the whole.
+///
+/// The posts go out together, so publishing costs the slowest service's
+/// answer rather than the sum of them, and one refusal does not keep the
+/// artifact from the services after it.
+async fn publish_revocation_to(
+    endpoints: &BTreeSet<String>,
+    artifact: &[u8],
+) -> Result<(), TonkWorkerError> {
     if endpoints.is_empty() {
         return Err(TonkWorkerError::Conflict(
             "this profile has no access service to publish a revocation to".to_string(),
         ));
     }
 
-    for endpoint in &endpoints {
+    let posts = endpoints.iter().map(|endpoint| async move {
         let url = url::Url::parse(endpoint).map_err(|error| {
             TonkWorkerError::Internal(format!("unusable access endpoint '{endpoint}': {error}"))
         })?;
@@ -565,8 +683,12 @@ pub(super) async fn publish_revocation(
             "device revocation recorded at {endpoint}: {}",
             receipt.revoked
         );
-    }
-    Ok(())
+        Ok::<(), TonkWorkerError>(())
+    });
+    futures_util::future::join_all(posts)
+        .await
+        .into_iter()
+        .collect()
 }
 
 /// Revoke a device: mint the artifact, publish it to every access
@@ -782,6 +904,43 @@ mod tests {
             .find(|row| row.did == device.did().to_string())
             .expect("the registered device is listed");
         assert_eq!(registered.name, "e2e terminal");
+    }
+
+    /// The approval path answers with the attachment id once the row is
+    /// recorded locally; publishing it follows the answer.
+    #[dialog_common::test]
+    async fn it_records_a_device_before_publishing_it() {
+        use dialog_varsig::Principal as _;
+
+        let state = Arc::new(RwLock::new(test_state_without_account().await));
+        let account = dialog_credentials::Ed25519Signer::generate().await.unwrap();
+        let device = dialog_credentials::Ed25519Signer::generate().await.unwrap();
+        let chain = tonk_account::delegations::mint_account_union(
+            &dialog_credentials::Signer::from(account),
+            &device.did(),
+        )
+        .await
+        .unwrap();
+
+        let attachment_id = register_then_publish(
+            &state,
+            RegisterDeviceRequest {
+                did: device.did().to_string(),
+                name: "approved terminal".into(),
+                delegation_hex: hex::encode(chain.to_bytes().unwrap()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(attachment_id, chain.proof_cids()[0].to_string());
+
+        let devices = list(State(state)).await.unwrap();
+        let registered = devices
+            .0
+            .iter()
+            .find(|row| row.did == device.did().to_string())
+            .expect("the device is listed before its row is published");
+        assert_eq!(registered.name, "approved terminal");
     }
 
     /// Revoking another device mints from the target's grant retained in

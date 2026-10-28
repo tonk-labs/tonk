@@ -451,6 +451,9 @@ pub struct TonkState {
     /// Monotonic active-profile context. Browser clients bind to the value
     /// they first use and become stale when a profile promotion advances it.
     pub(crate) context_generation: Arc<AtomicU64>,
+    /// Shared across every profile's state, as the transition lock is:
+    /// raised as a swap begins, so syncs give up their guard on the state.
+    pub(crate) profile_swaps: crate::router::ProfileSwaps,
 }
 
 impl TonkState {
@@ -1877,6 +1880,7 @@ pub(crate) async fn boot_state_with_profile_library(
         registry,
         profile_transition: Arc::new(Mutex::new(())),
         context_generation: Arc::new(AtomicU64::new(0)),
+        profile_swaps: Default::default(),
     };
     bootstrap_profile(&state).await.map_err(|e| {
         crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))

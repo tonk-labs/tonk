@@ -98,6 +98,7 @@ pub async fn test_state_without_root() -> TonkState {
         registry,
         profile_transition: Default::default(),
         context_generation: Default::default(),
+        profile_swaps: Default::default(),
     }
 }
 

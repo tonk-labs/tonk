@@ -2719,9 +2719,9 @@ view!:
       {name}
 
 # The library's components a space can install, each beside the others
-# and beside the space's seed: issue, meta, notebook, prose, table (every
-# library file but `core.yaml`, which every space runs, and `profile.yaml`,
-# the profile's). An install is recorded like the seed's and brought up to
+# and beside the space's seed: issue, meta, notebook, prose, table,
+# version-control (every library file but `core.yaml`, which every space
+# runs, and `profile.yaml`, the profile's). An install is recorded like the seed's and brought up to
 # date the same way when the space mounts; installing one already there
 # updates it, or does nothing when it is current.
 concept!: &library/component
@@ -2757,6 +2757,10 @@ library/component!:
 library/component!:
   this: tonk:library/table
   name: "table"
+
+library/component!:
+  this: tonk:library/version-control
+  name: "version-control"
 
 attribute!: &install-component/component
   description: Which component to install, `tonk:library/<name>`.

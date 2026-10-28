@@ -16,20 +16,22 @@ struct SpaceShareControl: View {
     access.links(for: space.id).first { $0.kind == .publicRead }
   }
 
-  /// Copy link with its sharing options, as one accent glass capsule: the face copies
-  /// the default link in one click; the chevron explains each way to share.
+  /// New link with its sharing options, as one accent glass capsule: the face makes
+  /// and copies a fresh link in one click; existing links are copied from the space
+  /// page. The chevron explains each way to share.
   var body: some View {
     HStack(spacing: 0) {
-      Button(action: copyDefault) {
-        Label(copied ? "Copied" : "Copy link", systemImage: copied ? "checkmark" : "link")
+      Button(action: makeLink) {
+        Label(copied ? "Copied" : "New link", systemImage: copied ? "checkmark" : "link.badge.plus")
           .labelStyle(ShareLabelStyle(compact: compact))
           .font(.system(size: 13, weight: .medium))
           .padding(.leading, compact ? 11 : 13).padding(.trailing, compact ? 9 : 10)
           .frame(height: 32).contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .help(copied ? "Copied" : "Copy the default link")
-      .accessibilityLabel(copied ? "Copied" : "Copy link")
+      .help(copied ? "Copied" : "Make a new link to this space and copy it")
+      .accessibilityLabel(copied ? "Copied" : "New link")
+      .disabled(copying)
       Rectangle().fill(.white.opacity(0.4)).frame(width: 1, height: 16)
         .accessibilityHidden(true)
       Button {
@@ -44,10 +46,11 @@ struct SpaceShareControl: View {
       .popover(isPresented: $showingOptions, arrowEdge: .bottom) {
         VStack(alignment: .leading, spacing: 2) {
           ShareOption(
-            title: "Copy link", detail: "Anyone with it can view and edit", symbol: "link"
+            title: "New link", detail: "Makes and copies a link anyone can use to view and edit",
+            symbol: "link.badge.plus"
           ) {
             showingOptions = false
-            copyDefault()
+            makeLink()
           }
           Divider().padding(.horizontal, 8).padding(.vertical, 2)
           if let publication {
@@ -85,11 +88,11 @@ struct SpaceShareControl: View {
     }
   }
 
-  private func copyDefault() {
+  private func makeLink() {
     guard !copying else { return }
     copying = true
     Task {
-      copied = await access.copyDefaultLink(in: space, surface: surface)
+      copied = await access.make(.person, in: space, surface: surface)
       copying = false
       try? await Task.sleep(for: .milliseconds(1500))
       copied = false

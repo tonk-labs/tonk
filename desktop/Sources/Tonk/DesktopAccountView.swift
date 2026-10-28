@@ -5,7 +5,6 @@ struct DesktopAccountView: View {
   @ObservedObject var access: AccessModel
   @ObservedObject var model: HarnessModel
   var onSignOut: () -> Void
-  var showsChat = false
   @State private var name = ""
   @State private var saving = false
   @State private var error: String?
@@ -15,132 +14,121 @@ struct DesktopAccountView: View {
   @State private var passkeyError: String?
 
   var body: some View {
-    ScrollViewReader { proxy in
-      ScrollView {
-        VStack(alignment: .leading, spacing: 32) {
-          VStack(alignment: .leading, spacing: 8) {
-            Text("Your details").fontWeight(.semibold)
-            VStack(spacing: 0) {
-              HStack {
-                Text("Display name").frame(width: 120, alignment: .leading)
-                TextField("Display name", text: $name).textFieldStyle(.roundedBorder)
-                  .onSubmit { scheduleSave(delay: false) }
-              }.padding(16)
-              Divider()
-              HStack {
-                Text("Email").frame(width: 120, alignment: .leading)
-                Text(
-                  access.accountEmail
-                    ?? (access.accountDetailsLoaded ? "No email registered" : "Not available")
-                ).foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-              }.padding(16)
-            }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
-            Text(
-              saving
-                ? "Saving…"
-                : "Your name shows to people and agents in your spaces. Changes save as you type."
-            )
-            .font(.system(size: 12)).foregroundStyle(.secondary)
-            if let error {
-              Text(error).foregroundStyle(.red)
-              Button("Try again") { scheduleSave(delay: false) }
-            }
-          }
-          VStack(alignment: .leading, spacing: 8) {
-            Text("Passkeys").fontWeight(.semibold)
-            VStack(alignment: .leading, spacing: 0) {
-              ForEach(displayedPasskeys) { passkey in
-                if passkey.id != displayedPasskeys.first?.id { Divider() }
-                HStack(spacing: 12) {
-                  DesktopGlyph(name: "r2Key", size: 16).foregroundStyle(.secondary)
-                  VStack(alignment: .leading, spacing: 3) {
-                    Text(passkey.createdOn)
-                    if let date = passkey.createdAt {
-                      Text("Created \(date.formatted(date: .abbreviated, time: .omitted))")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                    }
-                  }
-                  Spacer()
-                }.padding(16)
-              }
-              if displayedPasskeys.isEmpty {
-                Text(
-                  access.accountDetailsLoaded ? "No passkeys listed" : "Passkey details unavailable"
-                )
-                .foregroundStyle(.secondary).padding(16)
-              }
-              Divider()
-              Button(action: addPasskey) {
-                HStack(spacing: 8) {
-                  DesktopGlyph(name: "r2Plus", size: 14)
-                  Text("Add a passkey…")
-                }
-              }.buttonStyle(.plain).padding(16).disabled(addingPasskey)
-                .help(
-                  model.runtime?.supportsDirectPasskey == true
-                    ? "Create a passkey on this Mac" : "Opens your account in the browser")
-            }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
-            Text(
-              "A passkey replaces a password. It can live on a device, a browser profile or a password manager."
-            )
-            .font(.system(size: 12)).foregroundStyle(.secondary)
-            if addingPasskey {
-              HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Follow the passkey prompts…").foregroundStyle(.secondary)
-              }.font(.system(size: 12))
-            }
-            if let passkeyError {
-              Text(passkeyError).font(.system(size: 12)).foregroundStyle(.red)
-            }
-          }
-          if let detailsError = access.accountDetailsError {
-            Text(detailsError).font(.system(size: 12)).foregroundStyle(.secondary)
-            Button("Retry Account Details") { Task { await access.refreshAccount() } }
-          }
+    ScrollView {
+      VStack(alignment: .leading, spacing: 32) {
+        VStack(alignment: .leading, spacing: 8) {
+          Text("Your details").fontWeight(.semibold)
           VStack(spacing: 0) {
             HStack {
-              VStack(alignment: .leading, spacing: 3) {
-                Text("Sign out on this Mac")
-                Text("Disconnects this account. Your spaces stay on this Mac.")
-                  .font(.system(size: 12)).foregroundStyle(.secondary)
-              }
-              Spacer()
-              Button("Sign out…") { confirming = true }
+              Text("Display name").frame(width: 120, alignment: .leading)
+              TextField("Display name", text: $name).textFieldStyle(.roundedBorder)
+                .onSubmit { scheduleSave(delay: false) }
             }.padding(16)
             Divider()
             HStack {
-              VStack(alignment: .leading, spacing: 3) {
-                Text("Delete account")
-                Text("Review permanent deletion in your browser account.")
-                  .font(.system(size: 12)).foregroundStyle(.secondary)
-              }
-              Spacer()
-              Button("Delete account…", action: openAccount).foregroundStyle(.red)
-                .help("Opens your account in the browser to review deletion")
+              Text("Email").frame(width: 120, alignment: .leading)
+              Text(
+                access.accountEmail
+                  ?? (access.accountDetailsLoaded ? "No email registered" : "Not available")
+              ).foregroundStyle(.secondary)
+              Spacer(minLength: 0)
             }.padding(16)
           }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
-          ProviderSettingsView(model: model, embedded: true).id("chat-settings")
-        }.frame(maxWidth: 720).padding(28).frame(maxWidth: .infinity)
-      }.font(.system(size: 13)).controlSize(.small).buttonBorderShape(.capsule)
-        .onAppear {
-          name = access.accountName ?? ""
-          if showsChat { proxy.scrollTo("chat-settings", anchor: .top) }
+          Text(
+            saving
+              ? "Saving…"
+              : "Your name shows to people and agents in your spaces. Changes save as you type."
+          )
+          .font(.system(size: 12)).foregroundStyle(.secondary)
+          if let error {
+            Text(error).foregroundStyle(.red)
+            Button("Try again") { scheduleSave(delay: false) }
+          }
         }
-        .onChange(of: showsChat) { _, value in
-          if value { proxy.scrollTo("chat-settings", anchor: .top) }
+        VStack(alignment: .leading, spacing: 8) {
+          Text("Passkeys").fontWeight(.semibold)
+          VStack(alignment: .leading, spacing: 0) {
+            ForEach(displayedPasskeys) { passkey in
+              if passkey.id != displayedPasskeys.first?.id { Divider() }
+              HStack(spacing: 12) {
+                DesktopGlyph(name: "r2Key", size: 16).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                  Text(passkey.createdOn)
+                  if let date = passkey.createdAt {
+                    Text("Created \(date.formatted(date: .abbreviated, time: .omitted))")
+                      .font(.system(size: 12)).foregroundStyle(.secondary)
+                  }
+                }
+                Spacer()
+              }.padding(16)
+            }
+            if displayedPasskeys.isEmpty {
+              Text(
+                access.accountDetailsLoaded ? "No passkeys listed" : "Passkey details unavailable"
+              )
+              .foregroundStyle(.secondary).padding(16)
+            }
+            Divider()
+            Button(action: addPasskey) {
+              HStack(spacing: 8) {
+                DesktopGlyph(name: "r2Plus", size: 14)
+                Text("Add a passkey…")
+              }
+            }.buttonStyle(.plain).padding(16).disabled(addingPasskey)
+              .help(
+                model.runtime?.supportsDirectPasskey == true
+                  ? "Create a passkey on this Mac" : "Opens your account in the browser")
+          }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+          if addingPasskey {
+            HStack(spacing: 8) {
+              ProgressView().controlSize(.small)
+              Text("Follow the passkey prompts…").foregroundStyle(.secondary)
+            }.font(.system(size: 12))
+          }
+          if let passkeyError {
+            Text(passkeyError).font(.system(size: 12)).foregroundStyle(.red)
+          }
         }
-        .onChange(of: name) { _, _ in scheduleSave() }
-        .onChange(of: access.selfDid) { _, _ in
-          saveTask?.cancel()
-          name = access.accountName ?? ""
+        if let detailsError = access.accountDetailsError {
+          Text(detailsError).font(.system(size: 12)).foregroundStyle(.secondary)
+          Button("Retry Account Details") { Task { await access.refreshAccount() } }
         }
-        .onDisappear { scheduleSave(delay: false) }
-        .confirmationDialog("Sign out on this Mac?", isPresented: $confirming) {
-          Button("Sign out", action: onSignOut)
-        }
-    }
+        VStack(spacing: 0) {
+          HStack {
+            VStack(alignment: .leading, spacing: 3) {
+              Text("Sign out on this Mac")
+              Text("Disconnects this account. Your spaces stay on this Mac.")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Sign out…") { confirming = true }
+          }.padding(16)
+          Divider()
+          HStack {
+            VStack(alignment: .leading, spacing: 3) {
+              Text("Delete account")
+              Text("Review permanent deletion in your browser account.")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Delete account…", action: openAccount).foregroundStyle(.red)
+              .help("Opens your account in the browser to review deletion")
+          }.padding(16)
+        }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+      }.frame(maxWidth: 720).padding(28).frame(maxWidth: .infinity)
+    }.font(.system(size: 13))
+      .onAppear {
+        name = access.accountName ?? ""
+      }
+      .onChange(of: name) { _, _ in scheduleSave() }
+      .onChange(of: access.selfDid) { _, _ in
+        saveTask?.cancel()
+        name = access.accountName ?? ""
+      }
+      .onDisappear { scheduleSave(delay: false) }
+      .confirmationDialog("Sign out on this Mac?", isPresented: $confirming) {
+        Button("Sign out", action: onSignOut)
+      }
   }
 
   private var displayedPasskeys: [AccountPasskey] {
@@ -199,14 +187,35 @@ struct DesktopAccountView: View {
   }
 }
 
-/// In-window destination shared by both account footer controls.
+enum DesktopSettingsTab: Hashable {
+  case account, chatAgent, advanced
+}
+
+/// Settings stay in the hub, with stable tab identities for unapplied drafts.
 struct DesktopSettingsView: View {
   @ObservedObject var model: HarnessModel
   @ObservedObject var access: AccessModel
+  @Binding var selection: DesktopSettingsTab
   var onSignOut: () -> Void
-  var showsChat = false
+  var onBack: () -> Void
+
   var body: some View {
-    DesktopAccountView(access: access, model: model, onSignOut: onSignOut, showsChat: showsChat)
-      .frame(maxWidth: .infinity, maxHeight: .infinity).nativeControl()
+    VStack(alignment: .leading, spacing: 12) {
+      Button(action: onBack) {
+        Label("Back", systemImage: "chevron.left")
+      }.help("Return to the previous page")
+      TabView(selection: $selection) {
+        DesktopAccountView(access: access, model: model, onSignOut: onSignOut)
+          .tabItem { Text("Account") }.tag(DesktopSettingsTab.account)
+        ScrollView {
+          ProviderSettingsView(model: model, embedded: true)
+            .frame(maxWidth: 720).padding(28).frame(maxWidth: .infinity)
+        }.tabItem { Text("Chat Agent") }.tag(DesktopSettingsTab.chatAgent)
+        ScrollView {
+          AdvancedSettingsView(embedded: true)
+            .frame(maxWidth: 720).padding(28).frame(maxWidth: .infinity)
+        }.tabItem { Text("Advanced") }.tag(DesktopSettingsTab.advanced)
+      }
+    }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 }

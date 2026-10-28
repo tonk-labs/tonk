@@ -37,7 +37,7 @@ struct SpaceOverviewView: View {
         }
         Group {
           HStack(spacing: 12) {
-            Text("People").foregroundStyle(.secondary).frame(width: 124, alignment: .leading)
+            Text("People").foregroundStyle(.secondary)
             if let state, !state.members.isEmpty {
               Roster(summary: state.peopleSummary, members: state.members)
             } else {
@@ -104,16 +104,16 @@ struct SpaceOverviewView: View {
           HStack {
             Text(state == nil ? "Loading links…" : "No links yet.").foregroundStyle(.secondary)
             Spacer()
-            if state != nil { Button("Copy link", action: onNewLink) }
+            if state != nil { Button("New Link", action: onNewLink) }
           }.padding(14)
         } else {
           ForEach(rows) { link in
             if link.id != rows.first?.id { Divider() }
-            AccessLinkRow(link: link, space: space, access: access).padding(.horizontal, 14)
+            AccessLinkRow(link: link, space: space, access: access)
               .padding(.vertical, 10)
           }
         }
-      }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+      }
     }
   }
 }

@@ -112,7 +112,9 @@ private struct MemberList: View {
           }
         }
       }
-      .padding(12)
+      // Rows start at the edge, not centered in the popover's minimum width.
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 12).padding(.vertical, 10)
     }
     .frame(minWidth: 180, maxHeight: 320)
     .fixedSize(horizontal: true, vertical: false)
@@ -144,13 +146,14 @@ struct LinkKindIcon: View {
   }
 }
 
-/// One link: what it allows, who used it, and Reset / Revoke / Copy.
+/// One link: permissions and Copy, with usage and management disclosed on demand.
 struct AccessLinkRow: View {
   let link: AccessLink
   let space: TonkSpace?
   @ObservedObject var access: AccessModel
   @State private var confirming = false
   @State private var resetting = false
+  @State private var showingUsage = false
   @State private var publishing = false
 
   var body: some View {
@@ -168,7 +171,7 @@ struct AccessLinkRow: View {
             if link.forAgents { LinkBadge(text: "for agents") }
           }
           Text(link.detail(now: context.date)).font(.system(size: 12)).foregroundStyle(.secondary)
-          if let usage = link.usage(madeAt: access.madeAt(link), now: context.date) {
+          if showingUsage, let usage = link.usage(madeAt: access.madeAt(link), now: context.date) {
             Text(usage).font(.system(size: 12)).foregroundStyle(.secondary)
           }
         }
@@ -183,6 +186,7 @@ struct AccessLinkRow: View {
       if let space { PublishSpaceSheet(space: space, access: access) }
     }
     .accessibilityElement(children: .contain)
+    .contextMenu { secondaryActions }
     .confirmationDialog(confirmTitle, isPresented: $confirming) {
       Button(resetting ? "Reset Link" : confirmAction, role: .destructive) {
         guard let space else { return }
@@ -204,30 +208,47 @@ struct AccessLinkRow: View {
     let stored = access.storedLink(link)
     HStack(spacing: 8) {
       if busy { ProgressView().controlSize(.small) }
-      if link.canReset {
-        Button("Reset…") {
-          resetting = true
-          confirming = true
-        }
-        .disabled(busy || space == nil)
-      }
-      if link.kind == .publicRead {
-        Button("Settings…") { publishing = true }.disabled(busy || space == nil)
-      } else if !link.canReset {
-        Button("Revoke…") {
-          resetting = false
-          confirming = true
-        }
-        .disabled(busy || space == nil)
-      }
       Button("Copy") { access.copyLink(link) }
+        .buttonStyle(.bordered)
         .disabled(busy || stored == nil)
         .help(
           stored == nil
             ? "Only links made on this Mac can be copied. Reset it or make a new link to get one."
             : "Copy link")
+      Menu {
+        secondaryActions
+      } label: {
+        Label("More actions", systemImage: "ellipsis").labelStyle(.iconOnly)
+          .frame(width: 24, height: 24)
+      }
+      .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+      .help("More link actions").accessibilityLabel("More actions for \(link.title)")
     }
-    .buttonStyle(.bordered).controlSize(.small).buttonBorderShape(.capsule)
+  }
+
+  @ViewBuilder private var secondaryActions: some View {
+    let busy = access.working.contains(link.id)
+    if link.usage(madeAt: access.madeAt(link), now: Date()) != nil {
+      Button(showingUsage ? "Hide Usage" : "Show Usage") { showingUsage.toggle() }
+      Divider()
+    }
+    if access.storedLink(link) == nil {
+      Text("Link unavailable on this Mac")
+    }
+    if link.canReset {
+      Button("Reset Link…") {
+        resetting = true
+        confirming = true
+      }.disabled(busy || space == nil)
+    }
+    if link.kind == .publicRead {
+      Button("Publishing Settings…") { publishing = true }.disabled(busy || space == nil)
+    } else if !link.canReset {
+      Button("Revoke Link…") {
+        resetting = false
+        confirming = true
+      }.disabled(busy || space == nil)
+    }
   }
 
   private var confirmTitle: String {
