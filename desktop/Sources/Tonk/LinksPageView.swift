@@ -10,43 +10,32 @@ struct LinksPageView: View {
   private var linkCount: Int { access.allLinks.filter { !$0.forAgents }.count }
 
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 24) {
-        ForEach(spaces) { space in
-          let rows = access.links(for: space.id).filter { !$0.forAgents }
-          if let error = access.errors[space.id] {
-            VStack(alignment: .leading, spacing: 8) {
-              Text(space.title).fontWeight(.semibold)
-              VStack(alignment: .leading, spacing: 10) {
-                Text(error).foregroundStyle(.secondary)
-                Divider()
+    List {
+      ForEach(spaces) { space in
+        let rows = access.links(for: space.id).filter { !$0.forAgents }
+        if !rows.isEmpty || access.errors[space.id] != nil {
+          Section(space.title) {
+            if let error = access.errors[space.id] {
+              VStack(alignment: .leading, spacing: 8) {
+                Text(error).foregroundStyle(.secondary).textSelection(.enabled)
                 Button("Try Again") { Task { await access.refresh(space) } }
-              }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                .background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+              }.padding(.vertical, 8)
             }
-          }
-          if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-              HStack {
-                Text(space.title).fontWeight(.semibold)
-                Spacer()
-                Text("\(rows.count) link\(rows.count == 1 ? "" : "s")").foregroundStyle(.tertiary)
-              }
-              VStack(spacing: 0) {
-                ForEach(rows) { link in
-                  if link.id != rows.first?.id { Divider() }
-                  AccessLinkRow(link: link, space: space, access: access)
-                    .padding(.horizontal, 14).padding(.vertical, 10)
-                }
-              }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+            ForEach(rows) { link in
+              AccessLinkRow(link: link, space: space, access: access)
+                .padding(.vertical, 6)
             }
           }
         }
-        if linkCount == 0 {
+      }
+      if linkCount == 0 {
+        Group {
           if access.loadedAll { emptyState } else { LinksPlaceholder() }
-        }
-      }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
-    }.font(.system(size: 13))
+        }.listRowSeparator(.hidden)
+      }
+    }
+    .listStyle(.inset).scrollContentBackground(.hidden)
+    .font(.system(size: 13))
   }
 
   private var emptyState: some View {
@@ -79,7 +68,7 @@ private struct LinksPlaceholder: View {
           }.padding(.horizontal, 14).padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-      }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+      }
     }
     .redacted(reason: .placeholder)
     .opacity(dim ? 0.45 : 1)

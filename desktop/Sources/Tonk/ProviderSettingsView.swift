@@ -175,7 +175,9 @@ struct ProviderSettingsView: View {
       .font(.system(size: 12)).foregroundStyle(.secondary)
       if let error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
       HStack {
-        Button("Advanced…") { showAdvancedSettings = true }
+        if !embedded {
+          Button("Advanced…") { showAdvancedSettings = true }
+        }
         Spacer()
         if applied { Text("Saved").font(.caption).foregroundStyle(.secondary) }
         if !embedded {

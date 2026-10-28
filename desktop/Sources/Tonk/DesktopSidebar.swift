@@ -189,11 +189,10 @@ struct DesktopSidebar: View {
               access.accountName ?? (runtime.accountConnected ? "Your Account" : "Not Signed In")
             )
             .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: "gearshape").accessibilityHidden(true)
           }.contentShape(Rectangle())
-        }.buttonStyle(.plain).help("Settings")
-        Button(action: onSettings) {
-          Label("Settings", systemImage: "gearshape").labelStyle(.iconOnly)
-        }.buttonStyle(.plain).help("Settings")
+        }.buttonStyle(.plain).help("Account & Settings")
+          .accessibilityLabel("Account & Settings")
 
       }
       .padding(.horizontal, 8).padding(.vertical, 8)
