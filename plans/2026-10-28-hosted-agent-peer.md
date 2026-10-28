@@ -46,15 +46,24 @@ the time. Revocation is the only bound on the session itself.
 
 ## Token
 
-```
-token = base64url(dag-cbor { v: 1, seed: <32 bytes>, proof: <powerline> })
+A UCAN container (base64url), the same encoding everything else uses. The
+outermost delegation says what the token is and carries the seed:
+
+```mermaid
+flowchart LR
+  subgraph token[UCAN container]
+    outer["outermost delegation<br/>iss = aud = session<br/>meta:<br/>token.type = agent-session<br/>token.version = 1<br/>token.seed = 32 bytes"]
+    powerline["powerline<br/>iss = agent space, aud = session<br/>sub Any, cmd /, no exp<br/>meta: home.address"]
+  end
+  outer -- proof --> powerline
 ```
 
-The seed travels **beside** the powerline, not in its `meta`. `meta` is signed
-and rides inside the envelope: dialog retains delegation chains (see
-`account/device-link`, keyed by the retained blob), and proofs go to every
-verifier on invocation. A seed in `meta` would be persisted in the agent space
-and disclosed to the access service on every call.
+The outermost delegation is issued by the session to itself, so it authorizes
+nothing on its own. tonk.host reads `token.*` from its `meta`, derives the key
+from the seed and checks that its DID is both issuer and audience. Invocations
+use only the powerline as proof, and only the powerline is retained in the
+agent space (the session row), so the seed is never stored or sent to a
+verifier.
 
 The token response has no `expires_in` and no `refresh_token`. This departs
 from the spec's SHOULD on short-lived tokens; expiry is on invites, revocation
@@ -104,7 +113,7 @@ against the code. The code is single-use and short-lived; `/token` checks PKCE
 flowchart TD
   req[MCP request + Bearer] --> decode{decode token}
   decode -- malformed --> e401[401 + resource_metadata]
-  decode --> verify{powerline valid?<br/>aud = DID of seed<br/>iss is agent space}
+  decode --> verify{"token.type, token.version known?<br/>DID of seed = outer iss = aud?<br/>powerline from agent space to it?"}
   verify -- no --> e401
   verify --> revoked{revoked?<br/>checked every call}
   revoked -- yes --> e401
@@ -178,8 +187,11 @@ Rust, in `tonk-identity`, `tonk-schema` and the YAML library.
 
 - Concepts: agent marker and `agent-session` row (mirror `account/device-link`).
 - `mint_agent_session(agent_space, session_did, home)`: powerline, no expiry.
-- Token encode/decode `{ v, seed, proof }`, with tests that the seed never ends
-  up in signed `meta` or in retained chains.
+- Token as a UCAN container: outermost session-to-session delegation with
+  `token.type`, `token.version`, `token.seed` in `meta`, the powerline as its
+  proof. Tests: round trip; unknown type or version refused; seed DID must match
+  issuer and audience; the retained powerline and the proofs sent on invocation
+  never contain the seed.
 - Provision an agent space under an account (reuse space creation and sealing).
 - Create-space delegation, once open question 1 is decided.
 - CLI: `tonk agent create --name`, `tonk agent session` printing a token,
