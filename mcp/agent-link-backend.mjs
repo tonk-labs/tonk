@@ -28,6 +28,40 @@ export function agentLinkBackend({
       if (cancel) lifetime.abort();
       await pending;
     },
+    // Hosted agent tools (`agent_create`, `agent_identity`, `agent_sponsor`).
+    // They share this queue and checkpoint: agents live under the same root.
+    async agent(input) {
+      if (closed || failed || queued >= maxPending)
+        throw new TonkToolError('Agent worker unavailable or busy.');
+      if (!['agent_create', 'agent_identity', 'agent_sponsor'].includes(input?.tool))
+        throw new TonkToolError('Tool unavailable.');
+      queued++;
+      const task = pending.then(async () => {
+        if (failed) throw new TonkToolError('Agent storage requires recovery.');
+        if (closed && !drainQueued) throw new TonkToolError('Agent worker is shutting down.');
+        let result;
+        try {
+          result = await run({ binary, dataDirectory, remote, signal: lifetime.signal, input });
+        } finally {
+          if (checkpoint && input.tool !== 'agent_identity') {
+            try {
+              await checkpoint.save();
+            } catch {
+              failed = true;
+              throw new TonkToolError('Durable storage failed.');
+            }
+          }
+        }
+        if (result.error) throw new TonkToolError(result.error);
+        return result.result;
+      });
+      pending = task
+        .catch(() => {})
+        .finally(() => {
+          queued--;
+        });
+      return task;
+    },
     async call(tool, args, signal) {
       if (closed || failed || queued >= maxPending)
         throw new TonkToolError('Agent worker unavailable or busy.');

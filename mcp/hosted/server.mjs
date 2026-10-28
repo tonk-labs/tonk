@@ -20,7 +20,7 @@ const build = await readFile(new URL('./build.json', import.meta.url), 'utf8').c
   throw error;
 });
 const agentLinks = await createAgentService({ issuer, binary, provider });
-const sponsor = await createSponsorService({ issuer, provider });
+const sponsor = await createSponsorService({ issuer, provider, agents: agentLinks.agents });
 const service = {
   fetch: (request) =>
     new URL(request.url).pathname === '/mcp/link'

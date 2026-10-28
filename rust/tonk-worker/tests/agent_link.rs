@@ -503,3 +503,96 @@ async fn storage_admission_reports_safe_distinct_reasons_before_dispatch() -> an
     anyhow::ensure!(mismatches.is_empty(), "{}", mismatches.join("\n"));
     Ok(())
 }
+
+/// One `tonk-agent-worker` invocation with `input` on stdin, as the hosted
+/// service makes it. Answers the marked result line's JSON.
+fn invoke_agent_worker(root: &std::path::Path, input: serde_json::Value) -> serde_json::Value {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_tonk-agent-worker"))
+        .arg(root)
+        .arg("http://127.0.0.1:9/ucan/")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("the agent worker starts");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let line = stdout
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("TONK_AGENT_LINK_RESULT "))
+        .expect("a marked result line");
+    serde_json::from_str(line).unwrap()
+}
+
+/// A hosted agent keeps its key across processes, and a sponsorship issued
+/// to that key by the sponsor's device is verified and kept.
+#[tokio::test]
+async fn hosted_agent_keeps_its_identity_and_its_sponsor_across_processes() -> anyhow::Result<()> {
+    use tonk_invite::sponsorship::AgentSponsorship;
+
+    let root = std::env::temp_dir().join(format!("tonk-hosted-agent-{}", rand::random::<u64>()));
+    let created = invoke_agent_worker(&root, serde_json::json!({"tool": "agent_create"}));
+    let agent = created["result"]["agent"].as_str().unwrap().to_owned();
+    let did = created["result"]["did"].as_str().unwrap().to_owned();
+    assert!(did.starts_with("did:key:z6Mk"));
+
+    let identity = invoke_agent_worker(
+        &root,
+        serde_json::json!({"tool": "agent_identity", "agent": agent}),
+    );
+    assert_eq!(identity["result"]["did"], did);
+    assert_eq!(identity["result"]["sponsor"], serde_json::Value::Null);
+
+    // What the sponsor's device sends.
+    let account = Ed25519Signer::generate().await?;
+    let device = Ed25519Signer::generate().await?;
+    let link = DelegationBuilder::new()
+        .issuer(Signer::from(account.clone()))
+        .audience(&device.did())
+        .subject(dialog_ucan_core::subject::Subject::Any)
+        .command(Vec::<String>::new())
+        .try_build()
+        .await?;
+    let sponsorship = AgentSponsorship::issue_from_device(
+        DelegationChain::new(link),
+        &Signer::from(device),
+        &did.parse()?,
+        Timestamp::now(),
+    )
+    .await?;
+    let recipient = "did:key:z6LSbysY2xFMRpGMhb7tFTLMpeuPRaqaWM1yECx2AtzE3KCc";
+    let sponsored = invoke_agent_worker(
+        &root,
+        serde_json::json!({
+            "tool": "agent_sponsor",
+            "agent": agent,
+            "sponsorship_hex": hex::encode(sponsorship.to_bytes()?),
+            "recipient": recipient,
+        }),
+    );
+    assert_eq!(sponsored["result"]["sponsor"], account.did().to_string());
+
+    let identity = invoke_agent_worker(
+        &root,
+        serde_json::json!({"tool": "agent_identity", "agent": agent}),
+    );
+    assert_eq!(identity["result"]["did"], did);
+    assert_eq!(identity["result"]["sponsor"], account.did().to_string());
+    assert_eq!(identity["result"]["recipient"], recipient);
+
+    // Link invocations keep their own shape: an agent field is not a link.
+    let refused = invoke_agent_worker(
+        &root,
+        serde_json::json!({"tool": "tonk_query", "agent": agent}),
+    );
+    assert_eq!(refused["error"], "Tool unavailable.");
+    Ok(())
+}

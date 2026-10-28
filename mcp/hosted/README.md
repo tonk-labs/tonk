@@ -1,7 +1,8 @@
 > The deployed executable (`server.mjs`) serves two endpoints. `/mcp` is OAuth
-> where a human sponsors an agent (`sponsor-service.mjs`, a test stub for now: the
-> agent gets the guides and an empty space list, and the approval delegation goes
-> to a key nobody holds). `/mcp/link` takes [agent links](../AGENT-LINKS.md).
+> where a person sponsors an agent (`sponsor-service.mjs`, `sponsor-agents.mjs`):
+> each connection is a hosted agent with its own key under `agents/`, approved on
+> `/settings/agent`, which grants it `/provider/add` on the person's account. It
+> cannot create spaces yet. `/mcp/link` takes [agent links](../AGENT-LINKS.md).
 > The account-attachment modules below (`service.mjs`, `worker-tenants.mjs`) are
 > not deployed: OAuth no longer attaches the human's own account.
 

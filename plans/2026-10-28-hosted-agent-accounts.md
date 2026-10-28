@@ -200,13 +200,46 @@ in both claude.ai and ChatGPT.
   human's account.
 - The passkey worked inside both clients' OAuth windows.
 
+### Second step: real agent identity and sponsorship (done locally)
+
+- `tonk_invite::sponsorship::AgentSponsorship`:
+  - The signed-in device extends its `account -> device` grant to the agent with
+    exactly `/provider/add` on the account.
+  - Expiry: 90 days, or when the device grant ends.
+  - `verify()` checks the agent, the account as root issuer and subject, the
+    command, empty policies and every signature.
+  - The access service accepts this exact chain from the agent (test
+    `it_provisions_through_a_device_issued_sponsorship`).
+- `tonk:sponsor-agent` command (`router/sponsor_agent.rs`):
+  - The provider is target-agnostic, and no passkey is asked for.
+  - It sends the page to the host's callback with
+    `#sponsor=<base64 {account, recipient, sponsorshipHex}>`.
+- `/settings/agent` page in `profile.yaml`:
+  - It shows the agent's name, the account and what approving grants.
+  - Decline sends `#deny=`.
+  - Sign-in returns the person to the page.
+- `HostedAgents` (`router/hosted_agent.rs`) and the `tonk-agent-worker` agent tools:
+  - Each agent is one `LocalPeer` directory under `agents/<id>`, with its own key.
+  - `agent_sponsor` verifies the sponsorship in Rust and keeps the chain in the
+    peer's delegation store.
+- `mcp/hosted/sponsor-agents.mjs`:
+  - `/oauth/continue` creates the agent, or reuses this browser's agent.
+  - The callback sponsors the agent.
+  - The reconnect cookie is keyed by redirect URI.
+  - Another account cannot take over an agent another account sponsors.
+- Connections last 30 days, and token refresh no longer revokes after 256 rotations.
+
+Known limits:
+
+- Agent keys are in the R2 checkpoint in plain text, as agent-link seeds already
+  are. They must be encrypted before production.
+- The page JavaScript has not been tested in a browser before the live check.
+- The agent cannot create spaces yet (slice 2).
+
 Next steps:
 
-1. Replace the stub:
-   - The native worker mints a persistent agent account.
-   - A new `/settings/agent` page and `tonk:sponsor-agent` command return the
-     sponsor's recipient key and the S0 `/provider/add` grant.
-   - Verify the grant in Rust.
+1. A live connect on the preview.
+2. Slice 2: `tonk_create_space`.
 
 ## Open questions
 

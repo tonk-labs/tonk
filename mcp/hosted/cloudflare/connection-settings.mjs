@@ -3,8 +3,8 @@ export function connectionSettings(config) {
   return [
     `**OAuth server (ChatGPT, Claude):** \`${issuer}/mcp\``,
     'Streamable HTTP · OAuth with dynamic registration; no client ID needed.',
-    'Test connection: sign in to Tonk and approve. The agent can read the guides and',
-    'sees an empty space list; it cannot create or open spaces yet.',
+    'Sign in to Tonk and approve to sponsor the agent: it gets its own identity and can',
+    'read the guides; it cannot create or open spaces yet.',
     '',
     `**Agent links:** \`${issuer}/mcp/link\``,
     'Streamable HTTP · no OAuth. Copy an agent link from the desired Tonk space and',

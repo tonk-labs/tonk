@@ -23,6 +23,18 @@ export async function createAgentService({ issuer, provider, binary, directory, 
   });
   const handler = createTonkHTTP(async () => backend);
   return {
+    // Persistent hosted agents, under the same root and checkpoint.
+    agents: {
+      create: () => backend.agent({ tool: 'agent_create' }),
+      identity: (agent) => backend.agent({ tool: 'agent_identity', agent }),
+      sponsor: ({ agent, sponsorshipHex, recipient }) =>
+        backend.agent({
+          tool: 'agent_sponsor',
+          agent,
+          sponsorship_hex: sponsorshipHex,
+          recipient,
+        }),
+    },
     async fetch(request) {
       const url = new URL(request.url);
       if (url.origin !== issuer) return new Response(null, { status: 421 });

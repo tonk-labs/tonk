@@ -1,14 +1,13 @@
-// OAuth endpoint where a human sponsors an agent connection. This first slice
-// uses the stub identity in `sponsor-stub.mjs`: it proves discovery,
-// registration, passkey approval in the Tonk app and token issue, and grants
-// the agent no authority.
+// OAuth endpoint where a person sponsors an agent connection. Each connection
+// is a hosted agent with its own persistent key; approving in the Tonk app
+// (`/settings/agent`) sponsors it. See `sponsor-agents.mjs`.
 import { createDurableState } from './durable-state.mjs';
 import { createTonkOAuth } from './oauth.mjs';
 import { createAuthenticatedTonkHTTP } from './authenticated-http.mjs';
-import { sponsorStubBackend, sponsorStubProvisioner } from './sponsor-stub.mjs';
+import { agentProvisioner, sponsoredAgentBackend } from './sponsor-agents.mjs';
 import { providerOrigin } from './provider.mjs';
 
-const STATE_VERSION = 'sponsor-stub-1';
+const STATE_VERSION = 'sponsor-agents-1';
 
 // Pre-registered public clients, for hosts that take a client ID. Others use
 // dynamic registration.
@@ -36,12 +35,16 @@ export async function createSponsorService({
   provider,
   now = Date.now,
   durable,
-  provision = sponsorStubProvisioner(),
+  agents,
+  provision = agentProvisioner(agents),
+  // How long one approval lasts; the client then asks the person again.
+  connectionLifetime = 30 * 24 * 60 * 60_000,
 }) {
   provider = providerOrigin(provider);
   durable ??= await createDurableState();
-  if (durable.state && durable.state.version !== STATE_VERSION)
-    throw Error('Sponsor credential snapshot version mismatch');
+  // State from another version names agents this one does not keep (the
+  // first slice's throwaway keys). Start over; those clients connect again.
+  const saved = durable.state?.version === STATE_VERSION ? durable.state : undefined;
   const oauth = createTonkOAuth({
     issuer,
     now,
@@ -50,14 +53,16 @@ export async function createSponsorService({
     // A client registers once per connection and keeps its ID; an expired
     // registration would break every later refresh.
     registrationLifetime: 90 * 24 * 60 * 60_000,
-    linkPage: provider + '/settings/link',
-    saved: durable.state?.oauth,
+    linkPage: provider + '/settings/agent',
+    approvalParameter: 'agent',
+    connectionLifetime,
+    saved: saved?.oauth,
     provisionAccount: provision,
   });
   const http = createAuthenticatedTonkHTTP({
     oauth,
     now,
-    resolveBackend: async (principal) => sponsorStubBackend(principal),
+    resolveBackend: async (principal) => sponsoredAgentBackend(principal),
   });
   return {
     fetch(request) {

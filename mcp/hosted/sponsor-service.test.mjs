@@ -3,32 +3,67 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createSponsorService } from './sponsor-service.mjs';
-import { sponsorStubProvisioner, throwawayDid } from './sponsor-stub.mjs';
 
 const issuer = 'https://mcp.tonk.example';
 const provider = 'https://app.tonk.example';
 const resource = `${issuer}/mcp`;
 const chatgpt = 'https://chatgpt.com/connector_platform_oauth_redirect';
 const hash = (value) => createHash('sha256').update(value).digest('base64url');
-// A real tonk-identity delegation; see delegation-parties.test.mjs.
 const sponsor = 'did:key:z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX';
-const agent = 'did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH';
-const delegationHex =
-  'a16663746e2d7631815901368258405e060f9df267938da7fbf7ed550d3310fa84fe2da72bb680fe5915047e1d28e6f4f3b1a979f3c4ff8cf1cf33176841450821181eb4430bcb31b860836089700fa26168483401ed01ed011371737563616e2f646c6740312e302e302d72632e31a86361756478386469643a6b65793a7a364d6b6f39685467674d776a535445614a615055664536747163793278765536426e4e713365336f3871564269794863636d64612f63657870f66369737378386469643a6b65793a7a364d6b6f6e334e656364364e6b6b79666f476f48786964327a6e476335394c55334b376d756261526346624c664c5863706f6c8063737562f6646d657461a16c686f6d652e616464726573737668747470733a2f2f6875622e746573742f7563616e2f656e6f6e63655044db865ee2e4f2fa48841888a0668a44';
+const otherSponsor = 'did:key:z6Mko9hTggMwjSTEaJaPUfE6tqcy2xvU6BnNq3e3o8qVBiyH';
+const recipient = 'did:key:z6LSbysY2xFMRpGMhb7tFTLMpeuPRaqaWM1yECx2AtzE3KCc';
 
-async function service({ mint = () => agent } = {}) {
+// The native agent store, in memory. `sponsor` accepts only the sponsorship
+// the fake device below produces for that agent, the way the native worker
+// verifies it against the agent's key.
+function fakeAgents() {
+  const agents = new Map();
+  let next = 0;
+  return {
+    agents,
+    async create() {
+      next++;
+      const agent = String(next).padStart(32, '0');
+      const did = `did:key:z6MkAgent${String(next).padStart(40, 'A')}`;
+      agents.set(agent, { agent, did });
+      return { agent, did };
+    },
+    async identity(agent) {
+      const found = agents.get(agent);
+      if (!found) throw Error('Unknown agent.');
+      return { ...found };
+    },
+    async sponsor({ agent, sponsorshipHex, recipient: key }) {
+      const found = agents.get(agent);
+      const [audience, account] = Buffer.from(sponsorshipHex, 'hex').toString().split('|');
+      if (!found || audience !== found.did || !key) throw Error('not valid');
+      found.sponsor = account;
+      found.recipient = key;
+      return { agent, did: found.did, sponsor: account };
+    },
+  };
+}
+
+// What the sponsor's device returns: the account, its recipient key, and a
+// stand-in chain naming the agent and the account.
+const delivery = (agentDid, account = sponsor) =>
+  Buffer.from(
+    JSON.stringify({
+      account,
+      recipient,
+      sponsorshipHex: Buffer.from(`${agentDid}|${account}`).toString('hex'),
+    }),
+  ).toString('base64');
+
+async function service(agents = fakeAgents()) {
   const durable = { state: undefined, run: (operation) => operation() };
-  return createSponsorService({
-    issuer,
-    provider,
-    durable,
-    provision: sponsorStubProvisioner({ mint }),
-  });
+  const svc = await createSponsorService({ issuer, provider, durable, agents });
+  return Object.assign(svc, { agents });
 }
 
 // Drive a browser through authorize -> approval page -> callback, the way a
 // client and the Tonk app would, and return the issued token response.
-async function connect(svc, { approve = delegationHex } = {}) {
+async function connect(svc, { account = sponsor, hint, forge } = {}) {
   const registration = await svc.fetch(
     new Request(`${issuer}/oauth/register`, {
       method: 'POST',
@@ -65,10 +100,14 @@ async function connect(svc, { approve = delegationHex } = {}) {
   );
   assert.equal(start.status, 303);
   const cookie = start.headers.get('set-cookie').split(';')[0];
-  const go = await svc.fetch(new Request(start.headers.get('location'), { headers: { cookie } }));
+  const cookies = hint ? `${cookie}; ${hint}` : cookie;
+  const go = await svc.fetch(
+    new Request(start.headers.get('location'), { headers: { cookie: cookies } }),
+  );
   assert.equal(go.status, 303);
   const approval = new URL(go.headers.get('location'));
-  assert.equal(approval.origin + approval.pathname, `${provider}/settings/link`);
+  assert.equal(approval.origin + approval.pathname, `${provider}/settings/agent`);
+  const agentDid = approval.searchParams.get('agent');
   assert.equal(approval.searchParams.get('name'), 'Unverified client: ChatGPT');
   const callback = new URL(approval.searchParams.get('callback'));
   const done = await svc.fetch(
@@ -77,12 +116,16 @@ async function connect(svc, { approve = delegationHex } = {}) {
       headers: { cookie, origin: issuer, 'content-type': 'application/json' },
       body: JSON.stringify({
         request: callback.searchParams.get('request'),
-        authorize: Buffer.from(JSON.stringify({ delegationHex: approve })).toString('base64'),
+        authorize: delivery(forge ?? agentDid, account),
       }),
     }),
   );
   const result = await done.json();
-  if (!result.redirect) return { approval, result };
+  const remembered = done.headers
+    .getSetCookie()
+    .map((value) => value.split(';')[0])
+    .find((value) => value.startsWith('__Host-tonk-hint-'));
+  if (!result.redirect) return { approval, result, remembered };
   const redirect = new URL(result.redirect);
   assert.equal(redirect.searchParams.get('state'), 'client-state');
   assert.equal(redirect.searchParams.get('iss'), issuer);
@@ -101,7 +144,7 @@ async function connect(svc, { approve = delegationHex } = {}) {
     }),
   );
   assert.equal(token.status, 200);
-  return { approval, token: await token.json() };
+  return { approval, token: await token.json(), remembered };
 }
 
 test('it challenges an unauthenticated MCP request and publishes discovery', async () => {
@@ -128,47 +171,82 @@ test('it challenges an unauthenticated MCP request and publishes discovery', asy
   }
 });
 
-test('a sponsor approves a stub agent and the agent sees who sponsored it', async () => {
+async function listSpaces(svc, token) {
+  const client = new Client({ name: 'sponsor-test', version: '1' });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(resource), {
+      fetch: (url, init) => svc.fetch(new Request(url, init)),
+      requestInit: { headers: { authorization: `Bearer ${token.access_token}` } },
+    }),
+  );
+  try {
+    const tools = (await client.listTools()).tools.map((tool) => tool.name).sort();
+    assert.deepEqual(tools, ['tonk_guide', 'tonk_list_spaces']);
+    return (await client.callTool({ name: 'tonk_list_spaces', arguments: {} })).structuredContent;
+  } finally {
+    await client.close();
+  }
+}
+
+test('approving sponsors a new hosted agent with its own identity', async () => {
   const svc = await service();
   try {
-    const { approval, token } = await connect(svc);
-    assert.equal(approval.searchParams.get('audience'), agent);
-    const client = new Client({ name: 'sponsor-test', version: '1' });
-    await client.connect(
-      new StreamableHTTPClientTransport(new URL(resource), {
-        fetch: (url, init) => svc.fetch(new Request(url, init)),
-        requestInit: { headers: { authorization: `Bearer ${token.access_token}` } },
-      }),
-    );
-    try {
-      const tools = (await client.listTools()).tools.map((tool) => tool.name).sort();
-      assert.deepEqual(tools, ['tonk_guide', 'tonk_list_spaces']);
-      const listed = await client.callTool({ name: 'tonk_list_spaces', arguments: {} });
-      assert.deepEqual(listed.structuredContent.spaces, []);
-      assert.equal(listed.structuredContent.agent, agent);
-      assert.equal(listed.structuredContent.sponsor, sponsor);
-    } finally {
-      await client.close();
-    }
+    const { approval, token, remembered } = await connect(svc);
+    const agent = [...svc.agents.agents.values()][0];
+    assert.equal(approval.searchParams.get('agent'), agent.did);
+    assert.equal(agent.sponsor, sponsor);
+    assert.equal(agent.recipient, recipient);
+    assert.ok(remembered?.endsWith(`=${agent.agent}`), 'the browser remembers the agent');
+    const listed = await listSpaces(svc, token);
+    assert.deepEqual(listed.spaces, []);
+    assert.equal(listed.agent, agent.did);
+    assert.equal(listed.sponsor, sponsor);
   } finally {
     await svc.close();
   }
 });
 
-test('it refuses an approval that names a different agent', async () => {
-  // The service mints its own agent; the fixture delegation is to another key.
-  const svc = await service({ mint: throwawayDid });
+test('a reconnect from the same browser keeps the same agent', async () => {
+  const svc = await service();
   try {
-    const { result } = await connect(svc);
+    const first = await connect(svc);
+    const second = await connect(svc, { hint: first.remembered });
+    assert.equal(svc.agents.agents.size, 1);
+    assert.equal(
+      second.approval.searchParams.get('agent'),
+      first.approval.searchParams.get('agent'),
+    );
+    assert.equal((await listSpaces(svc, second.token)).sponsor, sponsor);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('another account cannot take over a remembered agent', async () => {
+  const svc = await service();
+  try {
+    const first = await connect(svc);
+    const { result, remembered } = await connect(svc, {
+      hint: first.remembered,
+      account: otherSponsor,
+    });
+    assert.deepEqual(result, { failure: 'device-check' });
+    assert.ok(remembered?.endsWith('='), 'the remembered agent is forgotten');
+    // The next attempt from that browser starts a new agent.
+    const fresh = await connect(svc, { account: otherSponsor });
+    assert.equal(svc.agents.agents.size, 2);
+    assert.equal((await listSpaces(svc, fresh.token)).sponsor, otherSponsor);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('it refuses a sponsorship of a different agent', async () => {
+  const svc = await service();
+  try {
+    const { result } = await connect(svc, { forge: 'did:key:z6MkSomeoneElse' });
     assert.deepEqual(result, { failure: 'device-check' });
   } finally {
     await svc.close();
   }
-});
-
-test('a throwaway agent DID is a fresh Ed25519 did:key', () => {
-  const a = throwawayDid(),
-    b = throwawayDid();
-  assert.match(a, /^did:key:z6Mk[1-9A-HJ-NP-Za-km-z]{44}$/);
-  assert.notEqual(a, b);
 });
