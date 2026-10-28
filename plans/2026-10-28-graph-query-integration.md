@@ -105,3 +105,16 @@ Companion to Dialog `ideas/graph-queries.md`, implemented on an isolated Tonk wo
   not execute tests on this PR. Service-worker lifecycle tests did execute and
   passed. Account-test summary failure reports skipped prerequisites, not an
   executed account-test failure. CI is not green yet.
+
+## Reviewed CI dependency correction
+
+- Repinned all 18 Dialog workspace dependencies to
+  `bdee655a12c46b573dcf670ab56602c991221871` after fresh review. All 25 resolved
+  Dialog git packages agree. Only source identities and the storage stream
+  adapter edge changed in the lockfile; no registry versions changed.
+- Locked offline metadata passes. The enabled whole-workspace Wasm Cargo tree
+  contains only `wasm-streams` 0.6.0, shared by Dialog storage, Tonk host/worker,
+  and Cloudflare worker 0.8.5. Version 0.4.2 remains in metadata/lock for inactive
+  target/feature combinations; its Wasm reverse tree is empty.
+- Parent authorized publishing the reviewed lint and dependency corrections to
+  PR 1197. Dialog companion: https://github.com/dialog-db/dialog-db/pull/700.
