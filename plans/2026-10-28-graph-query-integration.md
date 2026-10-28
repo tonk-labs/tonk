@@ -72,4 +72,6 @@ Companion to Dialog `ideas/graph-queries.md`, implemented on an isolated Tonk wo
 - Full checkpoint: reactor 56 passed; analyzer 254 passed, 1 ignored; evaluator
   42 passed. Native HTTP/SSE handler test passed: constrained JSON equals the
   stream snapshot, nested change emits a root delta, invalid envelope rejected.
-  The schema suite remains running.
+  Schema library suite: 135 passed. Formatting and whitespace checks passed.
+- Review fixes committed as `98ddf4185a` (schema/analyzer compatibility) and
+  `d74906c46a` (constrained streams/lazy snapshots). No test processes remain.
