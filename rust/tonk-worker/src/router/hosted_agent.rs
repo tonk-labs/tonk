@@ -61,6 +61,21 @@ impl HostedAgents {
                 )
                 .await
             }
+            "agent_call" => {
+                let call = text("call").ok_or(INVALID)?;
+                let mut forwarded = serde_json::Map::new();
+                for field in ["space", "document"] {
+                    if let Some(value) = text(field) {
+                        forwarded.insert(field.to_owned(), Value::String(value.to_owned()));
+                    }
+                }
+                self.call_peer(
+                    text("agent").ok_or(INVALID)?,
+                    call,
+                    &Value::Object(forwarded),
+                )
+                .await
+            }
             "agent_create_space" => {
                 self.create_space(
                     text("agent").ok_or(INVALID)?,
@@ -259,6 +274,29 @@ impl HostedAgents {
             "name": name,
             "claim_url": claim,
         }))
+    }
+
+    /// Run one of the agent's own space tools on its peer: list its spaces,
+    /// or query or evaluate one of them. The peer pulls before it reads,
+    /// journals a write, and pushes after it.
+    pub async fn call_peer(
+        &self,
+        id: &str,
+        call: &str,
+        arguments: &Value,
+    ) -> Result<Value, String> {
+        if !["tonk_list_spaces", "tonk_query", "tonk_evaluate"].contains(&call) {
+            return Err("Tool unavailable.".into());
+        }
+        let directory = self.existing(id)?;
+        if read_record(&directory)?.is_none() {
+            return Err("This agent has no sponsor.".into());
+        }
+        let _lock = lock(&directory)?;
+        let mut peer = LocalPeer::open(directory).await?;
+        let outcome = peer.call(call, arguments).await;
+        peer.close().await;
+        outcome
     }
 
     fn directory(&self, id: &str) -> Result<PathBuf, String> {

@@ -646,6 +646,8 @@ export function createTonkOAuth({
       credentials.revokeWhere((value) => value.rootDid === rootDid);
     },
     challenge: () => json({ error: 'invalid_token' }, 401, { 'www-authenticate': challenge }),
+    // The name a client registered under, for labelling what it does.
+    clientName: (id) => registry.get(id)?.displayName,
     close() {
       closed = true;
       pending.clear();

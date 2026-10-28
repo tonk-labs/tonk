@@ -296,3 +296,32 @@ grants through the access service without the space key.
 
 **Risk.** Until the space is adopted, the sealed seed exists only in the link. If
 the link is lost, the key is lost. The space stays usable through `space -> sponsor`.
+
+### Slice 2 progress (2026-10-28, done locally)
+
+- `create_sponsored_space` and `HostedAgents::create_space` follow the design
+  above.
+- `build_device_invocation` sends every hop of the chain.
+- Joining a claim link adopts the space:
+  - `join_invite` splits off `#seed=`, joins as before, keeps `space -> account`
+    on the account branch, and writes custody rows for the sealed key.
+  - The existing custody migration adopts those rows at the next passkey sign-in.
+- MCP tools for a sponsored agent: `tonk_guide`, `tonk_list_spaces`,
+  `tonk_create_space`, and `tonk_query` / `tonk_evaluate` with `space`. All run on
+  the agent's own peer (`agent_call`).
+- An integration test against the local access service covers the whole agent
+  side:
+  - create, sponsor and create a space (billed to the sponsor, then pushed);
+  - the agent writes a record;
+  - an empty replica holding only the sponsor's chain reads the space name and
+    the record;
+  - the sponsor's account secret opens the sealed key.
+- A native test covers adoption of the sealed key.
+
+Not done:
+
+- The browser join of a claim link has not been tested live.
+- The roster has no `kind = agent` or `InvitedBy` until #1137 and #1138 merge.
+- The agent's grants come straight from the space key. Revoking them needs the
+  sponsor's `/`; there is no UI for that yet.
+- Agent keys in R2 are still not encrypted.

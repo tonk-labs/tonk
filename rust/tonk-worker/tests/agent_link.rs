@@ -675,6 +675,24 @@ async fn hosted_agent_creates_a_space_its_sponsor_owns() -> anyhow::Result<()> {
     assert_eq!(founder.issuer(), &space_did);
     assert_eq!(founder.audience(), &sponsor.did());
 
+    // The agent lists its space and writes to it through its own peer.
+    let listed = agents
+        .call_peer(&agent, "tonk_list_spaces", &serde_json::json!({}))
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert!(listed.to_string().contains(space_did.as_str()), "{listed}");
+    agents
+        .call_peer(
+            &agent,
+            "tonk_evaluate",
+            &serde_json::json!({
+                "space": space_did.to_string(),
+                "document": "concept!: &chat-note\n  with:\n    text: { the: example.chat/text, as: text, description: Note text }\nchat-note!:\n  this: urn:chat:note\n  text: Remember the train times\n",
+            }),
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+
     // The sponsor reads the space from the remote through that chain, from
     // empty storage: the agent provisioned and pushed it.
     let seed = [61; 32];
@@ -707,6 +725,14 @@ async fn hosted_agent_creates_a_space_its_sponsor_owns() -> anyhow::Result<()> {
     assert!(
         read.to_string().contains("Notes from a chat"),
         "the sponsor reads the agent's space: {read}"
+    );
+    let note = reader
+        .call("tonk_query", &reader_link, "chat-note:\n")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert!(
+        note.to_string().contains("Remember the train times"),
+        "the sponsor reads what the agent wrote: {note}"
     );
     Ok(())
 }

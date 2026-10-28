@@ -36,6 +36,12 @@ struct AgentInput {
     name: Option<String>,
     #[serde(default)]
     agent_name: Option<String>,
+    #[serde(default)]
+    call: Option<String>,
+    #[serde(default)]
+    space: Option<String>,
+    #[serde(default)]
+    document: Option<String>,
 }
 
 #[tokio::main]
@@ -84,6 +90,9 @@ async fn run() -> Result<serde_json::Value, String> {
                 "recipient": input.recipient,
                 "name": input.name,
                 "agent_name": input.agent_name,
+                "call": input.call,
+                "space": input.space,
+                "document": input.document,
             });
             tonk_worker::HostedAgents::new(
                 std::path::PathBuf::from(directory).join("agents"),

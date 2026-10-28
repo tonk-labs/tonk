@@ -33,6 +33,23 @@ function fakeAgents() {
       if (!found) throw Error('Unknown agent.');
       return { ...found };
     },
+    async createSpace({ agent, name, agentName }) {
+      const found = agents.get(agent);
+      if (!found?.sponsor) throw Error('This agent has no sponsor.');
+      found.spaces ??= [];
+      const space = `did:key:z6MkSpace${String(found.spaces.length + 1).padStart(40, 'S')}`;
+      found.spaces.push({ subject: space, name, agentName });
+      return { space, name, claim_url: `https://app.tonk.example/join?access=x#seed=y` };
+    },
+    async call({ agent, call, space, document }) {
+      const found = agents.get(agent);
+      if (call === 'tonk_list_spaces')
+        return {
+          peer: found.did,
+          spaces: (found.spaces ?? []).map(({ subject, name }) => ({ subject, name })),
+        };
+      return { call, space, document };
+    },
     async sponsor({ agent, sponsorshipHex, recipient: key }) {
       const found = agents.get(agent);
       const [audience, account] = Buffer.from(sponsorshipHex, 'hex').toString().split('|');
@@ -181,7 +198,13 @@ async function listSpaces(svc, token) {
   );
   try {
     const tools = (await client.listTools()).tools.map((tool) => tool.name).sort();
-    assert.deepEqual(tools, ['tonk_guide', 'tonk_list_spaces']);
+    assert.deepEqual(tools, [
+      'tonk_create_space',
+      'tonk_evaluate',
+      'tonk_guide',
+      'tonk_list_spaces',
+      'tonk_query',
+    ]);
     return (await client.callTool({ name: 'tonk_list_spaces', arguments: {} })).structuredContent;
   } finally {
     await client.close();
@@ -246,6 +269,44 @@ test('it refuses a sponsorship of a different agent', async () => {
   try {
     const { result } = await connect(svc, { forge: 'did:key:z6MkSomeoneElse' });
     assert.deepEqual(result, { failure: 'device-check' });
+  } finally {
+    await svc.close();
+  }
+});
+
+test('a sponsored agent creates a space and works in it', async () => {
+  const svc = await service();
+  try {
+    const { token } = await connect(svc);
+    const client = new Client({ name: 'sponsor-test', version: '1' });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(resource), {
+        fetch: (url, init) => svc.fetch(new Request(url, init)),
+        requestInit: { headers: { authorization: `Bearer ${token.access_token}` } },
+      }),
+    );
+    try {
+      const created = (
+        await client.callTool({ name: 'tonk_create_space', arguments: { name: 'Trip notes' } })
+      ).structuredContent;
+      assert.match(created.space, /^did:key:/);
+      assert.match(created.claim_url, /#seed=/);
+      const [agent] = svc.agents.agents.values();
+      assert.equal(agent.spaces[0].agentName, 'ChatGPT');
+      const listed = (await client.callTool({ name: 'tonk_list_spaces', arguments: {} }))
+        .structuredContent;
+      assert.deepEqual(listed.spaces, [{ subject: created.space, name: 'Trip notes' }]);
+      const written = (
+        await client.callTool({
+          name: 'tonk_evaluate',
+          arguments: { space: created.space, document: 'note!:\n  text: "hi"\n' },
+        })
+      ).structuredContent;
+      assert.equal(written.call, 'tonk_evaluate');
+      assert.equal(written.space, created.space);
+    } finally {
+      await client.close();
+    }
   } finally {
     await svc.close();
   }

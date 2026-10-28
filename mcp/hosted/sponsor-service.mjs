@@ -62,7 +62,11 @@ export async function createSponsorService({
   const http = createAuthenticatedTonkHTTP({
     oauth,
     now,
-    resolveBackend: async (principal) => sponsoredAgentBackend(principal),
+    resolveBackend: async (principal) =>
+      sponsoredAgentBackend(principal, {
+        agents,
+        agentName: oauth.clientName(principal.clientId) ?? 'Agent',
+      }),
   });
   return {
     fetch(request) {

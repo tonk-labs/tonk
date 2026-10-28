@@ -55,22 +55,38 @@ export function agentProvisioner(agents) {
   };
 }
 
-// Tools for a sponsored agent. It has no spaces until slice 2 lets it create
-// them; the list names the agent and its sponsor.
-export function sponsoredAgentBackend(principal) {
-  const capabilities = ['tonk_guide', 'tonk_list_spaces'];
+// Tools for a sponsored agent: the guide, its spaces, and creating a space
+// its sponsor owns. Every call runs on the agent's own peer, which pulls
+// before it reads and pushes after it writes.
+export function sponsoredAgentBackend(principal, { agents, agentName }) {
+  const capabilities = [
+    'tonk_guide',
+    'tonk_list_spaces',
+    'tonk_create_space',
+    'tonk_query',
+    'tonk_evaluate',
+  ];
+  const agent = principal.tenantId;
   return {
     spaceSelection: true,
     capabilities,
     async call(name, args) {
       if (name === 'tonk_guide') return authoringGuide(args);
-      if (name === 'tonk_list_spaces')
+      if (name === 'tonk_list_spaces') {
+        const listed = await agents.call({ agent, call: 'tonk_list_spaces' });
+        return { ...listed, agent: principal.deviceDid, sponsor: principal.rootDid };
+      }
+      if (name === 'tonk_create_space') {
+        const created = await agents.createSpace({ agent, name: args.name, agentName });
         return {
-          spaces: [],
-          agent: principal.deviceDid,
-          sponsor: principal.rootDid,
-          note: 'This agent has its own identity, sponsored by this account. It cannot create spaces yet.',
+          space: created.space,
+          name: created.name,
+          claim_url: created.claim_url,
+          next: 'Give the user claim_url and ask them to open it: it adds the space to their Tonk space list. Use space with tonk_query and tonk_evaluate.',
         };
+      }
+      if (name === 'tonk_query' || name === 'tonk_evaluate')
+        return agents.call({ agent, call: name, space: args.space, document: args.document });
       throw new TonkToolError('Tool unavailable.');
     },
   };

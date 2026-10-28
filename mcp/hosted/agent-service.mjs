@@ -34,6 +34,10 @@ export async function createAgentService({ issuer, provider, binary, directory, 
           sponsorship_hex: sponsorshipHex,
           recipient,
         }),
+      createSpace: ({ agent, name, agentName }) =>
+        backend.agent({ tool: 'agent_create_space', agent, name, agent_name: agentName }),
+      call: ({ agent, call, space, document }) =>
+        backend.agent({ tool: 'agent_call', agent, call, space, document }),
     },
     async fetch(request) {
       const url = new URL(request.url);
