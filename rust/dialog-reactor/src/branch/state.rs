@@ -317,7 +317,8 @@ impl BranchState {
             let elapsed = polled.elapsed();
             if elapsed >= SLOW {
                 dialog_common::log!(
-                    "[reactor] slow subscription poll: {hash:?} level={level} subscribers={subscribers} elapsed_ms={}",
+                    "[reactor] slow subscription poll: {hash:?} on {} level={level} subscribers={subscribers} elapsed_ms={}",
+                    self.branch.name(),
                     elapsed.as_millis()
                 );
             }
@@ -325,7 +326,8 @@ impl BranchState {
         let elapsed = started.elapsed();
         if elapsed >= SLOW {
             dialog_common::log!(
-                "[reactor] slow branch poll: {count} subscriptions elapsed_ms={}",
+                "[reactor] slow branch poll: {count} subscriptions on {} elapsed_ms={}",
+                self.branch.name(),
                 elapsed.as_millis()
             );
         }

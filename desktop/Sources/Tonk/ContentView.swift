@@ -34,7 +34,8 @@ struct ContentView: View {
   private var chromeVisible: Bool { topChromeHovered || chromePreview }
   /// The chat sidebar opens on its list of chats; choosing one pushes the chat.
   @State private var showHistory = true
-  @State private var settingsShowsChat = false
+  @State private var settingsTab: DesktopSettingsTab = .account
+  @State private var previousSettingsPage: DesktopPage?
   @State private var accountError: String?
   @State private var signingOut = false
   @FocusState private var composing: Bool
@@ -184,8 +185,7 @@ struct ContentView: View {
       }
       .onReceive(NotificationCenter.default.publisher(for: .tonkShowSettings)) { notification in
         if !isSpace {
-          settingsShowsChat = notification.object as? Bool ?? false
-          page = .account
+          showSettings(chat: notification.object as? Bool ?? false)
         }
       }
       .sheet(item: $newLink) { request in
@@ -679,7 +679,8 @@ struct ContentView: View {
         NotificationCenter.default.post(name: .tonkShowSettings, object: chat)
       }
     } else {
-      settingsShowsChat = chat
+      if page != .account { previousSettingsPage = page }
+      settingsTab = chat ? .chatAgent : .account
       page = .account
     }
   }
@@ -763,7 +764,8 @@ struct ContentView: View {
             onOpenSpace: { page = .space($0.id) })
         case .account:
           DesktopSettingsView(
-            model: model, access: access, onSignOut: signOutOfTonk, showsChat: settingsShowsChat)
+            model: model, access: access, selection: $settingsTab, onSignOut: signOutOfTonk,
+            onBack: { page = previousSettingsPage ?? .allLinks })
         case nil:
           CatalogStatusView(runtime: runtime)
         }

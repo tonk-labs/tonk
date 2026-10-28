@@ -618,13 +618,21 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
 /// the generic per-branch sync returns before it reaches the account
 /// key — so a sweep that skips this leaves local facts unpublished.
 pub(crate) async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
+    try_push_account_main(tonk)
+        .await
+        .map_err(|error| format!("account push failed: {error}"))
+}
+
+/// [`push_account_main`], answering the push's own refusal so a caller
+/// can tell one that is out of date from any other.
+async fn try_push_account_main(tonk: &TonkState) -> Result<(), PushRefused> {
     let session = tonk
         .reactor
         .profile_repository()
         .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
-        .map_err(|error| format!("account branch unavailable: {error}"))?;
+        .map_err(|error| PushRefused::Other(format!("account branch unavailable: {error}")))?;
     let pushed = session.handle().push().perform(&tonk.operator).await;
     // Whether this push was served is the registration state, said by
     // the only party that knows. Nothing polls for it: an unactivated
@@ -641,21 +649,52 @@ pub(crate) async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
         .and_then(|error| super::sync::authorization_reason(error))
         .cloned();
     observe_registration(tonk, declined).await;
-    pushed.map_err(|error| format!("account push failed: {error}"))?;
+    pushed.map_err(|error| {
+        if super::sync::is_push_out_of_date(&error) {
+            PushRefused::OutOfDate(error.to_string())
+        } else {
+            PushRefused::Other(error.to_string())
+        }
+    })?;
     Ok(())
 }
 
-/// Pull profile main from the account remote, then push it.
+/// Why profile main was not pushed.
+#[derive(Debug)]
+enum PushRefused {
+    /// Upstream holds a head this branch has not merged.
+    OutOfDate(String),
+    Other(String),
+}
+
+impl std::fmt::Display for PushRefused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OutOfDate(error) | Self::Other(error) => formatter.write_str(error),
+        }
+    }
+}
+
+/// Push profile main to the account remote, pulling first only when
+/// upstream has moved past it.
 ///
-/// What a device leaving the account publishes on its way out: it has
-/// to merge what other devices pushed since its last sweep, or the push
-/// is refused as non-fast-forward. The pull materializes the operational
-/// regions only, as the sweep's does.
+/// What a device leaving the account publishes on its way out. When no
+/// other device pushed since its last sweep, the push lands as it is.
+/// Otherwise it is refused as out of date, and the device merges what
+/// the others pushed and pushes again. The pull materializes the
+/// operational regions only, as the sweep's does.
+///
+/// The push goes first because the pull is the expensive half: it walks
+/// the whole operational tree of the adopted head, and every node this
+/// device lacks costs a round trip to the account service and another to
+/// storage, one after another. On an account in use for weeks that was
+/// nearly a minute of every sign-out, spent to merge nothing.
 ///
 /// The profile's own secrets commit to this branch through the profile's
 /// handle rather than the reactor's, so the reactor's handle is refreshed
-/// first: a pull from a stale head cannot publish its merge.
-pub(crate) async fn pull_and_push_account_main(tonk: &TonkState) -> Result<(), String> {
+/// first: a push or pull from a stale head cannot publish.
+pub(crate) async fn pull_and_push_account_main(tonk: &TonkState) -> Result<Published, String> {
+    let mut timing = super::link_timing::LinkTiming::new("account-pull-and-push", "refresh");
     let session = tonk
         .reactor
         .profile_repository()
@@ -668,6 +707,31 @@ pub(crate) async fn pull_and_push_account_main(tonk: &TonkState) -> Result<(), S
         .refresh(&tonk.operator)
         .await
         .map_err(|error| format!("account branch head unreadable: {error}"))?;
+    // What the push will diff: everything between the sync point recorded
+    // for each upstream and the head ships, so an old sync point names a
+    // backlog of commits no sweep pushed. More than one upstream means
+    // blocks held by reference are probed one by one.
+    {
+        let handle = session.handle();
+        let bases: Vec<_> = handle
+            .pushes()
+            .iter()
+            .map(|upstream| upstream.tree().cloned())
+            .collect();
+        log!(
+            "account push: head={:?} sync points={bases:?}",
+            handle.revision().map(|revision| revision.tree)
+        );
+    }
+    timing.next("push");
+    match try_push_account_main(tonk).await {
+        Ok(()) => return Ok(Published::Pushed),
+        Err(PushRefused::OutOfDate(error)) => {
+            log!("account push is out of date, pulling first: {error}");
+        }
+        Err(PushRefused::Other(error)) => return Err(format!("account push failed: {error}")),
+    }
+    timing.next("pull");
     session
         .handle()
         .pull()
@@ -676,8 +740,20 @@ pub(crate) async fn pull_and_push_account_main(tonk: &TonkState) -> Result<(), S
         .perform(&tonk.operator)
         .await
         .map_err(|error| format!("account pull failed: {error}"))?;
+    timing.next("migrate");
     migrate_adopted_profile_head(tonk).await;
-    push_account_main(tonk).await
+    timing.next("push-after-pull");
+    push_account_main(tonk).await?;
+    Ok(Published::PulledAndPushed)
+}
+
+/// How [`pull_and_push_account_main`] published profile main.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Published {
+    /// Upstream had not moved, so the push landed as it was.
+    Pushed,
+    /// Upstream had moved, so its head was merged before pushing.
+    PulledAndPushed,
 }
 
 /// Preserve both retryable failures when library repair and account push fail
@@ -2483,6 +2559,107 @@ pub(crate) mod tests {
             adopt_account_access(&state).await,
             "the second account's authority is adopted on {landing}",
         );
+    }
+
+    /// A device leaving the account publishes what it wrote: by pushing at
+    /// once when no other device pushed since its last sweep, and by
+    /// merging what another device pushed first when one did.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_publishes_its_last_writes_whether_or_not_another_device_pushed() {
+        async fn name(state: &TonkState, name: &str) {
+            use tonk_schema::prelude::DidExt as _;
+            state
+                .reactor
+                .profile_repository()
+                .branch(&state.active_branch)
+                .transaction()
+                .assert(tonk_schema::ProfileName::new(
+                    state.profile.did().this(),
+                    name.to_string(),
+                ))
+                .commit()
+                .perform(&state.operator)
+                .await
+                .unwrap();
+        }
+        async fn head(state: &TonkState) -> Option<dialog_repository::Revision> {
+            state
+                .reactor
+                .profile_repository()
+                .branch(&state.active_branch)
+                .acquire(&state.operator)
+                .await
+                .unwrap()
+                .handle()
+                .revision()
+        }
+
+        let (home, _service, root, remote) = ready_account_state(None).await;
+        let (_, swept) = ensure_account_state_swept(&home).await;
+        swept.unwrap();
+        let device = device_on(&root, &remote, None).await;
+        let (_, swept) = ensure_account_state_swept(&device).await;
+        swept.unwrap();
+        // The other device's first sweep pushed; catch up with it.
+        let (_, swept) = ensure_account_state_swept(&home).await;
+        swept.unwrap();
+
+        name(&home, "home, nobody else pushed").await;
+        assert_eq!(
+            pull_and_push_account_main(&home).await.unwrap(),
+            Published::Pushed,
+            "nothing to merge, so nothing is pulled",
+        );
+        let (_, swept) = ensure_account_state_swept(&device).await;
+        swept.unwrap();
+        assert_eq!(
+            head(&device).await,
+            head(&home).await,
+            "the other device adopts what the leaving one pushed",
+        );
+
+        name(&device, "device, pushed first").await;
+        push_account_main(&device).await.unwrap();
+        name(&home, "home, behind the other device").await;
+        assert_eq!(
+            pull_and_push_account_main(&home)
+                .await
+                .expect("an out-of-date push pulls and pushes again"),
+            Published::PulledAndPushed,
+        );
+        let (_, swept) = ensure_account_state_swept(&device).await;
+        swept.unwrap();
+        assert_eq!(
+            head(&device).await,
+            head(&home).await,
+            "the leaving device published a merge of both",
+        );
+    }
+
+    /// A profile switch publishes the account branch itself, so a sweep
+    /// that would push the same blocks alongside it waits until it ends.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_defers_an_account_sweep_while_a_profile_switch_runs() {
+        let (home, _service, _root, _remote) = ready_account_state(None).await;
+        let key = require_ready_account_state(&home).await.unwrap().key;
+        let transition = std::sync::Arc::clone(&home.profile_transition);
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(home));
+
+        let switching = transition.lock().await;
+        let deferred = crate::router::sync_repository(&state, &key).await;
+        assert!(
+            deferred
+                .as_ref()
+                .is_err_and(|error| error.contains("deferred")),
+            "a sweep during a switch is deferred, not run: {deferred:?}",
+        );
+
+        drop(switching);
+        crate::router::sync_repository(&state, &key)
+            .await
+            .expect("the sweep runs once the switch has ended");
     }
 
     /// A remote account may still contain a revoked grant for this device.

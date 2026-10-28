@@ -265,6 +265,24 @@ impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
     }
 }
 
+/// Mount `key`'s space on first use, then catch its seed up. Every route
+/// that addresses a space by key calls this before it touches a branch,
+/// because a fresh or just-updated worker has nothing mounted: a route
+/// that skipped it failed for a space that a concurrent `query` mounted a
+/// moment later. A failed or absent mount is only logged; the caller
+/// proceeds and fails with its ordinary not-found.
+pub(crate) async fn mount_on_first_use(
+    tonk: &TonkState,
+    state: &crate::router::AppState,
+    key: &str,
+) {
+    match ensure_space_mounted(tonk, key).await {
+        Ok(true) => schedule_seed_upgrade(tonk, state.clone(), key).await,
+        Ok(false) => {}
+        Err(error) => log!("on-demand mount of '{key}' failed: {error}"),
+    }
+}
+
 /// Spaces whose seed this worker instance has already checked, by full
 /// subject DID. In memory on purpose: a worker instance corresponds to
 /// one shipped bundle, so once-per-instance is once-per-bundle for any
@@ -1440,6 +1458,92 @@ mod tests {
                 .await
                 .unwrap(),
             "the transact route mounts the directory space before touching its branch"
+        );
+    }
+
+    /// Record a space that exists only as account-directory facts, as if
+    /// another device created it, and return it in the shared app state.
+    async fn unmounted_directory_space() -> (crate::router::AppState, dialog_varsig::Did) {
+        use dialog_credentials::ed25519::Ed25519Signer;
+        use dialog_repository::SiteAddress;
+        use dialog_varsig::Principal as _;
+
+        let tonk = crate::router::tests::test_state().await;
+        let subject: dialog_varsig::Did = Ed25519Signer::generate().await.unwrap().did();
+        let address = SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
+            "https://sync.example.test/ucan/",
+        ));
+        let configuration = super::super::repository::RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                super::super::repository::RemoteConfiguration::new(address)
+                    .subject(subject.clone())
+                    .revocation_url("https://relay.example.test/revocations/".parse().unwrap()),
+            )
+            .branch(
+                "main",
+                super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
+            );
+        super::super::repository::record_space_mount(
+            &tonk,
+            &subject,
+            &configuration,
+            Some("Foreign Space"),
+        )
+        .await;
+        assert!(
+            !super::super::join::find_replica_for_subject(&tonk, &subject)
+                .await
+                .unwrap(),
+            "the space must start unmounted for the pin to mean anything"
+        );
+        (std::sync::Arc::new(tokio::sync::RwLock::new(tonk)), subject)
+    }
+
+    /// After a worker update nothing is mounted, and the desktop app reads
+    /// a space's views through `evaluate` in parallel with its `query`
+    /// reads. `evaluate` did not mount, so it failed whenever it ran before
+    /// a `query` mounted the space.
+    #[dialog_common::test]
+    async fn it_mounts_a_directory_space_on_a_first_evaluate() {
+        let (state, subject) = unmounted_directory_space().await;
+        let response = crate::router::evaluate::evaluate(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(crate::router::evaluate::EvaluatePath {
+                repo: subject.to_string(),
+                branch: "main".to_owned(),
+            }),
+            axum::extract::Query(crate::router::evaluate::EvaluateQuery {
+                transact: false,
+                ..Default::default()
+            }),
+            None,
+            None,
+            axum::http::HeaderMap::new(),
+            axum::body::Bytes::from_static(b"concept:\n"),
+        )
+        .await;
+        assert!(
+            response.is_ok(),
+            "an evaluate addressed to a directory space mounts it and answers: {:?}",
+            response.err()
+        );
+    }
+
+    /// The desktop app lists a space's links on the same refresh, so the
+    /// invites route must mount the space too.
+    #[dialog_common::test]
+    async fn it_mounts_a_directory_space_on_a_first_invite_listing() {
+        let (state, subject) = unmounted_directory_space().await;
+        let response = crate::router::revoke_invite::list(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(subject.to_string()),
+        )
+        .await;
+        assert!(
+            response.is_ok(),
+            "an invite listing addressed to a directory space mounts it and answers: {:?}",
+            response.err()
         );
     }
 

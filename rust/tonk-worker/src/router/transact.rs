@@ -89,15 +89,7 @@ pub async fn transact(
     // page sat on its loading placeholder for good.
     {
         let tonk_state = state.read().await;
-        match super::adopt::ensure_space_mounted(&tonk_state, &path.repo).await {
-            Ok(true) => {
-                super::adopt::schedule_seed_upgrade(&tonk_state, state.clone(), &path.repo).await;
-            }
-            Ok(false) => {}
-            Err(error) => {
-                log!("on-demand mount of '{}' failed: {error}", path.repo);
-            }
-        }
+        super::adopt::mount_on_first_use(&tonk_state, &state, &path.repo).await;
     }
     // A read lock on `TonkState` — concurrent transactions and syncs don't
     // serialize on the outer lock. Transactions instead serialize on the

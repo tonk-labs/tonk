@@ -424,6 +424,7 @@ pub async fn list(
     Path(repo): Path<String>,
 ) -> Result<Json<Vec<InvitationSummary>>, TonkWorkerError> {
     let tonk = state.read().await;
+    super::adopt::mount_on_first_use(&tonk, &state, &repo).await;
     let session = tonk
         .reactor
         .repository(&repo)

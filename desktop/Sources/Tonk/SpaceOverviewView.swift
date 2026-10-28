@@ -109,11 +109,11 @@ struct SpaceOverviewView: View {
         } else {
           ForEach(rows) { link in
             if link.id != rows.first?.id { Divider() }
-            AccessLinkRow(link: link, space: space, access: access).padding(.horizontal, 14)
+            AccessLinkRow(link: link, space: space, access: access)
               .padding(.vertical, 10)
           }
         }
-      }.background(DesktopStyle.group, in: RoundedRectangle(cornerRadius: 10))
+      }
     }
   }
 }

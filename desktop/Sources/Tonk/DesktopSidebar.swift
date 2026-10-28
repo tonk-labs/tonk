@@ -20,6 +20,11 @@ struct DesktopSidebar: View {
   /// The space whose icon picker is open, from its context menu.
   @State private var customizing: String?
   @State private var hovered: String?
+  @State private var creating = false
+  @State private var renaming: TonkSpace?
+  @State private var removing: TonkSpace?
+  /// Spaces whose removal was confirmed and is still settling.
+  @State private var leaving: Set<String> = []
   @Environment(\.appearsActive) private var appearsActive
 
   private var spaces: [TonkSpace] {
@@ -47,7 +52,7 @@ struct DesktopSidebar: View {
         )
         .tag(DesktopPage.addressBook)
       }
-      Section("Spaces") {
+      Section {
         ForEach(spaces) { space in
           let shared = (access.spaces[space.id]?.members.count ?? 0) > 1
           Label {
@@ -67,9 +72,15 @@ struct DesktopSidebar: View {
               hovered = nil
             }
           }
+          .opacity(leaving.contains(space.id) ? 0.5 : 1)
           .contextMenu {
+            Button("Rename…") { renaming = space }
+              .disabled(!canManage || leaving.contains(space.id))
             Button("Change Icon…") { customizing = space.id }
               .disabled(!runtime.accountConnected)
+            Divider()
+            Button(removal(space).verb + "…", role: .destructive) { removing = space }
+              .disabled(!canManage || leaving.contains(space.id))
           }
           .popover(
             isPresented: Binding(
@@ -85,6 +96,14 @@ struct DesktopSidebar: View {
         if spaces.isEmpty && !search.isEmpty {
           Text("No matching spaces").foregroundStyle(.secondary)
         }
+        Button {
+          creating = true
+        } label: {
+          Label("New Space…", systemImage: "plus")
+        }
+        .buttonStyle(.plain).foregroundStyle(.secondary).disabled(!canManage)
+      } header: {
+        Text("Spaces")
       }
     }
     .listStyle(.sidebar)
@@ -94,6 +113,49 @@ struct DesktopSidebar: View {
     .searchable(text: $search, placement: .sidebar, prompt: "Search spaces")
     .searchFocused(searchFocused)
     .sidebarFooter(footer)
+    .sheet(isPresented: $creating) {
+      SpaceNameSheet(title: "New Space", confirm: "Create") { name in
+        let space = try await runtime.createSpace(named: name)
+        selection = .space(space.id)
+      }
+    }
+    .sheet(item: $renaming) { space in
+      SpaceNameSheet(title: "Rename Space", confirm: "Rename", name: space.title) { name in
+        try await runtime.renameSpace(space, to: name)
+      }
+    }
+    .confirmationDialog(
+      removing.map { removal($0).title($0.title) } ?? "",
+      isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
+      presenting: removing
+    ) { space in
+      Button(removal(space).verb + " Space", role: .destructive) { remove(space) }
+    } message: { space in
+      Text(removal(space).message)
+    }
+  }
+
+  /// Creating, renaming and removing need the live catalog, not the cached one.
+  private var canManage: Bool {
+    runtime.accountConnected && runtime.catalogLoaded && !runtime.showingCachedCatalog
+  }
+
+  private func removal(_ space: TonkSpace) -> SpaceRemoval {
+    space.removal(accountRoot: runtime.liveAccountRoot)
+  }
+
+  private func remove(_ space: TonkSpace) {
+    leaving.insert(space.id)
+    Task {
+      defer { leaving.remove(space.id) }
+      do {
+        try await runtime.removeSpace(space)
+      } catch {
+        access.notice =
+          "Couldn’t \(removal(space).verb.lowercased()) “\(space.title)”: "
+          + AccessModel.message(error)
+      }
+    }
   }
 
   private func save(_ space: TonkSpace, icon: String?, color: String?) {
@@ -127,11 +189,10 @@ struct DesktopSidebar: View {
               access.accountName ?? (runtime.accountConnected ? "Your Account" : "Not Signed In")
             )
             .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: "gearshape").accessibilityHidden(true)
           }.contentShape(Rectangle())
-        }.buttonStyle(.plain).help("Settings")
-        Button(action: onSettings) {
-          Label("Settings", systemImage: "gearshape").labelStyle(.iconOnly)
-        }.buttonStyle(.plain).help("Settings")
+        }.buttonStyle(.plain).help("Account & Settings")
+          .accessibilityLabel("Account & Settings")
 
       }
       .padding(.horizontal, 8).padding(.vertical, 8)
