@@ -134,3 +134,26 @@ Companion to Dialog `ideas/graph-queries.md`, implemented on an isolated Tonk wo
   evaluates a local concept declaration, then checks status. 656 tests passed,
   one failed, 47 were not run. Cause remains under investigation; no test gate or
   expectation has been weakened.
+
+## Region-head sync compatibility
+
+- Root cause of the CLI Ahead/Diverged failure: the newer Dialog base publishes
+  causal context in a tree region, leaving `Revision.context` absent. The pure
+  shared classifier interpreted all absent inline contexts as unprovable.
+- A focused worker-api test reproduced the exact Ahead/Diverged assertion before
+  the fix. For region-backed heads on one origin (branch plus issuer), the shared
+  Dialog `Revision::precedence` comparison is exact. The classifier now uses that
+  only when both heads publish a context and at least one is region-backed.
+  Cross-origin region heads, legacy contextless heads, and conflicting trees at
+  the same version remain conservative. Existing inline-context behavior stays.
+- All 16 sync unit tests pass, including multiple-commit direction, mixed inline
+  and region formats, different issuers/branches, unknown legacy context, and
+  equal-version/different-tree counterexamples. No engine dependency was added.
+- Metadata-only all-target/all-feature Clippy covered analyzer, schema, evaluator,
+  reactor, worker, inspector, CLI, and worker-api. Local Rust 1.99 strict warnings
+  expose preexisting `fetch_update` deprecations absent from CI Rust 1.93; the
+  full check passes with only `-A deprecated` on the local command line. No
+  source suppression or CI gate change was introduced. Actual CLI integration
+  rerun remains for CI; no local CLI test binary was available.
+- Worker-api itself passes strict all-target/all-feature Clippy `-D warnings`
+  without exceptions; final formatting and whitespace checks pass.
