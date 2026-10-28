@@ -325,3 +325,10 @@ Not done:
 - The agent's grants come straight from the space key. Revoking them needs the
   sponsor's `/`; there is no UI for that yet.
 - Agent keys in R2 are still not encrypted.
+
+Live result (2026-10-28, preview PR 1196), as the user reported: the whole user
+story works in ChatGPT. The agent creates a space, the claim link adopts it, and
+the user sees it in Tonk.
+
+- Agents sponsored on the slice-1 build had to reconnect, because their record
+  had no sponsorship chain. That was expected; there is no compatibility path.
