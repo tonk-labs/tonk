@@ -203,7 +203,7 @@ extension RuntimeModel {
         try {
           const failure = await response.json();
           const message = failure?.error?.message;
-          if (typeof message === 'string' && message) reason = ': ' + message.slice(0, 300);
+          if (typeof message === 'string' && message) reason = ': ' + message.slice(0, 2000);
         } catch {}
         throw new Error(path.split('/').slice(-1)[0] + ' failed (HTTP ' + response.status + ')' + reason);
       }
