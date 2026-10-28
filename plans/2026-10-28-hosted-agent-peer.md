@@ -40,10 +40,10 @@ flowchart LR
   letting the agent provision spaces on the user's behalf. Created spaces are
   owned by the user and sealed under the account.
 - **Attribution.** Authority is the agent space DID, operator is the session DID.
-- **Identifier.** Agent spaces are named by `did:web`, derived from their key,
-  like accounts are named under the access service (see below).
+- **Identifier.** `did:key` through stage 6. Naming agent spaces by `did:web`
+  is a follow-up (stage 7).
 
-### Identifier
+### Identifier (follow-up)
 
 ```
 did:key:z6Mk...            agent space key
@@ -190,6 +190,7 @@ flowchart LR
   S4 --> S5[5 Account management]
   S4 --> S6[6 Deploy and migrate]
   S5 --> S6
+  S6 -.-> S7[7 did:web follow-up]
 ```
 
 ### Stage 0: dialog peer in a Workers isolate
@@ -217,8 +218,6 @@ Rust, in `tonk-identity`, `tonk-schema` and the YAML library.
   issuer and audience; the retained powerline and the proofs sent on invocation
   never contain the seed.
 - Provision an agent space under an account (reuse space creation and sealing).
-- `did:web:tonk.host:agent:{key}` derivation and document builder, with the
-  embedded-key check in the resolver used by the access service and peers.
 - Create-space delegation, once open question 1 is decided.
 - CLI: `tonk agent create --name`, `tonk agent session` printing a token,
   `tonk agent revoke`. This gives stage 2 real tokens without OAuth.
@@ -238,8 +237,6 @@ Worker that takes a Bearer token.
 - `401` with `WWW-Authenticate: Bearer resource_metadata=...`; tool errors for
   lapsed invites.
 - Serve `/.well-known/oauth-protected-resource` naming the channel's provider.
-- Serve `/agent/{key}/did.json` (on `tonk.host` in production, locally on the
-  dev port), with the deactivated flag once revoking an agent exists.
 - `providerOrigin()` localhost exception for local development.
 - Tests: missing, malformed, wrong-audience and revoked tokens; concurrent writes
   from two sessions of one agent; a lapsed invite.
@@ -305,6 +302,18 @@ revoking an agent does so for all its sessions.
 **M6:** claude.ai connected to `agent-dev.tonk.host` through the real OAuth flow,
 working in a space it was invited to.
 
+### Stage 7 (follow-up): did:web identifiers
+
+After the core flow ships. Settle open questions 5 and 6 first.
+
+- `did:web:tonk.host:agent:{key}` derivation and document builder.
+- Embedded-key check in the resolver used by the access service and peers.
+- Serve `/agent/{key}/did.json`, with a deactivated flag for revoked agents.
+- Decide whether existing agents are renamed or keep `did:key`.
+
+**M7:** an invite addressed to an agent's `did:web` verifies, and the document
+resolves with the embedded-key check enforced.
+
 ## Local development
 
 | Piece | How |
@@ -332,9 +341,9 @@ working in a space it was invited to.
    it (offline peers need the embedded-key shortcut to avoid a fetch). As alias,
    UCANs keep the `did:key` and the `did:web` is for naming and discovery only.
    Also: does the space's storage subject stay `did:key` either way? Needed by
-   stage 1.
+   stage 7.
 6. **Channels in the identifier.** `did:web:tonk.host:...` names the stable host
    for agents provisioned on dev and staging too. Either `tonk.host` serves
    documents for every channel (the key part is derivable, but the service entry
    and deactivation are per channel), or the host is per channel, e.g.
-   `did:web:agent-dev.tonk.host:agent:...`. Needed by stage 1.
+   `did:web:agent-dev.tonk.host:agent:...`. Needed by stage 7.
