@@ -3,12 +3,35 @@
 use serde::Deserialize;
 use std::io::{Read, Write};
 
+/// A call authorized by an agent link, or a call on a hosted agent.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Input {
+    Link(LinkInput),
+    Agent(AgentInput),
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Input {
+struct LinkInput {
     tool: String,
     agent_link: String,
     document: String,
+}
+
+/// `agent_create`, `agent_identity {agent}` or
+/// `agent_sponsor {agent, sponsorship_hex, recipient}`. Agents live under
+/// `<directory>/agents`, apart from link replicas.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentInput {
+    tool: String,
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    sponsorship_hex: Option<String>,
+    #[serde(default)]
+    recipient: Option<String>,
 }
 
 #[tokio::main]
@@ -44,8 +67,21 @@ async fn run() -> Result<serde_json::Value, String> {
     if input.len() > 200_000 {
         return Err("Invocation too large.".into());
     }
-    let input: Input = serde_json::from_slice(&input).map_err(|_| "Invalid invocation.")?;
-    tonk_worker::AgentLinkWorker::new(directory.into(), remote)
-        .call(&input.tool, &input.agent_link, &input.document)
-        .await
+    match serde_json::from_slice(&input).map_err(|_| "Invalid invocation.")? {
+        Input::Link(input) => {
+            tonk_worker::AgentLinkWorker::new(directory.into(), remote)
+                .call(&input.tool, &input.agent_link, &input.document)
+                .await
+        }
+        Input::Agent(input) => {
+            let arguments = serde_json::json!({
+                "agent": input.agent,
+                "sponsorship_hex": input.sponsorship_hex,
+                "recipient": input.recipient,
+            });
+            tonk_worker::HostedAgents::new(std::path::PathBuf::from(directory).join("agents"))
+                .call(&input.tool, &arguments)
+                .await
+        }
+    }
 }

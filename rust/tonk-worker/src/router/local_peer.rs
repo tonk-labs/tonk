@@ -84,6 +84,20 @@ impl LocalPeer {
         self.hub.shutdown().await;
     }
 
+    /// Keep a delegation to this peer in its delegation store.
+    pub(crate) async fn retain(
+        &self,
+        chain: dialog_ucan_core::DelegationChain,
+    ) -> Result<(), String> {
+        let tonk = self.state.read().await;
+        tonk.profile
+            .access()
+            .save(dialog_ucan::UcanDelegation(chain))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|_| "Agent storage is unavailable.".to_owned())
+    }
+
     /// Release query streams and the worker.
     pub async fn close(self) {
         self.state.read().await.shutdown();

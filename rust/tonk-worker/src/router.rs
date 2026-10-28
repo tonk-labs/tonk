@@ -82,6 +82,10 @@ pub use agent_link::AgentLinkWorker;
 mod local_peer;
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 pub use local_peer::{LocalPeer, try_lock as try_lock_peer};
+#[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
+mod hosted_agent;
+#[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
+pub use hosted_agent::HostedAgents;
 pub(crate) mod public_access;
 mod publication;
 pub use join::{JoinRequest, JoinResponse};
