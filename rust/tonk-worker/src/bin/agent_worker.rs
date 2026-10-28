@@ -32,6 +32,10 @@ struct AgentInput {
     sponsorship_hex: Option<String>,
     #[serde(default)]
     recipient: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    agent_name: Option<String>,
 }
 
 #[tokio::main]
@@ -78,10 +82,15 @@ async fn run() -> Result<serde_json::Value, String> {
                 "agent": input.agent,
                 "sponsorship_hex": input.sponsorship_hex,
                 "recipient": input.recipient,
+                "name": input.name,
+                "agent_name": input.agent_name,
             });
-            tonk_worker::HostedAgents::new(std::path::PathBuf::from(directory).join("agents"))
-                .call(&input.tool, &arguments)
-                .await
+            tonk_worker::HostedAgents::new(
+                std::path::PathBuf::from(directory).join("agents"),
+                remote,
+            )
+            .call(&input.tool, &arguments)
+            .await
         }
     }
 }

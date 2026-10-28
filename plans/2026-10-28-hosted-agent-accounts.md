@@ -257,3 +257,42 @@ Next step: slice 2, `tonk_create_space`.
    Business, Enterprise and Edu have full MCP. They do not agree about Plus and Pro.
 5. Agent account durability: the agent's own account space also needs a sync remote,
    so that it survives the loss of the service. Until then it lives in the R2 checkpoint.
+
+## Slice 2 design (2026-10-28)
+
+**Agent side** (`HostedAgents::create_space`, native).
+
+It does not reuse `create_repository`. That function assumes the owner is the
+device's own account: on the agent it would mint an onboarding account and keep
+the seed. Instead:
+
+1. Generate the space seed and signer. Mount it (`mount_verifier`), then write the
+   local metadata (`record_replica_local_meta`).
+2. Delegate from the space key:
+   - `space -> sponsor` with `/` (founder). This is also the consent for `/provider/add`.
+   - `space -> agent` with `candidate_build_scopes`. Each carries `home_address_meta`
+     and expires no later than the sponsorship. Only these are saved in the agent's
+     delegation store.
+3. Seed the content (`install_fresh_seed` and name claims). Write the roster: the
+   sponsor as founder, and the agent as a member (`kind` and `InvitedBy` wait for
+   #1137 and #1138).
+4. Seal the seed to the sponsor's recipient key, and drop the seed and signer.
+5. `/provider/add` invoked by the agent, with the full sponsorship chain as proof
+   (needs a builder that sends every hop).
+6. Push.
+7. Return a claim link: a Scoped invite carrying `space -> sponsor`, plus the
+   sealed seed.
+
+**Human side.** Redeem the claim link through the normal join. A Scoped invite
+whose audience is the account itself is used as it is. Then also:
+
+- retain `space -> account` on the account branch;
+- write the sealed seed as `SecretMessage` and `SecretPrincipal` rows (the custody
+  migration that already exists adopts them at the next passkey ceremony);
+- record the provider.
+
+**Revocation.** The sponsor holds `/` on the space, so they can revoke the agent's
+grants through the access service without the space key.
+
+**Risk.** Until the space is adopted, the sealed seed exists only in the link. If
+the link is lost, the key is lost. The space stays usable through `space -> sponsor`.

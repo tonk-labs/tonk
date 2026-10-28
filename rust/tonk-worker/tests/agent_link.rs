@@ -596,3 +596,117 @@ async fn hosted_agent_keeps_its_identity_and_its_sponsor_across_processes() -> a
     assert_eq!(refused["error"], "Tool unavailable.");
     Ok(())
 }
+
+/// A sponsored hosted agent creates a space its sponsor owns: provisioned
+/// under the sponsor, pushed, readable from an independent replica through
+/// the founder chain in the claim link, with the space key sealed to the
+/// sponsor's account in the link's fragment.
+#[tokio::test]
+async fn hosted_agent_creates_a_space_its_sponsor_owns() -> anyhow::Result<()> {
+    use tonk_invite::sponsorship::AgentSponsorship;
+    use tonk_worker::HostedAgents;
+
+    let service = access_service(AccessServiceSettings::default()).await?;
+    let remote: url::Url = service.address.ucan_endpoint().parse()?;
+    let sponsor = Ed25519Signer::generate().await?;
+    service
+        .address
+        .activate_customer(&sponsor, "sponsor@example.com")
+        .await?;
+    let account_secret =
+        tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([9u8; 32]));
+    let recipient = account_secret.secret().did();
+
+    let root = std::env::temp_dir().join(format!("tonk-sponsored-space-{}", rand::random::<u64>()));
+    let agents = HostedAgents::new(root.join("agents"), remote.clone());
+    let created = agents.create().await.map_err(anyhow::Error::msg)?;
+    let agent = created["agent"].as_str().unwrap().to_owned();
+    let agent_did: dialog_varsig::Did = created["did"].as_str().unwrap().parse()?;
+
+    let device = Ed25519Signer::generate().await?;
+    let link = DelegationBuilder::new()
+        .issuer(Signer::from(sponsor.clone()))
+        .audience(&device.did())
+        .subject(dialog_ucan_core::subject::Subject::Any)
+        .command(Vec::<String>::new())
+        .try_build()
+        .await?;
+    let sponsorship = AgentSponsorship::issue_from_device(
+        DelegationChain::new(link),
+        &Signer::from(device),
+        &agent_did,
+        Timestamp::now(),
+    )
+    .await?;
+    agents
+        .sponsor(
+            &agent,
+            &hex::encode(sponsorship.to_bytes()?),
+            recipient.as_ref(),
+            Timestamp::now(),
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    let space = agents
+        .create_space(&agent, "Notes from a chat", "ChatGPT")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let space_did: dialog_varsig::Did = space["space"].as_str().unwrap().parse()?;
+    let claim = url::Url::parse(space["claim_url"].as_str().unwrap())?;
+    assert_eq!(claim.path(), "/join");
+
+    // The sealed key opens only for the sponsor's account, and is the space's.
+    let sealed = claim
+        .fragment()
+        .and_then(|fragment| fragment.strip_prefix("seed="))
+        .expect("the claim link carries the sealed key");
+    let sealed = tonk_identity::sealed::Sealed::decode(&bs58::decode(sealed).into_vec()?)?;
+    let seed = account_secret.secret().reveal(&sealed, &space_did)?;
+    assert_eq!(Ed25519Signer::import(&*seed).await?.did(), space_did);
+
+    // The founder chain in the link is `space -> sponsor` with `/`.
+    let access = claim
+        .query_pairs()
+        .find(|(key, _)| key == "access")
+        .map(|(_, value)| value.into_owned())
+        .expect("the claim link carries the founder chain");
+    let founder = DelegationChain::try_from(bs58::decode(access).into_vec()?.as_slice())?;
+    assert_eq!(founder.issuer(), &space_did);
+    assert_eq!(founder.audience(), &sponsor.did());
+
+    // The sponsor reads the space from the remote through that chain, from
+    // empty storage: the agent provisioned and pushed it.
+    let seed = [61; 32];
+    let reader_key = Ed25519Signer::import(&seed).await?;
+    let now = Timestamp::now();
+    let deadline = Timestamp::try_from((now.to_unix() + 3600) as i128)?;
+    let scopes = candidate_build_scopes(&space_did);
+    let mut chains = Vec::new();
+    for scope in &scopes {
+        let leaf = DelegationBuilder::new()
+            .issuer(Signer::from(sponsor.clone()))
+            .audience(&reader_key.did())
+            .subject(scope.subject.clone())
+            .command(scope.command.0.clone())
+            .policy(scope.policy())
+            .expiration(deadline)
+            .meta(tonk_invite::home_address_meta(&remote))
+            .try_build()
+            .await?;
+        chains.push(founder.clone().push(leaf)?);
+    }
+    let reader_link = AgentInvite::new(seed, chains, &scopes, &remote, now)
+        .await?
+        .to_url("https://tonk.example/agent")?;
+    let mut reader = AgentLinkWorker::new(root.join("reader"), remote.clone());
+    let read = reader
+        .call("tonk_query", &reader_link, "tonk/repository:\n")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert!(
+        read.to_string().contains("Notes from a chat"),
+        "the sponsor reads the agent's space: {read}"
+    );
+    Ok(())
+}

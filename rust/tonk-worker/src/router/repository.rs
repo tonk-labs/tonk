@@ -6454,6 +6454,128 @@ where
     Ok(())
 }
 
+/// A space a hosted agent made for its sponsor; see
+/// [`create_sponsored_space`].
+#[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
+pub(crate) struct SponsoredSpace {
+    /// The new space.
+    pub did: Did,
+    /// `space -> sponsor` with `/`: the founder's authority, and the consent
+    /// the access service needs to provision the space under the sponsor.
+    pub founder: dialog_ucan_core::DelegationChain,
+    /// The space seed sealed to the sponsor's account. No other copy exists.
+    pub sealed_seed: Vec<u8>,
+}
+
+/// Create a space on this (hosted agent) peer that its sponsor owns.
+///
+/// Unlike [`create_repository`] the owner is not this peer's account: the
+/// space delegates `/` to `sponsor`, the seed is sealed to the sponsor's
+/// `recipient` and dropped, and this peer keeps only content grants
+/// (`candidate_build_scopes`) that end at `grants_expire`. The content is
+/// seeded like any created space, and the roster names the sponsor as
+/// founder and this peer as a member called `agent_name`. Nothing here
+/// touches this peer's own account, custody or provider.
+#[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_sponsored_space(
+    tonk: &TonkState,
+    sponsor: &Did,
+    recipient: &tonk_identity::sealed::RecipientKey,
+    name: &str,
+    agent_name: &str,
+    remote: &url::Url,
+    grants_expire: dialog_ucan_core::time::Timestamp,
+) -> Result<SponsoredSpace, RepositoryError> {
+    let internal = |what: &str, error: &dyn std::fmt::Display| {
+        RepositoryError::Internal(format!("{what}: {error}"))
+    };
+    let mut seed = Zeroizing::new([0u8; 32]);
+    getrandom::fill(seed.as_mut()).map_err(|e| internal("generate the space key", &e))?;
+    let signer = Ed25519Signer::import(&*seed)
+        .await
+        .map_err(|e| internal("generate the space key", &e))?;
+    let did = signer.did();
+    let key = did.repo_key().to_owned();
+    let agent = tonk.profile.did();
+
+    // Sealed first: it is the only copy of the seed that outlives this call.
+    let sealed_seed = recipient
+        .secret()
+        .conceal(&seed, &did)
+        .map_err(|e| internal("seal the space key", &e))?
+        .encode();
+
+    super::join::mount_replica(tonk, &did, Some(remote.as_str()), None)
+        .await
+        .map_err(|e| internal("mount the space", &e))?;
+
+    let minter = Repository::from(signer.clone());
+    let founder = minter
+        .access()
+        .claim(&minter)
+        .delegate(sponsor.clone())
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| internal("delegate the space to its sponsor", &e))?
+        .into_chain();
+    for scope in tonk_invite::connection::candidate_build_scopes(&did) {
+        let grant = dialog_ucan_core::DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(signer.clone()))
+            .audience(&agent)
+            .subject(scope.subject.clone())
+            .command(scope.command.0.clone())
+            .policy(scope.policy())
+            .expiration(grants_expire)
+            .meta(tonk_invite::home_address_meta(remote))
+            .try_build()
+            .await
+            .map_err(|e| internal("grant the agent the space", &e))?;
+        tonk.profile
+            .access()
+            .save(UcanDelegation(dialog_ucan_core::DelegationChain::new(
+                grant,
+            )))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| internal("keep the agent's grant", &e))?;
+    }
+    drop(signer);
+    drop(seed);
+
+    let library = fetch_standard_library(STANDARD_LIBRARY_URL)
+        .await
+        .map_err(|e| internal("read the standard library", &e))?;
+    let claims = repository_name_claims(&did, name, None)?;
+    install_fresh_seed(tonk, &key, CONTENT_BRANCH, &library, &claims).await?;
+
+    let sponsor_membership = Membership::new(sponsor.clone(), did.clone());
+    let sponsor_role = MemberRole::founder(sponsor_membership.this().clone());
+    let agent_membership = Membership::new(agent.clone(), did.clone());
+    let agent_role = MemberRole::member(agent_membership.this().clone());
+    let agent_member_name = MemberName::new(agent_membership.this().clone(), agent_name.to_owned());
+    tonk.reactor
+        .repository(&key)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(sponsor_membership)
+        .assert(sponsor_role)
+        .assert(agent_membership)
+        .assert(agent_role)
+        .assert(agent_member_name)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| internal("record the roster", &e))?;
+    record_initialized_replica_in_profile(tonk, &did).await?;
+
+    Ok(SponsoredSpace {
+        did,
+        founder,
+        sealed_seed,
+    })
+}
+
 /// Assert a [`Replica`] concept for a newly created repository in
 /// the profile repository's meta branch.
 ///

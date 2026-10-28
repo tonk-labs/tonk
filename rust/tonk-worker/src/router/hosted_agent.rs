@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use tonk_invite::sponsorship::AgentSponsorship;
 
 use super::local_peer::LocalPeer;
+use tonk_schema::prelude::DidExt as _;
 
 /// The non-authority facts about a sponsorship, kept beside the agent. The
 /// chain itself is retained in the peer's delegation store.
@@ -26,6 +27,8 @@ struct SponsorRecord {
     sponsor: String,
     recipient: String,
     expires_at: u64,
+    /// The verified chain, presented as proof when provisioning. Public.
+    sponsorship_hex: String,
 }
 
 const SPONSOR_FILE: &str = "sponsor.json";
@@ -33,12 +36,14 @@ const SPONSOR_FILE: &str = "sponsor.json";
 /// The agents one hosted service keeps, under one private root.
 pub struct HostedAgents {
     root: PathBuf,
+    remote: url::Url,
 }
 
 impl HostedAgents {
-    /// Agents under `root`. The caller serializes invocations.
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    /// Agents under `root`, syncing with `remote` (the provider's UCAN
+    /// endpoint). The caller serializes invocations.
+    pub fn new(root: PathBuf, remote: url::Url) -> Self {
+        Self { root, remote }
     }
 
     /// Run one agent tool. Errors are fixed strings that never echo input.
@@ -53,6 +58,14 @@ impl HostedAgents {
                     text("sponsorship_hex").ok_or(INVALID)?,
                     text("recipient").ok_or(INVALID)?,
                     Timestamp::now(),
+                )
+                .await
+            }
+            "agent_create_space" => {
+                self.create_space(
+                    text("agent").ok_or(INVALID)?,
+                    text("name").ok_or(INVALID)?,
+                    text("agent_name").ok_or(INVALID)?,
                 )
                 .await
             }
@@ -120,6 +133,7 @@ impl HostedAgents {
             sponsor: verified.sponsor.to_string(),
             recipient: recipient.to_string(),
             expires_at: verified.expires_at.to_unix(),
+            sponsorship_hex: sponsorship_hex.to_owned(),
         };
         write_record(&directory, &record)?;
         Ok(json!({
@@ -127,6 +141,123 @@ impl HostedAgents {
             "did": agent.to_string(),
             "sponsor": record.sponsor,
             "expiresAt": record.expires_at,
+        }))
+    }
+
+    /// Create a space the agent's sponsor owns, provision it under the
+    /// sponsor, push it, and answer the link the sponsor opens to adopt it.
+    pub async fn create_space(
+        &self,
+        id: &str,
+        name: &str,
+        agent_name: &str,
+    ) -> Result<Value, String> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 120 {
+            return Err("Give the space a name of up to 120 characters.".into());
+        }
+        let agent_name = agent_name.trim();
+        if agent_name.is_empty() || agent_name.chars().count() > 120 {
+            return Err(INVALID.into());
+        }
+        let directory = self.existing(id)?;
+        let record =
+            read_record(&directory)?.ok_or_else(|| "This agent has no sponsor.".to_owned())?;
+        let now = Timestamp::now();
+        if record.expires_at <= now.to_unix() {
+            return Err("This agent's sponsorship has expired; reconnect to renew it.".into());
+        }
+        let sponsor: Did = record.sponsor.parse().map_err(|_| UNAVAILABLE)?;
+        let recipient: Did = record.recipient.parse().map_err(|_| UNAVAILABLE)?;
+        let recipient =
+            tonk_identity::sealed::RecipientKey::try_from(&recipient).map_err(|_| UNAVAILABLE)?;
+        let sponsorship = AgentSponsorship::from_bytes(
+            &hex::decode(&record.sponsorship_hex).map_err(|_| UNAVAILABLE)?,
+        )
+        .map_err(|_| UNAVAILABLE)?;
+        let grants_expire =
+            Timestamp::try_from(record.expires_at as i128).map_err(|_| UNAVAILABLE)?;
+
+        let _lock = lock(&directory)?;
+        let peer = LocalPeer::open(directory.clone()).await?;
+        let outcome = self
+            .create_with(
+                &peer,
+                &sponsor,
+                &recipient,
+                &sponsorship,
+                name,
+                agent_name,
+                grants_expire,
+            )
+            .await;
+        peer.close().await;
+        outcome
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_with(
+        &self,
+        peer: &LocalPeer,
+        sponsor: &Did,
+        recipient: &tonk_identity::sealed::RecipientKey,
+        sponsorship: &AgentSponsorship,
+        name: &str,
+        agent_name: &str,
+        grants_expire: Timestamp,
+    ) -> Result<Value, String> {
+        let state = peer.sync_state();
+        let created = {
+            let tonk = state.read().await;
+            super::repository::create_sponsored_space(
+                &tonk,
+                sponsor,
+                recipient,
+                name,
+                agent_name,
+                &self.remote,
+                grants_expire,
+            )
+            .await
+            .map_err(|_| "The space could not be created.".to_owned())?
+        };
+
+        // Provision under the sponsor before anything is pushed: the service
+        // serves only provisioned spaces.
+        let invocation = {
+            let tonk = state.read().await;
+            tonk_identity::request::build_provider_add_invocation(
+                tonk.profile.credential().signer().clone(),
+                sponsorship.chain(),
+                &created.did,
+                &created.founder,
+                None,
+            )
+            .await
+            .map_err(|_| "The space could not be registered.".to_owned())?
+        };
+        super::http::post_cbor(&self.remote, &invocation)
+            .await
+            .map_err(|_| {
+                "The space could not be registered under the sponsor's account.".to_owned()
+            })?;
+
+        let mut router = peer.router();
+        let key = created.did.repo_key().to_owned();
+        super::agent_link::request_detailed(
+            &mut router,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            "",
+            "POST",
+        )
+        .await
+        .map_err(|_| "The space was created but could not be published yet.".to_owned())?;
+
+        let claim = claim_url(&self.remote, created.founder, &created.sealed_seed).await?;
+        Ok(json!({
+            "space": created.did.to_string(),
+            "name": name,
+            "claim_url": claim,
         }))
     }
 
@@ -149,6 +280,29 @@ impl HostedAgents {
         }
         Ok(directory)
     }
+}
+
+/// The link the sponsor opens to adopt a space: an ordinary Scoped invite
+/// carrying `space -> sponsor`, which the sponsor's join redeems as is, and
+/// the sealed seed in the fragment, which never reaches a server.
+async fn claim_url(
+    remote: &url::Url,
+    founder: dialog_ucan_core::DelegationChain,
+    sealed_seed: &[u8],
+) -> Result<String, String> {
+    let join = remote.join("/join").map_err(|_| UNAVAILABLE)?;
+    let invite = tonk_invite::Invite::new(
+        founder,
+        tonk_invite::InviteAudience::Scoped,
+        Some(remote.clone()),
+    )
+    .await
+    .map_err(|_| UNAVAILABLE)?;
+    let url = invite.to_url(join.as_str()).map_err(|_| UNAVAILABLE)?;
+    Ok(format!(
+        "{url}#seed={}",
+        bs58::encode(sealed_seed).into_string()
+    ))
 }
 
 /// Hold the agent's directory for this invocation, as [`LocalPeer`] requires.
@@ -233,7 +387,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_keeps_one_identity_per_agent_across_invocations() {
-        let agents = HostedAgents::new(root());
+        let agents = HostedAgents::new(root(), "http://127.0.0.1:9/ucan/".parse().unwrap());
         let created = agents.create().await.unwrap();
         let id = created["agent"].as_str().unwrap();
         let again = agents.identity(id).await.unwrap();
@@ -245,7 +399,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_retains_a_valid_sponsorship_of_the_agent() {
-        let agents = HostedAgents::new(root());
+        let agents = HostedAgents::new(root(), "http://127.0.0.1:9/ucan/".parse().unwrap());
         let created = agents.create().await.unwrap();
         let id = created["agent"].as_str().unwrap();
         let did: Did = created["did"].as_str().unwrap().parse().unwrap();
@@ -262,7 +416,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_refuses_a_sponsorship_of_another_agent() {
-        let agents = HostedAgents::new(root());
+        let agents = HostedAgents::new(root(), "http://127.0.0.1:9/ucan/".parse().unwrap());
         let created = agents.create().await.unwrap();
         let id = created["agent"].as_str().unwrap();
         let stranger = Ed25519Signer::generate().await.unwrap().did();
@@ -277,7 +431,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_refuses_ids_that_are_not_agents() {
-        let agents = HostedAgents::new(root());
+        let agents = HostedAgents::new(root(), "http://127.0.0.1:9/ucan/".parse().unwrap());
         for id in ["../escape", "", "ABCDEF", &"0".repeat(32)] {
             assert!(agents.identity(id).await.is_err(), "accepted {id:?}");
         }
