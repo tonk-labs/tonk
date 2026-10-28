@@ -33,17 +33,30 @@ struct SponsorRecord {
 
 const SPONSOR_FILE: &str = "sponsor.json";
 
+/// How long an agent may wait for its sponsor. OAuth gives an attempt five
+/// minutes, so an agent still unsponsored after this can never be sponsored.
+const ABANDONED_AFTER: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// How many agents may wait for a sponsor at once. Each one is checkpointed,
+/// so unapproved attempts must not grow storage without bound.
+const MAX_WAITING: usize = 32;
+
 /// The agents one hosted service keeps, under one private root.
 pub struct HostedAgents {
     root: PathBuf,
     remote: url::Url,
+    max_waiting: usize,
 }
 
 impl HostedAgents {
     /// Agents under `root`, syncing with `remote` (the provider's UCAN
     /// endpoint). The caller serializes invocations.
     pub fn new(root: PathBuf, remote: url::Url) -> Self {
-        Self { root, remote }
+        Self {
+            root,
+            remote,
+            max_waiting: MAX_WAITING,
+        }
     }
 
     /// Run one agent tool. Errors are fixed strings that never echo input.
@@ -88,8 +101,12 @@ impl HostedAgents {
         }
     }
 
-    /// Make a new agent with a fresh key.
+    /// Make a new agent with a fresh key. Abandoned agents are reclaimed
+    /// first, and a new one is refused while too many wait for a sponsor.
     pub async fn create(&self) -> Result<Value, String> {
+        if self.reclaim(std::time::SystemTime::now())? >= self.max_waiting {
+            return Err("Too many agents are waiting for approval. Try again later.".into());
+        }
         let mut id = [0u8; 16];
         getrandom::fill(&mut id).map_err(|_| UNAVAILABLE)?;
         let id = hex::encode(id);
@@ -299,6 +316,44 @@ impl HostedAgents {
         outcome
     }
 
+    /// Remove agents that were never sponsored and are older than
+    /// [`ABANDONED_AFTER`]. Returns how many unsponsored agents remain.
+    fn reclaim(&self, now: std::time::SystemTime) -> Result<usize, String> {
+        let entries = match std::fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(_) => return Err(UNAVAILABLE.into()),
+        };
+        let mut waiting = 0;
+        for entry in entries {
+            let entry = entry.map_err(|_| UNAVAILABLE)?;
+            let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Ok(directory) = self.directory(&id) else {
+                continue;
+            };
+            if !directory.is_dir() || directory.join(SPONSOR_FILE).exists() {
+                continue;
+            }
+            let age = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok());
+            if age.is_some_and(|age| age >= ABANDONED_AFTER) {
+                // A busy agent is in use: leave it for the next sweep.
+                if let Ok(Some(_lock)) = super::local_peer::try_lock(&directory)
+                    && std::fs::remove_dir_all(&directory).is_ok()
+                {
+                    continue;
+                }
+            }
+            waiting += 1;
+        }
+        Ok(waiting)
+    }
+
     fn directory(&self, id: &str) -> Result<PathBuf, String> {
         // 32 lowercase hex characters, as `create` makes them: never a path.
         if id.len() != 32
@@ -479,6 +534,54 @@ mod tests {
                 .sponsor(&"0".repeat(32), &hex, "did:key:nope", Timestamp::now())
                 .await
                 .is_err()
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_reclaims_agents_that_were_never_sponsored() {
+        let agents = HostedAgents::new(root(), "http://127.0.0.1:9/ucan/".parse().unwrap());
+        let abandoned = agents.create().await.unwrap();
+        let sponsored = agents.create().await.unwrap();
+        let id = sponsored["agent"].as_str().unwrap();
+        let did: Did = sponsored["did"].as_str().unwrap().parse().unwrap();
+        let (_, hex) = sponsorship_for(&did).await;
+        agents
+            .sponsor(id, &hex, &recipient(), Timestamp::now())
+            .await
+            .unwrap();
+
+        let later = std::time::SystemTime::now() + ABANDONED_AFTER;
+        assert_eq!(agents.reclaim(later).unwrap(), 0);
+        let error = agents
+            .identity(abandoned["agent"].as_str().unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(error, "Unknown agent.");
+        assert_eq!(agents.identity(id).await.unwrap()["did"], sponsored["did"]);
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_agents_still_waiting_for_a_sponsor() {
+        let agents = HostedAgents::new(root(), "http://127.0.0.1:9/ucan/".parse().unwrap());
+        let waiting = agents.create().await.unwrap();
+        assert_eq!(agents.reclaim(std::time::SystemTime::now()).unwrap(), 1);
+        assert!(
+            agents
+                .identity(waiting["agent"].as_str().unwrap())
+                .await
+                .is_ok()
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_new_agents_while_too_many_wait() {
+        let mut agents = HostedAgents::new(root(), "http://127.0.0.1:9/ucan/".parse().unwrap());
+        agents.max_waiting = 1;
+        agents.create().await.unwrap();
+        let error = agents.create().await.unwrap_err();
+        assert_eq!(
+            error,
+            "Too many agents are waiting for approval. Try again later."
         );
     }
 }
