@@ -967,6 +967,78 @@ async fn it_provisions_a_space_for_a_sponsor_through_a_delegate() -> anyhow::Res
     Ok(())
 }
 
+/// The sponsorship the Tonk app issues: the signed-in device extends its
+/// `account -> device` grant to the agent with `/provider/add` on the
+/// account. The agent presents both hops and the space is billed to the
+/// account.
+#[dialog_common::test]
+async fn it_provisions_through_a_device_issued_sponsorship() -> anyhow::Result<()> {
+    use tonk_invite::sponsorship::AgentSponsorship;
+
+    let fixture = Fixture::new().await;
+    let account = Ed25519Signer::generate().await?;
+    let device = Ed25519Signer::generate().await?;
+    let agent = Ed25519Signer::generate().await?;
+    let space = Ed25519Signer::generate().await?;
+    fixture
+        .enroll_and_activate(&account, "sponsor@example.com")
+        .await;
+
+    let account_link = DelegationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(account.clone()))
+        .audience(&device.did())
+        .subject(DelegatedSubject::Any)
+        .command(vec![])
+        .try_build()
+        .await?;
+    let sponsorship = AgentSponsorship::issue_from_device(
+        dialog_ucan_core::DelegationChain::new(account_link),
+        &dialog_credentials::Signer::from(device.clone()),
+        &agent.did(),
+        Timestamp::now(),
+    )
+    .await?;
+    let proofs = sponsorship.chain().proof_cids().to_vec();
+
+    let consent = DelegationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(space.clone()))
+        .audience(&account.did())
+        .subject(DelegatedSubject::Specific(space.did()))
+        .command(vec![])
+        .try_build()
+        .await?;
+    let invocation = InvocationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(agent.clone()))
+        .audience(&account.did())
+        .subject(&account.did())
+        .command(vec!["provider".to_string(), "add".to_string()])
+        .arguments(BTreeMap::from([
+            (
+                "consumer".to_string(),
+                Promised::String(space.did().to_string()),
+            ),
+            ("consent".to_string(), Promised::Link(consent.to_cid())),
+        ]))
+        .proofs(proofs)
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await?;
+    let mut tokens = vec![serde_ipld_dagcbor::to_vec(&invocation)?];
+    for proof in sponsorship.chain().proofs() {
+        tokens.push(proof.encoded().to_vec());
+    }
+    tokens.push(consent.encoded().to_vec());
+    let container = Container::new(tokens).to_bytes()?;
+
+    let Answer::Subscription(receipt) = fixture.registration(&container).handle().await.unwrap()
+    else {
+        panic!("expected a consumer receipt");
+    };
+    assert_eq!(receipt.provider, account.did());
+    assert_eq!(receipt.consumer, space.did());
+    Ok(())
+}
+
 /// Revoking the sponsor's grant stops the agent from provisioning more.
 #[dialog_common::test]
 async fn it_refuses_a_delegate_whose_sponsor_revoked_it() -> anyhow::Result<()> {

@@ -69,6 +69,7 @@ pub mod join_address;
 pub mod local_space_link;
 pub mod public;
 pub mod shortcut;
+pub mod sponsorship;
 pub mod ticket;
 
 pub use attribution::{INVITER, inviter, inviter_meta};
