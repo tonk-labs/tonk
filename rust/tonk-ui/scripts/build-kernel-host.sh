@@ -18,7 +18,7 @@ cargo build -p tonk-kernel-host --lib --target wasm32-unknown-unknown $FLAGS
 rm -rf "$HOST_DIR"
 mkdir -p "$HOST_DIR"
 wasm-bindgen --target no-modules --no-typescript --out-dir "$HOST_DIR" --out-name embedder \
-  "target/wasm32-unknown-unknown/$OUT/tonk_kernel_host.wasm"
+  "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/$OUT/tonk_kernel_host.wasm"
 cargo run -q -p tonk-components --bin write-components -- "$HOST_DIR"
 # The profile's shell names the persona this deployment ships, so that it can
 # take a profile a worker from before kernels serves over to it: that worker

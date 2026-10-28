@@ -1,42 +1,38 @@
 package sapling:kernel@0.1.0;
 
 interface session {
-  use types.{did, ucan, error};
-  use credential.{credential};
+  use types.{did};
+  use credential.{credential, representative, persona};
 
-  /// The subject a claim asks for.
-  variant subject {
-    /// This subject only.
-    this(did),
-    /// Any subject.
-    any,
-  }
-
-  /// A capability a guest kernel asks to be delegated, as Dialog DB claims
-  /// one for its prover to find.
-  record claim {
-    subject: subject,
-    /// The command, such as `/blob/put`.
-    command: string,
-    /// What the delegation must allow, by the name of each argument of the
-    /// command, as in the policy of a UCAN. Each value is DAG-CBOR.
-    arguments: list<tuple<string, list<u8>>>,
-    /// Why the guest kernel asks, in words the embedder can show a person.
-    reason: string,
-  }
-
-  /// The standing of a worker. The embedder makes it and hands it to the
-  /// guest kernel at boot.
+  /// The standing of a worker: the key it acts under, the representative it
+  /// acts through, and the persona it acts for. The embedder makes it and
+  /// hands it to the guest kernel at boot.
   ///
-  /// Whom the worker acts for is the guest kernel's own to work out, from
-  /// the delegations it keeps: the embedder never tells it.
-  resource session {
-    /// The key this worker acts under.
+  /// A guest kernel asks its representative for the delegations it needs
+  /// (`representative.delegate`), and keeps them in its space.
+  variant session {
+    /// The persona's own worker, which may ask to act as the persona.
+    persona(persona-session),
+    /// The worker of a space, which knows its persona by DID only.
+    space(space-session),
+  }
+
+  resource persona-session {
+    /// The key this worker acts under. It never leaves the embedder.
     credential: func() -> credential;
-    /// Delegations to `credential` that grant `claim`, which the embedder
-    /// holds or obtains, such as from the persona of the person. The guest
-    /// kernel looks among the delegations it keeps first, and keeps what it
-    /// is handed.
-    claim: async func(claim: claim) -> result<list<ucan>, error>;
+    /// What this worker acts through, such as a device.
+    representative: func() -> representative;
+    /// The persona, as it stands now: a provisional persona becomes
+    /// permanent once it merges.
+    persona: func() -> persona;
+  }
+
+  resource space-session {
+    /// The key this worker acts under. It never leaves the embedder.
+    credential: func() -> credential;
+    /// What this worker acts through, such as a device.
+    representative: func() -> representative;
+    /// The persona this worker acts for.
+    persona: func() -> did;
   }
 }

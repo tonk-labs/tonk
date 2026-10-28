@@ -25,10 +25,15 @@ fn space() -> String {
     did_key(&ed25519_dalek::SigningKey::from_bytes(&[3; 32]))
 }
 
-/// The standing every kernel here boots with: the same key, so a kernel that
-/// starts again is the same worker, and no delegation to claim.
+/// The standing every space's kernel here boots with: the same key, so a
+/// kernel that starts again is the same worker, and nothing delegated.
 fn standing() -> Standing {
-    Standing::new([7; 32], Vec::new())
+    Standing::handed([7; 32], None)
+}
+
+/// The standing every persona here boots with: the same key, provisional.
+fn persona_standing() -> Standing {
+    Standing::new([7; 32])
 }
 
 /// Boot a kernel over the layers in `layers`, and answer who it is.
@@ -191,27 +196,27 @@ async fn it_creates_a_space_with_a_key_the_host_makes() {
     );
 }
 
-/// A persona grants another worker's session the space it claims, and the
-/// space's own worker takes the space up with what the persona granted.
+/// A persona delegates another worker's session the space it asks for, and
+/// the space's own worker takes the space up with what the persona
+/// delegated.
 #[tokio::test(flavor = "current_thread")]
-async fn it_takes_up_a_space_its_persona_grants() {
-    use tonk_kernel_host::bindings::sapling::kernel::session::{Claim, Subject};
+async fn it_takes_up_a_space_its_persona_delegates() {
+    use tonk_kernel_host::bindings::sapling::kernel::credential::Access;
 
     let engine = engine();
     let (mut persona, space) = persona_with_space(&engine, scratch("granting")).await;
     let worker = did_key(&ed25519_dalek::SigningKey::from_bytes(&[8; 32]));
-    let claim = Claim {
-        subject: Subject::This(space.clone()),
+    let access = Access {
+        subject: space.clone(),
         command: "/".to_owned(),
         arguments: Vec::new(),
         reason: "to serve the space".to_owned(),
     };
-    let granted = persona
-        .grant(&worker, claim)
+    let delegated = persona
+        .delegate(&worker, access)
         .await
         .unwrap()
-        .expect("the persona grants the space it created");
-    assert_eq!(granted.len(), 1);
+        .expect("the persona delegates the space it created");
 
     let mut kernel = Kernel::load(
         &engine,
@@ -221,7 +226,7 @@ async fn it_takes_up_a_space_its_persona_grants() {
     .await
     .unwrap();
     kernel
-        .init(&space, Standing::new([8; 32], granted))
+        .init(&space, Standing::handed([8; 32], Some(delegated)))
         .await
         .unwrap();
     let path = format!("/api/repository/{space}");
@@ -242,7 +247,7 @@ async fn persona_with_space(engine: &Engine, layers: Layers) -> (Kernel, String)
     let mut kernel = Kernel::load(engine, tonk_components::TONK_PERSONA_BYTES, layers)
         .await
         .unwrap();
-    kernel.init(&session, standing()).await.unwrap();
+    kernel.init(&session, persona_standing()).await.unwrap();
     let said = kernel.request("GET", "/api/identify", b"").await.unwrap();
     assert!(
         said.text().contains(&session),
@@ -321,7 +326,7 @@ async fn it_takes_up_its_space_from_its_session() {
     kernel
         .init(
             &space(),
-            Standing::new([7; 32], vec![space_to_session().await]),
+            Standing::handed([7; 32], Some(space_to_session().await)),
         )
         .await
         .unwrap();

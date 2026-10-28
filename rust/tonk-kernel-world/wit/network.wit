@@ -1,28 +1,52 @@
 package sapling:kernel@0.1.0;
 
-/// The replicas of remote peers, which a worker reads through the daemon. A
-/// worker has no socket of its own. See PDD007, "Network".
+/// The peers a worker reaches through its embedder: an access service,
+/// another device. A worker has no socket of its own. See PDD007, "Network".
 interface network {
-  use types.{did, hash, route, edition, error};
+  use types.{did, hash, ucan, route, version, edition, byte-range, encoding, blob-read, error};
 
-  /// A replica of a subject on a remote peer. Read only. It reads no blob:
-  /// a `read` of a layer of the device, with the size of the blob, fetches
-  /// what the store lacks from the peers of the subject. See PDD013, "The
-  /// Daemon Fetches".
-  resource replica {
-    peer: func() -> did;
-    subject: func() -> did;
-    get: async func(catalog: string, key: hash) -> result<option<list<u8>>, error>;
-    resolve: async func(namespace: string, cell: string) -> result<option<edition>, error>;
-    %list: async func(namespace: string) -> result<list<string>, error>;
+  /// A peer this worker reaches.
+  resource peer {
+    did: func() -> did;
+    /// The replica of `subject` on this peer, acted on under `chain`, whose
+    /// last audience is the session key of this worker. The guest kernel
+    /// gets `chain` when it opens, from its representative
+    /// (`representative.delegate`), as for any other access.
+    open: async func(subject: did, chain: ucan) -> result<replica, error>;
   }
 
-  /// Reach the replica of `subject` on `peer`. The subject must be the subject
-  /// of this worker, or a layer that this worker has open, and the peer a
-  /// device peer that the daemon verified for a member of that subject. The
-  /// daemon ignores `routes`: it dials only the routes that it recorded for
-  /// the peer, so a guest kernel can give an empty list. The next version of
-  /// the world removes `routes`.
-  open-remote: async func(peer: did, routes: list<route>, subject: did)
-    -> result<replica, error>;
+  /// A replica of a subject on a peer. Its calls are those of a layer
+  /// (`storage.layer`), each one checked by the peer against the chain the
+  /// replica was opened with.
+  resource replica {
+    subject: func() -> did;
+
+    get: async func(catalog: string, key: hash) -> result<option<list<u8>>, error>;
+    get-many: async func(catalog: string, keys: list<hash>)
+      -> result<list<option<list<u8>>>, error>;
+    put: async func(catalog: string, key: hash, bytes: list<u8>) -> result<_, error>;
+
+    resolve: async func(namespace: string, cell: string) -> result<option<edition>, error>;
+    publish: async func(namespace: string, cell: string, content: list<u8>,
+                        when: option<version>) -> result<version, error>;
+    retract: async func(namespace: string, cell: string, when: version) -> result<_, error>;
+    %list: async func(namespace: string) -> result<list<string>, error>;
+
+    size: async func(key: hash) -> result<option<u64>, error>;
+    read: async func(key: hash, range: byte-range, size: option<u64>,
+                     encoding: encoding, proof: bool)
+      -> result<blob-read, error>;
+    write: async func(bytes: stream<u8>) -> result<hash, error>;
+  }
+
+  /// Reach the peer `peer`, at `routes`, which the guest kernel keeps for it,
+  /// such as the address of an access service. The embedder may dial routes
+  /// of its own for the peer as well, and refuses a peer it cannot or will
+  /// not reach.
+  open: async func(peer: did, routes: list<route>) -> result<peer, error>;
+
+  /// The peer of this embedder's deployment, where a person's account and
+  /// custodies live unless they say otherwise. A worker that knows no peer
+  /// yet, such as on a new device, starts here.
+  home: async func() -> result<did, error>;
 }

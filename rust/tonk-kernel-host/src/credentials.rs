@@ -1,14 +1,20 @@
-//! The keys a guest kernel reaches through handles: `credential`, `session`
-//! and `authentication`. Every key stays here: as its seed, or as a signer
-//! whose seed nothing reads, as a browser keeps a session's key. A guest
-//! kernel signs the bytes it writes, conceals its own messages to a DID, and
-//! entrusts a key to a custodian whose key is here too, so no key reaches it.
-//! What it claims, its host's [`Claims`] answer.
+//! The keys a guest kernel reaches through handles: `credential` and
+//! `session`. Every key stays here: as its seed, or as a signer whose seed
+//! nothing reads, as a browser keeps a session's key. A guest kernel signs
+//! the bytes it writes, conceals its own messages to a DID, and backs a key
+//! up to a custodian whose key is here too, so no key reaches it. What it
+//! asks its representative to delegate, the representative's [`Delegates`]
+//! answer.
 //!
-//! Not yet bound: signing a person in, which a browser does with a passkey.
+//! Not yet bound: merging a provisional persona and opening a permanent one,
+//! which a browser does with a passkey.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 
 use dialog_common::ConditionalSync;
 use dialog_credentials::Ed25519Signer;
@@ -16,8 +22,10 @@ use dialog_credentials::Ed25519Verifier;
 use dialog_credentials::ed25519::Extractable;
 use dialog_credentials::key::{ExtractableKey, KeyExport};
 use dialog_credentials::secret::{Context, SealedSecret, SecretExtractableDerive};
-use dialog_varsig::Principal as _;
+use dialog_ucan_core::subject::Subject as UcanSubject;
+use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::eddsa::Ed25519Signature;
+use dialog_varsig::{Did, Principal as _};
 use ed25519_dalek::Signer as _;
 #[cfg(not(target_arch = "wasm32"))]
 use futures::future::BoxFuture;
@@ -26,16 +34,16 @@ use futures::future::LocalBoxFuture;
 use wcmp::{Accessor, Resource};
 use zeroize::Zeroizing;
 
-use crate::bindings::sapling::kernel::authentication;
 use crate::bindings::sapling::kernel::credential::{
-    self, Authority, Credential, Custodian, Payload as Signed,
+    self, Access, Credential, CredentialBackup, Custodian, Payload as Signed, PermanentPersona,
+    Persona, PersonaAuthority, ProvisionalPersona, Recovery, Representative,
 };
-use crate::bindings::sapling::kernel::session::{self, Claim, Session};
+use crate::bindings::sapling::kernel::session::{self, PersonaSession, Session, SpaceSession};
 use crate::bindings::sapling::kernel::types::Error;
 use crate::sapling::{KernelHost, Sapling, did_key, trace};
 
-/// The context every key is entrusted in. A guest kernel cannot conceal a
-/// message in it, nor reveal one, so it opens a custody only by `recover`.
+/// The context every key is backed up in. A guest kernel cannot conceal a
+/// message in it, nor reveal one, so it opens a backup only by `restore`.
 const CUSTODY: &str = "sapling.kernel/custody";
 
 /// A key a handle names.
@@ -89,58 +97,209 @@ impl Key {
     }
 }
 
-/// The delegations a claim is answered with, once they come: `Send`
+/// A delegation a representative answers with, once it comes: `Send`
 /// natively, as a store's futures are, and not in the browser, where a
 /// JavaScript promise answers it.
 #[cfg(not(target_arch = "wasm32"))]
-pub type Answer = BoxFuture<'static, Result<Vec<Vec<u8>>, Error>>;
+pub type Answer = BoxFuture<'static, Result<Vec<u8>, Error>>;
 #[cfg(target_arch = "wasm32")]
-pub type Answer = LocalBoxFuture<'static, Result<Vec<Vec<u8>>, Error>>;
+pub type Answer = LocalBoxFuture<'static, Result<Vec<u8>, Error>>;
 
-/// What answers a guest kernel's claims: the delegations its host holds, or
-/// obtains, such as from the person's profile.
-pub trait Claimant: ConditionalSync {
-    fn claim(&self, claim: Claim) -> Answer;
+/// What answers `representative.delegate`: the representative's key, where
+/// the host holds it, or the host of the person's persona, which it asks.
+pub trait Delegator: ConditionalSync {
+    fn delegate(&self, audience: String, access: Access) -> Answer;
 }
 
-impl<F: Fn(Claim) -> Answer + ConditionalSync> Claimant for F {
-    fn claim(&self, claim: Claim) -> Answer {
-        self(claim)
+impl<F: Fn(String, Access) -> Answer + ConditionalSync> Delegator for F {
+    fn delegate(&self, audience: String, access: Access) -> Answer {
+        self(audience, access)
     }
 }
 
-pub type Claims = Arc<dyn Claimant>;
+/// What answers a representative's delegations, shared by each handle on
+/// it: an `Rc` in the browser, where a key held as a `CryptoKey` is not
+/// `Send`.
+#[cfg(not(target_arch = "wasm32"))]
+pub type Delegates = Arc<dyn Delegator>;
+#[cfg(target_arch = "wasm32")]
+pub type Delegates = Rc<dyn Delegator>;
 
-/// What a session handle names: the key it acts under, and what answers its
-/// claims.
-pub struct Standing {
-    pub credential: Key,
-    pub claims: Claims,
+/// `delegator`, shared.
+pub fn delegates(delegator: impl Delegator + 'static) -> Delegates {
+    #[cfg(not(target_arch = "wasm32"))]
+    let shared = Arc::new(delegator);
+    #[cfg(target_arch = "wasm32")]
+    let shared = Rc::new(delegator);
+    shared
 }
 
-impl Standing {
-    /// The standing of a worker that acts under the key of `seed`, whose
-    /// first claim is answered with `handed`, and every claim after it with
-    /// none.
-    pub fn new(seed: [u8; 32], handed: Vec<Vec<u8>>) -> Self {
-        let handed = Mutex::new(handed);
+/// What a representative handle names: its DID, its key when this host holds
+/// it, and what answers its delegations.
+#[derive(Clone)]
+pub struct Representation {
+    pub did: String,
+    pub key: Option<Key>,
+    pub delegates: Delegates,
+}
+
+impl Representation {
+    /// A representative whose key this host holds, which signs each
+    /// delegation of what it is itself the subject of.
+    pub fn held(key: Key) -> Self {
+        let signing = key.clone();
         Self {
-            credential: Key::generated(Zeroizing::new(seed)),
-            claims: Arc::new(move |_| {
-                let chains = core::mem::take(&mut *handed.lock().expect("handed"));
-                Box::pin(async move { Ok(chains) }) as Answer
+            did: key.did(),
+            key: Some(key),
+            delegates: delegates(move |audience: String, access: Access| {
+                let key = signing.clone();
+                Box::pin(async move { delegation(&key, &audience, &access).await }) as Answer
             }),
         }
     }
 
-    /// The standing of a worker that acts under `credential`, a key held as
-    /// a signer, whose claims `claims` answers.
-    pub fn sealed(credential: Ed25519Signer, claims: Claims) -> Self {
+    /// A representative this host holds no key of, whose delegations
+    /// `delegates` answers, such as by asking the host of the persona.
+    pub fn remote(did: String, delegates: Delegates) -> Self {
         Self {
-            credential: Key::Sealed(Box::new(credential)),
-            claims,
+            did,
+            key: None,
+            delegates,
         }
     }
+}
+
+/// Whom a worker acts for, as its session says.
+#[derive(Clone)]
+pub enum Acting {
+    /// The persona itself, for the persona's own worker: provisional, with
+    /// its key here.
+    Persona(Key),
+    /// The persona of a space's worker, by its DID.
+    Space(String),
+}
+
+/// What a session handle names: the key it acts under, what it acts
+/// through, and whom it acts for.
+pub struct Standing {
+    pub credential: Key,
+    pub representative: Representation,
+    pub acting: Acting,
+}
+
+impl Standing {
+    /// The standing of a persona's own worker, provisional, that acts under
+    /// the key of `seed`, which also represents the persona and is it.
+    pub fn new(seed: [u8; 32]) -> Self {
+        let key = Key::generated(Zeroizing::new(seed));
+        Self {
+            credential: key.clone(),
+            representative: Representation::held(key.clone()),
+            acting: Acting::Persona(key),
+        }
+    }
+
+    /// The standing of a space's worker that acts under the key of `seed`,
+    /// for the persona that key is, whose representative answers its first
+    /// delegation with `handed`, and every one after it with none.
+    pub fn handed(seed: [u8; 32], handed: Option<Vec<u8>>) -> Self {
+        let key = Key::generated(Zeroizing::new(seed));
+        let handed = Mutex::new(handed);
+        let representative = Representation::remote(
+            key.did(),
+            delegates(move |_, _| {
+                let chain = handed.lock().expect("handed").take();
+                Box::pin(async move {
+                    chain.ok_or_else(|| Error::Denied("nothing more is delegated".into()))
+                }) as Answer
+            }),
+        );
+        Self {
+            acting: Acting::Space(key.did()),
+            credential: key,
+            representative,
+        }
+    }
+
+    /// The standing of a persona's own worker, provisional, under
+    /// `credential`, a key held as a signer, which represents the persona and
+    /// is it, until the person makes themselves known.
+    pub fn persona(credential: Ed25519Signer) -> Self {
+        let key = Key::Sealed(Box::new(credential));
+        Self {
+            credential: key.clone(),
+            representative: Representation::held(key.clone()),
+            acting: Acting::Persona(key),
+        }
+    }
+
+    /// The standing of a space's worker under `credential`, a key held as a
+    /// signer, acting for the persona `persona` through `representative`.
+    pub fn space(
+        credential: Ed25519Signer,
+        representative: Representation,
+        persona: String,
+    ) -> Self {
+        Self {
+            credential: Key::Sealed(Box::new(credential)),
+            representative,
+            acting: Acting::Space(persona),
+        }
+    }
+}
+
+/// A delegation from `key` to `audience` of what `access` asks, of a subject
+/// that is `key` itself.
+async fn delegation(key: &Key, audience: &str, access: &Access) -> Result<Vec<u8>, Error> {
+    let issuer = key.did();
+    if access.subject != issuer {
+        return Err(Error::Denied(format!(
+            "{issuer} delegates only itself, not {}",
+            access.subject
+        )));
+    }
+    if !access.arguments.is_empty() {
+        return Err(Error::Invalid(
+            "a delegation that constrains arguments is not made here yet".into(),
+        ));
+    }
+    let audience: Did = audience
+        .parse()
+        .map_err(|_| Error::Invalid(format!("{audience} is not a DID")))?;
+    let subject: Did = access
+        .subject
+        .parse()
+        .map_err(|_| Error::Invalid(format!("{} is not a DID", access.subject)))?;
+    let command = access
+        .command
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let signer = match key {
+        Key::Seed { seed, .. } => Ed25519Signer::import(&**seed)
+            .await
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        Key::Sealed(signer) => (**signer).clone(),
+    };
+    let delegation = DelegationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(signer))
+        .audience(&audience)
+        .subject(UcanSubject::Specific(subject))
+        .command(command)
+        .try_build()
+        .await
+        .map_err(|error| Error::Invalid(format!("{error:?}")))?;
+    DelegationChain::new(delegation)
+        .to_bytes()
+        .map_err(|error| Error::Invalid(format!("{error:?}")))
+}
+
+/// What a persona handle names: its key, where this host holds it.
+#[derive(Clone)]
+pub(crate) struct Held {
+    pub(crate) did: String,
+    pub(crate) key: Option<Key>,
 }
 
 impl KernelHost {
@@ -153,18 +312,60 @@ impl KernelHost {
         self.keys[credential.rep() as usize].clone()
     }
 
-    fn authority(&self, authority: &Resource<Authority>) -> Key {
-        self.authorities[authority.rep() as usize].clone()
+    fn represent(&mut self, representation: Representation) -> Resource<Representative> {
+        self.representatives.push(representation);
+        Resource::new_own((self.representatives.len() - 1) as u32)
+    }
+
+    fn representation(&self, representative: &Resource<Representative>) -> Representation {
+        self.representatives[representative.rep() as usize].clone()
+    }
+
+    fn keep_persona(&mut self, held: Held) -> u32 {
+        self.personas.push(held);
+        (self.personas.len() - 1) as u32
+    }
+
+    fn persona_of(&self, rep: u32) -> Held {
+        self.personas[rep as usize].clone()
     }
 
     /// A handle on `standing`, for the boot.
-    pub fn session(&mut self, standing: Standing) -> Resource<Session> {
+    pub fn session(&mut self, standing: Standing) -> Session {
+        let persona = matches!(standing.acting, Acting::Persona(_));
         self.sessions.push(standing);
-        Resource::new_own((self.sessions.len() - 1) as u32)
+        let rep = (self.sessions.len() - 1) as u32;
+        if persona {
+            Session::Persona(Resource::new_own(rep))
+        } else {
+            Session::Space(Resource::new_own(rep))
+        }
     }
 
-    fn standing(&self, session: &Resource<Session>) -> &Standing {
-        &self.sessions[session.rep() as usize]
+    fn standing(&self, rep: u32) -> &Standing {
+        &self.sessions[rep as usize]
+    }
+
+    /// The DID of `custodian`, and whether a key backed up to it is one the
+    /// guest kernel could restore with a seed it knows.
+    fn custodian(&self, custodian: &Custodian) -> Result<String, Error> {
+        match custodian {
+            Custodian::Credential(held) => {
+                let key = self.key(held);
+                if key.imported() {
+                    return Err(Error::Denied(
+                        "a key whose seed the guest kernel knows is no custodian".into(),
+                    ));
+                }
+                Ok(key.did())
+            }
+            Custodian::Representative(representative) => {
+                Ok(self.representation(representative).did)
+            }
+            Custodian::Provisional(persona) => Ok(self.persona_of(persona.rep()).did),
+            Custodian::Permanent(persona) => Ok(self.persona_of(persona.rep()).did),
+            Custodian::Persona(authority) => Ok(self.persona_of(authority.rep()).did),
+        }
     }
 }
 
@@ -315,41 +516,33 @@ impl<T: 'static> credential::HostCredentialWithStore<T> for Sapling {
         reveal(&key, context(&label)?, &secret).await
     }
 
-    async fn entrust(
+    async fn backup(
         accessor: &Accessor<T, Self>,
         credential: Resource<Credential>,
         custodian: Custodian,
-    ) -> Result<Vec<u8>, Error> {
-        trace("credential.entrust");
+    ) -> Result<CredentialBackup, Error> {
+        trace("credential.backup");
         let (key, custodian) = accessor.with(|mut access| {
             let host = access.get();
-            let custodian = match &custodian {
-                Custodian::Credential(held) => host.key(held),
-                Custodian::Authority(authority) => host.authority(authority),
-            };
-            (host.key(&credential), custodian)
-        });
-        if custodian.imported() {
-            return Err(Error::Denied(
-                "a key whose seed the guest kernel knows is no custodian".into(),
-            ));
-        }
+            Ok::<_, Error>((host.key(&credential), host.custodian(&custodian)?))
+        })?;
         let Key::Seed { seed, .. } = &key else {
             return Err(Error::Denied(
-                "a key held as a signer is never entrusted".into(),
+                "a key held as a signer is never backed up".into(),
             ));
         };
-        conceal(&custodian.did(), custody_free(CUSTODY), seed.as_slice()).await
+        let secret = conceal(&custodian, custody_free(CUSTODY), seed.as_slice()).await?;
+        Ok(CredentialBackup { custodian, secret })
     }
 
-    async fn recover(
+    async fn restore(
         accessor: &Accessor<T, Self>,
         credential: Resource<Credential>,
-        custody: Vec<u8>,
+        backup: CredentialBackup,
     ) -> Result<Resource<Credential>, Error> {
-        trace("credential.recover");
+        trace("credential.restore");
         let custodian = accessor.with(|mut access| access.get().key(&credential));
-        let key = recover(&custodian, &custody).await?;
+        let key = restored(&custodian, &backup).await?;
         Ok(accessor.with(|mut access| access.get().hold(key)))
     }
 
@@ -377,102 +570,256 @@ impl<T: 'static> credential::HostCredentialWithStore<T> for Sapling {
     }
 }
 
-impl credential::HostAuthority for KernelHost {
-    fn drop(&mut self, _authority: Resource<Authority>) -> wcmp::Result<()> {
+/// The key `backup` holds, restored by `custodian`, if it is backed up to
+/// it.
+async fn restored(custodian: &Key, backup: &CredentialBackup) -> Result<Key, Error> {
+    if backup.custodian != custodian.did() {
+        return Err(Error::Denied(format!(
+            "the backup is for {}, not {}",
+            backup.custodian,
+            custodian.did()
+        )));
+    }
+    recover(custodian, &backup.secret).await
+}
+
+/// `secret`, concealed to `from` in `context`, concealed to `to` instead.
+async fn confided(from: &Key, label: &[u8], secret: &[u8], to: &str) -> Result<Vec<u8>, Error> {
+    let context = context(label)?;
+    let message = Zeroizing::new(reveal(from, context, secret).await?);
+    conceal(to, context, &message).await
+}
+
+impl credential::HostRepresentative for KernelHost {
+    fn did(&mut self, representative: Resource<Representative>) -> String {
+        self.representation(&representative).did
+    }
+
+    fn drop(&mut self, _representative: Resource<Representative>) -> wcmp::Result<()> {
         Ok(())
     }
 }
 
-impl<T: 'static> credential::HostAuthorityWithStore<T> for Sapling {
-    async fn did(
+impl<T: 'static> credential::HostRepresentativeWithStore<T> for Sapling {
+    async fn delegate(
         accessor: &Accessor<T, Self>,
-        authority: Resource<Authority>,
-    ) -> Result<String, Error> {
-        Ok(accessor.with(|mut access| access.get().authority(&authority).did()))
-    }
-
-    async fn sign(
-        accessor: &Accessor<T, Self>,
-        authority: Resource<Authority>,
-        signed: Signed,
+        representative: Resource<Representative>,
+        audience: String,
+        access: Access,
     ) -> Result<Vec<u8>, Error> {
-        trace("authority.sign");
-        let key = accessor.with(|mut access| access.get().authority(&authority));
-        let Signed::Bytes(bytes) = signed;
-        key.sign(&bytes).await
+        trace("representative.delegate");
+        let delegates = accessor.with(|mut access| {
+            Delegates::clone(&access.get().representation(&representative).delegates)
+        });
+        delegates.delegate(audience, access).await
     }
 
     async fn confide(
         accessor: &Accessor<T, Self>,
-        authority: Resource<Authority>,
+        representative: Resource<Representative>,
         label: Vec<u8>,
         secret: Vec<u8>,
-        to: Resource<Authority>,
+        to: Custodian,
     ) -> Result<Vec<u8>, Error> {
-        trace("authority.confide");
-        let context = context(&label)?;
+        trace("representative.confide");
         let (from, to) = accessor.with(|mut access| {
             let host = access.get();
-            (host.authority(&authority), host.authority(&to))
-        });
-        let message = Zeroizing::new(reveal(&from, context, &secret).await?);
-        conceal(&to.did(), context, &message).await
+            Ok::<_, Error>((
+                host.representation(&representative).key,
+                host.custodian(&to)?,
+            ))
+        })?;
+        let from = from.ok_or_else(|| {
+            Error::Unavailable("this host holds no key of the representative".into())
+        })?;
+        confided(&from, &label, &secret, &to).await
     }
 
-    async fn recover(
+    async fn restore(
         accessor: &Accessor<T, Self>,
-        authority: Resource<Authority>,
-        custody: Vec<u8>,
+        representative: Resource<Representative>,
+        backup: CredentialBackup,
     ) -> Result<Resource<Credential>, Error> {
-        trace("authority.recover");
-        let custodian = accessor.with(|mut access| access.get().authority(&authority));
-        let key = recover(&custodian, &custody).await?;
+        trace("representative.restore");
+        let custodian =
+            accessor.with(|mut access| access.get().representation(&representative).key);
+        let custodian = custodian.ok_or_else(|| {
+            Error::Unavailable("this host holds no key of the representative".into())
+        })?;
+        let key = restored(&custodian, &backup).await?;
+        Ok(accessor.with(|mut access| access.get().hold(key)))
+    }
+}
+
+impl credential::HostProvisionalPersona for KernelHost {
+    fn did(&mut self, persona: Resource<ProvisionalPersona>) -> String {
+        self.persona_of(persona.rep()).did
+    }
+
+    fn merge(&mut self, _persona: Resource<ProvisionalPersona>, _id: String) {
+        crate::platform::log(
+            "kernel",
+            "a merge was asked for: this host signs no one in yet",
+            true,
+        );
+    }
+
+    fn drop(&mut self, _persona: Resource<ProvisionalPersona>) -> wcmp::Result<()> {
+        Ok(())
+    }
+}
+
+impl credential::HostPermanentPersona for KernelHost {
+    fn did(&mut self, persona: Resource<PermanentPersona>) -> String {
+        self.persona_of(persona.rep()).did
+    }
+
+    fn authorize(
+        &mut self,
+        _persona: Resource<PermanentPersona>,
+        reason: String,
+        _context: Vec<u8>,
+    ) {
+        crate::platform::log(
+            "kernel",
+            &format!("authorization was asked for {reason}: this host opens no persona yet"),
+            true,
+        );
+    }
+
+    fn drop(&mut self, _persona: Resource<PermanentPersona>) -> wcmp::Result<()> {
+        Ok(())
+    }
+}
+
+impl credential::HostPersonaAuthority for KernelHost {
+    fn did(&mut self, authority: Resource<PersonaAuthority>) -> String {
+        self.persona_of(authority.rep()).did
+    }
+
+    fn drop(&mut self, _authority: Resource<PersonaAuthority>) -> wcmp::Result<()> {
+        Ok(())
+    }
+}
+
+/// The key a persona authority lends, which the host holds for as long as
+/// the lifecycle call it was lent for.
+fn lent<T: 'static>(
+    accessor: &Accessor<T, Sapling>,
+    authority: &Resource<PersonaAuthority>,
+) -> Result<Key, Error> {
+    accessor
+        .with(|mut access| access.get().persona_of(authority.rep()).key)
+        .ok_or_else(|| Error::Unavailable("the persona's key is not open".into()))
+}
+
+impl<T: 'static> credential::HostPersonaAuthorityWithStore<T> for Sapling {
+    async fn delegate(
+        accessor: &Accessor<T, Self>,
+        authority: Resource<PersonaAuthority>,
+        audience: String,
+        access: Access,
+    ) -> Result<Vec<u8>, Error> {
+        trace("persona-authority.delegate");
+        let key = lent(accessor, &authority)?;
+        delegation(&key, &audience, &access).await
+    }
+
+    async fn confide(
+        accessor: &Accessor<T, Self>,
+        authority: Resource<PersonaAuthority>,
+        label: Vec<u8>,
+        secret: Vec<u8>,
+        to: Custodian,
+    ) -> Result<Vec<u8>, Error> {
+        trace("persona-authority.confide");
+        let from = lent(accessor, &authority)?;
+        let to = accessor.with(|mut access| access.get().custodian(&to))?;
+        confided(&from, &label, &secret, &to).await
+    }
+
+    async fn restore(
+        accessor: &Accessor<T, Self>,
+        authority: Resource<PersonaAuthority>,
+        backup: CredentialBackup,
+    ) -> Result<Resource<Credential>, Error> {
+        trace("persona-authority.restore");
+        let custodian = lent(accessor, &authority)?;
+        let key = restored(&custodian, &backup).await?;
         Ok(accessor.with(|mut access| access.get().hold(key)))
     }
 
-    async fn enroll(
+    async fn add_recovery(
         _accessor: &Accessor<T, Self>,
-        _authority: Resource<Authority>,
-        _id: Option<String>,
+        _authority: Resource<PersonaAuthority>,
+        _recovery: Recovery,
+    ) -> Result<CredentialBackup, Error> {
+        Err(Error::Unavailable(
+            "this host sets up no recovery yet".into(),
+        ))
+    }
+
+    async fn unlink(
+        _accessor: &Accessor<T, Self>,
+        _authority: Resource<PersonaAuthority>,
+        _representative: String,
     ) -> Result<(), Error> {
-        Err(Error::Unavailable("this host enrolls no passkey".into()))
+        Err(Error::Unavailable(
+            "this host unlinks no representative yet".into(),
+        ))
     }
 }
 
 impl session::Host for KernelHost {}
 
-impl session::HostSession for KernelHost {
-    fn credential(&mut self, session: Resource<Session>) -> Resource<Credential> {
-        let key = self.standing(&session).credential.clone();
+impl session::HostPersonaSession for KernelHost {
+    fn credential(&mut self, session: Resource<PersonaSession>) -> Resource<Credential> {
+        let key = self.standing(session.rep()).credential.clone();
         self.hold(key)
     }
 
-    fn drop(&mut self, _session: Resource<Session>) -> wcmp::Result<()> {
+    fn representative(&mut self, session: Resource<PersonaSession>) -> Resource<Representative> {
+        let representation = self.standing(session.rep()).representative.clone();
+        self.represent(representation)
+    }
+
+    fn persona(&mut self, session: Resource<PersonaSession>) -> Persona {
+        let key = match &self.standing(session.rep()).acting {
+            Acting::Persona(key) => key.clone(),
+            Acting::Space(_) => unreachable!("a persona session acts for the persona itself"),
+        };
+        let rep = self.keep_persona(Held {
+            did: key.did(),
+            key: Some(key),
+        });
+        Persona::Provisional(Resource::new_own(rep))
+    }
+
+    fn drop(&mut self, _session: Resource<PersonaSession>) -> wcmp::Result<()> {
         Ok(())
     }
 }
 
-impl<T: 'static> session::HostSessionWithStore<T> for Sapling {
-    async fn claim(
-        accessor: &Accessor<T, Self>,
-        session: Resource<Session>,
-        claim: Claim,
-    ) -> Result<Vec<Vec<u8>>, Error> {
-        trace("session.claim");
-        let claims =
-            accessor.with(|mut access| Arc::clone(&access.get().standing(&session).claims));
-        claims.claim(claim).await
+impl session::HostSpaceSession for KernelHost {
+    fn credential(&mut self, session: Resource<SpaceSession>) -> Resource<Credential> {
+        let key = self.standing(session.rep()).credential.clone();
+        self.hold(key)
     }
-}
 
-impl authentication::Host for KernelHost {}
+    fn representative(&mut self, session: Resource<SpaceSession>) -> Resource<Representative> {
+        let representation = self.standing(session.rep()).representative.clone();
+        self.represent(representation)
+    }
 
-impl<T: 'static> authentication::HostWithStore<T> for Sapling {
-    async fn authenticate(
-        _accessor: &Accessor<T, Self>,
-        _id: Option<String>,
-    ) -> Result<Resource<Authority>, Error> {
-        Err(Error::Unavailable("this host signs no one in".into()))
+    fn persona(&mut self, session: Resource<SpaceSession>) -> String {
+        match &self.standing(session.rep()).acting {
+            Acting::Space(did) => did.clone(),
+            Acting::Persona(key) => key.did(),
+        }
+    }
+
+    fn drop(&mut self, _session: Resource<SpaceSession>) -> wcmp::Result<()> {
+        Ok(())
     }
 }
 
@@ -506,12 +853,16 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn it_recovers_a_key_entrusted_to_a_sealed_key() {
+    async fn it_restores_a_key_backed_up_to_a_sealed_key() {
         let sealed = sealed().await;
-        let custody = conceal(&sealed.did(), custody_free(CUSTODY), &[6; 32])
+        let secret = conceal(&sealed.did(), custody_free(CUSTODY), &[6; 32])
             .await
             .unwrap();
-        let recovered = recover(&sealed, &custody).await.unwrap();
+        let backup = CredentialBackup {
+            custodian: sealed.did(),
+            secret,
+        };
+        let recovered = restored(&sealed, &backup).await.unwrap();
         assert_eq!(
             recovered.did(),
             Key::generated(Zeroizing::new([6; 32])).did()

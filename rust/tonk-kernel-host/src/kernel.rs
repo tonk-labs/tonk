@@ -7,13 +7,13 @@ use futures::{FutureExt as _, StreamExt as _};
 use wcmp::{Accessor, Component, Engine, Func, Linker, ResourceDynamic, Store, Val};
 
 use crate::bindings::Host_;
-use crate::bindings::exports::sapling::kernel::lifecycle::{Access, Boot, Stacked};
-use crate::bindings::sapling::kernel::session::Claim;
+use crate::bindings::exports::sapling::kernel::lifecycle::{Access as StackAccess, Boot, Stacked};
+use crate::bindings::sapling::kernel::credential::Access;
 use crate::bindings::sapling::kernel::types::Error;
 use crate::credentials::Standing;
 use crate::http_types::{self, Body, Fields, HttpHost, Request, Types};
 use crate::layers::Layers;
-use crate::persona_bindings::exports::sapling::kernel::grant;
+use crate::persona_bindings::exports::sapling::kernel::guest;
 use crate::sapling::{KernelHost, Sapling};
 use crate::{platform, wasi, wasi_bindings};
 
@@ -23,8 +23,9 @@ const HANDLER: &str = "wasi:http/handler@0.3.0";
 pub struct Kernel {
     store: Store<KernelHost>,
     bindings: Host_,
-    /// What a persona grants, if the guest kernel is one.
-    grant: Option<grant::Guest>,
+    /// What a persona delegates to the person's other workers, if the guest
+    /// kernel is one.
+    guest: Option<guest::Guest>,
     handle: Func,
     types: Types,
     /// How long each stage took, in milliseconds.
@@ -52,9 +53,9 @@ pub struct Head {
     pub body: mpsc::UnboundedReceiver<Vec<u8>>,
 }
 
-/// What a persona answers a claim with, or why the guest kernel could not be
-/// asked.
-pub type Granted = Result<Result<Vec<Vec<u8>>, Error>, String>;
+/// What a persona answers a delegation with, or why the guest kernel could
+/// not be asked.
+pub type Delegated = Result<Result<Vec<u8>, Error>, String>;
 
 /// What a served kernel is asked to do.
 enum Job {
@@ -65,10 +66,10 @@ enum Job {
         body: Vec<u8>,
         reply: oneshot::Sender<Result<Head, String>>,
     },
-    Grant {
+    Delegate {
         audience: String,
-        claim: Claim,
-        reply: oneshot::Sender<Granted>,
+        access: Access,
+        reply: oneshot::Sender<Delegated>,
     },
 }
 
@@ -106,14 +107,14 @@ impl Served {
 }
 
 impl Served {
-    /// Ask the guest kernel, a persona, to delegate what `claim` asks to
-    /// `audience`. An error when the guest kernel is no persona.
-    pub async fn grant(&self, audience: &str, claim: Claim) -> Granted {
+    /// Ask the guest kernel, a persona, to delegate `access` to `audience`.
+    /// An error when the guest kernel is no persona.
+    pub async fn delegate(&self, audience: &str, access: Access) -> Delegated {
         let (reply, answered) = oneshot::channel();
         self.jobs
-            .unbounded_send(Job::Grant {
+            .unbounded_send(Job::Delegate {
                 audience: audience.to_owned(),
-                claim,
+                access,
                 reply,
             })
             .map_err(|_| "the kernel has stopped".to_owned())?;
@@ -193,7 +194,7 @@ impl Kernel {
         let Kernel {
             mut store,
             handle,
-            grant,
+            guest,
             types,
             ..
         } = self;
@@ -205,18 +206,18 @@ impl Kernel {
                         futures::select! {
                             job = queued.next() => match job {
                                 None => break,
-                                Some(Job::Grant { audience, claim, reply }) => {
-                                    let grant = &grant;
+                                Some(Job::Delegate { audience, access, reply }) => {
+                                    let guest = &guest;
                                     running.push(
                                         async move {
-                                            let granted = match grant {
-                                                Some(grant) => grant
-                                                    .call_delegate(accessor, audience, claim)
+                                            let delegated = match guest {
+                                                Some(guest) => guest
+                                                    .call_delegate(accessor, audience, access)
                                                     .await
                                                     .map_err(|error| platform::describe(&error)),
                                                 None => Err("the kernel is no persona".to_owned()),
                                             };
-                                            let _ = reply.send(granted);
+                                            let _ = reply.send(delegated);
                                         }
                                         .boxed_local(),
                                     );
@@ -275,7 +276,7 @@ impl Kernel {
             .await
             .map_err(|error| error.to_string())?;
         let bindings = Host_::new(&mut store, &instance).map_err(|error| error.to_string())?;
-        let grant = grant::Guest::new(&instance).ok();
+        let guest = guest::Guest::new(&instance).ok();
         let handle = instance
             .exports()
             .instance(HANDLER)
@@ -285,7 +286,7 @@ impl Kernel {
         Ok(Kernel {
             store,
             bindings,
-            grant,
+            guest,
             handle,
             types,
             timings,
@@ -303,8 +304,9 @@ impl Kernel {
             stack: vec![Stacked {
                 layer,
                 scopes: vec!["memory:space".to_owned()],
-                access: Access::ReadWrite,
+                access: StackAccess::ReadWrite,
             }],
+            landing: None,
         };
         let bindings = &self.bindings;
         let answer = self
@@ -323,14 +325,13 @@ impl Kernel {
         answer.map_err(|error| format!("init answered {error:?}"))
     }
 
-    /// Ask the guest kernel, a persona, to delegate what `claim` asks to
-    /// `audience`.
-    pub async fn grant(&mut self, audience: &str, claim: Claim) -> Granted {
-        let grant = self.grant.as_ref().ok_or("the kernel is no persona")?;
+    /// Ask the guest kernel, a persona, to delegate `access` to `audience`.
+    pub async fn delegate(&mut self, audience: &str, access: Access) -> Delegated {
+        let guest = self.guest.as_ref().ok_or("the kernel is no persona")?;
         let audience = audience.to_owned();
         self.store
             .run_concurrent(async |accessor: &Accessor<KernelHost>| {
-                grant.call_delegate(accessor, audience, claim).await
+                guest.call_delegate(accessor, audience, access).await
             })
             .await
             .map_err(|error| platform::describe(&error))?

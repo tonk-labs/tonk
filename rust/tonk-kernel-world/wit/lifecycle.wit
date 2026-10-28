@@ -6,6 +6,7 @@ interface lifecycle {
   use types.{did, version, error};
   use storage.{layer};
   use session.{session};
+  use credential.{persona-authority};
 
   /// What a worker can do with a layer of its stack.
   enum access { read, read-write }
@@ -21,6 +22,18 @@ interface lifecycle {
     access: access,
   }
 
+  /// How the first head of `main` of the subject lands under a guest kernel
+  /// that the device adopts. See PDD012, "An Adoption Lands with a Revision".
+  enum landing {
+    /// The guest kernel commits the first revision of `main`: at genesis, or
+    /// on the head that another guest kernel produced. It writes its session
+    /// link into its member branch first.
+    commit,
+    /// The guest kernel commits nothing of its own: the head of the sharer
+    /// that it pulls lands. The first boot after a join.
+    pull,
+  }
+
   /// What a worker gets at boot. The boot names no domain: the guest kernel
   /// serves what its stack holds.
   record boot {
@@ -29,6 +42,9 @@ interface lifecycle {
     /// The durable layers of the stack, the bottom first. The subject, if the
     /// stack has one, is the layer of `memory:space`.
     stack: list<stacked>,
+    /// How this boot lands its guest kernel, when it is the boot of an
+    /// adoption. None for each other boot.
+    landing: option<landing>,
   }
 
   /// A new version of a cell of a peer that the worker watches.
@@ -44,6 +60,17 @@ interface lifecycle {
   init: async func(boot: boot) -> result<_, error>;
   /// One or more watched cells of peers changed.
   sync: async func(changes: list<cell-change>) -> result<_, error>;
+  /// The person signed in, after `provisional-persona.merge`: `provisional`
+  /// merges into `permanent`. The guest kernel moves what it holds for the
+  /// provisional persona to the permanent one, and has the permanent one
+  /// delegate to its representative. Both keys are gone when this returns.
+  merge: async func(provisional: borrow<persona-authority>, permanent: borrow<persona-authority>)
+    -> result<_, error>;
+  /// The person let this worker act as their persona, after
+  /// `permanent-persona.authorize` with `context`. The key is gone when this
+  /// returns.
+  authorize: async func(persona: borrow<persona-authority>, context: list<u8>)
+    -> result<_, error>;
   /// Stop. The process ends at the deadline.
   shutdown: async func(deadline-ms: u32);
 }

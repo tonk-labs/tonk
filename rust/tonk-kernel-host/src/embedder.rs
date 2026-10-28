@@ -6,7 +6,6 @@
 //! Dialog DB's credential store.
 
 use std::rc::Rc;
-use std::sync::Arc;
 
 use dialog_credentials::Ed25519Signer;
 use dialog_effects::storage::Directory;
@@ -21,9 +20,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use wcmp::Engine;
 
-use crate::bindings::sapling::kernel::session::{Claim, Subject};
+use crate::bindings::sapling::kernel::credential::{Access, Argument};
 use crate::bindings::sapling::kernel::types::Error;
-use crate::credentials::{Answer, Claims, Standing};
+use crate::credentials::{Answer, Delegates, Representation, Standing, delegates};
 use crate::kernel::{Kernel, Served};
 use crate::layers::{LayerSpace, Layers};
 use crate::{boot, platform};
@@ -122,18 +121,37 @@ pub async fn pinned(subject: String) -> Result<Option<String>, JsError> {
     Ok(pinned.map(|(id, _)| id))
 }
 
+/// Boot the persona the profile `subject` pins, with a session that acts
+/// under `session`, whose key represents the persona and is it, until the
+/// person makes themselves known.
+#[wasm_bindgen(js_name = bootPersona)]
+pub async fn boot_persona(subject: String, session: &Session) -> Result<Embedder, JsError> {
+    run(subject, Standing::persona(session.key.clone())).await
+}
+
 /// Boot the kernel the space `subject` pins, with a session that acts under
-/// `session`, whose claims `claim` answers: a function that takes
-/// `{ subject, command, arguments, reason }`, with `subject` undefined for
-/// any subject and `arguments` as `[name, value]` pairs, and resolves to the
-/// delegations that grant it, each an encoded chain.
-#[wasm_bindgen]
-pub async fn boot(
+/// `session`, for the persona `persona`, through the representative
+/// `representative`, whose delegations `delegate` answers: a function that
+/// takes the audience's DID and `{ subject, command, arguments, reason }`,
+/// with `arguments` as `[name, value]` pairs, and resolves to the delegation,
+/// an encoded chain.
+#[wasm_bindgen(js_name = bootSpace)]
+pub async fn boot_space(
     subject: String,
     session: &Session,
-    claim: Function,
+    representative: String,
+    persona: String,
+    delegate: Function,
 ) -> Result<Embedder, JsError> {
-    let standing = Standing::sealed(session.key.clone(), claims_of(claim));
+    let representative = Representation::remote(representative, delegates_of(delegate));
+    run(
+        subject,
+        Standing::space(session.key.clone(), representative, persona),
+    )
+    .await
+}
+
+async fn run(subject: String, standing: Standing) -> Result<Embedder, JsError> {
     let started = platform::now_millis();
     let layers = Layers::default();
     let (_, bytes) = boot::pinned(&layers, &subject)
@@ -165,92 +183,93 @@ pub async fn boot(
     Ok(Embedder { kernel, timings })
 }
 
-/// The kernel's claims, answered by the bootloader's `claim`.
-fn claims_of(claim: Function) -> Claims {
-    Arc::new(move |asked: Claim| {
-        let answer = claim.call1(&JsValue::UNDEFINED, &claim_to_js(asked));
+/// The representative's delegations, answered by the bootloader's
+/// `delegate`.
+fn delegates_of(delegate: Function) -> Delegates {
+    delegates(move |audience: String, access: Access| {
+        let answer = delegate.call2(
+            &JsValue::UNDEFINED,
+            &JsValue::from(audience),
+            &access_to_js(access),
+        );
         Box::pin(async move {
             let unanswered = |error: JsValue| Error::Unavailable(format!("{error:?}"));
-            let chains = JsFuture::from(Promise::resolve(&answer.map_err(unanswered)?))
+            let chain = JsFuture::from(Promise::resolve(&answer.map_err(unanswered)?))
                 .await
                 .map_err(unanswered)?;
-            Ok(Array::from(&chains)
-                .iter()
-                .map(|chain| Uint8Array::new(&chain).to_vec())
-                .collect())
+            if chain.is_undefined() || chain.is_null() {
+                return Err(Error::Denied("the persona delegated nothing".into()));
+            }
+            Ok(Uint8Array::new(&chain).to_vec())
         }) as Answer
     })
 }
 
-/// A claim, as `claim_to_js` hands one to the bootloader.
-fn claim_from_js(claim: &JsValue) -> Result<Claim, JsError> {
-    let field = |name: &str| Reflect::get(claim, &name.into()).unwrap_or(JsValue::UNDEFINED);
+/// An access, as `access_to_js` hands one to the bootloader.
+fn access_from_js(access: &JsValue) -> Result<Access, JsError> {
+    let field = |name: &str| Reflect::get(access, &name.into()).unwrap_or(JsValue::UNDEFINED);
     let text = |name: &str| {
         field(name)
             .as_string()
-            .ok_or_else(|| JsError::new(&format!("a claim's {name} is text")))
-    };
-    let subject = match field("subject").as_string() {
-        Some(did) => Subject::This(did),
-        None => Subject::Any,
+            .ok_or_else(|| JsError::new(&format!("an access's {name} is text")))
     };
     let arguments = Array::from(&field("arguments"))
         .iter()
         .map(|pair| {
             let pair = Array::from(&pair);
-            let name = pair
+            let key = pair
                 .get(0)
                 .as_string()
-                .ok_or_else(|| JsError::new("a claim's argument is named"))?;
-            Ok((name, Uint8Array::new(&pair.get(1)).to_vec()))
+                .ok_or_else(|| JsError::new("an access's argument is named"))?;
+            Ok(Argument {
+                key,
+                value: Uint8Array::new(&pair.get(1)).to_vec(),
+            })
         })
         .collect::<Result<_, JsError>>()?;
-    Ok(Claim {
-        subject,
+    Ok(Access {
+        subject: text("subject")?,
         command: text("command")?,
         arguments,
         reason: text("reason")?,
     })
 }
 
-fn claim_to_js(claim: Claim) -> JsValue {
+fn access_to_js(access: Access) -> JsValue {
     let object = Object::new();
-    let subject = match claim.subject {
-        Subject::This(did) => JsValue::from(did),
-        Subject::Any => JsValue::UNDEFINED,
-    };
-    let arguments: Array = claim
+    let arguments: Array = access
         .arguments
         .into_iter()
-        .map(|(name, value)| Array::of2(&name.into(), &Uint8Array::from(value.as_slice()).into()))
+        .map(|argument| {
+            Array::of2(
+                &argument.key.into(),
+                &Uint8Array::from(argument.value.as_slice()).into(),
+            )
+        })
         .collect();
-    let _ = Reflect::set(&object, &"subject".into(), &subject);
-    let _ = Reflect::set(&object, &"command".into(), &claim.command.into());
+    let _ = Reflect::set(&object, &"subject".into(), &access.subject.into());
+    let _ = Reflect::set(&object, &"command".into(), &access.command.into());
     let _ = Reflect::set(&object, &"arguments".into(), &arguments);
-    let _ = Reflect::set(&object, &"reason".into(), &claim.reason.into());
+    let _ = Reflect::set(&object, &"reason".into(), &access.reason.into());
     object.into()
 }
 
 #[wasm_bindgen]
 impl Embedder {
-    /// Ask the kernel, a persona, to delegate what `claim` asks to
-    /// `audience`, another worker's session: `claim` as `{ subject, command,
-    /// arguments, reason }`, as a kernel's claim reaches the bootloader.
-    /// Resolves to the delegations, each an encoded chain.
-    pub fn grant(&self, audience: String, claim: JsValue) -> Result<Promise, JsError> {
-        let claim = claim_from_js(&claim)?;
+    /// Ask the kernel, a persona, to delegate `access` to `audience`,
+    /// another worker's session: `access` as `{ subject, command, arguments,
+    /// reason }`, as a kernel's request reaches the bootloader. Resolves to
+    /// the delegation, an encoded chain.
+    pub fn delegate(&self, audience: String, access: JsValue) -> Result<Promise, JsError> {
+        let access = access_from_js(&access)?;
         let kernel = self.kernel.clone();
         Ok(wasm_bindgen_futures::future_to_promise(async move {
-            let granted = kernel
-                .grant(&audience, claim)
+            let chain = kernel
+                .delegate(&audience, access)
                 .await
                 .map_err(|error| JsValue::from(JsError::new(&error)))?
                 .map_err(|error| JsValue::from(JsError::new(&format!("{error:?}"))))?;
-            Ok(granted
-                .iter()
-                .map(|chain| JsValue::from(Uint8Array::from(chain.as_slice())))
-                .collect::<Array>()
-                .into())
+            Ok(Uint8Array::from(chain.as_slice()).into())
         }))
     }
 

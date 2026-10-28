@@ -42,8 +42,8 @@ world core {
   export wasi:http/handler@0.3.0;
 }
 
-/// `core`, with the channel of the application layer, which carries commands,
-/// results, and notices. See PDD009, "The Application Interface".
+/// `core`, with the channel between a worker and its embedder. See PDD009,
+/// "The Application Interface".
 world commands {
   include core;
   import application;
@@ -51,19 +51,18 @@ world commands {
 }
 
 /// The world that the embedder serves, and that a guest kernel targets:
-/// `commands`, with the replicas of peers, which a guest kernel reaches only
-/// through `open-remote`. See PDD010, "The Network Interface".
+/// `commands`, with the peers a guest kernel connects to through its
+/// embedder. See PDD010, "The Network Interface".
 world kernel {
   include commands;
   import network;
 }
 
-/// `kernel`, for the persona of a person: it signs them in, and grants the
-/// person's other workers what they claim.
+/// `kernel`, for the persona of a person: it delegates to the person's
+/// other workers what their embedders ask for.
 world persona {
   include kernel;
-  import authentication;
-  export grant;
+  export guest;
 }
 
 /// What the adapters of `tonk-kernel-world` reach: the storage of a layer,

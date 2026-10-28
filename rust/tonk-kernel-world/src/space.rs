@@ -9,9 +9,9 @@
 //! (see [`crate::stack`]), so that every part of a space shares one layer.
 //!
 //! A space's credential store keeps no key: a key is made in the host
-//! ([`credential::Generate`]) and entrusted to the session's credential, and
-//! its custody is what the store keeps, in a cell. Loading the key recovers
-//! it from the custody, as a handle, so its seed never reaches the guest
+//! ([`credential::Generate`]) and backed up to the session's credential, and
+//! its backup is what the store keeps, in a cell. Loading the key restores
+//! it from the backup, as a handle, so its seed never reaches the guest
 //! kernel. A site's secret is concealed to the session's credential and kept
 //! in a cell the same way. What a space keeps of a key it does not hold is
 //! its public identity, in a cell too.
@@ -170,7 +170,7 @@ impl Credentials {
             return Ok(None);
         };
         let credential = session::credential()
-            .recover(custody)
+            .restore(session::backup_to_credential(custody))
             .await
             .map_err(failed)?;
         let signer = credentials::signer(Rc::new(credential)).map_err(failed)?;
@@ -195,11 +195,12 @@ impl Provider<Generate> for Credentials {
     async fn execute(&self, input: Capability<Generate>) -> Result<Credential, CredentialError> {
         let credential = host::generate().await.map_err(failed)?;
         let custodian = session::credential();
-        let custody = credential
-            .entrust(Custodian::Credential(&custodian))
+        let backup = credential
+            .backup(Custodian::Credential(&custodian))
             .await
             .map_err(failed)?;
-        self.write(CUSTODIES, input.address(), custody).await?;
+        self.write(CUSTODIES, input.address(), backup.secret)
+            .await?;
         let signer = credentials::signer(Rc::new(credential)).map_err(failed)?;
         Ok(Credential::Signer(signer))
     }

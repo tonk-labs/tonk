@@ -1,26 +1,23 @@
 package sapling:kernel@0.1.0;
 
-/// The channel of the application layer of a worker, from the side of the
-/// worker. See PDD009, "The Application Interface" and "The Application Layer
-/// and Its Channel".
+/// The channel between a worker and its embedder, from the side of the
+/// worker. See PDD009, "The Application Interface".
 ///
-/// A catch-up is the encoded form of the catch-up message of a Dialog DB
-/// channel: the instants past the offset of the other end. The guest kernel
-/// sends only the instants of commits that published. WIT puts an interface
-/// in one direction only, so the call that brings a catch-up from the daemon
-/// is in the export `channel`.
+/// A message is bytes the two ends agree on, such as a signed UCAN
+/// invocation the embedder delivers to its audience and the receipt it
+/// answers with. WIT puts an interface in one direction only, so the call
+/// that brings a message from the embedder is in the export `channel`.
 interface application {
   use types.{error};
 
-  /// Send a catch-up of the application layer to the end of the daemon.
-  send: async func(catchup: list<u8>) -> result<_, error>;
+  /// Send a message to the embedder.
+  send: async func(message: list<u8>) -> result<_, error>;
 }
 
-/// The calls of the channel of the application layer that the daemon makes
-/// into a worker.
+/// The calls of the channel that the embedder makes into a worker.
 interface channel {
   use types.{error};
 
-  /// A catch-up of the application layer, from the end of the daemon.
-  receive: async func(catchup: list<u8>) -> result<_, error>;
+  /// A message from the embedder.
+  receive: async func(message: list<u8>) -> result<_, error>;
 }

@@ -13,7 +13,7 @@ use wcmp::{
 };
 
 use crate::bindings::sapling::kernel::{application, network, storage, types};
-use crate::credentials::{Key, Standing};
+use crate::credentials::{Held, Key, Representation, Standing};
 use crate::http_types::{HttpHost, HttpTable};
 use crate::layers::{self, LayerSpace, Layers};
 use storage::{BlobRead, ByteRange, Edition, Encoding, Layer};
@@ -31,11 +31,13 @@ pub struct KernelHost {
     opened: HashMap<String, LayerSpace>,
     /// The key each `credential` handle names, by its representation.
     pub(crate) keys: Vec<Key>,
-    /// The key each `authority` handle names, by its representation.
-    pub(crate) authorities: Vec<Key>,
+    /// What each `representative` handle names, by its representation.
+    pub(crate) representatives: Vec<Representation>,
+    /// The persona each persona handle names, by its representation.
+    pub(crate) personas: Vec<Held>,
     /// The standing each `session` handle names, by its representation.
     pub(crate) sessions: Vec<Standing>,
-    /// The catch-ups the guest kernel sent with `application.send`.
+    /// The messages the guest kernel sent with `application.send`.
     pub sent: Vec<Vec<u8>>,
 }
 
@@ -307,20 +309,31 @@ impl Drop for Collect {
 impl application::Host for KernelHost {}
 
 impl<T: 'static> application::HostWithStore<T> for Sapling {
-    async fn send(accessor: &Accessor<T, Self>, catchup: Vec<u8>) -> Result<(), Error> {
+    async fn send(accessor: &Accessor<T, Self>, message: Vec<u8>) -> Result<(), Error> {
         trace("send");
-        accessor.with(|mut access| access.get().sent.push(catchup));
+        accessor.with(|mut access| access.get().sent.push(message));
         Ok(())
     }
 }
 
 impl network::Host for KernelHost {}
 
-impl network::HostReplica for KernelHost {
-    fn peer(&mut self, _replica: Resource<network::Replica>) -> String {
+/// What every call on a peer answers until this host reaches the network.
+fn offline() -> Error {
+    Error::Unavailable("this host has no network".into())
+}
+
+impl network::HostPeer for KernelHost {
+    fn did(&mut self, _peer: Resource<network::Peer>) -> String {
         String::new()
     }
 
+    fn drop(&mut self, _peer: Resource<network::Peer>) -> wcmp::Result<()> {
+        Ok(())
+    }
+}
+
+impl network::HostReplica for KernelHost {
     fn subject(&mut self, _replica: Resource<network::Replica>) -> String {
         String::new()
     }
@@ -331,14 +344,30 @@ impl network::HostReplica for KernelHost {
 }
 
 impl<T: 'static> network::HostWithStore<T> for Sapling {
-    async fn open_remote(
+    async fn open(
         _accessor: &Accessor<T, Self>,
         _peer: String,
         _routes: Vec<String>,
+    ) -> Result<Resource<network::Peer>, Error> {
+        trace("network.open");
+        Err(offline())
+    }
+
+    async fn home(_accessor: &Accessor<T, Self>) -> Result<String, Error> {
+        trace("network.home");
+        Err(offline())
+    }
+}
+
+impl<T: 'static> network::HostPeerWithStore<T> for Sapling {
+    async fn open(
+        _accessor: &Accessor<T, Self>,
+        _peer: Resource<network::Peer>,
         _subject: String,
+        _chain: Vec<u8>,
     ) -> Result<Resource<network::Replica>, Error> {
-        trace("open_remote");
-        Err(Error::Unavailable("this host has no network".into()))
+        trace("peer.open");
+        Err(offline())
     }
 }
 
@@ -349,8 +378,26 @@ impl<T: 'static> network::HostReplicaWithStore<T> for Sapling {
         _catalog: String,
         _key: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, Error> {
-        trace("get");
-        Err(Error::Unavailable("this host has no network".into()))
+        Err(offline())
+    }
+
+    async fn get_many(
+        _accessor: &Accessor<T, Self>,
+        _replica: Resource<network::Replica>,
+        _catalog: String,
+        _keys: Vec<Vec<u8>>,
+    ) -> Result<Vec<Option<Vec<u8>>>, Error> {
+        Err(offline())
+    }
+
+    async fn put(
+        _accessor: &Accessor<T, Self>,
+        _replica: Resource<network::Replica>,
+        _catalog: String,
+        _key: Vec<u8>,
+        _bytes: Vec<u8>,
+    ) -> Result<(), Error> {
+        Err(offline())
     }
 
     async fn resolve(
@@ -359,8 +406,28 @@ impl<T: 'static> network::HostReplicaWithStore<T> for Sapling {
         _namespace: String,
         _cell: String,
     ) -> Result<Option<Edition>, Error> {
-        trace("resolve");
-        Err(Error::Unavailable("this host has no network".into()))
+        Err(offline())
+    }
+
+    async fn publish(
+        _accessor: &Accessor<T, Self>,
+        _replica: Resource<network::Replica>,
+        _namespace: String,
+        _cell: String,
+        _content: Vec<u8>,
+        _when: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, Error> {
+        Err(offline())
+    }
+
+    async fn retract(
+        _accessor: &Accessor<T, Self>,
+        _replica: Resource<network::Replica>,
+        _namespace: String,
+        _cell: String,
+        _when: Vec<u8>,
+    ) -> Result<(), Error> {
+        Err(offline())
     }
 
     async fn list(
@@ -368,8 +435,35 @@ impl<T: 'static> network::HostReplicaWithStore<T> for Sapling {
         _replica: Resource<network::Replica>,
         _namespace: String,
     ) -> Result<Vec<String>, Error> {
-        trace("list");
-        Err(Error::Unavailable("this host has no network".into()))
+        Err(offline())
+    }
+
+    async fn size(
+        _accessor: &Accessor<T, Self>,
+        _replica: Resource<network::Replica>,
+        _key: Vec<u8>,
+    ) -> Result<Option<u64>, Error> {
+        Err(offline())
+    }
+
+    async fn read(
+        _accessor: &Accessor<T, Self>,
+        _replica: Resource<network::Replica>,
+        _key: Vec<u8>,
+        _range: ByteRange,
+        _size: Option<u64>,
+        _encoding: Encoding,
+        _proof: bool,
+    ) -> Result<BlobRead, Error> {
+        Err(offline())
+    }
+
+    async fn write(
+        _accessor: &Accessor<T, Self>,
+        _replica: Resource<network::Replica>,
+        _bytes: StreamReader<u8>,
+    ) -> Result<Vec<u8>, Error> {
+        Err(offline())
     }
 }
 

@@ -6562,8 +6562,8 @@ pub async fn create_repository(
 }
 
 /// A new space's key, made by the kernel's host, which holds it: the
-/// kernel signs as the space through the host, and keeps the key's custody,
-/// entrusted to the session's credential, as this peer's copy of the key.
+/// kernel signs as the space through the host, and keeps the key's backup,
+/// restored by the session's credential, as this peer's copy of the key.
 /// Its seed never reaches the kernel.
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 async fn generated_space_key(
@@ -6580,10 +6580,10 @@ async fn generated_space_key(
             .map_err(|error| failed("the host made no key for the space", &error))?,
     );
     let session = tonk_kernel_world::session::credential();
-    let custody = space
-        .entrust(Custodian::Credential(&session))
+    let backup = space
+        .backup(Custodian::Credential(&session))
         .await
-        .map_err(|error| failed("the space's key was not entrusted", &error))?;
+        .map_err(|error| failed("the space's key was not backed up", &error))?;
     let did: Did = space
         .did()
         .parse()
@@ -6592,7 +6592,7 @@ async fn generated_space_key(
         tonk.profile.state(),
         &did,
         &tonk.profile.did(),
-        custody,
+        backup.secret,
         &tonk.profile,
     )
     .await

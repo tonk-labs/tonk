@@ -15,14 +15,16 @@
 // - Opens the key of this origin's session from Dialog DB's credential
 //   store, where nothing reads its seed, and asks the person's profile, over
 //   the port a page of this origin hands it, to delegate the space to it,
-//   which says which space this origin is. The kernel acts as that session,
-//   claims what it needs delegated, and keeps it.
+//   which says which space this origin is, and who the person's
+//   representative and persona are. The kernel acts as that session, asks
+//   its representative for what it needs delegated, and keeps it.
 // - Installs into a space that holds no kernel the one it was made for, which
 //   the person's profile hands it, as the space's own blob and boot cell.
 //
 // On the profile's origin (`profile.{host}`) the space is the person's
 // profile: the session's own, so it needs no one's delegation, and its
-// kernel is the persona it pins. There this worker answers every page load
+// kernel is the persona it pins. Until the person makes themselves known,
+// the session's key represents the persona and is it. There this worker answers every page load
 // with the profile's shell, and serves the ports a space's host asks the
 // profile over.
 //   From then on the kernel comes from the space's store, not from anywhere
@@ -146,33 +148,57 @@ async function askHost(request) {
 
 // ---- The space ----------------------------------------------------------
 
-// What the kernel claims as it takes its space up for the first time: the
+// What the kernel asks for as it takes its space up for the first time: the
 // space, which the profile names, since the label of an origin does not.
-const FIRST_CLAIM = { command: "/", arguments: [], reason: "to serve the space" };
+const FIRST_ACCESS = { command: "/", arguments: [], reason: "to serve the space" };
+
+// Who this space's kernel acts for, and through: the person's persona and
+// its representative, as the profile said when it first delegated the space.
+// Kept with the host's files, and asked of the profile again when they are
+// gone.
+const STANDING_REQUEST = new Request(new URL("/_host/standing.json", self.location.href));
+async function keptStanding() {
+    const kept = await caches.match(STANDING_REQUEST, { cacheName: HOST_CACHE });
+    return kept ? kept.json() : null;
+}
+async function keepStanding({ representative, persona }) {
+    const standing = { representative, persona };
+    const cache = await caches.open(HOST_CACHE);
+    await cache.put(STANDING_REQUEST, new Response(JSON.stringify(standing), { headers: { "content-type": "application/json" } }));
+    return standing;
+}
+async function standing() {
+    return (await keptStanding()) ?? keepStanding(await askHost({ standing: true }));
+}
 
 // The delegation of the space to this origin's session, which the person's
-// persona grants. It says which space this origin is. Asked once: the kernel
+// persona makes. It says which space this origin is. Asked once: the kernel
 // keeps what it is delegated.
 async function delegateSession(session) {
-    const answer = await askHost({ delegate: session.did, claim: FIRST_CLAIM });
+    const answer = await askHost({ delegate: session.did, access: FIRST_ACCESS });
     // A space that runs a kernel starts blank: nothing of what the profile
     // would seed it with is taken. Saying it holds the space lets the
     // profile stop waiting for it to.
     await askHost({ seeded: true, from: "kernel" }).catch(error => log("the profile was not told:", error));
-    return { space: answer.space, session, proofs: answer.chains.map(chain => new Uint8Array(chain)) };
+    await keepStanding(answer);
+    return { space: answer.space, handed: new Uint8Array(answer.chain) };
 }
 
-// What answers the kernel's claims: the delegations the person's profile
-// handed over with the session, once, and after them the ones it delegates
-// anew to the same key, once a page of this origin hands this worker a port
+// What answers the kernel's requests to its representative: the delegation
+// the person's profile handed over with the session, once, and after it the
+// ones it delegates anew, once a page of this origin hands this worker a port
 // up to it.
-function claims(session, handed) {
-    return async claim => {
-        if (handed.length) return handed.splice(0);
-        log("the kernel claims", claim.command, "for", claim.reason);
-        const answer = await askHost({ delegate: session.did, claim });
-        log("granted", answer.space);
-        return answer.chains.map(chain => new Uint8Array(chain));
+function delegates(handed) {
+    return async (audience, access) => {
+        if (handed) {
+            const chain = handed;
+            handed = null;
+            return chain;
+        }
+        log("the kernel asks for", access.command, "for", access.reason);
+        const answer = await askHost({ delegate: audience, access });
+        log("delegated", answer.space);
+        return new Uint8Array(answer.chain);
     };
 }
 
@@ -220,10 +246,10 @@ async function start() {
     await wasm_bindgen({ module_or_path: await hostFile(new Request(new URL("/_host/embedder_bg.wasm", self.location.href))) });
     const session = await wasm_bindgen.openSession(SESSION);
     // The profile's space is its session's own: the profile acts under its
-    // own authority, so it claims nothing.
+    // own authority, so it asks for nothing.
     let space = PROFILE ? session.did : await wasm_bindgen.heldSpace();
-    let proofs = [];
-    if (!space) ({ space, proofs } = await delegateSession(session));
+    let handed = null;
+    if (!space) ({ space, handed } = await delegateSession(session));
     // A space with no kernel of its own yet is one being created, and a
     // profile with none a new one: install the one its worker was registered
     // for.
@@ -234,15 +260,21 @@ async function start() {
         log("installed the kernel", pinned);
     }
     if (pinned !== PINNED) throw new Error(`the space pins ${pinned}, not ${PINNED}`);
-    const answer = PROFILE ? async () => [] : claims(session, proofs);
-    const embedder = await wasm_bindgen.boot(space, session, answer);
+    let embedder;
+    if (PROFILE) {
+        profileDid = session.did;
+        embedder = await wasm_bindgen.bootPersona(space, session);
+    } else {
+        const { representative, persona } = await standing();
+        embedder = await wasm_bindgen.bootSpace(space, session, representative, persona, delegates(handed));
+    }
     log("booted in", Math.round(performance.now() - started), "ms", embedder.timings);
     return embedder;
 }
 
 // Boot the kernel, which takes up its space as it boots. After a space's
 // first start, booting needs nothing of the person's profile, and a
-// delegation the kernel claims alongside never holds a page up.
+// delegation the kernel asks for alongside never holds a page up.
 function run() {
     booting = start();
     booting.catch(error => {
@@ -254,6 +286,9 @@ function run() {
     });
 }
 let booting;
+// The profile's DID, on the profile's origin: its session's, which
+// represents the persona and is it, until the person makes themselves known.
+let profileDid = null;
 run();
 
 // A kernel that trapped answers nothing again: boot it anew, from what the
@@ -470,14 +505,20 @@ function bindSpacePort(port, { repo }) {
         if (typeof id !== "number") return;
         port.postMessage({ id, ack: true });
         try {
-            // What the space's kernel claims for its session, which this
-            // profile's persona grants. The claim is for the space this
-            // port is bound to, whatever it names.
+            // What the space's kernel asks its representative for, for its
+            // session, which this profile's persona delegates. The access is
+            // to the space this port is bound to, whatever it names.
             if (typeof data.delegate === "string") {
-                const claim = { ...(data.claim ?? FIRST_CLAIM), subject: repo };
-                const granted = await (await booting).grant(data.delegate, claim);
-                const chains = Array.from(granted, chain => chain.buffer);
-                port.postMessage({ id, space: repo, chains }, chains);
+                const access = { ...(data.access ?? FIRST_ACCESS), subject: repo };
+                const chain = (await (await booting).delegate(data.delegate, access)).buffer;
+                const representative = profileDid;
+                port.postMessage({ id, space: repo, chain, representative, persona: profileDid }, [chain]);
+                return;
+            }
+            // Who the space's kernel acts for, and through.
+            if (data.standing === true) {
+                await booting;
+                port.postMessage({ id, representative: profileDid, persona: profileDid });
                 return;
             }
             // The kernel the space was made for, from the deployment's copy:

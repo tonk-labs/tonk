@@ -5,9 +5,10 @@
 //! `wasi:http/handler`.
 //!
 //! Built with the feature `persona`, it targets `sapling:kernel/persona`: the
-//! person's own worker, which serves their profile and grants their other
-//! workers what they claim (`grant`). Without it, `sapling:kernel/kernel`: a
-//! space's own worker, which acts on what its session is delegated.
+//! person's own worker, which serves their profile and delegates to their
+//! other workers what their hosts ask for (`guest`). Without it,
+//! `sapling:kernel/kernel`: a space's own worker, which acts on what its
+//! representative delegates to it.
 //!
 //! Built for `wasm32-wasip3` by `tonk-components`; on every other target the
 //! crate is empty.
@@ -50,7 +51,7 @@ use http_body_util::BodyExt as _;
 use tonk_kernel_world::boot;
 use tonk_kernel_world::guest::HandleLayer;
 use tonk_kernel_world::layer::{SharedLayer, share};
-use tonk_kernel_world::world::sapling::kernel::session::{Claim, Subject};
+use tonk_kernel_world::world::sapling::kernel::credential::{Access, PersonaAuthority};
 use tonk_kernel_world::world::sapling::kernel::types::Error;
 use tonk_worker::{AppState, TonkState};
 use tower::ServiceExt as _;
@@ -177,6 +178,21 @@ impl lifecycle::Guest for Kernel {
         Ok(())
     }
 
+    async fn merge(
+        _provisional: &PersonaAuthority,
+        _permanent: &PersonaAuthority,
+    ) -> Result<(), Error> {
+        Err(Error::Unavailable(
+            "this kernel merges no persona yet".into(),
+        ))
+    }
+
+    async fn authorize(_persona: &PersonaAuthority, _context: Vec<u8>) -> Result<(), Error> {
+        Err(Error::Unavailable(
+            "this kernel acts as no persona yet".into(),
+        ))
+    }
+
     async fn shutdown(_deadline_ms: u32) {}
 }
 
@@ -235,39 +251,40 @@ impl handler::Guest for Kernel {
     }
 }
 
-/// Claim the delegation of `space` to this kernel's session, and take up
-/// what the host hands over.
+/// Ask for the delegation of `space` to this kernel's session, and take up
+/// what the representative hands over.
 async fn take_up(state: &TonkState, space: &Space) {
     let chains = delegated(space, "to serve the space").await;
     adopt(state, space, &chains).await;
 }
 
-/// Claim the delegation of `space` anew, as the kernel serves what it took up
-/// before, so a delegation running out is replaced. Nothing is locked while
-/// the host asks the person's profile.
+/// Ask for the delegation of `space` anew, as the kernel serves what it took
+/// up before, so a delegation running out is replaced. Nothing is locked
+/// while the host asks the person's profile.
 async fn renew(state: &AppState, space: &Space) {
     let chains = delegated(space, "to keep serving the space").await;
     adopt(&*state.read().await, space, &chains).await;
 }
 
-/// The delegations of `space` to this kernel's session, as its host answers
-/// the claim: none when it answers with none, or fails to.
+/// The delegation of `space` to this kernel's session, as its representative
+/// answers: none when it refuses, or fails to.
 async fn delegated(space: &Space, reason: &str) -> Vec<Vec<u8>> {
-    let claim = Claim {
-        subject: Subject::This(space.subject.clone()),
+    let access = Access {
+        subject: space.subject.clone(),
         command: "/".to_owned(),
         arguments: Vec::new(),
         reason: reason.to_owned(),
     };
-    tonk_kernel_world::session::claim(claim)
-        .await
-        .unwrap_or_else(|error| {
+    match tonk_kernel_world::session::delegate(access).await {
+        Ok(chain) => vec![chain],
+        Err(error) => {
             eprintln!(
                 "tonk-kernel: {} was not delegated: {error:?}",
                 space.subject
             );
             Vec::new()
-        })
+        }
+    }
 }
 
 /// Take up `chains`. A chain is taken up only if the space signed it all the
@@ -311,13 +328,9 @@ async fn found(state: &TonkState, space: &Space) -> Result<(), String> {
 }
 
 #[cfg(feature = "persona")]
-impl world::exports::sapling::kernel::grant::Guest for Kernel {
-    async fn delegate(audience: String, claim: Claim) -> Result<Vec<Vec<u8>>, Error> {
-        let Subject::This(space) = claim.subject else {
-            return Err(Error::Invalid(
-                "a persona grants one space at a time".into(),
-            ));
-        };
+impl world::exports::sapling::kernel::guest::Guest for Kernel {
+    async fn delegate(audience: String, access: Access) -> Result<Vec<u8>, Error> {
+        let space = access.subject;
         let state =
             state().ok_or_else(|| Error::Unavailable("the persona has not booted".into()))?;
         let tonk = state.read().await;
@@ -325,7 +338,7 @@ impl world::exports::sapling::kernel::grant::Guest for Kernel {
             .delegate_space(&space, &audience)
             .await
             .map_err(|error| Error::Denied(error.to_string()))?;
-        Ok(vec![chain])
+        Ok(chain)
     }
 }
 
