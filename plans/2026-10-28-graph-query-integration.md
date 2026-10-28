@@ -75,3 +75,17 @@ Companion to Dialog `ideas/graph-queries.md`, implemented on an isolated Tonk wo
   Schema library suite: 135 passed. Formatting and whitespace checks passed.
 - Review fixes committed as `98ddf4185a` (schema/analyzer compatibility) and
   `d74906c46a` (constrained streams/lazy snapshots). No test processes remain.
+
+## Reviewed dependency pin
+
+- Fresh Tonk review round two and Dialog review round three reported no
+  actionable findings (parent handoff).
+- All 18 Dialog workspace dependencies pin immutable revision
+  `52f48d49ba952320a4c0025cf400ee1b9b277fe4`.
+- Restored the committed lockfile before resolving this pin; no local-path patch
+  state remains. All 25 resolved Dialog git packages use the same revision.
+- `cargo metadata --locked --offline --format-version 1` and `git diff --check`
+  passed. All new registry versions trace to the pinned Dialog dependency closure
+  (S3 0.14, Iroh base 1.2, WASI 0.3); no broad update was run.
+- No rebuild after pinning: preceding local tests exercised the graph source;
+  remote-source build and CI verification remain with the parent PR workflow.
