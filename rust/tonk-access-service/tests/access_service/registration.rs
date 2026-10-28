@@ -873,6 +873,136 @@ async fn it_refuses_a_consent_issued_to_another_customer() -> anyhow::Result<()>
     Ok(())
 }
 
+/// Build a `/provider/add` container invoked by a delegate: `agent`
+/// provisions `space` under `sponsor` through a `sponsor -> agent` grant
+/// of exactly `/provider/add` on the sponsor. The space's consent is
+/// issued to the sponsor, who pays. Returns the grant's CID so a test can
+/// revoke it.
+async fn delegated_add_container(
+    sponsor: &Ed25519Signer,
+    agent: &Ed25519Signer,
+    space: &Ed25519Signer,
+) -> (Vec<u8>, ipld_core::cid::Cid) {
+    let grant = DelegationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(sponsor.clone()))
+        .audience(&agent.did())
+        .subject(DelegatedSubject::Specific(sponsor.did()))
+        .command(vec!["provider".to_string(), "add".to_string()])
+        .try_build()
+        .await
+        .expect("sponsor grant");
+    let consent = DelegationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(space.clone()))
+        .audience(&sponsor.did())
+        .subject(DelegatedSubject::Specific(space.did()))
+        .command(vec![])
+        .try_build()
+        .await
+        .expect("consent delegation");
+    let arguments = BTreeMap::from([
+        (
+            "consumer".to_string(),
+            Promised::String(space.did().to_string()),
+        ),
+        ("consent".to_string(), Promised::Link(consent.to_cid())),
+    ]);
+    let invocation = InvocationBuilder::new()
+        .issuer(dialog_credentials::Signer::from(agent.clone()))
+        .audience(&sponsor.did())
+        .subject(&sponsor.did())
+        .command(vec!["provider".to_string(), "add".to_string()])
+        .arguments(arguments)
+        .proofs(vec![grant.to_cid()])
+        .expiration(Timestamp::five_minutes_from_now())
+        .try_build()
+        .await
+        .expect("add invocation");
+    let tokens = vec![
+        serde_ipld_dagcbor::to_vec(&invocation).expect("invocation encodes"),
+        grant.encoded().to_vec(),
+        consent.encoded().to_vec(),
+    ];
+    let container = Container::new(tokens)
+        .to_bytes()
+        .expect("container encodes");
+    (container, grant.to_cid())
+}
+
+/// An agent provisions a space its sponsor pays for, holding only a
+/// grant of `/provider/add` on the sponsor. The sponsor is the provider,
+/// not the agent, which is no customer at all.
+#[dialog_common::test]
+async fn it_provisions_a_space_for_a_sponsor_through_a_delegate() -> anyhow::Result<()> {
+    let fixture = Fixture::new().await;
+    let sponsor = Ed25519Signer::generate().await?;
+    let agent = Ed25519Signer::generate().await?;
+    let space = Ed25519Signer::generate().await?;
+    fixture
+        .enroll_and_activate(&sponsor, "sponsor@example.com")
+        .await;
+
+    let (container, _) = delegated_add_container(&sponsor, &agent, &space).await;
+    let Answer::Subscription(receipt) = fixture.registration(&container).handle().await.unwrap()
+    else {
+        panic!("expected a consumer receipt");
+    };
+    assert_eq!(receipt.consumer, space.did());
+    assert_eq!(receipt.provider, sponsor.did());
+    let consumer = fixture
+        .store
+        .consumer(space.did().as_str())
+        .await
+        .unwrap()
+        .expect("the consumer row exists");
+    assert_eq!(consumer.provider, sponsor.did().to_string());
+    assert!(
+        fixture
+            .store
+            .customer(agent.did().as_str())
+            .await
+            .unwrap()
+            .is_none(),
+        "the agent must not become a customer"
+    );
+    Ok(())
+}
+
+/// Revoking the sponsor's grant stops the agent from provisioning more.
+#[dialog_common::test]
+async fn it_refuses_a_delegate_whose_sponsor_revoked_it() -> anyhow::Result<()> {
+    use tonk_access_service::revocation::index::RevocationIndex as _;
+
+    let fixture = Fixture::new().await;
+    let sponsor = Ed25519Signer::generate().await?;
+    let agent = Ed25519Signer::generate().await?;
+    let space = Ed25519Signer::generate().await?;
+    fixture
+        .enroll_and_activate(&sponsor, "sponsor@example.com")
+        .await;
+
+    let (container, grant) = delegated_add_container(&sponsor, &agent, &space).await;
+    fixture
+        .revocations
+        .0
+        .record(&grant.to_string(), sponsor.did().as_ref(), b"")
+        .await?;
+    let answer = fixture.registration(&container).handle().await;
+    assert!(
+        matches!(answer, Err(RegistrationError::Unauthorized { .. })),
+        "a revoked grant must refuse provisioning, got {answer:?}"
+    );
+    assert!(
+        fixture
+            .store
+            .consumer(space.did().as_str())
+            .await
+            .unwrap()
+            .is_none(),
+        "a refused provisioning records nothing"
+    );
+    Ok(())
+}
+
 /// A state-dir service survives its own restart: same signing identity,
 /// same customers, and the blob snapshot refills the fresh store. This
 /// is the dev-durability contract — a restarted local service must not
