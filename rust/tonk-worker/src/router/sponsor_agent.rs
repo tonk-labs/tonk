@@ -270,4 +270,129 @@ mod tests {
             );
         }
     }
+
+    /// A space an agent made for this account: the claim link's sealed key
+    /// becomes custody rows the account's next passkey ceremony adopts.
+    #[dialog_common::test]
+    async fn it_adopts_the_sealed_key_of_a_space_an_agent_made() {
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject};
+        use tonk_schema::prelude::DidExt as _;
+
+        let state = super::super::command::tests::native::test_state().await;
+        let tonk = state.read().await;
+        let account = sign_in(&tonk).await;
+        let secret =
+            tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([7u8; 32]));
+
+        let seed = zeroize::Zeroizing::new([3u8; 32]);
+        let space = Ed25519Signer::import(&*seed).await.unwrap();
+        let founder = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(space.clone()))
+            .audience(&account)
+            .subject(Subject::Specific(space.did()))
+            .command(Vec::<String>::new())
+            .try_build()
+            .await
+            .unwrap();
+        let invite = tonk_invite::Invite::new(
+            DelegationChain::new(founder),
+            tonk_invite::InviteAudience::Scoped,
+            Some("https://hub.test/ucan/".parse().unwrap()),
+        )
+        .await
+        .unwrap();
+        let sealed = secret
+            .secret()
+            .recipient()
+            .secret()
+            .conceal(&seed, &space.did())
+            .unwrap()
+            .encode();
+        let url = format!(
+            "{}#seed={}",
+            invite.to_url("https://hub.test/join").unwrap(),
+            bs58::encode(&sealed).into_string()
+        );
+
+        let (link, found) = super::super::join::split_sealed_seed(&url);
+        assert_eq!(found.as_deref(), Some(sealed.as_slice()));
+        assert!(!link.contains('#'));
+        super::super::join::adopt(&tonk, &link, found.unwrap())
+            .await
+            .unwrap();
+        // An open invite's fragment is a bare seed and stays on the link.
+        let open = "https://hub.test/join?access=abc#3mJr7AoUXx2Wqd";
+        assert_eq!(
+            super::super::join::split_sealed_seed(open),
+            (open.to_owned(), None)
+        );
+
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let principals: Vec<tonk_schema::SecretPrincipal> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SecretPrincipal> {
+                this: Term::from(space.did().this()),
+                kind: Term::var("kind"),
+                seed: Term::var("seed"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(principals.len(), 1, "the sealed key is recorded once");
+        let messages: Vec<tonk_schema::SecretMessage> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SecretMessage> {
+                this: Term::from(principals[0].seed.0.clone()),
+                to: Term::var("to"),
+                message: Term::var("message"),
+                from: Term::var("from"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        let opened = secret
+            .secret()
+            .reveal(
+                &tonk_identity::sealed::Sealed::decode(&messages[0].message.0).unwrap(),
+                &space.did(),
+            )
+            .unwrap();
+        assert_eq!(*opened, *seed);
+
+        // A link for another account is not adopted.
+        let stranger = Ed25519Signer::generate().await.unwrap().did();
+        let other = DelegationBuilder::new()
+            .issuer(dialog_credentials::Signer::from(space.clone()))
+            .audience(&stranger)
+            .subject(Subject::Specific(space.did()))
+            .command(Vec::<String>::new())
+            .try_build()
+            .await
+            .unwrap();
+        let other = tonk_invite::Invite::new(
+            DelegationChain::new(other),
+            tonk_invite::InviteAudience::Scoped,
+            None,
+        )
+        .await
+        .unwrap()
+        .to_url("https://hub.test/join")
+        .unwrap();
+        assert!(
+            super::super::join::adopt(&tonk, &other, sealed)
+                .await
+                .is_err()
+        );
+    }
 }
