@@ -17,7 +17,10 @@ test('hosted executable bundles against the core without retired runtimes or Des
   const modules = Object.keys(result.metafile.inputs);
   assert.ok(modules.some((path) => path.endsWith('agent-link-backend.mjs')));
   assert.ok(modules.some((path) => path.endsWith('hosted/agent-service.mjs')));
-  assert.ok(!modules.some((path) => path.endsWith('hosted/oauth.mjs')));
+  assert.ok(modules.some((path) => path.endsWith('hosted/sponsor-service.mjs')));
+  assert.ok(modules.some((path) => path.endsWith('hosted/oauth.mjs')));
+  // OAuth sponsors an agent; it never attaches the human's own account.
+  assert.ok(!modules.some((path) => /hosted\/worker-tenants\.mjs|account-backend\.mjs/.test(path)));
   assert.ok(
     modules
       .filter((path) => path.includes('/chatgpt/'))

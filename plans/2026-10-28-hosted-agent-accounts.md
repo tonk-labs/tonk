@@ -162,6 +162,43 @@ What this means for the design:
 - Not covered by S0: the grant limits only the command, not how many spaces or how
   much storage. Any quota must come from the sponsor's plan.
 
+## Slice 1 progress (2026-10-28)
+
+Decisions: OAuth on `/mcp`; agent links moved to `/mcp/link`. Agent scope is
+content read and write only.
+
+### First step: OAuth stub (done locally, not deployed)
+
+Goal: prove the browser flow live (client, then OAuth, then passkey approval in the
+Tonk app, then token) before we build the agent account.
+
+- `mcp/hosted/sponsor-service.mjs` reuses `oauth.mjs`. It has dynamic registration,
+  pre-registered `tonk-chatgpt` and `tonk-claude` clients, and 90-day registrations.
+- `mcp/hosted/sponsor-stub.mjs` mints a throwaway agent DID and drops its private key.
+- The approval page is the existing `/settings/link`. The delegation it mints goes
+  to the throwaway key, so nobody can use it.
+- The callback reads only the delegation's issuer, unverified, using
+  `delegation-parties.mjs`, a small CBOR reader tested on real `tonk-identity` bytes.
+- Tools: `tonk_guide`, and `tonk_list_spaces`, which returns no spaces plus the
+  agent and sponsor DIDs.
+- DCR now ignores metadata it does not read, and `authorize` accepts a missing `scope`.
+
+Known limits of the stub:
+
+- Approving adds a device row for the throwaway DID to the sponsor's account. The
+  sponsor can remove it.
+- Connections still end after 8 hours (`oauth.mjs`), so the client must reconnect.
+- Breaking change: anyone who uses agent links at `/mcp` must change to `/mcp/link`.
+
+Next steps:
+
+1. A live connect from ChatGPT and claude.ai to a deployed preview.
+2. Replace the stub:
+   - The native worker mints a persistent agent account.
+   - A new `/settings/agent` page and `tonk:sponsor-agent` command return the
+     sponsor's recipient key and the S0 `/provider/add` grant.
+   - Verify the grant in Rust.
+
 ## Open questions
 
 1. Endpoint: OAuth on `/mcp`, with agent links moved to their own path? Or a new path for OAuth?

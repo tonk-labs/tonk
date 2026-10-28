@@ -26,7 +26,7 @@ export async function createAgentService({ issuer, provider, binary, directory, 
     async fetch(request) {
       const url = new URL(request.url);
       if (url.origin !== issuer) return new Response(null, { status: 421 });
-      if (url.pathname !== '/mcp' || url.search) return new Response(null, { status: 404 });
+      if (url.pathname !== '/mcp/link' || url.search) return new Response(null, { status: 404 });
       if (request.headers.has('origin')) return new Response(null, { status: 403 });
       if (request.method !== 'POST') return new Response(null, { status: 405 });
       return handler.fetch(request);

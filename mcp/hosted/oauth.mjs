@@ -94,6 +94,7 @@ export function createTonkOAuth({
   redirectUris,
   clients,
   dynamicRegistration = false,
+  registrationLifetime,
   provisionAccount,
   linkPage = 'https://tonk.network/settings/link',
   now = Date.now,
@@ -121,7 +122,11 @@ export function createTonkOAuth({
       },
     ],
   );
-  const registrations = createRegistrations({ now, saved: saved?.registrations });
+  const registrations = createRegistrations({
+    now,
+    saved: saved?.registrations,
+    ...(registrationLifetime ? { lifetime: registrationLifetime } : {}),
+  });
   const registry = {
     get(id) {
       return configured.get(id) ?? (dynamicRegistration ? registrations.get(id) : undefined);
@@ -255,7 +260,8 @@ export function createTonkOAuth({
         if (
           p.response_type !== 'code' ||
           p.resource !== resource ||
-          p.scope !== scope ||
+          // A client may omit scope; this server has exactly one.
+          (p.scope !== undefined && p.scope !== scope) ||
           p.code_challenge_method !== 'S256' ||
           !validOpaque(p.code_challenge)
         ) {

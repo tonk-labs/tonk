@@ -65,7 +65,7 @@ setTimeout(() => console.log('TONK_AGENT_LINK_RESULT {"result":{"published":true
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const response = await service.fetch(
-      new Request('https://mcp.example/mcp', {
+      new Request('https://mcp.example/mcp/link', {
         method: req.method,
         headers: req.headers,
         body: Buffer.concat(chunks),
@@ -85,7 +85,7 @@ setTimeout(() => console.log('TONK_AGENT_LINK_RESULT {"result":{"published":true
   const request = httpRequest({
     hostname: '127.0.0.1',
     port: server.address().port,
-    path: '/mcp',
+    path: '/mcp/link',
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -141,7 +141,7 @@ test('hosted shutdown drains the active write through checkpoint without cancell
     },
   });
   const response = service.fetch(
-    new Request('https://mcp.example/mcp', {
+    new Request('https://mcp.example/mcp/link', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -193,17 +193,17 @@ test('hosted URL discovers without OAuth, checkpoints calls, and rejects old aut
     ['https://other.example/mcp', {}, 421],
     ['https://mcp.example/oauth/authorize', {}, 404],
     [
-      'https://mcp.example/mcp',
+      'https://mcp.example/mcp/link',
       { method: 'POST', headers: { origin: 'https://evil.example' } },
       403,
     ],
-    ['https://mcp.example/mcp', {}, 405],
+    ['https://mcp.example/mcp/link', {}, 405],
   ])
     assert.equal((await service.fetch(new Request(url, init))).status, expected);
   const client = new Client({ name: 'hosted-agent-test', version: '1' });
   try {
     await client.connect(
-      new StreamableHTTPClientTransport(new URL('https://mcp.example/mcp'), {
+      new StreamableHTTPClientTransport(new URL('https://mcp.example/mcp/link'), {
         fetch: (url, init) => service.fetch(new Request(url, init)),
       }),
     );
@@ -234,7 +234,7 @@ test('legacy stateless HTTP discovers link schemas without account sessions', as
   });
   const request = (body) =>
     service.fetch(
-      new Request('https://mcp.example/mcp', {
+      new Request('https://mcp.example/mcp/link', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

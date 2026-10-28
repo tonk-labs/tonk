@@ -1,7 +1,9 @@
-> The deployed `/mcp` executable now uses [agent links](../AGENT-LINKS.md),
-> replacing OAuth. The account/OAuth modules described below remain optional
-> adapters and are not the deployed entrypoint. See the agent-link guide for
-> current setup, storage limits and recovery.
+> The deployed executable (`server.mjs`) serves two endpoints. `/mcp` is OAuth
+> where a human sponsors an agent (`sponsor-service.mjs`, a test stub for now: the
+> agent gets the guides and an empty space list, and the approval delegation goes
+> to a key nobody holds). `/mcp/link` takes [agent links](../AGENT-LINKS.md).
+> The account-attachment modules below (`service.mjs`, `worker-tenants.mjs`) are
+> not deployed: OAuth no longer attaches the human's own account.
 
 # Hosted MCP service
 

@@ -37,34 +37,26 @@ export function createRegistrations({
       prune();
       if (entries.size >= capacity || enrollments.length >= 8)
         return { error: 'temporarily_unavailable', status: 429 };
+      // Real clients send more metadata than this server uses (logo, contacts,
+      // client_uri...). Ignore what is not read; refuse only what would change
+      // how the client authenticates or which grants it uses.
+      const grants = metadata?.grant_types ?? ['authorization_code', 'refresh_token'];
       if (
         !metadata ||
         typeof metadata !== 'object' ||
         Array.isArray(metadata) ||
-        Object.keys(metadata).some(
-          (key) =>
-            ![
-              'client_name',
-              'redirect_uris',
-              'application_type',
-              'token_endpoint_auth_method',
-              'grant_types',
-              'response_types',
-              'scope',
-            ].includes(key),
-        ) ||
-        metadata.token_endpoint_auth_method !== 'none' ||
-        (metadata.scope !== undefined && metadata.scope !== 'tonk') ||
-        (metadata.grant_types !== undefined &&
-          JSON.stringify(metadata.grant_types) !==
-            JSON.stringify(['authorization_code', 'refresh_token'])) ||
+        ![undefined, 'none'].includes(metadata.token_endpoint_auth_method) ||
+        !Array.isArray(grants) ||
+        !grants.includes('authorization_code') ||
+        grants.some((grant) => !['authorization_code', 'refresh_token'].includes(grant)) ||
         (metadata.response_types !== undefined &&
-          JSON.stringify(metadata.response_types) !== '["code"]')
+          JSON.stringify(metadata.response_types) !== '["code"]') ||
+        (metadata.client_name !== undefined && typeof metadata.client_name !== 'string')
       )
         return { error: 'invalid_client_metadata', status: 400 };
       const client = {
         clientId: 'dynamic-' + random(),
-        displayName: metadata.client_name,
+        displayName: metadata.client_name?.trim().slice(0, 128) || 'MCP client',
         redirectUris: metadata.redirect_uris,
         applicationType: metadata.application_type ?? 'web',
         type: 'public',

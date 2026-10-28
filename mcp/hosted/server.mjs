@@ -1,8 +1,10 @@
-// Agent-link hosted runtime. Each invocation supplies its own scoped authority.
+// Hosted runtime. `/mcp` is the OAuth endpoint where a human sponsors an agent;
+// `/mcp/link` takes per-call agent links, each supplying its own scoped authority.
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import { readFile } from 'node:fs/promises';
 import { createAgentService } from './agent-service.mjs';
+import { createSponsorService } from './sponsor-service.mjs';
 import { providerOrigin } from './provider.mjs';
 const required = (name) => {
   if (!process.env[name]) throw Error('Missing ' + name);
@@ -17,7 +19,15 @@ const build = await readFile(new URL('./build.json', import.meta.url), 'utf8').c
   if (error.code === 'ENOENT') return '{}';
   throw error;
 });
-const service = await createAgentService({ issuer, binary, provider });
+const agentLinks = await createAgentService({ issuer, binary, provider });
+const sponsor = await createSponsorService({ issuer, provider });
+const service = {
+  fetch: (request) =>
+    new URL(request.url).pathname === '/mcp/link'
+      ? agentLinks.fetch(request)
+      : sponsor.fetch(request),
+  close: () => Promise.all([agentLinks.close(), sponsor.close()]),
+};
 const server = createServer(async (req, res) => {
   try {
     if (!req.url?.startsWith('/') || req.url.startsWith('//')) {
