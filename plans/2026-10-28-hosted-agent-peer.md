@@ -15,6 +15,8 @@ Two surfaces on the provider origin, each its own Worker behind a service bindin
 - `/host/` is the hosted peer: a space's origin API, mounted per space.
 - `/mcp` is MCP, a thin wrapper that proxies to `/host/`.
 
+Inline views in MCP Apps come later, by long-polling a watch tool (stage 7).
+
 ## Model
 
 ```mermaid
@@ -45,7 +47,7 @@ flowchart LR
   letting the agent provision spaces on the user's behalf. Created spaces are
   owned by the user and sealed under the account.
 - **Attribution.** Authority is the agent space DID, operator is the session DID.
-- **Identifier.** `did:key`. Naming agents by `did:web` is a follow-up (stage 8).
+- **Identifier.** `did:key`. Naming agents by `did:web` comes later (stage 8).
 
 ### Permanent session delegations
 
@@ -89,7 +91,7 @@ verifier.
 
 ```mermaid
 flowchart LR
-  client[LLM host / MCP App view] --> origin
+  client[LLM host] --> origin
   subgraph origin[provider origin, e.g. tonk.foundation]
     access[tonk-access-service]
   end
@@ -128,8 +130,6 @@ on the provider origin, which also holds the account and its passkeys. So:
 - **Every HTML response from `/host/` carries `Content-Security-Policy: sandbox
   allow-scripts allow-forms`** (no `allow-same-origin`): an opaque origin even
   when opened directly. Space content must never run as the provider origin.
-- CORS allows opaque-origin callers (`Origin: null`) with a Bearer header and no
-  cookies.
 
 ## Authorization
 
@@ -189,24 +189,41 @@ flowchart TD
   not a 401: a 401 makes the host mint a new session instead of renewing anything.
 - Reads go through the access service. Revisit direct R2 only if it measures slow.
 
-## Views in MCP Apps
+## Views in MCP Apps (later)
 
-The OAuth token stays in the LLM host; an MCP App view never sees it. A tool that
-renders a view mints a **view credential** and returns it to the view:
+A view never holds a credential. It reads through the host, so the host's own
+token does the work, which is all the MCP Apps spec guarantees: views can call
+tools and read resources. Hosts may forward subscriptions or notifications to a
+view, but nothing requires it, so live updates are a long poll.
 
-- A short-lived delegation from the session to an ephemeral key, one space,
-  read-only unless the view writes. Precedent: `mcp/hosted/space-session.mjs`
-  (10 minutes, space only), renewed while the view is open.
-- Delivered in the tool result's `_meta`, not in `content`, so the model does not
-  read it.
-- The view calls `/host/{space}/` with it directly. `apps/ui.mjs` already declares
-  the provider origin in `_meta.ui.csp.connectDomains`.
-- **Subscriptions over SSE work** with `fetch` and a streamed body, which can send
-  `Authorization`. `EventSource` cannot set headers, so it is not used; the
-  credential never goes in a URL.
+```mermaid
+sequenceDiagram
+  participant V as View
+  participant H as LLM host
+  participant M as MCP Worker
+  participant O as Space DO (live.rs)
 
-This is the one place credentials are short-lived: they live in a browser frame
-the user does not manage.
+  V->>H: tools/call tonk_watch(space, query, cursor)
+  H->>M: tool call + Bearer
+  M->>O: socket, watch the space's cells
+  Note over O: hibernates until a commit
+  O-->>M: change
+  M-->>H: result + new cursor
+  H-->>V: result
+  V->>H: tonk_watch(space, query, new cursor)
+```
+
+- **`tonk_watch(space, query, cursor)`** is app-only (MCP Apps tool visibility), so
+  the model never sees it. It answers as soon as the result moves past `cursor`,
+  or after about 20 s with "no change". The view calls again at once.
+- **The cursor makes it lossless.** A change that lands between two calls is
+  seen by the next one, which answers immediately.
+- **Waiting costs little.** The Worker holds the tool call (wall time, not CPU).
+  It watches through the space's existing Durable Object (`live.rs`, `GET
+  /ucan/?sub=<space>`), whose sockets hibernate between commits, so nothing is
+  awake while a space is idle.
+- **Content and assets** reach the view as tool results or resource reads, for
+  the same reason.
 
 ## Records
 
@@ -244,12 +261,10 @@ flowchart LR
   S1 --> S4
   S3b --> S4
   S4 --> S5[5 Account management]
-  S2 --> S6[6 MCP App views]
-  S3b --> S6
-  S4 --> S7[7 Deploy and migrate]
-  S5 --> S7
-  S6 --> S7
-  S7 -.-> S8[8 did:web follow-up]
+  S4 --> S6[6 Deploy and migrate]
+  S5 --> S6
+  S6 -.-> S7[7 MCP App views]
+  S6 -.-> S8[8 did:web]
 ```
 
 ### Stage 0: dialog peer in a Workers isolate
@@ -291,7 +306,9 @@ decode and verify it, revoke it.
 - Mount the space-origin surface per space (see `/host/{space}/`): worker API
   with SSE, `PUT /` assets, `/asset:{hash}` with `Range`, route content. Reuse
   the kernel's rewrite onto the worker's routes rather than reimplementing it.
-- CSP sandbox on every HTML response; CORS for opaque origins.
+- SSE subscriptions on `/host/` are fed by the space's `live.rs` socket, not by
+  polling the remote.
+- CSP sandbox on every HTML response.
 - Agent-level reads: the agent's spaces and contacts.
 - Service binding from `tonk-access-service`; service worker bypass for `/host/`.
 - Tests: missing, malformed, wrong-audience and revoked tokens; concurrent writes
@@ -362,19 +379,7 @@ tools work, with no static header.
 **M5:** revoking a session on the account page makes its next call return 401;
 revoking an agent does so for all its sessions.
 
-### Stage 6: MCP App views
-
-- View credential: session to ephemeral key, one space, minutes, renewed while
-  open. Minted by the tool that renders the view, returned in `_meta`.
-- `/host/` accepts view credentials alongside session tokens.
-- View runtime: `fetch` with streamed SSE for subscriptions, assets by
-  `/host/{space}/asset:{hash}`, route content in a sandboxed frame.
-- `apps/ui.mjs` CSP: `connectDomains` and `frameDomains` are the provider origin.
-
-**M6:** in Claude Code or the MCP Apps reference host, a tool renders a live view
-of a space; a write from the CLI shows up in the view without a tool call.
-
-### Stage 7: deploy and migrate
+### Stage 6: deploy and migrate
 
 - Deployment config: MCP and Host Workers, bound into each channel's access
   service. Drop the container, the `TonkRuntime` Durable Object, the checkpoint
@@ -386,10 +391,26 @@ of a space; a write from the CLI shows up in the view without a tool call.
 - Acceptance on `tonk.foundation`: claude.ai, Claude Code, ChatGPT. Then staging,
   then stable.
 
-**M7:** claude.ai connected to `tonk.foundation/mcp` through the real OAuth flow,
-working in a space it was invited to, with an inline view.
+**M6:** claude.ai connected to `tonk.foundation/mcp` through the real OAuth flow,
+working in a space it was invited to.
 
-### Stage 8 (follow-up): did:web identifiers
+### Stage 7 (later): MCP App views
+
+Wanted, not needed for the core flow.
+
+- Probe first: a throwaway MCP server with an app that long-polls a tool, run in
+  Claude and ChatGPT. Check that view-initiated calls are allowed, are approved
+  once rather than per call, are not queued behind the model, and survive a 20 s
+  wait. Note whether either host forwards subscriptions or progress to views.
+- `tonk_watch`, app-only, held in the MCP Worker, watching through the space's
+  `live.rs` Durable Object.
+- Content and assets for views as tool results or resource reads.
+- `apps/ui.mjs` CSP no longer needs the provider in `connectDomains`.
+
+**M7:** in Claude or ChatGPT, a tool renders a live view of a space; a write from
+the CLI shows up in the view without a model turn.
+
+### Stage 8 (later): did:web identifiers
 
 ```
 did:key:z6Mk...                       agent space key
