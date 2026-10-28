@@ -3919,7 +3919,7 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 /// backs nothing but the Hub, so it doesn't pay to write the full
 /// workspace/board/sheet library it never reads. Only referenced from
 /// the SW-scoped profile seed path.
-const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
+pub(super) const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
 
 /// Result of reconciling the system-owned profile library.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9493,30 +9493,7 @@ pub(crate) mod profile_library_tests {
     async fn profile_library_upgrades_account_views_with_unusable_provenance() {
         let tonk = test_state().await;
         install_recorded(&tonk, PROFILE_LIBRARY_URL, BEFORE_ACCOUNT_VIEWS).await;
-        let session = tonk
-            .reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .acquire(&tonk.operator)
-            .await
-            .unwrap();
-        let installation = profile_library_installations(&tonk, &session)
-            .await
-            .unwrap()
-            .pop()
-            .unwrap();
-        let mut broken = installation.installed.clone();
-        broken.version.0 = "unavailable-legacy-version".to_owned();
-        session
-            .handle()
-            .transaction()
-            .retract(installation.installed)
-            .assert(broken)
-            .commit()
-            .publish()
-            .perform(&tonk.operator)
-            .await
-            .unwrap();
+        lose_provenance(&tonk).await;
         assert_account_views_migrate(&tonk).await;
     }
 
@@ -9721,7 +9698,7 @@ route!: &foreign-profile-route
         crate::router::tests::test_state_without_root().await
     }
 
-    async fn install_recorded(tonk: &TonkState, source: &str, library: &str) {
+    pub(crate) async fn install_recorded(tonk: &TonkState, source: &str, library: &str) {
         let seed = seed_version(library);
         super::super::evaluate::evaluate_profile_body_recording(
             tonk,
@@ -9741,7 +9718,38 @@ route!: &foreign-profile-route
         .expect("historical library installs");
     }
 
-    async fn evaluate_authored(tonk: &TonkState, document: &str) {
+    /// Point the recorded profile-library install at a version this
+    /// replica's history does not hold, as an install made elsewhere or by
+    /// an earlier release leaves it: the next reconcile cannot read what
+    /// that install wrote.
+    pub(crate) async fn lose_provenance(tonk: &TonkState) {
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let installation = profile_library_installations(tonk, &session)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let mut broken = installation.installed.clone();
+        broken.version.0 = "unavailable-legacy-version".to_owned();
+        session
+            .handle()
+            .transaction()
+            .retract(installation.installed)
+            .assert(broken)
+            .commit()
+            .publish()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+    }
+
+    pub(crate) async fn evaluate_authored(tonk: &TonkState, document: &str) {
         super::super::evaluate::evaluate_profile_body_recording(
             tonk,
             PROFILE_BRANCH,

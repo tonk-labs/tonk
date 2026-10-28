@@ -12,7 +12,10 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::api_router_with_state;
-use super::repository::profile_library_tests::test_state;
+use super::repository::profile_library_tests::{
+    evaluate_authored, install_recorded, lose_provenance, test_state,
+};
+use super::repository::{PROFILE_LIBRARY_URL, reconcile_profile_library_from};
 
 const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
 const NOTEBOOK: &str = include_str!("../../../tonk-core/assets/library/notebook.yaml");
@@ -962,4 +965,175 @@ async fn it_installs_a_component_from_the_palette() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     panic!("the notebook component was never installed: {sources}");
+}
+
+/// The bar's acts, as the palette's menu names them.
+const BAR_ACTS: [&str; 5] = [
+    "add an account",
+    "copy share link",
+    "view members",
+    "copy agent link",
+    "connect this space",
+];
+
+/// The profile library as an earlier release shipped it: the same bar
+/// commands under the same names, but with their `time` attributes in
+/// another namespace. A command's entity is the hash of its attributes,
+/// so each bar command is a different entity there than here, as it is
+/// after any release that changes a bar command's fields or how an
+/// identity is derived.
+fn earlier_profile() -> String {
+    let mut library = PROFILE.to_owned();
+    for act in [
+        "add-account",
+        "share-link",
+        "view-members",
+        "connect-agent",
+        "connect-space",
+    ] {
+        let current = format!("the: xyz.tonk.command.{act}/time");
+        assert_eq!(library.matches(&current).count(), 1, "{current}");
+        library = library.replace(&current, &format!("the: xyz.tonk.{act}/time"));
+    }
+    library
+}
+
+/// What the palette lists before anything is typed, on the profile.
+async fn profile_menu(app: &Router, state: &super::AppState) -> Vec<String> {
+    let branch = state.read().await.active_branch.clone();
+    let rows = send(
+        app,
+        "POST",
+        &format!("/api/repository/profile:tonk/branch/{branch}/query"),
+        "application/json",
+        json!({
+            "predicate": "intent/suggest",
+            "terms": {
+                "input": "",
+                "this": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+                "now": 1.0,
+                "max": 500
+            }
+        })
+        .to_string(),
+    )
+    .await;
+    rows.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| field(row, "text").as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Every bar act the menu lists, with how many times it lists it.
+fn listed(menu: &[String]) -> Vec<(&'static str, usize)> {
+    BAR_ACTS
+        .iter()
+        .map(|act| (*act, menu.iter().filter(|text| text == act).count()))
+        .collect()
+}
+
+fn once() -> Vec<(&'static str, usize)> {
+    BAR_ACTS.iter().map(|act| (*act, 1)).collect()
+}
+
+/// The earlier library is a different set of entities, not the same one:
+/// evaluated beside the current library with no reconcile between them,
+/// every bar act is listed twice. What the tests below rely on.
+#[dialog_common::test]
+async fn an_earlier_profile_library_declares_the_bar_acts_as_other_entities() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    {
+        let tonk = state.read().await;
+        evaluate_authored(&tonk, &earlier_profile()).await;
+        evaluate_authored(&tonk, PROFILE).await;
+    }
+    let menu = profile_menu(&app, &state).await;
+    assert_eq!(
+        listed(&menu),
+        BAR_ACTS.iter().map(|act| (*act, 2)).collect::<Vec<_>>(),
+        "{menu:?}"
+    );
+}
+
+/// A profile that only ever ran the current library lists each act once.
+#[dialog_common::test]
+async fn a_fresh_profile_lists_each_bar_act_once() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    reconcile_profile_library_from(&*state.read().await, PROFILE.to_owned())
+        .await
+        .unwrap();
+    let menu = profile_menu(&app, &state).await;
+    assert_eq!(listed(&menu), once(), "{menu:?}");
+}
+
+/// An install the profile recorded, with its history at hand, is
+/// withdrawn by the upgrade: each act is listed once.
+#[dialog_common::test]
+async fn an_upgrade_from_a_recorded_install_lists_each_bar_act_once() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    {
+        let tonk = state.read().await;
+        install_recorded(&tonk, PROFILE_LIBRARY_URL, &earlier_profile()).await;
+        reconcile_profile_library_from(&tonk, PROFILE.to_owned())
+            .await
+            .unwrap();
+    }
+    let menu = profile_menu(&app, &state).await;
+    assert_eq!(listed(&menu), once(), "{menu:?}");
+}
+
+/// A release between the two that left the bar commands as they were:
+/// its install wrote none of them, and the upgrade withdraws only what
+/// the latest install wrote.
+#[dialog_common::test]
+async fn an_upgrade_across_an_unchanged_release_lists_each_bar_act_once() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    {
+        let tonk = state.read().await;
+        install_recorded(&tonk, PROFILE_LIBRARY_URL, &earlier_profile()).await;
+        reconcile_profile_library_from(
+            &tonk,
+            format!("{}\n# intermediate release\n", earlier_profile()),
+        )
+        .await
+        .unwrap();
+        reconcile_profile_library_from(&tonk, PROFILE.to_owned())
+            .await
+            .unwrap();
+    }
+    let menu = profile_menu(&app, &state).await;
+    assert_eq!(listed(&menu), once(), "{menu:?}");
+}
+
+/// An install from before installs were recorded.
+#[dialog_common::test]
+async fn an_upgrade_from_an_unrecorded_install_lists_each_bar_act_once() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    {
+        let tonk = state.read().await;
+        evaluate_authored(&tonk, &earlier_profile()).await;
+        reconcile_profile_library_from(&tonk, PROFILE.to_owned())
+            .await
+            .unwrap();
+    }
+    let menu = profile_menu(&app, &state).await;
+    assert_eq!(listed(&menu), once(), "{menu:?}");
+}
+
+/// An install whose history this replica does not hold, as one another
+/// device made and the account synced here.
+#[dialog_common::test]
+async fn an_upgrade_without_the_installs_history_lists_each_bar_act_once() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    {
+        let tonk = state.read().await;
+        install_recorded(&tonk, PROFILE_LIBRARY_URL, &earlier_profile()).await;
+        lose_provenance(&tonk).await;
+        reconcile_profile_library_from(&tonk, PROFILE.to_owned())
+            .await
+            .unwrap();
+    }
+    let menu = profile_menu(&app, &state).await;
+    assert_eq!(listed(&menu), once(), "{menu:?}");
 }
