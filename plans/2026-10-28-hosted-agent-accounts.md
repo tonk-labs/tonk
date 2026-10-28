@@ -190,10 +190,19 @@ Known limits of the stub:
 - Connections still end after 8 hours (`oauth.mjs`), so the client must reconnect.
 - Breaking change: anyone who uses agent links at `/mcp` must change to `/mcp/link`.
 
+Live result (2026-10-28, preview `tonk-mcp-pr-1196.tonk.workers.dev/mcp`): passes
+in both claude.ai and ChatGPT.
+
+- Both clients used dynamic registration, then OAuth, then passkey sign-in and
+  approval in the preview Tonk app.
+- `tonk_list_spaces` worked in both.
+- Each client got its own agent DID. Both reported the same sponsor DID, the
+  human's account.
+- The passkey worked inside both clients' OAuth windows.
+
 Next steps:
 
-1. A live connect from ChatGPT and claude.ai to a deployed preview.
-2. Replace the stub:
+1. Replace the stub:
    - The native worker mints a persistent agent account.
    - A new `/settings/agent` page and `tonk:sponsor-agent` command return the
      sponsor's recipient key and the S0 `/provider/add` grant.
