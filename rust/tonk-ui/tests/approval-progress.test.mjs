@@ -33,7 +33,7 @@ function fixture() {
     localLinkShow: () => false, viaShow: () => false, text() {}, pane() {}, seat() {},
     context: () => ({ hash: '' }), connectionsRefresh() {},
   });
-  for (const name of ['base58', 'approval-entity', 'ceremony-target', 'refresh', 'describe', 'status']) {
+  for (const name of ['base58', 'approval-entity', 'agent-request', 'sponsorship-entity', 'ceremony-target', 'refresh', 'describe', 'status']) {
     self[name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = (...args) => method(name)(self, ...args);
   }
   return { self, row, progress, line };
@@ -112,4 +112,18 @@ test('an approval without a ceremony row has a quiet absence fallback', () => {
   const display = library.match(/<tonk-display model="state:ceremony"[^>]*>([\s\S]*?)<\/tonk-display>/);
   assert.ok(display, 'settings contains its ceremony display');
   assert.match(display[1], /<span slot="no-entity" hidden><\/span>/);
+});
+
+// An agent's host asking to be sponsored has its own request-scoped progress,
+// matching router/sponsor_agent.rs sponsorship_entity.
+test('an agent sponsorship request has its own progress entity', () => {
+  const { self } = fixture();
+  const agent = { agent: 'did:key:agent', callback: 'https://mcp.example/oauth/callback?request=1', name: 'ChatGPT' };
+  self.context = () => ({ path: '/settings/agent', search: `?${new URLSearchParams(agent)}`, hash: '' });
+  assert.deepEqual(self.agentRequest(), agent);
+  const entity = self.ceremonyTarget();
+  assert.equal(entity, self.sponsorshipEntity(agent));
+  assert.ok(entity.startsWith('urn:tonk:sponsorship:'));
+  assert.notEqual(entity, self.approvalEntity(request));
+  assert.notEqual(entity, self.sponsorshipEntity({ ...agent, agent: 'did:key:other' }));
 });
