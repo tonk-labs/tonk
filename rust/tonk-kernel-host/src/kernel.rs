@@ -71,6 +71,10 @@ enum Job {
         access: Access,
         reply: oneshot::Sender<Delegated>,
     },
+    Receive {
+        message: Vec<u8>,
+        reply: oneshot::Sender<Result<Result<(), Error>, String>>,
+    },
 }
 
 /// A guest kernel that a driver runs (see [`Kernel::serve`]): requests reach
@@ -107,6 +111,18 @@ impl Served {
 }
 
 impl Served {
+    /// Hand the guest kernel a message from its embedder, through
+    /// `channel.receive`.
+    pub async fn receive(&self, message: Vec<u8>) -> Result<Result<(), Error>, String> {
+        let (reply, answered) = oneshot::channel();
+        self.jobs
+            .unbounded_send(Job::Receive { message, reply })
+            .map_err(|_| "the kernel has stopped".to_owned())?;
+        answered
+            .await
+            .map_err(|_| "the kernel has stopped".to_owned())?
+    }
+
     /// Ask the guest kernel, a persona, to delegate `access` to `audience`.
     /// An error when the guest kernel is no persona.
     pub async fn delegate(&self, audience: &str, access: Access) -> Delegated {
@@ -196,6 +212,7 @@ impl Kernel {
             handle,
             guest,
             types,
+            bindings,
             ..
         } = self;
         let driver = async move {
@@ -218,6 +235,20 @@ impl Kernel {
                                                 None => Err("the kernel is no persona".to_owned()),
                                             };
                                             let _ = reply.send(delegated);
+                                        }
+                                        .boxed_local(),
+                                    );
+                                }
+                                Some(Job::Receive { message, reply }) => {
+                                    let bindings = &bindings;
+                                    running.push(
+                                        async move {
+                                            let received = bindings
+                                                .sapling_kernel_channel()
+                                                .call_receive(accessor, message)
+                                                .await
+                                                .map_err(|error| platform::describe(&error));
+                                            let _ = reply.send(received);
                                         }
                                         .boxed_local(),
                                     );
@@ -291,6 +322,14 @@ impl Kernel {
             types,
             timings,
         })
+    }
+
+    /// The messages the guest kernel sends with `application.send` from now
+    /// on, as it sends them.
+    pub fn messages(&mut self) -> mpsc::UnboundedReceiver<Vec<u8>> {
+        let (outbox, messages) = mpsc::unbounded();
+        self.store.data_mut().outbox = Some(outbox);
+        messages
     }
 
     /// Boot the guest kernel over one subject, as the layer of

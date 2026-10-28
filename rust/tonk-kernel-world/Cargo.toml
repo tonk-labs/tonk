@@ -21,7 +21,9 @@ dialog-common = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-storage = { workspace = true }
 dialog-varsig = { workspace = true }
+futures = { workspace = true }
 futures-util = { workspace = true }
+serde_json = { workspace = true }
 signature = "2.2"
 wit-bindgen = { workspace = true, features = ["inter-task-wakeup"] }
 

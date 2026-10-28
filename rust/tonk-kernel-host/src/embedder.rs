@@ -124,9 +124,15 @@ pub async fn pinned(subject: String) -> Result<Option<String>, JsError> {
 /// Boot the persona the profile `subject` pins, with a session that acts
 /// under `session`, whose key represents the persona and is it, until the
 /// person makes themselves known.
+///
+/// Each message the kernel sends its embedder goes to `message`, as bytes.
 #[wasm_bindgen(js_name = bootPersona)]
-pub async fn boot_persona(subject: String, session: &Session) -> Result<Embedder, JsError> {
-    run(subject, Standing::persona(session.key.clone())).await
+pub async fn boot_persona(
+    subject: String,
+    session: &Session,
+    message: Function,
+) -> Result<Embedder, JsError> {
+    run(subject, Standing::persona(session.key.clone()), message).await
 }
 
 /// Boot the kernel the space `subject` pins, with a session that acts under
@@ -134,7 +140,8 @@ pub async fn boot_persona(subject: String, session: &Session) -> Result<Embedder
 /// `representative`, whose delegations `delegate` answers: a function that
 /// takes the audience's DID and `{ subject, command, arguments, reason }`,
 /// with `arguments` as `[name, value]` pairs, and resolves to the delegation,
-/// an encoded chain.
+/// an encoded chain. Each message the kernel sends its embedder goes to
+/// `message`, as bytes.
 #[wasm_bindgen(js_name = bootSpace)]
 pub async fn boot_space(
     subject: String,
@@ -142,16 +149,18 @@ pub async fn boot_space(
     representative: String,
     persona: String,
     delegate: Function,
+    message: Function,
 ) -> Result<Embedder, JsError> {
     let representative = Representation::remote(representative, delegates_of(delegate));
     run(
         subject,
         Standing::space(session.key.clone(), representative, persona),
+        message,
     )
     .await
 }
 
-async fn run(subject: String, standing: Standing) -> Result<Embedder, JsError> {
+async fn run(subject: String, standing: Standing, message: Function) -> Result<Embedder, JsError> {
     let started = platform::now_millis();
     let layers = Layers::default();
     let (_, bytes) = boot::pinned(&layers, &subject)
@@ -164,6 +173,19 @@ async fn run(subject: String, standing: Standing) -> Result<Embedder, JsError> {
     let mut kernel = Kernel::load(&engine, &bytes, layers)
         .await
         .map_err(|error| JsError::new(&error))?;
+    let mut messages = kernel.messages();
+    wasm_bindgen_futures::spawn_local(async move {
+        while let Some(sent) = messages.next().await {
+            let sent = Uint8Array::from(sent.as_slice());
+            if let Err(error) = message.call1(&JsValue::UNDEFINED, &sent) {
+                platform::log(
+                    "kernel",
+                    &format!("a message was not taken: {error:?}"),
+                    true,
+                );
+            }
+        }
+    });
     kernel
         .init(&subject, standing)
         .await
@@ -271,6 +293,21 @@ impl Embedder {
                 .map_err(|error| JsValue::from(JsError::new(&format!("{error:?}"))))?;
             Ok(Uint8Array::from(chain.as_slice()).into())
         }))
+    }
+
+    /// Hand the kernel `message` from its embedder. Resolves once the kernel
+    /// took it up.
+    pub fn receive(&self, message: Uint8Array) -> Promise {
+        let kernel = self.kernel.clone();
+        let message = message.to_vec();
+        wasm_bindgen_futures::future_to_promise(async move {
+            kernel
+                .receive(message)
+                .await
+                .map_err(|error| JsValue::from(JsError::new(&error)))?
+                .map_err(|error| JsValue::from(JsError::new(&format!("{error:?}"))))?;
+            Ok(JsValue::UNDEFINED)
+        })
     }
 
     /// How long each stage of the boot took, in milliseconds.

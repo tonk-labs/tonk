@@ -10,6 +10,8 @@
 //! - [`store`]: the archive, the memory and the blobs of a space, over a
 //!   layer. [`mount`] opens one from a location.
 //! - [`session`]: the session the boot hands over.
+//! - [`application`]: what a worker asks of another worker, through its
+//!   embedder, and the answers that come back.
 //! - [`credentials::signer`]: a credential, as a signer whose signatures come
 //!   from the host.
 //! - [`space`]: a space's credential store, as custodies and secrets in its
@@ -32,6 +34,8 @@ pub mod world {
     });
 }
 
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub mod application;
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 pub mod cache;
 #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]

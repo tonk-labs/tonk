@@ -66,11 +66,13 @@ world persona {
 }
 
 /// What the adapters of `tonk-kernel-world` reach: the storage of a layer,
-/// the keys the embedder holds, and the session. A guest kernel that uses them
-/// imports the same interfaces through its own world.
+/// the keys the embedder holds, the session, and the channel to the embedder.
+/// A guest kernel that uses them imports the same interfaces through its own
+/// world.
 world imports {
   import types;
   import storage;
   import credential;
   import session;
+  import application;
 }

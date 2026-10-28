@@ -263,10 +263,10 @@ async function start() {
     let embedder;
     if (PROFILE) {
         profileDid = session.did;
-        embedder = await wasm_bindgen.bootPersona(space, session);
+        embedder = await wasm_bindgen.bootPersona(space, session, kernelSent);
     } else {
         const { representative, persona } = await standing();
-        embedder = await wasm_bindgen.bootSpace(space, session, representative, persona, delegates(handed));
+        embedder = await wasm_bindgen.bootSpace(space, session, representative, persona, delegates(handed), kernelSent);
     }
     log("booted in", Math.round(performance.now() - started), "ms", embedder.timings);
     return embedder;
@@ -495,12 +495,129 @@ async function serveShell() {
     return new Response(shell, { status: response.status, headers });
 }
 
+// ---- What the kernel asks of other kernels -------------------------------
+//
+// The kernel sends a message with `application.send`: `{ ask, to, method,
+// path, body }` asks the kernel of the space `to`, and its answer goes back
+// with `receive` as `{ answer, status, body }`, or `{ answer, error }`.
+// Only the persona asks other kernels: a space's host answers anything else
+// with an error.
+async function kernelSent(bytes) {
+    let message;
+    try {
+        message = JSON.parse(new TextDecoder().decode(bytes));
+    } catch (error) {
+        log("the kernel sent what is not JSON:", error);
+        return;
+    }
+    if (typeof message?.ask !== "number") return;
+    let answer;
+    try {
+        if (!PROFILE) throw new Error("a space's kernel asks no other kernel");
+        const body = message.body == null ? null : new TextEncoder().encode(message.body).buffer;
+        const headers = body ? [["content-type", "application/json"]] : [];
+        const reply = await callSpace(message.to, { method: message.method, path: message.path, headers, body });
+        answer = { answer: message.ask, status: reply.status, body: new TextDecoder().decode(reply.body) };
+    } catch (error) {
+        answer = { answer: message.ask, error: String(error?.message ?? error) };
+    }
+    try {
+        await (await booting).receive(new TextEncoder().encode(JSON.stringify(answer)));
+    } catch (error) {
+        log("the kernel did not take an answer:", error);
+    }
+}
+
+// The port to each space's host, by the space's DID, as the profile's pages
+// open them.
+const spacePorts = new Map();
+const spacePortWaiters = new Map();
+const SPACE_PORT_WAIT_MS = 20_000;
+const SPACE_PORT_ASK_EVERY_MS = 1_000;
+const SPACE_ANSWER_WAIT_MS = 30_000;
+let nextSpaceCall = 1;
+
+// The pages of this origin that render the profile. The frame the app keeps
+// only to reach this worker renders nothing, and opens no ports.
+async function profilePages() {
+    const pages = await self.clients.matchAll({ type: "window" });
+    return pages.filter(page => !page.url.endsWith("#connector"));
+}
+
+async function askForSpacePort(repo) {
+    for (const page of await profilePages()) page.postMessage({ type: "need-space-port", repo, branch: "main" });
+}
+
+// The port to the host of the space `repo`, asking the pages to open one
+// when there is none. `null` when none is opened in time.
+function spacePort(repo) {
+    const held = spacePorts.get(repo);
+    if (held) return Promise.resolve(held);
+    return new Promise(resolve => {
+        const asking = setInterval(() => askForSpacePort(repo), SPACE_PORT_ASK_EVERY_MS);
+        const settle = value => {
+            clearInterval(asking);
+            resolve(value);
+        };
+        const waiters = spacePortWaiters.get(repo) ?? [];
+        waiters.push(settle);
+        spacePortWaiters.set(repo, waiters);
+        setTimeout(() => settle(null), SPACE_PORT_WAIT_MS);
+        askForSpacePort(repo);
+    });
+}
+
+// Ask the kernel of the space `repo` `request`, as a page of its origin
+// would: answers `{ status, headers, body }`, the body whole.
+async function callSpace(repo, request) {
+    const held = await spacePort(repo);
+    if (!held) throw new Error(`the host of ${repo} could not be reached`);
+    const call = nextSpaceCall++;
+    const pieces = [];
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            held.calls.delete(call);
+            reject(new Error(`the kernel of ${repo} did not answer`));
+        }, SPACE_ANSWER_WAIT_MS);
+        let head = null;
+        held.calls.set(call, data => {
+            if (data.head) head = data.head;
+            else if (data.chunk) pieces.push(new Uint8Array(data.chunk));
+            else if (data.end || data.error) {
+                clearTimeout(timer);
+                held.calls.delete(call);
+                if (data.error) return reject(new Error(data.error));
+                const body = new Uint8Array(pieces.reduce((length, piece) => length + piece.length, 0));
+                let at = 0;
+                for (const piece of pieces) {
+                    body.set(piece, at);
+                    at += piece.length;
+                }
+                resolve({ status: head?.status ?? 502, headers: head?.headers ?? [], body });
+            }
+        });
+        held.port.postMessage({ call, request });
+    });
+}
+
 // Serve the host of the space `repo` over `port`. What it asks is for the
 // space the port is bound to, never another, and is acknowledged before it
-// is answered, so the host can tell a restarted worker from a slow one.
+// is answered, so the host can tell a restarted worker from a slow one. The
+// answers to what the persona asks of it come back over the same port.
 function bindSpacePort(port, { repo }) {
     if (!port || typeof repo !== "string") return;
+    const held = { port, calls: new Map() };
+    // A port replaces the last: the space's host restarted, and whatever it
+    // was still answering will never finish.
+    for (const answered of spacePorts.get(repo)?.calls.values() ?? []) answered({ error: "the space's host restarted" });
+    spacePorts.set(repo, held);
+    for (const resolve of spacePortWaiters.get(repo) ?? []) resolve(held);
+    spacePortWaiters.delete(repo);
     port.onmessage = async ({ data }) => {
+        if (typeof data?.call === "number") {
+            held.calls.get(data.call)?.(data);
+            return;
+        }
         const id = data?.id;
         if (typeof id !== "number") return;
         port.postMessage({ id, ack: true });

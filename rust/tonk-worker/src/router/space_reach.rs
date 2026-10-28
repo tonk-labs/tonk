@@ -69,7 +69,25 @@ pub(crate) async fn ask(
         }
         Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::Null))
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    // A kernel asks through its embedder, which delivers the request to the
+    // space's kernel.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    {
+        let unreachable =
+            |why: String| TonkWorkerError::Internal(format!("could not ask {space}: {why}"));
+        let body = body.map(ToString::to_string);
+        let answer = tonk_kernel_world::application::ask(space, method, path, body.as_deref())
+            .await
+            .map_err(|error| unreachable(format!("{error:?}")))?;
+        if !(200..300).contains(&answer.status) {
+            return Err(unreachable(format!(
+                "it answered {}: {}",
+                answer.status, answer.body
+            )));
+        }
+        Ok(serde_json::from_str(&answer.body).unwrap_or(serde_json::Value::Null))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     {
         #[cfg(test)]
         if let Some(answer) = stand_in::answer(space, method, path, body) {

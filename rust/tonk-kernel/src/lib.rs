@@ -25,6 +25,7 @@ pub mod world {
             "sapling:kernel/storage@0.1.0": tonk_kernel_world::world::sapling::kernel::storage,
             "sapling:kernel/credential@0.1.0": tonk_kernel_world::world::sapling::kernel::credential,
             "sapling:kernel/session@0.1.0": tonk_kernel_world::world::sapling::kernel::session,
+            "sapling:kernel/application@0.1.0": tonk_kernel_world::world::sapling::kernel::application,
         },
         generate_all,
     });
@@ -37,6 +38,7 @@ pub mod world {
             "sapling:kernel/storage@0.1.0": tonk_kernel_world::world::sapling::kernel::storage,
             "sapling:kernel/credential@0.1.0": tonk_kernel_world::world::sapling::kernel::credential,
             "sapling:kernel/session@0.1.0": tonk_kernel_world::world::sapling::kernel::session,
+            "sapling:kernel/application@0.1.0": tonk_kernel_world::world::sapling::kernel::application,
         },
         generate_all,
     });
@@ -204,8 +206,8 @@ impl lifecycle::Guest for Kernel {
 }
 
 impl channel::Guest for Kernel {
-    async fn receive(_catchup: Vec<u8>) -> Result<(), Error> {
-        Ok(())
+    async fn receive(message: Vec<u8>) -> Result<(), Error> {
+        tonk_kernel_world::application::received(&message)
     }
 }
 

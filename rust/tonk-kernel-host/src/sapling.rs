@@ -8,6 +8,7 @@ use core::task::{Context, Poll};
 use std::collections::HashMap;
 
 use ed25519_dalek::SigningKey;
+use futures::channel::mpsc::UnboundedSender;
 use wcmp::{
     Accessor, HasData, Resource, Source, StoreContext, StreamConsumer, StreamReader, StreamResult,
 };
@@ -37,8 +38,11 @@ pub struct KernelHost {
     pub(crate) personas: Vec<Held>,
     /// The standing each `session` handle names, by its representation.
     pub(crate) sessions: Vec<Standing>,
-    /// The messages the guest kernel sent with `application.send`.
+    /// The messages the guest kernel sent with `application.send`, when
+    /// nothing takes them.
     pub sent: Vec<Vec<u8>>,
+    /// What takes the messages the guest kernel sends, as it sends them.
+    pub outbox: Option<UnboundedSender<Vec<u8>>>,
 }
 
 impl KernelHost {
@@ -311,7 +315,18 @@ impl application::Host for KernelHost {}
 impl<T: 'static> application::HostWithStore<T> for Sapling {
     async fn send(accessor: &Accessor<T, Self>, message: Vec<u8>) -> Result<(), Error> {
         trace("send");
-        accessor.with(|mut access| access.get().sent.push(message));
+        accessor.with(|mut access| {
+            let host = access.get();
+            match &host.outbox {
+                Some(outbox) => outbox
+                    .unbounded_send(message)
+                    .map_err(|_| Error::BrokeOff("no one takes the worker's messages".into())),
+                None => {
+                    host.sent.push(message);
+                    Ok(())
+                }
+            }
+        })?;
         Ok(())
     }
 }
