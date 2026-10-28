@@ -907,16 +907,16 @@ impl Graph {
                                 .map(|(name, _)| name.to_owned()),
                         );
                     }
-                    if plan.rest_retraction.is_some() {
-                        if let Some(def) = &resolved {
-                            edge_fields.extend(
-                                def.descriptor
-                                    .concept()
-                                    .with()
-                                    .iter()
-                                    .map(|(name, _)| name.to_owned()),
-                            );
-                        }
+                    if plan.rest_retraction.is_some()
+                        && let Some(def) = &resolved
+                    {
+                        edge_fields.extend(
+                            def.descriptor
+                                .concept()
+                                .with()
+                                .iter()
+                                .map(|(name, _)| name.to_owned()),
+                        );
                     }
                     retractions.extend(
                         edge_fields

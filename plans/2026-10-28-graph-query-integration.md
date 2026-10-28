@@ -89,3 +89,19 @@ Companion to Dialog `ideas/graph-queries.md`, implemented on an isolated Tonk wo
   (S3 0.14, Iroh base 1.2, WASI 0.3); no broad update was run.
 - No rebuild after pinning: preceding local tests exercised the graph source;
   remote-source build and CI verification remain with the parent PR workflow.
+
+## CI follow-up on PR 1197
+
+- Exact candidate `6815fa319a4b151ed04497d054208cc59f12ad24`, Test run
+  `40685017199`: lint job `122805016492` fails two `collapsible_if` diagnostics.
+  Scoped analyzer Clippy reproduced both (`graph.rs` and `query.rs`); collapsed
+  the nested guards without changing conditions. Scoped Clippy with `-D warnings`
+  now passes; formatting and whitespace checks pass.
+- All four debug web shards and guest/browser builds fail duplicate Wasm exports
+  from `wasm-streams` 0.5 (pinned Dialog storage) and 0.6 (Tonk plus Cloudflare
+  worker 0.8.5). A Tonk-only downgrade cannot unify this dependency graph. Parent
+  is coordinating the Dialog manifest fix and subsequent reviewed repin.
+- Release-test success jobs only defer optimized testing to main/tags; they do
+  not execute tests on this PR. Service-worker lifecycle tests did execute and
+  passed. Account-test summary failure reports skipped prerequisites, not an
+  executed account-test failure. CI is not green yet.
