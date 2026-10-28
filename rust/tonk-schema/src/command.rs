@@ -68,6 +68,32 @@ impl Command for AuthorizeDevice {
     type Output = ();
 }
 
+/// `tonk:sponsor-agent`: sponsor an agent's key from this device.
+///
+/// An agent's host (a hosted MCP server) opens
+/// `/settings/agent?agent=&callback=&name=` and waits on `callback`; the hub
+/// shows what is asking and, on approval, asserts this. The worker extends
+/// this device's `account -> device` grant to the agent with exactly
+/// `/provider/add` on the account, and sends the page to the callback with
+/// that chain, the account and the account's encryption key. No passkey:
+/// the grant is narrow, and the device already acts for the account.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SponsorAgent {
+    /// The command entity (a fresh id per approval).
+    pub this: Entity,
+    /// The agent DID to sponsor.
+    pub agent: crate::domain::command::sponsor_agent::Agent,
+    /// The waiting host's callback URL, base58.
+    pub callback: crate::domain::command::sponsor_agent::Callback,
+    /// The name the waiting host gave the agent.
+    pub name: crate::domain::command::sponsor_agent::Name,
+}
+
+impl Command for SponsorAgent {
+    type Input = Self;
+    type Output = ();
+}
+
 /// `tonk:add-passkey`: seal the account under a second passkey.
 ///
 /// The worker asks the page for both ceremonies — the passkey that

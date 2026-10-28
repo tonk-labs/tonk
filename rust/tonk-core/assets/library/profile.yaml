@@ -1862,6 +1862,39 @@ command!: &device/authorize
       the: xyz.tonk.authorize-device/expected-account
       as: entity
 
+# An agent's host (a hosted MCP server) asks to be sponsored
+# (`/settings/agent?agent=…&callback=…&name=…`); the element copies the
+# request onto the approve control so the click can assert it.
+event!: &on/sponsor-agent
+  type: "click"
+  prevent-default: true
+  where:
+    agent: ".currentTarget.dataset.agent"
+    callback: ".currentTarget.dataset.callback"
+    name: ".currentTarget.dataset.name"
+
+command!: &agent/sponsor
+  this: tonk:sponsor-agent
+  description: >
+    Sponsor an agent's key: let it provision spaces billed to this account,
+    and nothing else. The agent's host receives the grant, the account and
+    the account's encryption key.
+  with:
+    agent:
+      description: The agent's DID.
+      the: xyz.tonk.sponsor-agent/agent
+      as: entity
+    callback:
+      description: >
+        Where the agent's host listens, base58 over the URL: a bare URL
+        carries a `:` and would decode as an entity.
+      the: xyz.tonk.sponsor-agent/callback
+      as: text
+    name:
+      description: What the agent's host calls the agent, such as ChatGPT.
+      the: xyz.tonk.sponsor-agent/name
+      as: text
+
 # Signing this browser in through another deployment, the browser's
 # `tonk account login --via`. `/settings/link?via=<origin>` shows the ask;
 # the pane copies the origin onto its continue control so the click can

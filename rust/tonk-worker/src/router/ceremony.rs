@@ -18,7 +18,13 @@ pub(crate) async fn report(tonk: &TonkState, ceremony: &str, state: &str, detail
     report_to(tonk, CeremonyStatus::ENTITY, ceremony, state, detail).await;
 }
 
-async fn report_to(tonk: &TonkState, entity: &str, ceremony: &str, state: &str, detail: &str) {
+pub(super) async fn report_to(
+    tonk: &TonkState,
+    entity: &str,
+    ceremony: &str,
+    state: &str,
+    detail: &str,
+) {
     let Ok(this) = entity.parse::<dialog_artifacts::Entity>() else {
         return;
     };

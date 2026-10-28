@@ -620,6 +620,8 @@ pub mod ceremony {
     /// browser in through another deployment. One name for both halves,
     /// so the page shows one line however far the round trip got.
     pub const SIGN_IN_VIA: &str = "sign-in-via";
+    /// `tonk:sponsor-agent`: an agent's host waits for a sponsorship.
+    pub const SPONSOR_AGENT: &str = "sponsor-agent";
 }
 
 /// The states a [`CeremonyStatus`] can report.

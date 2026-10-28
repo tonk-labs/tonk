@@ -59,6 +59,7 @@ mod email_status;
 mod identity_discovery_spike;
 mod link_timing;
 mod sign_in_via;
+mod sponsor_agent;
 
 pub(crate) mod account_state;
 pub use account_state::AccountKeys;
