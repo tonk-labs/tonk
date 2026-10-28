@@ -10146,6 +10146,8 @@ pub(crate) mod tests {
     async fn it_cuts_off_storage_access_when_an_invite_is_revoked(
         env: TestEnvironment,
     ) -> Result<()> {
+        // DIAGNOSTIC ONLY: keep every console line for the dump below.
+        unsafe { std::env::set_var("TONK_E2E_CHROME_LOG", "1") };
         let owner = driver_with_prf(&env).await?;
         sign_up(&owner, &env, "owner@example.com").await?;
 
@@ -10313,6 +10315,12 @@ pub(crate) mod tests {
             &declare(after_description),
         )
         .await?;
+        if wrote_after["status"].as_u64() != Some(200) {
+            eprintln!("DIAG guest console follows");
+            dump_browser_log(&guest, &env).await;
+            eprintln!("DIAG owner console follows");
+            dump_browser_log(&owner, &env).await;
+        }
         assert_eq!(
             wrote_after["status"].as_u64(),
             Some(200),
