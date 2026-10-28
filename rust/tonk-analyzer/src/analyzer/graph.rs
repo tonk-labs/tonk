@@ -38,7 +38,8 @@ use tonk_schema::rule::{Rule, StoredRuleError, stored_rule};
 use super::assertion::{body_digest, derive_head_intent};
 use super::declaration::{
     DeclaredApplication, action_application, attribute_application, build_concept_retractions,
-    concept_application, parse_attribute_body, parse_concept_body, role_application,
+    concept_application, edge_application, parse_attribute_body, parse_concept_body,
+    role_application,
 };
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::rule::{collect_rule_concepts, is_rule_retract_body, parse_rule_this_entity};
@@ -863,36 +864,61 @@ impl Graph {
                             },
                         );
                     }
-                    let inline_attributes = plan
-                        .inline_attributes
-                        .into_iter()
-                        .flat_map(|attr| {
-                            let role = attr
-                                .role
-                                .as_deref()
-                                .map(|role| role_application(&attr.entity, role));
-                            std::iter::once(attribute_application(
-                                &attr.descriptor,
-                                &attr.entity,
-                                None,
-                            ))
-                            .chain(role)
-                        })
-                        .chain(
-                            plan.action
-                                .iter()
-                                .map(|name| action_application(&entity, name)),
-                        )
-                        .collect();
+                    let inline_attributes =
+                        plan.inline_attributes
+                            .into_iter()
+                            .flat_map(|attr| {
+                                let role = attr
+                                    .role
+                                    .as_deref()
+                                    .map(|role| role_application(&attr.entity, role));
+                                std::iter::once(attribute_application(
+                                    &attr.descriptor,
+                                    &attr.entity,
+                                    None,
+                                ))
+                                .chain(role)
+                            })
+                            .chain(
+                                plan.action
+                                    .iter()
+                                    .map(|name| action_application(&entity, name)),
+                            )
+                            .chain(plan.edges.iter().map(|(field, target)| {
+                                edge_application(&entity, field, Some(target))
+                            }))
+                            .collect();
                     // Field retractions (`with: { f: _ }` / `..: _`)
                     // dissociate stored fields read off the branch.
                     let resolved = scope.resolved_concept(&entity).flatten();
-                    let retractions = build_concept_retractions(
+                    let mut retractions = build_concept_retractions(
                         &entity,
                         &plan.retracted,
                         plan.rest_retraction.as_ref(),
                         resolved.as_ref().map(|def| def.descriptor.concept()),
                     )?;
+                    // Removing a field also removes its graph metadata.
+                    let mut edge_fields: std::collections::BTreeSet<String> = plan
+                        .retracted
+                        .iter()
+                        .map(|field| field.name.clone())
+                        .collect();
+                    if plan.rest_retraction.is_some() {
+                        if let Some(def) = &resolved {
+                            edge_fields.extend(
+                                def.descriptor
+                                    .concept()
+                                    .with()
+                                    .iter()
+                                    .map(|(name, _)| name.to_owned()),
+                            );
+                        }
+                    }
+                    retractions.extend(
+                        edge_fields
+                            .iter()
+                            .map(|field| edge_application(&entity, field, None)),
+                    );
                     // A retraction-only body (no asserted fields)
                     // emits no concept assertion — only the
                     // retractions; its descriptor is an unemitted stub.

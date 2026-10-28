@@ -359,6 +359,8 @@ pub(crate) struct RestRetraction;
 /// inline attribute definitions that need to be registered as
 /// their own meta-head plans alongside the concept's own.
 pub(crate) struct ConceptBody {
+    /// Typed edge bookmarks; kept outside the ordinary matching descriptor.
+    pub edges: BTreeMap<String, String>,
     pub descriptor: ConceptDescriptor,
     pub entity: Entity,
     /// Fields named for retraction via `field: _`. Never enter the
@@ -395,6 +397,45 @@ pub(crate) fn parse_concept_body(
     assertion: &SyntaxApplication,
     scope: &Scope,
 ) -> Result<ConceptBody, AnalyzeError> {
+    // Normalize typed fields to entity-valued attributes, retaining their
+    // targets separately. Bookmarks deliberately need not resolve yet: a
+    // declaration may refer to itself or to a later declaration.
+    let mut assertion = assertion.clone();
+    let mut edges = BTreeMap::new();
+    for block in &mut assertion.fields {
+        if !matches!(block.name.as_str(), "with" | "maybe") {
+            continue;
+        }
+        let FieldValue::Nested(fields) = &mut block.value else {
+            continue;
+        };
+        for field in fields {
+            let FieldValue::Nested(properties) = &mut field.value else {
+                continue;
+            };
+            for property in properties {
+                if property.name != "as" {
+                    continue;
+                }
+                let target = match &property.value {
+                    FieldValue::Symbol(name)
+                        if tonk_notation::type_uri(name).is_none()
+                            || scope.shadowed_builtins.lock().contains(name) =>
+                    {
+                        Some(name.clone())
+                    }
+                    FieldValue::Uri(uri) if tonk_notation::type_uri(uri).is_none() => {
+                        Some(uri.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(target) = target {
+                    edges.insert(field.name.clone(), target);
+                    property.value = FieldValue::Symbol("entity".into());
+                }
+            }
+        }
+    }
     let mut description: Option<String> = None;
     let mut transient: bool = false;
     let mut action: Vec<String> = Vec::new();
@@ -568,10 +609,15 @@ pub(crate) fn parse_concept_body(
             }
             .into());
         }
-        None => raw_descriptor.this(),
+        None if edges.is_empty() => raw_descriptor.this(),
+        None => {
+            use tonk_schema::prelude::EntityExt;
+            Entity::of(&("tonk.graph.concept", &raw_descriptor, &edges))
+        }
     };
     let descriptor = raw_descriptor;
     Ok(ConceptBody {
+        edges,
         descriptor,
         entity,
         retracted,
@@ -1045,6 +1091,28 @@ fn concept_field_retraction(
 
 /// Build the `dialog.attribute` built-in schema descriptor. Its
 /// fields map to the 5 EAVs every named attribute writes.
+/// Assert or clear one typed edge bookmark on a concept.
+pub(crate) fn edge_application(entity: &Entity, field: &str, target: Option<&str>) -> Application {
+    let predicate: ConceptDescriptor = serde_json::from_value(serde_json::json!({
+        "with": { "target": { "the": format!("db.concept.edge/{field}"), "as": "text:" } }
+    }))
+    .expect("edge metadata schema is valid");
+    let mut terms = Parameters::new();
+    terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+    terms.insert(
+        "target".into(),
+        target
+            .map(|target| Term::Constant(Value::String(target.into())))
+            .unwrap_or_else(Term::blank),
+    );
+    Application::Concept {
+        query: ConceptQuery { terms, predicate },
+        join: Vec::new(),
+        this: ThisIntent::Uri(entity.clone()),
+        name: None,
+    }
+}
+
 /// Build the `Application` asserting an attribute's intent role: one
 /// fact, `tonk.dialog.intent.attribute/role`, on the attribute entity.
 pub(crate) fn role_application(entity: &Entity, role: &str) -> Application {
@@ -1367,5 +1435,62 @@ fn parse_transient_tag(field: &tonk_notation::Field) -> Result<bool, AnalyzeErro
                 .into(),
         }
         .into()),
+    }
+}
+
+#[cfg(test)]
+mod graph_tests {
+    use super::*;
+
+    fn body(source: &str) -> ConceptBody {
+        let parsed = tonk_notation::parse(source).syntax.expect("valid notation");
+        parse_concept_body(parsed.expressions[0].application(), &Scope::new())
+            .expect("valid declaration")
+    }
+
+    #[dialog_common::test]
+    fn typed_edges_allow_self_reference_and_preserve_storage_types() {
+        let graph = body(
+            r#"concept!: &person
+  with:
+    name: { the: example.person/name, as: text, description: "Name" }
+  maybe:
+    manager: { the: example.person/manager, as: person, description: "Manager" }
+"#,
+        );
+        assert_eq!(
+            graph.edges.get("manager").map(String::as_str),
+            Some("person")
+        );
+        let with = graph.descriptor.with();
+        let manager = with.iter().find(|(name, _)| *name == "manager").unwrap().1;
+        assert_eq!(manager.content_type(), Some(dialog_query::Type::Entity));
+        assert!(manager.is_optional());
+    }
+
+    #[dialog_common::test]
+    fn edge_target_changes_identity_but_ordinary_declarations_keep_theirs() {
+        let ordinary = body(
+            r#"concept!: &person
+  with:
+    manager: { the: example.person/manager, as: entity, description: "Manager" }
+"#,
+        );
+        let first = body(
+            r#"concept!: &person
+  with:
+    manager: { the: example.person/manager, as: person, description: "Manager" }
+"#,
+        );
+        let second = body(
+            r#"concept!: &person
+  with:
+    manager: { the: example.person/manager, as: team, description: "Manager" }
+"#,
+        );
+        assert_eq!(ordinary.entity, ordinary.descriptor.this());
+        assert_eq!(first.descriptor, ordinary.descriptor);
+        assert_ne!(first.entity, ordinary.entity);
+        assert_ne!(first.entity, second.entity);
     }
 }
