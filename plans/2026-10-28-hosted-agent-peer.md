@@ -40,6 +40,30 @@ flowchart LR
   letting the agent provision spaces on the user's behalf. Created spaces are
   owned by the user and sealed under the account.
 - **Attribution.** Authority is the agent space DID, operator is the session DID.
+- **Identifier.** Agent spaces are named by `did:web`, derived from their key,
+  like accounts are named under the access service (see below).
+
+### Identifier
+
+```
+did:key:z6Mk...            agent space key
+did:web:tonk.host:agent:z6Mk...
+  └─ GET https://tonk.host/agent/z6Mk.../did.json
+```
+
+The document is derived from the key: one `verificationMethod` for the embedded
+key, `alsoKnownAs` the `did:key`, and a `service` entry pointing at the hosted
+peer. Resolvers **must** check that the document's key is the one embedded in
+the identifier, so whoever controls `tonk.host` cannot rotate an agent's key.
+With that check, `did:web` adds a name, discovery of the hosted peer and a
+place to mark an agent deactivated, without adding trust in DNS.
+
+The access service already verifies chains issued by `did:web` identities
+(`dialog_did_web::CachingResolver` in `handlers/ucan.rs`). The embedded-key
+check is new.
+
+`tonk.host` serves these documents and nothing else: it must never serve sign-in,
+because every `*.tonk.host` page can claim `tonk.host` as its WebAuthn RP ID.
 
 A leaked token exposes the agent's own space plus whatever invites are live at
 the time. Revocation is the only bound on the session itself.
@@ -193,6 +217,8 @@ Rust, in `tonk-identity`, `tonk-schema` and the YAML library.
   issuer and audience; the retained powerline and the proofs sent on invocation
   never contain the seed.
 - Provision an agent space under an account (reuse space creation and sealing).
+- `did:web:tonk.host:agent:{key}` derivation and document builder, with the
+  embedded-key check in the resolver used by the access service and peers.
 - Create-space delegation, once open question 1 is decided.
 - CLI: `tonk agent create --name`, `tonk agent session` printing a token,
   `tonk agent revoke`. This gives stage 2 real tokens without OAuth.
@@ -212,6 +238,8 @@ Worker that takes a Bearer token.
 - `401` with `WWW-Authenticate: Bearer resource_metadata=...`; tool errors for
   lapsed invites.
 - Serve `/.well-known/oauth-protected-resource` naming the channel's provider.
+- Serve `/agent/{key}/did.json` (on `tonk.host` in production, locally on the
+  dev port), with the deactivated flag once revoking an agent exists.
 - `providerOrigin()` localhost exception for local development.
 - Tests: missing, malformed, wrong-audience and revoked tokens; concurrent writes
   from two sessions of one agent; a lapsed invite.
@@ -299,3 +327,14 @@ working in a space it was invited to.
 3. **Workers fit.** Answered by stage 0.
 4. **Invite renewal.** Who renews an agent's lapsed invite, and how the agent
    learns which one lapsed. Needed by stage 5.
+5. **`did:web` as principal or alias.** As principal, the powerline issuer,
+   invite audiences and contacts use the `did:web`, and every verifier resolves
+   it (offline peers need the embedded-key shortcut to avoid a fetch). As alias,
+   UCANs keep the `did:key` and the `did:web` is for naming and discovery only.
+   Also: does the space's storage subject stay `did:key` either way? Needed by
+   stage 1.
+6. **Channels in the identifier.** `did:web:tonk.host:...` names the stable host
+   for agents provisioned on dev and staging too. Either `tonk.host` serves
+   documents for every channel (the key part is derivable, but the service entry
+   and deactivation are per channel), or the host is per channel, e.g.
+   `did:web:agent-dev.tonk.host:agent:...`. Needed by stage 1.
