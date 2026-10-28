@@ -8,7 +8,11 @@
 //! - asked of the worker of a space, by the space's DID: `{ "ask": id, "to":
 //!   did, "method", "path", "body": text or null }`
 //! - asked of the embedder, to read a public text such as a seed: `{ "ask":
-//!   id, "read": url }`
+//!   id, "read": url }`, where a path is on the deployment's app
+//! - asked of the embedder, by the person's persona, to deliver a request to
+//!   the deployment's access service, such as an invocation it signed:
+//!   `{ "ask": id, "fetch": url, "method", "type": media type or null,
+//!   "body64": base64 or null }`, answered with `"body64"`
 //! - asked of the person's persona, by a space's worker, for what its space
 //!   is to be created from: `{ "ask": id, "seed": true }`, and that it has
 //!   been: `{ "ask": id, "seeded": true }`
@@ -18,6 +22,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::channel::oneshot;
 use serde_json::{Value, json};
 
@@ -28,6 +34,12 @@ use crate::world::sapling::kernel::types::Error;
 pub struct Answer {
     pub status: u16,
     pub body: String,
+}
+
+/// An answer of a service: its status and its body's bytes.
+pub struct Delivered {
+    pub status: u16,
+    pub body: Vec<u8>,
 }
 
 struct Pending {
@@ -55,6 +67,29 @@ pub async fn ask(to: &str, method: &str, path: &str, body: Option<&str>) -> Resu
 /// credentials go with it, and a redirect fails it.
 pub async fn read(url: &str) -> Result<Answer, Error> {
     send(|id| json!({ "ask": id, "read": url })).await
+}
+
+/// Ask the embedder to deliver `method` on `url`, with `body` of the media
+/// type `kind`, and answer what came back. Only a persona's embedder
+/// delivers.
+pub async fn fetch(
+    method: &str,
+    url: &str,
+    kind: Option<&str>,
+    body: Option<&[u8]>,
+) -> Result<Delivered, Error> {
+    let body64 = body.map(|body| BASE64.encode(body));
+    let message = send(
+        |id| json!({ "ask": id, "fetch": url, "method": method, "type": kind, "body64": body64 }),
+    );
+    let answer = message.await?;
+    let body = BASE64
+        .decode(answer.body)
+        .map_err(|error| Error::Invalid(format!("the answer's body is not base64: {error}")))?;
+    Ok(Delivered {
+        status: answer.status,
+        body,
+    })
 }
 
 /// Ask the person's persona what this worker's space is to be created from:
@@ -119,6 +154,7 @@ pub fn received(message: &[u8]) -> Result<(), Error> {
                 .unwrap_or(502),
             body: message
                 .get("body")
+                .or_else(|| message.get("body64"))
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),

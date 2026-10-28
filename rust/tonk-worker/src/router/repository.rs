@@ -2809,12 +2809,18 @@ pub(super) fn worker_origin() -> Option<String> {
             .map(|global| global.location().origin())
             .filter(|origin| !origin.is_empty())
     }
+    // A kernel serves an origin it does not know: its host says which app
+    // it is the deployment of (see [`crate::set_app_origin`]).
+    #[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+    {
+        crate::app_origin()
+    }
     // A native host serves no origin of its own; the access-service
     // address must come from recorded facts (an account provider) or
     // host configuration, so "derive it from where I am serving" has no
     // native answer. Callers already treat `None` as "the service is
     // unknown" and refuse or degrade visibly.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         None
     }

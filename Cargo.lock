@@ -5931,6 +5931,7 @@ name = "tonk-kernel-world"
 version = "0.6.16-rc.1"
 dependencies = [
  "async-trait",
+ "base64",
  "blake3",
  "dialog-artifacts",
  "dialog-capability",

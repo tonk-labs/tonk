@@ -182,6 +182,10 @@ mod handoff;
 mod cache;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use cache::{set_asset_paths, set_build_id};
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) use device::app_origin;
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub use device::set_app_origin;
 pub use device::{Standing, set_standing};
 
 mod r#async;

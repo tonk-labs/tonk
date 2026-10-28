@@ -546,10 +546,14 @@ async function serveShell() {
 // ---- What the kernel asks of other kernels, and of its host --------------
 //
 // The kernel sends a message with `application.send`: `{ ask, to, method,
-// path, body }` asks the kernel of the space `to`, and `{ ask, read }` asks
-// this host for the text at the address `read`, which anyone may read, such
-// as a seed. The answer goes back with `receive` as `{ answer, status, body
-// }`, or `{ answer, error }`. Only the persona asks other kernels.
+// path, body }` asks the kernel of the space `to`; `{ ask, read }` asks this
+// host for the text at the address `read`, which anyone may read, such as a
+// seed; and `{ ask, fetch, method, type, body64 }` asks it to deliver a
+// request, such as an invocation the kernel signed, to the address `fetch`.
+// The answer goes back with `receive` as `{ answer, status, body }` (`body64`
+// for a delivery), or `{ answer, error }`. Only the persona asks other
+// kernels and has requests delivered: a space's code is its author's, and
+// gets no network.
 async function kernelSent(bytes) {
     let message;
     try {
@@ -575,6 +579,10 @@ async function kernelSent(bytes) {
 // What answers `message`: `{ status, body }`.
 async function answerOf(message) {
     if (typeof message.read === "string") return readPublic(message.read);
+    if (typeof message.fetch === "string") {
+        if (!PROFILE) throw new Error("a space's kernel has nothing delivered");
+        return deliver(message);
+    }
     // What the space is to be created from, which the person's profile kept
     // as it created it, and that it has been.
     if (message.seed === true && !PROFILE) {
@@ -593,6 +601,18 @@ async function answerOf(message) {
     const headers = body ? [["content-type", "application/json"]] : [];
     const reply = await callSpace(message.to, { method: message.method, path: message.path, headers, body });
     return { status: reply.status, body: new TextDecoder().decode(reply.body) };
+}
+
+// Deliver the request `message` asks for, with no credentials: what it
+// carries is its own authority. The body goes both ways as base64.
+async function deliver({ fetch: url, method, type, body64 }) {
+    const headers = type ? { "content-type": type } : {};
+    const body = body64 == null ? undefined : Uint8Array.from(atob(body64), char => char.charCodeAt(0));
+    const response = await fetch(url, { method, headers, body, credentials: "omit", redirect: "error", cache: "no-store" });
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    let binary = "";
+    for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+    return { status: response.status, body64: btoa(binary) };
 }
 
 // The text at `url`, read as anyone would read it: no credentials, no

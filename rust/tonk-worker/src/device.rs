@@ -174,6 +174,25 @@ pub fn set_standing(standing: Standing) {
     let _ = STANDING.set(standing);
 }
 
+/// The app a kernel's deployment serves, as its host said.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+static APP_ORIGIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Say which app this kernel's deployment serves, such as
+/// `https://tonk.foundation`: the origin a link made for the person opens
+/// on, and where the deployment's access service answers. A kernel serves
+/// an origin of its own, which is not it, and its host knows it.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub fn set_app_origin(origin: String) {
+    let _ = APP_ORIGIN.set(origin);
+}
+
+/// The app this kernel's deployment serves, once its host said.
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+pub(crate) fn app_origin() -> Option<String> {
+    APP_ORIGIN.get().cloned()
+}
+
 /// Whether spaces render on origins of their own, each with a worker that
 /// holds it. So wherever a site's script started this worker and said it is a
 /// person's: that script runs on the profile's origin, beside the spaces'.

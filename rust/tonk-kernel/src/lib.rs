@@ -52,9 +52,7 @@ use std::sync::{Mutex, PoisonError};
 use axum::Router;
 use axum::http::StatusCode;
 use http_body_util::BodyExt as _;
-#[cfg(feature = "persona")]
-use serde_json::Value;
-use serde_json::json;
+use serde_json::{Value, json};
 use site::{Routed, Site};
 use tonk_kernel_world::boot;
 use tonk_kernel_world::guest::HandleLayer;
@@ -183,6 +181,7 @@ impl lifecycle::Guest for Kernel {
             #[cfg(feature = "persona")]
             state: state.clone(),
         });
+        wit_bindgen::spawn_local(configure());
         if let Some(space) = renewing {
             wit_bindgen::spawn_local(async move { renew(&state, &space).await });
         } else if let Some(space) = fresh {
@@ -287,6 +286,25 @@ impl handler::Guest for Kernel {
 async fn take_up(state: &TonkState, space: &Space) {
     let chains = delegated(space, "to serve the space").await;
     adopt(state, space, &chains).await;
+}
+
+/// Learn from the deployment's configuration, which the host reads, which
+/// app it serves: where the access service answers, and where a link made
+/// for the person opens.
+async fn configure() {
+    let read = tonk_kernel_world::application::read("/.well-known/tonk").await;
+    let app = read.ok().and_then(|answer| {
+        let configuration: Value = serde_json::from_str(&answer.body).ok()?;
+        configuration
+            .get("sites")?
+            .get("app")?
+            .as_str()
+            .map(|app| app.trim_end_matches('/').to_owned())
+    });
+    match app {
+        Some(app) => tonk_worker::set_app_origin(app),
+        None => tonk_common::log!("tonk-kernel: the deployment names no app"),
+    }
 }
 
 /// Ask for the delegation of `space` anew, as the kernel serves what it took
