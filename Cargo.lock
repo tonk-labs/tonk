@@ -5882,6 +5882,7 @@ version = "0.6.16-rc.1"
 dependencies = [
  "axum",
  "http-body-util",
+ "serde_json",
  "tonk-common",
  "tonk-kernel-world",
  "tonk-worker",
@@ -5938,7 +5939,9 @@ dependencies = [
  "dialog-effects",
  "dialog-storage",
  "dialog-varsig",
+ "futures",
  "futures-util",
+ "serde_json",
  "signature 2.2.0",
  "tokio",
  "wit-bindgen 0.61.1",
