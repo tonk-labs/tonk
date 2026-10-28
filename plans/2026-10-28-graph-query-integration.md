@@ -48,9 +48,28 @@ Companion to Dialog `ideas/graph-queries.md`, implemented on an isolated Tonk wo
   matching/shaping semantics.
 - Final focused run passed all eight tests: two declarations, five evaluator
   scenarios, and one reactor nested delta/reconnect/cleanup scenario.
-- Existing analyzer, evaluator, and reactor unit suites are running as an
-  integration checkpoint.
+- Existing analyzer, evaluator, and reactor unit suites passed in the fresh
+  review cycle below.
 - Local verification uses an external Cargo patch config. Its path and the
   resulting local-patch lockfile are not for committing. The dependency must be
   pinned to the reviewed Dialog graph commit before PR CI.
-- Browser execution, actual HTTP/SSE requests, and CI are not yet verified here.
+- Native HTTP/SSE handler requests and frames are verified below. Browser
+  execution, live network serving, and CI are not yet verified here.
+
+## Fresh review cycle
+
+- Preserved ordinary fields named `graph` and their variable/constant bindings.
+- Graph schemas now come from the analyzer's resolved scope. Recursive local
+  redeclarations agree with their root predicates and before/after overlays.
+- Concept resolution captures edge bookmarks in its existing metadata read;
+  ordinary evaluation no longer re-resolves concepts or scans graph metadata.
+- Field cleanup retracts only persisted graph metadata, preserving ordinary
+  retraction statement counts. The existing one-retraction test passes unchanged.
+- Graph fanout serializes a full snapshot only for pending subscribers, under
+  the subscription-map lock after polling, preserving attachment during poll.
+- Added explicit HTTP graph envelope with matching/shaping constraints and
+  constrained subscription root changes, edge moves, cycle closure/cut tests.
+- Full checkpoint: reactor 56 passed; analyzer 254 passed, 1 ignored; evaluator
+  42 passed. Native HTTP/SSE handler test passed: constrained JSON equals the
+  stream snapshot, nested change emits a root delta, invalid envelope rejected.
+  The schema suite remains running.

@@ -127,34 +127,31 @@ impl SubscriptionPoll<'_> {
 
         if let super::state::Engine::Graph(graph) = &mut engine {
             let result = graph.poll(env).await;
-            let snapshot = serde_json::to_vec(&serde_json::json!({
-                "kind": "graph_snapshot", "graph": graph.results(),
-            }))
-            .map(Bytes::from);
-            *slot.lock().await = Some(engine);
             let delta = match result {
                 Ok(delta) => delta,
                 Err(error) => {
                     log!("[reactor] graph subscription poll failed: {error}");
+                    *slot.lock().await = Some(engine);
                     return;
                 }
-            };
-            let Ok(snapshot) = snapshot else {
-                return;
             };
             let delta = delta.filter(|delta| !delta.is_empty()).and_then(|delta| {
                 serde_json::to_vec(&serde_json::json!({ "kind": "graph_delta", "delta": delta }))
                     .ok()
                     .map(Bytes::from)
             });
-            let mut subs = self.state.subscriptions().lock();
-            let Some(subscription) = subs.get_mut(&self.hash) else {
-                return;
-            };
-            subscription.deliver_graph(&snapshot, delta.as_ref());
-            if subscription.subscribers.is_empty() {
-                subs.shift_remove(&self.hash);
+            {
+                let mut subs = self.state.subscriptions().lock();
+                if let Some(subscription) = subs.get_mut(&self.hash) {
+                    // Recheck pending clients after poll, while holding the map
+                    // lock. No snapshot serialization on established-only polls.
+                    subscription.deliver_graph(graph.results(), delta.as_ref());
+                    if subscription.subscribers.is_empty() {
+                        subs.shift_remove(&self.hash);
+                    }
+                }
             }
+            *slot.lock().await = Some(engine);
             return;
         }
         let super::state::Engine::Rows(rows) = &mut engine else {

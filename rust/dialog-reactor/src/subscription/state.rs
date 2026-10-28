@@ -197,10 +197,24 @@ impl Subscription {
     }
 
     /// Deliver graph frames using the same pending-subscriber handshake.
-    pub fn deliver_graph(&mut self, snapshot: &Bytes, delta: Option<&Bytes>) {
+    pub fn deliver_graph(
+        &mut self,
+        graph: &dialog_query::graph::GraphResult,
+        delta: Option<&Bytes>,
+    ) {
+        let mut snapshot = None;
         self.subscribers.retain_mut(|subscriber| {
             let bytes = match subscriber.status {
-                Status::Pending => Some(snapshot),
+                Status::Pending => {
+                    if snapshot.is_none() {
+                        snapshot = serde_json::to_vec(
+                            &serde_json::json!({ "kind": "graph_snapshot", "graph": graph }),
+                        )
+                        .ok()
+                        .map(Bytes::from);
+                    }
+                    snapshot.as_ref()
+                }
                 Status::Established => delta,
             };
             let Some(bytes) = bytes else {

@@ -18,6 +18,8 @@ pub struct Subscribe<'a> {
     pub query: ConceptQuery,
     /// Concept bookmark whose persisted typed edges shape this subscription.
     pub graph: Option<String>,
+    /// Explicit root matching and edge shaping constraints.
+    pub graph_constraints: tonk_schema::graph::GraphConstraints,
     /// The client this subscriber serves, when known — see
     /// [`BranchState::retain_subscribers`](crate::BranchState::retain_subscribers).
     pub client: Option<String>,
@@ -33,6 +35,7 @@ impl<'a> Subscribe<'a> {
             branch,
             query,
             graph: None,
+            graph_constraints: Default::default(),
             client: None,
             level: 0,
         }
@@ -41,6 +44,12 @@ impl<'a> Subscribe<'a> {
     /// Shape this subscription using the named concept's typed edges.
     pub fn graph(mut self, name: impl Into<String>) -> Self {
         self.graph = Some(name.into());
+        self
+    }
+
+    /// Narrow a graph subscription at its matching and shaping stages.
+    pub fn graph_constraints(mut self, constraints: tonk_schema::graph::GraphConstraints) -> Self {
+        self.graph_constraints = constraints;
         self
     }
 
@@ -67,13 +76,16 @@ impl<'a> Subscribe<'a> {
     {
         let session = self.branch.acquire(env).await?;
         let subscriber = if let Some(name) = self.graph {
-            let graph =
+            let mut graph =
                 tonk_schema::graph::resolve_graph(self.query, &name, &session.handle().into(), env)
                     .await
                     .map_err(|error| ReactorError::Graph(error.to_string()))?
                     .ok_or_else(|| {
                         ReactorError::Graph(format!("concept {name:?} has no typed edges"))
                     })?;
+            self.graph_constraints
+                .apply(&mut graph)
+                .map_err(|error| ReactorError::Graph(error.to_string()))?;
             self.branch
                 .reactor()
                 .subscription_lifecycle

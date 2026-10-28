@@ -58,6 +58,29 @@ pub struct QueryParams {
     pub level: u32,
 }
 
+/// Explicit envelope accepted only with `?graph=<bookmark>`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphRequest {
+    query: Query,
+    #[serde(default)]
+    constraints: tonk_schema::graph::GraphConstraints,
+}
+
+fn decode_query(
+    bytes: &[u8],
+    graph: bool,
+) -> Result<(Query, tonk_schema::graph::GraphConstraints), serde_json::Error> {
+    if graph {
+        let value: serde_json::Value = serde_json::from_slice(bytes)?;
+        if value.get("query").is_some() {
+            let request: GraphRequest = serde_json::from_value(value)?;
+            return Ok((request.query, request.constraints));
+        }
+    }
+    Ok((serde_json::from_slice(bytes)?, Default::default()))
+}
+
 /// Handler. Reads body, decides one-shot vs subscription based on
 /// `Accept`, dispatches to the reactor.
 #[wasm_compat]
@@ -287,7 +310,7 @@ async fn query_on_branch(
         .await
         .map_err(|e| TonkWorkerError::Router(format!("failed to read body: {e}")))?
         .to_bytes();
-    let wire: Query = serde_json::from_slice(&bytes)
+    let (wire, constraints) = decode_query(&bytes, params.graph.is_some())
         .map_err(|e| TonkWorkerError::Router(format!("invalid query body: {e}")))?;
 
     let want_stream = headers
@@ -301,6 +324,11 @@ async fn query_on_branch(
     let query = match wire.into_concept_query() {
         Ok(query) => query,
         Err(wire) => {
+            if params.graph.is_some() {
+                return Err(TonkWorkerError::Router(
+                    "graph queries require a concept predicate".into(),
+                ));
+            }
             if want_stream {
                 return Err(TonkWorkerError::Router(
                     "formula queries do not support subscriptions yet".into(),
@@ -331,7 +359,11 @@ async fn query_on_branch(
             .await
             .map_err(reactor_to_error)?;
         if want_stream {
-            let mut subscribe = branch.subscribe(query).graph(name).level(params.level);
+            let mut subscribe = branch
+                .subscribe(query)
+                .graph(name)
+                .graph_constraints(constraints)
+                .level(params.level);
             if let Some(client) = client {
                 subscribe = subscribe.client(client);
             }
@@ -345,7 +377,7 @@ async fn query_on_branch(
             .acquire(&tonk.operator)
             .await
             .map_err(reactor_to_error)?;
-        let graph = tonk_schema::graph::resolve_graph(
+        let mut graph = tonk_schema::graph::resolve_graph(
             query,
             &name,
             &session.handle().into(),
@@ -354,6 +386,9 @@ async fn query_on_branch(
         .await
         .map_err(|error| TonkWorkerError::Router(error.to_string()))?
         .ok_or_else(|| TonkWorkerError::Router(format!("concept {name:?} has no typed edges")))?;
+        constraints
+            .apply(&mut graph)
+            .map_err(|error| TonkWorkerError::Router(error.to_string()))?;
         let result = session
             .handle()
             .query()
@@ -584,7 +619,8 @@ mod tests {
                 ReactorError::RepositoryNotFound { .. } | ReactorError::BranchNotFound { .. } => {
                     true
                 }
-                ReactorError::QueryFailed(_)
+                ReactorError::Graph(_)
+                | ReactorError::QueryFailed(_)
                 | ReactorError::Commit(_)
                 | ReactorError::Pull(_)
                 | ReactorError::Download(_)
@@ -712,5 +748,140 @@ mod tests {
             matches!(branch.migrate_once(&tonk.operator).await, Ok(None)),
             "a second read does not upgrade again"
         );
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod graph_tests {
+    use super::*;
+    use tonk_evaluator::evaluate::SyntaxEvaluateExt;
+
+    #[dialog_common::test]
+    async fn graph_http_envelope_narrows_json_and_sse_and_emits_membership_changes()
+    -> anyhow::Result<()> {
+        let state = crate::router::command::tests::native::test_state().await;
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await?;
+        let source = r#"concept!: &person
+  with:
+    name: { the: example.person/name, as: text, description: "Name" }
+concept!: &issue
+  with:
+    title: { the: example.issue/title, as: text, description: "Title" }
+    owner: { the: example.issue/owner, as: person, description: "Owner" }
+person!:
+  this: id:alice
+  name: "Alice"
+person!:
+  this: id:bob
+  name: "Bob"
+issue!:
+  this: id:first
+  title: "First"
+  owner: id:alice
+issue!:
+  this: id:second
+  title: "Second"
+  owner: id:bob
+"#;
+        tonk_notation::parse(source)
+            .syntax
+            .unwrap()
+            .evaluate(session.handle().transaction())
+            .perform(&tonk.operator)
+            .await?
+            .commit()
+            .publish()
+            .perform(&tonk.operator)
+            .await?;
+        let definition = tonk_schema::resolution::ConceptReference::from(
+            tonk_schema::resolution::NamedReference("issue".into()),
+        )
+        .resolve(session.handle())
+        .perform(&tonk.operator)
+        .await?
+        .unwrap();
+        let query = dialog_query::ConceptQuery {
+            predicate: definition.descriptor.concept().clone(),
+            terms: {
+                let mut terms = dialog_query::Parameters::new();
+                terms.insert("this".into(), dialog_query::Term::var("this"));
+                terms
+            },
+        };
+        let body = serde_json::to_vec(
+            &serde_json::json!({ "query": Query::from(&query), "constraints": { "matching": { "owner": { "name": "Alice" } }, "shaping": { "owner": { "name": "Alice" } } } }),
+        )?;
+        // The envelope is unambiguous, enabled only by the graph URL parameter.
+        assert!(decode_query(&body, false).is_err());
+        assert!(decode_query(br#"{"query":{},"constraints":{"unknown":{}}}"#, true).is_err());
+        let target = QueryTarget::Profile {
+            branch: tonk.active_branch.clone(),
+        };
+        let request = || {
+            Request::builder()
+                .uri("/query?graph=issue")
+                .body(Body::from(body.clone()))
+                .unwrap()
+        };
+        let json = query_on_branch(
+            &state,
+            &tonk,
+            target.clone(),
+            HeaderMap::new(),
+            request(),
+            None,
+        )
+        .await?;
+        assert_eq!(json.status(), StatusCode::OK);
+        let graph: serde_json::Value =
+            serde_json::from_slice(&json.into_body().collect().await?.to_bytes())?;
+        assert_eq!(graph["roots"], serde_json::json!(["id:first"]));
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, "text/event-stream".parse()?);
+        let response = query_on_branch(&state, &tonk, target, headers, request(), None).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/event-stream"
+        );
+        let mut body = response.into_body();
+        async fn frame(body: &mut Body) -> anyhow::Result<serde_json::Value> {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+                .await?
+                .unwrap()?
+                .into_data()
+                .unwrap();
+            let text = std::str::from_utf8(&frame)?;
+            Ok(serde_json::from_str(
+                text.strip_prefix("data: ").unwrap().trim(),
+            )?)
+        }
+        let initial = frame(&mut body).await?;
+        assert_eq!(initial["kind"], "graph_snapshot");
+        assert_eq!(initial["graph"], graph);
+        tonk_notation::parse("person!:\n  this: id:bob\n  name: \"Alice\"\n")
+            .syntax
+            .unwrap()
+            .evaluate(session.handle().transaction())
+            .perform(&tonk.operator)
+            .await?
+            .commit()
+            .publish()
+            .perform(&tonk.operator)
+            .await?;
+        session.poll(&tonk.operator).await;
+        let delta = frame(&mut body).await?;
+        assert_eq!(delta["kind"], "graph_delta");
+        assert_eq!(
+            delta["delta"]["roots_added"],
+            serde_json::json!(["id:second"])
+        );
+        Ok(())
     }
 }

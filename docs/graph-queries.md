@@ -38,7 +38,9 @@ issue:
 
 Matching may remove an issue; shaping restricts its comments without removing
 the issue. Constants reach Dialog's scans. Matching on cyclic edges is rejected.
-Graph constraints currently accept constants, not variables.
+Graph constraints currently accept constants, not variables. If the concept
+declares a field named `graph`, that field retains its ordinary binding semantics;
+use the HTTP envelope below to constrain such a graph.
 
 For streaming, send the ordinary concept query body to the existing repository
 `/query?graph=person` endpoint with `Accept: text/event-stream`. Connections get a
@@ -48,6 +50,22 @@ a fresh snapshot. Without the header, this endpoint returns one normalized graph
 Omitting the `graph` parameter preserves the row protocol. Equal graph
 subscriptions share the retained Dialog engine and existing reactor cleanup.
 
-A subscription captures its schema on open; reconnect after changing bookmarks.
-Query-side constraints are available through notation; the streaming URL selects
-the declared graph without extra constraints.
+To constrain a JSON read or stream, the same graph endpoint accepts an explicit
+envelope (the ordinary query body remains accepted):
+
+```javascript
+JSON.stringify({
+  query, // The ordinary concept query for the selected bookmark.
+  constraints: {
+    matching: { owner: { name: "Alice" } },
+    shaping: { comments: { body: "Repro attached" } }
+  }
+})
+```
+
+The fields named by each stage must be typed edges of the root concept. The envelope
+is accepted only with `?graph=<bookmark>`; unknown constraint stages are errors.
+A subscription captures its schema and constraints on open; reconnect after
+changing bookmarks. Notation evaluation captures schemas in the analyzer scope,
+so declarations and recursive references in the document agree before and after
+its transaction writes.
