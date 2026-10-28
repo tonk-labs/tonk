@@ -320,15 +320,54 @@ fn expand(
     // ---- query pass: build query Applications ----
     for (index, expression) in syntax.expressions.iter().enumerate() {
         if let Expression::Query(q) = expression {
-            let graph = query::graph_constraints(q, scope, &working)?;
+            let constraints = query::graph_constraints(q, scope, &working)?;
             let mut matching = q.clone();
-            if graph.is_some() {
+            if constraints.is_some() {
                 matching.fields.retain(|field| field.name != "graph");
             }
             let application = build_query_application(&matching, scope, &working)?;
-            if graph.is_some() && !matches!(application, Application::Concept { .. }) {
+            if constraints.is_some() && !matches!(application, Application::Concept { .. }) {
                 return Err(AnalyzeErrorKind::InvalidGraphQuery {
                     reason: "graph stages require a concept query".into(),
+                }
+                .into());
+            }
+            let graph = if let (
+                tonk_notation::HeadName::Concept(name),
+                Application::Concept { query, .. },
+            ) = (&q.predicate.name, &application)
+            {
+                scope
+                    .concept(name)
+                    .and_then(|definition| {
+                        scope
+                            .graph_schemas
+                            .lock()
+                            .get(&definition.entity.to_string())
+                            .cloned()
+                            .map(|schema| dialog_query::graph::GraphQuery {
+                                root: query.clone(),
+                                shape: definition.entity.to_string(),
+                                schema,
+                            })
+                    })
+                    .map(|mut plan| {
+                        if let Some(constraints) = &constraints {
+                            constraints.apply(&mut plan).map_err(|e| {
+                                AnalyzeErrorKind::InvalidGraphQuery {
+                                    reason: e.to_string(),
+                                }
+                            })?;
+                        }
+                        Ok::<_, AnalyzeError>(plan)
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
+            if constraints.is_some() && graph.is_none() {
+                return Err(AnalyzeErrorKind::InvalidGraphQuery {
+                    reason: "graph constraints require typed edges".into(),
                 }
                 .into());
             }

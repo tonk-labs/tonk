@@ -589,7 +589,7 @@ impl<'a> Evaluated<'a> {
 /// synthesized snapshots).
 #[derive(Clone)]
 struct LabeledQuery {
-    graph: Option<tonk_schema::graph::GraphConstraints>,
+    graph: Option<dialog_query::graph::GraphQuery>,
     application: Application,
     label: String,
 }
@@ -656,42 +656,19 @@ async fn run_query<Env: EvaluateEnv>(
     let mut graphs = Vec::with_capacity(queries.len());
     for query in queries {
         let mut frames = collect_matches(query.application.clone(), txn, env).await?;
-        let graph = if let Application::Concept { query: root, .. } = &query.application {
-            match tonk_schema::graph::resolve_graph(
-                root.clone(),
-                &query.label,
-                &Source::from(txn),
-                env,
-            )
-            .await
-            .map_err(|error| EvaluateError::Query(error.to_string()))?
-            {
-                Some(mut graph) => {
-                    if let Some(constraints) = &query.graph {
-                        constraints
-                            .apply(&mut graph)
-                            .map_err(|error| EvaluateError::Query(error.to_string()))?;
-                    }
-                    let result = txn
-                        .query()
-                        .graph(graph)
-                        .perform(env)
-                        .await
-                        .map_err(|error| EvaluateError::Query(error.to_string()))?;
-                    frames.retain(|frame| {
-                        let entity =
-                            render_one_result(&root.predicate, &query.application, frame).this;
-                        result.roots.iter().any(|root| root.as_str() == entity)
-                    });
-                    Some(result)
-                }
-                None if query.graph.is_some() => {
-                    return Err(EvaluateError::Query(
-                        "graph constraints require typed edges".into(),
-                    ));
-                }
-                None => None,
-            }
+        let graph = if let Some(graph) = &query.graph {
+            let result = txn
+                .query()
+                .graph(graph.clone())
+                .perform(env)
+                .await
+                .map_err(|error| EvaluateError::Query(error.to_string()))?;
+            frames.retain(|frame| {
+                let entity =
+                    render_one_result(&graph.root.predicate, &query.application, frame).this;
+                result.roots.iter().any(|root| root.as_str() == entity)
+            });
+            Some(result)
         } else {
             None
         };

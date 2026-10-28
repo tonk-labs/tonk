@@ -6,15 +6,16 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use dialog_artifacts::{Entity, Value};
+use dialog_query::ConceptQuery;
 use dialog_query::graph::{GraphEdge, GraphQuery, GraphSchema, GraphShape};
-use dialog_query::{AttributeQuery, ConceptQuery, Output as _, Term};
 
 use crate::concept::{ConceptLookupError, QueryEnv};
 use crate::query_source::Source;
 use crate::resolution::{ConceptReference, NamedReference};
 
 /// Explicit query-side equalities, separated by the stage they affect.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct GraphConstraints {
     /// Root-edge target equalities: these may remove roots.
     pub matching: BTreeMap<String, BTreeMap<String, Value>>,
@@ -82,8 +83,8 @@ impl GraphConstraints {
 /// The stored relation naming a field's graph target.
 pub const EDGE_DOMAIN: &str = "db.concept.edge";
 
-/// Resolve graph metadata for a normal query. `None` leaves an ordinary query
-/// on its existing path. Every target must resolve; unresolved bookmarks are an
+/// Resolve persisted graph metadata for an explicit HTTP query. `None`
+/// indicates that the selected concept has no typed edges. Every target must resolve; unresolved bookmarks are an
 /// error, rather than silently returning an incomplete graph.
 pub async fn resolve_graph<Env: QueryEnv>(
     root: ConceptQuery,
@@ -95,7 +96,7 @@ pub async fn resolve_graph<Env: QueryEnv>(
     let Some(root_definition) = root_definition else {
         return Ok(None);
     };
-    let edges = read_edges(&root_definition.entity, source, env).await?;
+    let edges = definition_edges(&root_definition);
     if edges.is_empty() {
         return Ok(None);
     }
@@ -117,7 +118,7 @@ pub async fn resolve_graph<Env: QueryEnv>(
                 })?;
             edge.target = target.entity.to_string();
             if scheduled.insert(edge.target.clone()) {
-                let target_edges = read_edges(&target.entity, source, env).await?;
+                let target_edges = definition_edges(&target);
                 pending.push_back((target, target_edges));
             }
         }
@@ -147,47 +148,21 @@ fn reference(name: &str) -> ConceptReference {
     }
 }
 
-async fn read_edges<Env: QueryEnv>(
-    entity: &Entity,
-    source: &Source<'_>,
-    env: &Env,
-) -> Result<BTreeMap<String, GraphEdge>, ConceptLookupError> {
-    let claims = source
-        .select(AttributeQuery::new(
-            Term::var("relation"),
-            Term::from(entity.clone()),
-            Term::var("target"),
-            Term::blank(),
-            Some(dialog_query::Cardinality::One),
-        ))
-        .perform(env)
-        .try_vec()
-        .await
-        .map_err(|error| ConceptLookupError::query(error.to_string()))?;
-    let mut edges = BTreeMap::new();
-    for claim in claims {
-        let relation: dialog_artifacts::Relation = claim.the.into();
-        let Some(field) = relation.as_str().strip_prefix("db.concept.edge/") else {
-            continue;
-        };
-        let Value::String(target) = claim.is else {
-            continue;
-        };
-        if edges
-            .insert(
-                field.into(),
+fn definition_edges(
+    definition: &crate::resolution::ConceptDefinition,
+) -> BTreeMap<String, GraphEdge> {
+    definition
+        .edges
+        .iter()
+        .map(|(field, target)| {
+            (
+                field.clone(),
                 GraphEdge {
-                    target,
+                    target: target.clone(),
                     matching: BTreeMap::new(),
                     shaping: BTreeMap::new(),
                 },
             )
-            .is_some()
-        {
-            return Err(ConceptLookupError::query(format!(
-                "conflicting graph targets for {entity}.{field}"
-            )));
-        }
-    }
-    Ok(edges)
+        })
+        .collect()
 }

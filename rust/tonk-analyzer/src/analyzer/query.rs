@@ -323,6 +323,19 @@ pub(crate) fn graph_constraints(
     working: &Working,
 ) -> Result<Option<tonk_schema::graph::GraphConstraints>, AnalyzeError> {
     use tonk_notation::FieldValue;
+    // A declared field always keeps its ordinary query semantics.
+    if let HeadName::Concept(name) = &query.predicate.name {
+        if scope.concept(name).is_some_and(|definition| {
+            definition
+                .descriptor
+                .concept()
+                .with()
+                .iter()
+                .any(|(name, _)| name == "graph")
+        }) {
+            return Ok(None);
+        }
+    }
     let Some(graph) = query.fields.iter().find(|field| field.name == "graph") else {
         return Ok(None);
     };

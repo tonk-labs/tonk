@@ -445,8 +445,8 @@ impl Analyzable for AssertionNode {
 /// wrapper picks which one applies to a given node.
 #[derive(Debug, Clone)]
 pub struct QueryNodeAnalysis {
-    /// Explicit matching and shaping constraints on typed graph edges.
-    pub graph: Option<tonk_schema::graph::GraphConstraints>,
+    /// Typed graph query captured from the same scope as the root application.
+    pub graph: Option<dialog_query::graph::GraphQuery>,
     /// The built [`Application`] for this query — bare-symbol and
     /// analysis-time `?var` references already substituted.
     pub application: Application,

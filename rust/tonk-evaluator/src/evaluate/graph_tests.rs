@@ -271,3 +271,98 @@ async fn replacing_a_pinned_typed_field_with_entity_clears_its_edge() -> anyhow:
     assert_eq!(evaluated.matches[0].results.len(), 2);
     Ok(())
 }
+
+#[dialog_common::test]
+async fn declared_graph_fields_remain_ordinary_bindings() -> anyhow::Result<()> {
+    let (operator, profile) = test_session_with_peer().await;
+    let repo = test_repo(&operator, &profile).await;
+    let branch = repo.branch("main").open().perform(&operator).await?;
+    syntax(
+        r#"concept!: &chart
+  with:
+    graph: { the: example.chart/graph, as: text, description: "Graph" }
+chart!:
+  this: id:chart
+  graph: "plot"
+"#,
+    )
+    .evaluate(branch.transaction())
+    .perform(&operator)
+    .await?
+    .commit()
+    .publish()
+    .perform(&operator)
+    .await?;
+    for query in ["chart:\n  graph: \"plot\"\n", "chart:\n  graph: ?g\n"] {
+        let evaluated = syntax(query)
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await?;
+        assert_eq!(evaluated.matches[0].results.len(), 1);
+        assert!(evaluated.matches[0].graph.is_none());
+    }
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn recursive_redeclarations_use_the_same_schema_before_and_after_mutations()
+-> anyhow::Result<()> {
+    let (operator, profile) = test_session_with_peer().await;
+    let repo = test_repo(&operator, &profile).await;
+    let branch = repo.branch("main").open().perform(&operator).await?;
+    syntax(PEOPLE)
+        .evaluate(branch.transaction())
+        .perform(&operator)
+        .await?
+        .commit()
+        .publish()
+        .perform(&operator)
+        .await?;
+    let source = r#"concept!: &person
+  with:
+    name: { the: example.person/name, as: text, description: "Name" }
+  maybe:
+    manager: { the: example.person/manager, as: person, description: "Manager" }
+    nickname: { the: example.person/nickname, as: text, description: "Nickname" }
+person:
+  this: id:alice
+person!:
+  this: id:bob
+  nickname: "Bobby"
+"#;
+    let evaluated = syntax(source)
+        .evaluate(branch.transaction())
+        .perform(&operator)
+        .await?;
+    let before = evaluated.matches[0].graph.as_ref().unwrap();
+    assert_eq!(before.nodes.len(), 2);
+    let bob: Entity = "id:bob".parse()?;
+    assert!(
+        !before.nodes[&bob]
+            .values()
+            .next()
+            .unwrap()
+            .contains_key("nickname")
+    );
+    let after = evaluated.matches_after(&operator).await?;
+    let graph = after[0].graph.as_ref().unwrap();
+    assert_eq!(
+        graph.nodes[&bob].len(),
+        1,
+        "self edge resolves to redeclared shape"
+    );
+    assert_eq!(
+        graph.nodes[&bob].values().next().unwrap()["nickname"],
+        vec![Value::String("Bobby".into())]
+    );
+    evaluated.commit().publish().perform(&operator).await?;
+    let committed = syntax("person:\n  this: id:alice\n")
+        .evaluate(branch.transaction())
+        .perform(&operator)
+        .await?;
+    assert_eq!(
+        serde_json::to_value(committed.matches[0].graph.as_ref())?,
+        serde_json::to_value(Some(graph))?
+    );
+    Ok(())
+}

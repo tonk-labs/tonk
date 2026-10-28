@@ -579,11 +579,8 @@ fn collect_event_source_needs(fields: &[Field], needs: &mut Vec<Need>) {
 /// attribute definitions (a nested mapping) declare their own entity
 /// and need no resolution, so they're skipped here.
 fn collect_concept_with_needs(assertion: &tonk_notation::Application, needs: &mut Vec<Need>) {
-    // A retraction (`with: { f: _ }`, `maybe: { f: _ }`, or `..: _`)
-    // reads the concept's stored fields off the branch. Track whether
-    // the body carries one so a single `ConceptByEntity` need is
-    // registered against the `this:`-pinned entity below.
-    let mut has_retraction = false;
+    // Pinned declarations read stored fields and graph edges so field
+    // retractions and replacements can remove exactly the old metadata.
     let mut this_entity: Option<(Entity, lsp_types::Range)> = None;
     for field in &assertion.fields {
         if field.name == "this"
@@ -594,9 +591,6 @@ fn collect_concept_with_needs(assertion: &tonk_notation::Application, needs: &mu
             continue;
         }
         if field.name == ".." {
-            if matches!(field.value, FieldValue::Blank) {
-                has_retraction = true;
-            }
             continue;
         }
         if field.name != "with" && field.name != "maybe" {
@@ -609,7 +603,7 @@ fn collect_concept_with_needs(assertion: &tonk_notation::Application, needs: &mu
             match &sub.value {
                 // `f: _` is a retraction, not a reference — no
                 // attribute need; the value is read from the branch.
-                FieldValue::Blank => has_retraction = true,
+                FieldValue::Blank => {}
                 FieldValue::Nested(_) => {} // inline definition, no need
                 FieldValue::Symbol(name) | FieldValue::Variable(name) => {
                     needs.push(Need::Attribute {
@@ -629,7 +623,7 @@ fn collect_concept_with_needs(assertion: &tonk_notation::Application, needs: &mu
             }
         }
     }
-    if has_retraction && let Some((entity, range)) = this_entity {
+    if let Some((entity, range)) = this_entity {
         needs.push(Need::ConceptByEntity { entity, range });
     }
 }
@@ -845,6 +839,7 @@ impl Graph {
                                 .map(AnchorName::as_str)
                                 .or(variable.as_deref()),
                             ConceptDef {
+                                edges: plan.edges.clone(),
                                 entity: entity.clone(),
                                 descriptor,
                             },
@@ -926,6 +921,11 @@ impl Graph {
                     retractions.extend(
                         edge_fields
                             .iter()
+                            .filter(|field| {
+                                resolved
+                                    .as_ref()
+                                    .is_some_and(|def| def.edges.contains_key(*field))
+                            })
                             .map(|field| edge_application(&entity, field, None)),
                     );
                     // A retraction-only body (no asserted fields)
@@ -1096,6 +1096,79 @@ impl Graph {
         // table; read synchronously by the view-binding pass.
         super::view::index_event_declarations(syntax, scope);
 
+        // Capture graph schemas from this exact analyzer scope. In-document
+        // declarations override persisted bookmarks, including recursive edges.
+        for expression in &syntax.expressions {
+            let tonk_notation::Expression::Query(query) = expression else {
+                continue;
+            };
+            let tonk_notation::HeadName::Concept(name) = &query.predicate.name else {
+                continue;
+            };
+            let Some(root) = scope.concept(name) else {
+                continue;
+            };
+            if root.edges.is_empty() {
+                continue;
+            }
+            let mut pending = std::collections::VecDeque::from([root.clone()]);
+            let mut schema = dialog_query::graph::GraphSchema::default();
+            while let Some(definition) = pending.pop_front() {
+                let key = definition.entity.to_string();
+                if schema.shapes.contains_key(&key) {
+                    continue;
+                }
+                let mut edges = std::collections::BTreeMap::new();
+                for (field, target_name) in &definition.edges {
+                    let target = if let Some(target) = scope.concept(target_name) {
+                        Some(target)
+                    } else if let Ok(entity) = target_name.parse::<Entity>() {
+                        let local = scope
+                            .in_doc_concepts_by_entity
+                            .lock()
+                            .get(target_name)
+                            .cloned();
+                        match local {
+                            Some(target) => Some(target),
+                            None => resolver.concept_by_entity(&entity).await.map_err(|e| {
+                                AnalyzeErrorKind::InvalidGraphQuery {
+                                    reason: e.to_string(),
+                                }
+                            })?,
+                        }
+                    } else {
+                        resolver.concept(target_name).await.map_err(|e| {
+                            AnalyzeErrorKind::InvalidGraphQuery {
+                                reason: e.to_string(),
+                            }
+                        })?
+                    }
+                    .ok_or_else(|| AnalyzeErrorKind::InvalidGraphQuery {
+                        reason: format!("graph target {target_name:?} is not a concept"),
+                    })?;
+                    edges.insert(
+                        field.clone(),
+                        dialog_query::graph::GraphEdge {
+                            target: target.entity.to_string(),
+                            matching: Default::default(),
+                            shaping: Default::default(),
+                        },
+                    );
+                    pending.push_back(target);
+                }
+                schema.shapes.insert(
+                    key,
+                    dialog_query::graph::GraphShape {
+                        concept: definition.descriptor.concept().clone(),
+                        edges,
+                    },
+                );
+            }
+            scope
+                .graph_schemas
+                .lock()
+                .insert(root.entity.to_string(), schema);
+        }
         Ok(Resolved { declared })
     }
 }
@@ -1210,6 +1283,7 @@ view!: &counter/view
         /// One concept, from the JSON shape a resolved descriptor takes.
         fn definition(entity: &str, descriptor: &str) -> ConceptDefinition {
             ConceptDefinition {
+                edges: Default::default(),
                 entity: entity.parse().expect("an entity"),
                 descriptor: tonk_core::claim::ConceptDescriptor::Durable(
                     serde_json::from_str(descriptor).expect("a descriptor"),
