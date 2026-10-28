@@ -320,11 +320,23 @@ fn expand(
     // ---- query pass: build query Applications ----
     for (index, expression) in syntax.expressions.iter().enumerate() {
         if let Expression::Query(q) = expression {
-            let application = build_query_application(q, scope, &working)?;
+            let graph = query::graph_constraints(q, scope, &working)?;
+            let mut matching = q.clone();
+            if graph.is_some() {
+                matching.fields.retain(|field| field.name != "graph");
+            }
+            let application = build_query_application(&matching, scope, &working)?;
+            if graph.is_some() && !matches!(application, Application::Concept { .. }) {
+                return Err(AnalyzeErrorKind::InvalidGraphQuery {
+                    reason: "graph stages require a concept query".into(),
+                }
+                .into());
+            }
             working.queries.push(application.clone());
             nodes[index] = Some(ExpressionAnalysis::Query(Box::new(Tree {
                 source: QueryNode { source: q.clone() },
                 analysis: QueryNodeAnalysis {
+                    graph,
                     application,
                     label: q.predicate.source.clone(),
                 },

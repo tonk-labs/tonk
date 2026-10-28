@@ -16,6 +16,8 @@ pub struct Subscribe<'a> {
     pub branch: BranchReference<'a>,
     /// The query the subscription re-evaluates on every change.
     pub query: ConceptQuery,
+    /// Concept bookmark whose persisted typed edges shape this subscription.
+    pub graph: Option<String>,
     /// The client this subscriber serves, when known — see
     /// [`BranchState::retain_subscribers`](crate::BranchState::retain_subscribers).
     pub client: Option<String>,
@@ -30,9 +32,16 @@ impl<'a> Subscribe<'a> {
         Self {
             branch,
             query,
+            graph: None,
             client: None,
             level: 0,
         }
+    }
+
+    /// Shape this subscription using the named concept's typed edges.
+    pub fn graph(mut self, name: impl Into<String>) -> Self {
+        self.graph = Some(name.into());
+        self
     }
 
     /// Tag the subscriber with the client it serves, so the owner
@@ -57,12 +66,31 @@ impl<'a> Subscribe<'a> {
         Env: LoadProvider + BranchOpenProvider + SelectProvider,
     {
         let session = self.branch.acquire(env).await?;
-        let subscriber = self.branch.reactor().register_subscription(
-            &session,
-            self.query,
-            self.client,
-            self.level,
-        )?;
+        let subscriber = if let Some(name) = self.graph {
+            let graph =
+                tonk_schema::graph::resolve_graph(self.query, &name, &session.handle().into(), env)
+                    .await
+                    .map_err(|error| ReactorError::Graph(error.to_string()))?
+                    .ok_or_else(|| {
+                        ReactorError::Graph(format!("concept {name:?} has no typed edges"))
+                    })?;
+            self.branch
+                .reactor()
+                .subscription_lifecycle
+                .register(|| {
+                    session
+                        .state
+                        .subscribe_graph(graph, self.client, self.level)
+                })
+                .ok_or(ReactorError::Shutdown)??
+        } else {
+            self.branch.reactor().register_subscription(
+                &session,
+                self.query,
+                self.client,
+                self.level,
+            )?
+        };
         session
             .subscription(subscriber.hash.clone())
             .poll()

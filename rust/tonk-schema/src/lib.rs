@@ -47,6 +47,7 @@ pub use tonk_core::{claim, conclusion, meta};
 pub mod transact;
 
 pub mod concept;
+pub mod graph;
 
 pub mod resolution;
 /// Moving definitions an earlier release wrote to their current shape.

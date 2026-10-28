@@ -903,6 +903,15 @@ impl Graph {
                         .iter()
                         .map(|field| field.name.clone())
                         .collect();
+                    if plan.pinned && !plan.asserts_nothing {
+                        edge_fields.extend(
+                            plan.descriptor
+                                .with()
+                                .iter()
+                                .filter(|(name, _)| !plan.edges.contains_key(*name))
+                                .map(|(name, _)| name.to_owned()),
+                        );
+                    }
                     if plan.rest_retraction.is_some() {
                         if let Some(def) = &resolved {
                             edge_fields.extend(

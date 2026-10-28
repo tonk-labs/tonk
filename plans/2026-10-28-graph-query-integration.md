@@ -24,3 +24,33 @@ Companion to Dialog `ideas/graph-queries.md`, implemented on an isolated Tonk wo
 - Persisted fields use `db.concept.with/<field>` plus optional markers; graph target metadata must survive this reconstruction.
 - `/evaluate` reexports `tonk-evaluator` match DTOs; `tonk-worker-api` has a wire-compatible copy.
 - Dialog graph API coordination is in progress with the engine implementation agent.
+
+## Implementation
+
+- `7c7d0eb48f`: notation checkpoint; two focused declaration tests passed.
+- The evaluator now resolves canonical graph shapes and runs graph reads against
+  the transaction overlay, filters matching root rows, and serializes the graph
+  alongside them. Ordinary responses omit the optional graph member.
+- Query-side `graph.matching` and `graph.shaping` constants bind into Dialog scans.
+- Existing worker `/query?graph=<bookmark>` supports one-shot graph reads and SSE
+  `graph_snapshot` / `graph_delta` frames. Reactor sharing, shutdown, pending
+  subscriber handshake, reconnect snapshots, and client cleanup are reused.
+- Pinned schema edits clear obsolete edge metadata. Edge-target schema is captured
+  when a subscription opens; reopening is required after schema changes.
+
+## Verification
+
+- `cargo check -p tonk-evaluator -p dialog-reactor` passed against the local Dialog
+  graph branch.
+- Native `cargo check -p tonk-worker` passed (existing dead-code warnings).
+- Three end-to-end evaluator tests passed: cyclic normalized results and staged
+  overlay updates; worker DTO JSON roundtrip; root typed conformance and separate
+  matching/shaping semantics.
+- Final focused run passed all eight tests: two declarations, five evaluator
+  scenarios, and one reactor nested delta/reconnect/cleanup scenario.
+- Existing analyzer, evaluator, and reactor unit suites are running as an
+  integration checkpoint.
+- Local verification uses an external Cargo patch config. Its path and the
+  resulting local-patch lockfile are not for committing. The dependency must be
+  pinned to the reviewed Dialog graph commit before PR CI.
+- Browser execution, actual HTTP/SSE requests, and CI are not yet verified here.

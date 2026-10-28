@@ -48,6 +48,9 @@ pub struct ProfileQueryPath {
 /// URL parameters for `/query`.
 #[derive(Debug, Default, Deserialize)]
 pub struct QueryParams {
+    /// Shape this query with the named concept's typed edges. SSE replies
+    /// use `graph_snapshot` and `graph_delta` frames when this is present.
+    pub graph: Option<String>,
     /// How deeply the subscribing display is nested (0 when absent).
     /// The branch notifies lower levels first, so a display learns of a
     /// change before the displays nested inside it.
@@ -315,6 +318,52 @@ async fn query_on_branch(
         }
     };
 
+    if let Some(name) = params.graph {
+        if want_stream && (update_pending() || tonk.is_retiring()) {
+            return Ok((
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::RETRY_AFTER, "1")],
+                "worker is retiring",
+            )
+                .into_response());
+        }
+        migrate_while_opening(tonk, branch)
+            .await
+            .map_err(reactor_to_error)?;
+        if want_stream {
+            let mut subscribe = branch.subscribe(query).graph(name).level(params.level);
+            if let Some(client) = client {
+                subscribe = subscribe.client(client);
+            }
+            let subscriber = subscribe
+                .perform(&tonk.operator)
+                .await
+                .map_err(reactor_to_error)?;
+            return Ok(sse_response(subscriber.receiver));
+        }
+        let session = branch
+            .acquire(&tonk.operator)
+            .await
+            .map_err(reactor_to_error)?;
+        let graph = tonk_schema::graph::resolve_graph(
+            query,
+            &name,
+            &session.handle().into(),
+            &tonk.operator,
+        )
+        .await
+        .map_err(|error| TonkWorkerError::Router(error.to_string()))?
+        .ok_or_else(|| TonkWorkerError::Router(format!("concept {name:?} has no typed edges")))?;
+        let result = session
+            .handle()
+            .query()
+            .graph(graph)
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| TonkWorkerError::Router(error.to_string()))?;
+        return Ok(Json(result).into_response());
+    }
+
     if want_stream {
         // Once this worker starts retiring, refuse to open a long-lived
         // stream: an SSE response is a fetch event that never settles, so one
@@ -440,7 +489,8 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         ReactorError::RepositoryNotFound { .. } | ReactorError::BranchNotFound { .. } => {
             TonkWorkerError::NotFound(err.to_string())
         }
-        ReactorError::QueryFailed(_)
+        ReactorError::Graph(_)
+        | ReactorError::QueryFailed(_)
         | ReactorError::Commit(_)
         | ReactorError::Pull(_)
         | ReactorError::Download(_)

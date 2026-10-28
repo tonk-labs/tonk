@@ -12,4 +12,4 @@ pub use subscriber::Subscriber;
 // Crate-internal: the slot type and `Subscription` struct that
 // backs the subscription map. Used by `BranchState` and the
 // poll path.
-pub(crate) use state::{Status, SubscriberSession, Subscription};
+pub(crate) use state::{Engine, Status, SubscriberSession, Subscription};

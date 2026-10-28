@@ -359,6 +359,8 @@ pub(crate) struct RestRetraction;
 /// inline attribute definitions that need to be registered as
 /// their own meta-head plans alongside the concept's own.
 pub(crate) struct ConceptBody {
+    /// A pinned declaration may replace existing graph metadata.
+    pub pinned: bool,
     /// Typed edge bookmarks; kept outside the ordinary matching descriptor.
     pub edges: BTreeMap<String, String>,
     pub descriptor: ConceptDescriptor,
@@ -431,7 +433,7 @@ pub(crate) fn parse_concept_body(
                 };
                 if let Some(target) = target {
                     edges.insert(field.name.clone(), target);
-                    property.value = FieldValue::Symbol("entity".into());
+                    property.value = FieldValue::Uri("entity:".into());
                 }
             }
         }
@@ -599,6 +601,7 @@ pub(crate) fn parse_concept_body(
     // `this:` pins the entity; otherwise derive it from the
     // descriptor (content-addressed). A retraction-only body has no
     // content to derive from, so the pin is mandatory.
+    let pinned = pinned_entity.is_some();
     let entity = match pinned_entity {
         Some(e) => e,
         None if asserts_nothing => {
@@ -617,6 +620,7 @@ pub(crate) fn parse_concept_body(
     };
     let descriptor = raw_descriptor;
     Ok(ConceptBody {
+        pinned,
         edges,
         descriptor,
         entity,
