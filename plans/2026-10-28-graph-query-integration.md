@@ -118,3 +118,19 @@ Companion to Dialog `ideas/graph-queries.md`, implemented on an isolated Tonk wo
   target/feature combinations; its Wasm reverse tree is empty.
 - Parent authorized publishing the reviewed lint and dependency corrections to
   PR 1197. Dialog companion: https://github.com/dialog-db/dialog-db/pull/700.
+
+## CI follow-up on corrected Wasm candidate
+
+- Candidate `b1f1fe1791ea1adf6e11e88168c82231ad57b4a0` passes actual guest web-app
+  build and runtime packaging, confirming the previous Wasm link collision is
+  resolved.
+- Lint job `122816023242` now reaches reactor `Engine` and rejects its 2000-byte
+  graph variant versus the 968-byte row variant. Boxed both retained engines to
+  keep the slot enum small without changing polling or delivery. Reactor library
+  and test-target Clippy with `-D warnings` passes; formatting/diff checks pass.
+- Native CLI job `122816023443` reveals an independent failure:
+  `sync::when_reporting_status::it_reports_ahead_when_local_has_unpushed_commits`
+  expects Ahead but receives Diverged at `sync.rs:618`. It pushes a shared base,
+  evaluates a local concept declaration, then checks status. 656 tests passed,
+  one failed, 47 were not run. Cause remains under investigation; no test gate or
+  expectation has been weakened.

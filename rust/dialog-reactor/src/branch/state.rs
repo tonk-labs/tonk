@@ -231,7 +231,7 @@ impl BranchState {
         let plan = tonk_schema::concept::QueryPlan::from(query);
         let subscription = entry.or_insert_with(|| Subscription {
             engine: Arc::new(tokio::sync::Mutex::new(Some(
-                crate::subscription::Engine::Rows(self.branch.subscribe(plan)),
+                crate::subscription::Engine::Rows(Box::new(self.branch.subscribe(plan))),
             ))),
             terms,
             subscribers: Vec::new(),
@@ -263,7 +263,7 @@ impl BranchState {
                 hash.clone(),
                 Subscription {
                     engine: Arc::new(tokio::sync::Mutex::new(Some(
-                        crate::subscription::Engine::Graph(engine),
+                        crate::subscription::Engine::Graph(Box::new(engine)),
                     ))),
                     terms: query.root.terms,
                     subscribers: Vec::new(),

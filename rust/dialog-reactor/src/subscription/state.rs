@@ -33,9 +33,9 @@ use dialog_common::log;
 /// `QueryPlan` — resolves fine).
 pub enum Engine {
     /// Existing row subscription.
-    Rows(dialog_repository::Subscription<tonk_schema::concept::QueryPlan>),
+    Rows(Box<dialog_repository::Subscription<tonk_schema::concept::QueryPlan>>),
     /// Typed graph subscription, retained by Dialog's incremental engine.
-    Graph(dialog_repository::GraphSubscription),
+    Graph(Box<dialog_repository::GraphSubscription>),
 }
 
 /// The engine slot: an `Option` behind an async mutex.
